@@ -35,7 +35,7 @@ import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-
 import { readJobLogTerminal, type JobLogTerminal } from './job-log-terminal';
 import {
   clearVanishedUnaccounted,
-  listLiveTasks,
+  listReconcileTasks,
   markEndedUnobserved,
   markRecoveredFromJobLog,
   markStranded,
@@ -183,7 +183,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   // files and classifies with the same rules; an injected non-node `fs` without
   // an `asyncFs` still takes the synchronous path.
   const scanFn = deps.scan ?? scanProcessesAsync;
-  const listLive = deps.listLive ?? listLiveTasks;
+  const listLive = deps.listLive ?? listReconcileTasks;
 
   deps.stage?.('reconcile-scan');
   const scan = await scanFn({ fs, ...(deps.scanOptions ?? {}) });
@@ -202,7 +202,8 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   const candidateUnits = [
     ...new Set(
       live
-        .filter((r) => isLiveOwnedState(r.state as TaskState) && r.scopeUnit && !seenScopes.has(r.scopeUnit))
+        .filter((r) => (isLiveOwnedState(r.state as TaskState) ||
+          (r.state === 'ended_unobserved' && r.exitCode == null)) && r.scopeUnit && !seenScopes.has(r.scopeUnit))
         .map((r) => r.scopeUnit as string),
     ),
   ];
@@ -350,6 +351,16 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         return scan.ownedRootExists && Boolean(unit && releasedScopes.has(unit));
       })
     : result.endedUnobserved;
+  // A prior absence verdict is not an observed exit. Revisit only on this host,
+  // with no live process in the scope and positive independent release evidence.
+  if (scan.ownedRootExists) {
+    for (const row of live) {
+      if (row.state === 'ended_unobserved' && row.exitCode == null && row.scopeUnit &&
+        !seenScopes.has(row.scopeUnit) && releasedScopes.has(row.scopeUnit)) {
+        endedToPersist.push({ taskId: row.taskId, reason: 'revisit unobserved terminal row after confirmed scope release' });
+      }
+    }
+  }
   const observeStage = deps.stage;
   const effectsForTask = observeStage
     ? (taskId: string) => ({ stage: (name: string) => observeStage(name, taskId) })

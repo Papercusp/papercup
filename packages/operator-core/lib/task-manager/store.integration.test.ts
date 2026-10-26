@@ -781,6 +781,66 @@ describe('P-012 terminal provenance writer', () => {
     ).resolves.toBe(false);
     expect((await store.getTask(row.taskId))?.state).toBe('running');
   });
+
+  it('upgrades an unobserved close from delayed exit evidence without changing ended_at', async () => {
+    const row = await liveTask('lateexit');
+    const effects = { emitTerminal: vi.fn(async () => {}) };
+    await store.closeTask(row.taskId, { state: 'ended_unobserved' }, undefined, effects);
+    const endedAt = (await store.getTask(row.taskId))!.endedAt;
+    expect((await store.listReconcileTasks(WS)).map((r) => r.taskId)).toContain(row.taskId);
+    const emitTerminal = vi.fn(async () => {
+      expect(await store.getTask(row.taskId)).toMatchObject({ state: 'exited', exitCode: 0, endedAt });
+    });
+    const input = { state: 'ended_unobserved' as const, terminalProvenance: terminal(row.scopeUnit!, {
+      activeState: 'inactive', serviceResult: 'success', execMainCode: 1, execMainStatus: 0,
+    }) };
+    expect(await store.closeTask(row.taskId, input, undefined, { emitTerminal })).toBe(true);
+    expect(await store.closeTask(row.taskId, input, undefined, { emitTerminal })).toBe(false);
+    expect(emitTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves observed exits and rejects active or mismatched recovery evidence', async () => {
+    const row = await liveTask('latecontrols');
+    const effects = { emitTerminal: vi.fn(async () => {}) };
+    await store.closeTask(row.taskId, { state: 'ended_unobserved', terminalProvenance: terminal(row.scopeUnit!, {
+      invocationId: 'original', activeState: 'inactive', serviceResult: null, execMainCode: null, execMainStatus: null,
+    }) }, undefined, effects);
+    for (const change of [{ scopeUnit: 'pc-other.service' }, { invocationId: 'other' },
+      ...['active', 'activating', 'reloading', 'deactivating'].map((activeState) => ({ activeState }))]) {
+      expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0,
+        terminalProvenance: terminal(row.scopeUnit!, { invocationId: 'original', serviceResult: 'success',
+          execMainCode: 1, execMainStatus: 0, activeState: 'inactive', ...change }) }, undefined, effects)).toBe(false);
+    }
+    expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 4 }, undefined, effects)).toBe(true);
+    expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0 }, undefined, effects)).toBe(false);
+    expect(await store.getTask(row.taskId)).toMatchObject({ state: 'exited', exitCode: 4 });
+  });
+
+  it('does not overwrite a racing observed exit or changed scope after the recovery read', async () => {
+    for (const change of ['observed', 'scope', 'invocation']) {
+      const row = await liveTask(`racing${change}`);
+      await store.closeTask(row.taskId, { state: 'ended_unobserved' }, undefined, { emitTerminal: async () => {} });
+      const effects: CloseTaskEffects = { emitTerminal: vi.fn(async () => {}), stage: (stage) => {
+        if (stage === 'task-close-update') updates.push(change === 'observed'
+          ? db.sql`UPDATE harness_shared.task_ledger SET state = 'exited', exit_code = 9 WHERE task_id = ${row.taskId}`
+          : change === 'scope'
+            ? db.sql`UPDATE harness_shared.task_ledger SET scope_unit = 'pc-replaced.service' WHERE task_id = ${row.taskId}`
+            : db.sql`UPDATE harness_shared.task_ledger SET detail = detail || '{"terminalProvenance":{"invocationId":"new"}}'::jsonb WHERE task_id = ${row.taskId}`);
+      } };
+      // An injected SQL boundary models another connection winning between read and UPDATE.
+      const updates: PromiseLike<unknown>[] = [];
+      const sql = ((parts: TemplateStringsArray, ...values: unknown[]) => {
+        const query = parts.join('?');
+        if (query.includes('UPDATE harness_shared.task_ledger')) return (async () => {
+          await Promise.all(updates);
+          return db.sql(parts, ...values as never[]);
+        })();
+        return db.sql(parts, ...values as never[]);
+      }) as typeof db.sql;
+      expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0 }, sql, effects)).toBe(false);
+      expect(effects.emitTerminal).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe('persistFailedTaskUnitTerminal fallback collector', () => {

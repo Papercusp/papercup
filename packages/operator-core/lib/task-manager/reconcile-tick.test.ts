@@ -20,6 +20,7 @@ const store = vi.hoisted(() => ({
 
 vi.mock('./store', () => ({
   listLiveTasks: async () => [] as TaskRow[],
+  listReconcileTasks: async () => [] as TaskRow[],
   touchAlive: async (u: unknown[]) => {
     store.touched.push(...u);
     await store.touchGate?.();
@@ -610,6 +611,31 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     peakMemoryBytes: null,
     peakMemorySource: 'unknown' as const,
   });
+
+  it.each([false, true])('revisits an unobserved terminal row when a delayed marker appears (truncated=%s)', async (ownedTruncated) => {
+    const task = row({ taskId: 'delayed', state: 'ended_unobserved', exitCode: null,
+      endedAt: '2026-10-25T20:00:00.000Z', logPath: '/logs/delayed.log' });
+    const out = await reconcileTick({ listLive: async () => [task], scan: () => scanResult([], { ownedTruncated }),
+      fs: memFs({}), checkScopesReleased: async () => new Set([task.scopeUnit!]),
+      readJobLogTerminal: () => ({ status: 'completed', exitCode: 0 }) });
+    expect(out.recoveredFromJobLogCount).toBe(1);
+    expect(store.recovered).toEqual([expect.objectContaining({ taskId: task.taskId, state: 'exited', exitCode: 0 })]);
+  });
+
+  it.each(['active', 'unavailable', 'seen', 'wrong-host', 'dry-run', 'observed', 'no-marker'])(
+    'refuses delayed recovery without independent matching terminal evidence: %s', async (control) => {
+      const task = row({ taskId: 'delayed', state: control === 'observed' ? 'exited' : 'ended_unobserved',
+        exitCode: control === 'observed' ? 4 : null, endedAt: '2026-10-25T20:00:00.000Z', logPath: '/logs/delayed.log' });
+      const readJobLogTerminal = vi.fn(() => control === 'no-marker' ? null : { status: 'completed' as const, exitCode: 0 });
+      await reconcileTick({ listLive: async () => [task], fs: memFs({}), dryRun: control === 'dry-run',
+        scan: () => scanResult(control === 'seen' ? [proc({ pid: 1, cgroupPath: `${OURS}/${task.scopeUnit}` })] : [],
+          { ownedRootExists: control !== 'wrong-host' }),
+        inspectTaskUnitTerminals: async () => control === 'unavailable' ? new Map() : new Map([[task.scopeUnit!,
+          { ...collected(task.scopeUnit!), activeState: control === 'active' ? 'active' : 'inactive' }]]),
+        resetFailedTaskUnit: vi.fn(async () => true), readJobLogTerminal });
+      expect(store.recovered).toEqual([]);
+      if (control !== 'no-marker') expect(readJobLogTerminal).not.toHaveBeenCalled();
+    });
 
   it.each([false, true])('closes a collected unit from the runner JOB END (ownedTruncated=%s)', async (ownedTruncated) => {
     const terminal = collected('pc-ok888.service');

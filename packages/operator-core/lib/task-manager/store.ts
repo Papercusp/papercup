@@ -420,6 +420,8 @@ export function classifyTerminalClose(
   } else if (result === 'exit-code') {
     state = 'exited';
     exitReason ??= 'exit-code';
+  } else if (state === 'ended_unobserved' && terminal.execMainCode === 1 && terminal.execMainStatus != null) {
+    state = 'exited';
   }
 
   return {
@@ -432,9 +434,8 @@ export function classifyTerminalClose(
 
 /**
  * Terminal close. Idempotent by construction — the WHERE excludes rows that
- * already ended, so a race between the child's `exit` event and the reconciler's
- * strand verdict resolves to whichever landed first instead of overwriting a real
- * exit code with a guess.
+ * already observed an exit. A later definitive exit can upgrade an unobserved
+ * close, with snapshot guards repeated atomically in SQL so racing evidence wins.
  */
 export async function closeTask(
   taskId: string,
@@ -456,6 +457,14 @@ export async function closeTask(
   const classified = classifyTerminalClose(input, existing);
   assertState(classified.state);
   if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
+  const recovering = Boolean(existing?.endedAt && existing.state === 'ended_unobserved' && existing.exitCode == null
+    && ['exited', 'killed', 'timed_out'].includes(classified.state) && classified.exitCode != null);
+  const terminal = input.terminalProvenance;
+  if (recovering && terminal && (
+    ['active', 'activating', 'reloading', 'deactivating'].includes(terminal.activeState ?? '') ||
+    (existing?.terminalProvenance?.invocationId != null && terminal.invocationId != null &&
+      existing.terminalProvenance.invocationId !== terminal.invocationId)
+  )) return false;
   if (existing && !existing.endedAt) {
     effects.stage?.('task-close-cleanup');
     await (effects.cleanupVerifierDirectories ?? cleanupEndedVerifierDirectories)(existing);
@@ -495,11 +504,15 @@ export async function closeTask(
                'terminalProvenance', ${terminalJson}::text::jsonb
              )
            END,
-           ended_at = now(),
+           ended_at = COALESCE(ended_at, now()),
            last_seen_at = now(),
            updated_at = now()
      WHERE task_id = ${taskId}
-       AND ended_at IS NULL
+       AND (ended_at IS NULL OR (
+         ${recovering} AND state = 'ended_unobserved' AND exit_code IS NULL
+         AND scope_unit IS NOT DISTINCT FROM ${existing?.scopeUnit ?? null}
+         AND detail #>> '{terminalProvenance,invocationId}' IS NOT DISTINCT FROM ${existing?.terminalProvenance?.invocationId ?? null}
+       ))
     RETURNING task_id, workspace_id, harness_slug, class, launched_by,
               work_item_id, log_path, argv, started_at, ended_at
   `;
@@ -1088,6 +1101,11 @@ export async function bindAgentSessionTaskToLatestNativeSession(taskId: string, 
 /** Every row in a state that asserts a live OS process — the reconciler's input. */
 export async function listLiveTasks(workspaceId?: string, inject?: Sql): Promise<TaskRow[]> {
   return listTasks({ workspaceId, states: ['pending', 'running'], limit: 2000 }, inject);
+}
+
+/** Lost watchers may leave an unobserved close before their durable exit arrives. */
+export async function listReconcileTasks(workspaceId?: string, inject?: Sql): Promise<TaskRow[]> {
+  return listTasks({ workspaceId, states: ['pending', 'running', 'ended_unobserved'], includeEnded: true, limit: 2000 }, inject);
 }
 
 /**
