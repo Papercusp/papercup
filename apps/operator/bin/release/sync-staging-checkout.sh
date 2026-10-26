@@ -414,6 +414,17 @@ collect_staging_generation_refs() {
         tr '\0' '\n' | sed -n 's#^/proc/\([0-9]*\)/environ:PAPERCUSP_INTEGRATION_ROOT=#\1\tintegration-root\t#p' || true
       find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%p\t%l\n' 2>/dev/null |
         sed -n 's#^/proc/\([0-9]*\)/cwd\t#\1\tcwd\t#p' || true
+      # WI-6554700010029679: an argv element naming a path INSIDE a generation
+      # pins it too. release:cut runs `bash -c 'source "$1" …' <root>/bin/
+      # release-local.sh <generation>/…/bin/release-local.sh …` with its cwd in
+      # the release root and no PAPERCUSP_INTEGRATION_ROOT, yet the orchestrator
+      # keeps opening files from that generation until the cut's final step.
+      # Anchored on the generations-root prefix (the same literal prefix every
+      # pruned candidate sits under), so the batched scan stays one grep.
+      if [[ -n "${STAGING_GENERATIONS_ROOT:-}" ]]; then
+        grep -sazHo -- "^$(printf '%s' "$STAGING_GENERATIONS_ROOT" | sed 's/[][\\.*^$]/\\&/g')/.*" /proc/[0-9]*/cmdline 2>/dev/null |
+          tr '\0' '\n' | sed -n 's#^/proc/\([0-9]*\)/cmdline:#\1\targv\t#p' || true
+      fi
     } | sort -u || true
   )"
   STAGING_GENERATION_REFS="$(printf '%s\n' "$STAGING_GENERATION_PROCESS_REFS" | cut -f3- | sort -u)"

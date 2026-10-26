@@ -1747,6 +1747,48 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
     }
   });
 
+  it('retains a generation a process names only in argv — a release:cut orchestrator (WI-6554700010029679)', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'staging-prune-argv-')));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const current = join(generationRoot, '.candidate-aaaaaaaaaaaa.cur', 'checkout');
+    const argvPinned = join(generationRoot, '.candidate-eeeeeeeeeeee.arg', 'checkout');
+    const unreferenced = join(generationRoot, '.candidate-ffffffffffff.old', 'checkout');
+    const orchestrator = join(argvPinned, 'papercusp-desktop/bin/release-local.sh');
+    mkdirSync(current, { recursive: true });
+    mkdirSync(unreferenced, { recursive: true });
+    mkdirSync(dirname(orchestrator), { recursive: true });
+    writeFileSync(orchestrator, '');
+    symlinkSync(current, alias);
+    // The cut's shape: cwd in the release root (outside every generation), no
+    // PAPERCUSP_INTEGRATION_ROOT, the generation present ONLY as a positional
+    // argument. `; true` stops bash exec-ing sleep, which would drop that argv.
+    const env = { ...process.env };
+    delete env.PAPERCUSP_INTEGRATION_ROOT;
+    const holder = spawn('bash', ['-c', 'sleep 60; true', join(root, 'release-root.sh'), orchestrator], {
+      cwd: root,
+      env,
+      stdio: 'ignore',
+    });
+    try {
+      await new Promise((resolve) => holder.once('spawn', resolve));
+      const result = runFn(
+        PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations',
+        { env: { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root } },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`retaining prior staging generation still referenced by a process: ${argvPinned}`);
+      expect(result.stdout).toContain(`holder_pid=${holder.pid} `);
+      expect(result.stdout).toContain('reference=argv');
+      expect(result.stdout).toContain(`pruned unused staging generation ${unreferenced}`);
+      expect(realpathSync(argvPinned)).toBe(argvPinned);
+    } finally {
+      holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['live', 'missing'] as const)('reports a retained sidecar with its exact PID and %s declared parent (WI5508)', async (parentState) => {
     const root = mkdtempSync(join(tmpdir(), 'staging-prune-parent-'));
     const generationRoot = join(root, 'papercusp-staging.generations');
