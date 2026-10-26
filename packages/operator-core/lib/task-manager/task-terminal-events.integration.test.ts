@@ -170,6 +170,39 @@ describe('task terminal awaited-event bridge (real PG)', () => {
     expect(emitted).toHaveBeenCalledWith(expect.objectContaining({ taskId, state: 'exited', exitCode: 9, exitReason: 'late-runner-log' }));
   });
 
+  it('retains pending delivery when only the terminal revision changes during a successful emit', async () => {
+    const taskId = 'terminal-revision-only-during-emit';
+    const eventKey = taskTerminalEventKey(taskId);
+    await insertTask(taskId);
+    await expect(taskStore.closeTask(taskId, {
+      state: 'exited', exitCode: 9, exitReason: 'runner-log',
+    }, undefined, { emitTerminal: async event => {
+      expect(event).toMatchObject({ revision: 1 });
+      // Keep the tuple identical: only the SQL acknowledgement's revision
+      // predicate can stop this successful older emission clearing pending.
+      await h.sql`UPDATE harness_shared.task_ledger
+        SET detail = detail || '{"terminalEventRevision":7}'::jsonb
+        WHERE task_id = ${taskId}`;
+      return true;
+    } })).resolves.toBe(true);
+    expect(await h.sql`SELECT state, exit_code, exit_reason,
+      detail -> 'terminalEventRevision' AS revision, detail -> 'terminalEventPending' AS pending
+      FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+      .toEqual([{ state: 'exited', exit_code: 9, exit_reason: 'runner-log', revision: 7, pending: true }]);
+    const recovery = vi.fn(emitTaskTerminalEvent);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws, undefined, recovery)).resolves.toBe(1);
+    expect(recovery).toHaveBeenCalledWith(expect.objectContaining({
+      taskId, state: 'exited', exitCode: 9, exitReason: 'runner-log', revision: 7,
+    }));
+    expect(await h.sql`SELECT fire_count, last_payload -> 'terminalEventRevision' AS revision
+      FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}`)
+      .toEqual([{ fire_count: 1, revision: 7 }]);
+    expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending
+      FROM harness_shared.task_ledger WHERE task_id = ${taskId}`).toEqual([{ pending: false }]);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws, undefined, recovery)).resolves.toBe(0);
+    expect(recovery).toHaveBeenCalledTimes(1);
+  });
+
   it('retains the newer acknowledged tuple when an older recovery emission finishes last', async () => {
     const taskId = 'terminal-older-emission-finishes-last';
     const eventKey = taskTerminalEventKey(taskId);
