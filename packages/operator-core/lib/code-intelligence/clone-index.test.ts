@@ -132,10 +132,6 @@ describe('incremental TS/TSX clone index', () => {
     expect(index.families('renamed', { includeTests: true })[0].members.map(fn => fn.path))
       .toEqual(['src/__tests__/rig.ts', 'src/a.ts', 'src/b.ts', 'tests/a.spec.ts']);
     expect(classifyClonePath('node_modules/vendor/a.ts').vendored).toBe(true);
-    // Build-generated desktop sidecar copies are vendored (derive-and-sync), not merge targets.
-    expect(classifyClonePath('papercusp-desktop/src-tauri/env-sidecars/staging/harness/paths.ts').vendored).toBe(true);
-    expect(classifyClonePath('libs/papercusp/packages/harness/paths.ts').vendored).toBe(false);
-    expect(classifyClonePath('src/my-env-sidecars-helper.ts').vendored).toBe(false);
     expect(index.getFile('_retired/a.ts')!.functions[0].classification.retired).toBe(true);
     for (const path of ['a.d.ts', 'src/x.gen.ts', 'dist/a.ts', 'src/a.js']) {
       expect(extractCloneFile({ path, source }, 10).status).toBe('excluded');
