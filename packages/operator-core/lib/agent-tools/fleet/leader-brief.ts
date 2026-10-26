@@ -387,6 +387,36 @@ export async function readLeaderBriefFleetMetrics(
   }
 }
 
+/** Start required queue metrics as soon as the fleet and harness are known.
+ * The whole brief has a 25s deadline, so deferring this independent read until
+ * optional member diagnostics finish can leave it no time to return. */
+export function startLeaderBriefFleetMetricsRead(input: {
+  workspaceId: string;
+  fleet: string;
+  harness: string | null | PromiseLike<string | null>;
+  assignee?: string;
+}, read = readLeaderBriefFleetMetrics) {
+  return Promise.resolve(input.harness).then((harness) => {
+    const fallback = leaderBriefFleetMetricsUnavailable({
+      fleet: input.fleet,
+      harness,
+      reason: 'canonical fleet metric read exceeded the leader-brief leg budget',
+      recoverVia: harness
+        ? `work_items:burn_down { harness: '${harness}', fleet: '${input.fleet}', window: 'fleet-lifetime' }`
+        : 'fleet:leader-brief { fleet, harness }',
+    });
+    return boundedLeaderBriefFleetMetricsRead(
+      () => read({
+        workspaceId: input.workspaceId,
+        fleet: input.fleet,
+        harness,
+        assignee: input.assignee,
+      }),
+      fallback,
+    );
+  });
+}
+
 export async function runLeaderBriefWithinDeadline<T>(
   work: () => Promise<T>,
   fallback: T,
@@ -4336,6 +4366,12 @@ export async function buildLeaderBrief(
     leaderBriefLaneHealthUnavailable({ fleet, harness: args.harness }),
     FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
   );
+  const fleetMetricsPromise = startLeaderBriefFleetMetricsRead({
+    workspaceId,
+    fleet,
+    harness: args.harness ?? fleetLaneHealthPromise.then((read) => read.laneHealth?.spec.harness ?? null),
+    assignee: ownerId,
+  });
   const rosterResult = await boundedLeaderBriefRead<ListFleetRosterResult>(
     'roster',
     () => listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId }),
@@ -4783,29 +4819,7 @@ export async function buildLeaderBrief(
     fleetPaused: fleetPause.paused,
   });
   const claimabilitySupervision = computeClaimabilitySupervision(claimableNow);
-  // P-005 / D-001: hydrate the rich, replace-full fleet snapshot through the
-  // canonical scope resolver + burn-down builder. A missing harness or a slow
-  // optional leg remains an explicit unavailable result with recoverVia;
-  // omission/zero would falsely read as a measured empty fleet.
-  const fleetMetricsHarness = args.harness ?? fleetLaneHealth?.spec.harness ?? null;
-  const fleetMetricsFallback = leaderBriefFleetMetricsUnavailable({
-    fleet,
-    harness: fleetMetricsHarness,
-    reason: 'canonical fleet metric read exceeded the leader-brief leg budget',
-    recoverVia: fleetMetricsHarness
-      ? `work_items:burn_down { harness: '${fleetMetricsHarness}', fleet: '${fleet}', window: 'fleet-lifetime' }`
-      : 'fleet:leader-brief { fleet, harness }',
-  });
-  const fleetMetrics = await boundedLeaderBriefFleetMetricsRead(
-    () =>
-      readLeaderBriefFleetMetrics({
-        workspaceId,
-        fleet,
-        harness: fleetMetricsHarness,
-        assignee: ownerId,
-      }),
-    fleetMetricsFallback,
-  );
+  const fleetMetrics = await fleetMetricsPromise;
   const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
   const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
   const fleetLaneGating =

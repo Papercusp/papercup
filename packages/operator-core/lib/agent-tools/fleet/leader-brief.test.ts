@@ -57,6 +57,7 @@ import {
   projectFleetCampaignInvocationDiagnostics,
   recordFleetCampaignInvocationDiagnostics,
   readLeaderBriefFleetMetrics,
+  startLeaderBriefFleetMetricsRead,
   leaderBriefFleetMetricsUnavailable,
   readLeaderBriefLaneHealth,
   readLeaderAnnouncedGates,
@@ -494,6 +495,32 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       // P-001: the workspace scope reaches the builder, else feature/paused reads go unknown.
       expect.objectContaining({ sourceCapExhausted: false, assignee: 'su-leader', workspaceId: 'ws' }),
     );
+  });
+
+  it('starts the bounded queue metrics read immediately when its harness is available', async () => {
+    const fallback = leaderBriefFleetMetricsUnavailable({
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      reason: 'canonical fleet metric read exceeded the leader-brief leg budget',
+      recoverVia: "work_items:burn_down { harness: 'papercusp', fleet: 'fleet-a', window: 'fleet-lifetime' }",
+    });
+    let releaseRead: ((value: typeof fallback) => void) | undefined;
+    const read = vi.fn(() => new Promise<typeof fallback>((resolve) => { releaseRead = resolve; }));
+    const pending = startLeaderBriefFleetMetricsRead({
+      workspaceId: 'ws',
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      assignee: 'su-leader',
+    }, read);
+
+    await vi.waitFor(() => expect(read).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      assignee: 'su-leader',
+    }));
+    releaseRead?.(fallback);
+    await expect(pending).resolves.toBe(fallback);
   });
 
   it('fixes scope before hydrating selected items and overlaps the occurrence census', async () => {
