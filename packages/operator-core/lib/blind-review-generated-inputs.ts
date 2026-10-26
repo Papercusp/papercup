@@ -6,6 +6,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { verifierSourceFiles, type VerifierSourceFile } from '@papercusp/test-config/verifier-source';
 import { captureVerifierDependencies, runVerifierDependencyCommand, verifyVerifierSource,
   type prepareVerifierSource } from '../../../scripts/source-preview.mjs';
+import { captureRuntimeTools, type RuntimeToolSources } from './blind-review-runtime-tools';
+import { buildRuntimeDesktop, type RuntimeDesktopToolchain } from './blind-review-runtime-desktop';
 
 type Source = Awaited<ReturnType<typeof prepareVerifierSource>>;
 type Dependencies = ReturnType<typeof captureVerifierDependencies>;
@@ -82,6 +84,10 @@ export async function verifyRuntimeGeneratedInputs(root: string, source: Source,
 export async function buildRuntimeGeneratedInputs(options: {
   root: string; repositoryRoot: string; custodyRoot: string; source: Source; dependencies: Dependencies;
   signal?: AbortSignal;
+  /** Host-only full runtime preparation; low-level build fixtures may omit it. */
+  runtimeTools?: RuntimeToolSources;
+  /** Production includes a desktop; fixtures may supply a tiny toolchain. */
+  nativeDesktop?: { toolchain?: RuntimeDesktopToolchain };
 }): Promise<RuntimeGeneratedInputs> {
   const { source, dependencies, signal } = options;
   signal?.throwIfAborted();
@@ -123,6 +129,10 @@ export async function buildRuntimeGeneratedInputs(options: {
       { recursive: true, force: false, errorOnExist: true });
     await run(['apps/operator/bin/bundle-host.sh', 'bin/hono-host.ts',
       join(root, 'apps/operator/dist-verify/hono-host.mjs')]);
+    if (options.nativeDesktop) await buildRuntimeDesktop({ root, work, sourceCommit: source.sourceCommit,
+      env, signal, toolchain: options.nativeDesktop.toolchain });
+    if (options.runtimeTools) await captureRuntimeTools(join(root, 'apps/operator/dist-verify/runtime'),
+      options.runtimeTools, signal);
     await verifyInputs(root, source, dependencies);
     const files = (await census(root, source)).map(file => Object.freeze(file));
     const receipt = Object.freeze({ version: 1 as const, sourceReceiptSha256: sha(source),

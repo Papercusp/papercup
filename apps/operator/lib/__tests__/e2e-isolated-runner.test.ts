@@ -554,6 +554,7 @@ describe('run-operator-e2e-isolated.sh', () => {
         HARNESS_ADMIN_DATABASE_URL: SHARED,
         OPERATOR_E2E_RIG: f.rig,
         OPERATOR_E2E_PLAYWRIGHT: f.pw,
+        E2E_FIXTURE_VITE_CWD: f.viteCwd,
         OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
         VH_TSX: f.harnessTsx,
       } });
@@ -606,6 +607,8 @@ describe('run-operator-e2e-isolated.sh', () => {
       VERIFY_TAURI_SOURCE_INPUTS: '',
       VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
       OPERATOR_E2E_RIG: f.rig,
+      OPERATOR_E2E_PLAYWRIGHT: f.pw,
+      E2E_FIXTURE_VITE_CWD: f.viteCwd,
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,
     }, encoding: 'utf8', timeout: 15_000 });

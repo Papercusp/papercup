@@ -129,10 +129,10 @@ def mount_source(command, expected, size, manifest_hash):
         os.dup2(program, 4, inheritable=True)
         os.close(program)
     os.set_inheritable(4, True)
-    argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--new-session',
+    argv = ['/usr/bin/bwrap', '--unshare-all', '--hostname', 'review-runtime', '--die-with-parent', '--new-session',
             '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin',
             '--symlink', 'usr/lib', '/lib', '--ro-bind', '/lib64', '/lib64',
-            '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/source',
+            '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/source', '--dir', '/etc',
             '--ro-bind-data', '4', '/init.py',
             '/usr/bin/python3', '-I', '-S', '/init.py', '_extract-exec',
             '--sha256', expected, '--max-bytes', str(size),
@@ -267,13 +267,36 @@ def extract_source(command, expected, size, manifest_hash):
     # explicitly generated inputs, against the host-pinned verifier manifest.
     # Merely hashing an image would bless a source race during image creation.
     verify_manifest('/tmp/source-stage', manifest_hash)
+    # Supply a generated guest identity, never the host's /etc or passwd rows.
+    # Native PostgreSQL/GTK require NSS and font configuration even when every
+    # product path, credential and environment variable is otherwise private.
+    guest_etc = '/tmp/guest-etc'
+    os.mkdir(guest_etc, 0o700)
+    os.mkdir(guest_etc + '/fonts', 0o700)
+    guest_files = {
+        'passwd': 'review:x:' + str(os.getuid()) + ':' + str(os.getgid()) +
+                  ':Disposable review:/tmp/home:/usr/sbin/nologin\n',
+        'group': 'review:x:' + str(os.getgid()) + ':\n',
+        'nsswitch.conf': 'passwd: files\ngroup: files\nhosts: files\n',
+        'hosts': '127.0.0.1 localhost\n::1 localhost\n',
+        'resolv.conf': '',
+        'machine-id': os.urandom(16).hex() + '\n',
+        'fonts/fonts.conf': '<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd">'
+                            '<fontconfig><dir>/usr/share/fonts</dir>'
+                            '<cachedir>/tmp/fontcache</cachedir></fontconfig>\n',
+    }
+    for name, value in guest_files.items():
+        with open(guest_etc + '/' + name, 'x', encoding='utf-8') as output:
+            output.write(value)
     # Hide the writable extraction after the read-only bind. Census and all
     # product children share this exact mount; no mutable donor is visible.
     # A fresh PID namespace also hides the staging supervisor's /proc/PID/root;
     # hiding /tmp alone would still expose its writable extraction that way.
     argv = ['/usr/bin/bwrap', '--die-with-parent', '--unshare-pid', '--unshare-user', '--disable-userns',
-            '--ro-bind', '/', '/', '--proc', '/proc',
-            '--ro-bind', '/tmp/source-stage', '/source', '--tmpfs', '/tmp',
+            '--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev',
+            '--ro-bind', '/tmp/source-stage', '/source', '--ro-bind', guest_etc, '/etc',
+            '--tmpfs', '/tmp', '--perms', '0700', '--dir', '/tmp/home', '--perms', '0700', '--dir', '/tmp/run',
+            '--setenv', 'HOME', '/tmp/home', '--setenv', 'XDG_RUNTIME_DIR', '/tmp/run',
             '--chdir', '/source', *command]
     clean_exec(argv, expected, size)
 

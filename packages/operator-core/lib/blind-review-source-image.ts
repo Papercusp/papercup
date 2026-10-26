@@ -291,7 +291,7 @@ export async function prepareRuntimeSourceImage(options: {
     const dependencies = await prepareVerifierDependencies({ donor: options.repositoryRoot, dest: root,
       receipt: source, signal: options.signal });
     const generated = await buildRuntimeGeneratedInputs({ root, repositoryRoot: options.repositoryRoot,
-      custodyRoot, source, dependencies, signal: options.signal });
+      custodyRoot, source, dependencies, signal: options.signal, runtimeTools: {}, nativeDesktop: {} });
     return await packRuntimeSourceImage({ root, custodyRoot, source, dependencies, generated,
       repositoryRoot: options.repositoryRoot, signal: options.signal });
   } catch (error) {

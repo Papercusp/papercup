@@ -12,6 +12,7 @@ import { packRuntimeSourceImage } from './blind-review-source-image';
 import { consumeRuntimeSourceImage } from './blind-review-source-custody';
 import { provisionRuntimeNamespace, releaseRuntimeNamespace,
   type RuntimeNamespaceBackend } from './blind-review-runtime-lifecycle';
+import { assertRuntimeSeed } from './blind-review-runtime-seed';
 import { _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFingerprint,
   type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
@@ -395,6 +396,10 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
       const backend: RuntimeNamespaceBackend = {
         async provision(input) {
           creates++;
+          assertRuntimeSeed(input.seed, input.lease);
+          expect(input.seed.fixtures).toEqual(['ready']);
+          expect(input.seed.actors).toEqual([]);
+          expect(input.seed.workspace.id).not.toBe(f.identity.workspaceId);
           expect(input.image.handle).toBe(image.handle);
           expect(input.resources).toHaveLength(RUNTIME_RESOURCE_KINDS.length - 1);
           entered.resolve(); await finish.promise;

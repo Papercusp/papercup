@@ -341,6 +341,7 @@ JS
 selection_status=$?
 if [ "$selection_status" -ne 0 ]; then
   vh_fail selection-invalid
+  echo "run-operator-e2e-isolated: invalid selection report; refusing native rig; evidence=$selection_report" >&2
   exit 2
 fi
 

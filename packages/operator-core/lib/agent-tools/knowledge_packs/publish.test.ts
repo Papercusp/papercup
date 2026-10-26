@@ -126,6 +126,9 @@ describe('knowledge_packs:publish tool', () => {
     } as unknown as Awaited<ReturnType<typeof publishListingToCupboard>>);
     const res = body(await call(publishTool, PUBLISH_ARGS));
     expect(res).toMatchObject({ ok: true, listingId: 'listing-2', review_status: 'approved' });
-    expect(res.hint).toBeUndefined();
+    // withSubmissionReceipt always appends a tracking receipt; what must be absent
+    // is the PENDING approval warning.
+    expect(res.hint).toMatch(/^Published — approved\. Track it in My submissions/);
+    expect(res.hint).not.toContain('PENDING');
   });
 });

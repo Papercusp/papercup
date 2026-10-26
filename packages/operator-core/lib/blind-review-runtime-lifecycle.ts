@@ -6,6 +6,7 @@
 import { RuntimeCustodyRefusal, type createRuntimeCustodyStore, type RuntimeLease,
   type RuntimeResourceIntent, type RuntimeResourceKind, type RuntimeReviewerIdentity } from './blind-review-runtime-custody';
 import { runtimeSourceImageOrigin, type RuntimeSourceImage } from './blind-review-source-image';
+import { createRuntimeSeed, type RuntimeSeed } from './blind-review-runtime-seed';
 
 type Store = ReturnType<typeof createRuntimeCustodyStore>;
 type Absence = { scopeAbsent: boolean; absentIntentIds: string[]; checkedKinds: RuntimeResourceKind[] };
@@ -18,7 +19,7 @@ export type RuntimeNamespaceBackend = {
    * A rejection does not imply absence; cleanup/discovery still run below.
    */
   provision(input: {
-    lease: RuntimeLease; resources: readonly RuntimeResourceIntent[]; image: RuntimeSourceImage;
+    lease: RuntimeLease; resources: readonly RuntimeResourceIntent[]; image: RuntimeSourceImage; seed: RuntimeSeed;
     signal: AbortSignal; beforeCreate(): Promise<void>;
     record(intentId: string, identity: Record<string, string>): Promise<void>;
   }): Promise<void>;
@@ -124,7 +125,8 @@ export async function provisionRuntimeNamespace(options: {
       // Schedule invocation after Promise.race installs both handlers. A
       // backend may throw synchronously before returning its Promise; that
       // must not orphan the abort rejection during failure cleanup.
-      await Promise.race([Promise.resolve().then(() => backend.provision({ lease, resources, image, signal,
+      const seed = createRuntimeSeed(lease);
+      await Promise.race([Promise.resolve().then(() => backend.provision({ lease, resources, image, seed, signal,
         beforeCreate: async () => { signal.throwIfAborted(); await store.checkProvisioning(identity, leaseId); },
         record: async (intentId, observed) => {
           signal.throwIfAborted();
