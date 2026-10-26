@@ -2,7 +2,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { identityActivationConditionKey, runUnappliedActivationCensusOnce } from './wedged-identity-activation-watchdog';
+import {
+  identityActivationConditionKey,
+  loadDenialAttestationsFromLedger,
+  runUnappliedActivationCensusOnce,
+} from './wedged-identity-activation-watchdog';
 
 const store = vi.hoisted(() => ({ sql: null as Sql | null }));
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -82,5 +86,26 @@ describe('original identity census durable recovery SQL', () => {
       expect((await pass()).verdict).toBe('not-measured');
       expect(open.has(key)).toBe(true); expect(resolve).not.toHaveBeenCalled();
     } finally { await db.sql`ALTER TABLE harness_shared.briefs_unreadable RENAME TO session_briefs`; }
+  });
+});
+
+// WI-6554700010029612 — the ATTEST rung's ledger read, against the real tool_invocations shape.
+describe('loadDenialAttestationsFromLedger', () => {
+  it('counts only this workspace, inside the window, at or above the threshold, and names the serving build', async () => {
+    const insert = (owner: string, workspace: string, minutesAgo: number, message: string) => db.sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, invoked_at, status,
+         coord_owner_id, error_message, serving_host, serving_build_sha)
+      VALUES (${workspace}, 'papercusp', 'papercusp', 'coord:send', 'su', 'spawn-attest', 'w-attest',
+         now() - make_interval(mins => ${minutesAgo}), 'error', ${owner}, ${message}, 'port-3070', 'd740fc3802abcdef')`;
+    for (let i = 0; i < 3; i++) await insert('attest-denied', WS, 5, 'identity preflight refused: stale-artifact');
+    for (let i = 0; i < 2; i++) await insert('attest-below-threshold', WS, 5, 'stale-artifact');
+    for (let i = 0; i < 3; i++) await insert('attest-outside-window', WS, 90, 'stale-artifact');
+    for (let i = 0; i < 3; i++) await insert('attest-foreign', 'foreign-ws', 5, 'stale-artifact');
+    for (let i = 0; i < 3; i++) await insert('attest-other-error', WS, 5, 'statement timeout');
+
+    expect(await loadDenialAttestationsFromLedger(WS)).toEqual([
+      { ownerId: 'attest-denied', denials: 3, servedBy: ['port-3070@d740fc3802'] },
+    ]);
   });
 });

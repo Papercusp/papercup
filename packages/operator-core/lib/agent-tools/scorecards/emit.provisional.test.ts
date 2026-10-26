@@ -11,6 +11,10 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    readRubric: async (...a: unknown[]) => {
+      const rubric = await getRubric(...a);
+      return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+    },
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     // The real identity helper closes over the real getRubric, bypassing this suite's mock.
     getRubricEvidenceIdentity: async (rubricId: string) => ({
@@ -62,7 +66,7 @@ describe('scorecards:emit preserved grading baseline', () => {
   });
   it('requires the existing grading audit before comparing a pending baseline', async () => {
     listScorecards.mockResolvedValue([{ ...baseline(), gradingAudit: { state: 'pending' } }]);
-    expect(await emitScorecard(args(), EMIT_INPUT)).toMatchObject({ ok: false, code: 'grading_audit_required' });
+    expect(await emitScorecard(args(), EMIT_INPUT)).toMatchObject({ ok: false, code: 'baseline_not_comparable' });
     expect(captureImprovement).not.toHaveBeenCalled();
   });
   it('refuses an absent baseline instead of filing ungrounded comparison evidence', async () => {
