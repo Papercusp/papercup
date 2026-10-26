@@ -1598,6 +1598,11 @@ export interface PipelinePosition {
       progressAtMs?: number | null;
       /** Current phase published by the active checkpoint run, when readable. */
       currentPhase?: string | null;
+      /** WI-6554700010029556: what the run is doing inside `currentPhase`
+       *  (`repair-head-verification`, `repair-tick-legs`, `materialization`), when published. */
+      currentActivity?: string;
+      /** WI-6554700010029556: the leg in flight, 1-based `index` of `total`, when published. */
+      currentLeg?: { label: string; index: number; total: number };
       startedAtMs: number | null;
       elapsedSec: number | null;
       /** How stale this reading is: ms since the cache was last computed. `null`
@@ -5042,6 +5047,8 @@ export function mapCheckpointRunInFlight(
   // cache can make an old run look like the live run's heartbeat/phase.
   const progressAtMs = active && cachedDescribesNow ? cachedRun!.progressAtMs : undefined;
   const currentPhase = active && cachedDescribesNow ? cachedRun!.currentPhase : undefined;
+  const currentActivity = active && cachedDescribesNow ? cachedRun!.currentActivity : undefined;
+  const currentLeg = active && cachedDescribesNow ? cachedRun!.currentLeg : undefined;
   const systemd = cachedDescribesNow ? cachedRun!.systemd : undefined;
   // Terminal marker/evidence are facts about the most recently finished unit, not detail
   // about the run that is active now. A live lock can release between the derived snapshot
@@ -5115,6 +5122,8 @@ export function mapCheckpointRunInFlight(
     elapsedSec,
     ...(progressAtMs !== undefined ? { progressAtMs } : {}),
     ...(currentPhase !== undefined ? { currentPhase } : {}),
+    ...(currentActivity !== undefined ? { currentActivity } : {}),
+    ...(currentLeg !== undefined ? { currentLeg: { ...currentLeg } } : {}),
     // Still the CACHE's age (that is what the field documents), so it stays null when the
     // lock answered with no cache behind it — there is no cache to be stale.
     asOfAgeMs: cacheAgeMs,

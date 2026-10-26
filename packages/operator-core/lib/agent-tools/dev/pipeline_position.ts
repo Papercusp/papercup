@@ -247,6 +247,8 @@ function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLim
       'startedAtMs',
       'progressAtMs',
       'currentPhase',
+      'currentActivity',
+      'currentLeg',
       'elapsedSec',
       'asOfAgeMs',
     ],

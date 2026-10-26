@@ -382,6 +382,11 @@ export interface ActiveCheckpointCheck {
   progress_at?: string | null;
   /** Current phase published by the run in its per-run `phase.json` marker. */
   current_phase?: string | null;
+  /** WI-6554700010029556: what the run is doing inside that phase (`repair-head-verification`,
+   *  `repair-tick-legs`, `materialization`), when it published one. */
+  current_activity?: string;
+  /** WI-6554700010029556: the leg in flight, 1-based `index` of `total`, when published. */
+  current_leg?: { label: string; index: number; total: number };
   /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
    *  would kill it — a rough "how much longer" estimate, not a promise. Null when the
    *  run has reached `delivering`: the backstop remainder is no longer an honest estimate
@@ -1063,6 +1068,27 @@ const PROCESS_START_AFTER_LOCK_TOLERANCE_MS = 5_000;
 export interface CheckpointRunPhase {
   phase?: string;
   at?: string;
+  /** WI-6554700010029556: additive detail (green-checkpoint.ts `CheckpointRunPhaseDetail`). */
+  activity?: string;
+  leg?: { label?: unknown; index?: unknown; total?: unknown };
+}
+
+/** WI-6554700010029556: project the activity + leg a run published in `phase.json` onto the
+ *  probe result. Malformed detail is dropped, never guessed. */
+export function runPhaseDetailFields(
+  runPhase: CheckpointRunPhase | null | undefined,
+): { current_activity?: string; current_leg?: { label: string; index: number; total: number } } {
+  if (!runPhase) return {};
+  const leg = runPhase.leg;
+  return {
+    ...(typeof runPhase.activity === 'string' && runPhase.activity ? { current_activity: runPhase.activity } : {}),
+    ...(leg &&
+    typeof leg.label === 'string' &&
+    typeof leg.index === 'number' &&
+    typeof leg.total === 'number'
+      ? { current_leg: { label: leg.label, index: leg.index, total: leg.total } }
+      : {}),
+  };
 }
 
 /** Default reader for the run-lock's `phase.json`. Real fs; injectable for tests. Never throws:
@@ -1648,7 +1674,7 @@ export function checkActiveCheckpointRun(
             started_at: lockHeld.started_at ?? null,
             elapsed_sec: lockHeld.elapsed_sec ?? null,
             ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
-            ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
+            ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}), ...runPhaseDetailFields(runPhase),
             held_externally: true,
           }
         : {}),
@@ -1692,7 +1718,7 @@ export function checkActiveCheckpointRun(
         started_at: lockHeld.started_at ?? null,
         elapsed_sec: lockHeld.elapsed_sec ?? null,
         ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
-        ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
+        ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}), ...runPhaseDetailFields(runPhase),
         ...eta,
         ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
         held_externally: true,
@@ -1769,7 +1795,7 @@ export function checkActiveCheckpointRun(
     started_at: startedAt,
     elapsed_sec: elapsedSec,
     ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
-    ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
+    ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}), ...runPhaseDetailFields(runPhase),
     ...eta,
     ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
   };

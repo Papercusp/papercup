@@ -3680,9 +3680,24 @@ export function checkpointRunLockDir(
  *  value is introduced that a reader must be able to depend on. */
 export const PHASE_PROTOCOL = 3;
 
+export type CheckpointRunPhaseName = "materializing" | "suite" | "isolating" | "delivering";
+
+/** WI-6554700010029556 (owner #2439): WHAT the run is doing inside its phase, so a reader of the
+ *  run-lock's `phase.json` (dev:pipeline_position, release:trace, the stall watchdog) can name the
+ *  live activity and leg instead of only a coarse phase. `phase` alone keeps its throttle meaning
+ *  for pc-heavy; these fields are additive and never carry a nested `"phase"` key, because
+ *  pc-heavy parses the marker with a greedy `"phase":"…"` sed match. */
+export interface CheckpointRunPhaseDetail {
+  /** e.g. `repair-head-verification`, `repair-tick-legs`, `materialization`. */
+  activity?: string;
+  /** The leg in flight, 1-based `index` of `total`. */
+  leg?: { label: string; index: number; total: number };
+}
+
 export function writeCheckpointRunPhase(
   lockDir: string,
-  phase: "materializing" | "suite" | "isolating" | "delivering",
+  phase: CheckpointRunPhaseName,
+  detail?: CheckpointRunPhaseDetail,
 ): void {
   try {
     writeFileSync(
@@ -3691,10 +3706,90 @@ export function writeCheckpointRunPhase(
         phase,
         at: new Date().toISOString(),
         phaseProtocol: PHASE_PROTOCOL,
+        ...(detail?.activity ? { activity: detail.activity } : {}),
+        ...(detail?.leg
+          ? { leg: { label: detail.leg.label, index: detail.leg.index, total: detail.leg.total } }
+          : {}),
       }),
     );
   } catch {
     /* best-effort: the phase marker is an optimization for the launch side, never load-bearing here */
+  }
+}
+
+/** Read this run's own `phase.json` back. Never throws; an absent, unreadable or unrecognized
+ *  marker is `null`. */
+export function readCheckpointRunPhaseMarker(
+  lockDir: string,
+): ({ phase: CheckpointRunPhaseName } & CheckpointRunPhaseDetail) | null {
+  try {
+    const raw = JSON.parse(readFileSync(path.join(lockDir, "phase.json"), "utf8")) as Record<string, unknown>;
+    const phase = raw.phase;
+    if (phase !== "materializing" && phase !== "suite" && phase !== "isolating" && phase !== "delivering") {
+      return null;
+    }
+    const leg = raw.leg as { label?: unknown; index?: unknown; total?: unknown } | undefined;
+    return {
+      phase,
+      ...(typeof raw.activity === "string" ? { activity: raw.activity } : {}),
+      ...(leg && typeof leg.label === "string" && typeof leg.index === "number" && typeof leg.total === "number"
+        ? { leg: { label: leg.label, index: leg.index, total: leg.total } }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** WI-6554700010029556: publish `materializing` (with its heartbeat) for exactly the duration of
+ *  `fn`, then restore the phase the caller had published before it. Measured 2026-10-26: a
+ *  frozen-repair run (verify the repair head, then 26 repair-tick legs) wrote `materializing`
+ *  at the start of its pass and never wrote another phase, so for 2h+ every surface reported
+ *  "materializing, last progress 15:34:29" and pc-heavy kept the fleet clamped to one slot.
+ *  Callers now publish their measurement phase first; a materialization inside it (the
+ *  exclusive pc-heavy barrier needs a closed front door) borrows `materializing` and gives the
+ *  measurement phase back. A prior marker that was itself `materializing`, or absent, is left
+ *  to the caller's next write. */
+export interface PublishedMaterializationDeps {
+  write?: typeof writeCheckpointRunPhase;
+  read?: typeof readCheckpointRunPhaseMarker;
+  heartbeat?: (lockDir: string) => () => void;
+}
+
+/** The begin/end form of {@link withPublishedMaterialization}, for a call site whose
+ *  try/finally already exists. Call the returned function exactly once, in `finally`. */
+export function beginPublishedMaterialization(
+  lockDir: string,
+  deps: PublishedMaterializationDeps = {},
+): () => void {
+  const write = deps.write ?? writeCheckpointRunPhase;
+  const prior = (deps.read ?? readCheckpointRunPhaseMarker)(lockDir);
+  write(lockDir, "materializing", { activity: "materialization" });
+  const stopHeartbeat = (deps.heartbeat ?? startMaterializationHeartbeat)(lockDir);
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    stopHeartbeat();
+    if (prior && prior.phase !== "materializing") {
+      write(lockDir, prior.phase, {
+        ...(prior.activity ? { activity: prior.activity } : {}),
+        ...(prior.leg ? { leg: prior.leg } : {}),
+      });
+    }
+  };
+}
+
+export async function withPublishedMaterialization<T>(
+  lockDir: string,
+  fn: () => Promise<T>,
+  deps: PublishedMaterializationDeps = {},
+): Promise<T> {
+  const end = beginPublishedMaterialization(lockDir, deps);
+  try {
+    return await fn();
+  } finally {
+    end();
   }
 }
 
@@ -14278,6 +14373,11 @@ async function runGreenCheckpointInner(
         selectiveRepairSupported: !existsSync(path.join(cfg.integrationRoot, "package.json")) ||
           existsSync(path.join(cfg.integrationRoot, "scripts/affected-tests.mjs")),
       };
+      // WI-6554700010029556: the frozen-repair path never reaches the normal path's
+      // `materializing` → `suite` writes below, so without this the pass-start
+      // `materializing` marker described the whole multi-hour run (measured 2026-10-26).
+      writeCheckpointRunPhase(phaseLockDir, "suite", { activity: "repair-head-verification" });
+      deps.reportProgress?.("phase:suite");
       let verification = await verifyRepairHead(verifyDeps, repairQueue);
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
       // P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): a red whose signature
@@ -14333,6 +14433,7 @@ async function runGreenCheckpointInner(
             );
           } else if (signatureWithoutHealed(verification.signature, heal).length === 0) {
             candidate = repairQueue.repairHead;
+            writeCheckpointRunPhase(phaseLockDir, "suite", { activity: "repair-head-verification" });
             verification = await verifyRepairHead(verifyDeps, repairQueue);
             deps.log(
               `repair head ${candidate.slice(0, 8)}: ${verification.summary} (re-judged in-run after gen:*:check self-heal)`,
@@ -17726,6 +17827,10 @@ export async function measureRepairTickLegs(
       workspace: string | null,
     ): Promise<{ code: number; tail: string; subjectPaths?: string[] }>;
     log(line: string): void;
+    /** WI-6554700010029556: publish the leg now in flight (realCheckpointDeps writes it into the
+     *  run-lock's phase.json) so a reader can name the leg without tailing the run log.
+     *  Best-effort: a throw here never fails the measurement. */
+    onLegStart?(leg: { label: string; index: number; total: number }): void;
     now?: () => number;
     /** Injectable for tests so the bounded setup-contention retry below costs no real
      *  wall-clock. Production uses a real timer. */
@@ -17836,6 +17941,11 @@ export async function measureRepairTickLegs(
       io.log(
         `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} started`,
       );
+      try {
+        io.onLegStart?.({ label, index: legIndex + 1, total: registryEntries.length });
+      } catch {
+        /* best-effort: publishing the leg must never fail the measurement */
+      }
       const scriptStartedAt = now();
       try {
         const r = await io.runScript(script, workspace);
@@ -23876,6 +23986,12 @@ export function realCheckpointDeps(
       );
       let setup: CheckpointExecResult;
       materializationStartedAtMs = Date.now();
+      // WI-6554700010029556: the whole-box barrier needs `materializing` published for its
+      // duration on EVERY path (the frozen-repair verify and tick legs materialize here too,
+      // under a `suite` marker); the caller's phase is restored afterwards.
+      const endPublishedMaterialization = exclusiveMaterialization
+        ? beginPublishedMaterialization(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot))
+        : null;
       try {
         setup = await exec(
           "bash",
@@ -23929,6 +24045,7 @@ export function realCheckpointDeps(
         );
       } finally {
         flushSetupOutput();
+        endPublishedMaterialization?.();
       }
       const setupOutput = setup.stdout + setup.stderr;
       const dependencyGeneration = setupOutput.match(
@@ -25280,9 +25397,14 @@ export function realCheckpointDeps(
         undefined,
         opts?.frozenCandidateOpenedAtMs,
       );
+      // WI-6554700010029556: name the activity and each leg in the run-lock's phase.json.
+      const tickPhaseLockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
+      writeCheckpointRunPhase(tickPhaseLockDir, "suite", { activity: "repair-tick-legs" });
       return measureRepairTickLegs(
         {
           setupTree: (r) => this.setupTree(r),
+          onLegStart: (leg) =>
+            writeCheckpointRunPhase(tickPhaseLockDir, "suite", { activity: "repair-tick-legs", leg }),
           resolveHead: () => revParse(cfg.checkpointRoot, "HEAD"),
           signal: opts?.signal,
           runScript: async (script, workspace) => {
