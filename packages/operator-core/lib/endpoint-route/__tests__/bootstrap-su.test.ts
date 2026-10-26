@@ -202,7 +202,8 @@ const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => SESSION_PORT
 const recordSessionPortTelemetryMock = vi.fn(async (_event: unknown) => true);
 const bindAgentTasksMock = vi.hoisted(() => vi.fn(async (_input: unknown) => [] as string[]));
 
-vi.mock('../../task-manager/store', () => ({
+vi.mock('../../task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../task-manager/store')>()),
   bindLiveAgentSessionTasksToNativeSession: (...args: unknown[]) => bindAgentTasksMock(...args),
 }));
 
@@ -625,8 +626,13 @@ async function routesOf(): Promise<Route[]> {
   return mod.default as Route[];
 }
 
-async function callPost(body: unknown): Promise<Response> {
+async function callPost(
+  body: unknown,
+  onStage?: (stage: 'loading-routes' | 'running-handler') => void,
+): Promise<Response> {
+  onStage?.('loading-routes');
   const post = (await routesOf()).find((r) => r.method === 'POST')!;
+  onStage?.('running-handler');
   const req = new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-su', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -638,10 +644,35 @@ async function callPost(body: unknown): Promise<Response> {
 describe('bootstrap headless task/session binding', () => {
   it('forwards the exact enrolled task id to the owner-scoped binder', async () => {
     const taskId = '0123456789abcdefghj';
-    const response = await callPost({
+    let routeStage = 'not-started';
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const request = callPost({
       agent: 'claude', harness_slug: 'papercup', headless: true,
       owner_id: 'su-headless-owner', agent_task_id: taskId,
-    });
+    }, (stage) => { routeStage = stage; }).then(
+      (response) => ({ kind: 'response' as const, response }),
+      (error: unknown) => ({ kind: 'error' as const, error }),
+    );
+    const outcome = await Promise.race([
+      request,
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        timeout = setTimeout(() => resolve({ kind: 'timeout' }), 10_000);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    if (outcome.kind === 'timeout') {
+      throw new Error(`bootstrap did not settle; observed route calls: ${JSON.stringify({
+        routeStage,
+        prePinnedQueries: dbSqlMock.mock.calls.length,
+        livenessChecks: resolveSessionStatesMock.mock.calls.length,
+        launchSpecs: buildLaunchSpecMock.mock.calls.length,
+        sessionWrites: recordAdvSessionMock.mock.calls.length,
+        taskBinds: bindAgentTasksMock.mock.calls.length,
+        modeWrites: setModeMock.mock.calls.length,
+      })}`);
+    }
+    if (outcome.kind === 'error') throw outcome.error;
+    const response = outcome.response;
     expect(response.status).toBe(200);
     expect(bindAgentTasksMock).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'default', coordOwnerId: 'su-headless-owner', initialTaskId: taskId,
