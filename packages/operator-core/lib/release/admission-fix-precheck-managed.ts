@@ -19,8 +19,11 @@ import {
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
   precheckPopulation,
+  previousHeadBaselineFiles,
   ADMISSION_PRECHECK_MAX_FILES,
   type FixPrecheckFileResult,
+  type FixPrecheckPopulation,
+  type FixPrecheckPreviousHead,
   type FixPrecheckRunner,
   type FixPrecheckProgress,
   type FixPrecheckRunResult,
@@ -199,7 +202,9 @@ export interface AdmissionPrecheckWorkerDeps {
     update: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   ) => Promise<unknown>;
   createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string;
-    prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv> }) => FixPrecheckRunner;
+    prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv>;
+    /** D-004: the paired previous-head baseline measures in a second tree. */
+    precheckRootSuffix?: string }) => FixPrecheckRunner;
   now?: () => number;
 }
 
@@ -235,12 +240,64 @@ export function validateAdmissionPrecheckResults(files: readonly string[], resul
     throw new Error('incomplete execution-group measurement');
 }
 
+/** The second tree the paired previous-head baseline measures in (D-004). */
+export const ADMISSION_PRECHECK_BASELINE_ROOT_SUFFIX = '-previous-head';
+
+/**
+ * measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the PAIRED BASELINE. Re-measure, at
+ * the previous repair head, exactly the guarded radius files that failed at the built commit —
+ * same runner, same per-file command and the operation's own test environment, in a second tree —
+ * so a guarded red is attributed against a MEASURED previous-head verdict, never an assumed pass.
+ *
+ * Returns undefined when no guarded file failed (nothing to pair). A baseline that cannot run,
+ * or runs only partly, returns what it measured plus a `detail`; the evaluator then refuses the
+ * unpaired reds as unavailable. It never throws a runner failure into a measured verdict.
+ */
+export async function measurePreviousHeadBaseline(input: {
+  population: FixPrecheckPopulation;
+  results: readonly FixPrecheckFileResult[];
+  previousHead: string;
+  runner: FixPrecheckRunner;
+  deadlineAtMs: number;
+  now?: () => number;
+  onProgress?: (file: string) => Promise<void> | void;
+}): Promise<FixPrecheckPreviousHead | undefined> {
+  const files = previousHeadBaselineFiles(input.population, input.results);
+  if (!files.length) return undefined;
+  const now = input.now ?? Date.now;
+  const commit = input.previousHead;
+  const results: FixPrecheckFileResult[] = [];
+  const partial = (detail: string): FixPrecheckPreviousHead => ({ commit, results, detail });
+  for (let start = 0; start < files.length; start += ADMISSION_PRECHECK_MAX_FILES) {
+    if (now() >= input.deadlineAtMs) return partial('the bounded pre-check deadline expired before the paired baseline completed');
+    const group = files.slice(start, start + ADMISSION_PRECHECK_MAX_FILES);
+    let run: FixPrecheckRunResult;
+    try {
+      run = await input.runner({
+        commit,
+        files: group,
+        ...(input.onProgress ? { onProgress: async (progress: FixPrecheckProgress) => { await input.onProgress!(progress.currentFile); } } : {}),
+      });
+    } catch (error) {
+      return partial(`the paired baseline runner failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!run.ran) return partial(`the paired baseline did not run (${run.reason}): ${run.detail}`);
+    if (run.commit !== commit) return partial('the paired baseline measured a different commit');
+    try { validateAdmissionPrecheckResults(group, run.results, true); }
+    catch (error) { return partial(`the paired baseline returned an invalid measurement: ${String(error)}`); }
+    results.push(...run.results);
+  }
+  return { commit, results };
+}
+
 async function runBoundedAdmissionPrecheck(
   input: AdmissionPrecheckWorkerInput,
   queue: FrozenCandidateRepairQueue,
   deps: AdmissionPrecheckWorkerDeps,
   runner: FixPrecheckRunner,
   finalize: () => Promise<void>,
+  /** D-004: measures the paired previous-head baseline in a second tree. */
+  baselineRunner: FixPrecheckRunner,
 ): Promise<AdmissionPrecheckWorkerOutcome> {
   const operation = queue.admissionPrecheck!;
   const identity = admissionPrecheckMeasurementIdentity(operation, queue.signature);
@@ -326,9 +383,35 @@ async function runBoundedAdmissionPrecheck(
     if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
     validateAdmissionPrecheckResults(operation.files, completed, true);
     const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+    const ordered = operation.files.map(file => completed.find(result => result.path === file)!);
+    // D-004 ruling 1: pair every guarded red with a MEASURED previous-head verdict while the
+    // operation's own test environment is still running, and persist it beside the aggregate.
+    const previousHead = await measurePreviousHeadBaseline({
+      population, results: ordered, previousHead: operation.repairHead, runner: baselineRunner,
+      deadlineAtMs: operation.expiresAtMs, now,
+      onProgress: async file => {
+        await deps.transition(input.queueTarget, fresh => {
+          assertFresh(fresh);
+          return admissionPrecheckProgressTransition(fresh, input.operationId, { currentFile: file,
+            completedCount: operation.files.length, totalCount: operation.files.length, heartbeatAtMs: now() });
+        });
+      },
+    });
+    if (previousHead) {
+      await deps.transition(input.queueTarget, fresh => {
+        const current = assertFresh(fresh);
+        const prior = current.measurement;
+        if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
+          throw new Error('persisted measurement moved while recording the paired baseline');
+        return { ...fresh, admissionPrecheck: { ...current, measurement: { ...prior, previousHead: {
+          commit: previousHead.commit, results: [...previousHead.results],
+          ...(previousHead.detail ? { detail: previousHead.detail } : {}) } } } };
+      });
+    }
+    if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
     await finalize();
-    const verdict = evaluateFixPrecheck(population, { ran: true, commit: operation.builtCommit,
-      results: operation.files.map(file => completed.find(result => result.path === file)!) }, { actor: operation.actor });
+    const verdict = evaluateFixPrecheck(population, { ran: true, commit: operation.builtCommit, results: ordered },
+      { actor: operation.actor, ...(previousHead ? { previousHead } : {}) });
     await deps.transition(input.queueTarget, fresh => {
       assertFresh(fresh);
       return admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, now());
@@ -374,7 +457,7 @@ export async function runAdmissionPrecheckWorker(
   let bootstrapping = true;
   let finishing: Promise<void> | undefined;
   const finalize = async () => { if (environment) await (finishing ??= environment.then(fixture => fixture.stop())); };
-  const runner = deps.createRunner({
+  const runnerOptions = {
     integrationRoot: input.integrationRoot,
     checkpointRoot: input.checkpointRoot,
     testRunHarness: input.queueTarget.installSlug,
@@ -382,7 +465,7 @@ export async function runAdmissionPrecheckWorker(
     ...(input.testCommand ? { testCommand: input.testCommand } : {}),
     ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),
     assertTestEnvironment: () => fixture?.assertRunning(),
-    prepareTestEnvironment: async (root, onOutput) => {
+    prepareTestEnvironment: async (root: string, onOutput: () => void) => {
       environment ??= (deps.startTestEnvironment ?? startAdmissionTestEnvironment)(root, {
         onOutput: () => { if (bootstrapping) onOutput(); }, log: line => console.log(line),
         testRunsDbUrl: process.env.PAPERCUSP_TEST_RUNS_DB_URL ?? getHarnessAdminUrl(),
@@ -392,11 +475,18 @@ export async function runAdmissionPrecheckWorker(
       fixture.assertRunning();
       return fixture.env;
     },
-  });
+  };
+  const runner = deps.createRunner(runnerOptions);
+  // D-004: the paired baseline shares the runner options and the ONE operation-owned test
+  // environment; only its tree differs, so the previous head never re-pins the admission tree.
+  // Built lazily: an admission with no guarded red never materializes a second tree.
+  let lazyBaselineRunner: FixPrecheckRunner | undefined;
+  const baselineRunner: FixPrecheckRunner = run =>
+    (lazyBaselineRunner ??= deps.createRunner({ ...runnerOptions, precheckRootSuffix: ADMISSION_PRECHECK_BASELINE_ROOT_SUFFIX }))(run);
   try {
   try {
   if (operation.files.length > ADMISSION_RADIUS_CAP || operation.measurement)
-    return await runBoundedAdmissionPrecheck(input, queue, deps, runner, finalize);
+    return await runBoundedAdmissionPrecheck(input, queue, deps, runner, finalize, baselineRunner);
   let run: FixPrecheckRunResult;
   try {
     run = await runner({
@@ -415,10 +505,23 @@ export async function runAdmissionPrecheckWorker(
     };
   }
 
+  // D-004 ruling 1: pair each guarded red with a MEASURED previous-head verdict before the
+  // operation's test environment stops; the verdict carries the baseline it was judged against.
+  const previousHead = run.ran
+    ? await measurePreviousHeadBaseline({
+        population, results: run.results, previousHead: operation.repairHead, runner: baselineRunner,
+        deadlineAtMs: operation.expiresAtMs, ...(deps.now ? { now: deps.now } : {}),
+        onProgress: async file => {
+          await deps.transition(input.queueTarget, fresh => admissionPrecheckProgressTransition(fresh, input.operationId, {
+            currentFile: file, completedCount: operation.files.length, totalCount: operation.files.length,
+            heartbeatAtMs: (deps.now ?? Date.now)() }));
+        },
+      })
+    : undefined;
   // Cleanup is evidence too: an unverified stop must never leave a passed marker.
   await finalize();
   // P-006: the admission ratchet routes an imports-red refusal to the admitting actor.
-  const verdict = evaluateFixPrecheck(population, run, { actor: operation.actor ?? null });
+  const verdict = evaluateFixPrecheck(population, run, { actor: operation.actor ?? null, ...(previousHead ? { previousHead } : {}) });
   const settledAtMs = (deps.now ?? Date.now)();
   await deps.transition(input.queueTarget, (fresh) =>
     admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, settledAtMs));

@@ -97,7 +97,18 @@ describe('frozen-candidate repair queue', () => {
       { ...measurement, results: [{ path: 'foreign.test.ts', status: 'pass' }] },
       { ...measurement, results: [{ path: 'lib/a.test.ts', status: 'skip' }] },
       { ...measurement, results: [{ path: 'lib/a.test.ts', status: 'pass', durationMs: -1 }] },
-    ]) expect(parseFrozenCandidateRepairQueue({ ...measured, admissionPrecheck: { ...measured.admissionPrecheck, measurement: bad } })?.admissionPrecheck).toBeUndefined();
+      // measured-wide-repair-admission-2026-10-24#D-004: a malformed paired baseline rejects the record.
+      { ...measurement, previousHead: { commit: '', results: [] } },
+      { ...measurement, previousHead: { commit: C, results: [{ path: 'foreign.test.ts', status: 'fail' }] } },
+      { ...measurement, previousHead: { commit: C, results: [{ path: 'lib/a.test.ts', status: 'skip' }] } },
+      { ...measurement, previousHead: { commit: C, results: {} } },
+      { ...measurement, previousHead: { commit: C, results: [], detail: 7 } },
+    ]) expect(parseFrozenCandidateRepairQueue({ ...measured, admissionPrecheck: { ...measured.admissionPrecheck, measurement: bad } })?.admissionPrecheck, JSON.stringify(bad)).toBeUndefined();
+    // D-004: the paired baseline round-trips beside the aggregate so the door re-judges against it.
+    const paired = { ...measurement, previousHead: { commit: C, results: [{ path: 'lib/a.test.ts', status: 'fail' as const, exitCode: 1 }],
+      detail: 'partial' } };
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify({ ...measured,
+      admissionPrecheck: { ...measured.admissionPrecheck, measurement: paired } })))?.admissionPrecheck?.measurement).toEqual(paired);
     expect(parseFrozenCandidateRepairQueue({
       ...pending,
       admissionPrecheck: { ...pending.admissionPrecheck, runnerPid: -1 },

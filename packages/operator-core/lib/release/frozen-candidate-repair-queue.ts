@@ -512,7 +512,17 @@ export interface FrozenRepairAdmissionPrecheck {
    */
   radius?: AdmissionRadius;
   /** Additive JSON state on the existing operation; a different identity never reuses proof. */
-  measurement?: { schemaVersion: 1; identity: string; results: FixPrecheckFileResult[] };
+  measurement?: {
+    schemaVersion: 1;
+    identity: string;
+    results: FixPrecheckFileResult[];
+    /**
+     * measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the paired baseline — guarded files
+     * red at the built commit, re-measured at `repairHead` by the same runner and env. Persisted so
+     * the door re-evaluates a passed wide measurement against the SAME baseline, never an implied one.
+     */
+    previousHead?: { commit: string; results: FixPrecheckFileResult[]; detail?: string };
+  };
 }
 
 export interface FrozenCandidateRepairQueue {
@@ -2120,18 +2130,35 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     const value = row.measurement as Record<string, unknown> | null;
     if (!value || typeof value !== 'object' || value.schemaVersion !== 1 ||
         typeof value.identity !== 'string' || !/^[0-9a-f]{64}$/.test(value.identity) || !Array.isArray(value.results)) return undefined;
-    const seen = new Set<string>();
-    const results: FixPrecheckFileResult[] = [];
-    for (const entry of value.results) {
-      if (!entry || typeof entry !== 'object' || !files.includes(entry.path) || seen.has(entry.path) ||
-          !['pass', 'fail', 'unmeasured'].includes(entry.status) ||
-          (entry.detail !== undefined && typeof entry.detail !== 'string') ||
-          (entry.exitCode !== undefined && entry.exitCode !== null && !Number.isInteger(entry.exitCode)) ||
-          (entry.durationMs !== undefined && (typeof entry.durationMs !== 'number' || !Number.isFinite(entry.durationMs) || entry.durationMs < 0))) return undefined;
-      seen.add(entry.path);
-      results.push({ ...entry });
+    const parseResults = (list: unknown): FixPrecheckFileResult[] | null => {
+      if (!Array.isArray(list)) return null;
+      const seen = new Set<string>();
+      const out: FixPrecheckFileResult[] = [];
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object' || !files.includes(entry.path) || seen.has(entry.path) ||
+            !['pass', 'fail', 'unmeasured'].includes(entry.status) ||
+            (entry.detail !== undefined && typeof entry.detail !== 'string') ||
+            (entry.exitCode !== undefined && entry.exitCode !== null && !Number.isInteger(entry.exitCode)) ||
+            (entry.durationMs !== undefined && (typeof entry.durationMs !== 'number' || !Number.isFinite(entry.durationMs) || entry.durationMs < 0))) return null;
+        seen.add(entry.path);
+        out.push({ ...entry });
+      }
+      return out;
+    };
+    const results = parseResults(value.results);
+    if (!results) return undefined;
+    // D-004: the paired baseline answers for a subset of the same immutable population.
+    let previousHead: { commit: string; results: FixPrecheckFileResult[]; detail?: string } | undefined;
+    if (value.previousHead !== undefined) {
+      const prior = value.previousHead as Record<string, unknown> | null;
+      if (!prior || typeof prior !== 'object' || Array.isArray(prior) || !nonBlank(prior.commit) ||
+          (prior.detail !== undefined && typeof prior.detail !== 'string')) return undefined;
+      const priorResults = parseResults(prior.results);
+      if (!priorResults) return undefined;
+      previousHead = { commit: prior.commit as string, results: priorResults,
+        ...(typeof prior.detail === 'string' ? { detail: prior.detail } : {}) };
     }
-    measurement = { schemaVersion: 1, identity: value.identity, results };
+    measurement = { schemaVersion: 1, identity: value.identity, results, ...(previousHead ? { previousHead } : {}) };
   }
   const verdict = row.verdict;
   if (row.status === 'running' && verdict !== undefined) return undefined;

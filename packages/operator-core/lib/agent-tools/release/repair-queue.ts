@@ -1908,8 +1908,10 @@ export default defineTool({
               if (!measured || measured.identity !== admissionPrecheckMeasurementIdentity(matchingPrecheck, queue.signature))
                 throw new Error('missing or stale immutable aggregate identity');
               validateAdmissionPrecheckResults(population.files, measured.results, true);
+              // D-004 ruling 1: re-judge against the SAME persisted paired baseline, never an implied one.
               precheck = evaluateFixPrecheck(population, { ran: true, commit: matchingPrecheck.builtCommit,
-                results: measured.results }, { actor: identity.ownerId });
+                results: measured.results }, { actor: identity.ownerId,
+                ...(measured.previousHead ? { previousHead: measured.previousHead } : {}) });
             } catch (error) {
               precheck = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed', detail: String(error) });
             }

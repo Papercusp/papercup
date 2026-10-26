@@ -16,6 +16,7 @@ import {
   evaluateFixPrecheck,
   isTestFilePath,
   precheckPopulation,
+  previousHeadBaselineFiles,
   defaultGitCommonDir,
   resolveCanonicalIntegrationRoot,
   ROUTER_EXIT_NOT_MEASURED,
@@ -197,14 +198,67 @@ describe('admission radius (green-main-cycle-time-2026-10-08 P-007, #D-036)', ()
     expect(pop.radius?.reportOnly).toEqual([]);
   });
 
-  it('a failing GUARDED radius file refuses admission-imports-red and names its leg', () => {
-    const v = evaluateFixPrecheck(withRadius(), ran([
-      ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'fail'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
-    ]));
+  const nearRed = (): FixPrecheckRunResult => ran([
+    ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'fail'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
+  ]);
+  const baseline = (status: 'pass' | 'fail' | 'unmeasured', detail?: string) =>
+    ({ commit: 'b'.repeat(40), results: [{ path: 'ws-a/lib/near.test.ts', status }], ...(detail ? { detail } : {}) });
+
+  it('a GUARDED radius file green at the MEASURED previous head and red now refuses admission-imports-red and names its leg', () => {
+    const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('pass') });
     expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['ws-a/lib/near.test.ts'], newlyRedLegs: ['@t/a'], reportOnlyRed: [] });
     if (v.ok) throw new Error('expected refusal');
     expect(v.detail).toContain('ws-a/lib/near.test.ts (leg @t/a)');
     expect(v.detail).toContain('previously green leg(s) turned red: @t/a');
+  });
+
+  describe('measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the evaluator never implies green', () => {
+    it('a guarded red with NO paired baseline is neither blamed nor published', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed());
+      expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', importedRed: [], alsoImportsRed: false,
+        baselineMissing: ['ws-a/lib/near.test.ts'], newlyRedLegs: [] });
+      if (v.ok) throw new Error('expected refusal');
+      expect(v).not.toHaveProperty('ratchet');
+      expect(v.detail).toContain('no measured previous-head verdict (no paired baseline was run)');
+      expect(v.detail).toContain('ws-a/lib/near.test.ts (leg @t/a)');
+    });
+
+    it('a guarded red that was ALSO red at the measured previous head is carried and publishes', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('fail') });
+      expect(v).toMatchObject({ ok: true, ran: true, fixes: ['lib/red.test.ts'], carriedRed: ['ws-a/lib/near.test.ts'],
+        previousHead: baseline('fail') });
+    });
+
+    it('a baseline collection failure (matched=0 / route error) maps to unmeasured, never fail or pass', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('unmeasured') });
+      expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', importedRed: [], baselineMissing: ['ws-a/lib/near.test.ts'] });
+    });
+
+    it('a baseline that could not run names its reason on the refusal', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(),
+        { previousHead: { commit: 'b'.repeat(40), results: [], detail: 'the paired baseline did not run (runner-failed): setup exited 1' } });
+      expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', baselineMissing: ['ws-a/lib/near.test.ts'] });
+      if (v.ok) throw new Error('expected refusal');
+      expect(v.detail).toContain('paired baseline at bbbbbbbbbbbb: the paired baseline did not run (runner-failed): setup exited 1');
+    });
+
+    it('a proven new failure still rejects when another guarded red is unpaired (reject wins)', () => {
+      const v = evaluateFixPrecheck(withRadius(), ran([
+        ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'fail'], ['ws-a/lib/near.test.ts', 'fail'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
+      ]));
+      expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['lib/new.test.ts'], baselineMissing: ['ws-a/lib/near.test.ts'] });
+    });
+
+    it('previousHeadBaselineFiles selects exactly the guarded files red at the built commit', () => {
+      const pop = withRadius(radius({ guarded: ['ws-a/lib/near.test.ts', 'ws-a/lib/far.test.ts'] }));
+      expect(previousHeadBaselineFiles(pop, [
+        { path: 'lib/red.test.ts', status: 'fail' }, { path: 'lib/new.test.ts', status: 'fail' },
+        { path: './ws-a/lib/near.test.ts', status: 'fail' }, { path: 'ws-a/lib/far.test.ts', status: 'unmeasured' },
+        { path: 'ws-b/lib/known-red-leg.test.ts', status: 'fail' },
+      ])).toEqual(['ws-a/lib/near.test.ts']);
+      expect(previousHeadBaselineFiles(precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: [] }),
+        [{ path: 'lib/red.test.ts', status: 'fail' }])).toEqual([]);
+    });
   });
 
   it('a failing REPORT-ONLY radius file is reported but cannot refuse: its leg was already red', () => {

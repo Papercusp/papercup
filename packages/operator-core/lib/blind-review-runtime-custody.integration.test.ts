@@ -10,6 +10,8 @@ import { brokerSourceFixture } from './blind-review-source.fixture';
 import { buildRuntimeGeneratedInputs } from './blind-review-generated-inputs';
 import { packRuntimeSourceImage } from './blind-review-source-image';
 import { consumeRuntimeSourceImage } from './blind-review-source-custody';
+import { provisionRuntimeNamespace, releaseRuntimeNamespace,
+  type RuntimeNamespaceBackend } from './blind-review-runtime-lifecycle';
 import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFingerprint,
   type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
 
@@ -84,6 +86,25 @@ async function canonicalFixture() {
       ${JSON.stringify({ [f.identity.reviewerOwnerId]: { confinement, expiresAt: new Date(Date.now() + 60_000).toISOString() } })}::jsonb)
     WHERE workspace_id = 'default'`;
   return { ...f, slug, confinement, store: createCanonicalRuntimeCustodyStore(fx.admin as never) };
+}
+
+async function withAdmittedRuntime(run: (context: {
+  f: Awaited<ReturnType<typeof fixture>>; leaseId: string;
+  image: Awaited<ReturnType<typeof packRuntimeSourceImage>>;
+}) => Promise<void>) {
+  const roots: string[] = [];
+  const source = await brokerSourceFixture(roots, { gitCheckout: true });
+  const generated = await buildRuntimeGeneratedInputs(source);
+  const image = await packRuntimeSourceImage({ ...source, generated });
+  try {
+    const f = await fixture(), lease = await f.reserve();
+    await consumeRuntimeSourceImage({ store: f.store, identity: f.identity, leaseId: lease.id,
+      image, repositoryId: 'custody-fixture' });
+    await run({ f, leaseId: lease.id, image });
+  } finally {
+    await image.handle.close();
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  }
 }
 
 describe('blind reviewer runtime custody on private PostgreSQL', () => {
@@ -357,6 +378,130 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
       scopeAbsent: true, absentIntentIds: resources.map(resource => resource.id), checkedKinds: [...RUNTIME_RESOURCE_KINDS],
     }))).toBe(true);
   });
+
+  it('runs one host provisioner, returns pending to overlap, and never reexecutes a ready retry', async () => {
+    await withAdmittedRuntime(async ({ f, leaseId, image }) => {
+      const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+      let creates = 0;
+      const backend: RuntimeNamespaceBackend = {
+        async provision(input) {
+          creates++;
+          expect(input.image.handle).toBe(image.handle);
+          expect(input.resources).toHaveLength(RUNTIME_RESOURCE_KINDS.length - 1);
+          entered.resolve(); await finish.promise;
+          for (const resource of input.resources) {
+            await input.beforeCreate();
+            await input.record(resource.id, { fixtureIdentity: resource.ownership_tag });
+          }
+        },
+        async teardown() {},
+        async inspect(_lease, resources) {
+          return { scopeAbsent: true, creatorStopped: true,
+            absentIntentIds: resources.map(resource => resource.id), checkedKinds: [...RUNTIME_RESOURCE_KINDS] };
+        },
+      };
+      const input = { store: f.store, identity: f.identity, leaseId, image, backend };
+      const boot = provisionRuntimeNamespace(input);
+      try {
+        await entered.promise;
+        expect(await provisionRuntimeNamespace({ ...input, store: f.makeStore() })).toEqual({ state: 'pending' });
+      } finally { finish.resolve(); }
+      expect((await boot).state).toBe('ready');
+      expect((await provisionRuntimeNamespace({ ...input, store: f.makeStore() })).state).toBe('ready');
+      expect(creates).toBe(1);
+      expect(await releaseRuntimeNamespace({ ...input, reason: 'exercise-ended' })).toBe(true);
+    });
+  }, 60_000);
+
+  it('commits cutoff while a creator is active and refuses release until independent discovery fences that creator', async () => {
+    await withAdmittedRuntime(async ({ f, leaseId, image }) => {
+      const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+      let creatorStopped = false, teardownCalls = 0;
+      const backend: RuntimeNamespaceBackend = {
+        async provision(input) {
+          await input.beforeCreate();
+          const resource = input.resources[0]!;
+          await input.record(resource.id, { fixtureIdentity: resource.ownership_tag });
+          entered.resolve(); await finish.promise;
+          await input.beforeCreate(); // Must observe the committed cutoff.
+        },
+        async teardown() { teardownCalls++; },
+        async inspect(_lease, resources) {
+          return { creatorStopped, scopeAbsent: true, checkedKinds: [...RUNTIME_RESOURCE_KINDS],
+            absentIntentIds: resources.map(resource => resource.id) };
+        },
+      };
+      const input = { store: f.store, identity: f.identity, leaseId, image, backend };
+      const boot = provisionRuntimeNamespace(input);
+      const failed = expect(boot).rejects.toMatchObject({ code: 'allocation_not_active' });
+      try {
+        await entered.promise;
+        expect(await releaseRuntimeNamespace({ ...input, store: f.makeStore(), reason: 'native-ended' })).toBe(false);
+        const [cutoff] = await fx.admin`SELECT state, revoked_at FROM harness_shared.blind_review_runtime_leases WHERE id = ${leaseId}`;
+        expect(cutoff!.state).toBe('releasing'); expect(cutoff!.revoked_at).not.toBeNull();
+        expect(teardownCalls).toBe(0); // The active creator still holds lifecycle custody.
+      } finally { finish.resolve(); }
+      await failed;
+      expect(teardownCalls).toBe(1);
+      const [unfenced] = await fx.admin`SELECT state FROM harness_shared.blind_review_runtime_leases WHERE id = ${leaseId}`;
+      expect(unfenced!.state).toBe('releasing');
+      creatorStopped = true;
+      expect(await releaseRuntimeNamespace({ ...input, reason: 'reaper-retry' })).toBe(true);
+    });
+  }, 60_000);
+
+  it('reaps a crashed provisioning plan without replaying creation or adopting its partial identities', async () => {
+    await withAdmittedRuntime(async ({ f, leaseId, image }) => {
+      const plan = await f.store.beginProvisioning(f.identity, leaseId);
+      await f.store.recordResource(f.identity, leaseId, plan.resources[0]!.id, { fixtureIdentity: 'created-before-crash' });
+      let created = false, reaped = false;
+      const backend: RuntimeNamespaceBackend = {
+        async provision() { created = true; },
+        async teardown() { reaped = true; },
+        async inspect(_lease, resources) {
+          expect(resources.filter(resource => resource.identity === null)).toHaveLength(resources.length - 1);
+          return { creatorStopped: true, scopeAbsent: true, checkedKinds: [...RUNTIME_RESOURCE_KINDS],
+            absentIntentIds: resources.map(resource => resource.id) };
+        },
+      };
+      await expect(provisionRuntimeNamespace({ store: f.makeStore(), identity: f.identity, leaseId, image, backend }))
+        .rejects.toMatchObject({ code: 'runtime_provisioning_interrupted' });
+      expect(created).toBe(false); expect(reaped).toBe(true);
+      const [row] = await fx.admin`SELECT state FROM harness_shared.blind_review_runtime_leases WHERE id = ${leaseId}`;
+      expect(row!.state).toBe('released');
+    });
+  }, 60_000);
+
+  it('does not wait for a canceled backend that ignores its signal and blocks its late resource writes', async () => {
+    await withAdmittedRuntime(async ({ f, leaseId, image }) => {
+      const entered = Promise.withResolvers<Parameters<RuntimeNamespaceBackend['provision']>[0]>();
+      const finish = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      let inspectCalls = 0;
+      const backend: RuntimeNamespaceBackend = {
+        async provision(input) { entered.resolve(input); await finish.promise; },
+        async teardown() {},
+        async inspect(_lease, resources) {
+          inspectCalls++;
+          return { creatorStopped: false, scopeAbsent: true, checkedKinds: [...RUNTIME_RESOURCE_KINDS],
+            absentIntentIds: resources.map(resource => resource.id) };
+        },
+      };
+      const input = { store: f.store, identity: f.identity, leaseId, image, backend, signal: controller.signal };
+      const boot = provisionRuntimeNamespace(input);
+      const failure = expect(boot).rejects.toThrow('caller-canceled');
+      try {
+        const active = await entered.promise;
+        controller.abort(new Error('caller-canceled'));
+        await failure; // Must settle before the non-cooperative backend returns.
+        expect(inspectCalls).toBe(1);
+        await expect(active.beforeCreate()).rejects.toThrow('caller-canceled');
+        await expect(active.record(active.resources[0]!.id, { late: 'identity' })).rejects.toThrow('caller-canceled');
+        const [row] = await fx.admin`SELECT state FROM harness_shared.blind_review_runtime_leases WHERE id = ${leaseId}`;
+        expect(row!.state).toBe('releasing'); // An unfenced creator is not gone.
+      } finally { finish.resolve(); }
+    });
+  }, 60_000);
 
   it('serializes host lifecycle work across connections while allowing immediate durable revocation', async () => {
     const f = await fixture(), { lease } = await f.allocate();

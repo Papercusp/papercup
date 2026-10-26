@@ -15,7 +15,9 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  *                                 "fixes nothing", so only imports-red applies.
  *
  * Unmeasured files (route error, matched=0, runner crash) refuse as unavailable; they never
- * establish a failed assertion or prove that an admission fixes nothing.
+ * establish a failed assertion or prove that an admission fixes nothing. A guarded radius file
+ * that fails is attributed only against its MEASURED previous-head verdict — the paired baseline
+ * (measured-wide-repair-admission-2026-10-24#D-004); without one it refuses as unavailable too.
  *
  * The pre-check uses its own checkout beside the gate's checkpoint tree. A gate run that is
  * already active still reports `checkpoint-tree-busy` and the door ACCEPTS the admission with a
@@ -35,7 +37,7 @@ import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-lock';
 import { dependencyGenerationInfraCode } from './checkpoint-log-tags';
-import { evaluateAdmissionRatchet, impliedPreviousHead, type RatchetNewFailure } from './admission-ratchet';
+import { evaluateAdmissionRatchet, previousHeadVerdicts, type RatchetNewFailure } from './admission-ratchet';
 export { dependencyGenerationInfraCode, DEPENDENCY_GENERATION_INFRA_EXITS,
   type DependencyGenerationInfraCode } from './checkpoint-log-tags';
 // Reuse the focused runner's maintained assertion-summary parser.
@@ -190,6 +192,30 @@ export interface FixPrecheckFileResult {
   durationMs?: number;
 }
 
+/**
+ * measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the PAIRED BASELINE — guarded radius
+ * files that failed at the built commit, re-measured at the previous repair head by the same
+ * per-file runner and env (in a second tree). `detail` records why a baseline could not run.
+ */
+export interface FixPrecheckPreviousHead {
+  commit: string;
+  results: readonly FixPrecheckFileResult[];
+  detail?: string;
+}
+
+/**
+ * The guarded radius files the paired baseline must measure: exactly those that FAIL at the built
+ * commit. A guarded file that passes after the admission needs no previous-head verdict (the
+ * ratchet cannot blame it on anyone), and an admitted file outside the radius is a new test.
+ */
+export function previousHeadBaselineFiles(
+  population: FixPrecheckPopulation,
+  results: readonly FixPrecheckFileResult[],
+): string[] {
+  const failing = new Set(results.filter((r) => r.status === 'fail').map((r) => normalize(r.path)));
+  return (population.radius?.guarded ?? []).filter((p) => failing.has(p));
+}
+
 export type FixPrecheckBusyReason = 'checkpoint-tree-busy';
 
 export type FixPrecheckRunResult =
@@ -241,6 +267,10 @@ export type FixPrecheckVerdict =
       fixes: string[];
       /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
       reportOnlyRed?: string[];
+      /** D-004: guarded files red at BOTH heads (measured) — carried by the lineage, never attributed. */
+      carriedRed?: string[];
+      /** D-004: the paired baseline this verdict was judged against, when one was measured. */
+      previousHead?: FixPrecheckPreviousHead;
     }
   | { ok: true; ran: false; reason: 'nothing-to-run'; population: FixPrecheckPopulation }
   | {
@@ -283,6 +313,15 @@ export type FixPrecheckVerdict =
        * each imported red with what it was at the previous head, and the actor the refusal is for.
        */
       ratchet?: { newFailures: RatchetNewFailure[]; routeTo: { actor: string | null; unattributed: boolean } };
+      /**
+       * D-004 ruling 1: guarded files that fail at the built commit but have no MEASURED
+       * previous-head verdict. The admission is never blamed for them, and never published past them.
+       */
+      baselineMissing?: string[];
+      /** D-004: guarded files red at BOTH heads (measured) — carried by the lineage, never attributed. */
+      carriedRed?: string[];
+      /** D-004: the paired baseline this verdict was judged against, when one was measured. */
+      previousHead?: FixPrecheckPreviousHead;
     };
 
 /**
@@ -292,8 +331,12 @@ export type FixPrecheckVerdict =
 export function evaluateFixPrecheck(
   population: FixPrecheckPopulation,
   run: FixPrecheckRunResult,
-  /** The admitting actor: an `admission-imports-red` refusal is routed to it (P-006). */
-  opts: { actor?: string | null } = {},
+  opts: {
+    /** The admitting actor: an `admission-imports-red` refusal is routed to it (P-006). */
+    actor?: string | null;
+    /** D-004 ruling 1: the measured paired baseline for guarded files red at the built commit. */
+    previousHead?: FixPrecheckPreviousHead;
+  } = {},
 ): FixPrecheckVerdict {
   if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
   if (!run.ran) {
@@ -318,20 +361,34 @@ export function evaluateFixPrecheck(
   const failing = results.filter((r) => r.status === 'fail').map((r) => r.path);
   const unmeasured = results.filter((r) => r.status === 'unmeasured').map((r) => r.path);
   const fixes = population.signatureTestFiles.filter((p) => passing.includes(p));
-  // P-007: guarded radius files are previously green, so a failure there imports a red exactly like
-  // an admitted test file. Report-only radius files sit in a leg the signature already names red.
-  // green-main-ratchet-convergence-2026-10-17 P-006: the ADMISSION RATCHET owns that decision —
-  // a test that passed (guarded) or was absent (admitted) at the previous head and fails now.
+  // P-007: a guarded radius file that fails imports a red exactly like an admitted test file —
+  // but only when it was green at the previous head. Report-only radius files sit in a leg the
+  // signature already names red. green-main-ratchet-convergence-2026-10-17 P-006: the ADMISSION
+  // RATCHET owns that decision — a test that passed (guarded) or was absent (admitted) at the
+  // previous head and fails now. measured-wide-repair-admission-2026-10-24#D-004 ruling 1: a guarded
+  // file's previous-head verdict is the MEASURED paired baseline, never an assumed pass.
+  const guarded = population.radius?.guarded ?? [];
+  const previous = opts.previousHead;
+  const before = previousHeadVerdicts({
+    signatureTestFiles: population.signatureTestFiles,
+    guardedRadius: guarded,
+    ...(previous ? { measured: Object.fromEntries(previous.results.map((r) => [r.path, r.status] as const)) } : {}),
+  });
   const ratchet = evaluateAdmissionRatchet({
     admission: { actor: opts.actor ?? null, commit: run.commit },
-    radius: [...population.admittedTestFiles, ...(population.radius?.guarded ?? [])],
-    previousHead: impliedPreviousHead({
-      signatureTestFiles: population.signatureTestFiles,
-      guardedRadius: population.radius?.guarded ?? [],
-    }),
+    radius: [...population.admittedTestFiles, ...guarded],
+    previousHead: before,
     postAdmission: Object.fromEntries(results.map((r) => [r.path, r.status] as const)),
   });
   const importedRed = ratchet.verdict === 'reject' ? ratchet.newFailures.map((f) => f.test) : [];
+  const guardedFailing = guarded.filter((p) => failing.includes(p));
+  const carriedRed = guardedFailing.filter((p) => before[p] === 'fail');
+  const baselineMissing = guardedFailing.filter((p) => before[p] === 'unmeasured');
+  const baselineFindings = {
+    ...(baselineMissing.length ? { baselineMissing } : {}),
+    ...(carriedRed.length ? { carriedRed } : {}),
+    ...(previous ? { previousHead: previous } : {}),
+  };
   const ratchetFinding = ratchet.verdict === 'reject'
     ? { ratchet: { newFailures: ratchet.newFailures, routeTo: ratchet.routeTo } }
     : {};
@@ -357,6 +414,7 @@ export function evaluateFixPrecheck(
       importedRed,
       alsoImportsRed: false,
       ...radiusFindings,
+      ...baselineFindings,
     };
   }
   if (unmeasured.length > 0) {
@@ -369,6 +427,7 @@ export function evaluateFixPrecheck(
       importedRed,
       alsoImportsRed: importsRed,
       ...radiusFindings,
+      ...baselineFindings,
     };
   }
   if (doesNotFix) {
@@ -386,6 +445,7 @@ export function evaluateFixPrecheck(
       importedRed,
       alsoImportsRed: importsRed,
       ...radiusFindings,
+      ...baselineFindings,
       ...ratchetFinding,
     };
   }
@@ -401,10 +461,39 @@ export function evaluateFixPrecheck(
       importedRed,
       alsoImportsRed: false,
       ...radiusFindings,
+      ...baselineFindings,
       ...ratchetFinding,
     };
   }
-  return { ok: true, ...base, fixes, ...(population.radius ? { reportOnlyRed } : {}) };
+  // D-004 ruling 1: a guarded red with no measured previous-head verdict is neither blamed on
+  // this admission nor published past. The paired baseline (or the gate's re-test) decides it.
+  if (baselineMissing.length > 0) {
+    const baselineNote = previous
+      ? ` (paired baseline at ${previous.commit.slice(0, 12)}${previous.detail ? `: ${previous.detail}` : ' left them unmeasured'})`
+      : ' (no paired baseline was run)';
+    return {
+      ok: false,
+      ...base,
+      code: 'admission-precheck-unavailable',
+      detail:
+        `${baselineMissing.length} guarded radius test file(s) fail at the built admission commit ${run.commit.slice(0, 12)} ` +
+        `but have no measured previous-head verdict${baselineNote}: ${baselineMissing.map((p) => withLeg(population, p)).join(', ')}; ` +
+        'a red is never blamed on an admission without a measured previous-head verdict, and nothing publishes past one ' +
+        '(measured-wide-repair-admission-2026-10-24#D-004)',
+      importedRed,
+      alsoImportsRed: false,
+      ...radiusFindings,
+      ...baselineFindings,
+    };
+  }
+  return {
+    ok: true,
+    ...base,
+    fixes,
+    ...(population.radius ? { reportOnlyRed } : {}),
+    ...(carriedRed.length ? { carriedRed } : {}),
+    ...(previous ? { previousHead: previous } : {}),
+  };
 }
 
 // ─── the real runner ─────────────────────────────────────────────────────────────────────────
@@ -488,6 +577,12 @@ export interface CheckpointTreeRunnerOptions {
    * keeps the tree on the dependency-generation store's filesystem (WI-10006789).
    */
   precheckRoot?: string;
+  /**
+   * measured-wide-repair-admission-2026-10-24#D-004: a SECOND tree for the paired previous-head
+   * baseline — this suffix is appended to the (derived or explicit) pre-check root, so measuring
+   * the previous head never re-pins the admission's own tree. A literal like `-previous-head`.
+   */
+  precheckRootSuffix?: string;
   /**
    * Injectable for tests: the dependency-generation store for `integrationRoot`.
    * Default {@link resolveDependencyGenerationRoot} (env, recorded root, tree-local).
@@ -927,7 +1022,10 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
           checkpointRoot: opts.checkpointRoot,
           generationRoot: (opts.resolveGenerationRoot ?? resolveDependencyGenerationRoot)(opts.integrationRoot),
         });
-    const precheckRoot = placement.root;
+    if (opts.precheckRootSuffix !== undefined && !/^-[a-z0-9][a-z0-9-]*$/.test(opts.precheckRootSuffix)) {
+      return { ran: false, reason: 'runner-failed', detail: `invalid pre-check root suffix ${JSON.stringify(opts.precheckRootSuffix)}` };
+    }
+    const precheckRoot = `${placement.root}${opts.precheckRootSuffix ?? ''}`;
     log(`[admission-precheck] tree ${precheckRoot} (${placement.placement}: ${placement.reason})`);
     if (placement.displaced && existsSync(placement.displaced)) {
       log(

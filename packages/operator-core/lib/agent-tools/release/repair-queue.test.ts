@@ -1489,9 +1489,16 @@ describe('release:repair-queue', () => {
         builtCommit: fixture.operation.builtCommit, measurement: { results: completed } });
       expect(started.precheckOperation.runnerTaskId).not.toBe('dead-task');
       await drainDetached();
-      expect(runner.mock.calls.flatMap(([run]) => run.files)).toEqual(fixture.files.slice(40));
+      const atBuilt = runner.mock.calls.filter(([run]) => run.commit === fixture.operation.builtCommit);
+      expect(atBuilt.flatMap(([run]) => run.files)).toEqual(fixture.files.slice(40));
+      // measured-wide-repair-admission-2026-10-24#D-004: the retained red is paired with ONE
+      // previous-head measurement (it passed there), so imports-red rests on a measured baseline.
+      const atPrevious = runner.mock.calls.filter(([run]) => run.commit !== fixture.operation.builtCommit);
+      expect(atPrevious.map(([run]) => [run.commit, run.files])).toEqual([[fixture.operation.repairHead, [fixture.files[1]]]]);
       expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', completedCount: fixture.files.length,
         verdict: { ok: false, code: 'admission-imports-red' } });
+      expect(persisted.admissionPrecheck!.measurement!.previousHead).toMatchObject({ commit: fixture.operation.repairHead,
+        results: [{ path: fixture.files[1], status: 'pass' }] });
       expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe('fail');
       expect(dryRuns()).toEqual([true]);
     });

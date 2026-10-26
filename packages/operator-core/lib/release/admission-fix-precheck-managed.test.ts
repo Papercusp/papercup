@@ -206,11 +206,14 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     persisted = saved;
     persisted.admissionPrecheck!.runnerTaskId = 'replacement-task';
     const resumed: string[] = [];
-    const outcome = await runAdmissionPrecheckWorker({ ...input, taskId: 'replacement-task' }, { ...deps, createRunner: () => async run => {
-      resumed.push(...run.files);
+    const baseline: string[] = [];
+    const outcome = await runAdmissionPrecheckWorker({ ...input, taskId: 'replacement-task' }, { ...deps, createRunner: options => async run => {
+      (options.precheckRootSuffix ? baseline : resumed).push(...run.files);
       return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
     } });
     expect(resumed).toEqual(originalFiles.slice(40));
+    // D-004: only a retained FAIL is paired with a previous-head measurement; it passed there.
+    expect(baseline).toEqual(status === 'fail' ? [originalFiles[1]] : []);
     expect(persisted.admissionPrecheck!.files).toEqual(originalFiles);
     expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe(status);
     expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: status === 'fail' ? 'admission-imports-red' : 'admission-precheck-unavailable' } });
@@ -437,9 +440,10 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
         getTask: async () => ({ state: 'running', confined: true }),
         readQueue: async () => ({ status: 'value', queue: persisted }),
         transition: async (_target, update) => { persisted = update(persisted); },
+        // Red only at the BUILT commit: the paired baseline at repairHead measures green (D-004).
         createRunner: () => async (run: { commit: string; files: readonly string[] }) => ({
           ran: true as const, commit: run.commit,
-          results: run.files.map((path) => ({ path, status: path === failing ? 'fail' as const : 'pass' as const })),
+          results: run.files.map((path) => ({ path, status: path === failing && run.commit === 'c'.repeat(40) ? 'fail' as const : 'pass' as const })),
         }),
         now: () => 30,
       });
@@ -455,6 +459,89 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     // CONTROL: the same files without the partition read the report-only file as admitted.
     expect(await settle(operation({ files, totalCount: files.length }), 'ws-b/red-leg.test.ts')).toMatchObject({
       status: 'failed', verdict: { ok: false, code: 'admission-imports-red', importedRed: ['ws-b/red-leg.test.ts'] },
+    });
+  });
+
+  describe('measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the paired previous-head baseline', () => {
+    const files = ['lib/red.test.ts', 'ws-a/near.test.ts', 'ws-a/other.test.ts'];
+    const radius = { status: 'measured' as const, reason: 'ok', guarded: ['ws-a/near.test.ts', 'ws-a/other.test.ts'],
+      reportOnly: [], legs: { 'ws-a/near.test.ts': '@t/a', 'ws-a/other.test.ts': '@t/a' } };
+    type Status = 'pass' | 'fail' | 'unmeasured';
+    /** `atBuilt`/`atPrevious` answer per file at the built commit 'c…' and the repair head 'b…'. */
+    const settle = async (precheck: FrozenRepairAdmissionPrecheck, atBuilt: Record<string, Status>, atPrevious: Record<string, Status>) => {
+      let persisted = queue(precheck);
+      const calls: Array<{ suffix: string | undefined; commit: string; files: string[] }> = [];
+      const outcome = await runAdmissionPrecheckWorker(input, {
+        getTask: async () => ({ state: 'running', confined: true }),
+        readQueue: async () => ({ status: 'value', queue: persisted }),
+        transition: async (_target, update) => { persisted = update(persisted); },
+        createRunner: options => async run => {
+          calls.push({ suffix: options.precheckRootSuffix, commit: run.commit, files: [...run.files] });
+          const table = run.commit === 'c'.repeat(40) ? atBuilt : atPrevious;
+          const results = run.files.map(path => ({ path, status: table[path] ?? 'pass' as Status }));
+          for (const result of results) await run.onFileResult?.(result);
+          return { ran: true, commit: run.commit, results };
+        },
+        now: () => 30,
+      });
+      return { outcome, persisted, calls };
+    };
+
+    it('measures ONLY the guarded reds, at repairHead, in the second tree — and a red at both heads is carried', async () => {
+      const { persisted, calls } = await settle(operation({ files, totalCount: files.length, radius }),
+        { 'ws-a/near.test.ts': 'fail' }, { 'ws-a/near.test.ts': 'fail' });
+      expect(calls).toEqual([
+        { suffix: undefined, commit: 'c'.repeat(40), files },
+        { suffix: '-previous-head', commit: 'b'.repeat(40), files: ['ws-a/near.test.ts'] },
+      ]);
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'passed', verdict: { ok: true, fixes: ['lib/red.test.ts'],
+        carriedRed: ['ws-a/near.test.ts'], previousHead: { commit: 'b'.repeat(40), results: [{ path: 'ws-a/near.test.ts', status: 'fail' }] } } });
+    });
+
+    it('a guarded red that PASSED at the measured previous head still refuses admission-imports-red', async () => {
+      const { persisted } = await settle(operation({ files, totalCount: files.length, radius }), { 'ws-a/near.test.ts': 'fail' }, {});
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', verdict: { ok: false, code: 'admission-imports-red',
+        importedRed: ['ws-a/near.test.ts'], ratchet: { newFailures: [{ test: 'ws-a/near.test.ts', before: 'pass' }] } } });
+    });
+
+    it('a baseline collection failure is UNMEASURED: never blamed, never published', async () => {
+      const { persisted } = await settle(operation({ files, totalCount: files.length, radius }),
+        { 'ws-a/near.test.ts': 'fail' }, { 'ws-a/near.test.ts': 'unmeasured' });
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', verdict: { ok: false, code: 'admission-precheck-unavailable',
+        importedRed: [], baselineMissing: ['ws-a/near.test.ts'] } });
+    });
+
+    it('a baseline that cannot run leaves the red unpaired and records why', async () => {
+      let persisted = queue(operation({ files, totalCount: files.length, radius }));
+      await runAdmissionPrecheckWorker(input, {
+        getTask: async () => ({ state: 'running', confined: true }),
+        readQueue: async () => ({ status: 'value', queue: persisted }),
+        transition: async (_target, update) => { persisted = update(persisted); },
+        createRunner: options => async run => options.precheckRootSuffix
+          ? { ran: false, reason: 'runner-failed', detail: 'setup-release-checkout exited 1' }
+          : { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: path === 'ws-a/near.test.ts' ? 'fail' as const : 'pass' as const })) },
+        now: () => 30,
+      });
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', verdict: { ok: false, code: 'admission-precheck-unavailable',
+        baselineMissing: ['ws-a/near.test.ts'], detail: expect.stringContaining('setup-release-checkout exited 1') } });
+    });
+
+    it('no guarded red ⇒ no baseline run at all', async () => {
+      const { calls, persisted } = await settle(operation({ files, totalCount: files.length, radius }), {}, {});
+      expect(calls.map(call => call.suffix)).toEqual([undefined]);
+      expect(persisted.admissionPrecheck?.verdict).not.toHaveProperty('previousHead');
+    });
+
+    it('bounded mode persists the baseline beside the aggregate, so the door can re-judge it', async () => {
+      const wideFiles = ['lib/red.test.ts', ...Array.from({ length: 44 }, (_, i) => `ws-a/file-${i}.test.ts`)];
+      const wideRadius = { status: 'measured' as const, reason: 'ok', guarded: wideFiles.slice(1), reportOnly: [], legs: {} };
+      const { persisted, calls } = await settle(operation({ files: wideFiles, totalCount: wideFiles.length, radius: wideRadius }),
+        { 'ws-a/file-3.test.ts': 'fail', 'ws-a/file-41.test.ts': 'fail' }, { 'ws-a/file-3.test.ts': 'fail', 'ws-a/file-41.test.ts': 'fail' });
+      expect(calls.filter(call => call.suffix).map(call => call.files)).toEqual([['ws-a/file-3.test.ts', 'ws-a/file-41.test.ts']]);
+      expect(persisted.admissionPrecheck?.measurement?.previousHead).toEqual({ commit: 'b'.repeat(40),
+        results: [{ path: 'ws-a/file-3.test.ts', status: 'fail' }, { path: 'ws-a/file-41.test.ts', status: 'fail' }] });
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'passed',
+        verdict: { ok: true, carriedRed: ['ws-a/file-3.test.ts', 'ws-a/file-41.test.ts'] } });
     });
   });
 
