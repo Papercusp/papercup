@@ -17,11 +17,14 @@
     "red": 22131848
   },
   "applied": {
-    "rubricRevision": 4,
-    "criteriaHash": "4b63a8cd3b4eb6ef1fe78f19768bd3f21967eb775758a43388a342004bd06693",
+    "rubricRevision": 5,
+    "criteriaHash": "84fc592c8c84b6333461c7536d10b1fd4ac74afceaad63ada220834d9bdd1b2d",
+    "barSetHash": "de18d909bc2f1b855aa5eb3130e9413925b7fce54e24dfd642d7953e5848213e",
     "atomicApproval": "thread-post:1206471",
     "wordingApproval": "thread-post:1206604",
-    "activationAuditSeq": 3
+    "activationAuditSeq": 4,
+    "subjectPlanRevision": 15,
+    "subjectPlanHash": "ac853968ab3b28fb67cc214f0ac382b6bafb96c97236a6225637c7562b51ac88"
   },
   "pendingFalsifierReview": {
     "args": {
@@ -591,7 +594,32 @@
     "reviewer": "su-37068955-1083-4ce3-bdcc-4cd4615b4b57",
     "awaitId": 373488,
     "staticCases": { "checked": 22, "computed": 3, "failures": [] },
-    "applied": false
+    "applied": true,
+    "approvalRef": "thread-post:1206761"
   },
-  "next": "Full12criterion amendment preview1206752 pending outside-lineage review. Plan Requirements/Design already updated rev14 hash eae981c48e9366b17b1a32c574977d61954ee3dba1e4c7cf81d9457f77a547e6. Rubricrev4 R3falsifier applied approval1206635 D003. Reaudit dryRun passed carrying8mappings and4agent-addeditems. On review event read currentclaim/thread/CAS, apply exact nextPreparedPatch only actual approval. Post final exact criteriaHash SAME critique conversation and get disposition before binding; record activationreaudit, exactspecquality+independentintegrity thenstart/proof/grading/recovery. R11 requires final release; historical/native restrictions remain; no LIVE_GATE_OPS."
+  "quality": {
+    "specSetHash": "8b282e02eef55ce8340a368f4a1b3714d9e269c248f8b6aff54106ffe1a034c8",
+    "evaluation": "pass",
+    "card": "EI-27061042666296110",
+    "gradingAudit": "EI-27061584067760971",
+    "gradingAuditState": "passed"
+  },
+  "vettingRev5": {
+    "sameConsultLateDisposition": "thread-post:1206780",
+    "card": "EI-27061486486857950",
+    "gradingAudit": "EI-27062028784918452",
+    "gradingAuditState": "passed",
+    "currentVettingState": "vetted"
+  },
+  "currentBarCritiques": {
+    "required": 2,
+    "first": "conv-request-046da7c9beabd389962c9a44b42b43d3fc4d8c6e9358999266bbce349e062dcf",
+    "firstSourceOwner": "su-6432fc8d-1d1b-4c87-b2f1-b891d3d7b80b",
+    "firstAnsweringOwner": "su-26b0d156-f842-4997-beeb-a8e208e4d2ff",
+    "second": null
+  },
+  "recoveryDisposition": {
+    "WI-6554700010009934": "dropped by system:acceptance-drain at2026-10-26T16:06:24.182Z because parentconsult-backed-parking-2026-10-12 isarchived:true version67. Sourceacceptance-drain-sweep.ts terminal reconciliation confirmsarchived->dropped. Do notclaimunownedopen/resurrectorcallshipped."
+  },
+  "next": "Full12criterionamendment COMMITTEDrev5approval1206761/D004; plan15. Activationaudit4 PASS. ExactqualitycardEI27061042666296110 independentlyauditPASS; vettingcardEI27061486486857950 independentlyauditPASS andrubricvettedcurrent5. plans:start nowrequires2fresh outside-lineage barcritique consults for current12BARset/16clauses. Firstrequested canonicalpolicy above; secondmustexclude itslineage. Closeonlyactualanswers; beforeproofbinding resolveanyfindings. Thenstart/proof/cards/grading/recovery. HistoricalarchivedparentWI9934droppedlegitimately; oldparked-agentparentpendingownerscope/nativeprohibitionstillopen. R11requiresfinalrelease; no LIVE_GATE_OPS."
 }
