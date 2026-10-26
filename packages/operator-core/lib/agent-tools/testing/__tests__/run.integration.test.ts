@@ -1155,7 +1155,10 @@ describe('bounded foreground process termination', () => {
         {
           root: roots[0]!,
           files: ['packages/x/real.test.ts', join(roots[1]!, 'packages/x/real.test.ts')],
-          timeoutMs: 10_000,
+          // The injected child already supplies the timeout. This case tests
+          // pending-writer recovery, so preparation gets the classification
+          // budget rather than racing an unrelated ten-second deadline.
+          timeoutMs: IN_PROCESS_CLASSIFICATION_CEILING_MS,
         },
         { runRouterFn },
       );
