@@ -4,7 +4,6 @@ import { collectStateCensus, backupCacheCensusDeclarations } from '../packages/b
 import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDeclaration, peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, mergeNestedCensusRoots, virtualenvCacheDeclaration } from '../packages/operator-core/lib/backup/state-census-producers';
 import { readdir, lstat, readFile } from 'node:fs/promises';
 import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
-import { createRequire } from 'node:module';
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
 import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
 import postgres from 'postgres';
@@ -122,7 +121,8 @@ const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = args.includes('--host-catalogs');
 const credentials = await accountCredentialCensusProducer(hostCatalogs
   ? await readWorkspaceCensusAccounts(readRegistry().workspaces) : []);
-const checkpointLogDir = options.checkpointLogDir ?? createRequire(import.meta.url)('../apps/operator/lib/release/release-config.ts').releaseConfig().checkpointLogDir;
+const { releaseConfig } = await import('../apps/operator/lib/release/release-config.ts');
+const checkpointLogDir = options.checkpointLogDir ?? releaseConfig().checkpointLogDir;
 const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
   { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
