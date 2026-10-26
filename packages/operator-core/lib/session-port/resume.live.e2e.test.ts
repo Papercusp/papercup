@@ -115,6 +115,26 @@ function assertLauncherLogProgress(taskId: string, log: string) {
   }
 }
 
+function matrixFailureResult(observations: Array<Record<string, unknown>>, expected: number, error: unknown) {
+  let message = String(error instanceof Error ? error.message : error).trim() || 'Unknown matrix failure';
+  if (message.length > 2000) {
+    const omission = '\n[exception truncated: ' + message.length + ' characters]\n';
+    message = message.slice(0, 600) + omission + message.slice(-(2000 - 600 - omission.length));
+  }
+  return {
+    exitCode: 1,
+    summary: 'Final matrix stopped after ' + observations.length + '/' + expected + ' observations.',
+    assertions: [
+      ...observations.map((observation, index) => ({
+        id: 'completed-observation-' + (index + 1),
+        passed: true,
+        evidence: JSON.stringify(observation).slice(0, 2000),
+      })),
+      { id: 'matrix-stop', passed: false, evidence: message },
+    ],
+  };
+}
+
 function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<string, unknown>) {
   // `serving` is the probe's policy-checked STATE. `ok`, HTTP 200, unknown
   // projections and the `unwalled` DELTA do not establish eligible capacity.
@@ -454,6 +474,29 @@ describe('owned matrix lifetime and progress', () => {
   });
 });
 
+describe('owned matrix failure evidence', () => {
+  it('retains completed observations and the stop cause when a later port fails', () => {
+    const observation = { source: 'claude', target: 'codex', targetAdvSessionId: '43472' };
+    const result = matrixFailureResult([observation], 9, new Error('explicit xhigh launch refused'));
+    expect(result.exitCode).toBe(1);
+    expect(result.summary).toBe('Final matrix stopped after 1/9 observations.');
+    expect(result.assertions).toEqual([
+      { id: 'completed-observation-1', passed: true, evidence: JSON.stringify(observation) },
+      { id: 'matrix-stop', passed: false, evidence: 'explicit xhigh launch refused' },
+    ]);
+  });
+
+  it('keeps both the trace start and semantic tail when the stop error is clipped', () => {
+    const result = matrixFailureResult([], 9,
+      new Error('MCP launch trace start\n' + 'connection detail\n'.repeat(400) + 'explicit xhigh refusal'));
+    const failure = result.assertions.at(-1)!;
+    expect(failure.evidence).toContain('MCP launch trace start');
+    expect(failure.evidence).toContain('[exception truncated:');
+    expect(failure.evidence).toContain('explicit xhigh refusal');
+    expect(failure.evidence.length).toBeLessThanOrEqual(2000);
+  });
+});
+
 async function native(session: Session, archivedSource = false) {
   const id = session.agent === 'omp' ? session.omp_thread_id ?? session.session_id : session.session_id;
   if (!id) return undefined;
@@ -663,13 +706,20 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             }
           }
         };
-        for (const pair of SESSION_PORT_SUPPORTED_PAIRS) {
-          await launch(sessions.find(session => session.agent === pair.source)!, pair.target);
-        }
-        for (const source of sessions) await launch(source);
-        expect(observations).toHaveLength(9);
-        for (const [path, sha256] of Object.entries(sourceHashes)) {
-          expect(createHash('sha256').update(readFileSync(resolve(canonical, path))).digest('hex')).toBe(sha256);
+        try {
+          for (const pair of SESSION_PORT_SUPPORTED_PAIRS) {
+            await launch(sessions.find(session => session.agent === pair.source)!, pair.target);
+          }
+          for (const source of sessions) await launch(source);
+          expect(observations).toHaveLength(9);
+          for (const [path, sha256] of Object.entries(sourceHashes)) {
+            expect(createHash('sha256').update(readFileSync(resolve(canonical, path))).digest('hex')).toBe(sha256);
+          }
+        } catch (error) {
+          // Return a failed artifact instead of throwing here: executeOperationalRun
+          // can persist the completed ports and first stop cause only when its callback
+          // returns. The test's final pass expectation still fails the Vitest run.
+          return matrixFailureResult(observations, SESSION_PORT_SUPPORTED_PAIRS.length + sessions.length, error);
         }
         return { exitCode: 0, summary: 'Six fresh delivered ports and three PUI-shaped original-backend native resumes',
           assertions: observations.map((observation, index) => ({
