@@ -16,6 +16,12 @@ import type { RouteContext } from '../define-route';
 import { renderSessionPortSeed } from '../../session-port/render';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../session-port/types';
 
+const nativeFork = vi.hoisted(() => ({ complete: vi.fn(), resolveSource: vi.fn() }));
+vi.mock('../../su-session-tracked-codex-fork', () => ({
+  completeTrackedCodexFork: nativeFork.complete,
+  resolveTrackedCodexForkSource: nativeFork.resolveSource,
+}));
+
 // Redirect the launch-context file writes to a throwaway temp dir so the
 // route's best-effort persistence doesn't touch the real ~/.papercusp.
 const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-su-lc-'));
@@ -642,6 +648,8 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  nativeFork.complete.mockReset();
+  nativeFork.resolveSource.mockReset();
   vi.stubEnv('HOME', TEST_CODEX_AUTH_HOME);
   vi.stubEnv('OPENAI_API_KEY', '');
   sessionAllowsAmbientContextMock.mockReset().mockResolvedValue(true);
@@ -961,6 +969,47 @@ describe('bootstrap-su', () => {
     } finally {
       warn.mockRestore();
     }
+  }, 30_000);
+
+  it.each([false, true])('native fork failure keeps retry safe when child cleanup fails=%s', async cleanupFails => {
+    const source = { advSessionId: 9, nativeSessionId: '11111111-1111-4111-8111-111111111111' };
+    const childNativeId = '22222222-2222-4222-8222-222222222222';
+    const lineage = { ...source, ownerId: 'su-fork-parent' };
+    nativeFork.resolveSource.mockResolvedValue({ ownerId: lineage.ownerId });
+    nativeFork.complete
+      .mockRejectedValueOnce(new Error('native fork preparation failed'))
+      .mockResolvedValueOnce({ nativeSessionId: childNativeId, nativeFork: lineage });
+    recordAdvSessionMock.mockResolvedValueOnce(42).mockResolvedValueOnce(43);
+    if (cleanupFails) markAdvSessionEndedMock.mockRejectedValueOnce(new Error('terminalization unavailable'));
+    const request = { agent: 'codex', harness_slug: 'papercup', owner_id: 'su-fork-child',
+      native_fork_source: source, bootstrap_idempotency_key: `fork-cleanup-${cleanupFails}` };
+
+    const warn = cleanupFails ? vi.spyOn(console, 'warn').mockImplementation(() => {}) : null;
+    try {
+      await expect(callPost(request)).rejects.toThrow('native fork preparation failed');
+      if (warn) expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        'incomplete session 42 could not be terminalized; retaining bootstrap idempotency claim'));
+    } finally { warn?.mockRestore(); }
+    expect(nativeFork.complete).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 42 }), source);
+    expect(recordAgentLaunchResultMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', { throwOnError: true });
+    if (cleanupFails) {
+      expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+      expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(
+      releaseAgentLaunchClaimMock.mock.invocationCallOrder[0]);
+
+    const replay = await callPost(request);
+    expect(replay.status).toBe(200);
+    const receipt = await replay.json();
+    expect(receipt).toMatchObject({ sessionId: 43, nativeSessionId: childNativeId, nativeFork: lineage });
+    expect(recordAdvSessionMock).toHaveBeenCalledTimes(2);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledTimes(1);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({ summary: receipt }));
+    expect(nativeFork.complete.mock.invocationCallOrder[1]).toBeLessThan(
+      recordAgentLaunchResultMock.mock.invocationCallOrder[0]);
   }, 30_000);
 
   it('stamps the resolved harness onto presence before the launched agent takes turn 1', async () => {
@@ -2012,6 +2061,8 @@ describe('bootstrap-su', () => {
       const rootDir = join(dir, '.papercusp', 'blueprints', 'named-route-root');
       mkdirSync(componentDir, { recursive: true });
       mkdirSync(rootDir, { recursive: true });
+      mkdirSync(join(componentDir, 'prompts'), { recursive: true });
+      writeFileSync(join(componentDir, 'prompts', 'domain.md'), 'Named route domain fixture.');
       const componentPath = join(componentDir, 'blueprint.yaml');
       writeFileSync(componentPath,
         'id: named-route-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');
