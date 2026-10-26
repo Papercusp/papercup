@@ -33,6 +33,8 @@ export interface SearchObservation {
   requestToken: string; intentTokens: string[]; at: string; tool: string;
   kind: 'search' | 'sql-fallback' | 'shell-fallback'; provider: SearchSource['provider'];
   outcome: SearchOutcome; returned: number | null; truncated: boolean;
+  /** Exact settled output is currently readable, even when its meaning is UNKNOWN. */
+  resultAvailable: boolean;
   existingTools: string[];
 }
 const hash = (scope: SqlIntentScope, domain: string, values: unknown[]): string => createHmac('sha256', scope.key)
@@ -104,7 +106,7 @@ export function observeSearchSource(source: SearchSource, scope: SqlIntentScope)
     requestToken: hash(scope, 'request', [source.tool, redactSensitiveText(stable(args), scope.knownSecrets)]),
     intentTokens: intentWords(intent.query, scope).map(w => hash(scope, 'intent-word', [w])),
     at: new Date(source.at).toISOString(), tool: source.tool, kind: intent.kind, provider: source.provider,
-    outcome, returned: outcome === 'UNKNOWN' ? null : facts.returned, truncated: facts.truncated,
+    outcome, resultAvailable: !!paired, returned: outcome === 'UNKNOWN' ? null : facts.returned, truncated: facts.truncated,
     existingTools: outcome === 'results' ? facts.existingTools : [] };
 }
 

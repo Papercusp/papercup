@@ -25,6 +25,8 @@ export interface RecoveryObservation {
   spillTokens: string[]; readToken: string | null; bounded: boolean;
   action: 'projection' | 'paging' | 'spill-read' | 'requery';
   outcome: 'success' | 'error' | 'refused' | 'UNKNOWN';
+  /** Exact settled output is currently readable, independent of its semantic outcome. */
+  resultAvailable: boolean;
   returnedBytes: number | null;
 }
 
@@ -69,7 +71,7 @@ export function observeResultRecovery(source: SearchSource & { metadata: unknown
     readToken: readAddress ? hash(scope, 'address', [readAddress]) : null, bounded,
     action: readAddress ? 'spill-read' : args.projection != null || args.view != null ? 'projection'
       : ['cursor', 'after', 'offset', 'page', 'byte_offset'].some(k => args[k] != null) ? 'paging' : 'requery',
-    outcome, returnedBytes: number(metadata.returnedContextBytes),
+    outcome, resultAvailable: paired, returnedBytes: number(metadata.returnedContextBytes),
   };
 }
 

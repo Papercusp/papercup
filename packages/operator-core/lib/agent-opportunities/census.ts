@@ -123,31 +123,35 @@ export async function readProductionMonitoredCandidate(
   }, deps: Parameters<typeof productionOpportunityReaders>[1] = {},
 ): Promise<CandidateEvidence | null> {
   const readers = productionOpportunityReaders({ ...opts, sourceBoundary: opts.scope.sourceBoundary }, deps);
-  return readMonitoredCandidate({ ...opts, authorizeCandidate: async (candidate, context) => {
-    const window = context.window as { since?: string; until?: string } | null;
-    const revisions = context.sourceRevisions as Record<string, unknown> | null;
-    if (!window || typeof window.since !== 'string' || typeof window.until !== 'string'
-      || !Number.isFinite(Date.parse(window.since)) || !Number.isFinite(Date.parse(window.until))
-      || Date.parse(window.until) - Date.parse(window.since) !== 7 * 86400_000
-      || !revisions || typeof revisions !== 'object' || Array.isArray(revisions)
-      || candidate.sourceRefs.some(token => typeof revisions[token] !== 'string' || !/^[a-f0-9]{64}$/.test(revisions[token] as string))) return false;
-    const common = { ...opts, since: window.since, until: window.until,
-      authorizeSource: readers.authorizeLedgerSource, readOutput: readers.readOutput };
-    const deadline = Date.now() + positive(opts.timeBudgetMs, 5000, 30_000);
-    const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
-    const drain = <T, C extends { scanned: number; denied: number }>(fetch: (page: { after?: SqlCorpusCursor; limit: number }) =>
-      Promise<{ observations: T[]; next: SqlCorpusCursor | null; coverage: C }>) =>
-      drainWindow(fetch, pageSize, rowCap, deadline, () => false);
-    const page = opts.family === 'search-reformulation'
-      ? await drain(p => fetchSearchReformulations({ ...common, ...p }))
-      : opts.family === 'result-recovery' ? await drain(p => fetchResultRecovery({ ...common, ...p }))
-        : opts.family === 'workaround-funnel' ? await drain(p => fetchWorkaroundFunnels({ ...common, ...p }))
-          : opts.family === 'native-operation' ? await drain(p => fetchNativeOperations({ ...common, ...p,
-            authorizeSource: readers.authorizeActivitySource, readTranscript: readers.readTranscript })) : null;
-    if (!page || page.next || page.coverage.denied) return false;
-    const current = observationRevisions(opts.scope, page.observations);
-    return candidate.sourceRefs.every(token => current[token] !== undefined && current[token] === revisions[token]);
-  } });
+  const deadline = Date.now() + positive(opts.timeBudgetMs, 5000, 30_000);
+  let cancelled = false;
+  try {
+    return await readMonitoredCandidate({ ...opts, authorizeCandidate: async (candidate, context) => {
+      if (cancelled || Date.now() >= deadline) return false;
+      const window = context.window as { since?: string; until?: string } | null;
+      const revisions = context.sourceRevisions as Record<string, unknown> | null;
+      if (!window || typeof window.since !== 'string' || typeof window.until !== 'string'
+        || !Number.isFinite(Date.parse(window.since)) || !Number.isFinite(Date.parse(window.until))
+        || Date.parse(window.until) - Date.parse(window.since) !== 7 * 86400_000
+        || !revisions || typeof revisions !== 'object' || Array.isArray(revisions)
+        || candidate.sourceRefs.some(token => typeof revisions[token] !== 'string' || !/^[a-f0-9]{64}$/.test(revisions[token] as string))) return false;
+      const common = { ...opts, since: window.since, until: window.until,
+        authorizeSource: readers.authorizeLedgerSource, readOutput: readers.readOutput };
+      const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
+      const drain = <T, C extends { scanned: number; denied: number }>(fetch: (page: { after?: SqlCorpusCursor; limit: number }) =>
+        Promise<{ observations: T[]; next: SqlCorpusCursor | null; coverage: C }>) =>
+        drainWindow(fetch, pageSize, rowCap, deadline, () => cancelled);
+      const page = opts.family === 'search-reformulation'
+        ? await drain(p => fetchSearchReformulations({ ...common, ...p }))
+        : opts.family === 'result-recovery' ? await drain(p => fetchResultRecovery({ ...common, ...p }))
+          : opts.family === 'workaround-funnel' ? await drain(p => fetchWorkaroundFunnels({ ...common, ...p }))
+            : opts.family === 'native-operation' ? await drain(p => fetchNativeOperations({ ...common, ...p,
+              authorizeSource: readers.authorizeActivitySource, readTranscript: readers.readTranscript })) : null;
+      if (!page || page.next || page.coverage.denied) return false;
+      const current = observationRevisions(opts.scope, page.observations);
+      return candidate.sourceRefs.every(token => current[token] !== undefined && current[token] === revisions[token]);
+    } });
+  } finally { cancelled = true; }
 }
 function identityIndex(rows: readonly { sourceToken: string; operationToken: string | null }[]) {
   const bySource = new Map<string, Set<string>>(), byOperation = new Map<string, Set<string>>();

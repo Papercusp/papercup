@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -252,9 +252,7 @@ async function ledgerEvidence(tool: string, args: unknown, body: unknown, at: st
 it('R23-DERIVED-ACL production search replay denies edits, deletion, revoked scope, missing bindings and incomplete scans', async () => {
   const ids: string[] = [];
   for (const query of ['job queue', 'job status', 'job owner']) {
-    const id = await f.seed(); ids.push(id);
-    await f.db.adminSql`UPDATE harness_shared.tool_invocations SET tool_name='tools:find',
-      args_json=${JSON.stringify({ query })}::jsonb WHERE id=${id}::bigint`;
+    ids.push(await ledgerEvidence('tools:find', { query }, { unrecognized: true }, '2026-10-24T12:00:00Z'));
   }
   const opts = f.opts({ rowBudget: 1, windowRowBudget: 10, timeBudgetMs: 30_000 });
   const run = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }));
@@ -264,6 +262,27 @@ it('R23-DERIVED-ACL production search replay denies edits, deletion, revoked sco
   const allowed = await read();
   expect(allowed).toMatchObject({ metrics: { logicalDemand: 3, reformulations: 2 }, reviewEligible: false });
   expect(JSON.stringify(allowed)).not.toMatch(/job queue|job status|job owner|sourceRevisions|window/);
+  // Both semantic outcomes are UNKNOWN; current physical output availability
+  // must still revoke the aggregate, and restoration must make it readable again.
+  const [output] = await f.db.adminSql`SELECT output_ref FROM harness_shared.tool_invocations WHERE id=${ids[0]!}::bigint`;
+  const outputPath = safeScratchFilesystemPath(output!.output_ref), original = readFileSync(outputPath);
+  await rm(outputPath); expect(await read()).toBeNull();
+  await writeFile(outputPath, original); expect(await read()).toEqual(allowed);
+  // Expire the single read budget between ACL passes. Giving the second pass
+  // a fresh budget would incorrectly release the same otherwise valid packet.
+  const started = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(started);
+  let snapshots = 0;
+  const client = new Proxy(opts.client!, { apply(target, thisArg, args) {
+    if (Array.isArray(args[0]) && args[0].join('').includes('SELECT f.diagnostics')) {
+      snapshots++;
+      if (snapshots === 2) clock.mockReturnValue(started + 5001);
+    }
+    return Reflect.apply(target, thisArg, args);
+  } });
+  try {
+    expect(await read({ client, timeBudgetMs: 5000 })).toBeNull();
+    expect(snapshots).toBe(2);
+  } finally { clock.mockRestore(); }
   expect(await read({ authorize: async () => false })).toBeNull();
   expect(await read({ windowRowBudget: 2 })).toBeNull();
   expect(await read({ scope: { ...opts.scope, epoch: 'rotated' } })).toBeNull();

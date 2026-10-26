@@ -20,6 +20,16 @@ const read = (id: string, over: Partial<Source> = {}) => source(id, {
   metadata: { returnedContextBytes: 100 }, ...over,
 });
 
+it('R23-DERIVED-ACL distinguishes deleted output from a readable bounded UNKNOWN result', () => {
+  const readable = observe(root());
+  const missing = observe({ ...root(), result: null });
+  expect(readable).toMatchObject({ outcome: 'UNKNOWN', bounded: true, resultAvailable: true });
+  expect(missing).toMatchObject({ outcome: 'UNKNOWN', bounded: true, resultAvailable: false });
+  const { resultAvailable: _available, ...before } = readable;
+  const { resultAvailable: _missing, ...after } = missing;
+  expect(before).toEqual(after);
+});
+
 it('R10-CONTRACT OUTCOME-P-010: repeated reads and copy replay are one episode, with actual extra calls and final outcome reference', () => {
   const rows = [root(), read('read1'), read('read2', { at: '2026-10-24T12:00:02Z' })].map(observe);
   const grouped = groupResultRecovery([...rows, { ...rows[1]!, sourceToken: 'different-storage-copy' }]);

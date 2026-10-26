@@ -14,6 +14,16 @@ function source(over: Partial<SearchSource> = {}): SearchSource {
 const observe = (s: SearchSource, scoped = scope) => observeSearchSource(s, scoped)!;
 const group = (...sources: SearchSource[]) => groupSearchReformulations(sources.map(s => observe(s)));
 
+it('R23-DERIVED-ACL distinguishes deleted output from a readable unrecognized UNKNOWN result', () => {
+  const a = source({ result: { ...source().result!, body: { unrecognized: true } } });
+  const readable = observe(a), missing = observe({ ...a, result: null });
+  expect(readable).toMatchObject({ outcome: 'UNKNOWN', resultAvailable: true });
+  expect(missing).toMatchObject({ outcome: 'UNKNOWN', resultAvailable: false });
+  const { resultAvailable: _available, ...before } = readable;
+  const { resultAvailable: _missing, ...after } = missing;
+  expect(before).toEqual(after);
+});
+
 it('R9-CONTRACT: groups normalized reformulations and SQL/shell fallbacks; recommends existing tools first', () => {
   const a = source(), b = source({ callId: 'call-b', copyRef: 'b', at: '2026-10-24T12:00:05Z',
     tool: 'docs:search', args: { query: 'owner work items' }, result: { ...a.result!, callId: 'call-b', body: { hits: [] } } });
