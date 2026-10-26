@@ -67,7 +67,8 @@ try {
       admitted = true;
       break;
     } catch (error) {
-      if (error.code !== 'ENOENT' && !String(error.message).includes('fetch failed')) throw error;
+      if (error.code !== 'ENOENT' && error.name !== 'TimeoutError'
+        && !String(error.message).includes('fetch failed')) throw error;
     }
     await delay(200);
   }
