@@ -66,13 +66,16 @@ export function buildAdmissionPrecheckSpawnPlan(options: {
   execPath?: string;
   spawnerPid?: number;
 } = {}): SidecarSpawnPlan {
-  return resolveSidecarSpawnPlan({
+  const plan = resolveSidecarSpawnPlan({
     selfPath: options.selfPath ?? fileURLToPath(import.meta.url),
     devScriptPath: join(options.moduleDirOverride ?? moduleDir, 'admission-fix-precheck-worker-bin.ts'),
     bundledModeEnvVar: ADMISSION_PRECHECK_WORKER_MODE_ENV,
     execPath: options.execPath ?? process.execPath,
     spawnerPid: options.spawnerPid ?? process.pid,
   });
+  // This task survives its launching host; only parent-bound sidecars declare this lifetime.
+  delete plan.env.PAPERCUSP_DESKTOP_PARENT_PID;
+  return plan;
 }
 
 export async function startAdmissionPrecheckWorker(
@@ -82,11 +85,13 @@ export async function startAdmissionPrecheckWorker(
   if (!isValidTaskId(input.taskId)) throw new Error('invalid admission pre-check task id');
   const plan = options.spawnPlan ?? buildAdmissionPrecheckSpawnPlan();
   const args = [...plan.args];
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...plan.env,
     [ADMISSION_PRECHECK_WORKER_INPUT_ENV]: JSON.stringify(input),
   };
+  // Also discard inherited or injected sidecar metadata at the actual spawn boundary.
+  delete env.PAPERCUSP_DESKTOP_PARENT_PID;
   const logDir = options.logDir ?? papercuspPath('checkpoint-logs');
   mkdirSync(logDir, { recursive: true, mode: 0o700 });
   const logPath = join(logDir, `admission-precheck-worker-${input.taskId}.log`);

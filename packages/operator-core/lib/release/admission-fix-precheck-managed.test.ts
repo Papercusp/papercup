@@ -309,6 +309,35 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it.each(['dev-tsx', 'bundled-reexec'] as const)('starts an independent %s worker without a desktop parent lifetime', async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-worker-parent-'));
+    const previousParent = process.env.PAPERCUSP_DESKTOP_PARENT_PID;
+    process.env.PAPERCUSP_DESKTOP_PARENT_PID = '101';
+    const launch = vi.fn(async (...args: Parameters<typeof managedSpawn>) => {
+      const [, , spec, options] = args;
+      expect(spec.class).toBe('test-run');
+      const child = spawn(process.execPath, ['-e', `console.log(JSON.stringify({
+        parent: process.env.PAPERCUSP_DESKTOP_PARENT_PID ?? null,
+        taskId: JSON.parse(process.env.PAPERCUSP_REPAIR_PRECHECK_WORKER_INPUT).taskId,
+      }))`], { env: options?.spawnOptions?.env, stdio: options?.spawnOptions?.stdio });
+      return { child } as Awaited<ReturnType<typeof managedSpawn>>;
+    });
+    try {
+      const result = await startAdmissionPrecheckWorker(input, {
+        spawn: launch, logDir: root,
+        spawnPlan: { cmd: '/node', args: ['/worker'], env: { PAPERCUSP_DESKTOP_PARENT_PID: '202' }, mode },
+      });
+      const [code] = await once(result.child, 'close');
+      expect(code).toBe(0);
+      expect(JSON.parse(readFileSync(join(root, `admission-precheck-worker-${input.taskId}.log`), 'utf8')))
+        .toEqual({ parent: null, taskId: input.taskId });
+    } finally {
+      if (previousParent === undefined) delete process.env.PAPERCUSP_DESKTOP_PARENT_PID;
+      else process.env.PAPERCUSP_DESKTOP_PARENT_PID = previousParent;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('logs a scope launch rejection and closes the descriptor before rethrowing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'precheck-scope-log-'));
     let fd = -1;
@@ -334,14 +363,14 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     })).toEqual({
       cmd: '/node',
       args: ['--import', createRequire(import.meta.url).resolve('tsx'), '/repo/packages/operator-core/lib/release/admission-fix-precheck-worker-bin.ts'],
-      env: { PAPERCUSP_DESKTOP_PARENT_PID: '42' },
+      env: {},
       mode: 'dev-tsx',
     });
     const bundled = buildAdmissionPrecheckSpawnPlan({ selfPath: '/app/dist-host/hono-host.mjs', execPath: '/app/node', spawnerPid: 43 });
     expect(bundled).toMatchObject({
       cmd: '/app/node',
       args: ['/app/dist-host/hono-host.mjs'],
-      env: { [ADMISSION_PRECHECK_WORKER_MODE_ENV]: '1', PAPERCUSP_DESKTOP_PARENT_PID: '43' },
+      env: { [ADMISSION_PRECHECK_WORKER_MODE_ENV]: '1' },
       mode: 'bundled-reexec',
     });
   });
