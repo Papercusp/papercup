@@ -147,7 +147,7 @@ describe('private native proof custody (P002)', () => {
     const full = f.save();
     expect(full.status).toBe('complete');
     expect(verifyNativeProofPacket(f.directory, full.locator, f.contract).status).toBe('complete');
-    writeFileSync(group.auxiliary[4].path, Buffer.alloc(remaining + 2));
+    writeFileSync(group.auxiliary[4].path, Buffer.alloc(remaining + 1024));
     const partial = f.save();
     expect(partial.status).toBe('partial');
     expect(partial.manifest.gaps).toContain('group-0:cleanup:custody limit');
