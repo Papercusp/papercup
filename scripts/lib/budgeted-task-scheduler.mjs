@@ -264,6 +264,249 @@ export function createNativeArtifactPersister(evidenceRoot) {
   return { root, persist };
 }
 
+// P002: custody is a byte archive, not a prospective execution receipt. The
+// expected groups are supplied by the router before launch; observations may
+// never silently replace that population with the subset which finished.
+const custodyHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const custodyLimits = Object.freeze({ objects: 16384, bytes: 64 * 1024 * 1024, objectBytes: 16 * 1024 * 1024 });
+function custodyDirectory(path, privateMode = false) {
+  const full = resolve(path);
+  for (let part = full;; part = dirname(part)) {
+    const stat = lstatSync(part);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('custody redirected ancestor');
+    if (part === dirname(part)) break;
+  }
+  const stat = lstatSync(full);
+  if (realpathSync(full) !== full || privateMode && (stat.mode & 0o777) !== 0o700)
+    throw new Error('custody nonprivate or redirected root');
+  return full;
+}
+function custodyRead(path, budget) {
+  custodyDirectory(dirname(path));
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || (budget.private && (stat.mode & 0o777) !== 0o600))
+    throw new Error('custody nonregular or nonprivate artifact');
+  if (++budget.objects > custodyLimits.objects || stat.size > custodyLimits.objectBytes ||
+      budget.bytes + stat.size + 1 > custodyLimits.bytes) throw new Error('custody limit');
+  return readNativeArtifactBytes(path, stat.size, custodyLimits.bytes - budget.bytes,
+    count => { budget.bytes += count; });
+}
+function custodyInventory(directory) {
+  custodyDirectory(directory);
+  const stat = lstatSync(directory), names = [];
+  const handle = opendirSync(directory);
+  try {
+    for (let entry; (entry = handle.readSync()) !== null;) {
+      if (names.length === custodyLimits.objects) throw new Error('custody inventory limit');
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('custody inventory nonregular entry');
+      names.push(entry.name);
+    }
+  } finally { handle.closeSync(); }
+  const after = lstatSync(directory);
+  if (stat.dev !== after.dev || stat.ino !== after.ino || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs)
+    throw new Error('custody inventory changed');
+  return names.sort();
+}
+function custodyReferences(payload) {
+  const refs = [];
+  const scan = (rows, prefix, observation) => {
+    if (rows === undefined) return;
+    if (!Array.isArray(rows) || rows.length > 4096) throw new Error('custody observation population');
+    rows.forEach((row, index) => {
+      const value = observation(row);
+      if (value === undefined) return;
+      if (value?.schemaVersion !== 'vitest-evaluator-inputs-v1' ||
+          value.scope !== 'vitest-inlined-evaluator-inputs' || value.basis !== 'before-evaluator-call')
+        throw new Error('custody evaluator protocol');
+      for (const role of ['entries', 'vmInputs']) {
+        const pins = value[role] ?? (role === 'vmInputs' ? [] : null);
+        if (!Array.isArray(pins)) throw new Error('custody evaluator population');
+        pins.forEach((pin, i) => {
+          if (refs.length === 4096 || !comparisonDigest(pin?.sha256) ||
+              !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0 || typeof pin.codeRef !== 'string')
+            throw new Error('custody evaluator reference');
+          refs.push({ location: `${prefix}/${index}/${role}/${i}`, ...pin });
+        });
+      }
+    });
+  };
+  scan(payload.rows, '/rows', row => row?.moduleEvaluations);
+  scan(payload.diagnostics, '/diagnostics', row => row?.moduleEvaluations);
+  scan(payload.nativeRun?.files, '/nativeRun/files', row => row?.proof?.inputs?.moduleEvaluations);
+  return refs;
+}
+function custodyIdentity(identity) {
+  if (!identity || !['workspace', 'harness', 'runId'].every(key => typeof identity[key] === 'string' && identity[key]))
+    throw new Error('custody identity missing');
+}
+function custodyPopulation(expected) {
+  if (!Array.isArray(expected) || !expected.length || expected.length > 4096 ||
+      expected.some(group => !group || typeof group.id !== 'string' || !group.id ||
+        !['primary', 'detail'].includes(group.attempt) || !Array.isArray(group.selected) ||
+        !group.selected.length || !Array.isArray(group.auxiliary) ||
+        !['vitest', 'node', 'unsupported'].includes(group.runner) || typeof group.armed !== 'boolean') ||
+      new Set(expected.map(group => group.id)).size !== expected.length) throw new Error('custody expected population missing');
+}
+
+/** Publish an immutable edition; failures preserve useful bytes and explicit gaps.
+ * `expected` is the independent routing contract, including conditional objects.
+ * Every auxiliary object needs a role and a producer-backed applicability state. */
+export function retainNativeProofPacket(directory, input) {
+  custodyIdentity(input.identity); custodyPopulation(input.expected);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const root = custodyDirectory(directory, true);
+  const objectRoot = join(root, 'objects');
+  mkdirSync(objectRoot, { mode: 0o700, recursive: true });
+  custodyDirectory(objectRoot, true);
+  const store = createNativeArtifactPersister(objectRoot), budget = { objects: 0, bytes: 0 }, gaps = [];
+  const capture = (path, suffix = 'bytes') => store.persist(custodyRead(path, budget), suffix);
+  const observations = input.observations ?? [];
+  if (observations.length !== input.expected.length || new Set(observations.map(row => row.id)).size !== observations.length)
+    gaps.push('group-population-mismatch');
+  const groups = input.expected.map(expected => {
+    const observed = observations.find(row => row.id === expected.id);
+    const group = { id: expected.id, attempt: expected.attempt, families: [], references: [], auxiliary: [],
+      captureComplete: observed?.captureComplete ?? null };
+    if (!observed || observed.out !== expected.out) gaps.push(`${expected.id}:group-binding-missing`);
+    if (observed?.captureComplete === false) gaps.push(`${expected.id}:child-stream-capture-incomplete`);
+    for (const [family, suffix] of [['A', ''], ['B', '.modules'], ['C', '.native-processes'], ['D', '.processes']]) {
+      const entry = { family, state: 'unavailable', producer: expected.id, entries: [] };
+      group.families.push(entry);
+      if (!expected.armed || expected.runner !== 'vitest') {
+        entry.state = expected.runner === 'vitest' ? 'not-requested' : 'not-applicable';
+        entry.reason = expected.runner === 'vitest' ? 'reporter-not-armed' : `runner:${expected.runner}`;
+        continue;
+      }
+      try {
+        if (!observed || !expected.out || !isAbsolute(expected.out)) throw new Error('producer-unavailable');
+        const path = expected.out + suffix;
+        if (family === 'A') {
+          const artifact = capture(path, 'out.json');
+          const payload = JSON.parse(readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
+            custodyLimits.objectBytes).toString('utf8'));
+          entry.entries.push({ original: path, artifact });
+          group.references = custodyReferences(payload);
+          for (const ref of group.references)
+            if (ref.codeRef !== join(resolve(`${expected.out}.modules`), `${ref.sha256}.js`))
+              throw new Error('foreign-evaluator-reference');
+          // These are observations only. Even a terminal reporter is not a
+          // runtime closure or an acceptance decision.
+          group.protocol = { checkpoint: payload.completionCheckpoint ?? null,
+            nativeRun: { state: payload.nativeRun?.state ?? null, reason: payload.nativeRun?.reason ?? null,
+              modulePopulationMatched: payload.nativeRun?.modulePopulationMatched ?? null }, status: 'unqualified' };
+        } else {
+          const names = custodyInventory(path);
+          for (const name of names) {
+            const original = join(path, name), artifact = capture(original);
+            if (family === 'C' && /^[a-f0-9]{64}\.(json|source|stream)$/.test(name) &&
+                artifact.sha256 !== name.slice(0, 64)) throw new Error('native-artifact-digest');
+            if (family === 'D' && name.endsWith('.pending')) gaps.push(`${expected.id}:process-writer-pending`);
+            entry.entries.push({ original, artifact });
+          }
+          if (JSON.stringify(custodyInventory(path)) !== JSON.stringify(names)) throw new Error('inventory-changed');
+          if (family === 'B') for (const ref of group.references) {
+            const retained = entry.entries.find(row => row.original === ref.codeRef)?.artifact;
+            if (!retained || retained.sha256 !== ref.sha256 || retained.byteLength !== ref.byteLength)
+              throw new Error('referenced-evaluator-unavailable');
+          }
+        }
+        entry.state = 'produced';
+      } catch (error) { entry.reason = String(error?.code ?? error?.message ?? error); gaps.push(`${expected.id}:${family}:${entry.reason}`); }
+    }
+    for (const spec of expected.auxiliary) {
+      const entry = { ...spec };
+      group.auxiliary.push(entry);
+      try {
+        if (!spec.role || !['produced', 'not-requested', 'not-produced', 'not-applicable', 'unavailable'].includes(spec.state))
+          throw new Error('auxiliary-declaration-missing');
+        if (spec.state === 'produced') entry.artifact = capture(spec.path);
+        else if (!spec.reason || spec.state === 'unavailable' || spec.state === 'not-produced')
+          throw new Error('auxiliary-unavailable-or-unsupported-absence');
+      } catch (error) { gaps.push(`${expected.id}:${spec.role}:${error?.code ?? error?.message ?? error}`); }
+    }
+    return group;
+  });
+  const manifest = { schemaVersion: 'native-proof-custody-v1', identity: input.identity,
+    expected: input.expected, expectedHash: custodyHash(input.expected), groups, limits: custodyLimits,
+    bytesRead: budget.bytes, gaps, predecessor: input.predecessor ?? null,
+    verdicts: { custody: gaps.length ? 'partial' : 'complete', execution: input.execution ?? 'unknown',
+      protocol: 'unqualified', producerRetirement: 'not-performed', cleanup: input.cleanup ?? 'unknown',
+      nativeProof: 'unqualified', acceptance: 'unmeasured' } };
+  const manifestPin = store.persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+  for (const name of custodyInventory(objectRoot)) {
+    const fd = openSync(join(objectRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  }
+  for (const path of [objectRoot, root, dirname(root)]) {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  }
+  const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash };
+  const verified = verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
+  return { directory: root, locator, ...verified };
+}
+
+/** Consumer reads only retained objects. Callers MUST provide independently
+ * expected identity/population; the manifest cannot declare its own success. */
+export function verifyNativeProofPacket(directory, locator, contract) {
+  custodyIdentity(contract?.identity); custodyPopulation(contract?.expected);
+  const root = custodyDirectory(directory, true), objects = custodyDirectory(join(root, 'objects'), true);
+  const budget = { objects: 0, bytes: 0, private: true };
+  const read = pin => {
+    if (!pin || !comparisonDigest(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
+        pin.byteLength < 0 || basename(pin.ref ?? '') !== pin.ref || !pin.ref.startsWith(`${pin.sha256}.`))
+      throw new Error('custody invalid retained pin');
+    const bytes = custodyRead(join(objects, pin.ref), budget);
+    if (bytes.length !== pin.byteLength || createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
+      throw new Error('custody retained bytes differ');
+    return bytes;
+  };
+  const manifest = JSON.parse(read(locator.manifest).toString('utf8'));
+  if (manifest.schemaVersion !== 'native-proof-custody-v1' ||
+      JSON.stringify(manifest.identity) !== JSON.stringify(contract.identity) ||
+      JSON.stringify(locator.identity) !== JSON.stringify(contract.identity) ||
+      locator.expectedHash !== custodyHash(contract.expected) || manifest.expectedHash !== locator.expectedHash ||
+      JSON.stringify(manifest.expected) !== JSON.stringify(contract.expected) ||
+      !Array.isArray(manifest.groups) || manifest.groups.length !== contract.expected.length)
+    throw new Error('custody identity or expected population mismatch');
+  for (const expected of contract.expected) {
+    const group = manifest.groups.find(row => row.id === expected.id);
+    if (!group || group.attempt !== expected.attempt || group.families.length !== 4 ||
+        new Set(group.families.map(row => row.family)).size !== 4 ||
+        !['A', 'B', 'C', 'D'].every(family => group.families.some(row => row.family === family)) ||
+        group.auxiliary.length !== expected.auxiliary.length) throw new Error('custody missing group or family');
+    if (group.captureComplete === false && !manifest.gaps.length) throw new Error('custody incomplete child capture');
+    for (const family of group.families) {
+      if (!Array.isArray(family.entries)) throw new Error('custody inventory missing');
+      for (const entry of family.entries) read(entry.artifact);
+      if (family.state !== 'produced' && expected.armed && expected.runner === 'vitest' && !manifest.gaps.length)
+        throw new Error('custody unsupported family absence');
+    }
+    const out = group.families.find(row => row.family === 'A').entries[0];
+    if (out) {
+      const refs = custodyReferences(JSON.parse(read(out.artifact).toString('utf8')));
+      if (JSON.stringify(refs) !== JSON.stringify(group.references)) throw new Error('custody reference occurrences missing');
+      for (const ref of refs) {
+        const pin = group.families.find(row => row.family === 'B').entries.find(row => row.original === ref.codeRef)?.artifact;
+        if (!pin || pin.sha256 !== ref.sha256 || pin.byteLength !== ref.byteLength) {
+          if (!manifest.gaps.length) throw new Error('custody evaluator mapping missing');
+        }
+      }
+    }
+    expected.auxiliary.forEach((spec, index) => {
+      const entry = group.auxiliary[index];
+      if (JSON.stringify(spec) !== JSON.stringify(Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'artifact'))))
+        throw new Error('custody auxiliary declaration mismatch');
+      if (entry.artifact) read(entry.artifact);
+      else if (spec.state === 'produced' && !manifest.gaps.length) throw new Error('custody auxiliary bytes missing');
+    });
+  }
+  if (manifest.verdicts.nativeProof !== 'unqualified' || manifest.verdicts.acceptance !== 'unmeasured' ||
+      manifest.verdicts.protocol !== 'unqualified' || manifest.verdicts.custody !== (manifest.gaps.length ? 'partial' : 'complete'))
+    throw new Error('custody verdict conflation');
+  return { status: manifest.verdicts.custody, verified: true, manifest };
+}
+
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   if (!input || typeof input.task !== "string" || !input.task ||
       typeof input.attempt !== "string" || !input.attempt ||

@@ -15,6 +15,41 @@ export interface TaskBudgetInput {
 export function readNativeArtifactBytes(file: string, byteLength: number, byteLimit: number,
   recordRead?: (count: number) => void): Buffer;
 export interface NativeArtifactPin { ref: string; sha256: string; byteLength: number; }
+export interface NativeCustodyIdentity { workspace: string; harness: string; runId: string; }
+export interface NativeCustodyAuxiliary {
+  role: string; state: 'produced' | 'not-requested' | 'not-produced' | 'not-applicable' | 'unavailable';
+  path?: string; reason?: string;
+}
+export interface NativeCustodyGroup {
+  id: string; attempt: 'primary' | 'detail'; selected: string[]; runner: 'vitest' | 'node' | 'unsupported';
+  armed: boolean; out: string | null; cwd?: string; auxiliary: NativeCustodyAuxiliary[];
+}
+export interface NativeCustodyLocator { manifest: NativeArtifactPin; identity: NativeCustodyIdentity; expectedHash: string; }
+export interface NativeCustodyFamily {
+  family: 'A' | 'B' | 'C' | 'D'; state: string; producer: string; reason?: string;
+  entries: Array<{ original: string; artifact: NativeArtifactPin }>;
+}
+export interface NativeCustodyRetainedGroup {
+  id: string; attempt: 'primary' | 'detail'; families: NativeCustodyFamily[];
+  captureComplete: boolean | null;
+  references: Array<{ location: string; codeRef: string; sha256: string; byteLength: number }>;
+  auxiliary: Array<NativeCustodyAuxiliary & { artifact?: NativeArtifactPin }>;
+  protocol?: unknown;
+}
+export interface NativeCustodyManifest {
+  schemaVersion: 'native-proof-custody-v1'; identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
+  expectedHash: string; groups: NativeCustodyRetainedGroup[]; gaps: string[]; predecessor: NativeCustodyLocator | null;
+  verdicts: { custody: 'complete' | 'partial'; execution: unknown; protocol: 'unqualified';
+    producerRetirement: 'not-performed'; cleanup: unknown; nativeProof: 'unqualified'; acceptance: 'unmeasured' };
+}
+export function retainNativeProofPacket(directory: string, input: {
+  identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
+  observations: Array<{ id: string; out: string | null; captureComplete?: boolean }>;
+  execution?: unknown; cleanup?: unknown; predecessor?: NativeCustodyLocator;
+}): { directory: string; locator: NativeCustodyLocator; status: 'complete' | 'partial'; verified: true; manifest: NativeCustodyManifest };
+export function verifyNativeProofPacket(directory: string, locator: NativeCustodyLocator,
+  contract: { identity: NativeCustodyIdentity; expected: NativeCustodyGroup[] }):
+  { status: 'complete' | 'partial'; verified: true; manifest: NativeCustodyManifest };
 /** Custody only: these helpers never create execution or acceptance proof. */
 export function createNativeArtifactPersister(evidenceRoot: string): {
   root: string; persist: (bytes: Buffer, suffix: string) => NativeArtifactPin;

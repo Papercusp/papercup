@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
-import { appendFileSync, closeSync, constants, cpSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, cpSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,8 @@ import {
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   retainReporterEvaluatorArtifacts,
+  retainNativeProofPacket,
+  verifyNativeProofPacket,
   runBudgetedTaskShards,
   runBudgetedTasks,
   timeoutDurationEstimate,
@@ -63,6 +65,119 @@ const SCHEDULER_SRC = readFileSync(
   resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'),
   'utf8',
 );
+
+describe('private native proof custody (P002)', () => {
+  const roots: string[] = [];
+  afterAll(() => roots.forEach(root => rmSync(root, { recursive: true, force: true })));
+  function fixture(attempts: Array<'primary' | 'detail'> = ['primary']) {
+    const root = mkdtempSync(join(tmpdir(), 'native-custody-'));
+    roots.push(root);
+    const producer = join(root, 'producer');
+    mkdirSync(producer);
+    const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: basename(root) };
+    const expected = attempts.map((attempt, index) => {
+      const out = join(producer, `out-${index}.json`);
+      for (const suffix of ['.modules', '.native-processes', '.processes']) mkdirSync(out + suffix);
+      const code = Buffer.from('export const exact = "é\\u0000";\n');
+      const sha256 = createHash('sha256').update(code).digest('hex');
+      const codeRef = join(out + '.modules', `${sha256}.js`);
+      writeFileSync(codeRef, code);
+      const pin = { codeRef, sha256, byteLength: code.length };
+      const moduleEvaluations = { schemaVersion: 'vitest-evaluator-inputs-v1',
+        scope: 'vitest-inlined-evaluator-inputs', basis: 'before-evaluator-call', entries: [pin, pin], vmInputs: [pin] };
+      writeFileSync(out, JSON.stringify({ rows: [{ moduleEvaluations }], diagnostics: [{ moduleEvaluations }],
+        nativeRun: { state: 'partial', reason: 'fixture-diagnostic', files: [{ proof: { inputs: { moduleEvaluations } } }] } }));
+      for (const suffix of ['source', 'stream', 'json']) {
+        const bytes = Buffer.from(suffix === 'json' ? '{"kind":"observation"}' : `raw-${suffix}\u0000\xff`);
+        const digest = createHash('sha256').update(bytes).digest('hex');
+        writeFileSync(join(out + '.native-processes', `${digest}.${suffix}`), bytes);
+      }
+      writeFileSync(join(out + '.processes', 'process.closed'), '{"state":"closed"}');
+      const auxiliary = ['command-exit', 'stdout', 'stderr', 'report', 'cleanup'].map(role => {
+        const path = join(producer, `${index}.${role}`);
+        writeFileSync(path, Buffer.from(`exact-${role}\u0000\xff`));
+        return { role, path, state: 'produced' as const };
+      });
+      return { id: `group-${index}`, attempt, selected: [join(producer, `test-${index}.ts`)],
+        runner: 'vitest' as const, armed: true, out, auxiliary };
+    });
+    const observations = expected.map(group => ({ id: group.id, out: group.out, captureComplete: true }));
+    const directory = join(root, 'packet');
+    const contract = { identity, expected };
+    const save = () => retainNativeProofPacket(directory, { ...contract, observations,
+      execution: { state: 'failed' }, cleanup: { complete: false } });
+    return { root, producer, directory, contract, observations, save };
+  }
+
+  it('reads every primary/detail family and duplicate occurrence in a fresh process after producer removal', () => {
+    const f = fixture(['primary', 'primary', 'detail']);
+    const first = f.save(), again = f.save();
+    expect(first.status).toBe('complete');
+    expect(again.locator).toEqual(first.locator);
+    expect(first.manifest.groups.map(group => group.references.length)).toEqual([9, 9, 9]);
+    const original = first.manifest.groups.map(group => group.families.map(family => family.entries.map(entry => ({
+      bytes: readFileSync(entry.original).toString('base64'), artifact: entry.artifact,
+    }))));
+    rmSync(f.producer, { recursive: true });
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'const r=verifyNativeProofPacket(...JSON.parse(process.argv[1]));' +
+      'process.stdout.write(JSON.stringify({status:r.status,verdicts:r.manifest.verdicts,groups:r.manifest.groups.length}));',
+      JSON.stringify([f.directory, first.locator, f.contract])], { encoding: 'utf8', timeout: 15_000 });
+    expect({ error: child.error, stderr: child.stderr, status: child.status }).toEqual({ error: undefined, stderr: '', status: 0 });
+    expect(JSON.parse(child.stdout)).toMatchObject({ status: 'complete', groups: 3, verdicts: {
+      execution: { state: 'failed' }, cleanup: { complete: false }, nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+    for (const groups of original) for (const entries of groups) for (const entry of entries)
+      expect(readFileSync(join(f.directory, 'objects', entry.artifact.ref)).toString('base64')).toBe(entry.bytes);
+  });
+
+  it.each(['group', 'A', 'B', 'C', 'D', 'auxiliary', 'pending', 'truncated-stream'])('keeps %s absence/pending explicit and refuses complete custody', omission => {
+    const f = fixture(['primary', 'detail']);
+    const group = f.contract.expected[1];
+    if (omission === 'group') f.observations.pop();
+    else if (omission === 'truncated-stream') f.observations[1].captureComplete = false;
+    else if (omission === 'auxiliary') rmSync(group.auxiliary[0].path);
+    else if (omission === 'pending') writeFileSync(join(group.out + '.processes', 'process.pending'), 'pending');
+    else rmSync(group.out + (({ A: '', B: '.modules', C: '.native-processes', D: '.processes' } as Record<string, string>)[omission] ?? ''), { recursive: true });
+    const saved = f.save();
+    expect(saved.status).toBe('partial');
+    expect(saved.manifest.groups).toHaveLength(2);
+    expect(saved.manifest.gaps.length).toBeGreaterThan(0);
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+    expect(saved.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+  });
+
+  it.each(['bytes', 'workspace', 'harness', 'run', 'population', 'root-mode', 'object-mode', 'leaf-symlink', 'ancestor-symlink'])('rejects %s corruption or private-boundary violations', mutation => {
+    const f = fixture();
+    const saved = f.save();
+    let directory = f.directory;
+    const contract = structuredClone(f.contract);
+    const pin = saved.manifest.groups[0].families[0].entries[0].artifact;
+    const object = join(f.directory, 'objects', pin.ref);
+    if (mutation === 'bytes') { const bytes = readFileSync(object); bytes[0] ^= 1; writeFileSync(object, bytes); }
+    if (mutation === 'workspace') contract.identity.workspace = 'foreign';
+    if (mutation === 'harness') contract.identity.harness = 'foreign';
+    if (mutation === 'run') contract.identity.runId = 'foreign';
+    if (mutation === 'population') contract.expected.push({ ...contract.expected[0], id: 'omitted' });
+    if (mutation === 'root-mode') chmodSync(directory, 0o755);
+    if (mutation === 'object-mode') chmodSync(object, 0o644);
+    if (mutation === 'leaf-symlink') { rmSync(object); symlinkSync(join(f.producer, 'out-0.json'), object); }
+    if (mutation === 'ancestor-symlink') { const alias = join(f.root, 'alias'); symlinkSync(f.directory, alias); directory = alias; }
+    expect(() => verifyNativeProofPacket(directory, saved.locator, contract)).toThrow();
+  });
+
+  it.each(['family', 'occurrence', 'auxiliary', 'verdict'])('rejects a self-consistent manifest omitting %s from the independent contract', mutation => {
+    const f = fixture(), saved = f.save();
+    const manifest = structuredClone(saved.manifest);
+    if (mutation === 'family') manifest.groups[0].families.pop();
+    if (mutation === 'occurrence') manifest.groups[0].references.pop();
+    if (mutation === 'auxiliary') manifest.groups[0].auxiliary.pop();
+    // @ts-expect-error Deliberately forge an invalid native-proof qualification.
+    if (mutation === 'verdict') manifest.verdicts.nativeProof = 'qualified';
+    const pin = createNativeArtifactPersister(join(f.directory, 'objects')).persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: pin }, f.contract)).toThrow();
+  });
+});
 
 // Read failure evidence before the fixture's finally block removes its trace.
 // An absent entry is unknown startup progress, not proof the child never ran.

@@ -43,6 +43,29 @@ export const SU_EXEC_COMBINATIONS = [
   { provider: 'codex', execution: 'programmatic', nativeVersion: SU_EXEC_INVENTORY.versions.codex },
 ] as const;
 
+/** Supported entry points; runtime qualification still requires their native
+ * receipts. Adapter-level fork commands deliberately point to these launchers. */
+export const SU_EXEC_FORK_ROUTES = [
+  { provider: 'codex', execution: 'pty', support: 'supported', route: 'native_fork_source', qualification: 'unknown',
+    files: ['packages/operator-core/lib/su-session-tracked-codex-fork.integration.test.ts'],
+    cases: ['registers native child ancestry before success; scenario=registered',
+      'registers native child ancestry before success; scenario=stale-source',
+      'registers native child ancestry before success; scenario=startup-failure'] },
+  { provider: 'codex', execution: 'programmatic', support: 'supported', route: 'native_fork_source', qualification: 'unknown',
+    files: ['packages/operator-core/lib/su-session-fork-pending.integration.test.ts',
+      'packages/operator-core/lib/su-session-codex-fork.integration.test.ts'],
+    cases: ['codex native fork leaves pending question, queued input and accepted wake exclusively with parent',
+      'transfers complete paginated history across homes and preserves parent isolation',
+      'transfers incomplete paginated history across homes and preserves parent isolation'] },
+  { provider: 'claude', execution: 'pty', support: 'supported', route: '--fork-session', qualification: 'unknown',
+    files: ['apps/operator/lib/psu-launcher-fork.test.ts'],
+    cases: [] },
+  { provider: 'claude', execution: 'programmatic', support: 'supported', route: 'fork_from', qualification: 'unknown',
+    files: ['packages/operator-core/lib/su-session-fork-pending.integration.test.ts'],
+    cases: ['claude native fork leaves pending question, queued input and accepted wake exclusively with parent',
+      'claude native fork refuses changed lineage and removes unregistered history'] },
+] as const;
+
 /** Every accepted decoder mode, including controls which are intentionally retired. */
 export const SU_EXEC_PTY_CONTROLS = [
   { mode: 'turn', classification: 'required', behavior: 'queue-steer-refocus' },

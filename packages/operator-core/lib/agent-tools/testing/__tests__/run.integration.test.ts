@@ -1171,12 +1171,23 @@ describe('bounded foreground process termination', () => {
       expect(runRouterFn).toHaveBeenCalledTimes(1);
       expect(existsSync(reportDir)).toBe(true);
 
+      const pendingManifest = JSON.parse(await readFile(join(dirname(reportDir), 'manifest.json'), 'utf8'));
+      expect(pendingManifest.nativeCustody).toMatchObject({ writerState: 'pending', nativeProof: 'unqualified', acceptance: 'unmeasured' });
+      const pendingLocator = pendingManifest.nativeCustody.locator;
+      const pendingObject = join(dirname(reportDir), 'native-proof/objects', pendingLocator.manifest.ref);
+      const pendingBytes = await readFile(pendingObject);
       close();
       // The run's artifact packet is RETAINED by design (TestRunArtifactPacket.finish stages
       // 'retained'). A late close records its cleanup receipt in the packet. It does not delete
       // the evidence (WI-6554700010018388).
       const packetDir = dirname(reportDir);
       await vi.waitFor(() => expect(existsSync(join(packetDir, 'late-cleanup.json'))).toBe(true), { timeout: 10_000 });
+      const settled = JSON.parse(await readFile(join(packetDir, 'manifest.json'), 'utf8'));
+      expect(settled.nativeCustody).toMatchObject({ writerState: 'settled', nativeProof: 'unqualified', acceptance: 'unmeasured' });
+      expect(settled.nativeCustody.locator.manifest.sha256).not.toBe(pendingLocator.manifest.sha256);
+      const successor = JSON.parse(await readFile(join(packetDir, 'native-proof/objects', settled.nativeCustody.locator.manifest.ref), 'utf8'));
+      expect(successor.predecessor).toEqual(pendingLocator);
+      expect(await readFile(pendingObject)).toEqual(pendingBytes);
       expect(existsSync(reportDir)).toBe(true);
     } finally {
       close();
@@ -1876,6 +1887,24 @@ describe('testing:run (integration)', () => {
     expect(await readFile(join(out.artifacts!.directory, 'source.json'), 'utf8')).toContain('package-lock.json');
     expect(await readFile(join(out.artifacts!.directory, 'router.json'), 'utf8')).toContain(logPath);
     expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('completes confirmed-close cleanup when private native custody refuses a redirected root (P002)', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-custody-refusal-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const runRouterFn = vi.fn(async (_args: string[], _cwd: string, env: NodeJS.ProcessEnv) => {
+      await symlink(root, join(env.PAPERCUSP_TEST_ARTIFACT_DIR!, 'native-proof'));
+      return { code: 0, signal: null, timedOut: false, aborted: false,
+        output: '# tests 1\n# pass 1\n# fail 0\n# skipped 0\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed' };
+    });
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'] }, { runRouterFn });
+    expect(out).toMatchObject({ ok: true, cleanup: { complete: true, errors: [] } });
+    const manifest = JSON.parse(await readFile(out.artifacts!.manifest, 'utf8'));
+    expect(manifest.nativeCustody).toMatchObject({ byteCustody: 'unavailable', nativeProof: 'unqualified',
+      acceptance: 'unmeasured', producerRetirement: 'retained' });
+    expect(manifest.nativeCustody.error).toContain('custody redirected ancestor');
   });
 
   it.each([0, 1])('keeps the real router child log after exit %s without a report', async (code) => {

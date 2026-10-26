@@ -102,7 +102,7 @@ describe('papercusp-db-backup artifact receipt serialization', () => {
       'DUMPED=(papercusp-state papercusp-transcript)',
       'declare -A ARTIFACT_DUMP_START_EPOCHS=([papercusp-state]=100 [papercusp-transcript]=200)',
       'declare -A ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=([papercusp-state]=123456 [papercusp-transcript]=123456)',
-      'artifact_receipts_json',
+      'printf "[%s]" "$(artifact_receipts_json)"',
       '',
     ].join('\n'));
     expect(JSON.parse(json)).toEqual([

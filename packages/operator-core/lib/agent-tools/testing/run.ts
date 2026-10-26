@@ -3510,6 +3510,7 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   const foregroundTransportAtMs = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const foregroundCutoffAtMs = Math.min(foregroundTransportAtMs, deadline.childCutoffAtMs);
   const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
+  packet.bindNativeIdentity(opts.workspaceId, opts.harnessSlug);
   const reportDirectory = deps.reportDirectories?.[resolve(opts.root)];
   let result: TestFilesCoreResult | undefined;
   let cleanup: OwnedTestDbCleanupResult | undefined;
@@ -3870,6 +3871,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     }
 
     outputLogPaths = outcome.outputLogPaths ?? [];
+    packet.captureOutputLogs(outputLogPaths);
     packet.childState = outcome.terminationUnconfirmed || outcome.hostShutdownDetached ? 'pending' : 'closed';
     packet.write('router.json', { code: outcome.code, signal: outcome.signal, timedOut: outcome.timedOut,
       aborted: outcome.aborted, taskId: outcome.taskId ?? null, outputLogPaths, childState: packet.childState });
@@ -3891,6 +3893,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           const cleanup = await cleanupOwnedTestDatabases({ dir: packet.paths.ownedDatabases, runId,
             deadlineAtMs: deadline.taskDeadlineAtMs, drop: dropDatabaseOnDedicatedConnection });
           packet.write('late-cleanup.json', cleanup);
+          packet.finish({ result: { code: outcome.code, signal: outcome.signal, lateChildClose: true }, cleanup });
         }).catch(cause => packet.stage('late-cleanup-error', { error: String(cause) }));
       }
       const error = outcome.aborted ? 'aborted' : 'timeout';
