@@ -146,6 +146,37 @@ describe('real native verifier process boundary', () => {
       expect(observed).toEqual({ donor: realpathSync(donor), source: 'committed source' });
       expect(child.VERIFY_TAURI_SOURCE_REF).toBe(sha);
       expect(child.VERIFY_TAURI_SOURCE_INPUTS).toContain('apps/operator/bin/desktop-portal-native.test.ts');
+      // The actual native21 launcher supplied only repair/config inputs. Its
+      // passing receipt then lacked the product subjects required by the
+      // completed-runtime certifier. Neither caller input channel may erase
+      // those subjects, and caller-owned selectors must remain unchanged.
+      for (const selection of [
+        { VERIFY_TAURI_SOURCE_INPUTS: 'acceptance.txt,apps/operator/bin/desktop-portal-native.test.ts' },
+        { VERIFY_TAURI_SOURCE_INPUTS_FILE: '/private/acceptance-inputs.txt' },
+        { VERIFY_TAURI_SOURCE_INPUTS: 'acceptance.txt', VERIFY_TAURI_SOURCE_INPUTS_FILE: '/private/acceptance-inputs.txt' },
+      ]) {
+        const inherited = { ...parent, ...selection };
+        const qualified = nativeVerifierEnv(inherited, { repoRoot: source });
+        const inputs = qualified.VERIFY_TAURI_SOURCE_INPUTS!.split(',');
+        expect(inputs).toEqual(expect.arrayContaining([
+          'apps/operator-vite/desktop-portal-candidate.ts',
+          'apps/operator-vite/desktop-portal-plugin.ts',
+          'apps/operator/bin/desktop-portal-host.ts',
+          'apps/operator/bin/desktop-portal-lifecycle.ts',
+          'papercusp-desktop/src-tauri/src/env_switch.rs',
+          'papercusp-desktop/src-tauri/src/main.rs',
+          'apps/operator/bin/desktop-portal-native.test.ts',
+          'apps/operator/vitest.e2e.config.ts',
+          'packages/operator-core/lib/testing-native-runtime.ts',
+          'scripts/lib/verify-tauri-native-env.mjs',
+          'scripts/test-files.mjs',
+          'scripts/verify-tauri-headless.sh',
+        ]));
+        expect(new Set(inputs).size).toBe(inputs.length);
+        if (selection.VERIFY_TAURI_SOURCE_INPUTS) expect(inputs).toContain('acceptance.txt');
+        expect(qualified.VERIFY_TAURI_SOURCE_INPUTS_FILE).toBe(selection.VERIFY_TAURI_SOURCE_INPUTS_FILE);
+        expect(inherited).toEqual({ ...parent, ...selection });
+      }
       expect(parent.PAPERCUSP_REPO_DIR).toBe(source);
       expect(lstatSync(join(source, metadata)).isSymbolicLink()).toBe(true);
       expect(lstatSync(join(donor, metadata)).isDirectory()).toBe(true);
