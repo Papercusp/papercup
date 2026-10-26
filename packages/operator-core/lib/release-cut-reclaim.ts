@@ -1359,7 +1359,9 @@ async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: num
     admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
   return withFsMutex(`release-cut-usage:${path.resolve(opts.dir)}`, async () => {
     const state = await readWalkState(opts.dir);
-    const terminal = !!state && !walkProcessAlive(state) && fs.existsSync(walkAttemptFiles(opts.dir, state.attempt).exit);
+    // The wrapper may die before writing exit.<attempt>. Its verified process
+    // death permits retirement, never adoption of its incomplete allocation.
+    const terminal = !!state && !walkProcessAlive(state);
     const consumed = path.join(opts.dir, 'consumed');
     if (fs.existsSync(consumed)) {
       if (!terminal) throw new Error('release-cut usage previous measurement is still retiring');
@@ -1384,7 +1386,7 @@ async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: num
       }
       if (!result.complete || !result.bytes || result.finishedAt === null) {
         const ended = await readWalkState(opts.dir);
-        if (ended && fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit)) {
+        if (ended && (fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit) || !walkProcessAlive(ended))) {
           await fs.promises.writeFile(consumed, 'failed\n');
         }
         throw new Error(result.error ?? 'incomplete release-cut usage measurement');

@@ -741,13 +741,14 @@ describe('gather + execute against a real temporary repo', () => {
     await slot.finished();
   });
 
-  it('retires a terminal obsolete population before launching its replacement', async () => {
+  it.each([true, false])('retires a dead obsolete population before launching its replacement (exit marker: %s)', async exitMarker => {
     const first = path.join(tmp, 'terminal-first');
     g(repo, 'worktree', 'add', '-q', '--detach', first);
     const plan = await gather(), slot = usageSlot(1);
     const pending = await reclaimCutWorktrees(plan, { notAfterMs: Date.now() + 200 }, { usageWalk: slot.usageWalk });
     expect(pending.cap.beforeBytes).toBeNull();
     await slot.finished();
+    if (!exitMarker) fs.rmSync(walkAttemptFiles(slot.dir, (await readWalkState(slot.dir))!.attempt).exit);
     const second = path.join(tmp, 'terminal-second');
     g(repo, 'worktree', 'add', '-q', '--detach', second);
     const result = await reclaimCutWorktrees(await gather(), {}, { usageWalk: slot.usageWalk });
@@ -757,7 +758,7 @@ describe('gather + execute against a real temporary repo', () => {
     await slot.finished();
   });
 
-  it('keeps a failed terminal measurement unknown and permits a fresh worker on the next call', async () => {
+  it.each([true, false])('keeps a failed dead measurement unknown and permits a fresh worker (exit marker: %s)', async exitMarker => {
     const tree = path.join(tmp, 'failed-then-fresh');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
     const plan = await gather(), slot = usageSlot();
@@ -768,9 +769,33 @@ describe('gather + execute against a real temporary repo', () => {
     expect(failed.cap.beforeBytes).toBeNull();
     expect(failed.cap.afterBytes).toBeNull();
     await slot.finished();
+    if (!exitMarker) fs.rmSync(walkAttemptFiles(slot.dir, (await readWalkState(slot.dir))!.attempt).exit);
     const result = await reclaimCutWorktrees(plan, {}, { usageWalk: slot.usageWalk });
     expect(result.ok).toBe(true);
     expect(result.cap.beforeBytes).toBeGreaterThan(0);
+    expect(slot.launches).toHaveLength(2);
+    expect(fs.existsSync(tree)).toBe(true);
+    await slot.finished();
+  });
+
+  it('consumes an exhausted dead worker without an exit marker before admitting a fresh measurement', async () => {
+    const tree = path.join(tmp, 'missing-exit-exhausted');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather(), slot = usageSlot();
+    await reclaimCutWorktrees(plan, {}, { usageWalk: slot.usageWalk });
+    await slot.finished();
+    fs.rmSync(path.join(slot.dir, 'consumed'));
+    fs.rmSync(walkAttemptFiles(slot.dir, (await readWalkState(slot.dir))!.attempt).exit);
+    const failed = await reclaimCutWorktrees(plan, {}, { usageWalk: { ...slot.usageWalk, maxAttempts: 1 } });
+    expect(failed.ok).toBe(false);
+    expect(failed.errors[0]).toContain('walk ended without an exit status');
+    expect(failed.cap.beforeBytes).toBeNull();
+    expect(failed.cap.afterBytes).toBeNull();
+    expect(slot.launches).toHaveLength(1);
+    expect(fs.existsSync(tree)).toBe(true);
+    const recovered = await reclaimCutWorktrees(plan, {}, { usageWalk: { ...slot.usageWalk, maxAttempts: 1 } });
+    expect(recovered.ok).toBe(true);
+    expect(recovered.cap.beforeBytes).toBeGreaterThan(0);
     expect(slot.launches).toHaveLength(2);
     expect(fs.existsSync(tree)).toBe(true);
     await slot.finished();
