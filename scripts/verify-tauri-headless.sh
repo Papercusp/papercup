@@ -245,6 +245,12 @@
 #                                refused without it: the seed is a WRITE, and
 #                                in the default (shared) mode it would land on
 #                                the owner's real live database.
+#   VERIFY_TAURI_ISOLATED_SHORTCUT
+#                                Optional Quick Panel shortcut preset, e.g.
+#                                CmdOrCtrl+Shift+K. Requires isolated DB mode.
+#                                Seeds only this run's PAPERCUSP_HOME before
+#                                native startup; never changes the user's HOME.
+#                                Empty by default (no shortcut choice seeded).
 #   VERIFY_TAURI_NATIVE_TERMINAL
 #                               1 = preserve the caller's native-terminal
 #                                strategy/command overrides and boot the dock for
@@ -1328,6 +1334,33 @@ if [ "$ISOLATED_SEED" = "ready" ] && [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]
   echo "       Re-run with: VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready scripts/verify-tauri-headless.sh ..." >&2
   exit 2
 fi
+
+# Reuse the real persisted configuration + native startup registrar, not a
+# replacement JavaScript shortcut callback. Validate before any expensive boot.
+validate_isolated_shortcut() {
+  ISOLATED_SHORTCUT="${VERIFY_TAURI_ISOLATED_SHORTCUT:-}"
+  [ -n "$ISOLATED_SHORTCUT" ] || return 0
+  if [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]; then
+    echo "FATAL: VERIFY_TAURI_ISOLATED_SHORTCUT requires VERIFY_TAURI_ISOLATED_DB=1." >&2
+    return 2
+  fi
+  case "$ISOLATED_SHORTCUT" in
+    'CmdOrCtrl+K'|'CmdOrCtrl+Shift+K'|'CmdOrCtrl+Shift+Space'|'CmdOrCtrl+/'|'Alt+Space') ;;
+    *) echo "FATAL: VERIFY_TAURI_ISOLATED_SHORTCUT must be a Quick Panel preset." >&2; return 2 ;;
+  esac
+}
+validate_isolated_shortcut || exit $?
+
+seed_isolated_shortcut() {
+  [ -n "$ISOLATED_SHORTCUT" ] || return 0
+  if [ "$ISOLATED_DB" != "1" ] || [ -z "$WORK" ] ||
+     [ "$ISOLATED_HOME" != "$WORK/papercusp-home" ]; then
+    echo "FATAL: refusing shortcut seed outside the per-run isolated home." >&2
+    return 2
+  fi
+  printf '{"accelerator":"%s"}\n' "$ISOLATED_SHORTCUT" > "$ISOLATED_HOME/docs-search-shortcut.json"
+  cmp -s "$ISOLATED_HOME/docs-search-shortcut.json" <(printf '{"accelerator":"%s"}\n' "$ISOLATED_SHORTCUT") || return 1
+}
 
 # R171 reached a reachable shared DB with unapplied, backup-conflicting DDL
 # only after its expensive source/dependency snapshot and host build. Check the
@@ -3958,6 +3991,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_WEBVIEW_CACHE="$ISOLATED_WEBVIEW_ROOT/cache"
   ISOLATED_WEBVIEW_CONFIG="$ISOLATED_WEBVIEW_ROOT/config"
   mkdir -p "$ISOLATED_HOME" "$ISOLATED_CODEX_HOMES_DIR" "$ISOLATED_WEBVIEW_DATA" "$ISOLATED_WEBVIEW_CACHE" "$ISOLATED_WEBVIEW_CONFIG"
+  seed_isolated_shortcut || exit $?
   prepare_isolated_bearer
 
   select_isolated_pg_source || exit $?
