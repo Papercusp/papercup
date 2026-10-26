@@ -38,6 +38,7 @@ import {
   prepareBgVerifierBuildContexts,
   prepareBgVerifierBuildTransaction,
   beginBgVerifierBuildTransaction,
+  stageBgVerifierAssetCopies,
   qualifyBgVerifierBuildOutputSet,
   verifyBgVerifierBuildOutputSet,
   qualifyBgVerifierLogicalOutputSet,
@@ -2507,6 +2508,7 @@ describe('BG inherited manifest and original source boundaries', () => {
         join(stage, outputs[index * 2]!.temporary))) }));
     const recipe = { entry: fixture.argv[0]!, outfile: join(stage, 'hono-host.mjs'), profile: 'release' as const };
     const args = { ...fixture, bank, stageLeaf: 'owned-build', invocations, outputs, recipe,
+      assets: [] as { source: string, temporary: string, final: string }[],
       publicationLeaf: 'published-build.json' as string | undefined };
     return { ...fixture, args, stage };
   }
@@ -2519,15 +2521,166 @@ describe('BG inherited manifest and original source boundaries', () => {
     const path = join(dirname(fixture.prepared.root), 'original-build-transaction.json');
     writeFileSync(path, bytes);
     const run = (changes: { digest?: string, entry?: string, outfile?: string, profile?: string, extra?: string[],
-      bindingOnly?: boolean, environment?: Record<string, string> } = {}) =>
+      bindingOnly?: boolean, publishOnly?: boolean, environment?: Record<string, string> } = {}) =>
       spawnSync('bash', [fixture.invocation.builder, '--bg-transaction', path, changes.digest ?? digest(bytes),
         changes.entry ?? fixture.args.recipe.entry, changes.outfile ?? fixture.args.recipe.outfile,
         changes.profile ?? fixture.args.recipe.profile,
-        ...(changes.bindingOnly === false ? [] : ['--binding-preflight-only']), ...(changes.extra ?? [])],
+        ...(changes.publishOnly ? ['--publish-qualified-output-only']
+          : changes.bindingOnly === false ? [] : ['--binding-preflight-only']), ...(changes.extra ?? [])],
       { env: childEnv({ BUNDLE_HOST_BG_BUILD_CONTEXT: '/must-not-adopt-inherited-context.json', ...changes.environment }),
         encoding: 'utf8', timeout: 60_000 });
     return { ...fixture, transaction, bytes, path, runRecipe: run };
   }
+
+  it('BG recipe output-only mode compiles the original main and worker and publishes complete retained evidence', async () => {
+    const fixture = await transactionRecipe();
+    const originalSource = readFileSync(join(fixture.prepared.root, '.verifier-source.json'));
+    const child = fixture.runRecipe({ publishOnly: true });
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+    const publication = JSON.parse(child.stdout);
+    const { binding, receipts, output, logical } = publication;
+    expect(binding.ownerPid).toBe(child.pid);
+    expect(binding.transaction).toEqual(fixture.transaction);
+    expect(receipts.map((receipt: { argv: string[] }) => receipt.argv))
+      .toEqual(fixture.transaction.contexts.invocations.map(entry =>
+        entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(child.pid)))));
+    expect(receipts).toHaveLength(2);
+    expect(output.files).toHaveLength(4);
+    expect(logical.files.map((row: { final: string }) => row.final)).toEqual(fixture.args.outputs.map(row => row.final));
+    expect(verifyBgVerifierPublication(publication, { binding, receipts, output, logical })).toBe(publication);
+    const { identity, ...published } = publication;
+    expect(JSON.parse(readFileSync(identity.path, 'utf8'))).toEqual(published);
+    const main = await import('data:text/javascript;base64,' + readFileSync(fixture.args.recipe.outfile).toString('base64'));
+    const worker = await import('data:text/javascript;base64,' + readFileSync(join(fixture.stage, 'worker.mjs')).toString('base64'));
+    expect({ y: main.y, dep: main.dep, worker: worker.y }).toEqual({ y: 2, dep: 41, worker: 2 });
+    expect(readFileSync(fixture.path, 'utf8')).toBe(fixture.bytes);
+    expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(originalSource);
+    const replay = fixture.runRecipe({ publishOnly: true });
+    expect(replay.status).not.toBe(0);
+    expect(replay.stderr).toContain('BG recipe publication already exists');
+    expect(JSON.parse(readFileSync(identity.path, 'utf8'))).toEqual(published);
+  });
+
+  function ancillaryAssets() {
+    return [
+      { source: 'docs/architecture.md', final: 'blueprints/base/README.md' },
+      { source: 'libs/papercusp/libs/db/sql/001-init.sql', final: 'sql/001-init.sql' },
+    ].map(row => ({ ...row, temporary: `${row.final}.new.@BG_PID@` }));
+  }
+
+  it('BG ancillary asset custody publishes the original source bytes beside compiled main and worker outputs', async () => {
+    const fixture = await transactionRecipe(args => { args.assets = ancillaryAssets(); });
+    const child = fixture.runRecipe({ publishOnly: true });
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+    const publication = JSON.parse(child.stdout);
+    const { binding, receipts, output, logical } = publication;
+    expect(output.files).toHaveLength(6);
+    expect(logical.files.map((row: { final: string }) => row.final)).toEqual([
+      ...fixture.args.outputs.map(row => row.final), ...fixture.args.assets.map(row => row.final),
+    ]);
+    for (const asset of fixture.args.assets) {
+      const source = join(fixture.prepared.root, asset.source), copied = join(fixture.stage, asset.final);
+      expect(readFileSync(copied)).toEqual(readFileSync(source));
+      expect(statSync(copied).nlink).toBe(1);
+      expect(statSync(copied).ino).not.toBe(statSync(source).ino);
+    }
+    expect(verifyBgVerifierPublication(publication, { binding, receipts, output, logical })).toBe(publication);
+    writeFileSync(join(fixture.stage, fixture.args.assets[0]!.final), 'replaced after publication');
+    expect(() => verifyBgVerifierPublication(publication, { binding, receipts, output, logical })).toThrow('BG logical file changed');
+  });
+
+  it.each(['uncensused', 'escape', 'collision', 'directory-overlap', 'pid-token'] as const)(
+    'BG ancillary asset custody refuses original %s membership before stage creation', async defect => {
+      const fixture = await transactionCandidate();
+      fixture.args.assets = ancillaryAssets();
+      const asset = fixture.args.assets[0]!;
+      if (defect === 'uncensused') asset.source = 'node_modules/fixture-dependency/index.js';
+      if (defect === 'escape') asset.final = '../outside.md';
+      if (defect === 'collision') asset.final = fixture.args.outputs[0]!.final;
+      if (defect === 'directory-overlap') asset.final = fixture.args.outputs[0]!.final + '/child.md';
+      if (defect === 'pid-token') asset.final = 'blueprints/@BG_PID@.md';
+      asset.temporary = `${asset.final}.new.@BG_PID@`;
+      expect(() => prepareBgVerifierBuildTransaction(fixture.args)).toThrow(/BG (transaction|asset)/);
+      expect(existsSync(fixture.stage)).toBe(false);
+      expect(readdirSync(fixture.args.bank)).toEqual([]);
+    });
+
+  it.each(['missing', 'changed', 'symlink', 'hardlink', 'unrecorded'] as const)(
+    'BG ancillary asset custody refuses %s copied output before logical publication', async defect => {
+      const fixture = await transactionCandidate();
+      fixture.args.assets = ancillaryAssets();
+      const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+      const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: process.pid });
+      const receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[] = [];
+      for (const entry of binding.contexts.invocations) receipts.push(await compileBgVerifierInvocation({
+        record: { ...binding.contexts.record, invocation: entry.original }, invocation: entry.invocation,
+        argv: entry.invocation.argv, expectedVersion: '0.25.0',
+      }));
+      stageBgVerifierAssetCopies(binding);
+      const asset = fixture.args.assets[0]!;
+      const copied = join(fixture.stage, asset.temporary.replaceAll('@BG_PID@', String(process.pid)));
+      if (defect === 'missing') rmSync(copied);
+      if (defect === 'changed') writeFileSync(copied, 'foreign bytes');
+      if (defect === 'symlink' || defect === 'hardlink') {
+        rmSync(copied);
+        if (defect === 'symlink') symlinkSync(join(fixture.prepared.root, asset.source), copied);
+        else linkSync(join(fixture.prepared.root, asset.source), copied);
+      }
+      if (defect === 'unrecorded') writeFileSync(join(dirname(copied), 'not-in-original.txt'), 'foreign');
+      expect(() => qualifyBgVerifierBuildOutputSet({ binding, receipts })).toThrow();
+      expect(existsSync(fixture.args.recipe.outfile)).toBe(false);
+      expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
+    });
+
+  it('BG ancillary asset custody refuses source drift and never adopts an existing copied destination', async () => {
+    const fixture = await transactionCandidate();
+    fixture.args.assets = ancillaryAssets();
+    const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+    const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: process.pid });
+    const path = join(fixture.prepared.root, fixture.args.assets[0]!.source);
+    const original = readFileSync(path);
+    writeFileSync(path, 'changed source');
+    expect(() => stageBgVerifierAssetCopies(binding)).toThrow();
+    expect(readdirSync(fixture.stage)).toEqual([]);
+    writeFileSync(path, original);
+    stageBgVerifierAssetCopies(binding);
+    const copied = join(fixture.stage, fixture.args.assets[0]!.temporary.replaceAll('@BG_PID@', String(process.pid)));
+    const before = statSync(copied);
+    expect(() => stageBgVerifierAssetCopies(binding)).toThrow(/EEXIST/);
+    expect(statSync(copied).ino).toBe(before.ino);
+    expect(readFileSync(copied)).toEqual(original);
+  });
+
+  it('BG recipe output-only mode retains failed later compiler diagnostics without publishing or replaying a partial set', async () => {
+    const fixture = await transactionRecipe(args => {
+      args.invocations[1]!.argv.push('--define:BG_RECIPE_INVALID=not a valid expression');
+    });
+    const child = fixture.runRecipe({ publishOnly: true });
+    expect(child.status).not.toBe(0);
+    expect(child.stderr).toContain('Invalid define value');
+    expect(child.stdout).toBe('');
+    const bindingPath = join(fixture.stage, '.bg-build-binding.json');
+    const bindingBytes = readFileSync(bindingPath);
+    const binding = JSON.parse(bindingBytes.toString('utf8'));
+    expect(binding.ownerPid).toBe(child.pid);
+    expect(existsSync(join(fixture.stage, binding.outputs[0].temporary))).toBe(true);
+    expect(existsSync(join(fixture.stage, binding.outputs[2].temporary))).toBe(false);
+    expect(existsSync(fixture.args.recipe.outfile)).toBe(false);
+    expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
+    const replay = fixture.runRecipe({ publishOnly: true });
+    expect(replay.status).not.toBe(0);
+    expect(replay.stderr).toContain('BG transaction stage already exists');
+    expect(readFileSync(bindingPath)).toEqual(bindingBytes);
+  });
+
+  it('BG recipe output-only mode requires its original publication destination before any build effect', async () => {
+    const fixture = await transactionRecipe(args => { args.publicationLeaf = undefined; });
+    const child = fixture.runRecipe({ publishOnly: true });
+    expect(child.status).not.toBe(0);
+    expect(child.stderr).toContain('BG recipe publication destination is UNKNOWN');
+    expect(existsSync(fixture.stage)).toBe(false);
+    expect(readdirSync(fixture.args.bank)).toEqual([]);
+  });
 
   it('binds the maintained BG recipe CLI and actual shell PID before its first build effect', async () => {
     const fixture = await transactionRecipe();
@@ -2722,7 +2875,8 @@ describe('BG inherited manifest and original source boundaries', () => {
     if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} publication-ready\n`);
     expect(publication.identity.path).toBe(join(fixture.args.bank, fixture.args.publicationLeaf!));
     expect(JSON.parse(readFileSync(publication.identity.path, 'utf8'))).toEqual({
-      schemaVersion: 'bg-build-publication-v1', logical,
+      schemaVersion: 'bg-build-publication-v1', logical, binding: fixture.binding,
+      receipts: fixture.receipts, output: fixture.output,
     });
     expect(verifyBgVerifierPublication(publication, { ...fixture, logical })).toBe(publication);
   });
@@ -2799,7 +2953,7 @@ describe('BG inherited manifest and original source boundaries', () => {
       expect(verifyBgVerifierLogicalOutputSet(logical, fixture)).toBe(logical);
     });
 
-  it.each(['receipt-bytes', 'receipt-replacement', 'worker'] as const)(
+  it.each(['receipt-bytes', 'receipt-replacement', 'worker', 'binding-evidence', 'compiler-evidence', 'output-evidence'] as const)(
     'logical-output publication readback refuses later %s replacement', async defect => {
       const fixture = await logicalTransaction(), logical = qualifyBgVerifierLogicalOutputSet(fixture);
       const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
@@ -2811,6 +2965,16 @@ describe('BG inherited manifest and original source boundaries', () => {
         rmSync(path + '-original');
       }
       if (defect === 'worker') writeFileSync(join(fixture.stage, 'worker.mjs'), 'changed worker');
+      if (defect.endsWith('-evidence')) {
+        const altered = JSON.parse(JSON.stringify(publication));
+        if (defect === 'binding-evidence') altered.binding.ownerPid++;
+        if (defect === 'compiler-evidence') altered.receipts[0].argv.push('--keep-names');
+        if (defect === 'output-evidence') altered.output.files.pop();
+        expect(() => verifyBgVerifierPublication(altered, { ...fixture, logical }))
+          .toThrow('BG publication original evidence changed');
+        expect(readFileSync(path)).toEqual(bytes);
+        return;
+      }
       expect(() => verifyBgVerifierPublication(publication, { ...fixture, logical })).toThrow();
     });
 

@@ -464,9 +464,10 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
  *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
  *   outputs: { temporary: string, final: string }[], publicationLeaf?: string,
+ *   assets?: { source: string, temporary: string, final: string }[],
  *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe, publicationLeaf }: {
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, assets, recipe, publicationLeaf }: {
     prepared: BgVerifierPreparation;
     dependencies: ReturnType<typeof captureVerifierDependencies>;
     invocations: BgBuildInvocation[];
@@ -477,6 +478,11 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
         final: string;
     }[];
     publicationLeaf?: string;
+    assets?: {
+        source: string;
+        temporary: string;
+        final: string;
+    }[];
     recipe?: {
         entry: string;
         outfile: string;
@@ -489,6 +495,11 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
         outfile: string;
         profile: "development" | "release";
     } | undefined;
+    assets?: {
+        source: string;
+        temporary: string;
+        final: string;
+    }[] | undefined;
     schemaVersion: string;
     contexts: {
         schemaVersion: string;
@@ -610,6 +621,11 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
             outfile: string;
             profile: "development" | "release";
         } | undefined;
+        assets?: {
+            source: string;
+            temporary: string;
+            final: string;
+        }[] | undefined;
         schemaVersion: string;
         contexts: {
             schemaVersion: string;
@@ -817,6 +833,13 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
         final: string;
     }[];
 };
+/** Copy only the original transaction's source-censused ancillary files. The
+ * very buffer checked against the original digest is written exclusively into
+ * the owned stage; no hardlink, ambient directory tree or later read supplies
+ * its bytes. Directory/production recipe selection remains the caller's job.
+ * @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
+ */
+export function stageBgVerifierAssetCopies(binding: ReturnType<typeof beginBgVerifierBuildTransaction>): void;
 /** Measure the COMPLETE temporary output population against the retained binding
  * and each compiler's receipt. This is a detached pre-publication fence: it
  * neither renames files nor authorizes service activation or runtime imports.
@@ -903,6 +926,11 @@ export function publishBgVerifierLogicalOutputSet(args: {
                 outfile: string;
                 profile: "development" | "release";
             } | undefined;
+            assets?: {
+                source: string;
+                temporary: string;
+                final: string;
+            }[] | undefined;
             schemaVersion: string;
             contexts: {
                 schemaVersion: string;
@@ -1184,6 +1212,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                 outfile: string;
                 profile: "development" | "release";
             } | undefined;
+            assets?: {
+                source: string;
+                temporary: string;
+                final: string;
+            }[] | undefined;
             schemaVersion: string;
             contexts: {
                 schemaVersion: string;
@@ -1469,6 +1502,11 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                 outfile: string;
                 profile: "development" | "release";
             } | undefined;
+            assets?: {
+                source: string;
+                temporary: string;
+                final: string;
+            }[] | undefined;
             schemaVersion: string;
             contexts: {
                 schemaVersion: string;

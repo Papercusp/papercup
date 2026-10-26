@@ -1231,9 +1231,10 @@ function selectBgVerifierBuildContext(context, argv) {
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
  *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
  *   outputs: { temporary: string, final: string }[], publicationLeaf?: string,
+ *   assets?: { source: string, temporary: string, final: string }[],
  *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe, publicationLeaf }) {
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, assets, recipe, publicationLeaf }) {
   const contexts = prepareBgVerifierBuildContexts({ prepared, dependencies, invocations });
   const bankIdentity = readBgDirectoryIdentity(bank);
   const local = relative(prepared.root, bank);
@@ -1241,7 +1242,7 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
     'BG transaction bank escaped selected generation');
   assert.match(stageLeaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
   const transaction = freezeBgExpectation({ schemaVersion: 'bg-build-transaction-v1', contexts,
-    bank: bankIdentity, stage: join(bank, stageLeaf), outputs, ...(recipe ? { recipe } : {}),
+    bank: bankIdentity, stage: join(bank, stageLeaf), outputs, ...(assets === undefined ? {} : { assets }), ...(recipe ? { recipe } : {}),
     ...(publicationLeaf === undefined ? {} : { publicationLeaf }) });
   validateBgVerifierBuildTransaction(transaction);
   assert.ok(!existsSync(transaction.stage) && !isBgSymlink(transaction.stage), 'BG transaction stage already exists');
@@ -1283,13 +1284,25 @@ function validateBgVerifierBuildTransaction(transaction) {
   assert.ok(Array.isArray(outputs) && outputs.length > 0 && outputs.every(row =>
     safe(row.temporary) && safe(row.final) && !row.final.includes('@BG_PID@')),
   'BG transaction output membership is invalid');
-  const temporary = outputs.map(row => row.temporary), finals = outputs.map(row => row.final);
+  const assets = transaction.assets ?? [];
+  assert.ok(Array.isArray(assets) && assets.every(row => safe(row.source) && safe(row.temporary) && safe(row.final)
+    && !row.final.includes('@BG_PID@') && row.temporary === `${row.final}.new.@BG_PID@`),
+  'BG transaction asset membership is invalid');
+  for (const asset of assets) {
+    const source = contexts.record.prepared.source.files.find(row => row.path === asset.source);
+    assert.ok(source?.kind === 'file', 'BG asset source is outside original source census');
+    assert.equal(realpathSync(join(contexts.record.prepared.root, asset.source)),
+      join(contexts.record.prepared.root, asset.source), 'BG asset source must be physical');
+  }
+  const members = [...outputs, ...assets];
+  const temporary = members.map(row => row.temporary), finals = members.map(row => row.final);
   assert.equal(new Set(temporary).size, temporary.length, 'BG transaction temporary output duplicated');
   assert.equal(new Set(finals).size, finals.length, 'BG transaction logical output duplicated');
   for (const paths of [temporary, finals]) {
     assert.ok(!paths.some(path => paths.some(other => other !== path && other.startsWith(`${path}/`))),
       'BG transaction file overlaps directory');
   }
+  assert.ok(!temporary.some(path => finals.includes(path)), 'BG transaction temporary and logical outputs overlap');
   const compilerOutputs = [];
   for (const entry of contexts.invocations) {
     verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-build');
@@ -1310,7 +1323,7 @@ function validateBgVerifierBuildTransaction(transaction) {
     }
   }
   // Exact equality makes the original logical population authoritative.
-  assert.deepEqual(compilerOutputs.sort(), [...temporary].sort(), 'BG transaction compiler output membership mismatch');
+  assert.deepEqual(compilerOutputs.sort(), outputs.map(row => row.temporary).sort(), 'BG transaction compiler output membership mismatch');
   if (transaction.recipe) {
     const { entry, outfile, profile } = transaction.recipe;
     const main = bgCompilerOptions(contexts.invocations[0].original.argv, contexts.record.prepared.root);
@@ -1345,6 +1358,42 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
       temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) })) });
 }
 
+/** Copy only the original transaction's source-censused ancillary files. The
+ * very buffer checked against the original digest is written exclusively into
+ * the owned stage; no hardlink, ambient directory tree or later read supplies
+ * its bytes. Directory/production recipe selection remains the caller's job.
+ * @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
+ */
+export function stageBgVerifierAssetCopies(binding) {
+  const { transaction, assets } = verifyBgVerifierOutputBinding(binding);
+  const { root, source } = binding.contexts.record.prepared;
+  for (const asset of assets) {
+    const expected = source.files.find(row => row.path === asset.source);
+    assert.ok(expected?.kind === 'file', 'BG asset source is outside original source census');
+    const path = join(root, asset.source), fd = openSync(path, 'r');
+    let contents;
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      assert.ok(before.isFile() && realpathSync(path) === path, 'BG asset source must be physical and regular');
+      contents = readFileSync(fd);
+      const after = fstatSync(fd, { bigint: true });
+      assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
+        && realpathSync(path) === path, 'BG asset source changed while reading');
+      assert.equal(createHash('sha256').update(contents).digest('hex'), expected.sha256,
+        'BG asset consumed bytes mismatch');
+    } finally { closeSync(fd); }
+    let directory = transaction.stage;
+    for (const part of dirname(asset.temporary).split('/').filter(part => part !== '.')) {
+      directory = join(directory, part);
+      try { mkdirSync(directory, { mode: 0o700 }); }
+      catch (error) { if (error.code !== 'EEXIST') throw error; }
+      readBgDirectoryIdentity(directory);
+    }
+    writeFileSync(join(transaction.stage, asset.temporary), contents, { flag: 'wx', mode: 0o600 });
+  }
+  verifyBgVerifierOutputBinding(binding);
+}
+
 /** Measure the COMPLETE temporary output population against the retained binding
  * and each compiler's receipt. This is a detached pre-publication fence: it
  * neither renames files nor authorizes service activation or runtime imports.
@@ -1353,7 +1402,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
  *   receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[] }} args
  */
 export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
-  const { transaction, contexts, outputs } = verifyBgVerifierOutputBinding(binding);
+  const { transaction, contexts, outputs, assets } = verifyBgVerifierOutputBinding(binding);
   const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   assert.ok(Array.isArray(receipts) && receipts.length === contexts.invocations.length,
     'BG output compiler receipt population mismatch');
@@ -1380,8 +1429,14 @@ export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
     commands.add(key);
   }
   assert.equal(commands.size, receipts.length, 'BG output compiler command population mismatch');
-  assert.deepEqual([...identities.keys()].sort(), outputs.map(row => row.temporary).sort(),
+  assert.deepEqual([...identities.keys()].sort(), binding.outputs.map(row => row.temporary).sort(),
     'BG output compiler file population mismatch');
+  for (const asset of assets) {
+    const expected = contexts.record.prepared.source.files.find(row => row.path === asset.source);
+    const identity = readBgIndependentOutputIdentity(join(transaction.stage, asset.temporary));
+    assert.equal(identity.sha256, expected?.sha256, 'BG output asset bytes differ from original source');
+    identities.set(asset.temporary, identity);
+  }
   const controls = new Map([
     ['.bg-build-binding.json', JSON.stringify(binding)],
     ['.bg-build-context.json', JSON.stringify(binding.contexts)],
@@ -1413,10 +1468,13 @@ function verifyBgVerifierOutputBinding(binding) {
     invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace: namespace,
       argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
   assert.deepEqual(binding.contexts, contexts, 'BG output original contexts changed');
-  const outputs = transaction.outputs.map(row => ({ ...row,
+  const compilerOutputs = transaction.outputs.map(row => ({ ...row,
     temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) }));
-  assert.deepEqual(binding.outputs, outputs, 'BG output original membership changed');
-  return { transaction, contexts, outputs };
+  assert.deepEqual(binding.outputs, compilerOutputs, 'BG output original membership changed');
+  const assets = (transaction.assets ?? []).map(row => ({ ...row,
+    temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) }));
+  const outputs = [...compilerOutputs, ...assets.map(({ temporary, final }) => ({ temporary, final }))];
+  return { transaction, contexts, outputs, assets };
 }
 
 /** @param {string} stage @param {Set<string>} expected @param {Map<string, string>} [controls] */
@@ -1608,6 +1666,7 @@ export async function runBgVerifierBuildRecipe(args) {
     receipts.push(await compileBgVerifierInvocation({ record, invocation: entry.invocation,
       argv: entry.invocation.argv, expectedVersion: '0.25.0' }));
   }
+  stageBgVerifierAssetCopies(binding);
   const output = qualifyBgVerifierBuildOutputSet({ binding, receipts });
   const logical = qualifyBgVerifierLogicalOutputSet({ binding, receipts, output });
   const retained = { binding, receipts, output, logical };
