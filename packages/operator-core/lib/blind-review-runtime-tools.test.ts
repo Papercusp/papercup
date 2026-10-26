@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { captureRuntimeTools } from './blind-review-runtime-tools';
-import { buildRuntimeGeneratedInputs } from './blind-review-generated-inputs';
+import { buildRuntimeGeneratedInputs, verifyRuntimeGeneratedInputs } from './blind-review-generated-inputs';
 import { packRuntimeSourceImage } from './blind-review-source-image';
 import { brokerSourceFixture } from './blind-review-source.fixture';
 import { write } from './source-preview.fixture';
@@ -86,6 +86,18 @@ describe('runtime tools captured into the measured sealed closure', () => {
     const generated = await buildRuntimeGeneratedInputs({ ...source,
       runtimeTools: { nodeExecutable: process.execPath, driverRoot: f.driverRoot } });
     expect(generated.files.some(file => file.path === 'apps/operator/dist-verify/runtime/node')).toBe(true);
+    const capturedDependency = 'apps/operator/dist-verify/runtime/driver/node_modules/fixture-dep/index.js';
+    expect(generated.files.some(file => file.path === capturedDependency)).toBe(true);
+    // Excluding emitted dependencies from the source-install census must never
+    // exclude their bytes from the generated closure's integrity check.
+    const capturedPath = join(source.root, capturedDependency);
+    const originalDependency = readFileSync(capturedPath, 'utf8');
+    chmodSync(capturedPath, 0o644);
+    write(source.root, capturedDependency, 'changed captured driver dependency');
+    await expect(verifyRuntimeGeneratedInputs(source.root, source.source, source.dependencies, generated))
+      .rejects.toThrow('broker_generated_inputs_changed');
+    write(source.root, capturedDependency, originalDependency);
+    chmodSync(capturedPath, 0o444);
     const image = await packRuntimeSourceImage({ ...source, generated });
     const listener = createServer(socket => { socket.destroy(); });
     await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
