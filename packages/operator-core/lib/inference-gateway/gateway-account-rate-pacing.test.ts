@@ -256,6 +256,24 @@ describe('production gateway account-governor wiring', () => {
     expect(acquireA.mock.calls.length + acquireB.mock.calls.length).toBe(routed.length);
   });
 
+  // WI-6554700010029423: a burst 429's retry-after is not enforced upstream (measured 42-570s on
+  // gpt-6.1-sol; the same accounts served every request started inside it). The account-wide
+  // governor pause is bounded to the bare-429 failover backoff, not the retry-after or 2-min cap.
+  it('bounds a transient 429 account pause to the bare-429 failover backoff, not its retry-after', async () => {
+    const affected = governorForBackend('codex', model, undefined, 'account-a');
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => ++calls === 1
+      ? Response.json({ error: { message: 'temporary burst throttle', type: 'rate_limit_error' } },
+        { status: 429, headers: { 'retry-after': '570' } })
+      : response()) as typeof fetch;
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), fetchImpl, bare429FailoverBackoffMs: 1_000, selfHeal: { enabled: false } });
+    const before = Date.now();
+    expect((await send()).status).toBe(200);
+    expect(affected.state.pausedUntil).toBeGreaterThan(before);
+    expect(affected.state.pausedUntil).toBeLessThanOrEqual(Date.now() + 1_000);
+  });
+
   it.each(['bearer', 'oauth', 'cli'] as const)(
     'reselects before %s dispatch when the selected account pauses during permit acquisition', async transport => {
     const affected = governorForBackend('codex', model, undefined, 'account-a');

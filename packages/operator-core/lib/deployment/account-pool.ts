@@ -234,6 +234,12 @@ export interface AccountRateState {
   /** When credit eligibility was observed; a credit-only update is not a new usage-window reading. */
   usageCreditsObservedAt?: number;
   creditBalance?: AccountCreditBalance;
+  /** WI-6554700010029499: the subscription tier the provider reports on every response (codex:
+   *  `x-codex-plan-type`, e.g. `pro` / `plus` / `free`), lower-cased. A drop in tier silently cuts the
+   *  account's window capacity, so the write seam compares it against the previous reading. */
+  planType?: string;
+  /** Epoch ms `planType` was last observed. */
+  planObservedAt?: number;
   /**
    * Unified-7d (weekly) rolling utilization (a fraction; 1.0 = 100%) from
    * `anthropic-ratelimit-unified-7d-utilization` — the LONGER Claude Max limit alongside the 5h.
@@ -587,7 +593,7 @@ export function recordAccountReset(pool: AccountPool, id: string, opts: { resetW
 export function recordAccountWindow(
   pool: AccountPool,
   id: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance; planType?: string },
   now: number,
 ): AccountPool {
   return {
@@ -605,6 +611,7 @@ export function recordAccountWindow(
             ? now : a.rate.utilizationAt,
         ...(accountProvider(a) === 'codex' && w.usageCreditsAvailable !== undefined
           ? { usageCreditsAvailable: w.usageCreditsAvailable, usageCreditsObservedAt: now } : {}),
+        ...(w.planType ? { planType: w.planType, planObservedAt: now } : {}),
         ...(w.creditBalance &&
           ((w.creditBalance.unit === 'credits' && accountProvider(a) === 'codex') ||
            (w.creditBalance.unit === 'USD' && accountProvider(a) === 'claude' && a.credentialRef.startsWith('apikey:'))) &&

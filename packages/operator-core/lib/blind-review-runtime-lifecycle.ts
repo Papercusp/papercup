@@ -97,28 +97,49 @@ export async function provisionRuntimeNamespace(options: {
     }
     const controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let rejectOnAbort: (() => void) | undefined;
     try {
       // A producer object alone is insufficient: it must be the image bound
       // to this consumed receipt. No mismatched source may reach the backend.
       if (!lease.admission || ['sourceImageNonce', 'sourceCommit', 'sourceTreeHash', 'sourceInputsHash']
         .some(key => lease.admission![key] !== image[key as keyof RuntimeSourceImage]))
         throw new RuntimeCustodyRefusal('runtime_source_identity_mismatch');
+      const expires = lease.expires_at && new Date(lease.expires_at).getTime();
+      if (!expires || !Number.isFinite(expires)) throw new RuntimeCustodyRefusal('lease_expired_or_revoked');
+      const remaining = expires - Date.now();
+      if (remaining <= 0) throw new RuntimeCustodyRefusal('lease_expired_or_revoked');
+      // The managed scope supplies the independent crash fuse. This bounds the
+      // host wait too: a backend that ignores AbortSignal cannot pin lifecycle
+      // custody forever or prevent teardown when its caller is canceled.
+      deadline = setTimeout(() => controller.abort(new RuntimeCustodyRefusal('lease_expired_or_revoked')),
+        Math.min(remaining, 15 * 60_000));
+      deadline.unref?.();
+      signal.throwIfAborted();
       const planned = new Set(resources.map(resource => resource.id));
-      await backend.provision({ lease, resources, image, signal,
+      const stopped = new Promise<never>((_, reject) => {
+        rejectOnAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', rejectOnAbort, { once: true });
+      });
+      await Promise.race([backend.provision({ lease, resources, image, signal,
         beforeCreate: async () => { signal.throwIfAborted(); await store.checkProvisioning(identity, leaseId); },
         record: async (intentId, observed) => {
           signal.throwIfAborted();
           if (!planned.has(intentId)) throw new RuntimeCustodyRefusal('resource_intent_missing');
           await store.recordResource(identity, leaseId, intentId, observed);
         },
-      });
+      }), stopped]);
       signal.throwIfAborted();
       return { state: 'ready' as const, lease: await store.markReady(identity, leaseId) };
     } catch (error) {
       controller.abort();
       await releaseUnderLock({ store, identity, leaseId, backend, reason: 'runtime-provisioning-failed' });
       throw error;
-    } finally { controller.abort(); }
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      if (rejectOnAbort) signal.removeEventListener('abort', rejectOnAbort);
+      controller.abort();
+    }
   });
   return result.acquired ? result.value : { state: 'pending' };
 }

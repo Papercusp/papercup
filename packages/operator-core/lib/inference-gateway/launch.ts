@@ -257,11 +257,12 @@ function makeWindowProjector(
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
 ): (headers: Record<string, string | undefined>, _status: number, model: string, accountId: string) => void {
   const WRITE_MIN_MS = 30_000;
-  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean }>();
+  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean; planType?: string }>();
   return (headers, _status, model, accountId) => {
     const parsedCredits = parseCodexRateLimitHeaders(headers);
     const observedCredits = parsedCredits.usageCreditsAvailable;
     const creditBalance = parsedCredits.creditBalance;
+    const planType = parsedCredits.planType; // WI-6554700010029499
     // HTTP status is transport metadata; only explicit Codex credit headers determine availability.
     const usageCreditsAvailable = observedCredits;
     let w = parseUnifiedWindow(headers);
@@ -318,7 +319,9 @@ function makeWindowProjector(
     const util7d = w7.utilization7d ?? prev?.util7d ?? 0;
     const resetAt7d = w7.windowResetAt7d ?? prev?.resetAt7d ?? 0;
     const creditChanged = usageCreditsAvailable !== undefined && usageCreditsAvailable !== prev?.usageCreditsAvailable;
-    if (prev && t - prev.at < WRITE_MIN_MS && !creditChanged) return; // throttle ordinary meter updates
+    // WI-6554700010029499: a tier change must reach the write seam (its downgrade alarm) unthrottled.
+    const planChanged = planType !== undefined && planType !== prev?.planType;
+    if (prev && t - prev.at < WRITE_MIN_MS && !creditChanged && !planChanged) return; // throttle ordinary meter updates
     // Write on a meaningful move in EITHER window (≥0.03 utilization) or a reset roll.
     const significant =
       !prev ||
@@ -327,9 +330,10 @@ function makeWindowProjector(
       Math.abs(util7d - prev.util7d) >= 0.03 ||
       resetAt7d !== prev.resetAt7d ||
       creditChanged ||
+      planChanged ||
       usageCreditsAvailable !== undefined;
     if (!significant) return;
-    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t, usageCreditsAvailable: usageCreditsAvailable ?? prev?.usageCreditsAvailable });
+    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t, usageCreditsAvailable: usageCreditsAvailable ?? prev?.usageCreditsAvailable, planType: planType ?? prev?.planType });
     // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
     // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
     // edge). Live traffic is the most frequent observer, so this is where an escalation
@@ -345,6 +349,7 @@ function makeWindowProjector(
             windowResetAt7d: w7.windowResetAt7d,
             usageCreditsAvailable,
             creditBalance,
+            planType,
           },
           t,
           ws,
