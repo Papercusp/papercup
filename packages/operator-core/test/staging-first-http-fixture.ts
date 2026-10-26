@@ -68,6 +68,8 @@ async function main() {
   const scope = await resolvePlanScope({ harnessSlug: harness, workspaceId: workspace });
   assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
+  // Keep this shared org client live through the teardown census below. The
+  // fixture's finally block owns the single close point via _resetForTests().
   const { sql } = getOrgPg();
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-hub-cleanup') ||
@@ -287,7 +289,6 @@ async function main() {
       assert.equal(row.hasNativeExecution, false);
     }
     await stopHost();
-    await sql.end();
     const receipt = { workspace, bundleSha256, health, hostStopped: true,
       providerForwarding: false, managedTool: 'capability:bash', surfaces: ['launch', 'resume', 'wake'] };
     writeFileSync(join(evidenceDir, 'operator-mcp-receipt.json'), JSON.stringify(receipt));
@@ -298,14 +299,12 @@ async function main() {
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'shared-chat-recovery') {
     const receipt = await (await import('./shared-chat-recovery-http-scenario')).measureSharedChatRecovery({ workspace, base });
     await stopHost();
-    await sql.end();
     console.log('SHARED_CHAT_RECOVERY_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair') {
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuHomeRepairScenario({ workspace, base });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_NATIVE_HOME_REPAIR ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
@@ -314,7 +313,6 @@ async function main() {
       workspace, api: base + '/api', expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('SESSION_CAPABILITY_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
     return;
@@ -324,7 +322,6 @@ async function main() {
       workspace, base, headers, evidenceDir,
     });
     await stopHost();
-    await sql.end();
     console.log('CODEX_BUDGET_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
@@ -333,7 +330,6 @@ async function main() {
       workspace, base, headers, evidenceDir,
     });
     await stopHost();
-    await sql.end();
     console.log('LOOP_NAMESPACE_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
@@ -342,7 +338,6 @@ async function main() {
     await stopHost();
     await blueprintRoute.dispose();
     disposeScenario = undefined;
-    await sql.end();
     const finalReceipt = { ...receipt, hostStopped: true, hostPid: host.pid, bundleSha256, sourceSha256, health };
     writeFileSync(join(evidenceDir, 'account-route.json'), JSON.stringify(finalReceipt));
     console.log('BLUEPRINT_ACCOUNT_ROUTE_RECEIPT ' + JSON.stringify(finalReceipt));
@@ -353,7 +348,6 @@ async function main() {
       workspace, base, evidenceDir, managedCarry: e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-carry',
     });
     await stopHost();
-    await sql.end();
     console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
@@ -362,7 +356,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir,
     });
     await stopHost();
-    await sql.end();
     console.log('COMPACTION_WARM_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
     return;
@@ -372,7 +365,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir,
     });
     await stopHost();
-    await sql.end();
     console.log('REPORT_JOURNAL_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
     return;
@@ -382,7 +374,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_READ_PG_ERROR_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -393,7 +384,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_READ_CANCELLATION_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -404,7 +394,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_READ_DEADLINE_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -415,7 +404,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_SAME_ITEM_WRITE_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -426,7 +414,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_UNRELATED_WRITE_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -437,7 +424,6 @@ async function main() {
     await stopHost();
     await committedReader.dispose();
     disposeScenario = undefined;
-    await sql.end();
     console.log('COMMITTED_READER_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
       hostStopped: true, sourceSha256, bundleSha256, health, ...readerReceipt }));
     return;
@@ -505,7 +491,6 @@ async function main() {
   const rows = await sql`SELECT workspace_id FROM harness_shared.harness_plans WHERE plan_slug LIKE 'private-guard-%'`;
   assert.equal(rows.length, preparation.length + releasePlanes.length);
   assert.ok(rows.every(row => row.workspace_id === workspace), 'fixture plans escaped private workspace');
-  await sql.end();
   await stopHost();
   console.log('STAGING_FIRST_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
     hostStopped: true, sourcePath, sourceSha256, bundleSha256, health, requests }));
@@ -539,8 +524,14 @@ catch (error) {
     const { sql } = getOrgPg();
     const pgConnections = await sql`SELECT client_port, application_name, state
       FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`
-      .catch(error => { retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable',
-        { error: String(error) }); return []; });
+      .catch(error => {
+        retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable', { error: String(error) });
+        // A missing census is not evidence that cleanup succeeded. Keep going
+        // so every owned pool is retired, but make the integration worker fail.
+        process.exitCode = 1;
+        console.error('STAGING_FIRST_HTTP_PG_CENSUS_UNAVAILABLE ' + String(error));
+        return [];
+      });
     retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closing', { pgConnections });
     // pg-listen-hub owns a direct postgres-js connection outside db-org's
     // reset registry. Close it after the census, before resetting disposable
