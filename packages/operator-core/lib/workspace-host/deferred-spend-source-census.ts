@@ -439,24 +439,70 @@ export function analyzeDeferredSpendSourceCensus(
   for (const constructor of constructors) if (!checker.getResolvedSignature(constructor)?.declaration || !functions.has(checker.getResolvedSignature(constructor)!.declaration!)) {
     diagnose(constructor, /Credential|Secret|Keychain/i.test(constructor.expression.getText()) ? 'R002' : 'R008', 'call', `unresolved constructor effect: ${constructor.expression.getText()}`, true);
   }
-  // SQL comments never constitute schema controls. Every new table needs explicit baseline identity,
-  // irrespective of its spelling; an innocently named credential/obligation table cannot evade this.
+  // Separate SQL tokens from data before recognizing effects. Preserve offsets/newlines so
+  // quoted table identities and diagnostics still refer to the original source bytes.
   const inspectSql = (path: string, sql: string, node?: ts.Node) => {
-    const stripped = sql.replace(/\/\*[\s\S]*?\*\//g, (text) => text.replace(/[^\n]/g, ' ')).replace(/--[^\n]*/g, '');
+    const masked = sql.split('');
+    const mask = (start: number, end: number, identifier = false) => {
+      for (let i = start; i < end; i++) if (sql[i] !== '\n' && sql[i] !== '\r') masked[i] = identifier ? 'x' : ' ';
+    };
+    for (let i = 0; i < sql.length;) {
+      const start = i;
+      if (sql.startsWith('--', i)) {
+        while (i < sql.length && sql[i] !== '\n') i++;
+        mask(start, i);
+      } else if (sql.startsWith('/*', i)) {
+        let depth = 1; i += 2;
+        while (i < sql.length && depth) {
+          if (sql.startsWith('/*', i)) { depth++; i += 2; }
+          else if (sql.startsWith('*/', i)) { depth--; i += 2; }
+          else i++;
+        }
+        if (depth) gaps.push(`${path}: unterminated SQL comment`);
+        mask(start, i);
+      } else if (sql[i] === "'" || sql[i] === '"') {
+        const quote = sql[i++], identifier = quote === '"';
+        const escaped = !identifier && start > 0 && /e/i.test(sql[start - 1]) && (start < 2 || !/[\w$]/.test(sql[start - 2]));
+        let closed = false;
+        while (i < sql.length) {
+          if (sql[i] === quote) {
+            if (sql[i + 1] === quote) { i += 2; continue; }
+            i++; closed = true; break;
+          }
+          if (!identifier && sql[i] === '\\') {
+            if (escaped) { i = Math.min(i + 2, sql.length); continue; }
+            gaps.push(`${path}: SQL string escape semantics require review`);
+          }
+          i++;
+        }
+        if (!closed) gaps.push(`${path}: unterminated SQL quoted token`);
+        mask(start, i, identifier);
+      } else if (sql[i] === '$' && (i === 0 || !/[\w$]/.test(sql[i - 1]))) {
+        const delimiter = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i))?.[0];
+        if (!delimiter) { i++; continue; }
+        const end = sql.indexOf(delimiter, i + delimiter.length);
+        if (end < 0) gaps.push(`${path}: unterminated SQL dollar quote`);
+        i = end < 0 ? sql.length : end + delimiter.length;
+        mask(start, i);
+      } else i++;
+    }
+    const stripped = masked.join('');
     if (node && /\b(?:INSERT\s+INTO|UPDATE\s+[\w."]+\s+SET|DELETE\s+FROM|ALTER\s+TABLE|DROP\s+TABLE)\b/i.test(stripped)) diagnose(node, 'R008', 'call', 'SQL mutation reachable from the source/acceptance boundary');
     if (!node && /\b(?:INSERT\s+INTO|UPDATE\s+[\w."]+\s+SET|DELETE\s+FROM|ALTER\s+TABLE|DROP\s+TABLE)\b/i.test(stripped)) {
       const baseline = request.allowances.some((entry) => entry.path === path && entry.symbol === '<schema>' && entry.effect === 'schema' && entry.contentHash === files.get(`${candidate}:${path}`)?.contentHash && entry.reason.trim() && entry.evidenceRefs.length);
       diagnostics.push({ path, symbol: '<schema>', line: 1, criterion: 'R005', effect: 'schema', disposition: baseline ? 'baseline' : 'forbidden', reason: 'active migration contains a SQL mutation outside the reviewed baseline' });
     }
-    if (/\b(?:EXECUTE|DO\s*\$)\b/i.test(stripped)) gaps.push(`${path}: dynamic SQL population cannot be resolved`);
+    if (/\b(?:EXECUTE|DO)\b/i.test(stripped)) gaps.push(`${path}: dynamic SQL population cannot be resolved`);
     for (const match of stripped.matchAll(/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."-]+)/gi)) {
+      const nameOffset = match.index + match[0].lastIndexOf(match[1]);
+      const tableName = sql.slice(nameOffset, nameOffset + match[1].length);
       const symbol = node ? site(node).symbol : '<schema>';
       const line = node ? site(node).line : stripped.slice(0, match.index).split('\n').length;
       const scoped = changed.has(path) || selectors.migrationRegistry.entries.some((entry) => entry.path === path);
       const baseline = request.allowances.some((entry) => entry.path === path && entry.symbol === symbol && entry.effect === 'schema' &&
         entry.contentHash === files.get(`${candidate}:${path}`)?.contentHash && !!entry.reason.trim() && entry.evidenceRefs.length);
-      diagnostics.push({ path, symbol, line, criterion: 'R005', effect: 'schema', disposition: !scoped ? 'out-of-scope' : baseline ? 'baseline' : 'forbidden', reason: `schema table: ${match[1]}` });
-      if (node) tokens.push({ node, kind: 'schema', value: match[1] });
+      diagnostics.push({ path, symbol, line, criterion: 'R005', effect: 'schema', disposition: !scoped ? 'out-of-scope' : baseline ? 'baseline' : 'forbidden', reason: `schema table: ${tableName}` });
+      if (node) tokens.push({ node, kind: 'schema', value: tableName });
     }
   };
   for (const [path, text] of texts) if (/\.sql$/.test(path)) {

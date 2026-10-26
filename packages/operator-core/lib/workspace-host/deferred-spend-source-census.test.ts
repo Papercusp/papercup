@@ -207,6 +207,37 @@ describe('DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples', () => 
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ criterion: 'R008', reason: 'SQL mutation reachable from the source/acceptance boundary', disposition: 'forbidden' }));
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ criterion: 'R005', reason: 'schema table: secondary', disposition: 'forbidden' }));
   });
+  it.each([
+    "SELECT 'CREATE TABLE harmless (id text)' AS note",
+    "SELECT 'INSERT INTO t VALUES (1); UPDATE t SET id=2; DELETE FROM t; ALTER TABLE t; DROP TABLE t; EXECUTE x'",
+    'SELECT $$CREATE TABLE harmless (id text)$$, $note$DROP TABLE harmless$note$',
+    "SELECT E'it\\'s CREATE TABLE harmless (id text)'",
+    'SELECT "CREATE TABLE harmless", "DROP TABLE harmless" FROM existing_table',
+    'SELECT 1 /* outer /* inner */ CREATE TABLE harmless (id text) */',
+  ])('does not fabricate a SQL write from quoted data or comments: %s', (sql) => {
+    const value = fixture();
+    edit(value, 'src/collector.ts', () => `function query(text: string) { return text; } export function collect() { query(${JSON.stringify(sql)}); return 'consistent-read-only'; }`);
+    const result = analyze(value);
+    expect(result.verdict).toBe('pass');
+    expect(result.diagnostics.filter((entry) => entry.path === 'src/collector.ts' && entry.disposition === 'forbidden')).toEqual([]);
+  });
+  it.each([
+    "SELECT '--'; CREATE TABLE actual_write (id text);",
+    "SELECT '/*'; CREATE TABLE actual_write (id text); SELECT '*/';",
+    "SELECT $note$/* --$note$; CREATE TABLE actual_write (id text);",
+    'CREATE TABLE "CREATE TABLE actual_write" (id text);',
+  ])('quoted comment markers cannot hide executable DDL: %s', (sql) => {
+    const value = fixture();
+    edit(value, 'src/collector.ts', () => `function query(text: string) { return text; } export function collect() { query(${JSON.stringify(sql)}); return 'consistent-read-only'; }`);
+    const result = analyze(value);
+    expect(result.verdict).toBe('fail');
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ path: 'src/collector.ts', criterion: 'R005', effect: 'schema', disposition: 'forbidden' }));
+  });
+  it.each(["SELECT 'unterminated", 'SELECT $tag$unterminated', 'SELECT "unterminated', 'SELECT 1 /* unterminated'])('keeps incomplete SQL lexical populations unknown: %s', (sql) => {
+    const value = fixture();
+    edit(value, 'src/collector.ts', () => `function query(text: string) { return text; } export function collect() { query(${JSON.stringify(sql)}); return 'consistent-read-only'; }`);
+    expect(analyze(value).verdict).toBe('unknown');
+  });
   it('redacts credential material from transport diagnostics', () => {
     const value = fixture(); edit(value, 'src/collector.ts', () => "export function collect() { fetch('https://account:secret@console.cloud.google.com/BillingData?token=secret'); return 'consistent-read-only'; }");
     const result = analyze(value); expect(result.verdict).toBe('fail');
