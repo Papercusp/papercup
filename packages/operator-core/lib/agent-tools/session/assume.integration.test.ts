@@ -781,6 +781,9 @@ describe('session:assume production receipt adapter (real PG)', () => {
   it('R-12 preview preserves caller and target runtime and durable snapshots', async () => {
     const f = await durableTransitionFixture();
     try {
+      // Fixture setup already prepared once; a first-preview write must not
+      // become the baseline that later idempotent previews appear to preserve.
+      expect(await f.store.load()).toBeNull();
       const scope = loopScope('fixture-harness', f.actor.ownerId);
       await setCarryNote({ scope, workspaceId }, 'Caller context retained by preview.');
       for (const owner of [f.actor.ownerId, f.ownerId]) {
