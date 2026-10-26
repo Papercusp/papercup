@@ -41,6 +41,7 @@ export interface DesktopGridFixtureServer {
 export async function startDesktopGridFixtureServer(
   fixture: string,
   aliases: Record<string, string> = {},
+  optimizedDependencies: string[] = [],
 ): Promise<DesktopGridFixtureServer> {
   const { createServer } = await import('vite');
   const server = await createServer({
@@ -52,7 +53,7 @@ export async function startDesktopGridFixtureServer(
       entries: [fixture],
       noDiscovery: true,
       include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime',
-        'lucide-react', '@radix-ui/react-slot', 'nuqs', 'nuqs/adapters/react'],
+        'lucide-react', '@radix-ui/react-slot', 'nuqs', 'nuqs/adapters/react', ...optimizedDependencies],
     },
     plugins: [{
       name: 'desktop-grid-fixture',
