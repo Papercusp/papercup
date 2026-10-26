@@ -452,16 +452,19 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   custodyIdentity(contract?.identity); custodyPopulation(contract?.expected);
   const root = custodyDirectory(directory, true), objects = custodyDirectory(join(root, 'objects'), true);
   const budget = { objects: 0, bytes: 0, private: true };
-  const read = pin => {
+  const read = (pin, readBudget = budget) => {
     if (!pin || !comparisonDigest(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
         pin.byteLength < 0 || basename(pin.ref ?? '') !== pin.ref || !pin.ref.startsWith(`${pin.sha256}.`))
       throw new Error('custody invalid retained pin');
-    const bytes = custodyRead(join(objects, pin.ref), budget);
+    const bytes = custodyRead(join(objects, pin.ref), readBudget);
     if (bytes.length !== pin.byteLength || createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
       throw new Error('custody retained bytes differ');
     return bytes;
   };
-  const manifest = JSON.parse(read(locator.manifest).toString('utf8'));
+  // The producer's content budget excludes the manifest it writes afterward.
+  // Apply the same accounting when consuming a partial packet at that limit;
+  // the manifest still has its own ordinary single-object bound.
+  const manifest = JSON.parse(read(locator.manifest, { objects: 0, bytes: 0, private: true }).toString('utf8'));
   if (manifest.schemaVersion !== 'native-proof-custody-v1' ||
       JSON.stringify(manifest.identity) !== JSON.stringify(contract.identity) ||
       JSON.stringify(locator.identity) !== JSON.stringify(contract.identity) ||
@@ -476,15 +479,21 @@ export function verifyNativeProofPacket(directory, locator, contract) {
         !['A', 'B', 'C', 'D'].every(family => group.families.some(row => row.family === family)) ||
         group.auxiliary.length !== expected.auxiliary.length) throw new Error('custody missing group or family');
     if (group.captureComplete === false && !manifest.gaps.length) throw new Error('custody incomplete child capture');
+    let reporter;
     for (const family of group.families) {
       if (!Array.isArray(family.entries)) throw new Error('custody inventory missing');
-      for (const entry of family.entries) read(entry.artifact);
+      for (const [index, entry] of family.entries.entries()) {
+        const bytes = read(entry.artifact);
+        if (family.family === 'A' && index === 0) reporter = bytes;
+      }
       if (family.state !== 'produced' && expected.armed && expected.runner === 'vitest' && !manifest.gaps.length)
         throw new Error('custody unsupported family absence');
     }
     const out = group.families.find(row => row.family === 'A').entries[0];
-    if (out) {
-      const refs = custodyReferences(JSON.parse(read(out.artifact).toString('utf8')));
+    if (out && group.families.find(row => row.family === 'A').state === 'produced') {
+      // Validate the exact bytes already read above; charging another read can
+      // reject a correctly retained packet near the bounded capture limit.
+      const refs = custodyReferences(JSON.parse(reporter.toString('utf8')));
       if (JSON.stringify(refs) !== JSON.stringify(group.references)) throw new Error('custody reference occurrences missing');
       for (const ref of refs) {
         const pin = group.families.find(row => row.family === 'B').entries.find(row => row.original === ref.codeRef)?.artifact;

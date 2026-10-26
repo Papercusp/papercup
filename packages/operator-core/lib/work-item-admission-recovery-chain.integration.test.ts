@@ -137,6 +137,8 @@ const originalContext = {
 const reviewerOwnerId = 'reviewer-session';
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
 const { readWorkItemAdmissionSnapshot } = await import('./work-items-admission-promoter');
+const { observeFallback, fallbackObservationCounters, _pendingFallbackObservationCount,
+  flushFallbackObservations } = await import('./degradation/fallback-observations');
 
 let db: FreshPgDb;
 let run = 0;
@@ -245,6 +247,25 @@ function request(id: string) {
 }
 
 describe('original authority context fidelity', () => {
+  it('drains queued fallback observations before retiring a fresh PG fixture', async () => {
+    // Start with no ambient work so the observation belongs to this lifecycle.
+    await flushFallbackObservations({ sql: db.sql });
+    const queries: string[] = [];
+    const retiring = await createFreshPgDb('admission_fallback_cleanup', {
+      onQuery: (query) => queries.push(query),
+    });
+    const failedBefore = fallbackObservationCounters().failed;
+    expect(observeFallback('admission-cleanup-regression', {
+      eligible: 1, applied: 0, reason: 'queued-at-teardown',
+    })).toBe(true);
+    expect(_pendingFallbackObservationCount()).toBe(1);
+    await retiring.cleanup();
+    expect(_pendingFallbackObservationCount()).toBe(0);
+    expect(fallbackObservationCounters().failed).toBe(failedBefore);
+    expect(queries.some((query) => query.includes('INSERT INTO harness_shared.fallback_observations')))
+      .toBe(true);
+  });
+
   it.each(['due', 'legacy'] as const)(
     'screens and replays a %s ordinary slot with the operator string timestamp representation', async (slot) => {
       const original = await create('String timestamp ordinary admission');

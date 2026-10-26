@@ -131,6 +131,42 @@ describe('private native proof custody (P002)', () => {
       expect(readFileSync(join(f.directory, 'objects', entry.artifact.ref)).toString('base64')).toBe(entry.bytes);
   });
 
+  it('retains and verifies explicit partial custody at the content budget without charging metadata twice', () => {
+    const f = fixture();
+    const group = f.contract.expected[0];
+    const payload = JSON.parse(readFileSync(group.out, 'utf8'));
+    payload.padding = 'x'.repeat(1024 * 1024);
+    writeFileSync(group.out, JSON.stringify(payload));
+    // Four legal objects almost fill the 64MiB capture budget. The next
+    // auxiliary object exceeds it; the retained content must remain readable
+    // as partial even when its manifest or a second reporter read would not fit.
+    for (const spec of group.auxiliary.slice(0, 4)) writeFileSync(spec.path, Buffer.alloc(15 * 1024 * 1024));
+    const saved = f.save();
+    const remaining = 64 * 1024 * 1024 - saved.manifest.bytesRead - 2;
+    writeFileSync(group.auxiliary[4].path, Buffer.alloc(remaining));
+    const full = f.save();
+    expect(full.status).toBe('complete');
+    expect(verifyNativeProofPacket(f.directory, full.locator, f.contract).status).toBe('complete');
+    writeFileSync(group.auxiliary[4].path, Buffer.alloc(remaining + 2));
+    const partial = f.save();
+    expect(partial.status).toBe('partial');
+    expect(partial.manifest.gaps).toContain('group-0:cleanup:custody limit');
+    expect(verifyNativeProofPacket(f.directory, partial.locator, f.contract)).toMatchObject({
+      status: 'partial', verified: true, manifest: { verdicts: { nativeProof: 'unqualified', acceptance: 'unmeasured' } },
+    });
+  });
+
+  it('keeps a retained reporter with an unsupported reference population explicitly partial', () => {
+    const f = fixture(), group = f.contract.expected[0];
+    const payload = JSON.parse(readFileSync(group.out, 'utf8'));
+    payload.rows = Array.from({ length: 4097 }, () => ({}));
+    writeFileSync(group.out, JSON.stringify(payload));
+    const saved = f.save();
+    expect(saved.status).toBe('partial');
+    expect(saved.manifest.gaps).toContain('group-0:A:custody observation population');
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+  });
+
   it.each(['group', 'A', 'B', 'C', 'D', 'auxiliary', 'pending', 'truncated-stream'])('keeps %s absence/pending explicit and refuses complete custody', omission => {
     const f = fixture(['primary', 'detail']);
     const group = f.contract.expected[1];
