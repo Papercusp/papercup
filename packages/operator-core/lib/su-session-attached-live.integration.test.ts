@@ -226,6 +226,21 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
   let server: ReturnType<typeof createAdaptorServer> | undefined;
   let home: string | undefined;
   let previousEnv: Record<string, string | undefined> = {};
+  let startup = { stage: 'not-started', startedAt: Date.now(), finished: false };
+  async function setupStep<T>(stage: string, action: () => Promise<T>): Promise<T> {
+    startup = { stage, startedAt: Date.now(), finished: false };
+    console.info('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage, state: 'started' }));
+    try {
+      const value = await action();
+      startup.finished = true;
+      console.info('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage, state: 'completed', elapsedMs: Date.now() - startup.startedAt }));
+      return value;
+    } catch (error) {
+      console.error('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage, state: 'failed', elapsedMs: Date.now() - startup.startedAt,
+        message: error instanceof Error ? error.message : String(error) }));
+      throw error;
+    }
+  }
 
   beforeAll(async () => {
     const account = process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto';
@@ -243,10 +258,10 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     })() : [];
     home = mkdtempSync(join(tmpdir(), 'pui-attached-live-'));
     previousEnv.PAPERCUSP_TEST_PG_ADMIN_URL = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
-    pg = await startDedicatedNativePg({ baseDir: home,
-      settings: { max_connections: '120', fsync: 'off', synchronous_commit: 'off' } });
+    pg = await setupStep('private-pg', () => startDedicatedNativePg({ baseDir: home!,
+      settings: { max_connections: '120', fsync: 'off', synchronous_commit: 'off' } }));
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = pg.getConnectionUri();
-    db = await createOrgTestDb();
+    db = await setupStep('org-db', () => createOrgTestDb());
     expect(new URL(db.adminDsn).port, 'the org fixture must use this test-owned PG process')
       .toBe(new URL(pg.getConnectionUri()).port);
     if (account === 'auto') await db.adminSql`
@@ -273,26 +288,28 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       'PAPERCUSP_MCP_PROXY_BASE', 'OPERATOR_DEV_PORT'].map(key => [key, process.env[key]])));
     Object.assign(process.env, env);
     delete process.env.OPERATOR_DEV_PORT;
-    fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
+    fixture = await setupStep('coord-fixture', () => setupBaselineCoordFixture({ dsn: db!.adminDsn }));
     const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp';
-    const { insertHiveIfAbsent } = await import('./hive-store');
-    await insertHiveIfAbsent({ workspaceId: 'papercusp-workspace', homeSlug: harness,
-      pubkeyBase64: randomBytes(32).toString('base64'), keychainId: `attached-fixture-${randomUUID()}` }, db.adminSql);
-    const { setHiveSetting } = await import('./hive-settings-store');
-    await setHiveSetting({ workspaceId: 'papercusp-workspace', potHomeSlug: harness,
-      settingKey: 'promptOverride.su', value: readFileSync(resolve(import.meta.dirname,
-        '../../../apps/operator/prompts/pot-instances/papercup-pot.su.md'), 'utf8') }, db.adminSql);
-    const { saveHarnessRegistry } = await import('./harness-registry');
-    await saveHarnessRegistry({ projects: [{ slug: harness, path: resolve(import.meta.dirname, '../../..'),
-      harness_kind: 'hive', self_repo: true }] }, 'papercusp-workspace');
+    await setupStep('seed-harness', async () => {
+      const { insertHiveIfAbsent } = await import('./hive-store');
+      await insertHiveIfAbsent({ workspaceId: 'papercusp-workspace', homeSlug: harness,
+        pubkeyBase64: randomBytes(32).toString('base64'), keychainId: `attached-fixture-${randomUUID()}` }, db!.adminSql);
+      const { setHiveSetting } = await import('./hive-settings-store');
+      await setHiveSetting({ workspaceId: 'papercusp-workspace', potHomeSlug: harness,
+        settingKey: 'promptOverride.su', value: readFileSync(resolve(import.meta.dirname,
+          '../../../apps/operator/prompts/pot-instances/papercup-pot.su.md'), 'utf8') }, db!.adminSql);
+      const { saveHarnessRegistry } = await import('./harness-registry');
+      await saveHarnessRegistry({ projects: [{ slug: harness, path: resolve(import.meta.dirname, '../../..'),
+        harness_kind: 'hive', self_repo: true }] }, 'papercusp-workspace');
+    });
     const { scaffoldHarnessSchema } = await import('./scaffold-harness-schema');
-    await scaffoldHarnessSchema(harness);
-    const { app } = await import('../../../apps/operator/bin/host-app');
+    await setupStep('scaffold-harness-schema', () => scaffoldHarnessSchema(harness));
+    const { app } = await setupStep('import-private-operator', () => import('../../../apps/operator/bin/host-app'));
     server = createAdaptorServer({ fetch: app.fetch });
-    await new Promise<void>((done, reject) => {
+    await setupStep('listen-private-operator', () => new Promise<void>((done, reject) => {
       server!.once('error', reject);
       server!.listen(0, '127.0.0.1', done);
-    });
+    }));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Private attached test operator has no port');
     expect([3070, 3170, 3271, 3278]).not.toContain(address.port);
@@ -309,17 +326,17 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       hasCompletedOnboarding: true, mcpServers: { 'papercusp-su': entry },
     }), { mode: 0o600 });
     const { ensureProjectTrust } = await import('./interactive-claude-config');
-    await ensureProjectTrust(claudeFixture.sourceHome, resolve(import.meta.dirname, '../../..'));
+    await setupStep('ensure-project-trust', () => ensureProjectTrust(claudeFixture.sourceHome!, resolve(import.meta.dirname, '../../..')));
     expect(entry.headers.Authorization === `Bearer ${token}`, 'MCP config must use the private operator bearer').toBe(true);
     const client = new Client({ name: 'attached-fixture-preflight', version: '1.0.0' });
     const mcpUrl = new URL('/api/mcp', origin);
     mcpUrl.search = new URLSearchParams({ superuser: '1', workspace: 'papercusp-workspace',
       tools: 'coord:whoami,tools:invoke' }).toString();
     try {
-      await client.connect(new StreamableHTTPClientTransport(mcpUrl, {
+      await setupStep('mcp-connect', () => client.connect(new StreamableHTTPClientTransport(mcpUrl, {
         requestInit: { headers: entry.headers },
-      }));
-      const listed = await client.listTools({}, { timeout: 30_000 });
+      })));
+      const listed = await setupStep('mcp-list-tools', () => client.listTools({}, { timeout: 30_000 }));
       expect(listed.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['coord:whoami', 'tools:invoke']));
     } finally {
       await client.close();
@@ -327,6 +344,8 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
   }, 180_000);
 
   afterAll(async () => {
+    if (!startup.finished) console.error('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage: startup.stage,
+      state: 'interrupted', elapsedMs: Date.now() - startup.startedAt }));
     try {
       if (server) await new Promise<void>((done, reject) => {
         server!.close(error => error ? reject(error) : done());
