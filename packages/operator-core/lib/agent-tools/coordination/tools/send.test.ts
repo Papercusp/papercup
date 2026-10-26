@@ -223,6 +223,10 @@ vi.mock('../presence-fleet', () => ({
 // time. Mocked here so the WIRING is asserted without a PG round-trip — the
 // derivation itself is covered by based-on.test.ts + based-on.integration.test.ts.
 vi.mock('../based-on', () => ({ BASED_ON_MAX_ENTRIES: 8, deriveBasedOn: vi.fn(async () => []) }));
+// WI-6554700010029331: the repeat-report rail's DB reads (real-PG coverage lives in
+// repeat-report-reads.integration.test.ts). Unset = the rail reads nothing and passes.
+const repeatReportReads = vi.hoisted(() => ({ evaluate: vi.fn() }));
+vi.mock('../repeat-report-reads', () => ({ evaluateRepeatReport: repeatReportReads.evaluate }));
 // `withBoundedTimeout` records each result through this sink; its unit tests
 // cover persistence. Keep this handler suite from flushing those observations
 // to real Postgres while exercising its many bounded enrichments.
@@ -425,6 +429,13 @@ describe('paired-device provenance bridge (R-35, D-010)', () => {
           if (Array.isArray(input) && typeof input[0] !== 'string') {
             persisted.push(...structuredClone(input) as Turn[]);
             return 'fixture-values';
+          }
+          // The session_turns INSERT ... RETURNING resolves, as postgres.js does, to the
+          // returned rows carrying `count`: insertTurns hands them to
+          // recordIndexedLoopTurnStarts (b5d4c794fa), which iterates them. A bare
+          // `{ count }` here made all three cases throw `turns.filter is not a function`.
+          if (Array.isArray(input) && input.join('').includes('INSERT INTO harness_shared.session_turns')) {
+            return Promise.resolve(Object.assign(structuredClone(persisted), { count: persisted.length }));
           }
           return Promise.resolve({ count: 1 });
         });
@@ -1757,6 +1768,40 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect((b.results[0] as { error?: string }).error).toBe('related_msg_not_found');
     expect(sendM).not.toHaveBeenCalled(); // nothing was persisted
     expect(wakeM).not.toHaveBeenCalled();
+  });
+
+  // WI-6554700010029331: repeat_report_no_delta — a directed re-send of an item the
+  // sender already reported to the same recipients, with no change since, is refused
+  // BEFORE persistence; a pass stamps the cited item states for the next send's baseline.
+  it('WI-6554700010029331: a no-delta repeat report is refused, nothing persisted, both doors named', async () => {
+    repeatReportReads.evaluate.mockResolvedValueOnce({
+      kind: 'refuse',
+      stamps: [{ ref: 'WI-100', token: 'blocked|bee-1|1|1||1|b1' }],
+      repeats: [{ ref: 'WI-100', priorMsgId: 'msg-prior-1', priorTs: '2026-10-26T17:00:00.000Z', status: 'blocked', holder: 'bee-1' }],
+    });
+    const b = await body({ to: ['peer'], summary: 'Still blocked on WI-100', expects: 'none' });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'repeat_report_no_delta' });
+    const message = (b.results[0] as { message?: string }).message ?? '';
+    expect(message).toContain("related_msg_id:'msg-prior-1'");
+    expect(message).toContain('work_items:set_blocker');
+    expect(sendM).not.toHaveBeenCalled();
+    expect(repeatReportReads.evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ refs: ['WI-100'], judge: true }),
+    );
+  });
+
+  it('WI-6554700010029331: a passing send carries the citedItemStates stamp; broadcasts and ref-free sends skip the rail', async () => {
+    const stamps = [{ ref: 'WI-100', token: 'open|||||1|b0' }];
+    repeatReportReads.evaluate.mockResolvedValueOnce({ kind: 'pass', stamps });
+    await body({ to: ['peer'], summary: 'WI-100 is unblocked now', expects: 'none' });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const sent = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(sent.extra?.citedItemStates).toEqual(stamps);
+
+    repeatReportReads.evaluate.mockClear();
+    await body({ to: ['*'], summary: 'FYI WI-100 is unblocked', expects: 'none' });
+    await body({ to: ['peer'], summary: 'no work item cited here', expects: 'none' });
+    expect(repeatReportReads.evaluate).not.toHaveBeenCalled();
   });
 
   it('stamps the awaiting and draft-suspension reader results onto the sent envelope', async () => {
