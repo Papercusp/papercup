@@ -1414,6 +1414,14 @@ export type BindSpecEvidenceResult =
       message: string;
     }
   | {
+      status: 'test_cases_ambiguous_in_run';
+      testRunId: number;
+      declaredCaseCount: number;
+      source: 'case-ledger' | 'passed-case-titles';
+      ambiguousTestCases: Array<{ testCase: string; matchingCaseTitles: string[] }>;
+      message: string;
+    }
+  | {
       status: 'test_cases_not_in_run';
       testRunId: number;
       declaredCaseCount: number;
