@@ -2711,9 +2711,10 @@ export function prepareSuLaunch(boot, {
         // The mismatch check below owns the fail-closed diagnostic.
       }
     }
-    if ((env.PAPERCUSP_ACCOUNT_ROUTING_MODE || "default") !== mode
-      || (mode === "pin" && env.PAPERCUSP_ACCOUNT_ID !== raw))
-      refuse("account_route_mismatch", "SU launch account route differs from its resolved bootstrap");
+    const resolvedMode = env.PAPERCUSP_ACCOUNT_ROUTING_MODE || "default";
+    if (resolvedMode !== mode || (mode === "pin" && env.PAPERCUSP_ACCOUNT_ID !== raw))
+      refuse("account_route_mismatch",
+        `SU launch account route differs from its resolved bootstrap (requested ${mode}, resolved ${resolvedMode})`);
   }
   if (executionKind === "programmatic") delete env.PAPERCUSP_TTY;
   const requestedModel = requestedRoleModelFromBootstrap(boot, model);
@@ -5143,6 +5144,23 @@ export function detectRespawnModelSpec(
   const inherited = modelSpecFromRecycleArgv(args);
   if (!inherited) return null; // no flag to replace — never ADD one
   if (normalized === "codex") {
+    // Codex persists the owner's /model selection in this isolated home. The
+    // operator also repairs this file to the current configured selection before
+    // a carry. Either way it is newer authority than an inherited argv: a fresh
+    // successor's explicit -m flag overrides config.toml, so preferring a stale
+    // transcript below would pin the old model forever (observed on session
+    // 51539: repaired gpt-6.1-sol home, inherited/turn_context gpt-5.6-sol).
+    // Read this for every model source. After the first carry the launch ledger
+    // necessarily calls the copied selection "inherited"; limiting repair to
+    // configured-default therefore made the bug recur on every later cut.
+    try {
+      const configured = codexModelSpecFromConfigText(
+        readFileSync(join(codexHome, "config.toml"), "utf8"),
+      );
+      if (configured && configured !== inherited) return configured;
+    } catch {
+      // An unreadable home still fails soft to the transcript/inherited argv.
+    }
     const latest = codexHome
       ? readLatestCodexRollout(join(codexHome, "sessions"))
       : null;
@@ -5163,16 +5181,6 @@ export function detectRespawnModelSpec(
         return resolveCodexModelSelection(switched, { source: "inherited" }).model;
       } catch {
         return null;
-      }
-    }
-    if (modelSource === "configured-default") {
-      try {
-        const configured = codexModelSpecFromConfigText(
-          readFileSync(join(codexHome, "config.toml"), "utf8"),
-        );
-        if (configured && configured !== inherited) return configured;
-      } catch {
-        // Home repair still needs the inherited model if config is unreadable.
       }
     }
     // A null is the argv rewriter's "unchanged" sentinel. The home repair
@@ -16407,6 +16415,9 @@ export function formatSessionPortInspection(result) {
     `psu: cross-backend port preview — ${sourceBackend} session #${i.source?.advSessionId} → ${i.target?.backend}/${i.target?.model ?? "default"}`,
     `psu: source snapshot — ${i.source?.snapshotKind}, ${i.source?.completeBytes ?? "?"} bytes, sha256 ${String(i.source?.sha256 ?? "").slice(0, 12)}…`,
     `psu: fidelity — ${i.requiresSummary ? "summary + recent tail (target budget requires summarization)" : "full active-path history"}; complete payload upper bound ${i.fullPayloadEstimatedTokens ?? i.fullHistoryEstimatedTokens ?? "?"} tokens / ${i.target?.availableInputTokens ?? "?"} available (${i.tokenEstimator ?? "unspecified estimator"})`,
+    ...(i.fit?.feasible === false
+      ? [`psu: fit blocked before egress — ${i.fit.reason ?? "the required atomic tail cannot fit"}; minimum ${i.fit.minimumRequiredTokens ?? "?"} tokens / ${i.target?.availableInputTokens ?? "?"} available. Compact the source session or choose a target with a larger context.`]
+      : []),
     `psu: sanitization — ${s.redactions ?? 0} secret redaction(s), ${s.omittedThinkingBlocks ?? 0} thinking block(s) omitted, ${s.omittedSignatureBlocks ?? 0} signature block(s) omitted, ${s.omittedAttachments ?? 0} binary attachment omission(s), ${s.textAttachments ?? 0} text attachment(s) preserved, ${s.truncatedAttachments ?? 0} attachment truncation(s), ${s.unsupportedBlocks ?? 0} unsupported block(s), ${s.sidechainRecords ?? 0} sidechain record(s) excluded`,
     `psu: egress — target ${i.disclosure?.targetEgress ?? "unknown"}${i.disclosure?.summarizerEgress ? `; summarizer ${i.disclosure.summarizerEgress}` : "; no summarizer egress"}`,
     authorityLine,
@@ -17460,6 +17471,12 @@ export async function launchSessionPort(
   }
   for (const line of formatSessionPortInspection(inspected))
     console.error(line);
+  if (inspected?.inspection?.fit?.feasible === false) {
+    throw new Error(
+      `session-port preview is not preparable: ${inspected.inspection.fit.reason ?? "the required atomic tail cannot fit"}. ` +
+      `Compact the source session or choose a target with at least ${inspected.inspection.fit.minimumRequiredTokens ?? "the required"} available input tokens.`,
+    );
+  }
   if (args.picker && !args.yes) {
     const { confirm } = await import("@inquirer/prompts");
     const proceed = await confirm({

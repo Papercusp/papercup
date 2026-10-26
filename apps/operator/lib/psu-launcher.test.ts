@@ -8826,6 +8826,15 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
         fullPayloadEstimatedTokens: 2000,
         tokenEstimator: "utf8-byte-upper-bound-v1",
         requiresSummary: true,
+        fit: {
+          feasible: false,
+          fidelity: "summary-tail",
+          fullEstimatedTokens: 2000,
+          minimumRequiredTokens: 1200,
+          latestAtomicGroupEstimatedTokens: 1050,
+          summaryChunks: null,
+          reason: "session port cannot fit the latest required atomic conversation/tool group plus bounded summary output",
+        },
         stats: {
           redactions: 2,
           omittedThinkingBlocks: 1,
@@ -8845,6 +8854,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       },
     });
     expect(lines.join("\n")).toMatch(/summary \+ recent tail/);
+    expect(lines.join("\n")).toMatch(/fit blocked before egress.*minimum 1200 tokens \/ 1000 available/s);
+    expect(lines.join("\n")).toMatch(/Compact the source session or choose a target with a larger context/);
     expect(lines.join("\n")).toMatch(/preserving the source coordination identity/);
     expect(lines.join("\n")).toMatch(/one malformed record/);
   });
@@ -9097,6 +9108,34 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       { picker: false }, { sessionPortApiImpl, launchFreshSuImpl }))
       .rejects.toThrow(/did not preserve the selected native session.*upgrade/);
     expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    expect(launchFreshSuImpl).not.toHaveBeenCalled();
+  });
+
+  it("refuses an infeasible atomic-tail preview before confirmation, preparation, or launch", async () => {
+    const sessionPortApiImpl = vi.fn(async () => ({
+      inspection: {
+        source: { nativeSessionId: source.sessionId, sha256: "a".repeat(64) },
+        target: { availableInputTokens: 1000 },
+        requiresSummary: true,
+        fit: {
+          feasible: false,
+          fidelity: "summary-tail",
+          minimumRequiredTokens: 1200,
+          reason: "session port cannot fit the latest required atomic conversation/tool group plus bounded summary output",
+        },
+      },
+    }));
+    const launchFreshSuImpl = vi.fn();
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(launchSessionPort(source, resolveResumeTarget(source, { agent: "codex" }), {},
+        { picker: true }, { sessionPortApiImpl, launchFreshSuImpl }))
+        .rejects.toThrow(/preview is not preparable.*at least 1200 available input tokens/s);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    expect(sessionPortApiImpl).toHaveBeenCalledWith("/api/adv/sessions/port/inspect", expect.anything());
     expect(launchFreshSuImpl).not.toHaveBeenCalled();
   });
 
@@ -10974,7 +11013,9 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
       expect(detectRespawnModelSpec([], options)).toBeNull();
     });
 
-    it("Codex carry uses the repaired isolated-home model when the old launch model was still active", () => {
+    it.each(["configured-default", "inherited"])(
+      "Codex carry uses the repaired isolated-home model over a stale %s launch",
+      (modelSource) => {
       const home = mkdtempSync(join(tmpdir(), "codex-model-carry-"));
       const codexHome = join(home, "isolated");
       mkdirSync(codexHome, { recursive: true });
@@ -10986,7 +11027,7 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
           agent: "codex",
           codexHome,
           advSessionId: 30870,
-          modelSource: "configured-default",
+          modelSource,
           readLatestCodexRollout: () => ({ id: UUID }),
           readLastActiveModel: () => "gpt-5.6-sol",
         });
@@ -10999,7 +11040,8 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
-    });
+      },
+    );
 
     it("Codex carry preserves an intentional in-session model switch over the home default", () => {
       const selected = detectRespawnModelSpec(["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="xhigh"'], {
