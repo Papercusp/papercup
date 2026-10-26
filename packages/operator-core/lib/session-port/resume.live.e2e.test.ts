@@ -3,9 +3,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
-import { describe, expect, it } from 'vitest';
-import { reportSessionEnded } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import { afterEach, describe, expect, it } from 'vitest';
 import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
@@ -23,6 +23,12 @@ const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 type Session = { id: string; agent: SessionBackend; coord_owner_id: string;
   session_id: string | null; omp_thread_id: string | null; ended_at: string | null };
+const MATRIX_SOURCE_PATHS = [
+  'apps/operator/scripts/psu-launcher.mjs',
+  'apps/operator/scripts/psu-pty-host.mjs',
+] as const;
+type MatrixSourceLock = { lockId: string; domain: string };
+type HeldMatrixSourceLocks = { sourceRoot: string; origin: string; locks: MatrixSourceLock[] };
 
 function verifiedEmptyCleanup(name: string, args: Record<string, unknown>, status: number | null,
   value: Record<string, any> | undefined) {
@@ -125,6 +131,59 @@ function maintainedCanonicalTree(env: Pick<NodeJS.ProcessEnv,
   const canonical = env.PAPERCUSP_CANONICAL_TREE || env.PAPERCUSP_INTEGRATION_ROOT;
   if (!canonical) throw new Error('The final matrix requires the maintained canonical tree selector');
   return resolve(canonical);
+}
+
+function matrixSourceLockDomains(sourceRoot: string, canonical: string) {
+  return [...new Set([resolve(sourceRoot), resolve(canonical)])];
+}
+
+function matrixSourceLockArgs(domain: string, sourceRoot: string) {
+  const resolvedRoot = resolve(sourceRoot);
+  const resolvedDomain = resolve(domain);
+  return {
+    paths: [...MATRIX_SOURCE_PATHS],
+    intent: 'Keep launcher source bytes stable throughout the final resume matrix.',
+    ttl_sec: 900,
+    ...(resolvedDomain === resolvedRoot ? {} : { coordination_domain: resolvedDomain }),
+  };
+}
+
+function assertMatrixSourceLock(receipt: Record<string, any>) {
+  const held = Array.isArray(receipt.held) ? receipt.held as unknown[] : [];
+  if (typeof receipt.lock_id !== 'string' ||
+    !MATRIX_SOURCE_PATHS.every(path => held.includes(path))) {
+    throw new Error('Final matrix could not secure both launcher source files: ' +
+      JSON.stringify({ lockId: receipt.lock_id, held: receipt.held, busy: receipt.busy }));
+  }
+  return receipt.lock_id as string;
+}
+
+function releaseMatrixSourceLocks(locks: MatrixSourceLock[], sourceRoot: string, origin: string) {
+  const resolvedRoot = resolve(sourceRoot);
+  for (const lock of [...locks].reverse()) {
+    call('locks:release', {
+      lock_id: lock.lockId,
+      ...(lock.domain === resolvedRoot ? {} : { coordination_domain: lock.domain }),
+    }, origin);
+  }
+}
+
+function acquireMatrixSourceLocks(sourceRoot: string, canonical: string, origin: string) {
+  const locks: MatrixSourceLock[] = [];
+  try {
+    for (const domain of matrixSourceLockDomains(sourceRoot, canonical)) {
+      const receipt = call('locks:acquire', matrixSourceLockArgs(domain, sourceRoot), origin);
+      locks.push({ lockId: assertMatrixSourceLock(receipt), domain });
+    }
+    return locks;
+  } catch (error) {
+    try { releaseMatrixSourceLocks(locks, sourceRoot, origin); }
+    catch (releaseError) {
+      throw new Error(`Final matrix source-lock acquisition failed: ${String(error)}\n` +
+        `Partial lock cleanup failed: ${String(releaseError)}`);
+    }
+    throw error;
+  }
 }
 
 function assertCodexAutoRoute(report: Record<string, unknown>) {
@@ -235,6 +294,16 @@ describe('owned matrix capacity preflight', () => {
     expect(() => maintainedCanonicalTree({})).toThrow('maintained canonical tree selector');
     expect(maintainedCanonicalTree({ PAPERCUSP_CANONICAL_TREE: '/canonical' })).toBe(resolve('/canonical'));
     expect(maintainedCanonicalTree({ PAPERCUSP_INTEGRATION_ROOT: '/integration' })).toBe(resolve('/integration'));
+  });
+
+  it('locks both source trees and requires both launcher paths in the receipt', () => {
+    expect(matrixSourceLockDomains('/source', '/source')).toEqual(['/source']);
+    expect(matrixSourceLockDomains('/source', '/canonical')).toEqual(['/source', '/canonical']);
+    expect(matrixSourceLockArgs('/source', '/source')).not.toHaveProperty('coordination_domain');
+    expect(matrixSourceLockArgs('/canonical', '/source').coordination_domain).toBe('/canonical');
+    expect(assertMatrixSourceLock({ lock_id: 'lock-1', held: [...MATRIX_SOURCE_PATHS] })).toBe('lock-1');
+    expect(() => assertMatrixSourceLock({ lock_id: 'lock-1', held: [MATRIX_SOURCE_PATHS[0]] }))
+      .toThrow('could not secure both launcher source files');
   });
 
   it('follows psu route policy: refuse unavailable routes but allow a temporary-cooldown warning', () => {
@@ -406,16 +475,15 @@ async function native(session: Session, archivedSource = false) {
 }
 
 describe.skipIf(!enabled)('final live session resume matrix', () => {
-  it('delivers six cross-backend ports and three original-backend PUI-shaped resumes', async () => {
-    // Validate the canonical source before any live route probes or source reads.
-    const canonical = maintainedCanonicalTree(process.env);
-    const sourceHashes: Record<string, string> = {};
-    for (const path of ['apps/operator/scripts/psu-launcher.mjs', 'apps/operator/scripts/psu-pty-host.mjs']) {
-      const hash = (base: string) => createHash('sha256').update(readFileSync(resolve(base, path))).digest('hex');
-      sourceHashes[path] = hash(root);
-      expect(hash(canonical), `Canonical ${path} changed after preparation`).toBe(sourceHashes[path]);
-    }
+  let heldSourceLocks: HeldMatrixSourceLocks | null = null;
+  afterEach(() => {
+    const held = heldSourceLocks;
+    heldSourceLocks = null;
+    if (held) releaseMatrixSourceLocks(held.locks, held.sourceRoot, held.origin);
+  });
 
+  it('delivers six cross-backend ports and three original-backend PUI-shaped resumes', async () => {
+    const canonical = maintainedCanonicalTree(process.env);
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     const origin = profile.origin as string;
@@ -426,6 +494,18 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     const parentTaskId = matrixParentTaskId();
     const parentWorkItemId = matrixParentWorkItemId(parentTaskId,
       call('processes:list', { taskId: parentTaskId }, origin).tasks);
+    heldSourceLocks = { sourceRoot: root, origin, locks: acquireMatrixSourceLocks(root, canonical, origin) };
+    // Import only after acquiring the lock so cleanup uses the exact launcher
+    // bytes that the matrix hashes and holds stable through every fixture.
+    const { reportSessionEnded } = await import(pathToFileURL(
+      resolve(canonical, 'apps/operator/scripts/psu-launcher.mjs')).href);
+    const sourceHashes: Record<string, string> = {};
+    for (const path of MATRIX_SOURCE_PATHS) {
+      const hash = (base: string) => createHash('sha256').update(readFileSync(resolve(base, path))).digest('hex');
+      sourceHashes[path] = hash(root);
+      expect(hash(canonical), `Canonical ${path} changed after source lock`).toBe(sourceHashes[path]);
+    }
+
     // The upstream capacity probe is not the exact account=auto launch route.
     // Read the gateway's route-level serviceability before preparing any targets;
     // psu's own launch refusal remains the final guard against state changing later.
