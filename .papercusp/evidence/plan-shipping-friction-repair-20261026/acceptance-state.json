@@ -17,15 +17,15 @@
     "red": 22131848
   },
   "applied": {
-    "rubricRevision": 6,
-    "criteriaHash": "8fc2d9c5cffabcc20bf562ecc1b13e4c1ceb5e821aea6119c76742f819431a7f",
-    "barSetHash": "55302753ec33e60ac12c0d04a5a0585681dce7a86939af76365f7a2299e1fdd7",
+    "rubricRevision": 7,
+    "criteriaHash": "79a51971bf9f894c33e1990d0d900b0f1f31e48ba9fa0ece7fcfb4d32e7347d0",
+    "barSetHash": "c642a20d2942f1ac420f184941381ff1b1841caf6c61fdf8528a1db0e4860a7e",
     "atomicApproval": "thread-post:1206471",
     "wordingApproval": "thread-post:1206604",
-    "activationAuditSeq": 5,
-    "subjectPlanRevision": 22,
-    "subjectPlanHash": "8eba9b67b63093692e0fccf4680b13aa07142d9765fe0f3a33a64cd3437a350f",
-    "approvalRef": "thread-post:1206838"
+    "activationAuditSeq": 6,
+    "subjectPlanRevision": 29,
+    "subjectPlanHash": "9e4b56992020bbca08c4a918b3a3f63f66ec07f06fd1f5930a3b0ae40cacd4e8",
+    "approvalRef": "thread-post:1206976"
   },
   "pendingFalsifierReview": {
     "args": {
@@ -603,11 +603,11 @@
     "approvalRef": "thread-post:1206761"
   },
   "quality": {
-    "specSetHash": "9d08f248f6b1024bf0c21ec5129f5182aa3bc81958e1b9b636d1fee90a2a6bcc",
+    "specSetHash": "fe2fbde6dfa34d5f924a81836629bc0fe9b5c64ce4f1a5c3f81774396b64f595",
     "evaluation": "pass",
-    "card": "EI-27066050679803612",
+    "card": "EI-27071679549470860",
     "gradingAuditState": "pending",
-    "note": "Automatically reserved grading-audit:EI-27066050679803612; do not recruit auditor manually."
+    "note": "Canonical automatic independent grading audit requested by scorecard emit; no manual auditor recruitment."
   },
   "vettingRev5": {
     "sameConsultLateDisposition": "thread-post:1206780",
@@ -620,18 +620,66 @@
     "required": 2,
     "policy": "bar-critique",
     "originTaskRef": "plan-shipping-friction-repair-2026-10-26",
-    "rubricRevision": 6,
-    "specSetHash": "9d08f248f6b1024bf0c21ec5129f5182aa3bc81958e1b9b636d1fee90a2a6bcc",
-    "first": "conv-request-cea838e59773b06fbff3f928253424fbadcfbba7c7508aa0d2c9f977e3d55ee4",
+    "rubricRevision": 7,
+    "specSetHash": "fe2fbde6dfa34d5f924a81836629bc0fe9b5c64ce4f1a5c3f81774396b64f595",
+    "first": "conv-request-b51d7527456453e3ed97341da45ec2d33e8717d8ad68735623c4e3588a87de47",
     "firstSourceOwner": "su-1d1eb8d6-c987-4ede-a7d2-6587afea6058",
-    "firstState": "awaiting_responder",
+    "firstState": "routing; not proof of launch",
     "second": null,
-    "next": "Once first routing identifies its actual answering lineage, request second with policy bar-critique + origin_task_ref plan slug and exclude first source/answering owners; both need actual closed-answered dispositions covering current16clauses."
+    "next": "Read current first critique routing; obtain distinct second lineage, close only after actual answers/dispositions. Revision6 reviews remain history.",
+    "firstAnsweringOwner": "su-e84a3579-7df4-40f8-b9ae-b142096aa748",
+    "firstDisposition": {
+      "actualPost": 1206879,
+      "closePost": 1206922,
+      "verdict": "corrections-required"
+    },
+    "secondSourceOwner": "su-84f3db20-3284-4c03-91a7-3562fa4cc698",
+    "secondAnsweringOwner": "su-b84ae44b-309d-494e-a271-dc6f42be9bbf",
+    "secondState": "closed_answered",
+    "secondDisposition": {
+      "actualPost": 1206931,
+      "closePost": 1206960,
+      "verdict": "corrections-required-on-v3"
+    },
+    "previous": {
+      "required": 2,
+      "policy": "bar-critique",
+      "originTaskRef": "plan-shipping-friction-repair-2026-10-26",
+      "rubricRevision": 6,
+      "specSetHash": "9d08f248f6b1024bf0c21ec5129f5182aa3bc81958e1b9b636d1fee90a2a6bcc",
+      "first": "conv-request-cea838e59773b06fbff3f928253424fbadcfbba7c7508aa0d2c9f977e3d55ee4",
+      "firstSourceOwner": "su-1d1eb8d6-c987-4ede-a7d2-6587afea6058",
+      "firstState": "closed_answered",
+      "second": "conv-request-549505595a86611a591b59b20954805a9a0ddda140bb1e09c1528794972c8180",
+      "next": "These reviews covered rubric6 and proposed v3, not the future current13BAR/spec set. D007/D008 record dispositions; v4 must obtain canonical exact-patch approval, then current quality/activation/reviews.",
+      "firstAnsweringOwner": "su-e84a3579-7df4-40f8-b9ae-b142096aa748",
+      "firstDisposition": {
+        "actualPost": 1206879,
+        "closePost": 1206922,
+        "verdict": "corrections-required"
+      },
+      "secondSourceOwner": "su-84f3db20-3284-4c03-91a7-3562fa4cc698",
+      "secondAnsweringOwner": "su-b84ae44b-309d-494e-a271-dc6f42be9bbf",
+      "secondState": "closed_answered",
+      "secondDisposition": {
+        "actualPost": 1206931,
+        "closePost": 1206960,
+        "verdict": "corrections-required-on-v3"
+      }
+    }
   },
   "recoveryDisposition": {
-    "WI-6554700010009934": "dropped by system:acceptance-drain at2026-10-26T16:06:24.182Z because parentconsult-backed-parking-2026-10-12 isarchived:true version67. Sourceacceptance-drain-sweep.ts terminal reconciliation confirmsarchived->dropped. Do notclaimunownedopen/resurrectorcallshipped."
+    "WI-6554700010009934": "dropped by system:acceptance-drain at2026-10-26T16:06:24.182Z because parentconsult-backed-parking-2026-10-12 isarchived:true version67. Sourceacceptance-drain-sweep.ts terminal reconciliation confirmsarchived->dropped. Do notclaimunownedopen/resurrectorcallshipped.",
+    "registryOwnerHandoff": {
+      "ref": "WI-6554700010020527",
+      "authority": "Avi directive2445 relayed by assigned peer",
+      "owner": "su-9681c9b7-0df8-46dc-bf44-cea8951f2608",
+      "state": "claim verified after our release",
+      "checkpointContamination": "unrelated c6c4 CPU-worker history/check rows; warning checkpointed before release",
+      "followup": "EI-27067865027037909"
+    }
   },
-  "next": "CONTINUE ACTIVE WORK: read/repair owned WI-6554700010029563 two exact integration assertions using manual locks and maintained targeted tests; root cause not yet established. Do not rerun for output or assume code vs fixture error. Rubric6/activation5 remain applied; quality card audit pending. Pending rubric-vetting reviews are NOT plan-start bar critiques. Correct first bar-critique is cea838.. with policy bar-critique and origin plan; request second only excluding its measured source/answer lineage. Reconcile actual critiques before proof binding. Keep original historical/native/owner-choice restrictions and final-release boundary. No LIVE_GATE_OPS.",
+  "next": "Rubric7 applied after approval1206976; all13methods/checks and37unique casebindings read back. Audit6 current plan29; specqualityPASS/cardEI27071679549470860 automatic independent audit pending. First currentbar critique b51d routing. Recover fullsource proof69 receipt; imported-source drift12 means currentness OPEN despite653PASS. Continue secondcurrentcritique/meta-vetting, operational R4/R5, current proof binding and final R11 release; no LIVE_GATE_OPS.",
   "launcherFix": {
     "workItem": "WI-6554700010029547",
     "state": "done",
@@ -680,6 +728,17 @@
       "activationAuditSeq": 4,
       "subjectPlanRevision": 15,
       "subjectPlanHash": "ac853968ab3b28fb67cc214f0ac382b6bafb96c97236a6225637c7562b51ac88"
+    },
+    {
+      "rubricRevision": 6,
+      "criteriaHash": "8fc2d9c5cffabcc20bf562ecc1b13e4c1ceb5e821aea6119c76742f819431a7f",
+      "barSetHash": "55302753ec33e60ac12c0d04a5a0585681dce7a86939af76365f7a2299e1fdd7",
+      "atomicApproval": "thread-post:1206471",
+      "wordingApproval": "thread-post:1206604",
+      "activationAuditSeq": 5,
+      "subjectPlanRevision": 22,
+      "subjectPlanHash": "8eba9b67b63093692e0fccf4680b13aa07142d9765fe0f3a33a64cd3437a350f",
+      "approvalRef": "thread-post:1206838"
     }
   ],
   "historicalBarCritiques": [
@@ -743,7 +802,62 @@
         "observation": "expected snapshot reader once; observed twice",
         "note": "EI-267115 is literal text in the maintained test title, not a resolvable work-item reference."
       }
-    ]
+    ],
+    "dbOwnedRepairOutcome": {
+      "state": "done",
+      "ref": "WI-6554700010029563",
+      "targetedRun": "55f08bb6-5740-48c4-8c19-ca6ac3354738",
+      "ledger": 22246797,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 157,
+      "currentness": "imported-source unknown after HEAD movement; not master proof"
+    },
+    "critiqueDetectors": [
+      {
+        "purpose": "forward-schema strict reader",
+        "ledger": 22247520,
+        "passed": 1,
+        "failed": 0
+      },
+      {
+        "purpose": "ended executor release/keyed successor with held-live control",
+        "before": 22247521,
+        "ledger": 22248933,
+        "passed": 1,
+        "failed": 0,
+        "fixtureCorrection": "run canonical lease release under the concrete fixture workspace ALS, matching production request context"
+      },
+      {
+        "purpose": "gate-level audited/unaudited unfinished tail plus helper controls",
+        "originRun": "1e94ec41-8140-4e1e-9938-bdbc40a18e22",
+        "run": "0d41caa3-c809-4df8-b101-336f46bf6875",
+        "ledger": 22249942,
+        "passed": 7,
+        "failed": 0,
+        "skipped": 129,
+        "earlierCollectionFailure": 22249931
+      }
+    ],
+    "detectorCurrentness": "targeted observed passes; dirty working tree/current imported source not yet accepted as current full-suite proof. Native source capture artifacts exist but indexing refused dirty checkout; do not attach current HEAD retroactively.",
+    "committedFullRun": {
+      "ref": "69d65a470984ac49f56e52d0a0632173db9254ee",
+      "log": "/tmp/shipping-friction-committed69.log",
+      "sourceMap": "/tmp/shipping-friction-committed69.sources.json",
+      "recipe": "npm run lint:as-committed -- test:file --any --ref=69d65a470984ac49f56e52d0a0632173db9254ee -- all nine files in v4 r12 check.files; explicit durable PAPERCUSP_TEST_RUNS_DB_URL resolved without printing secrets",
+      "state": "passed",
+      "observation": "Original-source reporter emitted written/dirty=false for seven-unit group; two integration files preparing. Do not infer verdict/counts from source-map rows. Recover durable ledger and complete process/log before any rerun.",
+      "transientHandleWarning": "predecessor run finished; never rerun for output",
+      "passed": 653,
+      "failed": 0,
+      "skipped": 0,
+      "proofPath": ".papercusp/evidence/plan-shipping-friction-repair-20261026/committed69-receipt.json",
+      "sourceMaps": [
+        "/tmp/shipping-friction-committed69.sources.json",
+        "/tmp/shipping-friction-committed69.sources.1.json"
+      ],
+      "currentness": "drift measured; twelve imported source files changed after execution; not bind as current full-tree proof"
+    }
   },
   "followups": [
     {
@@ -754,6 +868,11 @@
         "/tmp/shipping-activation6-commit.err",
         "/tmp/shipping-start-schema.err"
       ]
+    },
+    {
+      "ref": "EI-27067865027037909",
+      "purpose": "owned checkpoint cross-scope contamination investigation",
+      "ownership": "assigned self; not current critical path"
     }
   ],
   "currentVettingConsults": {
@@ -768,11 +887,15 @@
     "secondSourceOwner": "su-13f8badc-4608-4a5f-b67d-2ffeeb8d9a2b",
     "secondAnsweringOwner": "su-911e668e-b558-4b29-baac-ef171161a9d8",
     "secondAwaitId": 374073,
-    "state": "both-dispatched-no-answer-yet",
+    "state": "both-read-and-dispositioned",
     "deadline": "2026-10-26T18:22:24Z",
     "policy": "rubric-vetting",
     "countsForPlanStart": false,
-    "note": "Correction: these are rubric-vetting reviews, not the separate bar-critique gate. Preserve actual vetting work without claiming plan-start credit."
+    "note": "Correction: these are rubric-vetting reviews, not the separate bar-critique gate. Preserve actual vetting work without claiming plan-start credit.",
+    "firstActualPost": 1206864,
+    "firstClosePost": 1206924,
+    "secondActualPost": 1206868,
+    "secondClosePost": 1206925
   },
   "routingCorrection": {
     "wrong": "Two rubric-vetting requests were described as the required current bar critiques.",
@@ -781,5 +904,113 @@
       "packages/operator-core/lib/consult/selection-policies.ts",
       "packages/operator-core/lib/agent-tools/plans/plan-start-critique-gate.ts"
     ]
+  },
+  "critiqueReconciliation": {
+    "decisions": [
+      "D-007",
+      "D-008",
+      "D-009"
+    ],
+    "appliedRubricRevision": 6,
+    "subjectPlanRevisionBeforePreview": 28,
+    "immutableBase": "rubric6-snapshot.json",
+    "legacyClauses": [
+      {
+        "id": "shipping-blocker-age",
+        "revision": 4,
+        "lifecycleStatus": "active",
+        "role": "authored item contract distinct from BAR projection"
+      },
+      {
+        "id": "shipping-pregrading-wrong-phase-regression",
+        "revision": 4,
+        "lifecycleStatus": "active",
+        "role": "authored failure item contract"
+      },
+      {
+        "id": "shipping-readable-contract",
+        "revision": 4,
+        "lifecycleStatus": "active",
+        "role": "authored failure item contract"
+      },
+      {
+        "id": "shipping-recovery-owner",
+        "revision": 5,
+        "lifecycleStatus": "active",
+        "role": "atomic nonterminal accountable continuation, requiredEvidence live; terminal rule stays R4"
+      }
+    ],
+    "v3": {
+      "path": "critique-amendment-v3.json",
+      "previewPost": "thread-post:1206915",
+      "receipt": "review-742e804cc443640a6ce344108827080a1e1fa8baddf9d9246137412723e77eee",
+      "state": "orphaned",
+      "note": "No approval or apply; recovered authoritative receipt after transport timeout. Superseded by v4 content."
+    },
+    "v4": {
+      "path": "critique-amendment-v4.json",
+      "idempotencyKey": "shipping-friction-critique-v4-20261026",
+      "criteria": 13,
+      "caseBindings": 37,
+      "censusPath": "coverage-census-v4.json",
+      "censusSha256": "dc67cef9faa8d31f0c77c2cd39b788cc38afd2eb67edaba1b5252b00107326bc",
+      "previewState": "approved and applied",
+      "receipt": "review-5c0050b4b926436d7f7ee5c2c83ea07d6a2fdc8d43c62d6ca1ab8d2db6b07825",
+      "stderr": "/tmp/shipping-amend-v4-preview.err",
+      "transportSession": null,
+      "previewPost": "thread-post:1206961",
+      "conversation": "conv-mvpmk3zx-0000-506e562562234901baad9f94411c16cf",
+      "reviewer": "su-502b427b-f485-4637-a3a0-234b63fffd19",
+      "task": "0mvpmk9tr1acptvf16c",
+      "nativeRef": "/home/marsh-office/.papercusp/session-claude/su-502b427b-f485-4637-a3a0-234b63fffd19/projects/-home-marsh-office-papercupai-workspace-papercusp/76f539fb-d3d9-4ec2-82f9-ff208b048d34.jsonl",
+      "retainedPreviewReceipt": "review-48fb1ce67c4d7d53efd3683e5ca79bf3d8ad80558665ccd5af08acf92b6ebff1",
+      "retainedPreviewState": "no new reviewer launched: unrelated later post1206963 trips broad thread-reply guard; original502 reviewer not proven ended",
+      "retainedPreviewResponse": "/tmp/shipping-v4-retained-preview.json",
+      "supplementalV3Critique": 1206963,
+      "approvalRef": "thread-post:1206976",
+      "appliedRubricRevision": 7,
+      "fullReadback": "/tmp/shipping-rubric7-full.json",
+      "methodAndCheckReadback": "all13 criterion methods/checks match exact v4;37unique casebindings all match canonical passedCaseTitles"
+    },
+    "next": "Drain current preview process/receipt; do not reissue an unknown mutation. Apply only actual outside-lineage approval. Then refresh all actual13methods/checks, plan audits/current critiques and full regression receipts before binding.",
+    "legacyClauseHistory": [
+      {
+        "id": "shipping-blocker-age",
+        "revision": 3,
+        "lifecycleStatus": "superseded",
+        "successor": "AUTO-BAR-R-3-P-003"
+      },
+      {
+        "id": "shipping-pregrading-wrong-phase-regression",
+        "revision": 3,
+        "lifecycleStatus": "superseded",
+        "successor": "AUTO-BAR-R-2-P-002"
+      },
+      {
+        "id": "shipping-readable-contract",
+        "revision": 3,
+        "lifecycleStatus": "superseded",
+        "successor": "AUTO-BAR-R-1-P-001"
+      },
+      {
+        "id": "shipping-recovery-owner",
+        "revision": 3,
+        "lifecycleStatus": "superseded",
+        "successor": "AUTO-BAR-R-4-P-004"
+      }
+    ],
+    "supersessionCorrection": "D009 retracts blanket supersession: spec-quality intentionally excludes AUTO-BAR projections from authored item-contract coverage. Same four identities revised active; contradiction fixed rather than removing required item contracts.",
+    "currentQuality": {
+      "verdict": "pass",
+      "specSetHash": "4a0644072ebe5fbaaa512cb4d44d9ecc26bb6513c8d76a228f6b8bf2083f916e",
+      "clauseCount": 16,
+      "cardEmitted": false,
+      "activationAuditCurrent": false
+    }
+  },
+  "commitHop": {
+    "observedCommit": "69d65a470984ac49f56e52d0a0632173db9254ee",
+    "changedTestPathsClean": true,
+    "manualGitSync": "No successful manual fire: direct3170 request-only, direct3271 native-session verifier unavailable, explicit direct3170 target mismatch; background routine independently committed. No native auth bypass; no gate/deploy operations."
   }
 }
