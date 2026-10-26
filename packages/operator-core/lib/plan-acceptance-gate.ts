@@ -2264,7 +2264,12 @@ export function planAcceptanceRepairAction(
   if (verdict.code === 'acceptance_bar_contract_not_ready') {
     // D-022: this code ALSO means identity/read/adoption failure. Neither its
     // spelling nor prose is evidence that the rubric needs mutation.
-    const lifecycle = verdict.acceptanceBarLifecycle;
+    // The ship lifecycle includes obligations that are unreachable until the
+    // blocking phase passes (including grading and the author's verdict).
+    // Route the same phase the gate measured, rather than asking for later work.
+    const lifecycle = verdict.blockingPhase === 'pre-grading'
+      ? verdict.blockingPhaseLifecycle
+      : verdict.acceptanceBarLifecycle;
     const repair = lifecycle?.nextRepair;
     const code = repair && lifecycle.codes.includes(repair.code) ? repair.code : undefined;
     const context = code ? repair!.action : instruction;

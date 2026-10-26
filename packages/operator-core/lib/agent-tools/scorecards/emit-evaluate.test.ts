@@ -32,6 +32,11 @@ import {
 } from '../../acceptance-author-identity';
 
 const readRunningGenerationM = vi.hoisted(() => vi.fn());
+const deferredSpendM = vi.hoisted(() => vi.fn());
+vi.mock('../../workspace-host/deferred-spend-acceptance-instruments', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../workspace-host/deferred-spend-acceptance-instruments')>(),
+  measureDeferredSpendAcceptance: (...args: unknown[]) => deferredSpendM(...args),
+}));
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -2491,6 +2496,60 @@ describe('scorecards:evaluate input ownership is explicit', () => {
     expect(emitSourceHive).toContain("put the subject plan's hive in targetHive");
     expect(emitTargetHive).toContain('Subject plan/repository hive');
     expect(emitTargetHive).toContain('Independent of sourceHive');
+  });
+});
+
+describe('DS-P010-DISTINCT-OBSERVATIONS public scorecards handlers', () => {
+  const plan = 'workspace-host-deferred-spend-reconciliation-2026-09-07';
+  const keys = ['workspace-host.deferred-spend.r007', 'workspace-host.deferred-spend.r008'];
+  const subject = { kind: 'plan' as const, ref: plan,
+    windowStart: '2026-10-25T19:00:00Z', windowEnd: '2026-10-25T20:00:00Z' };
+  beforeEach(() => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, revision: 7, criteriaHash: 'c'.repeat(64),
+      subjectPlan: plan, subjectHarnessSlug: 'papercusp',
+      criteria: RUBRIC.criteria.map((criterion, index) => ({ ...criterion,
+        check: { kind: 'instrument', instrumentKey: keys[index] } })) });
+  });
+  // The instrument boundary is doubled here; the adjacent composer suite runs the
+  // real P007/P008/P009 collectors. No fixture establishes live product evidence.
+  function measurement(verdict: 'unknown' | 'fail') {
+    return { scope: 'deferred-spend-acceptance',
+      identity: { observation: { observedAt: '2026-10-25T20:00:02Z' } },
+      manifestRef: 'artifact:papercusp:evidence/deferred-spend/handler-control.json', manifestHash: 'a'.repeat(64),
+      criteria: { r007: { verdict: 'pass', reasons: [] }, r008: { verdict, reasons: ['distinct measured outcome'] } } };
+  }
+  const supplied = Object.fromEntries(keys.map(key => [key, { verdict: 'pass' as const,
+    measuredAt: '2026-10-25T20:00:02Z', provenance: 'platform-computed' as const }]));
+  it.each(['unknown', 'fail'] as const)('baseline: evaluate and emit each execute one shared measurement and retain R008 %s independently', async verdict => {
+    deferredSpendM.mockResolvedValue(measurement(verdict));
+    const args = { rubricRef: 'test-rubric', subject, ratings: RATINGS, instrumentSnapshots: supplied };
+    const evaluated = await evaluateScorecard(scorecardEvaluateArgs.parse(args));
+    expect(deferredSpendM).toHaveBeenCalledTimes(1);
+    expect(evaluated).toMatchObject({ ok: true, instrumentContract: {
+      verdictMismatches: [keys[1]], positiveClaimContradictions: verdict === 'fail' ? [keys[1]] : [],
+    } });
+    expect(await emitScorecard(scorecardEmitArgs.parse(args), { createdBy: 'su-1' })).toMatchObject({ ok: true, created: true });
+    expect(deferredSpendM).toHaveBeenCalledTimes(2);
+    expect(deferredSpendM).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: 'ws', harness: 'papercusp', planSlug: plan,
+      rubricRef: 'test-rubric', rubricRevision: 7, criteriaHash: 'c'.repeat(64), subjectRef: plan,
+      windowStart: subject.windowStart, windowEnd: subject.windowEnd }));
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: { instrumentSnapshots: {
+      [keys[0]]: { verdict: 'pass' }, [keys[1]]: { verdict },
+    } } } });
+  });
+  it.each(['resolver-error', 'missing-identity'] as const)('counterexample: both handlers replace forged passes on %s', async defect => {
+    if (defect === 'resolver-error') deferredSpendM.mockRejectedValue(new Error('unavailable'));
+    else deferredSpendM.mockResolvedValue({ ...measurement('unknown'), identity: undefined });
+    const args = { rubricRef: 'test-rubric', subject, ratings: RATINGS, instrumentSnapshots: supplied };
+    expect(await evaluateScorecard(scorecardEvaluateArgs.parse(args))).toMatchObject({ ok: true, instrumentContract: {
+      verdictMismatches: keys, positiveClaimContradictions: [],
+    } });
+    expect(await emitScorecard(scorecardEmitArgs.parse(args), { createdBy: 'su-1' })).toMatchObject({ ok: true, created: true });
+    expect(deferredSpendM).toHaveBeenCalledTimes(2);
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: { instrumentSnapshots: {
+      [keys[0]]: { verdict: 'unknown', provenance: 'platform-computed' },
+      [keys[1]]: { verdict: 'unknown', provenance: 'platform-computed' },
+    } } } });
   });
 });
 

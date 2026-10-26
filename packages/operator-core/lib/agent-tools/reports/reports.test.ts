@@ -32,6 +32,7 @@ import { reportResultDeliveryMetadata } from '../../report-result-delivery';
 const {
   publishReportM,
   getReportM,
+  reportExistsM,
   listReportsM,
   searchReportsM,
   retireReportM,
@@ -47,6 +48,7 @@ const {
 } = vi.hoisted(() => ({
   publishReportM: vi.fn(),
   getReportM: vi.fn(),
+  reportExistsM: vi.fn(),
   listReportsM: vi.fn(),
   searchReportsM: vi.fn(),
   retireReportM: vi.fn(),
@@ -70,6 +72,7 @@ vi.mock('../../report-library', async (importActual) => {
     ...actual,
     publishReport: publishReportM,
     getReport: getReportM,
+    reportExists: reportExistsM,
     listReports: listReportsM,
     searchReports: searchReportsM,
     retireReport: retireReportM,
@@ -116,6 +119,13 @@ describe('Reports component fixture calibration', () => {
 });
 
 describe('Reports delivery guidance', () => {
+  it('advertises workspace-public as the default and private visibility as an explicit choice', () => {
+    const visibility = publishTool.args.shape.visibility.description;
+    expect(visibility).toContain('public within this workspace');
+    expect(visibility).toContain('default workspace');
+    expect(visibility).toContain('private; opt in explicitly');
+  });
+
   it('requires readback and content verification before citation for new reports and corrections', () => {
     expect(publishTool.description).toContain('reports:get { id: report_id }');
     expect(publishTool.description).toContain('verify the complete body and visibility');
@@ -168,6 +178,7 @@ const record = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  reportExistsM.mockReset().mockResolvedValue(false);
   vi.clearAllMocks();
   getFlagM.mockResolvedValue(true);
   indexReportM.mockResolvedValue({ chunks: 1, embedded: 1 });
@@ -439,10 +450,35 @@ describe('visibility matrix (R-7) — every read passes a viewer', () => {
     expect(listReportLineageM.mock.calls[0][3]).toEqual(expectedViewer);
   });
 
-  it('an invisible report reads as not_found, never as forbidden', async () => {
+  it('an inaccessible report discloses existence without returning private content or lineage', async () => {
+    getReportM.mockResolvedValue(null);
+    reportExistsM.mockResolvedValue(true);
+    const metadata = vi.fn();
+    const out = body(await getTool.handler({ id: 'rpt_secret', lineage: true } as never, { ...CTX, metadata } as never) as Out);
+    expect(out.results[0]).toEqual({ ok: false, id: 'rpt_secret', error: 'access_denied', exists: true,
+      message: 'This report exists, but you do not have access to it.' });
+    expect(reportExistsM).toHaveBeenCalledWith(expect.anything(), 'ws1', 'rpt_secret');
+    expect(listReportLineageM).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenCalledWith({ reportReadbacks: [] });
+  });
+
+  it('a missing report remains not_found', async () => {
     getReportM.mockResolvedValue(null);
     const out = body(await getTool.handler({ id: 'rpt_secret' } as never, CTX as never) as Out);
     expect(out.results[0]).toMatchObject({ ok: false, id: 'rpt_secret', error: 'not_found' });
+  });
+
+  it('keeps allowed, denied and absent exact ids distinct in a batch', async () => {
+    getReportM.mockImplementation(async (_sql, _workspace, id) => id === 'rpt_allowed' ? record({ reportId: id }) : null);
+    reportExistsM.mockImplementation(async (_sql, _workspace, id) => id === 'rpt_private');
+    const out = body(await getTool.handler({ ids: ['rpt_allowed', 'rpt_private', 'rpt_absent'] } as never, CTX as never) as Out);
+    expect(out.counts).toEqual({ ok: 1, failed: 2 });
+    expect(out.results).toEqual([
+      expect.objectContaining({ id: 'rpt_allowed', ok: true, report: expect.objectContaining({ report_id: 'rpt_allowed' }) }),
+      { id: 'rpt_private', ok: false, error: 'access_denied', exists: true,
+        message: 'This report exists, but you do not have access to it.' },
+      { id: 'rpt_absent', ok: false, error: 'not_found' },
+    ]);
   });
   it('records the exact successful full report edition readback in native invocation metadata', async () => {
     const metadata = vi.fn();
