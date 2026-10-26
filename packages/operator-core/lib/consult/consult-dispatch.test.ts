@@ -60,6 +60,7 @@ import {
 const NOW_MS = Date.parse('2026-09-26T12:00:00.000Z');
 import { buildAgentLaunchCommand, injectLaunchedByArg } from '../agent-launch-core';
 import { checkConsultSessionPortTranscript } from './resume-transcript-preflight';
+import { analyzeCodexRolloutText } from '../events/await/codex-rollout-overflow';
 import {
   DEFAULT_EXPERT_MODEL_ALLOWLIST,
   normalizeExpertModelAllowlist,
@@ -215,6 +216,7 @@ function makeFakes(
     isConsultOpen: async () => true,
     // No transcript is poisoned unless a test says so; never read the real fs here.
     analyzeClaudeTranscript: () => null,
+    analyzeCodexRollout: () => null,
     nowMs: () => NOW_MS,
     // The first-turn wait (WI-10004645) never sleeps for real in unit tests.
     sleepMs: async () => {},
@@ -994,6 +996,56 @@ describe('dispatchConsultResponder — the walk', () => {
       expect(calls.stopped).toEqual(['task-1']);
       expect(result.attempts.some(attempt => attempt.reason === 'source-transcript-poisoned')).toBe(false);
       expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    // WI-6554700010029533: Codex ranks were never judged, so a convert whose first
+    // turn ended on a ChatGPT usage limit held its slot until bounded pickup recovery
+    // (measured 13-27 min, answer-pickup-stalled). Real analyzer over rollout text.
+    describe('a Codex rank first turn, judged from its rollout', () => {
+      const claudeWall = (path: string) => path === '/native/answer.jsonl' ? {
+        trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null,
+        assistantTurnsSinceLastPrompt: 1, trailingAccountWallTurns: 1,
+        lastAccountWallEvidence: 'API Error: Request rejected (429)',
+      } : null;
+      const rollout = (...records: object[]) => (path: string) => path === '/native/answer.jsonl'
+        ? analyzeCodexRolloutText(records.map((r) => JSON.stringify(r)).join('\n'))
+        : null;
+      const started = { type: 'event_msg', payload: { type: 'task_started' } };
+
+      it('stops a usage-limit wall as account-walled instead of holding the slot', async () => {
+        const { deps, calls } = makeFakes({
+          analyzeClaudeTranscript: claudeWall,
+          analyzeCodexRollout: rollout(started, {
+            type: 'event_msg', payload: { type: 'task_complete', error: { message: 'You’ve hit your usage limit. Upgrade to Pro' } },
+          }),
+        });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        const codex = result.attempts.find((a) => a.operation === 'convert');
+        expect(codex).toMatchObject({ outcome: 'failed', reason: 'account-walled' });
+        expect(codex?.detail).toContain('provider account rejection (You’ve hit your usage limit. Upgrade to Pro)');
+        expect(calls.stopped).toEqual(['task-1', 'task-2']);
+        expect(result.attempts.some((a) => a.operation === 'convert' && a.outcome === 'dispatched')).toBe(false);
+      });
+
+      it('keeps a Codex convert whose first turn ended cleanly, with no unchecked note', async () => {
+        const { deps, calls } = makeFakes({
+          analyzeClaudeTranscript: claudeWall,
+          analyzeCodexRollout: rollout(started, { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'answered' } }),
+        });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+        expect(calls.stopped).toEqual(['task-1']);
+        expect(result.attempts.find((a) => a.operation === 'convert')?.detail).not.toContain('First reply not');
+      });
+
+      it('keeps the dispatch when the rollout is unreadable, and says the check did not run', async () => {
+        const { deps, calls } = makeFakes({ analyzeClaudeTranscript: claudeWall });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+        expect(calls.stopped).toEqual(['task-1']);
+        expect(result.attempts.find((a) => a.operation === 'convert')?.detail)
+          .toContain('First reply not checked for a provider rejection: its transcript /native/answer.jsonl could not be read.');
+      });
     });
 
     // WI-6554700010018146: a first reply that is a transient provider failure was

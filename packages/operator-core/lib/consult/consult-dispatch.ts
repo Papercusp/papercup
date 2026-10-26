@@ -64,6 +64,7 @@ import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { papercuspPathForWorkspace } from '../papercusp-root';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { analyzeCodexRolloutFile, type CodexRolloutOverflowAnalysis } from '../events/await/codex-rollout-overflow';
 import {
   resolveExpertModelAllowlist,
   normalizeExpertModelAllowlist,
@@ -492,6 +493,34 @@ export interface CodexGatewayLaunchRefusal {
  * `refuse` outcomes of `codexAutoPoolVerdict` (warn/proceed both launch); the parity
  * test pins it to that function so the two predicates cannot drift again.
  */
+/** The first-turn fields the dispatcher judges an answering session by, for every agent. */
+type FirstTurnAnalysis = NonNullable<ReturnType<ConsultDispatchDeps['analyzeClaudeTranscript']>>;
+
+/**
+ * Map a Codex rollout analysis onto the first-turn fields Claude ranks are judged
+ * by (WI-6554700010029533). The kickoff proof is persisted before the check runs,
+ * so the newest `task_started` is the answering session's own kickoff turn. Until
+ * that turn ends there is no reply yet. A usage limit is an account wall, an
+ * overflow is a context-limit rejection and any other error is a transient
+ * provider error. A clean or aborted ending is a reply, and the dispatch stands.
+ */
+export function codexFirstTurnAnalysis(analysis: CodexRolloutOverflowAnalysis | null): FirstTurnAnalysis | null {
+  if (!analysis) return null;
+  const outcome = analysis.currentTurnOutcome;
+  const evidence = analysis.currentTurnErrorEvidence;
+  return {
+    assistantTurnsSinceLastPrompt: outcome === null ? 0 : 1,
+    trailingAccountWallTurns: outcome === 'usage-limit' ? 1 : 0,
+    lastAccountWallEvidence: outcome === 'usage-limit' ? evidence : null,
+    trailingContextLimitTurns: outcome === 'context-overflow' ? 1 : 0,
+    lastContextLimitEvidence: outcome === 'context-overflow' ? evidence : null,
+    trailingMissingToolReferenceTurns: 0,
+    lastMissingToolReferenceName: null,
+    trailingProviderErrorTurns: outcome === 'error' ? 1 : 0,
+    lastProviderErrorEvidence: outcome === 'error' ? evidence : null,
+  };
+}
+
 export function codexGatewayLaunchRefusal(
   stats: CodexGatewayPoolStats | null | undefined,
   now: number,
@@ -603,6 +632,12 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
     'trailingAccountWallTurns' | 'lastAccountWallEvidence' |
     'trailingProviderErrorTurns' | 'lastProviderErrorEvidence'
   > | null;
+  /**
+   * Read a Codex answering session's rollout (its kickoff proof's native ref) so
+   * its first turn is judged like a Claude rank's (WI-6554700010029533). Null when
+   * unreadable.
+   */
+  analyzeCodexRollout: (rolloutPath: string) => CodexRolloutOverflowAnalysis | null;
   /** Wait seam for the first-turn poll (WI-10004645); tests resolve it at once. */
   sleepMs: (ms: number) => Promise<void>;
   buildAgentLaunchCommand: typeof buildAgentLaunchCommand;
@@ -1370,6 +1405,7 @@ export async function dispatchConsultResponder(
     },
     isConsultOpen: defaultIsConsultOpen,
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
+    analyzeCodexRollout: analyzeCodexRolloutFile,
     buildAgentLaunchCommand,
     injectLaunchedByArg,
     buildConsoleEnvelope,
@@ -2210,10 +2246,14 @@ async function launchAnsweringSession(
   // the check did not run. A silent record reads exactly like a fork whose first
   // reply was judged clean, which hid a dead-on-arrival fork (WI-10006676).
   let firstTurnUncheckedReason: string | null = null;
-  if (rank.agent === 'claude' && !(typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl'))) {
+  // WI-6554700010029533: Codex ranks are judged too. Their kickoff proof names the
+  // rollout, and a Codex convert walled by a usage limit on its first turn otherwise
+  // held its cascade slot until bounded pickup recovery (measured 13-27 min).
+  const judgesFirstTurn = rank.agent === 'claude' || rank.agent === 'codex';
+  if (judgesFirstTurn && !(typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl'))) {
     firstTurnUncheckedReason = 'the kickoff proof named no native transcript';
   }
-  if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
+  if (judgesFirstTurn && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
     let rejection: {
       turns: number; tool: string | null; contextEvidence?: string; accountEvidence?: string; providerEvidence?: string;
     } | null = null;
@@ -2224,9 +2264,11 @@ async function launchAnsweringSession(
     let readable = true;
     let replied = false;
     for (let poll = 0; ; poll += 1) {
-      let analysis: ReturnType<ConsultDispatchDeps['analyzeClaudeTranscript']> = null;
+      let analysis: FirstTurnAnalysis | null = null;
       try {
-        analysis = d.analyzeClaudeTranscript(answeringTranscript);
+        analysis = rank.agent === 'codex'
+          ? codexFirstTurnAnalysis(d.analyzeCodexRollout(answeringTranscript))
+          : d.analyzeClaudeTranscript(answeringTranscript);
       } catch {
         analysis = null;
       }

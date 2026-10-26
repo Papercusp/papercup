@@ -39,9 +39,14 @@ const FIXTURES: Array<[string, CodexGatewayPoolStats | null | undefined]> = [
   ['healthy unknown', { codexHealthyAccounts: null, codexTotalAccounts: 8, codexEarliestRecoveryAt: null }],
 ];
 
+// The fixtures deliberately carry malformed and legacy snapshots, exactly as a live
+// /stats read can return them; the launcher's static type only names the good shape.
+type LauncherStats = Parameters<typeof codexAutoPoolVerdict>[0]['stats'];
+const asLauncherStats = (stats: unknown): LauncherStats => stats as LauncherStats;
+
 describe('codexGatewayLaunchRefusal parity with the psu launcher', () => {
   it.each(FIXTURES)('%s: refuses exactly when codexAutoPoolVerdict refuses', (_label, stats) => {
-    const launcher = codexAutoPoolVerdict({ agent: 'codex', model: 'gpt-6-astra', account: 'auto', stats, now: NOW });
+    const launcher = codexAutoPoolVerdict({ agent: 'codex', model: 'gpt-6-astra', account: 'auto', stats: asLauncherStats(stats), now: NOW });
     const refusal = codexGatewayLaunchRefusal(stats, NOW);
     expect(refusal !== null).toBe(launcher.kind === 'refuse');
     if (refusal) expect(refusal.recoveryAt).toBe(launcher.recoveryAt);
@@ -49,7 +54,7 @@ describe('codexGatewayLaunchRefusal parity with the psu launcher', () => {
 
   it('covers both refuse and launch outcomes, so parity is not vacuous', () => {
     const kinds = new Set(FIXTURES.map(([, stats]) =>
-      codexAutoPoolVerdict({ agent: 'codex', model: 'gpt-6-astra', account: 'auto', stats, now: NOW }).kind));
+      codexAutoPoolVerdict({ agent: 'codex', model: 'gpt-6-astra', account: 'auto', stats: asLauncherStats(stats), now: NOW }).kind));
     expect(kinds).toEqual(new Set(['proceed', 'warn', 'refuse']));
   });
 
