@@ -17,14 +17,15 @@
     "red": 22131848
   },
   "applied": {
-    "rubricRevision": 5,
-    "criteriaHash": "84fc592c8c84b6333461c7536d10b1fd4ac74afceaad63ada220834d9bdd1b2d",
-    "barSetHash": "de18d909bc2f1b855aa5eb3130e9413925b7fce54e24dfd642d7953e5848213e",
+    "rubricRevision": 6,
+    "criteriaHash": "8fc2d9c5cffabcc20bf562ecc1b13e4c1ceb5e821aea6119c76742f819431a7f",
+    "barSetHash": "55302753ec33e60ac12c0d04a5a0585681dce7a86939af76365f7a2299e1fdd7",
     "atomicApproval": "thread-post:1206471",
     "wordingApproval": "thread-post:1206604",
-    "activationAuditSeq": 4,
-    "subjectPlanRevision": 15,
-    "subjectPlanHash": "ac853968ab3b28fb67cc214f0ac382b6bafb96c97236a6225637c7562b51ac88"
+    "activationAuditSeq": 5,
+    "subjectPlanRevision": 22,
+    "subjectPlanHash": "8eba9b67b63093692e0fccf4680b13aa07142d9765fe0f3a33a64cd3437a350f",
+    "approvalRef": "thread-post:1206838"
   },
   "pendingFalsifierReview": {
     "args": {
@@ -602,11 +603,11 @@
     "approvalRef": "thread-post:1206761"
   },
   "quality": {
-    "specSetHash": "8b282e02eef55ce8340a368f4a1b3714d9e269c248f8b6aff54106ffe1a034c8",
+    "specSetHash": "9d08f248f6b1024bf0c21ec5129f5182aa3bc81958e1b9b636d1fee90a2a6bcc",
     "evaluation": "pass",
-    "card": "EI-27061042666296110",
-    "gradingAudit": "EI-27061584067760971",
-    "gradingAuditState": "passed"
+    "card": "EI-27066050679803612",
+    "gradingAuditState": "pending",
+    "note": "Automatically reserved grading-audit:EI-27066050679803612; do not recruit auditor manually."
   },
   "vettingRev5": {
     "sameConsultLateDisposition": "thread-post:1206780",
@@ -617,27 +618,20 @@
   },
   "currentBarCritiques": {
     "required": 2,
-    "first": "conv-request-046da7c9beabd389962c9a44b42b43d3fc4d8c6e9358999266bbce349e062dcf",
-    "firstSourceOwner": "su-6432fc8d-1d1b-4c87-b2f1-b891d3d7b80b",
-    "firstAnsweringOwner": "su-26b0d156-f842-4997-beeb-a8e208e4d2ff",
-    "second": "conv-request-f3cdde62c6d7a88d6e3dce34596147fdea3a52121d734b27ebaf16a8079497ad",
-    "firstDisposition": {
-      "postId": 1206810,
-      "state": "closed_answered",
-      "critiquePost": 1206797,
-      "verdict": "corrections-required"
-    },
-    "secondDisposition": {
-      "postId": 1206809,
-      "state": "closed_cant_help",
-      "answers": 0,
-      "reason": "expired fresh-launch defect; replacement required"
-    }
+    "policy": "bar-critique",
+    "originTaskRef": "plan-shipping-friction-repair-2026-10-26",
+    "rubricRevision": 6,
+    "specSetHash": "9d08f248f6b1024bf0c21ec5129f5182aa3bc81958e1b9b636d1fee90a2a6bcc",
+    "first": "conv-request-cea838e59773b06fbff3f928253424fbadcfbba7c7508aa0d2c9f977e3d55ee4",
+    "firstSourceOwner": "su-1d1eb8d6-c987-4ede-a7d2-6587afea6058",
+    "firstState": "awaiting_responder",
+    "second": null,
+    "next": "Once first routing identifies its actual answering lineage, request second with policy bar-critique + origin_task_ref plan slug and exclude first source/answering owners; both need actual closed-answered dispositions covering current16clauses."
   },
   "recoveryDisposition": {
     "WI-6554700010009934": "dropped by system:acceptance-drain at2026-10-26T16:06:24.182Z because parentconsult-backed-parking-2026-10-12 isarchived:true version67. Sourceacceptance-drain-sweep.ts terminal reconciliation confirmsarchived->dropped. Do notclaimunownedopen/resurrectorcallshipped."
   },
-  "next": "Resolve canonical amendment receipt review-0bd84ebc3914022dfbf2d1860b0bbaff5624c3f91d1c4cc7fbdb6071c3b865ec, read exact outside-lineage approval then apply exact candidate critique-amendment-v2.json. Re-audit activation, re-vet/re-critique changed contract, quality audits, then proof binding/current-build independent acceptance and final-release evidence. No self-grading. Keep WI17914 owner's historical-scope/native prohibition pending, legitimate dropped WI9934 terminal, and no LIVE_GATE_OPS duplication.",
+  "next": "CONTINUE ACTIVE WORK: read/repair owned WI-6554700010029563 two exact integration assertions using manual locks and maintained targeted tests; root cause not yet established. Do not rerun for output or assume code vs fixture error. Rubric6/activation5 remain applied; quality card audit pending. Pending rubric-vetting reviews are NOT plan-start bar critiques. Correct first bar-critique is cea838.. with policy bar-critique and origin plan; request second only excluding its measured source/answer lineage. Reconcile actual critiques before proof binding. Keep original historical/native/owner-choice restrictions and final-release boundary. No LIVE_GATE_OPS.",
   "launcherFix": {
     "workItem": "WI-6554700010029547",
     "state": "done",
@@ -653,7 +647,7 @@
     "subjectPlanHash": "6e23ff6fbef5fe2c58871140feea568d7f2c9cc5afc2ffe861d57879e35090eb",
     "rubricCurrentRevision": 5,
     "reviewReceipt": "review-0bd84ebc3914022dfbf2d1860b0bbaff5624c3f91d1c4cc7fbdb6071c3b865ec",
-    "status": "pending-outside-lineage-review",
+    "status": "applied",
     "specCorrection": {
       "specId": "shipping-pregrading-wrong-phase-regression",
       "revision": 2,
@@ -661,6 +655,131 @@
       "requiredEvidence": [
         "tree"
       ]
+    },
+    "approvalRef": "thread-post:1206838",
+    "applyKey": "shipping-friction-critique-detectors-20261026-v2",
+    "immutableReadback": {
+      "revision": 6,
+      "all12MethodsExact": true,
+      "all12ChecksExact": true
+    },
+    "activationAudit": {
+      "seq": 5,
+      "replayTransportKey": "f94ac214-3234-4a21-a08b-1cc5be8c754d",
+      "outcome": "recorded",
+      "note": "Initial transport timed out unknown; same-key replay returned ok:true auditSeq5. All source ranges/mappings preserved."
     }
+  },
+  "appliedHistory": [
+    {
+      "rubricRevision": 5,
+      "criteriaHash": "84fc592c8c84b6333461c7536d10b1fd4ac74afceaad63ada220834d9bdd1b2d",
+      "barSetHash": "de18d909bc2f1b855aa5eb3130e9413925b7fce54e24dfd642d7953e5848213e",
+      "atomicApproval": "thread-post:1206471",
+      "wordingApproval": "thread-post:1206604",
+      "activationAuditSeq": 4,
+      "subjectPlanRevision": 15,
+      "subjectPlanHash": "ac853968ab3b28fb67cc214f0ac382b6bafb96c97236a6225637c7562b51ac88"
+    }
+  ],
+  "historicalBarCritiques": [
+    {
+      "required": 2,
+      "first": "conv-request-046da7c9beabd389962c9a44b42b43d3fc4d8c6e9358999266bbce349e062dcf",
+      "firstSourceOwner": "su-6432fc8d-1d1b-4c87-b2f1-b891d3d7b80b",
+      "firstAnsweringOwner": "su-26b0d156-f842-4997-beeb-a8e208e4d2ff",
+      "second": "conv-request-f3cdde62c6d7a88d6e3dce34596147fdea3a52121d734b27ebaf16a8079497ad",
+      "firstDisposition": {
+        "postId": 1206810,
+        "state": "closed_answered",
+        "critiquePost": 1206797,
+        "verdict": "corrections-required"
+      },
+      "secondDisposition": {
+        "postId": 1206809,
+        "state": "closed_cant_help",
+        "answers": 0,
+        "reason": "expired fresh-launch defect; replacement required"
+      }
+    }
+  ],
+  "qualityHistory": [
+    {
+      "specSetHash": "8b282e02eef55ce8340a368f4a1b3714d9e269c248f8b6aff54106ffe1a034c8",
+      "evaluation": "pass",
+      "card": "EI-27061042666296110",
+      "gradingAudit": "EI-27061584067760971",
+      "gradingAuditState": "passed"
+    }
+  ],
+  "currentRegressionPreparation": {
+    "unitRun": "10949cde-7a0e-458e-9569-13076c490680",
+    "unitOutcome": "pass",
+    "unitCurrentness": "unknown imported source scope: HEAD moved; preserve as historical, do not bind as current by attaching latest HEAD",
+    "dbOriginRun": "f6de61af-239d-4db1-aed1-8775892df8d4",
+    "dbDetachedRun": "8cbbfe6c-5574-4a21-947d-ed80cd60b933",
+    "dbTask": "0mvpkhhp4hpkb5715np",
+    "dbState": "fail",
+    "dbAwaitId": 374074,
+    "dbAwaitDeadline": "2026-10-26T18:12:25Z",
+    "dbExitCode": 1,
+    "dbLedger": 22244667,
+    "dbOwnedRepair": "WI-6554700010029563",
+    "dbWakeConsumed": {
+      "awaitId": 374074,
+      "deliveryId": 999204
+    },
+    "failures": [
+      {
+        "file": "packages/operator-core/lib/rubrics.integration.test.ts",
+        "line": 2441,
+        "test": "refreshes a stale stored BAR readiness Now after a canonical acceptance amendment",
+        "observation": "expected cleared Now; actual acceptance BAR readiness remains blocked with vet-current-criteria repair"
+      },
+      {
+        "file": "packages/operator-core/lib/rubrics.integration.test.ts",
+        "line": 3797,
+        "test": "EI-267115: survives a real PostgreSQL idle-transaction timeout during independent snapshot reads",
+        "observation": "expected snapshot reader once; observed twice",
+        "note": "EI-267115 is literal text in the maintained test title, not a resolvable work-item reference."
+      }
+    ]
+  },
+  "followups": [
+    {
+      "ref": "EI-27065854150190948",
+      "purpose": "recorded external ptool bootstrap/restart stall",
+      "ownership": "claim refused not_claimable; no bypass; not a new implementation lane",
+      "evidence": [
+        "/tmp/shipping-activation6-commit.err",
+        "/tmp/shipping-start-schema.err"
+      ]
+    }
+  ],
+  "currentVettingConsults": {
+    "required": 2,
+    "rubricRevision": 6,
+    "specSetHash": "9d08f248f6b1024bf0c21ec5129f5182aa3bc81958e1b9b636d1fee90a2a6bcc",
+    "first": "conv-request-c851c69473b27f0a8ca340f44bdadae1f78536019bbe32b2c18f9607f1acf4c6",
+    "firstSourceOwner": "su-0352f515-d3e2-4814-85e4-1e12f7774e25",
+    "firstAnsweringOwner": "su-57966f52-8e6a-434c-8279-b34a53250771",
+    "firstAwaitId": 374072,
+    "second": "conv-request-4ccf02aa962109cf8dd158b722386a5cb392e0ba5770ddbab6a235671dea7548",
+    "secondSourceOwner": "su-13f8badc-4608-4a5f-b67d-2ffeeb8d9a2b",
+    "secondAnsweringOwner": "su-911e668e-b558-4b29-baac-ef171161a9d8",
+    "secondAwaitId": 374073,
+    "state": "both-dispatched-no-answer-yet",
+    "deadline": "2026-10-26T18:22:24Z",
+    "policy": "rubric-vetting",
+    "countsForPlanStart": false,
+    "note": "Correction: these are rubric-vetting reviews, not the separate bar-critique gate. Preserve actual vetting work without claiming plan-start credit."
+  },
+  "routingCorrection": {
+    "wrong": "Two rubric-vetting requests were described as the required current bar critiques.",
+    "correct": "plans:start counts only policy bar-critique with origin_task_ref equal to plan slug; rubric-vetting remains a separate meta-rubric step.",
+    "evidence": [
+      "packages/operator-core/lib/consult/selection-policies.ts",
+      "packages/operator-core/lib/agent-tools/plans/plan-start-critique-gate.ts"
+    ]
   }
 }
