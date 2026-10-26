@@ -37,6 +37,11 @@ test('Quick Access opens as an independent native launcher with reports and exac
   const click = (selector: string) => evaluate('document.querySelector(' + JSON.stringify(selector) + ')?.click()');
   const escape = () => evaluate('document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape",bubbles:true,cancelable:true}))');
   const visible = () => evaluate('window.__TAURI_INTERNALS__.invoke("plugin:window|is_visible", {label:"docs-search-palette"})');
+  async function expectUsable(selectors: string[]) {
+    for (const selector of selectors) {
+      await wait('(() => { const e=document.querySelector(' + JSON.stringify(selector) + '); if(!e) return false; const r=e.getBoundingClientRect(); const top=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2); return r.width>0 && r.height>0 && r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight && !!top && (top===e || e.contains(top)); })()');
+    }
+  }
   async function open() {
     await evaluate('window.__TAURI_INTERNALS__.invoke("open_docs_search_palette")', 'main');
     await wait('!!document.querySelector("[aria-label=\\"Quick Access launcher\\"]")');
@@ -61,8 +66,13 @@ test('Quick Access opens as an independent native launcher with reports and exac
       .toMatchObject({ path: '/quick-panel', native: true, width: 1000, height: 665 });
     await wait('document.querySelector(".pc-qa__results")?.textContent.includes("Native launcher plan") === true');
     await wait('document.querySelector(".pc-qa__preview")?.textContent.includes("Native launcher agent") === true');
+    await expectUsable(['.pc-qa__search input', '.pc-qa__scopes', '.pc-qa__results', '.pc-qa__preview',
+      '[aria-label="Talk to Native launcher agent"]', '[aria-label="Focus Native launcher agent window"]']);
     await click('[aria-label="Talk to Native launcher agent"]');
     await wait('!!document.querySelector("[aria-label=\\"Close conversation\\"]")');
+    // The resolved native roster's objective identifies the selected owner.
+    await wait('Array.from(document.querySelectorAll("[role=\\"dialog\\"]")).some(d => { const title=document.getElementById(d.getAttribute("aria-labelledby")); return title?.textContent.includes("Native launcher verification") === true; })');
+    await expectUsable(['[role="dialog"]', '[aria-label="Close conversation"]']);
     await escape();
     await wait('!document.querySelector("[aria-label=\\"Close conversation\\"]")');
     expect(await visible()).toBe(true);
@@ -71,6 +81,7 @@ test('Quick Access opens as an independent native launcher with reports and exac
     expect(await evaluate('location.pathname === "/quick-panel" && !!document.querySelector(".pc-qa__report")')).toBe(true);
     await click('.pc-qa__preview button');
     await wait('!!document.querySelector("[role=\\"dialog\\"]")');
+    await expectUsable(['[role="dialog"]']);
     await escape();
     await wait('!document.querySelector("[role=\\"dialog\\"]")');
     expect(await visible()).toBe(true);
@@ -89,7 +100,7 @@ test('Quick Access opens as an independent native launcher with reports and exac
     await click('[aria-label="Focus Native launcher agent window"]');
     await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim(), { timeout: 15_000 }).toBe(windowId);
     await open();
-    await escape();
+    await exec('xdotool', ['key', 'Escape'], { env: displayEnv, timeout: 15_000 });
     await expect.poll(visible).toBe(false);
     if (process.env.VERIFY_TAURI_SOURCE_RECEIPT) await info.attach('source receipt', {
       body: await readFile(process.env.VERIFY_TAURI_SOURCE_RECEIPT), contentType: 'application/json',
