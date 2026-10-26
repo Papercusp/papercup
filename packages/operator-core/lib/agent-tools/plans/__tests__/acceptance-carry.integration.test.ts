@@ -7,6 +7,10 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import '../../../plan-items/plan-drain-rule';
+import { matchReactions } from '../../../events/registry';
+import { fireBuiltinReactionAction } from '../../../events/builtin-actions';
 import { ensureAcceptanceDrainCarryInTransaction, ensureAcceptanceDrainFiling } from '../acceptance-drain-filing';
 import { applyPlanDrainTransition } from '../plan-drain-transition';
 import { withPlanLock } from '../with-plan-lock';
@@ -64,6 +68,36 @@ afterAll(async () => {
 });
 
 describe('P-025 transactional acceptance carry', () => {
+  it('hands a content-completion reaction to its finishing actor in the plan workspace', async () => {
+    const slug = PLAN('reaction-owner');
+    await registerHarnessProject(admin, workspaceId, HARNESS);
+    await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+    const action = matchReactions({
+      tool: 'plans:edit',
+      args: { slug, accountableOwnerId: 'su-payload-cannot-choose-owner' },
+      result: { ok: true, data: { ok: true, slug, planDrainTransitionChanged: true } },
+      ctx: {
+        isSuperuser: true, uiClientId: 'su-content-finisher',
+        workspaceId, harnessSlug: HARNESS,
+      } as UnifiedToolContext,
+    }).find((reaction) => reaction.ruleId === 'plan-drain:content-edited')!;
+    expect(action).toBeDefined();
+    await expect(fireBuiltinReactionAction(action.fire, action.args, workspaceId)).resolves.toEqual({ ok: true });
+    const plans = await admin<{ status: string }[]>`
+      SELECT status FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+    `;
+    const carries = await admin<{ taken_by: string; payload: Record<string, unknown> }[]>`
+      SELECT taken_by, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS}
+         AND payload->>'acceptanceDrainPlan' = ${`${workspaceId}/${HARNESS}/${slug}`}
+    `;
+    expect(plans).toEqual([{ status: 'awaiting-acceptance' }]);
+    expect(carries).toEqual([expect.objectContaining({
+      taken_by: 'su-content-finisher', payload: expect.objectContaining({ gateObservation: 'pending' }),
+    })]);
+  }, 60_000);
+
   it('commits awaiting-acceptance and the keyed carry item together', async () => {
     const slug = PLAN('commit');
     await registerHarnessProject(admin, workspaceId, HARNESS);
