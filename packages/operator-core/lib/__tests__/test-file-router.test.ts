@@ -131,6 +131,16 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('routes the maintained desktop portal assertion to its native e2e evidence config', () => {
+    expect(discoverVitestRoute('apps/operator/bin/desktop-portal-native.test.ts')).toMatchObject({
+      cwd: resolve(REPO_ROOT, 'apps/operator'),
+      config: 'vitest.e2e.config.ts',
+      requested: 'bin/desktop-portal-native.test.ts',
+    });
+    expect(discoverVitestRoute('apps/operator/bin/desktop-portal-persistence.test.ts').config)
+      .toBe('vitest.config.ts');
+  });
+
   it('keeps the explicit private receipt sink separate from product database discovery', () => {
     for (const key of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT']) {
       expect(() => assertPrivateIntegrationEvidence({ [key]: '/tmp/receipt',

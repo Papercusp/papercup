@@ -7,6 +7,9 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { expect, it, vi } from 'vitest';
+// The maintained plain-Node router has no TypeScript declaration file.
+// @ts-expect-error
+import { discoverVitestRoute } from '../../../scripts/test-files.mjs';
 import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
 import { admitDesktopPortalNativeParent, desktopPortalNativeTestTimeoutMs,
   desktopPortalNativeTimingForEnv } from '../../../scripts/lib/verify-tauri-native-env.mjs';
@@ -50,6 +53,9 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     VERIFY_TAURI_CANDIDATE_MANIFEST_SHA256: createHash('sha256').update(manifestBytes).digest('hex'),
     PAPERCUSP_PTOOL_LAUNCHER: launcher }, { timeoutMs: nativeTimeoutMs, repoRoot: repo });
   if (native) {
+    // Refuse a missing/stale evidence route before any database or native copy.
+    expect(discoverVitestRoute('apps/operator/bin/desktop-portal-native.test.ts', repo).config)
+      .toBe('vitest.e2e.config.ts');
     await run(process.execPath, [join(repo, 'scripts/lib/verify-tauri-deadline.mjs'), 'prepare', '0', '1'], {
       cwd: repo, timeout: 15_000, env: nativeEnv(),
     });
@@ -131,8 +137,10 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
       // an outer MemoryMax does not cover it. Bound the actual native child.
       const child = execFile('systemd-run', ['--user', '--scope', '--quiet', '-p', 'MemoryMax=16G',
         'bash', join(repo, 'scripts/verify-tauri-headless.sh'), '--',
-        process.execPath, join(repo, 'scripts/test-files.mjs'),
-        join(repo, 'apps/operator/bin/desktop-portal-native.test.ts')], {
+        // The observer certifies the verifier's frozen source domain. Resolve
+        // the assertion and its config there after the verifier has prepared it.
+        'bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT" && exec "$1" "$OPERATOR_SOURCE_ROOT/scripts/test-files.mjs" "$OPERATOR_SOURCE_ROOT/apps/operator/bin/desktop-portal-native.test.ts"',
+        'desktop-portal-native', process.execPath], {
         cwd: repo, timeout: nativeTimeoutMs, maxBuffer: 8 * 1024 * 1024,
         env: { ...nativeEnv(), VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready',
           PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',

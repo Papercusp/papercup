@@ -342,6 +342,14 @@ function isVitestPackageDir(dir) {
 // the same cross-tree ownership, and test:file must honor it too; walking ancestors alone can
 // never discover a config under libs/generic/template-kit for a path under templates/.
 const NON_WORKSPACE_VITEST_ROUTES = [
+  // This maintained native assertion predates the e2e filename convention.
+  // Its own config records the real native witness; the unit fallback cannot.
+  {
+    prefix: 'apps/operator/bin/',
+    pathPattern: /\/desktop-portal-native\.test\.ts$/,
+    cwd: 'apps/operator',
+    config: 'vitest.e2e.config.ts',
+  },
   {
     prefix: 'templates/papercusp-ops-pots/',
     pathPattern: /\/checks\/operation-first-triggers\.test\.[cm]?[jt]sx?$/,

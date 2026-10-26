@@ -1545,7 +1545,7 @@ export function verifyBgVerifierLogicalOutputSet(logical, { output, binding, rec
  *   Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
 export function publishBgVerifierLogicalOutputSet(args) {
-  const { logical, binding } = args;
+  const { logical, binding, receipts, output } = args;
   const leaf = binding.transaction.publicationLeaf;
   assert.ok(leaf, 'BG publication destination was not originally nominated');
   assert.match(leaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG publication leaf is invalid');
@@ -1554,14 +1554,16 @@ export function publishBgVerifierLogicalOutputSet(args) {
   assert.deepEqual(readBgDirectoryIdentity(binding.transaction.stage), logical.directory,
     'BG publication stage changed');
   const path = join(binding.transaction.bank.path, leaf), temporary = path + '.tmp.' + binding.ownerPid;
-  const body = JSON.stringify({ schemaVersion: 'bg-build-publication-v1', logical });
+  // Retain the original inputs needed by the publication verifier. A logical
+  // output digest alone cannot reconstruct the compiler or transaction proof.
+  const evidence = { schemaVersion: 'bg-build-publication-v1', logical, binding, receipts, output };
+  const body = JSON.stringify(evidence);
   writeFileSync(temporary, body, { flag: 'wx', mode: 0o600 });
   try {
     verifyBgVerifierLogicalOutputSet(logical, args);
     linkSync(temporary, path);
   } finally { unlinkSync(temporary); }
-  const publication = freezeBgExpectation({ schemaVersion: 'bg-build-publication-v1',
-    identity: readBgIndependentOutputIdentity(path), logical });
+  const publication = freezeBgExpectation({ ...evidence, identity: readBgIndependentOutputIdentity(path) });
   assert.equal(readFileSync(path, 'utf8'), body, 'BG publication content changed');
   return publication;
 }
@@ -1573,12 +1575,52 @@ export function verifyBgVerifierPublication(publication, args) {
   assert.equal(publication.identity.path, join(args.binding.transaction.bank.path,
     args.binding.transaction.publicationLeaf ?? ''), 'BG publication destination changed');
   assert.deepEqual(publication.logical, args.logical, 'BG publication logical record changed');
+  for (const key of ['binding', 'receipts', 'output'])
+    assert.deepEqual(publication[key], args[key], 'BG publication original evidence changed');
   assert.deepEqual(readBgIndependentOutputIdentity(publication.identity.path), publication.identity,
     'BG publication file changed');
   assert.equal(readFileSync(publication.identity.path, 'utf8'),
-    JSON.stringify({ schemaVersion: publication.schemaVersion, logical: args.logical }), 'BG publication content changed');
+    JSON.stringify({ schemaVersion: publication.schemaVersion, logical: args.logical,
+      binding: args.binding, receipts: args.receipts, output: args.output }), 'BG publication content changed');
   verifyBgVerifierLogicalOutputSet(args.logical, args);
   return publication;
+}
+
+/** Execute one retained recipe into an exclusively owned stage, then publish its
+ * complete evidence. Re-entry always refuses the existing stage, including an
+ * attempt whose compiler failed. There is no cache/fallback or service effect.
+ * This does not establish the production runtime closure or authorize activation.
+ * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0]} args
+ */
+export async function runBgVerifierBuildRecipe(args) {
+  const { transaction } = args;
+  validateBgVerifierBuildTransaction(transaction);
+  assert.ok(transaction.publicationLeaf, 'BG recipe publication destination is UNKNOWN');
+  const destination = join(transaction.bank.path, transaction.publicationLeaf);
+  assert.ok(!existsSync(destination) && !isBgSymlink(destination), 'BG recipe publication already exists');
+  const binding = beginBgVerifierBuildTransaction(args);
+  writeBgVerifierBinding(binding);
+  const receipts = [];
+  // Preserve original command order and record identity. A later compiler
+  // failure leaves diagnostic temporary files but cannot publish a partial set.
+  for (const entry of binding.contexts.invocations) {
+    const record = { ...binding.contexts.record, invocation: entry.original };
+    receipts.push(await compileBgVerifierInvocation({ record, invocation: entry.invocation,
+      argv: entry.invocation.argv, expectedVersion: '0.25.0' }));
+  }
+  const output = qualifyBgVerifierBuildOutputSet({ binding, receipts });
+  const logical = qualifyBgVerifierLogicalOutputSet({ binding, receipts, output });
+  const retained = { binding, receipts, output, logical };
+  const publication = publishBgVerifierLogicalOutputSet(retained);
+  verifyBgVerifierPublication(publication, retained);
+  return publication;
+}
+
+/** @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding */
+function writeBgVerifierBinding(binding) {
+  const stage = binding.transaction.stage;
+  writeFileSync(join(stage, '.bg-build-binding.json'), JSON.stringify(binding), { flag: 'wx', mode: 0o600 });
+  writeFileSync(join(stage, '.bg-build-context.json'), JSON.stringify(binding.contexts), { flag: 'wx', mode: 0o600 });
 }
 
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
@@ -3285,7 +3327,7 @@ function printGate(verdict) {
 }
 
 async function main(argv) {
-  if (argv[0] === 'bg-build-begin') {
+  if (argv[0] === 'bg-build-begin' || argv[0] === 'bg-build-run') {
     const flags = ['--context', '--sha256', '--pid', '--entry', '--outfile', '--profile', '--builder', '--repo'];
     assert.ok(argv.length === 1 + flags.length * 2 && flags.every((flag, index) => argv[index * 2 + 1] === flag),
       'BG recipe requires its exact original transaction, digest, PID, command, builder and repository');
@@ -3303,12 +3345,16 @@ async function main(argv) {
     const actualNode = readBgFileIdentity(process.execPath);
     assert.ok(actualNode.realpath === record.invocation.node.realpath && actualNode.sha256 === record.invocation.node.sha256,
       'BG recipe actual Node differs from original transaction');
+    if (argv[0] === 'bg-build-run') {
+      const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: Number(pidText) });
+      console.log(JSON.stringify(publication));
+      return 0;
+    }
     const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: Number(pidText) });
     const boundContext = join(transaction.stage, '.bg-build-context.json');
     // No caller may compile until BOTH exclusive records are complete. A failed
     // preflight retains its private stage for diagnosis and is never replayed.
-    writeFileSync(join(transaction.stage, '.bg-build-binding.json'), JSON.stringify(binding), { flag: 'wx', mode: 0o600 });
-    writeFileSync(boundContext, JSON.stringify(binding.contexts), { flag: 'wx', mode: 0o600 });
+    writeBgVerifierBinding(binding);
     console.log(boundContext);
     return 0;
   }
