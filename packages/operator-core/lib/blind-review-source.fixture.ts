@@ -36,7 +36,10 @@ if(process.argv[2]==='prebuild') {
   write(repositoryRoot, 'apps/operator/scripts/setup-porcupine-runtime.sh', '#!/bin/bash\nset -eu\nmkdir -p apps/operator/public/porcupine\nprintf "measured model" > apps/operator/public/porcupine/porcupine_params.pv\n');
   write(repositoryRoot, 'apps/operator/bin/bundle-host.sh', '#!/bin/bash\nset -eu\nnode apps/operator/bin/build.cjs host\n');
   write(repositoryRoot, 'scripts/pc-heavy.sh', '#!/bin/bash\nset -eu\n[ "$1" != -- ] || shift\nexec "$@"\n');
-  write(repositoryRoot, 'papercusp-desktop/bin/lib/pinned-deps.sh', '#!/bin/bash\n[ "$1" = trees ] || exit 2\nprintf "node_modules\\n"\n');
+  // Exercise the production tree population: a hard-coded root-only stub hid
+  // the captured driver's nested node_modules from every build regression.
+  write(repositoryRoot, 'papercusp-desktop/bin/lib/pinned-deps.sh',
+    readFileSync(new URL('../../../papercusp-desktop/bin/lib/pinned-deps.sh', import.meta.url), 'utf8'));
   write(repositoryRoot, 'apps/operator/bin/release/dependency-generation.sh', readFileSync(policy, 'utf8'));
   if (options.native) {
     write(repositoryRoot, 'papercusp-desktop/src-tauri/Cargo.lock', `version = 4

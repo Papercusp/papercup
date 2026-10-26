@@ -458,6 +458,28 @@ describe('dependency source checkout boundaries', () => {
     expect(readFileSync(join(generated, 'node_modules/copied/index.js'), 'utf8')).toBe('generated-v2\n');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('excludes captured verifier driver dependencies from full and selected source installs', () => {
+    const integration = makeIntegration();
+    const generated = 'apps/operator/dist-verify/runtime/driver';
+    const ordinary = 'packages/verifier-source';
+    for (const path of [generated, ordinary]) {
+      mkdirSync(join(integration, path, 'node_modules/fixture'), { recursive: true });
+      writeFileSync(join(integration, path, 'node_modules/fixture/index.js'), 'measured bytes\n');
+    }
+    const walk = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a packages/verifier-source apps/operator/dist-verify/runtime/driver)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    expect(walk.status, walk.stderr).toBe(0);
+    expect(walk.stdout).not.toContain('apps/operator/dist-verify');
+    expect(walk.stdout.match(/packages\/a\/node_modules/g)).toHaveLength(2);
+    expect(walk.stdout.match(/packages\/verifier-source\/node_modules/g)).toHaveLength(2);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('excludes unrelated nested checkouts while retaining tracked submodule inputs and trees', () => {
     const integration = makeIntegration();
     commitFixture(integration, 'seed source repository');

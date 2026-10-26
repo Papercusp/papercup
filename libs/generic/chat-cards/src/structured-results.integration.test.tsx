@@ -125,6 +125,9 @@ describe('structured result host composition (tree only)', () => {
     const activate = vi.fn<NonNullable<StructuredResultHost['activate']>>(async () => ({ ok: true, value: undefined }));
     let view = render(<StructuredResults blocks={[original]} authorizationKey="foreign:1" host={{ resolve, activate }} />);
     await screen.findByText('This result is not available to this caller.');
+    expect(view.container.querySelector(`[data-result-id="${original.id}"]`)?.textContent)
+      .toBe('This result is not available to this caller.');
+    expect(view.container.querySelector('[data-source-ref]')).toBeNull();
     expect(screen.queryByText(original.title)).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
     expect(activate).not.toHaveBeenCalled();
@@ -177,6 +180,8 @@ describe('structured result host composition (tree only)', () => {
     allowed = false;
     fireEvent.click(screen.getByRole('button', { name: 'Open document' }));
     await screen.findByText('This result is not available to this caller.');
+    expect(view.container.querySelector(`[data-result-id="${original.id}"]`)?.textContent)
+      .toBe('This result is not available to this caller.');
     expect(screen.queryByText(original.title)).toBeNull();
     expect(effects).toEqual([]);
     view.unmount();

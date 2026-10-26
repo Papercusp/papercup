@@ -62,7 +62,10 @@ test('P010 native converse parity', async ({}, info) => {
     await info.attach('p010-native-fixture-readback', { body: JSON.stringify({ fixture, current }), contentType: 'application/json' });
     expect(fixture).toMatchObject([{ id: conversationId, workspace_id: workspace, status: 'active', subject_ref: null }]);
     expect(current).toMatchObject({ status: 200, body: { rows: [{ id: conversationId, workspaceId: workspace }] } });
-    await native('navigate', '/?chat=true');
+    // Root gateways to /adv and discards its query on native navigation.
+    // Address the actual product surface so the requested chat is open.
+    await native('navigate', '/adv?tab=harnesses&chat=true');
+    await wait(`new URLSearchParams(location.search).get('chat') === 'true' && !!document.querySelector('[aria-label="Papercup chat"]')`);
     const selector = '[data-result-id="p010-native-report"]';
     await wait(`document.querySelector(${JSON.stringify(selector)})?.textContent.includes('P010 authorized native report') === true`);
     await wait(`(() => {
@@ -75,14 +78,14 @@ test('P010 native converse parity', async ({}, info) => {
     await native('click', `${selector} [data-action-id="open"]`);
     await wait(`location.pathname === '/reports' && new URLSearchParams(location.search).get('sel') === ${JSON.stringify(report.reportId)}`);
     await wait(`document.querySelector('.reports-reader')?.textContent.includes('Native current resource.') === true`);
-    await native('navigate', '/?chat=true');
+    await native('navigate', '/adv?tab=harnesses&chat=true');
     await wait(`document.querySelector(${JSON.stringify(selector)})?.textContent.includes('P010 authorized native report') === true`);
     // Remove authority while the authorized reference is already rendered.
     await sql.unsafe('DELETE FROM harness_shared.report_library WHERE workspace_id=$1 AND report_id=$2', [workspace, report.reportId]);
     await native('click', `${selector} [data-action-id="open"]`);
     await wait(`(() => {
       const sidebar = document.querySelector('[aria-label="Papercup chat"]');
-      return !!sidebar && /unavailable/i.test(sidebar.textContent ?? '') && location.pathname === '/';
+      return !!sidebar && /unavailable/i.test(sidebar.textContent ?? '') && location.pathname === '/adv';
     })()`);
     await info.attach('native-converse-result-dom', { body: JSON.stringify(await evaluate(`({
       url: location.href, text: document.querySelector('[aria-label="Papercup chat"]')?.textContent,
@@ -113,6 +116,7 @@ test.afterEach(async ({}, info) => {
       return { html: element.outerHTML, rect: element.getBoundingClientRect().toJSON(), ancestors };
     };
     return JSON.stringify({ url: location.href, viewport: { width: innerWidth, height: innerHeight },
+      chat: capture('[aria-label="Papercup chat"]'),
       reader: capture('.reports-reader'), work: capture('[data-testid="dock-fullscreen-surface"]') });
   })()`, '--json'], { timeout: 30_000 });
   // Body attachments live only in the reporter/trace buffer; successful runs

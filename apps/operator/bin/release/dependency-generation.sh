@@ -482,6 +482,8 @@ dependency_generation_configure_workspace_dirs() {
 # transient tree mid-snapshot and tear the gate's generation (exit 75).
 # Next's .next/standalone dependency copies are emitted build output too;
 # their writers do not hold the source-install reader/writer lock.
+# The broker's captured driver is also emitted output. Its complete bytes are
+# measured by the generated closure, never as a newly installed source tree.
 dependency_generation_enumerate_node_modules() {
   local root="$1" dir
   # WI-10006855: emitted desktop payloads copy dependencies from source trees;
@@ -490,7 +492,7 @@ dependency_generation_enumerate_node_modules() {
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
     { [ -d "$root/node_modules" ] || [ -L "$root/node_modules" ]; } && printf '%s\n' "$root/node_modules"
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
-      case "$dir" in .next|.next/*|*/.next|*/.next/*) continue ;; esac
+      case "$dir" in .next|.next/*|*/.next|*/.next/*|apps/operator/dist-verify|apps/operator/dist-verify/*) continue ;; esac
       if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
         && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
         printf '%s\n' "$root/$dir/node_modules"
@@ -504,6 +506,7 @@ dependency_generation_enumerate_node_modules() {
     \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next \
       -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
       -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
+      -o -path "$root/apps/operator/dist-verify" \
       -o -path "$root/papercusp-desktop/src-tauri/sidecar" \
       -o -path "$root/papercusp-desktop/src-tauri/env-sidecars" \
       -o -path "$root/papercusp-desktop/src-tauri/resources" \) -prune \) -o \

@@ -44,7 +44,8 @@ describe('P019 captured signup provider (distribution bytes)', () => {
     expect(page).toMatchObject({ nextCursor: null, hasMore: false });
     expect(page.records).toEqual([{
       datatype: 'person', nativeId: key, event: 'person.updated', occurredAt: value.ts,
-      payload: { emails: ['lead@example.com'], extensions: { 'papercusp-signups': {
+      payload: { provider: 'papercusp-signups', externalId: key, observedAt: value.ts,
+        emails: ['lead@example.com'], extensions: { 'papercusp-signups': {
         signupEventId: key, capturedAt: value.ts, evidenceRef: `cloudflare-kv:${config.accountId}:${config.namespaceId}:${key}`,
         emailVerified: false, communicationConsent: false,
         selfReported: { useCase: value.what, attribution: { distinct_id: 'PER-forged', first_touch: { utm_campaign: 'launch' } } },

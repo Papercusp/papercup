@@ -79,11 +79,11 @@ function StructuredResult({ result, authorizationKey, host }: {
   }, [key, host.resolve]);
 
   const outcome = state?.key === key && state.resolver === host.resolve ? state.outcome : undefined;
-  if (!outcome) return <p role="status">Loading result…</p>;
-  if (!outcome.ok) return <p role="status">{failureText[outcome.code]}</p>;
+  if (!outcome) return <p role="status" data-result-id={result.id}>Loading result…</p>;
+  if (!outcome.ok) return <p role="status" data-result-id={result.id}>{failureText[outcome.code]}</p>;
   const value = outcome.value;
   const renderer = host.renderers?.[value.kind];
-  if (host.renderers && !renderer) return <p role="status">{failureText.unsupported}</p>;
+  if (host.renderers && !renderer) return <p role="status" data-result-id={result.id}>{failureText.unsupported}</p>;
 
   const activate = async (actionId: string): Promise<void> => {
     const token = active.current;
