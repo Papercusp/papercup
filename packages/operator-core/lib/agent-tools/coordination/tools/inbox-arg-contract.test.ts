@@ -25,6 +25,7 @@
 import { describe, expect, it } from "vitest";
 import inboxTool from "./inbox";
 import { isDirectedDelivery } from "../inbox-visibility";
+import { BUDGET, promptWeight } from "../../tool-guidance-budget";
 
 type Redirect = string | { tool: string; args: Record<string, unknown>; note?: string };
 
@@ -39,6 +40,14 @@ function declaredKeys(): string[] {
 }
 
 describe("coord:inbox argument contract (P-001)", () => {
+  it("explains unread FYI receipts without conflating reading with answering, within the prompt budget", () => {
+    expect(inboxTool.description).toContain('clears the unread-mail reminder');
+    expect(inboxTool.description).toContain('FYIs (expects:none) need no reply');
+    expect(inboxTool.description).toContain('Reading does not fulfill ack/answer/action requests');
+    expect(inboxTool.description).toContain('re-reading does not empty it');
+    expect(promptWeight(inboxTool)).toBeLessThanOrEqual(BUDGET);
+  });
+
   it("documents that the limit uses priority ranking rather than newest-first overall", () => {
     const shape = inboxTool.args as unknown as {
       shape: Record<string, { description?: string }>;

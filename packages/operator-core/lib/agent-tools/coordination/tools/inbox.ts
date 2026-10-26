@@ -863,10 +863,9 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default: what fits one result). Ambient system broadcasts are excluded unless include_ambient. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — ignore it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+    "Read messages, acks, and handoffs addressed to you or broadcast. `limit` bounds a priority-ranked window (not newest-first); `coord:orient.inboxLimit` maps to it. Default: what fits one result. Ambient broadcasts require include_ambient. Repeats collapse (`repeat_count`, `first_seen_ts`); ignore resolved:true alarms; follow superseded_by corrections. " +
       COORD_KIND_FILTER_DESCRIPTION +
-      " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
-      " This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      " `recent` holds msg_ids into `entries`. An inbox read (also via coord:orient) clears the unread-mail reminder; FYIs (expects:none) need no reply. Reading does not fulfill ack/answer/action requests. This is a VIEW: re-reading does not empty it.",
   guidance: {
     // EI-21600823435053404: trimmed to clear the 1500-char prompt-weight HARD CAP (was 1706 —
     // a gate RED). Both cut sentences were redundant, not lost: the `limit` vs
