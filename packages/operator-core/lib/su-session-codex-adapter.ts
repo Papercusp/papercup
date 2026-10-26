@@ -303,8 +303,9 @@ export function codexCapabilities(): SuSessionCapabilities {
         reason: 'requires the tracked rollout and a live or P-004-reconciled managed runtime',
       },
       fork: {
-        state: 'unsupported',
-        reason: 'the tracked Codex psu path exposes exact resume but no identity-safe native fork transport',
+        state: 'conditional',
+        implementation: 'native',
+        reason: 'forks must use the tracked launcher with native_fork_source so the child receives its own durable identity',
       },
       focus: { state: 'supported', implementation: 'host' },
       end: {
@@ -892,12 +893,12 @@ export class CodexSuSessionAdapter {
         verdict = await this.controls.end({ ownerId, reason: command.reason });
         break;
       case 'fork':
-        // Capability dispatch refuses this before the executor is reached.
+        // The tracked launcher owns child allocation and lineage registration.
         return commandRefusal(
           refused(
-            'unsupported',
-            'the tracked Codex psu path exposes exact resume but no identity-safe native fork transport',
-            false,
+            'fork_requires_launcher',
+            'Codex native fork requires the tracked launcher with native_fork_source to register the child before exact resume',
+            true,
           ),
         );
       case 'handoff':

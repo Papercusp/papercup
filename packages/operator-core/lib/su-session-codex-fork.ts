@@ -150,6 +150,8 @@ export async function forkCodexNativeHistory(input: HistoryInput & {
   peer: Pick<SuStdioPeer, 'request'>;
   prepared?: PreparedCodexForkHistory;
   params: RpcFrame;
+  /** Tracked bootstrap retains ancestry only after lineage registration. */
+  retainHistory?: boolean;
 }): Promise<RpcFrame> {
   const { source, peer } = input;
   if (!source.ownerId || source.ownerId === input.childOwnerId || !source.rolloutId
@@ -201,9 +203,9 @@ export async function forkCodexNativeHistory(input: HistoryInput & {
     // Native paginated forks retain immutable ancestor references. These
     // copied history rows/files are part of the child's durable conversation,
     // never a link to the parent's live storage or runtime ownership.
-    prepared.retain();
+    if (input.retainHistory !== false) prepared.retain();
     return result;
   } finally {
-    await prepared.cleanup();
+    if (input.retainHistory !== false || !input.prepared) await prepared.cleanup();
   }
 }

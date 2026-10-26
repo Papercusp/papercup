@@ -255,6 +255,15 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
     ).rejects.toThrow(/only claude sessions support --fork-session/);
   });
 
+  it('directs a Codex console fork to the tracked native launcher', async () => {
+    process.env.AGENT_CMD = 'codex';
+    delete process.env.AGENT_BACKEND;
+    await expect(buildConsoleEnvelope({
+      workspaceId: 'default', slug: null, operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8', fork: true, skipMcpJson: true,
+    })).rejects.toThrow('psu --resume=<tracked-session> --fork');
+  });
+
   // WI-6510 (hud-chat-owner-controls-2026-08-11 P-002): the chat footer's MODEL
   // pill resumes a session onto a DIFFERENT model. These guard the seam D-007
   // named as the whole risk — a model change that appears to apply and does not.

@@ -240,7 +240,7 @@ describe('Codex SU-session backend — real PUI entry and native rollout transla
     }
   });
 
-  it('creates through openPuiSuSession, delivers an owner turn, translates tools/text, and visibly refuses fork/cards', async () => {
+  it('creates through openPuiSuSession, delivers an owner turn, translates tools/text, and routes fork to the tracked launcher', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'codex-su-session-'));
     tempDirs.push(dir);
     const rolloutPath = join(dir, `rollout-2026-08-28T00-00-00-${ROLLOUT_A}.jsonl`);
@@ -416,11 +416,12 @@ describe('Codex SU-session backend — real PUI entry and native rollout transla
           commandId: 'fork-command-1',
         }),
       );
-      expect(fork.accepted).toBeNull();
+      expect(fork.accepted).not.toBeNull();
       await expect(fork.terminal).resolves.toMatchObject({
         status: 'refused',
-        refusal: { code: 'unsupported', retryable: false },
+        refusal: { code: 'fork_requires_launcher', retryable: true },
       });
+      expect(adapter.host.descriptor().capabilities.commands.fork).toMatchObject({ state: 'conditional', implementation: 'native' });
       expect(adapter.host.descriptor().capabilities.features['interactive-cards']).toMatchObject({
         state: 'unsupported',
       });

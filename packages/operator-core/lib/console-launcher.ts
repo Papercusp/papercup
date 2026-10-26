@@ -527,11 +527,13 @@ export async function buildConsoleEnvelope(
     const bin = backend === 'omp' ? 'omp' : backend === 'codex' ? 'codex' : 'claude';
     // WI-3882: forking a LIVE session must NOT resume it in place — that opens a
     // second CLI on the SAME transcript and collides with the still-running
-    // original. Only claude has `--fork-session`; omp/codex refuse a fork rather
-    // than silently degrade to a colliding plain resume.
+    // original. Native Codex forks use the tracked psu launcher; this bare
+    // console path cannot allocate and register a child.
     if (opts.fork && backend !== 'claude-code') {
       throw new Error(
-        `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
+        backend === 'codex'
+          ? 'Codex fork requires the tracked launcher: psu --resume=<tracked-session> --fork (native_fork_source registers the new child)'
+          : `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
       );
     }
     // WI-6510: a model spec only reaches the CLI through psu, which is the claude
