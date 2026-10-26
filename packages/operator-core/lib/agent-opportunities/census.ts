@@ -6,7 +6,7 @@ import { getBuildInfo } from '../build-info';
 import type { SqlMiningOptions, SqlMiningResult } from '../bash-substitution/sql-tool-candidates';
 import type { SqlCorpusCursor, SqlDemandAggregate, SqlDemandObservation } from '../bash-substitution/sql-intent-corpus';
 import { rankSqlToolCandidates } from '../sql-tool-candidate-score';
-import { AGGREGATE_LIFETIME_DAYS, miningScopeId } from './privacy';
+import { AGGREGATE_LIFETIME_DAYS, miningScopeId, sourcesCurrentlyReadable } from './privacy';
 import { boundedStage, miningFailureReason, MONITORED_FAMILIES, type MonitoredFamily } from './pipeline';
 import { productionOpportunityReaders } from './source-readers';
 import { fetchSearchReformulations, groupSearchReformulations } from './search-reformulation';
@@ -24,6 +24,68 @@ export interface FamilyMeasurement {
 interface CandidateEvidence {
   id: string; sourceRefs: string[]; operationRefs: string[];
   metrics: Record<string, number>; reviewEligible: boolean;
+}
+const candidateMetricKeys: Record<MonitoredFamily, readonly string[]> = {
+  sql: ['successful', 'error', 'refused', 'unknown', 'verifiedAgents', 'activeDays'],
+  'search-reformulation': ['logicalDemand', 'reformulations', 'fallbacks'],
+  'result-recovery': ['exposure', 'recoveryEpisodes', 'extraCalls', 'successful'],
+  'workaround-funnel': ['successfulEpisodes', 'extraCalls', 'elapsedMs'],
+  'native-operation': ['logicalDemand', 'successful', 'unknown'],
+};
+export interface MonitoredCandidateReadOptions extends SqlMiningOptions {
+  runId: string; family: MonitoredFamily; candidateId: string;
+  /** Resolve the keyed copy against CURRENT canonical source existence and authority.
+   * A token is a pointer, never a grant. Missing/unresolvable copies must return false.
+   * The resolver must also authorize transcript copies, not just their activity index.
+   */
+  authorizeSource: (sourceToken: string, family: MonitoredFamily) => Promise<boolean>;
+}
+/** Internal evidence lookup for review preparation. Never release family diagnostics,
+ * scanned/denied counts or an unfiltered candidate list. No authorization is cached.
+ * A production route must supply its canonical source resolver before exposing this.
+ */
+export async function readMonitoredCandidate(opts: MonitoredCandidateReadOptions): Promise<CandidateEvidence | null> {
+  if (opts.workspaceId !== opts.scope.workspaceId || !MONITORED_FAMILIES.includes(opts.family)
+    || !/^[a-f0-9]{64}$/.test(opts.candidateId)
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(opts.runId)) return null;
+  const sql = opts.client ?? getOrgPg().sql, scopeId = miningScopeId(opts.scope, opts.harnessSlug);
+  const scopeAllowed = () => opts.authorize({ workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug, sourceBoundary: opts.scope.sourceBoundary });
+  const budget = positive(opts.timeBudgetMs, 5000, 30_000);
+  try {
+    return await boundedStage(async () => {
+      if (!await scopeAllowed()) return null;
+      const load = () => sql<{ diagnostics: { candidates?: CandidateEvidence[] } }[]>`
+        SELECT f.diagnostics FROM harness_shared.sql_intent_family_runs f
+        JOIN harness_shared.sql_intent_runs r USING (workspace_id,run_id)
+        WHERE r.workspace_id=${opts.workspaceId} AND r.scope_id=${scopeId} AND r.harness_slug=${opts.harnessSlug}
+          AND r.run_id=${opts.runId}::uuid AND f.family=${opts.family} AND r.finished_at IS NOT NULL
+          AND r.started_at > ${new Date((opts.now ?? Date.now()) - AGGREGATE_LIFETIME_DAYS * 86400_000).toISOString()}::timestamptz`;
+      const [row] = await load();
+      if (!row || !Array.isArray(row.diagnostics.candidates)) return null;
+      const matches = row.diagnostics.candidates.filter(c => c.id === opts.candidateId);
+      if (matches.length !== 1) return null;
+      const candidate = matches[0]!;
+      if (!Array.isArray(candidate.sourceRefs) || !candidate.sourceRefs.length
+        || !Array.isArray(candidate.operationRefs)
+        || [...candidate.sourceRefs, ...candidate.operationRefs].some(t => typeof t !== 'string' || !/^[a-f0-9]{64}$/.test(t))
+        || !candidate.metrics || typeof candidate.metrics !== 'object' || Array.isArray(candidate.metrics)
+        || Object.values(candidate.metrics).some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0)
+        || typeof candidate.reviewEligible !== 'boolean'
+        || candidateMetricKeys[opts.family].some(key => typeof candidate.metrics[key] !== 'number')) return null;
+      const allowed = () => sourcesCurrentlyReadable(candidate.sourceRefs, token => opts.authorizeSource(token, opts.family));
+      if (!await allowed()) return null;
+      // DB and ACL lookups await IO. A later family replacement must not release
+      // an older packet; revoke/delete during hydration denies the whole aggregate.
+      const [current] = await load();
+      if (!current || JSON.stringify(current.diagnostics) !== JSON.stringify(row.diagnostics)
+        || !await allowed() || !await scopeAllowed()) return null;
+      // Allowlist again on read so old/corrupt rows cannot smuggle private fields.
+      return { id: candidate.id, sourceRefs: [...candidate.sourceRefs], operationRefs: [...candidate.operationRefs],
+        metrics: Object.fromEntries(candidateMetricKeys[opts.family].map(key => [key, candidate.metrics[key]!])),
+        reviewEligible: candidate.reviewEligible };
+    }, budget);
+  } catch { return null; }
 }
 function identityIndex(rows: readonly { sourceToken: string; operationToken: string | null }[]) {
   const bySource = new Map<string, Set<string>>(), byOperation = new Map<string, Set<string>>();

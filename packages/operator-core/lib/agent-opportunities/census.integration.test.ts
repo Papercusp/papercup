@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { mineSqlCandidateSlice } from '../bash-substitution/sql-tool-candidates';
-import { runMonitoredCensus } from './census';
+import { readMonitoredCandidate, runMonitoredCensus } from './census';
 import { MONITORED_FAMILIES } from './pipeline';
 import { runSqlOpportunityCensus } from '../harness/routines/sql-read-census-action';
 import { buildScratchUri, safeScratchFilesystemPath } from '../scratch-uri';
@@ -27,6 +27,90 @@ afterAll(async () => {
 beforeEach(async () => {
   await f.clear(); await f.db.adminSql`TRUNCATE harness_shared.sql_intent_runs CASCADE`;
   await f.db.adminSql`DELETE FROM harness_shared.agent_activity`;
+});
+async function candidateFixture() {
+  const ids = [await f.seed(), await f.seed()];
+  const opts = f.opts({ rowBudget: 100, timeBudgetMs: 30_000 });
+  const run = await runMonitoredCensus(opts, () => mineSqlCandidateSlice(opts));
+  const candidates = run.families[0]!.diagnostics.candidates as Array<{ id: string; sourceRefs: string[] }>;
+  const candidate = candidates[0]!;
+  expect(candidate.sourceRefs).toHaveLength(2);
+  const denied = new Set<string>();
+  const authorizeSource = async (token: string) => {
+    const rows = await f.db.adminSql`SELECT o.source_id::text FROM harness_shared.sql_intent_operations o
+      JOIN harness_shared.tool_invocations i ON i.id=o.source_id AND i.workspace_id=o.workspace_id
+      WHERE o.workspace_id=${opts.workspaceId} AND o.source_token=${token} AND i.harness_slug=${opts.harnessSlug}`;
+    return rows.length === 1 && !denied.has(token);
+  };
+  const read = (over: Partial<Parameters<typeof readMonitoredCandidate>[0]> = {}) => readMonitoredCandidate({ ...opts,
+    runId: run.runId, family: 'sql', candidateId: candidate.id, authorizeSource, ...over });
+  return { ids, opts, run, candidate, denied, authorizeSource, read };
+}
+it('R23-DERIVED-ACL monitored candidates recheck every contributing source without cached grants or aggregate leakage', async () => {
+  const c = await candidateFixture();
+  const allowed = await c.read();
+  expect(allowed).toMatchObject({ id: c.candidate.id, sourceRefs: c.candidate.sourceRefs,
+    metrics: { successful: 2 }, reviewEligible: false });
+  expect(Object.keys(allowed!).sort()).toEqual(['id', 'metrics', 'operationRefs', 'reviewEligible', 'sourceRefs']);
+  c.denied.add(c.candidate.sourceRefs[1]!);
+  expect(await c.read()).toBeNull();
+  c.denied.clear(); expect(await c.read()).toEqual(allowed);
+  expect(await c.read({ authorizeSource: async () => { throw new Error('unavailable'); } })).toBeNull();
+  expect(await c.read({ authorize: async () => false })).toBeNull();
+  expect(await c.read({ scope: { ...c.opts.scope, epoch: 'rotated' } })).toBeNull();
+  expect(await c.read({ scope: { ...c.opts.scope, sourceBoundary: 'denied-boundary' } })).toBeNull();
+  expect(await c.read({ workspaceId: 'other-workspace' })).toBeNull();
+  expect(await c.read({ candidateId: '0'.repeat(64) })).toBeNull();
+  await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${c.ids[0]!}::bigint`;
+  expect(await c.read()).toBeNull();
+});
+it('R23-DERIVED-ACL monitored packets deny revoke, source deletion and snapshot replacement during read IO', async () => {
+  const c = await candidateFixture();
+  let calls = 0;
+  expect(await c.read({ authorizeSource: async token => {
+    const allowed = await c.authorizeSource(token);
+    if (++calls === 2) c.denied.add(c.candidate.sourceRefs[0]!);
+    return allowed;
+  } })).toBeNull();
+  c.denied.clear(); calls = 0;
+  expect(await c.read({ authorizeSource: async token => {
+    if (++calls === 1) await f.db.adminSql`UPDATE harness_shared.sql_intent_family_runs
+      SET diagnostics=jsonb_set(diagnostics,'{candidates,0,metrics,successful}','99'::jsonb)
+      WHERE run_id=${c.run.runId}::uuid AND family='sql'`;
+    return c.authorizeSource(token);
+  } })).toBeNull();
+  calls = 0;
+  expect(await c.read({ authorizeSource: async token => {
+    const allowed = await c.authorizeSource(token);
+    if (++calls === 2) await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${c.ids[0]!}::bigint`;
+    return allowed;
+  } })).toBeNull();
+});
+it('monitored candidate reads allowlist stored fields and deny incomplete, ambiguous, expired and malformed evidence', async () => {
+  const c = await candidateFixture();
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_family_runs SET diagnostics=
+    jsonb_set(jsonb_set(diagnostics,'{candidates,0,rawText}','"private-source-sentinel"'),
+      '{candidates,0,metrics,private-relation-name}','123') WHERE run_id=${c.run.runId}::uuid AND family='sql'`;
+  const allowed = await c.read();
+  expect(allowed).not.toBeNull(); expect(JSON.stringify(allowed)).not.toMatch(/private-source|private-relation/);
+  const [stored] = await f.db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
+    WHERE run_id=${c.run.runId}::uuid AND family='sql'`;
+  const original = stored!.diagnostics;
+  for (const candidates of [[], [original.candidates[0], original.candidates[0]],
+    [{ ...original.candidates[0], sourceRefs: [] }], [{ ...original.candidates[0], sourceRefs: ['raw-id'] }],
+    [{ ...original.candidates[0], metrics: { successful: '2' } }]]) {
+    await f.db.adminSql`UPDATE harness_shared.sql_intent_family_runs SET diagnostics=${JSON.stringify({ ...original, candidates })}::jsonb
+      WHERE run_id=${c.run.runId}::uuid AND family='sql'`;
+    expect(await c.read()).toBeNull();
+  }
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_family_runs SET diagnostics=${JSON.stringify(original)}::jsonb
+    WHERE run_id=${c.run.runId}::uuid AND family='sql'`;
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_runs SET started_at=${new Date(f.now).toISOString()}::timestamptz,
+    finished_at=NULL WHERE run_id=${c.run.runId}::uuid`;
+  expect(await c.read()).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_runs SET finished_at=now() WHERE run_id=${c.run.runId}::uuid`;
+  expect(await c.read({ now: f.now + 120 * 86400_000 - 1 })).not.toBeNull();
+  expect(await c.read({ now: f.now + 120 * 86400_000 })).toBeNull();
 });
 it('persists exactly five normalized family outcomes from real adapters and preserves unknown source coverage', async () => {
   await f.seed();
