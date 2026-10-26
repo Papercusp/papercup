@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify } from '@iarna/toml';
+import { spawn as spawnPty } from '@lydell/node-pty';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, expect, inject, it, vi } from 'vitest';
 import { acquireBaselineSchemaMutex, releaseBaselineSchemaMutex } from '@papercusp/test-config/baseline-schema-mutex';
@@ -62,8 +63,11 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
   const parentHome = join(root, 'parent'), childHome = join(root, 'child');
   mkdirSync(parentHome); mkdirSync(childHome);
   let calls = 0;
+  const bodies: RpcFrame[] = [];
   const provider = createServer(async (req, res) => {
-    for await (const _chunk of req) { /* drain native request */ }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    bodies.push(JSON.parse(Buffer.concat(chunks).toString()));
     calls++; res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol', text: 'ACK', inputTokens: 10, outputTokens: 1 })));
   });
@@ -72,7 +76,8 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
   const config = stringify({ model_provider: 'fork_fixture', model: 'gpt-6-sol',
     model_providers: { fork_fixture: { name: 'Fixture', base_url: `http://127.0.0.1:${address.port}/v1`,
       wire_api: 'responses', requires_openai_auth: false, supports_websockets: false, request_max_retries: 0 } },
-    features: { apps: false, shell_tool: false }, web_search: 'disabled' });
+    features: { apps: false, shell_tool: false }, web_search: 'disabled',
+    tui: { screen_reader_detection_done: true } });
   for (const home of [parentHome, childHome]) writeFileSync(join(home, 'config.toml'), config);
   const prompt = join(childHome, 'AGENTS.md'); writeFileSync(prompt, 'Child identity only');
   try {
@@ -144,13 +149,41 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
       const [child] = await h.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${childId}`;
       expect(child.session_id).toBe(fork.nativeSessionId); expect(child.session_id).not.toBe(native);
       expect(child.launch_spec.nativeFork).toEqual({ advSessionId: parentId, ownerId: 'su-parent', nativeSessionId: native });
+      // The launcher resumes this registered UUID in a PTY after its preparing
+      // app-server has exited. Exercise that installed CLI, including terminal
+      // negotiation, rather than substituting another thread/resume RPC.
+      const tui = spawnPty('codex', ['resume', fork.nativeSessionId, 'CHILD_PTY_RESUME_MARKER',
+        '--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox',
+        '--dangerously-bypass-hook-trust', '-C', root], {
+        cwd: root, cols: 120, rows: 30,
+        env: { PATH: process.env.PATH!, HOME: process.env.HOME!, CODEX_HOME: childHome, TERM: 'xterm-256color' },
+      });
+      let output = '', probeTail = '';
+      const exited = new Promise<void>(done => tui.onExit(() => done()));
+      const data = tui.onData(chunk => {
+        output = (output + chunk).slice(-65_536);
+        const probes = probeTail + chunk; probeTail = probes.slice(-3);
+        if (probes.includes('\x1b[6n')) tui.write('\x1b[1;1R');
+      });
+      try {
+        await vi.waitFor(() => {
+          expect(bodies.length, output).toBe(2);
+          expect(JSON.stringify(bodies[1])).toContain('PARENT_VISIBLE_HISTORY');
+          expect(JSON.stringify(bodies[1])).toContain('CHILD_PTY_RESUME_MARKER');
+          expect(output).toContain('ACK');
+        }, { timeout: 25_000 });
+      } finally {
+        tui.kill('SIGTERM');
+        const killTimer = setTimeout(() => tui.kill('SIGKILL'), 2000);
+        try { await exited; } finally { clearTimeout(killTimer); data.dispose(); }
+      }
       const [after] = await h.sql`SELECT * FROM harness_shared.adv_sessions WHERE id = ${parentId}`;
       expect(after).toEqual(before);
       await expect(registerTrackedCodexFork({ workspaceId: workspace, childAdvSessionId: childId,
         childOwnerId: 'su-child', childNativeSessionId: randomUUID(), source: fork.nativeFork })).rejects.toThrow('registration refused');
     }
     if (!startupFailure) expect(methods).toContain('thread/fork');
-    expect(methods).not.toContain('turn/start'); expect(calls).toBe(1);
+    expect(methods).not.toContain('turn/start'); expect(calls).toBe(scenario === 'registered' ? 2 : 1);
     expect(readFileSync(prompt, 'utf8')).toBe('Child identity only');
     expect(readFileSync(join(childHome, 'config.toml'), 'utf8')).toBe(config);
   } finally { provider.closeAllConnections(); await new Promise<void>(done => provider.close(() => done())); }
