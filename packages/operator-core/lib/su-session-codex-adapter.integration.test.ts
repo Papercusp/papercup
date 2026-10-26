@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import {
   type SuSessionEvent,
 } from '@papercusp/chat-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SU_EXEC_FORK_ROUTES } from './__fixtures__/su-execution-parity';
 
 import type { PuiSuSessionBinding } from './launch-agent';
 import {
@@ -24,6 +25,34 @@ const ROLLOUT_A = '019f0000-1111-7222-8333-444444444444';
 const ROLLOUT_B = '019f0000-5555-7666-8777-888888888888';
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
+
+it('SU-EXEC R-7 acceptance contract', async () => {
+  const routes = SU_EXEC_FORK_ROUTES.filter(row => row.provider === 'codex');
+  expect(routes.map(row => row.execution).sort()).toEqual(['programmatic', 'pty']);
+  for (const route of routes) {
+    expect(route).toMatchObject({ support: 'supported', route: 'native_fork_source', qualification: 'unknown' });
+    expect(route.files.length).toBeGreaterThan(0);
+    expect(route.cases.length).toBeGreaterThan(0);
+    for (const file of route.files) expect(readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8').length).toBeGreaterThan(0);
+    const adapter = createCodexSuSessionAdapter(binding(), runtime(), {
+      agentChatId: `r7-${route.execution}`, register: false, executionKind: route.execution,
+    });
+    try {
+      expect(adapter.host.descriptor().capabilities.commands.fork).toMatchObject({ state: 'conditional', implementation: 'native' });
+      const dispatch = adapter.host.startCommand(command(adapter, { type: 'fork', commandId: `fork-${route.execution}` }));
+      await expect(dispatch.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'fork_requires_launcher', retryable: true } });
+      expect(adapter.host.descriptor().identity.ownerId).toBe('su-codex-pui');
+    } finally { adapter.dispose(); }
+  }
+  expect(routes.flatMap(row => [...row.cases])).toEqual([
+    'registers native child ancestry before success; scenario=registered',
+    'registers native child ancestry before success; scenario=stale-source',
+    'registers native child ancestry before success; scenario=startup-failure',
+    'codex native fork leaves pending question, queued input and accepted wake exclusively with parent',
+    'transfers complete paginated history across homes and preserves parent isolation',
+    'transfers incomplete paginated history across homes and preserves parent isolation',
+  ]);
+});
 
 afterEach(() => {
   globalThis.fetch = originalFetch;

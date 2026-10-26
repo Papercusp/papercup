@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,6 +32,7 @@ it('SU-EXEC R-7 acceptance contract', async () => {
     expect(route).toMatchObject({ support: 'supported', qualification: 'unknown' });
     expect(route.route).toBe(route.execution === 'pty' ? '--fork-session' : 'fork_from');
     expect(route.files.length).toBeGreaterThan(0);
+    for (const file of route.files) expect(readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8').length).toBeGreaterThan(0);
     if (route.execution === 'programmatic') expect(route.cases).toHaveLength(2);
     const adapter = createClaudeSuSessionAdapter(binding(), runtime(), {
       agentChatId: `r7-${route.execution}`, register: false, executionKind: route.execution,
@@ -43,6 +44,10 @@ it('SU-EXEC R-7 acceptance contract', async () => {
       expect(adapter.host.descriptor().identity.ownerId).toBe('su-claude-pui');
     } finally { adapter.dispose(); }
   }
+  expect(routes.find(row => row.execution === 'programmatic')?.cases).toEqual([
+    'claude native fork leaves pending question, queued input and accepted wake exclusively with parent',
+    'claude native fork refuses changed lineage and removes unregistered history',
+  ]);
 });
 
 afterEach(() => {
