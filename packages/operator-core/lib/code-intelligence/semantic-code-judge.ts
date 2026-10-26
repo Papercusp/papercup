@@ -125,7 +125,8 @@ export function isVerifiedSemanticPair(pair: SemanticPair, judgment: SemanticJud
       && judgment.request.contractDomain === undefined
       && parsed.verdict === 'duplicate' && parsed.duplicate && parsed.confidence >= .90 && judgment.pairDigest === semanticDigest(pair)
       && judgment.request.input === semanticPairInput(pair) && judgment.request.model.trim().length > 0
-      && judgment.request.system === SEMANTIC_JUDGE_PROMPT && judgment.request.maxTokens === 1200
+      && createHash('sha256').update(judgment.request.system).digest('hex') === SEMANTIC_JUDGE_PROMPT_SHA256
+      && judgment.request.maxTokens === 1200
       && judgment.request.outputTokenLimit === 'requested-not-enforced'
       && judgment.promptDigest === semanticDigest(judgment.request)
       && judgment.outputDigest === semanticDigest(judgment.output) && !!judgment.execution?.model.trim()
