@@ -2,13 +2,14 @@
  * Inference is served only by a loopback fixture; no provider inference claim. */
 import postgres from 'postgres';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify } from '@iarna/toml';
+import { spawn as spawnPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, expect, inject, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA, type SuSessionIdentity } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
@@ -43,6 +44,9 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async original => ({
 import { startSuRpcEngine } from './su-session-rpc-engine';
 import { recordAdvSession } from './adv-sessions';
 import { completeTrackedCodexFork } from './su-session-tracked-codex-fork';
+import { prepareTrackedClaudeFork } from './su-session-tracked-claude-fork';
+import { resumeArgsFor, resumeEnvFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { SU_EXEC_INVENTORY } from './__fixtures__/su-execution-parity';
 import { startClaudeSuEngine } from './su-session-claude-engine';
 import { startSuStdioPeer } from './su-session-stdio-peer';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
@@ -127,10 +131,11 @@ function toolNames(tools: RpcFrame[], prefix = ''): string[] {
     ? toolNames(tool.tools, `${prefix}${tool.name}.`) : typeof tool.name === 'string' ? [prefix + tool.name] : []);
 }
 
-for (const { backend, registrationFailure, name } of [
-  { backend: 'codex', registrationFailure: false, name: 'codex native fork leaves pending question, queued input and accepted wake exclusively with parent' },
-  { backend: 'claude', registrationFailure: false, name: 'claude native fork leaves pending question, queued input and accepted wake exclusively with parent' },
-  { backend: 'claude', registrationFailure: true, name: 'claude native fork refuses changed lineage and removes unregistered history' },
+for (const { backend, registrationFailure, pty, name } of [
+  { backend: 'codex', registrationFailure: false, pty: false, name: 'codex native fork leaves pending question, queued input and accepted wake exclusively with parent' },
+  { backend: 'claude', registrationFailure: false, pty: false, name: 'claude native fork leaves pending question, queued input and accepted wake exclusively with parent' },
+  { backend: 'claude', registrationFailure: true, pty: false, name: 'claude native fork refuses changed lineage and removes unregistered history' },
+  { backend: 'claude', registrationFailure: false, pty: true, name: 'claude PTY native fork preserves parent history and isolates pending consumables' },
 ] as const) { it(name, async () => {
   const root = mkdtempSync(join(tmpdir(), 'su-fork-pending-')); roots.push(root);
   const parentOwner = `su-parent-${randomUUID()}`, childOwner = `su-child-${randomUUID()}`;
@@ -293,6 +298,70 @@ for (const { backend, registrationFailure, name } of [
     const [before] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE id = ${delivery.id}`;
     expect(before).toMatchObject({ status: 'delivered', turn_proof: 'awaiting', turn_started_at: null });
     expect(queueSettled).toBe(false);
+    if (pty) {
+      expect(execFileSync('claude', ['--version'], { encoding: 'utf8' })).toContain(SU_EXEC_INVENTORY.versions.claude);
+      const home = join(root, 'pty'), configDir = join(home, 'claude-config'), nativeId = randomUUID();
+      mkdirSync(home);
+      const childId = Number(await recordAdvSession({ agent: 'claude', workspaceId: 'fork-pending-fixture',
+        mode: 'console', coordOwnerId: childOwner, cwd: root, sessionId: nativeId }));
+      await fixture.sql`UPDATE harness_shared.adv_sessions SET launch_spec = ${JSON.stringify({ v: 1, agent: 'claude',
+        workspaceId: 'fork-pending-fixture' })}::text::jsonb WHERE id = ${childId}`;
+      const prepared = await prepareTrackedClaudeFork({ workspaceId: 'fork-pending-fixture', cwd: root,
+        childAdvSessionId: childId, childOwnerId: childOwner, childNativeSessionId: nativeId, childConfigDir: configDir,
+        source: { advSessionId: parentAdvSessionId, nativeSession: { backend: 'claude', source: 'adv_sessions',
+          ownerId: parentOwner, sessionId: parentNativeId, configDir: join(root, 'parent', 'claude-config'),
+          configDirSource: 'live-process', configDirUnresolvedReason: null, exactResumeSupported: true, missingReason: null } } });
+      const parentBytes = readFileSync(prepared.transcriptPath);
+      writeFileSync(join(configDir, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true, theme: 'dark',
+        bypassPermissionsModeAccepted: true, projects: { [root]: { hasTrustDialogAccepted: true,
+          hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1, allowedTools: [] } } }));
+      const session = { agent: 'claude', sessionId: parentNativeId, coordOwnerId: parentOwner,
+        workspaceId: 'fork-pending-fixture' };
+      const launch = resumeArgsFor(session, { fork: true, forkSessionId: nativeId, model: 'claude-haiku-4-5', env: {} });
+      const terminal = spawnPty(launch.bin, [...launch.args, '--setting-sources', '', '--settings', '{"disableAllHooks":true}',
+        '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--', 'CHILD_ONLY_PTY'], {
+        cwd: root, cols: 120, rows: 32, env: { PATH: process.env.PATH!, HOME: home, TERM: 'xterm-256color',
+          // A fixture bearer avoids the native API-key approval dialog. No
+          // credential is read from the invoking agent's environment.
+          CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_AUTH_TOKEN: 'offline-fixture-only',
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1',
+          ...resumeEnvFor(session, { fork: true, ownerId: childOwner }) },
+      });
+      let output = '', probeTail = '', exitCode: number | null = null;
+      const exited = new Promise<void>(done => terminal.onExit(event => { exitCode = event.exitCode; done(); }));
+      const data = terminal.onData(chunk => {
+        output = (output + chunk).slice(-65_536);
+        const probes = probeTail + chunk; probeTail = probes.slice(-3);
+        if (probes.includes('\x1b[6n')) terminal.write('\x1b[1;1R');
+      });
+      try {
+        await Promise.race([exited.then(() => { throw new Error(`Claude PTY exited (${exitCode}): ${output}`); }), vi.waitFor(() => {
+          expect(exitCode, output).toBeNull();
+          const request = bodies.find(body => JSON.stringify(body).includes('CHILD_ONLY_PTY'));
+          expect(request, output).toBeDefined();
+          expect(JSON.stringify(request)).toContain('PARENT_HISTORY');
+          expect(JSON.stringify(request)).not.toContain('PARENT_QUEUED_PRIVATE');
+          expect(JSON.stringify(request)).not.toContain('PARENT_WAKE_PRIVATE');
+          expect(output).toContain('ACK');
+        }, { timeout: 30_000 })]);
+        await prepared.register();
+        const [child] = await fixture.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${childId}`;
+        expect(child.session_id).toBe(nativeId);
+        expect(child.launch_spec.nativeFork).toEqual({ advSessionId: parentAdvSessionId,
+          nativeSessionId: parentNativeId, ownerId: parentOwner });
+        expect(readFileSync(prepared.transcriptPath)).toEqual(parentBytes);
+        expect(queueSettled).toBe(false);
+        expect(outbound.get(parentOwner)).toHaveLength(2);
+        const [retained] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE id = ${delivery.id}`;
+        expect(retained).toEqual(before);
+        expect(await fixture.sql`SELECT id FROM harness_shared.event_awaits WHERE subscriber_id = ${childOwner}`).toEqual([]);
+      } finally {
+        terminal.kill('SIGTERM');
+        const killTimer = setTimeout(() => terminal.kill('SIGKILL'), 2000);
+        try { await exited; } finally { clearTimeout(killTimer); data.dispose(); }
+      }
+      return;
+    }
     if (registrationFailure) {
       await expect(open(childOwner, true)).rejects.toThrow('lineage registration refused');
       const [child] = await fixture.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE coord_owner_id = ${childOwner}`;

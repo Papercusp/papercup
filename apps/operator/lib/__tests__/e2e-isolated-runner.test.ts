@@ -109,6 +109,17 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
     [
       '#!/usr/bin/env bash',
       'set -e',
+      'for arg in "$@"; do',
+      '  if [ "$arg" = "--list" ]; then',
+      '    case "${E2E_FIXTURE_SELECTION:-pass}" in',
+      '      error) echo "fixture collection failed" >&2; exit 63 ;;',
+      '      zero) echo \'{"suites":[]}\'; exit 0 ;;',
+      '      malformed) echo "invalid collection JSON"; exit 0 ;;',
+      '    esac',
+      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));process.stdout.write(JSON.stringify({suites:[{title:"fixture.spec.ts",specs:[{title:"fixture selected",tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
+      '    exit 0',
+      '  fi',
+      'done',
       'printf "%s" "${NODE_ENV:-}" > "$E2E_FIXTURE_VITE_CWD.playwright-node-env"',
       'artifact_dir=test-results',
       'for arg in "$@"; do case "$arg" in --output=*) artifact_dir="${arg#--output=}" ;; esac; done',
@@ -222,6 +233,29 @@ function run(
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it.each(['zero', 'error', 'malformed'])('refuses %s test selection before starting the native rig', selection => {
+    const f = fixture(0);
+    const started = join(f.dir, 'rig-started');
+    writeFileSync(f.rig, `#!/usr/bin/env bash\nprintf started > '${started}'\nexit 72\n`);
+    const result = run(f, ['e2e/chat-streaming.spec.ts', '--grep', '^P010 title$'], { E2E_FIXTURE_SELECTION: selection });
+    expect(result.status, result.out).toBe(2);
+    expect(result.out).toContain('refusing native rig');
+    expect(existsSync(started), result.out).toBe(false);
+    expect(existsSync(f.viteCwd), result.out).toBe(false);
+    expect(result.recorded).toBeNull();
+  });
+
+  it('collects the same files and grep before boot and preserves execution reporters', () => {
+    const f = fixture(0);
+    const args = ['e2e/chat-streaming.spec.ts', '--grep', 'P010 current-build conformance journey', '--workers=1'];
+    const result = run(f, args);
+    expect(result.status, result.out).toBe(0);
+    const selected = JSON.parse(readFileSync(`${f.viteCwd}.selection.json`, 'utf8'));
+    expect(selected.cwd).toBe(join(REPO_ROOT, 'apps/operator'));
+    expect(selected.argv).toEqual([...args, '--list', '--reporter=json']);
+    expect(result.out).toContain('OPERATOR_E2E_SELECTION count=1');
+    expect(result.recorded.argv).toEqual(args);
+  });
   it('admits its maintained assertion through the real native preflight', () => {
     const f = fixture(0);
     const result = run(f, ['e2e/content-reading.spec.ts', '--workers=1']);

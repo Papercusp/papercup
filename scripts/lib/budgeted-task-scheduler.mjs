@@ -441,7 +441,10 @@ export function retainNativeProofPacket(directory, input) {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
   }
-  const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash };
+  // Keep the producer's observed inventory and partial states in the original
+  // locator. A newly sealed manifest cannot redefine which objects were captured.
+  const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash,
+    inventoryHash: custodyHash({ groups, gaps }) };
   const verified = verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
   return { directory: root, locator, ...verified };
 }
@@ -472,6 +475,9 @@ export function verifyNativeProofPacket(directory, locator, contract) {
       JSON.stringify(manifest.expected) !== JSON.stringify(contract.expected) ||
       !Array.isArray(manifest.groups) || manifest.groups.length !== contract.expected.length)
     throw new Error('custody identity or expected population mismatch');
+  if (!comparisonDigest(locator.inventoryHash) ||
+      custodyHash({ groups: manifest.groups, gaps: manifest.gaps }) !== locator.inventoryHash)
+    throw new Error('custody captured inventory mismatch');
   for (const expected of contract.expected) {
     const group = manifest.groups.find(row => row.id === expected.id);
     if (!group || group.attempt !== expected.attempt || group.families.length !== 4 ||
@@ -482,6 +488,10 @@ export function verifyNativeProofPacket(directory, locator, contract) {
     let reporter;
     for (const family of group.families) {
       if (!Array.isArray(family.entries)) throw new Error('custody inventory missing');
+      if (family.family === 'A' && family.state === 'produced' &&
+          (family.entries.length !== 1 || typeof expected.out !== 'string' || !isAbsolute(expected.out) ||
+           family.entries[0]?.original !== expected.out))
+        throw new Error('custody produced OUT inventory mismatch');
       for (const [index, entry] of family.entries.entries()) {
         const bytes = read(entry.artifact);
         if (family.family === 'A' && index === 0) reporter = bytes;

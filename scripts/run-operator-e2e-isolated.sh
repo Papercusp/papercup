@@ -294,6 +294,56 @@ if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-
   node "$ROOT/scripts/source-preview.mjs" verifier-inputs-check "${input_check_args[@]}" || exit $?
 fi
 
+# Collect with the SAME selection arguments before allocating native build/DB
+# resources. Playwright --grep sees project + filename + title, so an apparently
+# valid anchored title can select nothing. Collection never runs fixtures and
+# uses its own JSON reporter; execution keeps the config's ledger reporters.
+selection_report="$VH_PHASE_DIR/selection.json"
+selection_errors="$VH_PHASE_DIR/selection.stderr.log"
+(
+  cd "$ROOT/apps/operator" || exit 2
+  timeout --signal=TERM --kill-after=5s 60s bash -c \
+    'exec $OPERATOR_E2E_PLAYWRIGHT "$@" --list --reporter=json' -- "$@"
+) >"$selection_report" 2>"$selection_errors"
+selection_status=$?
+if [ "$selection_status" -ne 0 ]; then
+  vh_fail selection-collection-failed
+  tail -n 20 "$selection_errors" >&2
+  echo "run-operator-e2e-isolated: selection collection failed (rc=$selection_status); refusing native rig; evidence=$selection_report" >&2
+  exit 2
+fi
+node --input-type=module - "$selection_report" <<'JS'
+import fs from 'node:fs';
+const file = process.argv[2];
+const report = JSON.parse(fs.readFileSync(file, 'utf8'));
+const selected = [];
+function visit(suites, parents = []) {
+  for (const suite of suites ?? []) {
+    const titles = [...parents, suite.title].filter(Boolean);
+    for (const spec of suite.specs ?? []) {
+      for (const test of spec.tests ?? []) selected.push({
+        project: test.projectName, title: [...titles, spec.title].join(' › '),
+      });
+    }
+    visit(suite.suites, titles);
+  }
+}
+visit(report.suites);
+if (report.errors?.length || !selected.length) {
+  console.error('run-operator-e2e-isolated: empty or invalid selection; refusing native rig');
+  process.exit(2);
+}
+fs.writeFileSync(file.replace(/\.json$/, '-proof.json'), JSON.stringify({
+  sourceRef: process.env.VERIFY_TAURI_SOURCE_REF ?? null, count: selected.length, selected,
+}, null, 2) + '\n');
+console.log(`OPERATOR_E2E_SELECTION count=${selected.length} report=${file}`);
+JS
+selection_status=$?
+if [ "$selection_status" -ne 0 ]; then
+  vh_fail selection-invalid
+  exit 2
+fi
+
 echo "OPERATOR_E2E_ISOLATED group=$PAPERCUSP_TEST_RUN_GROUP ledger=${PAPERCUSP_TEST_RUNS_DB_URL##*@} workspace=${PAPERCUSP_TEST_RUN_WORKSPACE:-<rig>} harness=$PAPERCUSP_TEST_RUN_HARNESS rig=$RIG"
 
 rig_pid=""

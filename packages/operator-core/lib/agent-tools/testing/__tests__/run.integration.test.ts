@@ -22,8 +22,8 @@
  */
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { randomUUID } from 'node:crypto';
-import { execFile, type ChildProcess } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { execFile, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -73,6 +73,7 @@ import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit 
 import { restrictedHoldRefusal } from '../restricted-hold-fence';
 import { __resetShutdownStateForTest, markShuttingDown } from '../../../shutdown-state';
 import type { TestRunArtifactPaths, TestRunDeadline } from '../run-artifacts';
+import { createNativeArtifactPersister } from '../../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -1891,6 +1892,120 @@ describe('testing:run (integration)', () => {
     expect(await readFile(join(out.artifacts!.directory, 'router.json'), 'utf8')).toContain(logPath);
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
+
+  it('P003 reopens real runner bytes in a separate retained-only process after scratch producer retirement', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-p003-retirement-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    // A real child exercises the maintained runner's stream and cleanup seam.
+    // The controlled node summary is not a claim of native Vitest execution.
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      'process.stdout.write(Buffer.from([0,255,10]));',
+      'process.stderr.write(Buffer.from([255,0,10]));',
+      "console.log('# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const runId = randomUUID();
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], runId,
+      workspaceId: 'p003-custody', harnessSlug: 'papercusp', timeoutMs: IN_PROCESS_CLASSIFICATION_CEILING_MS });
+    expect(out, JSON.stringify(out)).toMatchObject({ ok: true, passed: 1, failed: 0, cleanup: { complete: true, errors: [] } });
+    const paths = out.artifacts!;
+    const manifest = JSON.parse(await readFile(paths.manifest, 'utf8'));
+    expect(manifest).toMatchObject({ childState: 'closed', cleanup: { complete: true },
+      nativeCustody: { byteCustody: 'complete', writerState: 'settled', producerRetirement: 'not-performed',
+        nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+    // Derive the expected auxiliary population from original packet surfaces,
+    // independently of the native manifest that the consumer will verify.
+    const auxiliary: Array<{ role: string; state: 'produced'; path: string }> = [];
+    for (const name of ['source.json', 'configuration.json', 'router.json', 'ledger.json', 'phases.jsonl'])
+      auxiliary.push({ role: name, state: 'produced', path: join(paths.directory, name) });
+    async function inventory(directory: string, role: string): Promise<void> {
+      for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (entry.isDirectory()) await inventory(join(directory, entry.name), `${role}/${entry.name}`);
+        else auxiliary.push({ role: `${role}/${entry.name}`, state: 'produced', path: join(directory, entry.name) });
+      }
+    }
+    for (const [role, directory] of [['reports', paths.reports], ['owned-databases', paths.ownedDatabases],
+      ['executed-inputs', paths.runtimeInputs]]) await inventory(directory, role);
+    const logs: string[] = JSON.parse(await readFile(join(paths.directory, 'router.json'), 'utf8')).outputLogPaths;
+    expect(logs).toHaveLength(2);
+    logs.forEach((path, index) => auxiliary.push({ role: `router-output/${index}`, state: 'produced', path }));
+    const expectedBytes = await Promise.all(auxiliary.map(async entry => {
+      const bytes = await readFile(entry.path);
+      return { role: entry.role, sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.length };
+    }));
+    const contract = { identity: { workspace: 'p003-custody', harness: 'papercusp', runId }, expected: [{
+      id: 'packet', attempt: 'primary', selected: [join(root, 'packages/x/real.test.ts')],
+      runner: 'unsupported', armed: false, out: null, auxiliary }] };
+    // Copy the immutable retained directory alone; remove the producer checkout,
+    // original logs and packet metadata so the consumer has no original fallback.
+    const consumerRoot = await mkdtemp(join(tmpdir(), 'p003-retained-consumer-'));
+    selectorRoots.push(consumerRoot);
+    const { cp } = await import('node:fs/promises');
+    await cp(paths.nativeProof, join(consumerRoot, 'native-proof'), { recursive: true });
+    await rm(root, { recursive: true });
+    await Promise.all(logs.map(path => rm(path, { force: true })));
+    await rm(paths.directory, { recursive: true });
+    expect(existsSync(root)).toBe(false);
+    expect(existsSync(paths.directory)).toBe(false);
+    const consume = (locator = manifest.nativeCustody.locator, expectedContract = contract) => spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import {verifyNativeProofPacket} from ' + JSON.stringify(join(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'try { const r=verifyNativeProofPacket(...JSON.parse(process.argv[1]));' +
+      'process.stdout.write(JSON.stringify({pid:process.pid,status:r.status,verdicts:r.manifest.verdicts,' +
+      'pins:r.manifest.groups[0].auxiliary.map(a=>({role:a.role,sha256:a.artifact.sha256,byteLength:a.artifact.byteLength}))})); }' +
+      'catch(error) { process.stdout.write(JSON.stringify({pid:process.pid,refused:true,error:String(error)})); }',
+      JSON.stringify([join(consumerRoot, 'native-proof'), locator, expectedContract])],
+    { encoding: 'utf8', timeout: 15_000 });
+    const child = consume();
+    expect({ error: child.error, status: child.status, stderr: child.stderr })
+      .toEqual({ error: undefined, status: 0, stderr: '' });
+    const read = JSON.parse(child.stdout);
+    expect(read.pid).not.toBe(process.pid);
+    expect(read.pins).toEqual(expectedBytes);
+    expect(read).toMatchObject({ status: 'complete', verdicts: { protocol: 'unqualified', producerRetirement: 'not-performed',
+      cleanup: { complete: true }, nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+    const objects = join(consumerRoot, 'native-proof', 'objects');
+    const altered = JSON.parse(await readFile(join(objects, manifest.nativeCustody.locator.manifest.ref), 'utf8'));
+    altered.groups[0].auxiliary.pop();
+    const pin = createNativeArtifactPersister(objects).persist(Buffer.from(JSON.stringify(altered)), 'native-proof.json');
+    for (const refusal of [consume({ ...manifest.nativeCustody.locator, manifest: pin }),
+      consume(manifest.nativeCustody.locator, { ...contract, expected: [] })]) {
+      expect({ error: refusal.error, status: refusal.status, stderr: refusal.stderr })
+        .toEqual({ error: undefined, status: 0, stderr: '' });
+      expect(JSON.parse(refusal.stdout)).toMatchObject({ refused: true });
+    }
+  }, 120_000);
+
+  it('P003 preserves unavailable custody and cleanup receipts after a real unsealed router is hard-killed', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-p003-interrupted-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const ready = join(root, 'writer-ready');
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import {mkdirSync,writeFileSync} from 'node:fs'; import {join} from 'node:path';",
+      "const directory=join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'native-router-interrupted');",
+      'mkdirSync(directory,{mode:448});',
+      "writeFileSync(join(directory,'expected.json'),JSON.stringify({identity:{workspace:'p003-interrupted',harness:'papercusp',runId:process.env.PAPERCUSP_TEST_RUN_GROUP},expected:[]}));",
+      'process.stdout.write("P003 writer pending\\n");',
+      'writeFileSync(' + JSON.stringify(ready) + ',"ready");',
+      'process.kill(process.pid,"SIGKILL");',
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], workspaceId: 'p003-interrupted',
+      harnessSlug: 'papercusp', timeoutMs: IN_PROCESS_CLASSIFICATION_CEILING_MS,
+      allowDetachedRecovery: false });
+    expect(existsSync(ready)).toBe(true);
+    expect(out, JSON.stringify(out)).toMatchObject({ ok: false, error: 'no_report', cleanup: { complete: true, errors: [] } });
+    expect(out).not.toHaveProperty('passed');
+    expect(out).not.toHaveProperty('detachedRunId');
+    const manifest = JSON.parse(await readFile(out.artifacts!.manifest, 'utf8'));
+    expect(manifest).toMatchObject({ childState: 'closed', cleanup: { complete: true }, nativeCustody: {
+      byteCustody: 'unavailable', nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'retained' } });
+    expect(manifest.nativeCustody.error).toContain('locator.json');
+    expect(existsSync(join(out.artifacts!.directory, 'native-router-interrupted', 'expected.json'))).toBe(true);
+    expect(existsSync(join(out.artifacts!.directory, 'native-router-interrupted', 'locator.json'))).toBe(false);
+    // The maintained shell wrapper normalizes the child's SIGKILL to 128 + 9.
+    expect(JSON.parse(await readFile(join(out.artifacts!.directory, 'router.json'), 'utf8')))
+      .toMatchObject({ code: 137, signal: null, childState: 'closed' });
+  }, 120_000);
 
   it('completes confirmed-close cleanup when private native custody refuses a redirected root (P002)', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-custody-refusal-');

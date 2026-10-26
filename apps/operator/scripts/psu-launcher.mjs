@@ -6980,6 +6980,10 @@ export function ompDefaultModelAdvisory(home = homedir()) {
  * overriding it there would strand the original's locks/awaits/presence, which is
  * the exact regression the fresh-random-SID resume caused.
  */
+/**
+ * @param {any} session
+ * @param {{ mintSid?: () => string, fork?: boolean, ownerId?: string | null }} [options]
+ */
 export function resumeEnvFor(
   session,
   { mintSid = () => `su-${randomUUID()}`, fork = false, ownerId = null } = {},
@@ -12161,7 +12165,14 @@ export async function refreshPersonaRender(
  * transcript containing the exact rendered hash. If the POST response is lost,
  * reconcile through the status route before deciding whether acknowledgement
  * failed; killing a successfully-delivered target on a network ambiguity would
- * be as wrong as accepting PTY output as persistence. */
+ * be as wrong as accepting PTY output as persistence.
+ *
+ * WI-6554700010029583: when that authoritative status read proves the
+ * disposition did NOT commit (same port + target, still `pending`), re-POST the
+ * identical idempotent disposition up to `maxDeliveryAttempts` times with a
+ * linear backoff. One slow operator response (the 10s client timeout) used to
+ * strand an answered native consult's receipt at `pending` forever. Refusals,
+ * terminal states and identity mismatches are never retried. */
 export async function reportSessionPortDelivery(
   sessionPort,
   proof,
@@ -12172,6 +12183,9 @@ export async function reportSessionPortDelivery(
     timeoutMs = 10_000,
     coordOwnerId = null,
     appendEventImpl = appendHostEvent,
+    maxDeliveryAttempts = 3,
+    retryDelayMs = 2_000,
+    sleepImpl = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   } = {},
 ) {
   if (!sessionPort?.portId || !sessionPort?.targetAdvSessionId) {
@@ -12217,61 +12231,74 @@ export async function reportSessionPortDelivery(
   };
   let responseBody = null;
   let refused = false;
-  {
-    const { response, body } = await attempt("delivery",
-      operatorUrl + "/api/adv/sessions/port/delivery",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          protocolVersion: sessionPort.protocolVersion,
-          transformVersion: sessionPort.transformVersion,
-          workspace: sessionPort.workspace,
-          portId: sessionPort.portId,
-          targetAdvSessionId: Number(sessionPort.targetAdvSessionId),
-          status,
-          ...(status === "delivered"
-            ? {
-                proof: {
-                  persisted: true,
-                  renderedHash: proof.renderedHash,
-                  nativeRef: proof.nativeRef,
-                },
-              }
-            : {
-                error: proof?.error ?? "native persistence verification failed",
-              }),
-        }),
-      },
-    );
-    responseBody = body;
-    if (response?.ok && responseBody?.ok && responseBody.status === status &&
-        (responseBody.targetAdvSessionId == null || Number(responseBody.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId)))
-      return responseBody;
-    refused = response?.status >= 400 && response.status < 500 && response.status !== 429 && body?.ok === false;
-  }
-  {
-    const query = new URLSearchParams({ id: sessionPort.portId });
-    if (sessionPort.workspace) query.set("workspace", sessionPort.workspace);
-    const { response, body } = await attempt("status",
-      `${operatorUrl}/api/adv/sessions/port/status?${query}`,
-      {
-        method: "GET",
-      },
-    );
-    if (
-      response?.ok &&
-      body?.ok &&
-      body.port?.status === status &&
-      (body.port?.id == null || body.port.id === sessionPort.portId) &&
-      Number(body.port?.targetAdvSessionId) ===
-        Number(sessionPort.targetAdvSessionId)
-    )
-      return body;
-    if (response?.ok && body?.ok && body.port &&
-        ((body.port.id != null && body.port.id !== sessionPort.portId) ||
-         (body.port.targetAdvSessionId != null && Number(body.port.targetAdvSessionId) !== Number(sessionPort.targetAdvSessionId)) ||
-         (Number(body.port.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId) &&
-          ["delivered", "failed", "expired"].includes(body.port.status)))) refused = true;
+  const attemptBudget = Number.isSafeInteger(maxDeliveryAttempts) && maxDeliveryAttempts > 0 ? maxDeliveryAttempts : 1;
+  for (let deliveryAttempt = 1; deliveryAttempt <= attemptBudget; deliveryAttempt++) {
+    refused = false;
+    let provenUncommitted = false;
+    {
+      const { response, body } = await attempt("delivery",
+        operatorUrl + "/api/adv/sessions/port/delivery",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            protocolVersion: sessionPort.protocolVersion,
+            transformVersion: sessionPort.transformVersion,
+            workspace: sessionPort.workspace,
+            portId: sessionPort.portId,
+            targetAdvSessionId: Number(sessionPort.targetAdvSessionId),
+            status,
+            ...(status === "delivered"
+              ? {
+                  proof: {
+                    persisted: true,
+                    renderedHash: proof.renderedHash,
+                    nativeRef: proof.nativeRef,
+                  },
+                }
+              : {
+                  error: proof?.error ?? "native persistence verification failed",
+                }),
+          }),
+        },
+      );
+      responseBody = body;
+      if (response?.ok && responseBody?.ok && responseBody.status === status &&
+          (responseBody.targetAdvSessionId == null || Number(responseBody.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId)))
+        return responseBody;
+      refused = response?.status >= 400 && response.status < 500 && response.status !== 429 && body?.ok === false;
+    }
+    {
+      const query = new URLSearchParams({ id: sessionPort.portId });
+      if (sessionPort.workspace) query.set("workspace", sessionPort.workspace);
+      const { response, body } = await attempt("status",
+        `${operatorUrl}/api/adv/sessions/port/status?${query}`,
+        {
+          method: "GET",
+        },
+      );
+      if (
+        response?.ok &&
+        body?.ok &&
+        body.port?.status === status &&
+        (body.port?.id == null || body.port.id === sessionPort.portId) &&
+        Number(body.port?.targetAdvSessionId) ===
+          Number(sessionPort.targetAdvSessionId)
+      )
+        return body;
+      if (response?.ok && body?.ok && body.port &&
+          ((body.port.id != null && body.port.id !== sessionPort.portId) ||
+           (body.port.targetAdvSessionId != null && Number(body.port.targetAdvSessionId) !== Number(sessionPort.targetAdvSessionId)) ||
+           (Number(body.port.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId) &&
+            ["delivered", "failed", "expired"].includes(body.port.status)))) refused = true;
+      // The authoritative read proves the disposition did NOT commit: same
+      // port + target, still pending. Only this state is safe to re-POST.
+      provenUncommitted = !refused && response?.ok === true && body?.ok === true &&
+        body.port?.status === "pending" &&
+        (body.port.id == null || body.port.id === sessionPort.portId) &&
+        Number(body.port.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId);
+    }
+    if (!provenUncommitted || deliveryAttempt >= attemptBudget) break;
+    await sleepImpl(Math.max(0, retryDelayMs) * deliveryAttempt);
   }
   const error = new Error(
     `operator did not acknowledge session port ${sessionPort.portId} as ${status}` +

@@ -8949,8 +8949,10 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     });
   });
 
+  // A `pending` status read is no longer a single-shot outcome: it proves the
+  // disposition did not commit and triggers the bounded re-POST covered by the
+  // WI-6554700010029583 tests below.
   it.each([
-    ["pending", { status: "pending", targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
     ["missing status", { targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
     ["missing target", { status: "delivered" }, "session_port_ack_outcome_unknown"],
     ["wrong target", { status: "delivered", targetAdvSessionId: 100 }, "session_port_ack_refused"],
@@ -8977,6 +8979,84 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       expect(appendEventImpl.mock.calls[i][2]).toMatchObject({ portId: "22222222-2222-4222-8222-222222222222", expectedTargetAdvSessionId: 99, stage: i === 0 ? "delivery" : "status" });
     }
     expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("SECRET");
+  });
+
+  describe("WI-6554700010029583: bounded re-POST while the status read proves the disposition uncommitted", () => {
+    const port = { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99, workspace: "test" };
+    const proof = { persisted: true, renderedHash: "a".repeat(64), nativeRef: "/native/rollout.jsonl" };
+    const timeout = () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+
+    it("re-POSTs the identical disposition after a timed-out POST and a pending status read, then accepts the delivered ack", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const appendEventImpl = vi.fn();
+      const fetchImpl = vi.fn()
+        .mockRejectedValueOnce(timeout())
+        .mockResolvedValueOnce(json({ ok: true, port: { id: port.portId, status: "pending", targetAdvSessionId: 99 } }))
+        .mockResolvedValueOnce(json({ ok: true, status: "delivered", artifactDeleted: true }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl, coordOwnerId: "su-test", appendEventImpl,
+      });
+      expect(result).toMatchObject({ ok: true, status: "delivered" });
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "POST"]);
+      expect(fetchImpl.mock.calls[2][1].body).toBe(fetchImpl.mock.calls[0][1].body);
+      expect(sleepImpl).toHaveBeenCalledTimes(1);
+      expect(sleepImpl).toHaveBeenCalledWith(2_000);
+      expect(appendEventImpl.mock.calls.map((call) => call[2].stage)).toEqual(["delivery", "status", "delivery"]);
+      expect(appendEventImpl.mock.calls[0][2]).toMatchObject({ errorName: "TimeoutError", httpStatus: null });
+    });
+
+    it("stops after maxDeliveryAttempts when every status read stays pending, keeping every receipt", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const pending = () => json({ ok: true, port: { status: "pending", targetAdvSessionId: 99 } });
+      const reset = () => json({ ok: false, error: "upstream reset" }, 502);
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(reset()).mockResolvedValueOnce(pending())
+        .mockResolvedValueOnce(reset()).mockResolvedValueOnce(pending())
+        .mockResolvedValueOnce(reset()).mockResolvedValueOnce(pending());
+      const failure = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl, maxDeliveryAttempts: 3, retryDelayMs: 500,
+      }).catch((error) => error);
+      expect(failure.code).toBe("session_port_ack_outcome_unknown");
+      expect(failure.acknowledgement.outcome).toBe("outcome_unknown");
+      expect(failure.acknowledgement.receipts.map((r: { stage: string }) => r.stage))
+        .toEqual(["delivery", "status", "delivery", "status", "delivery", "status"]);
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+      expect(sleepImpl.mock.calls).toEqual([[500], [1_000]]);
+    });
+
+    it.each([
+      ["a refused POST", json({ ok: false, error: "native persistence proof/hash required" }, 409), "session_port_ack_refused"],
+      ["a pending row for a different target", null, "session_port_ack_refused"],
+    ])("never re-POSTs after %s", async (_label, postResponse, code) => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const statusPort = postResponse
+        ? { status: "pending", targetAdvSessionId: 99 }
+        : { status: "pending", targetAdvSessionId: 100 };
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(postResponse ?? json({ ok: false, error: "upstream reset" }, 502))
+        .mockResolvedValueOnce(json({ ok: true, port: statusPort }));
+      const failure = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      }).catch((error) => error);
+      expect(failure.code).toBe(code);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleepImpl).not.toHaveBeenCalled();
+    });
+
+    it("accepts a slow first POST that committed late: the re-POST is refused but the status read proves delivered", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn()
+        .mockRejectedValueOnce(timeout())
+        .mockResolvedValueOnce(json({ ok: true, port: { status: "pending", targetAdvSessionId: 99 } }))
+        .mockResolvedValueOnce(json({ ok: false, error: "session port is not pending" }, 409))
+        .mockResolvedValueOnce(json({ ok: true, port: { status: "delivered", targetAdvSessionId: 99 } }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      });
+      expect(result.port.status).toBe("delivered");
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "POST", "GET"]);
+    });
   });
 
   it("EI-259750: records an invalid JSON status body as unknown rather than swallowing the receipt", async () => {

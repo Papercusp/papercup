@@ -394,13 +394,39 @@ export function isPreparedCheckpointSelectionRecord(value: unknown): value is Pr
     (r.carry === null || (carry !== null && isDeepStrictEqual(carry, r.carry) && carry.judgedCandidate === r.candidate));
 }
 
+/**
+ * WI-6554700010029580: the queue facts the preflight's candidate choice reads — the queue's lineage,
+ * the repair head, and whether the frozen candidate itself is still owed its first verdict
+ * (`ready-to-test`). Fixer, verdict and latency bookkeeping (`updatedAtMs`, `fixerStateChangedAtMs`,
+ * `fixerSpawnId`, `attempts`, `freeRetries`, `lastVerdictAtMs`, rounds, legs, …) moves between one
+ * attempt's physical runs without changing that choice. Whole-row equality here crashed every such
+ * resume (the EI-21813295393334986 lesson the queue CAS already learned). The runner re-reads the
+ * queue under the serializer and still refuses a changed selection, so this stays fail-closed.
+ */
+function preparedSelectionQueueAuthority(queue: FrozenCandidateRepairQueue) {
+  return {
+    candidate: queue.candidate,
+    openedAtMs: queue.openedAtMs,
+    qualificationAttemptId: queue.qualificationAttemptId ?? null,
+    base: queue.base,
+    repairHead: queue.repairHead,
+    judgesCandidate: queue.phase === 'ready-to-test',
+  };
+}
+
 /** A fresh run may have persisted its own initial queue before dying in materialization. */
 export function preparedCheckpointQueueMatches(
   record: PreparedCheckpointSelectionRecord,
   queue: FrozenCandidateRepairQueue | null,
 ): boolean {
   if (record.queue === undefined || isDeepStrictEqual(record.queue, queue)) return true;
-  if (record.queue !== null || queue === null) return false;
+  if (record.queue !== null) {
+    // A captured queue never takes the fresh-cut exception below; it must still select the same candidate.
+    const captured = parseFrozenCandidateRepairQueue(record.queue);
+    return captured !== null && queue !== null && isDeepStrictEqual(
+      preparedSelectionQueueAuthority(captured), preparedSelectionQueueAuthority(queue));
+  }
+  if (queue === null) return false;
   // Reconstruct exactly the initial queue this attempt is allowed to publish.
   // An admission, verdict, version change, or another attempt still invalidates it.
   const initial = createFrozenCandidateQueue({

@@ -109,6 +109,94 @@ describe('private native proof custody (P002)', () => {
     return { root, producer, directory, contract, observations, save };
   }
 
+  function consumeRetained(f: ReturnType<typeof fixture>, locator: ReturnType<typeof f.save>['locator'], contract = f.contract) {
+    expect(fs.existsSync(f.producer)).toBe(false);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'import { readFileSync, statSync } from "node:fs"; import { join } from "node:path";' +
+      'const [directory,locator,contract]=JSON.parse(process.argv[1]);' +
+      'try { const r=verifyNativeProofPacket(directory,locator,contract);' +
+      'const entries=r.manifest.groups.flatMap(g=>[...g.families.flatMap(f=>f.entries),...g.auxiliary.filter(a=>a.artifact)]);' +
+      'process.stdout.write(JSON.stringify({refused:false,pid:process.pid,status:r.status,manifest:r.manifest,' +
+      'objects:entries.map(e=>({original:e.original??e.path,pin:e.artifact,mode:statSync(join(directory,"objects",e.artifact.ref)).mode&511,' +
+      'bytes:readFileSync(join(directory,"objects",e.artifact.ref)).toString("base64")}))})); }' +
+      'catch(error) { process.stdout.write(JSON.stringify({refused:true,error:String(error),pid:process.pid})); }',
+      JSON.stringify([f.directory, locator, contract])], { encoding: 'utf8', timeout: 15_000 });
+    expect({ error: child.error, stderr: child.stderr, status: child.status })
+      .toEqual({ error: undefined, stderr: '', status: 0 });
+    const result = JSON.parse(child.stdout);
+    expect(result.pid).not.toBe(process.pid);
+    return result;
+  }
+
+  it('P003 reconciles independent raw-byte pins and private modes for two primaries and a detail after retirement', () => {
+    const f = fixture(['primary', 'primary', 'detail']);
+    const originals = f.contract.expected.flatMap(group => [group.out,
+      ...['.modules', '.native-processes', '.processes'].flatMap(suffix =>
+        readdirSync(group.out + suffix).map(name => join(group.out + suffix, name))),
+      ...group.auxiliary.map(entry => entry.path)]).map(original => {
+      const bytes = readFileSync(original);
+      return { original, bytes: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex'), length: bytes.length };
+    });
+    const saved = f.save();
+    expect(saved.status).toBe('complete');
+    expect(fs.statSync(f.directory).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(join(f.directory, 'objects')).mode & 0o777).toBe(0o700);
+    rmSync(f.producer, { recursive: true });
+    const result = consumeRetained(f, saved.locator);
+    expect(result.status).toBe('complete');
+    expect(result.objects).toHaveLength(originals.length);
+    for (const expected of originals) expect(result.objects.find((entry: { original: string }) => entry.original === expected.original))
+      .toMatchObject({ bytes: expected.bytes, pin: { sha256: expected.sha256, byteLength: expected.length }, mode: 0o600 });
+    expect(result.manifest.groups.map((group: { references: unknown[] }) => group.references.length)).toEqual([9, 9, 9]);
+    expect(result.manifest.verdicts).toMatchObject({ execution: { state: 'failed' }, cleanup: { complete: false },
+      producerRetirement: 'not-performed', protocol: 'unqualified', nativeProof: 'unqualified', acceptance: 'unmeasured' });
+  });
+
+  it.each(['group', 'attempt', 'family', 'occurrence', 'auxiliary', 'workspace', 'harness', 'run',
+    'population', 'bytes', 'length', 'escape', 'object-mode', 'native-object', 'process-object'])
+  ('P003 refuses retained-only %s loss or corruption after producer retirement', mutation => {
+    const f = fixture(['primary', 'primary', 'detail']), saved = f.save();
+    const manifest = structuredClone(saved.manifest), contract = structuredClone(f.contract);
+    const detail = manifest.groups[2];
+    if (mutation === 'group') manifest.groups.pop();
+    if (mutation === 'attempt') detail.attempt = 'primary';
+    if (mutation === 'family') detail.families.pop();
+    if (mutation === 'occurrence') detail.references.pop();
+    if (mutation === 'auxiliary') detail.auxiliary.pop();
+    if (mutation === 'workspace') contract.identity.workspace = 'foreign';
+    if (mutation === 'harness') contract.identity.harness = 'foreign';
+    if (mutation === 'run') contract.identity.runId = 'foreign';
+    if (mutation === 'population') contract.expected.pop();
+    const entry = detail.families[1].entries[0];
+    if (mutation === 'bytes') writeFileSync(join(f.directory, 'objects', entry.artifact.ref), Buffer.from('corrupt'));
+    if (mutation === 'length') entry.artifact.byteLength++;
+    if (mutation === 'escape') entry.artifact.ref = '../' + entry.artifact.ref;
+    if (mutation === 'object-mode') chmodSync(join(f.directory, 'objects', entry.artifact.ref), 0o644);
+    if (mutation === 'native-object') detail.families.find(family => family.family === 'C')!.entries.pop();
+    if (mutation === 'process-object') detail.families.find(family => family.family === 'D')!.entries.pop();
+    const pin = createNativeArtifactPersister(join(f.directory, 'objects'))
+      .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    rmSync(f.producer, { recursive: true });
+    expect(consumeRetained(f, { ...saved.locator, manifest: pin }, contract)).toMatchObject({ refused: true });
+  });
+
+  it.each(['pending', 'missing-out', 'truncated-stream'])('P003 keeps %s custody partial independently of terminal execution and cleanup', fault => {
+    const f = fixture(['primary', 'primary', 'detail']);
+    if (fault === 'pending') writeFileSync(join(f.contract.expected[2].out + '.processes', 'worker.pending'), 'pending');
+    if (fault === 'missing-out') rmSync(f.contract.expected[2].out);
+    if (fault === 'truncated-stream') f.observations[2].captureComplete = false;
+    const saved = retainNativeProofPacket(f.directory, { ...f.contract, observations: f.observations,
+      execution: { state: 'closed', exitCode: 0 }, cleanup: { complete: true } });
+    expect(saved.status).toBe('partial');
+    rmSync(f.producer, { recursive: true });
+    const result = consumeRetained(f, saved.locator);
+    expect(result).toMatchObject({ refused: false, status: 'partial', manifest: { verdicts: {
+      custody: 'partial', execution: { state: 'closed', exitCode: 0 }, cleanup: { complete: true },
+      protocol: 'unqualified', nativeProof: 'unqualified', acceptance: 'unmeasured' } } });
+    expect(result.manifest.gaps.length).toBeGreaterThan(0);
+  });
+
   it('reads every primary/detail family and duplicate occurrence in a fresh process after producer removal', () => {
     const f = fixture(['primary', 'primary', 'detail']);
     const first = f.save(), again = f.save();
@@ -212,6 +300,30 @@ describe('private native proof custody (P002)', () => {
     if (mutation === 'verdict') manifest.verdicts.nativeProof = 'qualified';
     const pin = createNativeArtifactPersister(join(f.directory, 'objects')).persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
     expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: pin }, f.contract)).toThrow();
+  });
+
+  it('refuses a resealed detail manifest missing its produced OUT declaration in a fresh retained-only consumer (P003)', () => {
+    const f = fixture(['primary', 'primary', 'detail']), saved = f.save();
+    const manifest = structuredClone(saved.manifest);
+    const detail = manifest.groups[2];
+    detail.families.find(family => family.family === 'A')!.entries = [];
+    detail.references = [];
+    const pin = createNativeArtifactPersister(join(f.directory, 'objects'))
+      .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    rmSync(f.producer, { recursive: true });
+    expect(fs.existsSync(f.producer)).toBe(false);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'try { const r=verifyNativeProofPacket(...JSON.parse(process.argv[1]));' +
+      'process.stdout.write(JSON.stringify({refused:false,status:r.status,pid:process.pid})); }' +
+      'catch(error) { process.stdout.write(JSON.stringify({refused:true,error:String(error),pid:process.pid})); }',
+      JSON.stringify([f.directory, { ...saved.locator, manifest: pin }, f.contract])],
+    { encoding: 'utf8', timeout: 15_000 });
+    expect({ error: child.error, stderr: child.stderr, status: child.status })
+      .toEqual({ error: undefined, stderr: '', status: 0 });
+    const result = JSON.parse(child.stdout);
+    expect(result.pid).not.toBe(process.pid);
+    expect(result).toMatchObject({ refused: true });
   });
 });
 

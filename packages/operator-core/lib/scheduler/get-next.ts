@@ -763,6 +763,24 @@ function kindLeafWidensToFeatureFamily(leaf: FilterLeaf): boolean {
 const ISSUE_KIND_SET = new Set<string>(ISSUE_FAMILY_KINDS);
 type IssueFallbackKind = (typeof ISSUE_FAMILY_KINDS)[number];
 
+/**
+ * True only when the filter proves that no FEATURE-family row can match its `kind` terms.
+ * A positive issue-only kind leaf anywhere in an `all` is sufficient; an `any` excludes
+ * features only when every branch does. Keep `not` and fuzzy/negative kind terms on the
+ * regular path unless we can prove their full boolean meaning without guessing.
+ */
+function featureFamilyExcludedByKind(filter: FilterNode | undefined): boolean {
+  if (!filter) return false;
+  if (isLeaf(filter)) {
+    if (filter.field !== 'kind' || (filter.op !== '=' && filter.op !== 'in')) return false;
+    const values = (Array.isArray(filter.value) ? filter.value : [filter.value]).map(String);
+    return values.length > 0 && values.every((value) => ISSUE_KIND_SET.has(value));
+  }
+  if ('all' in filter) return filter.all.some(featureFamilyExcludedByKind);
+  if ('any' in filter) return filter.any.length > 0 && filter.any.every(featureFamilyExcludedByKind);
+  return false;
+}
+
 function intersectIssueKinds(
   current: Set<IssueFallbackKind> | undefined,
   next: Iterable<IssueFallbackKind>,
@@ -3244,6 +3262,7 @@ export async function getNextWorkItem(
   // both issue doors (priority preclaim and tier 3), avoiding that doomed bounce.
   // Solo callers retain WI-1407's adjacent-family fallback.
   const widened = opts.fleetSlug ? spec.view.filter : widenPastKind(spec.view.filter);
+  const featureFamilyOutOfScope = featureFamilyExcludedByKind(spec.view.filter);
   const issueKinds = issueKindsForFallback(spec.view.filter);
   const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
   const excludeIds = negativeIdExclusions(spec.view.filter);
@@ -3477,8 +3496,15 @@ export async function getNextWorkItem(
     }
   }
 
+  // Issue-only kind lanes cannot match a feature-family row. Skip the feature query entirely;
+  // this keeps an expensive feature-side evaluation from timing out before the issue tier that
+  // actually serves the lane. The detector is conservative for `any` and `not` filters.
+  if (!claimed && featureFamilyOutOfScope) {
+    resolutionStep('candidate-feature-family-skip-issue-only');
+  }
+
   // Tier 1: the spec's view exactly as authored.
-  if (!claimed) {
+  if (!claimed && !featureFamilyOutOfScope) {
     resolutionStep('candidate-feature-tier-1');
     claimed = await attempt(spec.view.filter, opts.captureCandidateWait === true);
   }
@@ -3489,7 +3515,7 @@ export async function getNextWorkItem(
   // plan/tags/risk_tier/etc — intact) before reporting a miss. `widenPastKind` only rewrites
   // shapes it can simplify safely (a bare leaf or one inside a top-level `all`); when it can't
   // (kind nested in an `any`/`not`), it hands back the SAME node and this tier is a no-op.
-  if (!claimed && widened !== spec.view.filter) {
+  if (!claimed && !featureFamilyOutOfScope && widened !== spec.view.filter) {
     resolutionStep('candidate-feature-tier-2');
     claimed = await attempt(widened);
   }

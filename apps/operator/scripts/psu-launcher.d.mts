@@ -3407,14 +3407,24 @@ export function refreshPersonaRender(coordOwnerId: any, { fetchImpl, operatorUrl
  * transcript containing the exact rendered hash. If the POST response is lost,
  * reconcile through the status route before deciding whether acknowledgement
  * failed; killing a successfully-delivered target on a network ambiguity would
- * be as wrong as accepting PTY output as persistence. */
-export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs, coordOwnerId, appendEventImpl, }?: {
+ * be as wrong as accepting PTY output as persistence.
+ *
+ * WI-6554700010029583: when that authoritative status read proves the
+ * disposition did NOT commit (same port + target, still `pending`), re-POST the
+ * identical idempotent disposition up to `maxDeliveryAttempts` times with a
+ * linear backoff. One slow operator response (the 10s client timeout) used to
+ * strand an answered native consult's receipt at `pending` forever. Refusals,
+ * terminal states and identity mismatches are never retried. */
+export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs, coordOwnerId, appendEventImpl, maxDeliveryAttempts, retryDelayMs, sleepImpl, }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
     coordOwnerId?: null | undefined;
     appendEventImpl?: typeof appendHostEvent | undefined;
+    maxDeliveryAttempts?: number | undefined;
+    retryDelayMs?: number | undefined;
+    sleepImpl?: ((ms: number) => Promise<any>) | undefined;
 }): Promise<any>;
 /** Finalize any failure after /prepare, whether bootstrap never minted a target
  * row (`prepared`) or local launch setup failed after bootstrap (`pending`). The

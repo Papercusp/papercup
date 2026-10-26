@@ -1,4 +1,4 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { checkpointLogDirFromEnv } from './release/checkpoint-log-dir';
 /**
  * release-checkpoint-launch — the agent-facing "fire the green-checkpoint NOW" lever's
  * launch primitive (WI-1320 follow-up: deploy-trigger-and-gate-unblock-2026-06-21).
@@ -978,12 +978,6 @@ function checkpointRunLockDirMirror(logDir: string, root: string): string {
   let h = 0;
   for (let i = 0; i < root.length; i++) h = (h * 31 + root.charCodeAt(i)) >>> 0;
   return path.join(logDir, `.green-checkpoint-run-${h.toString(36)}.lock`);
-}
-
-/** Mirrors release-config.ts's `checkpointLogDir` default resolution (env override, else
- *  `~/.papercusp/checkpoint-logs`) — same duplication rationale as the lock-dir mirror above. */
-function checkpointLogDirFromEnv(): string {
-  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? papercuspPath('checkpoint-logs');
 }
 
 /** Mirrors release-config.ts's `checkpointRoot` derivation (env override, else

@@ -2242,13 +2242,28 @@ export async function readPendingBatch(
           CASE WHEN pg_input_is_valid(wi.payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
                THEN (wi.payload #>> '{admissionReview,lastRetryAt}')::timestamptz END,
           rotated.rotated_at)`;
+  // WI-6554700010029586: a JUDGED hold on a still-`pending` row also advances nothing. The hold
+  // UPDATE stamps admissionReview.lastRetryAt only for `unreviewed` rows, and keeps a pending
+  // row's write to a reason change (the no-churn rule above). It is not a prescreen rotation
+  // either. So the same oldest model-held rows led every scheduled window. Live 2026-10-26: held
+  // on 15-20 ticks each in 24h, ~210k tokens a tick, 0-1 promotions, while ~1,800 candidate
+  // rows behind them were never reviewed. Every tick already records its holds in
+  // detail.heldReasons. Reading those ids from the same run ledger rotates judged holds too,
+  // without writing to work_items.
   const rows = await sql<WorkItemRow[]>`
     WITH rotated AS (
       SELECT x.rotated_id, max(ar.started_at) AS rotated_at
         FROM harness_shared.admission_runs ar
-        CROSS JOIN LATERAL jsonb_array_elements_text(
-          CASE WHEN jsonb_typeof(ar.detail #> '{prescreen,rotatedIds}') = 'array'
-               THEN ar.detail #> '{prescreen,rotatedIds}' ELSE '[]'::jsonb END) AS x(rotated_id)
+        CROSS JOIN LATERAL (
+          SELECT skipped.id FROM jsonb_array_elements_text(
+            CASE WHEN jsonb_typeof(ar.detail #> '{prescreen,rotatedIds}') = 'array'
+                 THEN ar.detail #> '{prescreen,rotatedIds}' ELSE '[]'::jsonb END) AS skipped(id)
+          UNION
+          SELECT judged.hold ->> 'itemId' FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(ar.detail -> 'heldReasons') = 'array'
+                 THEN ar.detail -> 'heldReasons' ELSE '[]'::jsonb END) AS judged(hold)
+           WHERE jsonb_typeof(judged.hold) = 'object' AND judged.hold ->> 'itemId' IS NOT NULL
+        ) AS x(rotated_id)
        WHERE ${rotate}
          AND ar.workspace_id = ${workspaceId}
          AND ar.harness_slug = ${harnessSlug}

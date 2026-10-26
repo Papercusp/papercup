@@ -24,7 +24,11 @@ export interface NativeCustodyGroup {
   id: string; attempt: 'primary' | 'detail'; selected: string[]; runner: 'vitest' | 'node' | 'unsupported';
   armed: boolean; out: string | null; cwd?: string; auxiliary: NativeCustodyAuxiliary[];
 }
-export interface NativeCustodyLocator { manifest: NativeArtifactPin; identity: NativeCustodyIdentity; expectedHash: string; }
+export interface NativeCustodyLocator {
+  manifest: NativeArtifactPin; identity: NativeCustodyIdentity; expectedHash: string;
+  /** Producer capture seal; retain independently of any replacement manifest. */
+  inventoryHash: string;
+}
 export interface NativeCustodyFamily {
   family: 'A' | 'B' | 'C' | 'D'; state: string; producer: string; reason?: string;
   entries: Array<{ original: string; artifact: NativeArtifactPin }>;

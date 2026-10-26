@@ -2271,6 +2271,52 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect((await readPendingBatch(db.sql, WS, HARNESS, 3)).map((row) => row.id))
         .toEqual(['WI-held-1', 'WI-held-2', 'WI-held-3']);
     }, 90_000);
+
+    it('rotates judged-held pending rows behind unexamined ones too (WI-6554700010029586)', async () => {
+      // A judged hold on a still-PENDING row writes only admissionHold: lastRetryAt is stamped
+      // for `unreviewed` rows only, and a judged hold is not a prescreen rotation. On the old
+      // ordering the oldest held row led every window (live 2026-10-26: the same rows held on
+      // 15-20 ticks in 24h while ~1,800 candidate rows behind them were never reviewed).
+      await seedItem({ id: 'WI-judged-twin', title: 'gate finding', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 60_000 });
+      await seedItem({ id: 'WI-judged-held', title: 'gate finding', vector: '[1,0,0]', createdAtMs: NOW - 50_000 });
+      await seedItem({ id: 'WI-fresh', title: 'zebra telemetry outage', vector: '[0,1,0]', createdAtMs: NOW - 10_000 });
+      const holdCall = vi.fn(async (input: { messages: Array<{ content: string }> }) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'hold' as const, reason: 'fixture ambiguous' })) },
+          inputTokens: 10,
+          outputTokens: 5,
+          costUsd: 0,
+        };
+      });
+      const tick = (runId: string) => runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId, sql: db.sql, llmCall: holdCall, now: () => NOW, batchSize: 1,
+      });
+
+      const tick1 = await tick('judged-rotation-1');
+      expect(tick1).toMatchObject({ promoted: 0, held: 1 });
+      expect(await admissionOf('WI-judged-held')).toBe('pending');
+      expect(await admissionOf('WI-fresh')).toBe('pending');
+      const [ledger] = await db.sql<Array<{ held: Array<{ itemId: string }> | null; rotated: string[] | null }>>`
+        SELECT detail -> 'heldReasons' AS held, detail #> '{prescreen,rotatedIds}' AS rotated
+          FROM harness_shared.admission_runs WHERE id = 'judged-rotation-1'`;
+      // The hold is judged, not structural: only heldReasons records it, and the row itself
+      // carries no retry watermark.
+      expect((ledger?.held ?? []).map((entry) => entry.itemId)).toEqual(['WI-judged-held']);
+      expect(ledger?.rotated ?? []).not.toContain('WI-judged-held');
+      const [heldRow] = await db.sql<Array<{ retry: string | null }>>`
+        SELECT payload #>> '{admissionReview,lastRetryAt}' AS retry
+          FROM harness_shared.work_items WHERE feature_id = 'WI-judged-held'`;
+      expect(heldRow?.retry ?? null).toBeNull();
+
+      // The heldReasons stamp sorts the judged row behind the never-reviewed one, which now gets
+      // its turn although the model would hold the judged row again.
+      const tick2 = await tick('judged-rotation-2');
+      expect(tick2).toMatchObject({ promoted: 1 });
+      expect(await admissionOf('WI-fresh')).toBe('admitted');
+      expect(await admissionOf('WI-judged-held')).toBe('pending');
+    }, 90_000);
   });
 
   it('allows a terminal canonical with applicable completion evidence', async () => {

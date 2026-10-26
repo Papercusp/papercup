@@ -155,7 +155,44 @@ describe('prepared selection authority shape', () => {
       { ...roundTrip, phase: 'blocked' as const },
     ]) expect(preparedCheckpointQueueMatches(record, changed)).toBe(false);
     // A captured queue never takes the fresh-cut exception, even at the same SHA.
-    expect(preparedCheckpointQueueMatches({ ...record, queue: roundTrip }, { ...roundTrip, updatedAtMs: 201 })).toBe(false);
+    expect(preparedCheckpointQueueMatches({ ...record, queue: roundTrip }, null)).toBe(false);
+  });
+
+  // WI-6554700010029580: a later physical run of the SAME attempt recovers the committed selection after
+  // the fixer state machine and the attempt's own verdict recording touched the queue row.
+  it('recovers a captured queue across bookkeeping drift but refuses any change to the selected candidate', () => {
+    const roundTrip = (q: unknown) => parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(q)))!;
+    const opened = createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'earlier-attempt',
+      base: 'base-1', nowMs: 200, affectedTestProofGroup: 'original-run' });
+    // Physical run 1 judged the candidate red; that is the queue the attempt's preparation captured.
+    const red = roundTrip(markFrozenCandidateVerificationRed(opened, { failingTests: ['lib/a.test.ts'], nowMs: 300 }));
+    expect(red.phase).toBe('awaiting-fixer');
+    // The stored record is the JSON round-trip the transaction parser returns, not the in-memory object.
+    const record = JSON.parse(JSON.stringify({ ...prepared(), candidate: red.repairHead, queue: red }));
+    // Between physical runs the fixer state machine and the gate touch only bookkeeping.
+    const dispatched = markFrozenRepairFixerDispatched(red, { spawnId: 'durable-spawn:fixer-1', nowMs: 400 });
+    expect(dispatched.attempts).toBe(1);
+    for (const live of [
+      dispatched,
+      { ...red, updatedAtMs: 900, fixerStateChangedAtMs: 900 },
+      { ...red, freeRetries: 1, lastVerdictAtMs: 800, fixerSpawnId: null },
+      { ...red, phase: 'blocked' as const, blockedReason: 'attempts-exhausted' as const },
+    ]) expect(preparedCheckpointQueueMatches(record, live)).toBe(true);
+    // An admission moves the head the preflight would prepare; lineage changes are a different queue.
+    const admitted = markFrozenRepairAdmitted(dispatched, { atMs: 500, actor: 'su-test',
+      source: { ref: 'head-2', sha: 'head-2' }, fromRepairHead: red.repairHead, toRepairHead: 'head-2',
+      paths: ['lib/a.test.ts'], unchanged: [], blobs: { 'lib/a.test.ts': 'blob-2' } });
+    expect(admitted.repairHead).toBe('head-2');
+    for (const live of [
+      admitted,
+      { ...red, phase: 'ready-to-test' as const },
+      { ...red, base: 'other-base' },
+      { ...red, qualificationAttemptId: 'other-attempt' },
+      { ...red, openedAtMs: 250 },
+      { ...red, candidate: 'candidate-2' },
+    ]) expect(preparedCheckpointQueueMatches(record, live)).toBe(false);
+    expect(preparedCheckpointQueueMatches(record, null)).toBe(false);
+    expect(preparedCheckpointQueueMatches({ ...record, queue: { repairHead: red.repairHead } }, red)).toBe(false);
   });
 });
 
