@@ -1,11 +1,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
 import { sqlMiningFixture } from '../test/_sql-mining-fixture';
 import { mineSqlCandidateSlice } from './bash-substitution/sql-tool-candidates';
-import { bindSqlCandidateAuthorityResolver, unknownSqlCandidateWorklist } from './sql-tool-candidate-pull';
+import { bindSqlCandidateAuthorityResolver } from './sql-tool-candidate-pull';
+import type { SqlCandidateWorklist } from './sql-tool-candidate-worklist';
 import { readSqlToolOpportunityLane } from './scout/sql-tool-opportunity-lane';
 import tool from './agent-tools/dev/sql_tool_candidates';
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>;
+// Keep the expected fail-closed response independent of the production helper.
+const unknown: SqlCandidateWorklist = { status: 'UNKNOWN', candidates: [], snapshots: [],
+  population: { candidates: 0, returned: 0, omitted: 0, snapshotCap: 120 } };
 const ctx = { workspaceId: 'sql-mining-test', harnessSlug: 'mining-test', tx: null, log: () => {},
   principal: { kind: 'system' as const, slug: 'fixture', workspaceId: 'sql-mining-test',
     authMethod: 'process-internal' as const, trust: 'trusted' as const, capabilities: new Set(['intel:read']) } };
@@ -28,8 +32,8 @@ it('realPG endpoint and Scout return real scoped candidates and exclude a foreig
   expect(allowed.snapshots).toHaveLength(1);
   expect(await tool.handler({ limit: 25 }, ctx)).toEqual({ data: allowed });
   const operator = { ...ctx, harnessSlug: '*' };
-  expect(await tool.handler({ harness: 'foreign' }, operator)).toEqual({ data: unknownSqlCandidateWorklist() });
-  expect(await readSqlToolOpportunityLane(operator, { harness: 'foreign' })).toEqual(unknownSqlCandidateWorklist());
+  expect(await tool.handler({ harness: 'foreign' }, operator)).toEqual({ data: unknown });
+  expect(await readSqlToolOpportunityLane(operator, { harness: 'foreign' })).toEqual(unknown);
 });
 it('realPG endpoint and Scout hide counts, membership, history and refs on revoke, unavailable and delete R23-DERIVED-ACL', async () => {
   const ids = [await f.seed(), await f.seed()];
@@ -45,12 +49,12 @@ it('realPG endpoint and Scout hide counts, membership, history and refs on revok
   expect(await tool.handler({}, ctx)).toEqual({ data: allowed });
   for (const next of ['denied', 'unavailable'] as const) {
     state = next;
-    expect(await tool.handler({}, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
-    expect(await readSqlToolOpportunityLane(ctx)).toEqual(unknownSqlCandidateWorklist());
+    expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
+    expect(await readSqlToolOpportunityLane(ctx)).toEqual(unknown);
   }
   state = 'allowed';
   expect((await readSqlToolOpportunityLane(ctx)).candidates[0]!.candidate.id).toBe(id);
   await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${ids[0]!}::bigint`;
-  expect(await tool.handler({}, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
-  expect(await readSqlToolOpportunityLane(ctx)).toEqual(unknownSqlCandidateWorklist());
+  expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
+  expect(await readSqlToolOpportunityLane(ctx)).toEqual(unknown);
 });

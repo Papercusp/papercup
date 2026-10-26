@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ToolContext } from '@papercusp/tooldef';
 import type { SqlCandidateReadOptions } from '../../bash-substitution/sql-tool-candidates';
 import type { SqlCandidateWorklist } from '../../sql-tool-candidate-worklist';
-import { bindSqlCandidateAuthorityResolver, unknownSqlCandidateWorklist } from '../../sql-tool-candidate-pull';
+import { bindSqlCandidateAuthorityResolver } from '../../sql-tool-candidate-pull';
 import { readSqlToolCandidateWorklist } from '../../sql-tool-candidate-worklist';
 import tool from './sql_tool_candidates';
 
@@ -15,10 +15,13 @@ const opts: SqlCandidateReadOptions = { workspaceId: 'w', harnessSlug: 'h',
   authorize: async () => true, authorizeSource: async () => true };
 const allowed: SqlCandidateWorklist = { status: 'ok', candidates: [], snapshots: [],
   population: { candidates: 3, returned: 0, omitted: 3, snapshotCap: 120 } };
+// Independent public response contract: never build this oracle with the helper under test.
+const unknown: SqlCandidateWorklist = { status: 'UNKNOWN', candidates: [], snapshots: [],
+  population: { candidates: 0, returned: 0, omitted: 0, snapshotCap: 120 } };
 afterEach(() => { bindSqlCandidateAuthorityResolver(null); vi.resetAllMocks(); });
 
 it('returns content-free UNKNOWN without a current source-authority adapter', async () => {
-  expect(await tool.handler({}, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
+  expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
   expect(readSqlToolCandidateWorklist).not.toHaveBeenCalled();
 });
 it('forwards bounded filters and authenticated context without exposing keys or callbacks', async () => {
@@ -32,9 +35,9 @@ it('forwards bounded filters and authenticated context without exposing keys or 
 it('rejects unrelated-harness requests and resolver scope mismatches OUTCOME-P-008', async () => {
   const resolver = vi.fn(async () => ({ ...opts, harnessSlug: 'foreign' }));
   bindSqlCandidateAuthorityResolver(resolver);
-  expect(await tool.handler({ harness: 'foreign' }, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
+  expect(await tool.handler({ harness: 'foreign' }, ctx)).toEqual({ data: unknown });
   expect(resolver).not.toHaveBeenCalled();
-  expect(await tool.handler({}, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
+  expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
   expect(readSqlToolCandidateWorklist).not.toHaveBeenCalled();
   resolver.mockResolvedValue(opts);
   vi.mocked(readSqlToolCandidateWorklist).mockResolvedValue(allowed);
@@ -47,22 +50,22 @@ it('re-resolves each pull and hides old counts after revocation or resolver fail
   vi.mocked(readSqlToolCandidateWorklist).mockResolvedValue(allowed);
   expect(await tool.handler({}, ctx)).toEqual({ data: allowed });
   current = false;
-  expect(await tool.handler({}, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
+  expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
   resolver.mockRejectedValue(new Error('private source'));
-  expect(await tool.handler({}, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
+  expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
   expect(resolver).toHaveBeenCalledTimes(3);
   expect(readSqlToolCandidateWorklist).toHaveBeenCalledTimes(1);
 });
 it('requires per-source authority even when workspace and harness access are granted', async () => {
   bindSqlCandidateAuthorityResolver(async () => ({ ...opts, authorizeSource: undefined! }));
-  expect(await tool.handler({}, ctx)).toEqual({ data: unknownSqlCandidateWorklist() });
+  expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
   expect(readSqlToolCandidateWorklist).not.toHaveBeenCalled();
 });
 it('rejects wildcard workspaces and inconsistent authenticated workspace bindings', async () => {
   const resolver = vi.fn(async () => opts);
   bindSqlCandidateAuthorityResolver(resolver);
   for (const workspaceId of ['foreign', '*']) {
-    expect(await tool.handler({}, { ...ctx, workspaceId })).toEqual({ data: unknownSqlCandidateWorklist() });
+    expect(await tool.handler({}, { ...ctx, workspaceId })).toEqual({ data: unknown });
   }
   expect(resolver).not.toHaveBeenCalled();
 });
