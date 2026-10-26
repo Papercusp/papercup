@@ -36,6 +36,7 @@ import { submitSqlCandidateReview } from '../../sql-tool-candidate-review';
 import { recordSqlCandidateFeedback } from '../../sql-tool-candidate-feedback';
 import type { SqlRepairMeasurement } from '../../bash-substitution/sql-census';
 import { miningFailureReason } from '../../agent-opportunities/pipeline';
+import { runMonitoredCensus } from '../../agent-opportunities/census';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fetchSqlCorpusAtoms } from '../../bash-substitution/sql-corpus';
 import { SQL_READ_NO_PAIR_DECISIONS, SQL_READ_PAIRS } from '../../bash-substitution/pairs';
@@ -303,6 +304,29 @@ export interface SqlIntentCensusDeps extends SqlMiningDeps {
   repairMeasurement?: (review: Awaited<ReturnType<typeof submitSqlCandidateReview>>) => Promise<SqlRepairMeasurement | null>;
 }
 export const SQL_CENSUS_REVIEW_LIMIT = 10;
+function censusMiningOptions(opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> &
+  Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>): SqlMiningOptions {
+  const epoch = new Date(opts.now ?? Date.now()).toISOString().slice(0, 7);
+  return { ...opts, scope: opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
+    key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() },
+  authorize: opts.authorize ?? (async () => true) };
+}
+
+/** Same trusted production scope and cadence for every family; no separate routine or opt-in flag. */
+export async function runSqlOpportunityCensus(opts: Parameters<typeof censusMiningOptions>[0] & {
+  routineId?: string; workflowId?: string;
+}, deps: SqlIntentCensusDeps = {}) {
+  let sqlResult: Awaited<ReturnType<typeof runSqlIntentCensus>> = {
+    status: 'UNKNOWN', stage: 'source', reason: 'sql_mining_source_missing', rows: 0 };
+  try {
+    const miningOpts = censusMiningOptions(opts);
+    const monitored = await runMonitoredCensus({ ...miningOpts, routineId: opts.routineId, workflowId: opts.workflowId },
+      async () => { sqlResult = await runSqlIntentCensus(miningOpts, deps); return sqlResult; });
+    return { sql: sqlResult, monitored };
+  } catch (error) {
+    return { sql: sqlResult, monitored: null, reason: miningFailureReason(error) };
+  }
+}
 export async function runSqlIntentCensus(
   opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> & Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>,
   deps: SqlIntentCensusDeps = {},
@@ -317,13 +341,8 @@ export async function runSqlIntentCensus(
     purgeBreach = true;
   }
   try {
-    const epoch = new Date(opts.now ?? Date.now()).toISOString().slice(0, 7);
-    const scope = opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
-      // Existing host key custody is outside the repo, atomic, mode0600; domain separate the mining subkey.
-      key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() };
-    const miningOpts: SqlMiningOptions = { ...opts, scope,
-      // This is the trusted system action's own workspace+harness source. Exposed reads require current ACL callbacks.
-      authorize: opts.authorize ?? (async () => true) };
+    // Host-key custody stays outside the repo. Exposed reads still require current ACL callbacks.
+    const miningOpts = censusMiningOptions(opts), scope = miningOpts.scope;
     const result = await mineSqlCandidateSlice(miningOpts, { ...deps, alert: async packet => {
       // This callback runs only after summary+cursor commit, and remains pending on failure.
       // The bounded top-ranked intake is advisory review demand, never a new-tool verdict.
@@ -347,7 +366,9 @@ export async function runSqlIntentCensus(
             harnessSlug: opts.harnessSlug, review: reviewed,
             sourceRef: { scopeId: packet.scopeId, ranOn: packet.ranOn },
             repair: reviewed.status === 'accepted' ? await deps.repairMeasurement?.(reviewed) ?? null : null,
-          }, { client: opts.client });
+          // The results-ledger seam intentionally types bind values as unknown;
+          // postgres.Sql's overload accepts only driver values. Same adapter as its default client.
+          }, { client: opts.client as unknown as NonNullable<Parameters<typeof recordSqlCandidateFeedback>[1]>['client'] });
         }
       }
       await deps.alert?.(packet);
@@ -364,14 +385,16 @@ registerSystemAction('sql-read-census', async (ctx: SystemActionCtx) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
-  const [result, intents] = await Promise.all([runSqlReadCensus({
+  const [result, opportunities] = await Promise.all([runSqlReadCensus({
     workspaceId: ctx.workspaceId,
     windowDays: num(cfg.window_days),
     agentThreshold: num(cfg.agent_threshold),
     graceDays: num(cfg.grace_days),
     requiredFallPct: num(cfg.required_fall_pct),
-  }), runSqlIntentCensus({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug,
+  }), runSqlOpportunityCensus({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug,
+    routineId: ctx.routineId, workflowId: ctx.workflowId,
     rowBudget: num(cfg.intent_row_budget), timeBudgetMs: num(cfg.intent_time_budget_ms) })]);
+  const intents = opportunities.sql;
   const line =
     `[sql-read-census] ${ctx.workspaceId} ${result.ranOn}: ${result.outcome} — ` +
     `${result.clusters} cluster(s), uncovered ${result.uncovered}, drift ${result.drift}, ` +
@@ -381,8 +404,8 @@ registerSystemAction('sql-read-census', async (ctx: SystemActionCtx) => {
   else console.log(line);
   if (intents.status === 'UNKNOWN' || intents.purgeBreach)
     console.warn(`[sql-intent-census] ${ctx.workspaceId}: ${intents.status} stage=${intents.stage} reason=${intents.reason ?? 'none'} purgeBreach=${intents.purgeBreach}`);
-  return { diagnostics: { sqlRead: result, sqlIntent: intents },
-    ...(intents.status === 'UNKNOWN' || intents.purgeBreach
+  return { diagnostics: { sqlRead: result, sqlIntent: intents, opportunities: opportunities.monitored },
+    ...(intents.status === 'UNKNOWN' || intents.purgeBreach || !opportunities.monitored
       ? { softError: `sql-intent-census ${intents.status} stage=${intents.stage} reason=${intents.reason ?? 'none'} purgeBreach=${intents.purgeBreach}` }
       : {}) };
 });
