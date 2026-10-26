@@ -7,7 +7,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { fleetEverMembers } from '../../fleet-membership-store';
+import { fleetEverMembers, readJoinActivation } from '../../fleet-membership-store';
 import { readIssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import { classifyTerminalOwner, type TerminalOwnerClass } from '../../completion-audit';
 import { countsTowardBurnDown, type CompletionAuthorityFrom } from '../../work-item-completion-authority';
@@ -355,11 +355,31 @@ export async function readFleetCampaign(
     `;
       const t = totals[0] ?? {};
       const total = number(t.total);
+      // EI-27031443048618869: a raw `join` count includes every launch refused at boot. Split it
+      // with the shared definition; a failed split is unknown (null), never zero.
+      let joinActivation: { neverActive: number; pending: number } | null = null;
+      try {
+        const a = await readJoinActivation(
+          {
+            workspaceId: input.workspaceId,
+            fleetSlug: input.fleetSlug,
+            since: boundary.at,
+            sinceInclusive: true,
+            includeDefaultWorkspace: true,
+          },
+          sql,
+        );
+        joinActivation = { neverActive: a.neverActive, pending: a.pending };
+      } catch {
+        joinActivation = null;
+      }
       membership = available(
         membershipWriter,
         {
           total: 'append-only membership transition rows in boundary',
           recent: 'most-recent transition evidence rows',
+          joinActivation:
+            'of byEvent.join: neverActive = no MCP call past the boot grace (dead launch, not turnover); pending = still inside the grace; null = unmeasured',
         },
         {
           total,
@@ -370,6 +390,7 @@ export async function readFleetCampaign(
             demote: number(t.demotes),
             backfill: number(t.backfills),
           },
+          joinActivation,
           recent: recentEvidence(
             rows.map((row) => ({
               id: number(row.id),

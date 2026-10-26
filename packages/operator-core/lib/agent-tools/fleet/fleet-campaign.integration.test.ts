@@ -81,7 +81,12 @@ describe('fleet campaign (real Postgres)', () => {
 
     expect(campaign.boundary).toEqual({ at: SINCE, source: 'explicit-since' });
     expect(campaign.everMembers).toMatchObject({ available: true, count: 1 });
-    expect(campaign.axes.membership).toMatchObject({ available: true, data: { total: 1 } });
+    // The one member joined and then called, so its join is not a dead launch
+    // (EI-27031443048618869: the split comes from readJoinActivation, not a raw join count).
+    expect(campaign.axes.membership).toMatchObject({
+      available: true,
+      data: { total: 1, byEvent: { join: 1 }, joinActivation: { neverActive: 0, pending: 0 } },
+    });
     expect(campaign.axes.speaking).toMatchObject({
       available: true,
       data: { calls: 2, distinctOwners: 1 },
