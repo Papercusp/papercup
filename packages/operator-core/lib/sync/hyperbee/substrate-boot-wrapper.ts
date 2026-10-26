@@ -63,7 +63,7 @@ export interface BootSubstrateResult {
     harnessSlug: string;
     state: 'booted' | 'already-booted' | 'failed' | 'deferred';
     error?: string;
-    deferReason?: 'inactive';
+    deferReason?: 'inactive' | 'dogfood-hive-disabled';
   }>;
   usedSidecar: boolean;
   /** Whether the LAZY_SUBSTRATE_BOOT eviction reaper was started this boot. */
