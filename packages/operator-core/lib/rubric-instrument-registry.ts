@@ -45,6 +45,7 @@ import { isSensitiveValueKey } from './sensitive-text';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
+import { DEFERRED_SPEND_INSTRUMENT_KEYS } from './workspace-host/deferred-spend-acceptance-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { RATCHET_METRICS_INSTRUMENT_KEY, RATCHET_METRICS_WINDOW_MS } from './release/ratchet-metrics';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
@@ -782,6 +783,7 @@ export function platformComputedInstrumentKeys(): string[] {
     ...TOOL_DELIVERY_INSTRUMENTS,
     'woe.goal-mode-base-scorecard',
     ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
+    ...Object.values(DEFERRED_SPEND_INSTRUMENT_KEYS),
     GATE_REUSE_AUDIT_INSTRUMENT_KEY,
     DISK_HEADROOM_SOAK_INSTRUMENT_KEY,
     DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY,

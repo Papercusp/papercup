@@ -40,6 +40,10 @@ import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY, DREAM_CONTROL_SOURCE_PLAN, measureDr
 import type { measureCarryDrillShipment } from './carry-drill-shipment';
 import { measureToolDeliveryAcceptance, toolDeliveryExperiment, TOOL_DELIVERY_INSTRUMENTS, TOOL_DELIVERY_PLAN } from './tool-delivery-acceptance';
 import { measureProviderPackageAcceptance, PROVIDER_PACKAGE_INSTRUMENT_KEYS, PROVIDER_PACKAGE_PLAN } from './integrations/provider-package-acceptance';
+import {
+  DEFERRED_SPEND_ACCEPTANCE_PLAN, DEFERRED_SPEND_INSTRUMENT_KEYS, measureDeferredSpendAcceptance,
+  type DeferredSpendAcceptanceMeasurement, type DeferredSpendCriterion,
+} from './workspace-host/deferred-spend-acceptance-instruments';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY, measurePgTableGrowthWindow } from './storage/pg-table-growth';
@@ -428,6 +432,7 @@ export async function resolveScorecardInstrumentSnapshots(
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
     providerPackages?: typeof measureProviderPackageAcceptance;
+    deferredSpend?: typeof measureDeferredSpendAcceptance;
     toolDelivery?: typeof measureToolDeliveryAcceptance;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
@@ -527,6 +532,7 @@ export async function resolveScorecardInstrumentSnapshots(
   ));
   let workOverheadMeasured: Promise<WorkOverheadMetrics> | null = null;
   let providerPackagesMeasured: ReturnType<typeof measureProviderPackageAcceptance> | null = null;
+  let deferredSpendMeasured: Promise<DeferredSpendAcceptanceMeasurement> | null = null;
   let toolDeliveryMeasured: ReturnType<typeof measureToolDeliveryAcceptance> | null = null;
   for (const key of keys) {
     if (key === BM25_LATENCY_INSTRUMENT_KEY) {
@@ -566,6 +572,36 @@ export async function resolveScorecardInstrumentSnapshots(
       value: { resolver: key, resolverVersion: 2, reason },
       evidenceRef: 'scorecards:list:goal-mode-e2e',
     });
+    const deferredSpendCriterion = (Object.keys(DEFERRED_SPEND_INSTRUMENT_KEYS) as DeferredSpendCriterion[])
+      .find(criterion => DEFERRED_SPEND_INSTRUMENT_KEYS[criterion] === key);
+    if (deferredSpendCriterion) {
+      const unavailable = (reason: string) => ({ ...unknown(reason), evidenceRef: 'deferred-spend:measurement-unavailable' });
+      if (subject?.kind !== 'plan' || subject.ref !== DEFERRED_SPEND_ACCEPTANCE_PLAN ||
+          input.rubric.subjectPlan !== subject.ref || input.rubric.subjectHarnessSlug !== 'papercusp' ||
+          !subject.windowStart || !subject.windowEnd || Date.parse(subject.windowEnd) > Date.parse(measuredAt)) {
+        snapshots[key] = unavailable('exact deferred-spend plan, harness and completed observation interval required');
+        continue;
+      }
+      try {
+        deferredSpendMeasured ??= (deps.deferredSpend ?? measureDeferredSpendAcceptance)({
+          workspaceId: input.rubric.workspaceId, harness: 'papercusp', planSlug: DEFERRED_SPEND_ACCEPTANCE_PLAN,
+          rubricRef: input.rubric.rubricId, rubricRevision: input.rubric.revision as number,
+          criteriaHash: input.rubric.criteriaHash as string, subjectRef: subject.ref,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+        });
+        const result = await deferredSpendMeasured;
+        const criterion = result.criteria[deferredSpendCriterion];
+        snapshots[key] = result.identity && result.manifestRef && result.manifestHash
+          ? { verdict: criterion.verdict, measuredAt: result.identity.observation.observedAt, provenance: 'platform-computed',
+            evidenceRef: result.manifestRef, window,
+            value: { resolver: key, scope: result.scope, manifestHash: result.manifestHash,
+              evidenceIdentity: result.identity, criterion: deferredSpendCriterion, reasons: criterion.reasons } }
+          : unavailable(criterion.reasons.join('; ') || 'durable identified measurement unavailable');
+      } catch {
+        snapshots[key] = unavailable('deferred-spend resolver failed');
+      }
+      continue;
+    }
     if (key === DREAM_CONTROL_LIVE_INSTRUMENT_KEY) {
       const evidenceRef = 'spec-evidence:Dream-R4-live-edition';
       if (subject?.kind !== 'plan' || subject.ref !== DREAM_CONTROL_SOURCE_PLAN
