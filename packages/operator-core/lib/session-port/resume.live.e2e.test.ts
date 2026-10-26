@@ -120,6 +120,29 @@ function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<strin
   }
 }
 
+function maintainedCanonicalTree(env: Pick<NodeJS.ProcessEnv,
+  'PAPERCUSP_CANONICAL_TREE' | 'PAPERCUSP_INTEGRATION_ROOT'>) {
+  const canonical = env.PAPERCUSP_CANONICAL_TREE || env.PAPERCUSP_INTEGRATION_ROOT;
+  if (!canonical) throw new Error('The final matrix requires the maintained canonical tree selector');
+  return resolve(canonical);
+}
+
+function assertCodexAutoRoute(report: Record<string, unknown>) {
+  const accounts = Array.isArray(report.codexAccounts)
+    ? report.codexAccounts.filter((account): account is string => typeof account === 'string' && account.length > 0)
+    : [];
+  const cause = report.codexUnserviceableCause;
+  // psu treats a temporary cooldown as an advisory and launches with normal
+  // gateway retry handling. All other non-null causes refuse the exact route.
+  if (report.ok !== true || accounts.length === 0 ||
+    (cause !== null && cause !== 'temporary-cooldown')) {
+    throw new Error('Final matrix has no launchable Codex auto-route from fresh gateway status: ' +
+      JSON.stringify({ codexAccounts: report.codexAccounts,
+        codexUnserviceableCause: cause,
+        codexReachability: report.codexReachability }));
+  }
+}
+
 function matrixCapacityProbeArgs(provider: 'claude' | 'codex') {
   // The explicit Codex matrix target is gpt-6.1-sol:xhigh. Probe that same
   // model family: accounts:probe-capacity otherwise defaults to gpt-5.6-sol,
@@ -198,6 +221,27 @@ describe('owned matrix capacity preflight', () => {
       serving: ['healthy-codex'] })).toThrow('no eligible claude capacity');
     expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: false,
       serving: ['healthy'] })).toThrow('dry probe');
+  });
+
+  it('requires the maintained canonical selector before live preflights', () => {
+    expect(() => maintainedCanonicalTree({})).toThrow('maintained canonical tree selector');
+    expect(maintainedCanonicalTree({ PAPERCUSP_CANONICAL_TREE: '/canonical' })).toBe(resolve('/canonical'));
+    expect(maintainedCanonicalTree({ PAPERCUSP_INTEGRATION_ROOT: '/integration' })).toBe(resolve('/integration'));
+  });
+
+  it('follows psu route policy: refuse unavailable routes but allow a temporary-cooldown warning', () => {
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
+      codexUnserviceableCause: null })).not.toThrow();
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
+      codexUnserviceableCause: 'accounts-unserviceable' })).toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
+      codexUnserviceableCause: 'temporary-cooldown' })).not.toThrow();
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
+      codexUnserviceableCause: 'upstream-unreachable' })).toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: [],
+      codexUnserviceableCause: null })).toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'] }))
+      .toThrow('no launchable Codex auto-route');
   });
 });
 
@@ -353,6 +397,15 @@ async function native(session: Session, archivedSource = false) {
 
 describe.skipIf(!enabled)('final live session resume matrix', () => {
   it('delivers six cross-backend ports and three original-backend PUI-shaped resumes', async () => {
+    // Validate the canonical source before any live route probes or source reads.
+    const canonical = maintainedCanonicalTree(process.env);
+    const sourceHashes: Record<string, string> = {};
+    for (const path of ['apps/operator/scripts/psu-launcher.mjs', 'apps/operator/scripts/psu-pty-host.mjs']) {
+      const hash = (base: string) => createHash('sha256').update(readFileSync(resolve(base, path))).digest('hex');
+      sourceHashes[path] = hash(root);
+      expect(hash(canonical), `Canonical ${path} changed after preparation`).toBe(sourceHashes[path]);
+    }
+
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     const origin = profile.origin as string;
@@ -363,6 +416,15 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     const parentTaskId = matrixParentTaskId();
     const parentWorkItemId = matrixParentWorkItemId(parentTaskId,
       call('processes:list', { taskId: parentTaskId }, origin).tasks);
+    // The upstream capacity probe is not the exact account=auto launch route.
+    // Read the gateway's route-level serviceability before preparing any targets;
+    // psu's own launch refusal remains the final guard against state changing later.
+    const route = call('gateway:status', {}, origin);
+    console.info('CBP_FINAL_ROUTE_PREFLIGHT', JSON.stringify({ ok: route.ok,
+      codexAccounts: route.codexAccounts,
+      codexUnserviceableCause: route.codexUnserviceableCause,
+      codexReachability: route.codexReachability }));
+    assertCodexAutoRoute(route);
     // Both target backends, and Claude maintenance summarization, are required
     // by the unchanged matrix profile. Refuse known capacity walls before any
     // fixture is launched; dry probes neither unwall nor readmit accounts.
@@ -392,16 +454,6 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
       await assertResumableArchiveEndpoint(source, origin);
       const snapshot = await native(source, true);
       expect(snapshot?.text).toContain('MATRIX-SRC');
-    }
-    // Fresh managed hosts below use the canonical launcher, whose bytes must
-    // match this committed test tree. No existing peer host is restarted.
-    const canonical = process.env.PAPERCUSP_CANONICAL_TREE || process.env.PAPERCUSP_INTEGRATION_ROOT;
-    if (!canonical) throw new Error('The final matrix requires the maintained canonical tree selector');
-    const sourceHashes: Record<string, string> = {};
-    for (const path of ['apps/operator/scripts/psu-launcher.mjs', 'apps/operator/scripts/psu-pty-host.mjs']) {
-      const hash = (base: string) => createHash('sha256').update(readFileSync(resolve(base, path))).digest('hex');
-      sourceHashes[path] = hash(root);
-      expect(hash(canonical), `Canonical ${path} changed after preparation`).toBe(sourceHashes[path]);
     }
     const observations: Array<Record<string, unknown>> = [];
     const attemptId = randomUUID();
