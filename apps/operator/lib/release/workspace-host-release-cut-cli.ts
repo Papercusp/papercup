@@ -904,6 +904,9 @@ export function removeReleaseSourceWorktree(repoRoot: string, source: string): v
  */
 export type WorkspaceHostCutIntermediate = 'source' | 'sidecar' | 'extracted' | 'vite-build.lock';
 const WORKSPACE_HOST_CUT_INTERMEDIATES: readonly WorkspaceHostCutIntermediate[] = ['source', 'sidecar', 'extracted', 'vite-build.lock'];
+// These boundaries are complete within the explicitly same-filesystem/no-follow
+// scope. Ownership/protected-root pruning can hide same-device descendants.
+const WORKSPACE_HOST_CENSUS_BOUNDARIES = new Set(['symlink boundary', 'filesystem boundary', 'special filesystem entry']);
 
 /** Plan only the native writer's atomic groups from a complete allocated-byte
  * census. This reuses standing retention's age/cap selector and hardlink union;
@@ -913,7 +916,7 @@ const WORKSPACE_HOST_CUT_INTERMEDIATES: readonly WorkspaceHostCutIntermediate[] 
  */
 export function planWorkspaceHostCutIntermediates(input: {
   workDir: string; census: RetentionTreeCensus; pins: readonly RetentionPinProtection[];
-  nowMs: number; maxBytes?: number;
+  nowMs: number; maxBytes?: number; isProtected?: RetentionPinPredicate;
 }): { intermediates: WorkspaceHostCutIntermediate[]; caps: RetentionCapReceipt[]; retainedPaths: string[] } {
   const root = resolve(input.workDir);
   const maxBytes = input.maxBytes ?? AGENT_ROOT_MAX_BYTES;
@@ -921,9 +924,11 @@ export function planWorkspaceHostCutIntermediates(input: {
     || !Number.isFinite(input.nowMs) || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > AGENT_ROOT_MAX_BYTES) {
     throw new Error('invalid workspace-host retention root, time or finite cap');
   }
-  if (input.census.error || input.census.retainedRecentTrees
-    || input.census.retained.some(row => !row.entry || row.entry.path !== row.path || !row.reason)) {
-    throw new Error('workspace-host retention requires a complete, unfiltered census');
+  const incompleteBoundary = input.census.retained.find(row => !row.entry || row.entry.path !== row.path
+    || !WORKSPACE_HOST_CENSUS_BOUNDARIES.has(row.reason));
+  if (input.census.error || input.census.retainedRecentTrees || incompleteBoundary) {
+    throw new Error('workspace-host retention requires a complete, unfiltered census'
+      + (incompleteBoundary ? `: ${incompleteBoundary.reason}` : ''));
   }
   if (input.pins.some(pin => !Number.isFinite(Date.parse(pin.expiresAt)) || !pin.paths.length
     || pin.paths.some(path => !path.startsWith('/') || resolve(path) !== path))) {
@@ -936,9 +941,9 @@ export function planWorkspaceHostCutIntermediates(input: {
     return WORKSPACE_HOST_CUT_INTERMEDIATES.find(child => child === name);
   };
   const groups = new Map<WorkspaceHostCutIntermediate, RetentionTreeCensus['entries']>();
-  // includeRecent attaches complete allocation evidence to boundary-retained
-  // children. Count those bytes, protect their whole group, and continue with
-  // unrelated groups. A boundary is not a pin and earns no pinned overage.
+  // The validated boundaries carry measured allocation within this no-follow,
+  // same-filesystem scope. Count those bytes and protect their whole group.
+  // A boundary is not a pin and earns no pinned overage.
   const retained = new Set(input.census.retained.map(row => row.path));
   const rawEntries = [...input.census.entries, ...input.census.retained.map(row => row.entry!)];
   const paths = new Set<string>();
@@ -967,7 +972,8 @@ export function planWorkspaceHostCutIntermediates(input: {
     entries.push({ ...members[0]!, path: join(root, group), root, classId, bytes,
       newestWriteMs: Math.max(...members.map(member => member.newestWriteMs)),
       hardlinks: members.flatMap(member => member.hardlinks ?? []),
-      ...(members.some(member => retained.has(member.path)) ? { protectedReason: 'retained workspace-host census boundary' } : {}) });
+      ...(members.some(member => retained.has(member.path)) ? { protectedReason: 'retained workspace-host census boundary' }
+        : members.some(member => input.isProtected?.(member.path)) ? { protectedReason: 'retained workspace-host pin or lease' } : {}) });
   }
   const policy = compilePolicy([{ id: classId, title: 'Native workspace-host cut intermediate groups', origin: 'agent',
     roots: [root], keep: { kind: 'max-age', maxAgeHours: AGENT_MAX_AGE_HOURS }, maxBytes, enforcers: [{ kind: 'none' }] }], homedir(), pins);
@@ -990,6 +996,7 @@ export async function pruneWorkspaceHostCutIntermediatesWithProtection(
   input: { repoRoot: string; workDir: string; intermediates?: readonly WorkspaceHostCutIntermediate[] },
   isPinned: RetentionPinPredicate,
   removeSource: (repoRoot: string, source: string) => void = removeReleaseSourceWorktree,
+  observeRemoval: (path: string) => void = () => {},
 ): Promise<string[]> {
   // The owning cap/age planner selects atomic writer groups, never arbitrary
   // paths. Omitting selection retains the post-build cleanup behavior. Empty
@@ -1006,19 +1013,19 @@ export async function pruneWorkspaceHostCutIntermediatesWithProtection(
         const target = join(input.workDir, child);
         if (isPinned(target) || !existsSync(target)) continue;
         await rm(target, { recursive: true, force: true });
-        removed.push(target);
+        removed.push(target); observeRemoval(target);
         continue;
       }
       const [target, marker] = child === 'source' ? [paths.source, paths.sourceReady] : [paths.sidecar, paths.sidecarReady];
       if (isPinned(target) || isPinned(marker)) continue;
       if (existsSync(marker)) {
         await rm(marker, { force: true });
-        removed.push(marker);
+        removed.push(marker); observeRemoval(marker);
       }
       if (!existsSync(target)) continue;
       if (target === paths.source) removeSource(input.repoRoot, target);
       else await rm(target, { recursive: true, force: true });
-      removed.push(target);
+      removed.push(target); observeRemoval(target);
     }
     return removed;
 }
@@ -1030,6 +1037,8 @@ export interface WorkspaceHostCutRetentionReceipt {
   selected?: WorkspaceHostCutIntermediate[];
   removed?: string[];
   caps?: RetentionCapReceipt[];
+  capsMeasurement?: 'before-effects' | 'after-effects' | 'unavailable';
+  allocationScope?: 'same-filesystem-no-follow';
   retainedPaths?: string[];
 }
 
@@ -1038,7 +1047,7 @@ export interface WorkspaceHostCutRetentionReceipt {
  * completed build bytes, exclusive cut ownership and host holders admit effects.
  * The mixed work directory itself is never a deletion candidate. */
 export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
-  input: { repoRoot: string; home?: string; dryRun: boolean; notAfterMs: number; pins: readonly RetentionPinProtection[]; maxBytes?: number },
+  input: { repoRoot: string; home?: string; dryRun: boolean; notAfterMs: number; pins: readonly RetentionPinProtection[]; maxBytes?: number; nowMs?: number },
   isPinned: RetentionPinPredicate,
   deps: {
     inspectTrees?: typeof inspectRetentionTrees;
@@ -1046,9 +1055,11 @@ export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
     verifyBuild?: typeof verifyWorkspaceHostBuild;
     removeSource?: typeof removeReleaseSourceWorktree;
   } = {},
-): Promise<{ ok: boolean; cuts: WorkspaceHostCutRetentionReceipt[] }> {
+): Promise<{ ok: boolean; cuts: WorkspaceHostCutRetentionReceipt[]; notExamined?: string[] }> {
   const cuts: WorkspaceHostCutRetentionReceipt[] = [];
-  if (!Number.isFinite(input.notAfterMs)) throw new Error('workspace-host retention needs a finite deadline');
+  const nowMs = input.nowMs ?? Date.now();
+  const notExamined: string[] = [];
+  if (!Number.isFinite(input.notAfterMs) || !Number.isFinite(nowMs)) throw new Error('workspace-host retention needs a finite deadline and snapshot time');
   let root: string;
   try { root = realpathSync(join(input.home ?? homedir(), '.papercusp')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, cuts }; throw error; }
@@ -1057,12 +1068,13 @@ export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
     if (ms <= 0) throw new Error('workspace-host retention deadline exceeded');
     return ms;
   };
-  for (const candidate of await readdir(root, { withFileTypes: true })) {
-    if (!candidate.name.startsWith('wh-release-')) continue;
+  const candidates = (await readdir(root, { withFileTypes: true })).filter(candidate => candidate.name.startsWith('wh-release-'));
+  for (const [index, candidate] of candidates.entries()) {
     const workDir = join(root, candidate.name);
     const receipt: WorkspaceHostCutRetentionReceipt = { workDir, status: 'retained' };
     cuts.push(receipt);
     let release: (() => Promise<void>) | undefined;
+    let refreshCaps: (() => Promise<void>) | undefined;
     try {
       remaining();
       // Do not follow a candidate alias into another owner or a special tree.
@@ -1088,20 +1100,34 @@ export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
         throw new Error('cut state does not identify this completed build');
       }
       const census = () => (deps.inspectTrees ?? inspectRetentionTrees)(workDir, {
-        includeRecent: true, retainAfterMs: -Infinity, timeoutMs: remaining(), requirePrivilege: true,
+        // Effects use the writer's uid, so census must retain foreign ownership
+        // boundaries under that same authority before any marker is removed.
+        includeRecent: true, retainAfterMs: -Infinity, timeoutMs: remaining(), requirePrivilege: false, sudo: null,
         coversPinnedPath: isPinned.coversPath,
       });
+      receipt.capsMeasurement = 'unavailable';
       const before = await census();
+      receipt.retainedPaths = before.retained.map(row => row.path);
       const measuredCaps = (census: RetentionTreeCensus, caps: RetentionCapReceipt[]) => {
         if (input.pins.length && census.pinnedBytes === undefined) throw new Error('workspace-host exact pin allocation unavailable');
         return caps.map(cap => ({ ...cap, pinnedBytes: census.pinnedBytes ?? 0,
           pinnedOverageBytes: Math.max(0, (census.pinnedBytes ?? 0) - cap.maxBytes) }));
       };
       const plan = planWorkspaceHostCutIntermediates({ workDir, census: before, pins: input.pins,
-        nowMs: Date.now(), maxBytes: input.maxBytes });
+        nowMs, maxBytes: input.maxBytes, isProtected: isPinned });
       receipt.selected = plan.intermediates;
       receipt.retainedPaths = plan.retainedPaths;
       receipt.caps = measuredCaps(before, plan.caps);
+      receipt.capsMeasurement = 'before-effects';
+      receipt.allocationScope = 'same-filesystem-no-follow';
+      refreshCaps = async () => {
+        const after = await census();
+        receipt.caps = measuredCaps(after, planWorkspaceHostCutIntermediates({ workDir, census: after, pins: input.pins,
+          nowMs, maxBytes: input.maxBytes, isProtected: isPinned }).caps).map((cap, index) => ({
+          ...cap, beforeBytes: plan.caps[index]!.beforeBytes,
+        }));
+        receipt.capsMeasurement = 'after-effects';
+      };
       if (plan.intermediates.length) {
         remaining();
         await (deps.verifyBuild ?? verifyWorkspaceHostBuild)(build, workDir);
@@ -1116,32 +1142,44 @@ export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
         }
         remaining();
-        if (!input.dryRun) receipt.removed = await pruneWorkspaceHostCutIntermediatesWithProtection({
-          repoRoot: input.repoRoot, workDir, intermediates: plan.intermediates,
-        }, isPinned, deps.removeSource);
+        if (!input.dryRun) {
+          receipt.removed = [];
+          await pruneWorkspaceHostCutIntermediatesWithProtection({
+            repoRoot: input.repoRoot, workDir, intermediates: plan.intermediates,
+          }, isPinned, deps.removeSource, path => receipt.removed!.push(path));
+        }
       }
       if (!input.dryRun && receipt.removed?.length) {
         // Usage is measured after effects; selection's predicted savings never
         // stand in for a cap receipt, especially for shared allocations or pins.
-        const after = await census();
-        receipt.caps = measuredCaps(after, planWorkspaceHostCutIntermediates({ workDir, census: after, pins: input.pins,
-          nowMs: Date.now(), maxBytes: input.maxBytes }).caps).map((cap, index) => ({
-          ...cap, beforeBytes: plan.caps[index]!.beforeBytes,
-        }));
+        await refreshCaps();
       }
-      receipt.status = input.dryRun ? 'planned' : 'reclaimed';
+      receipt.status = input.dryRun ? 'planned' : receipt.removed?.length ? 'reclaimed' : 'retained';
       if (!input.dryRun && receipt.caps.some(cap => cap.overByBytes > cap.pinnedOverageBytes)) {
         receipt.status = 'failed'; receipt.reason = 'workspace-host cap remains exceeded by retained unpinned bytes';
       }
     } catch (error) {
-      receipt.status = 'failed'; receipt.reason = error instanceof Error ? error.message : String(error);
+      receipt.status = error instanceof WorkspaceHostCutBusyError ? 'retained' : 'failed';
+      receipt.reason = error instanceof WorkspaceHostCutBusyError ? 'live cut holds work directory'
+        : error instanceof Error ? error.message : String(error);
+      if (receipt.removed?.length && refreshCaps && receipt.capsMeasurement !== 'after-effects') {
+        try { await refreshCaps(); }
+        catch (measurementError) {
+          receipt.caps = undefined; receipt.capsMeasurement = 'unavailable';
+          receipt.reason += `; post-effect cap measurement unavailable: ${String(measurementError)}`;
+        }
+      }
     } finally {
       try { await release?.(); }
       catch (error) { receipt.status = 'failed'; receipt.reason = `cut lock release failed: ${String(error)}`; }
     }
-    if (Date.now() >= input.notAfterMs) break;
+    if (Date.now() >= input.notAfterMs) {
+      notExamined.push(...candidates.slice(index + 1).map(candidate => join(root, candidate.name)));
+      break;
+    }
   }
-  return { ok: cuts.every(cut => cut.status !== 'failed'), cuts };
+  return { ok: !notExamined.length && cuts.every(cut => cut.status !== 'failed'), cuts,
+    ...(notExamined.length ? { notExamined } : {}) };
 }
 
 // ─── Orchestration ──────────────────────────────────────────────────────────────
@@ -1559,6 +1597,8 @@ export async function runWorkspaceHostReleaseCutCli(
   return 'planned';
 }
 
+export class WorkspaceHostCutBusyError extends Error {}
+
 /** One cut per work directory at a time: two would race each other's journal and files. */
 export async function acquireWorkDirLock(lockPath: string, identityFor: typeof readProcessIdentity = readProcessIdentity): Promise<() => Promise<void>> {
   const physical = join(realpathSync(dirname(lockPath)), basename(lockPath));
@@ -1594,10 +1634,10 @@ export async function acquireWorkDirLock(lockPath: string, identityFor: typeof r
     if (!dead) {
       // Legacy PID-only records stay conservative. New records distinguish a
       // live cut from an unrelated process that reused its PID, including reboot.
-      if (!recorded[2]) throw new Error(`another cut (pid ${holder}) holds ${physical}`);
+      if (!recorded[2]) throw new WorkspaceHostCutBusyError(`another cut (pid ${holder}) holds ${physical}`);
       const current = identityFor(holder);
       if (!current) throw new Error(`unverifiable cut process identity ${holder}`);
-      if (current === recorded[2]) throw new Error(`another cut (pid ${holder}) holds ${physical}`);
+      if (current === recorded[2]) throw new WorkspaceHostCutBusyError(`another cut (pid ${holder}) holds ${physical}`);
     }
     await rm(physical);
     await create();

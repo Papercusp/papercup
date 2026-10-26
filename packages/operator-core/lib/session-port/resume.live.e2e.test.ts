@@ -120,6 +120,48 @@ function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<strin
   }
 }
 
+function assertResumableArchiveRow(source: Session, sessions: Array<Record<string, any>>) {
+  const row = sessions.find(candidate => Number(candidate.id) === Number(source.id));
+  const expectedNativeId = source.agent === 'omp'
+    ? source.omp_thread_id ?? source.session_id : source.session_id;
+  const actualNativeId = row?.agent === 'omp'
+    ? row.ompThreadId ?? row.sessionId : row?.sessionId;
+  if (!row || row.agent !== source.agent || !expectedNativeId || actualNativeId !== expectedNativeId ||
+    row.hasArchive !== true) {
+    throw new Error(`Archived source ${source.id} is not safely resumable: ` + JSON.stringify({
+      expectedAgent: source.agent, expectedNativeId, actualAgent: row?.agent,
+      actualNativeId, hasArchive: row?.hasArchive,
+    }));
+  }
+}
+
+async function assertResumableArchiveEndpoint(source: Session, origin: string) {
+  const url = new URL('/api/adv/sessions/resumable', origin);
+  url.searchParams.set('id', String(source.id));
+  const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`Archived source ${source.id} preflight returned HTTP ${response.status}`);
+  const body = await response.json() as { sessions?: Array<Record<string, any>> };
+  assertResumableArchiveRow(source, Array.isArray(body.sessions) ? body.sessions : []);
+}
+
+describe('final resume archived-source preflight', () => {
+  const source: Session = { id: '42', agent: 'omp', coord_owner_id: 'fixture-owner',
+    session_id: null, omp_thread_id: '01a133bc-e525-75a1-885d-ea1cd5d4a1e5', ended_at: '2026-10-13T00:00:00Z' };
+  it('requires the exact OMP thread identity and archive marker before launching targets', () => {
+    expect(() => assertResumableArchiveRow(source, [{ id: 42, agent: 'omp', sessionId: null,
+      ompThreadId: source.omp_thread_id, hasArchive: true }])).not.toThrow();
+  });
+  it('fails before launch when the endpoint omits the source or archive marker', () => {
+    expect(() => assertResumableArchiveRow(source, [])).toThrow('not safely resumable');
+    expect(() => assertResumableArchiveRow(source, [{ id: 42, agent: 'omp', sessionId: null,
+      ompThreadId: source.omp_thread_id, hasArchive: false }])).toThrow('not safely resumable');
+  });
+  it('does not accept a same-id row from a different backend', () => {
+    expect(() => assertResumableArchiveRow(source, [{ id: 42, agent: 'claude',
+      sessionId: source.omp_thread_id, hasArchive: true }])).toThrow('not safely resumable');
+  });
+});
+
 describe('owned matrix capacity preflight', () => {
   it('accepts measured serving capacity without requiring an unwall correction', () => {
     expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: true,
@@ -324,6 +366,10 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     for (const source of sessions) {
       expect(source.ended_at, `Source ${source.id} must be an ended plan fixture`).toBeTruthy();
       assertSourceAvailable(source, origin);
+      // Check the live launcher preflight surface before starting any expensive
+      // target host: a canonical archive read alone does not prove that psu's
+      // resumable endpoint exposes the same native identity and hasArchive key.
+      await assertResumableArchiveEndpoint(source, origin);
       const snapshot = await native(source, true);
       expect(snapshot?.text).toContain('MATRIX-SRC');
     }

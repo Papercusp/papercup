@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -729,6 +729,12 @@ describe('workspace-host writer intermediate retention planning', () => {
     expect(result.caps[0]).toMatchObject({ beforeBytes: 131, pinnedBytes: 0, pinnedOverageBytes: 0 });
   });
 
+  it.each(['foreign ownership boundary', 'protected policy root', 'unknown boundary'])('refuses unmeasured descendant allocation despite a boundary entry (%s)', reason => {
+    expect(() => plan([], 100, { census: { entries: [entry('sidecar', 30, 80)],
+      retained: [{ path: join(workDir, 'source'), reason, entry: entry('source', 1, 90) }],
+      retainedRecentTrees: 0, inspectedNodes: 10 } })).toThrow('complete, unfiltered census');
+  });
+
   it('reports retained over-cap bytes without evicting the publication to make the cap appear satisfied', () => {
     const result = plan([entry('publication', 200, 90), entry('source', 20, 1)]);
     expect(result.intermediates).toEqual(['source']);
@@ -836,7 +842,7 @@ describe('scheduled workspace-host writer retention admission', () => {
     const lock = join(f.dir, 'release-cut.lock');
     const release = await acquireWorkDirLock(lock);
     try {
-      expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: expect.stringContaining('another cut') }] });
+      expect(await f.run()).toMatchObject({ ok: true, cuts: [{ status: 'retained', reason: 'live cut holds work directory' }] });
       expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\n${readProcessIdentity(process.pid)}\n`);
       expect(f.inspectTrees).not.toHaveBeenCalled();
     } finally { await release(); }
@@ -863,14 +869,43 @@ describe('scheduled workspace-host writer retention admission', () => {
   it('accepts a real complete native census with a retained symlink group and still plans its clean sibling', async () => {
     const f = fixture(); f.input.dryRun = true;
     symlinkSync(join(f.dir, 'extracted/payload'), join(f.dir, 'sidecar/tool-link'));
-    const result = await f.run({ inspectTrees: (root, options) => inspectRetentionTrees(root,
-      { ...options, sudo: null, requirePrivilege: false }) });
+    const result = await f.run({ inspectTrees: inspectRetentionTrees });
     expect(result).toMatchObject({ ok: true, cuts: [{ status: 'planned' }] });
     expect(result.cuts[0]?.selected).toContain('extracted');
     expect(result.cuts[0]?.selected).not.toContain('sidecar');
     expect(result.cuts[0]?.retainedPaths).toContain(join(f.dir, 'sidecar'));
     expect(result.cuts[0]?.caps?.[0]?.beforeBytes).toBeGreaterThan(100);
     expect(existsSync(join(f.dir, 'sidecar/tool-link'))).toBe(true);
+  });
+
+  it('marks the cap unavailable for a real native foreign directory with allocated descendants before touching markers', async () => {
+    const f = fixture();
+    const physicalDir = realpathSync(f.dir);
+    const payload = join(physicalDir, 'extracted/payload');
+    writeFileSync(payload, Buffer.alloc(128 * 1024, 7));
+    // A read-only namespace supplies a real foreign-owned directory on this
+    // device without chown, sudo or persistent privileged fixture files. Its
+    // allocated descendant is our own fixture payload, visible through the bind.
+    let foreign = dirname(physicalDir);
+    while (statSync(foreign).uid === process.getuid?.() || statSync(foreign).dev !== statSync(physicalDir).dev) {
+      const parent = dirname(foreign);
+      if (parent === foreign) throw new Error('native fixture needs a foreign-owned ancestor on its device');
+      foreign = parent;
+    }
+    const namespace = ['--ro-bind', '/', '/', '--ro-bind', foreign, join(physicalDir, 'sidecar')];
+    const boundPayload = join(physicalDir, 'sidecar', relative(foreign, payload));
+    expect(Number(execFileSync('bwrap', [...namespace, 'stat', '-c', '%b', boundPayload], { encoding: 'utf8' }).trim())).toBeGreaterThan(0);
+    const result = await f.run({ inspectTrees: (root, options) => inspectRetentionTrees(root, { ...options, timeoutMs: 10_000,
+      spawn: (command, args) => spawn('bwrap', [...namespace, command, ...args], { stdio: ['ignore', 'pipe', 'pipe'] }) }) });
+    expect(result).toMatchObject({ ok: false, cuts: [{ status: 'failed',
+      reason: expect.stringContaining('foreign ownership boundary'), capsMeasurement: 'unavailable',
+      retainedPaths: expect.arrayContaining([join(f.dir, 'sidecar')]) }] });
+    expect(result.cuts[0]?.caps).toBeUndefined();
+    expect(result.cuts[0]?.removed).toBeUndefined();
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+    expect(existsSync(join(f.dir, 'extracted/payload'))).toBe(true);
+    expect(f.scanHolders).not.toHaveBeenCalled();
   });
 
   it('refuses a selected intermediate alias before deleting its ready marker', async () => {
@@ -909,6 +944,42 @@ describe('scheduled workspace-host writer retention admission', () => {
     expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
   });
 
+  it.each(['physical alias pin', 'legacy lease', 'pin expired after snapshot'])('uses the same planner/effect protection for %s', async kind => {
+    const f = fixture();
+    const nowMs = kind === 'pin expired after snapshot' ? Date.now() - 5_000 : Date.now();
+    const alias = join(workDir, 'cut-alias'); symlinkSync(f.dir, alias);
+    const pins = kind === 'legacy lease' ? [] : [{ paths: [join(kind === 'physical alias pin' ? alias : f.dir, 'sidecar')],
+      expiresAt: new Date(nowMs + (kind === 'pin expired after snapshot' ? 1000 : 60_000)).toISOString() }];
+    const agentProtection = pinProtection(pins, nowMs);
+    const protection = kind === 'legacy lease' ? Object.assign((path: string) => path === join(f.dir, 'sidecar'),
+      { coversPath: pinProtection([], nowMs).coversPath }) : agentProtection;
+    const result = await withRetentionPinProtection(() => reclaimWorkspaceHostCutIntermediatesWithProtection(
+      { ...f.input, pins, nowMs }, protection, { inspectTrees: f.inspectTrees, scanHolders: f.scanHolders }));
+    expect(result).toMatchObject({ ok: true, cuts: [{ selected: ['extracted'], removed: [join(f.dir, 'extracted')],
+      capsMeasurement: 'after-effects', caps: [{ pinnedOverageBytes: 0 }] }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+  });
+
+  it.each([false, true])('preserves partial effects and marks post-effect measurement availability (failure=%s)', async measurementFails => {
+    const f = fixture(); f.input.maxBytes = 25;
+    mkdirSync(join(f.dir, 'source'));
+    writeFileSync(join(f.dir, 'source.ready.json'), '{}');
+    let inspections = 0;
+    const result = await f.run({ removeSource: () => { throw new Error('injected source removal failure'); },
+      inspectTrees: async () => {
+        if (++inspections > 1 && measurementFails) throw new Error('injected census failure');
+        return f.inspectTrees();
+      } });
+    expect(result).toMatchObject({ ok: false, cuts: [{ status: 'failed', reason: expect.stringContaining('injected source removal failure'),
+      removed: [join(f.dir, 'sidecar.ready.json'), join(f.dir, 'sidecar'), join(f.dir, 'source.ready.json')],
+      capsMeasurement: measurementFails ? 'unavailable' : 'after-effects' }] });
+    if (measurementFails) expect(result.cuts[0]?.caps).toBeUndefined();
+    else expect(result.cuts[0]?.caps?.[0]).toMatchObject({ beforeBytes: 136, afterBytes: 74 });
+    expect(existsSync(join(f.dir, 'source'))).toBe(true);
+    expect(existsSync(join(f.dir, 'extracted'))).toBe(true);
+  });
+
   it('reports retained unpinned overage after effects instead of claiming the cap was met', async () => {
     const f = fixture(); const census = f.inspectTrees;
     const result = await f.run({ inspectTrees: async () => {
@@ -923,6 +994,16 @@ describe('scheduled workspace-host writer retention admission', () => {
   it('does not start a census after the admission deadline', async () => {
     const f = fixture(); f.input.notAfterMs = Date.now() - 1;
     expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: 'workspace-host retention deadline exceeded' }] });
+    expect(f.inspectTrees).not.toHaveBeenCalled();
+  });
+
+  it('names candidates never examined when the delegate deadline interrupts the discovered population', async () => {
+    const f = fixture(); f.input.notAfterMs = Date.now() - 1;
+    const other = join(workDir, '.papercusp/wh-release-z-unreached'); mkdirSync(other);
+    const result = await f.run();
+    expect(result.ok).toBe(false);
+    expect(result.notExamined).toEqual([other]);
+    expect(result.cuts).toHaveLength(1);
     expect(f.inspectTrees).not.toHaveBeenCalled();
   });
 });

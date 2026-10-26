@@ -32756,7 +32756,7 @@
           "POST"
         ]
       },
-      "description": "What is filling each watched disk (/ and /mnt/data here): every directory ≥1 GiB to depth 6, large files, Postgres and Docker, plus unattributed bytes, each with its size and 24h growth. From the 6-hourly census; flags stale, missing and coverage-gap devices. Read-only.",
+      "description": "What is filling each watched disk (/ and /mnt/data here): every directory ≥1 GiB to depth 6, large files, Postgres and Docker, plus unattributed bytes, each with its size and 24h growth. From the hourly census (minute 35); flags stale, missing and coverage-gap devices. Read-only.",
       "capabilities": [
         "storage:read"
       ],

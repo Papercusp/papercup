@@ -32,25 +32,28 @@ const entry = (path: string, classId: string, ageHours: number): RetentionEntry 
 describe('workspace-host native owner scheduling', () => {
   it('passes the current admission snapshot and deadline to the existing native owner', async () => {
     let pins = [{ paths: ['/cut/sidecar'], expiresAt: '2099-01-01T00:00:00.000Z' }];
-    let isPinned = pinProtection(pins, Date.now(), path => path);
+    let nowMs = Date.now();
+    let isPinned = pinProtection(pins, nowMs, path => path);
     const reclaim = vi.fn(async (_input: unknown, _protection: unknown) => ({ ok: true, cuts: [] }));
     const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo',
-      protection: () => ({ pins, isPinned }), loadOwner: async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: reclaim }) });
+      protection: () => ({ pins, isPinned, nowMs }), loadOwner: async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: reclaim }) });
     expect(delegate.classId).toBe('workspace-host-cut-intermediates');
     expect(await delegate.run(true, undefined, 1234)).toEqual({ ok: true, detail: { ok: true, cuts: [] } });
-    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: true, notAfterMs: 1234, pins }, isPinned);
+    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: true, notAfterMs: 1234, pins, nowMs }, isPinned);
     const previous = isPinned;
     pins = [{ paths: ['/cut/extracted'], expiresAt: '2099-01-01T00:00:00.000Z' }];
-    isPinned = pinProtection(pins, Date.now(), path => path);
+    nowMs += 1000;
+    isPinned = pinProtection(pins, nowMs, path => path);
     await delegate.run(false, undefined, 5678);
-    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: false, notAfterMs: 5678, pins }, isPinned);
+    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: false, notAfterMs: 5678, pins, nowMs }, isPinned);
     expect(reclaim.mock.calls[0]?.[1]).toBe(previous);
   });
 
-  it.each(['protection', 'deadline'])('refuses missing %s before loading or invoking the writer', async missing => {
+  it.each(['protection', 'deadline', 'snapshot time'])('refuses missing %s before loading or invoking the writer', async missing => {
     const loadOwner = vi.fn();
     const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo', loadOwner,
-      protection: () => missing === 'protection' ? undefined : { pins: [], isPinned: pinProtection([]) } });
+      protection: () => missing === 'protection' ? undefined : { pins: [], isPinned: pinProtection([]),
+        nowMs: missing === 'snapshot time' ? NaN : Date.now() } });
     await expect(delegate.run(false, undefined, missing === 'deadline' ? undefined : 1234))
       .rejects.toThrow('not admitted');
     expect(loadOwner).not.toHaveBeenCalled();
@@ -59,7 +62,7 @@ describe('workspace-host native owner scheduling', () => {
   it('preserves an owning writer failure as an incomplete delegate result', async () => {
     const detail = { ok: false, cuts: [{ workDir: '/cut', status: 'failed' as const, reason: 'retained overage' }] };
     const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo',
-      protection: () => ({ pins: [], isPinned: pinProtection([]) }),
+      protection: () => ({ pins: [], isPinned: pinProtection([]), nowMs: Date.now() }),
       loadOwner: async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: async () => detail }) });
     expect(await delegate.run(false, undefined, 1234)).toEqual({ ok: false, detail });
   });
