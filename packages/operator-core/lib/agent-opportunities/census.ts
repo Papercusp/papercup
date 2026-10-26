@@ -1,10 +1,10 @@
 /** Five-family pass on the existing SQL census cadence; only minimized diagnostics are persisted. */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../build-info';
 import type { SqlMiningOptions, SqlMiningResult } from '../bash-substitution/sql-tool-candidates';
-import type { SqlCorpusCursor, SqlDemandAggregate } from '../bash-substitution/sql-intent-corpus';
+import type { SqlCorpusCursor, SqlDemandAggregate, SqlDemandObservation } from '../bash-substitution/sql-intent-corpus';
 import { rankSqlToolCandidates } from '../sql-tool-candidate-score';
 import { AGGREGATE_LIFETIME_DAYS, miningScopeId } from './privacy';
 import { boundedStage, miningFailureReason, MONITORED_FAMILIES, type MonitoredFamily } from './pipeline';
@@ -17,6 +17,28 @@ import { fetchNativeOperations, groupNativeOperations } from './native-operation
 export interface FamilyMeasurement {
   family: MonitoredFamily; coverage: 'measured' | 'missing' | 'unsupported' | 'truncated' | 'UNKNOWN';
   scanned: number; qualifying: number; diagnostics: Record<string, unknown>;
+}
+/** No examples, actor IDs, paths, request text or transcript locations in 120-day rows.
+ * These are internal evidence pointers, not an independent grant to read a source.
+ */
+interface CandidateEvidence {
+  id: string; sourceRefs: string[]; operationRefs: string[];
+  metrics: Record<string, number>; reviewEligible: boolean;
+}
+function identityIndex(rows: readonly { sourceToken: string; operationToken: string | null }[]) {
+  const bySource = new Map<string, Set<string>>(), byOperation = new Map<string, Set<string>>();
+  for (const row of rows) if (row.operationToken) {
+    const operations = bySource.get(row.sourceToken) ?? new Set<string>();
+    operations.add(row.operationToken); bySource.set(row.sourceToken, operations);
+    const sources = byOperation.get(row.operationToken) ?? new Set<string>();
+    sources.add(row.sourceToken); byOperation.set(row.operationToken, sources);
+  }
+  return (refs: string[]) => {
+    const sources = new Set(refs), operations = new Set(refs.flatMap(r => [...bySource.get(r) ?? []]));
+    // Include every contributing copy: deduplication cannot discard its authority.
+    for (const op of operations) for (const source of byOperation.get(op) ?? []) sources.add(source);
+    return { sourceRefs: [...sources].sort(), operationRefs: [...operations].sort() };
+  };
 }
 const runtimeId = `${hostname()}:${process.pid}:${Math.round(Date.now() - process.uptime() * 1000)}`;
 const positive = (value: number | undefined, fallback: number, max: number) =>
@@ -77,6 +99,14 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
   const common = { ...opts, since: new Date(now - 7 * 86400_000).toISOString(), until: new Date(now).toISOString(),
     authorizeSource: readers.authorizeLedgerSource,
     readOutput: readers.readOutput };
+  const candidate = (family: MonitoredFamily, identity: unknown, refs: { sourceRefs: string[]; operationRefs: string[] },
+    metrics: Record<string, number>, reviewEligible = false): CandidateEvidence => {
+    if (!refs.sourceRefs.length || [...refs.sourceRefs, ...refs.operationRefs].some(t => !/^[a-f0-9]{64}$/.test(t))
+      || Object.values(metrics).some(n => !Number.isFinite(n) || n < 0)) throw new Error('sql_mining_source_missing');
+    return { id: createHmac('sha256', opts.scope.key)
+      .update(JSON.stringify(['monitored-candidate-v1', scopeId, family, identity])).digest('hex'),
+    ...refs, metrics, reviewEligible };
+  };
   await sql`INSERT INTO harness_shared.sql_intent_runs
     (workspace_id,run_id,scope_id,harness_slug,routine_id,workflow_id,source_sha,runtime_id,started_at)
     VALUES (${opts.workspaceId},${runId}::uuid,${scopeId},${opts.harnessSlug},${opts.routineId ?? null},
@@ -93,41 +123,84 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
     let cancelled = false;
     try { return await boundedStage(() => work(Date.now() + budget, () => cancelled), budget); }
     catch (error) { return { family, coverage: 'UNKNOWN', scanned: 0, qualifying: 0,
-      diagnostics: { stage: 'source', reason: miningFailureReason(error), reviewEligible: false } }; }
+      diagnostics: { stage: 'source', reason: miningFailureReason(error), reviewEligible: false, candidates: [] } }; }
     finally { cancelled = true; }
   };
   const families = await Promise.all([
     measure('sql', async () => {
       const result = await sqlStage();
       if (result.status !== 'ok') return { family: 'sql', coverage: 'UNKNOWN', scanned: result.rows, qualifying: 0,
-        diagnostics: { stage: result.stage, reason: result.reason ?? 'unknown', reviewEligible: false } };
-      const [row] = await sql<{ summary: SqlDemandAggregate }[]>`SELECT summary FROM harness_shared.sql_intent_history
+        diagnostics: { stage: result.stage, reason: result.reason ?? 'unknown', reviewEligible: false, candidates: [] } };
+      const [row] = await sql<{ summary: SqlDemandAggregate; source_tokens: string[]; revision_token: string }[]>`
+        SELECT summary,source_tokens,revision_token FROM harness_shared.sql_intent_history
         WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId} AND ran_on=${new Date(now).toISOString().slice(0,10)}::date`;
       const coverage = result.more ? 'truncated' : row?.summary.coverage.status === 'complete' ? 'measured' : 'UNKNOWN';
+      const sources = row ? await sql<{ observation: SqlDemandObservation }[]>`SELECT observation
+        FROM harness_shared.sql_intent_operations WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId}
+        AND source_token=ANY(${row.source_tokens}::text[])` : [];
+      if (row) {
+        const [current] = await sql`SELECT 1 FROM harness_shared.sql_intent_history
+          WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId}
+          AND ran_on=${new Date(now).toISOString().slice(0,10)}::date AND revision_token=${row.revision_token}`;
+        if (!current || sources.length !== row.source_tokens.length) throw new Error('sql_mining_source_missing');
+      }
+      const observationsByCandidate = new Map<string, SqlDemandObservation[]>();
+      for (const { observation: o } of sources) if (o.intent.status === 'supported') {
+        const key = JSON.stringify([o.workspaceToken, o.harnessToken, o.boundaryToken, o.intent.version, o.intent.fingerprint]);
+        const rows = observationsByCandidate.get(key) ?? []; rows.push(o); observationsByCandidate.set(key, rows);
+      }
+      const identities = identityIndex(sources.map(s => s.observation));
+      const ranked = row ? rankSqlToolCandidates(row.summary).candidates : [];
+      const candidates = ranked.map(c => {
+        const observations = observationsByCandidate.get(c.id) ?? [];
+        return candidate('sql', c.id, identities(observations.map(o => o.sourceToken)),
+          { successful: c.counts.ok, error: c.counts.error, refused: c.counts.refused, unknown: c.counts.unknown,
+            verifiedAgents: c.verifiedAgents, activeDays: c.activeDays.length }, c.eligible && coverage === 'measured');
+      });
       return { family: 'sql', coverage, scanned: result.rows,
-        qualifying: row ? rankSqlToolCandidates(row.summary).candidates.filter(c => c.eligible).length : 0,
-        diagnostics: { stage: result.stage, logicalCalls: result.logicalCalls ?? null, reviewEligible: coverage === 'measured' } };
+        qualifying: ranked.filter(c => c.eligible).length,
+        diagnostics: { stage: result.stage, logicalCalls: result.logicalCalls ?? null, reviewEligible: coverage === 'measured',
+          candidates, sourceRevision: row?.revision_token ?? null } };
     }),
     measure('search-reformulation', async (deadline, cancelled) => {
       const page = await drainWindow(p => fetchSearchReformulations({ ...common, ...p }), pageSize, rowCap, deadline, cancelled);
       const grouped = groupSearchReformulations(page.observations);
+      const identities = identityIndex(page.observations);
+      const chains = grouped.chains.filter(c => c.reformulations > 0 || c.fallbacks > 0);
       return { family: 'search-reformulation', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
-        qualifying: grouped.chains.filter(c => c.reformulations > 0 || c.fallbacks > 0).length,
-        diagnostics: { sourceCoverage: page.coverage, collisions: grouped.collisions, reviewEligible: false } };
+        qualifying: chains.length,
+        diagnostics: { sourceCoverage: page.coverage, collisions: grouped.collisions, reviewEligible: false,
+          candidates: chains.map(c => candidate('search-reformulation', [c.scopeToken, c.id],
+            identities(c.operations.map(o => o.sourceToken)),
+            { logicalDemand: c.operations.length, reformulations: c.reformulations, fallbacks: c.fallbacks })) } };
     }),
     measure('result-recovery', async (deadline, cancelled) => {
       const page = await drainWindow(p => fetchResultRecovery({ ...common, ...p }), pageSize, rowCap, deadline, cancelled);
       const grouped = rankResultRecovery(page.observations);
+      const identities = identityIndex(page.observations);
+      const exposureSources = new Map<string, string[]>();
+      for (const o of grouped.operations) {
+        const key = JSON.stringify([o.scopeToken, o.tool]), sources = exposureSources.get(key) ?? [];
+        sources.push(o.sourceToken); exposureSources.set(key, sources);
+      }
       return { family: 'result-recovery', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: grouped.rankings.length, diagnostics: { sourceCoverage: page.coverage,
-          collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false } };
+          collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false,
+          candidates: grouped.rankings.map(c => candidate('result-recovery', [c.scopeToken, c.tool],
+            identities([...(exposureSources.get(JSON.stringify([c.scopeToken, c.tool])) ?? []),
+              ...c.episodes.flatMap(e => e.sourceRefs)]),
+            { exposure: c.exposure, recoveryEpisodes: c.recoveryEpisodes, extraCalls: c.extraCalls, successful: c.successEpisodes })) } };
     }),
     measure('workaround-funnel', async (deadline, cancelled) => {
       const page = await drainWindow(p => fetchWorkaroundFunnels({ ...common, ...p }), pageSize, rowCap, deadline, cancelled);
       const grouped = rankWorkarounds(page.observations);
+      const identities = identityIndex(page.observations);
       return { family: 'workaround-funnel', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: grouped.rankings.length, diagnostics: { sourceCoverage: page.coverage,
-          collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false } };
+          collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false,
+          candidates: grouped.rankings.map(c => candidate('workaround-funnel', [c.scopeToken, c.tool, c.repair],
+            identities(c.episodes.flatMap(e => e.operations.map(o => o.sourceToken))),
+            { successfulEpisodes: c.successfulEpisodes, extraCalls: c.extraCalls, elapsedMs: c.elapsedMs })) } };
     }),
     measure('native-operation', async (deadline, cancelled) => {
       const page = await drainWindow(p => fetchNativeOperations({ ...common, ...p, authorizeSource: readers.authorizeActivitySource,
@@ -135,7 +208,10 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       const grouped = groupNativeOperations(page.observations);
       return { family: 'native-operation', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: grouped.chains.length, diagnostics: { sourceCoverage: page.coverage,
-          collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false } };
+          collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false,
+          candidates: grouped.chains.map(c => candidate('native-operation', [c.scopeToken, c.kind, c.id],
+            { sourceRefs: c.sourceRefs, operationRefs: [...new Set(c.operationRefs)].sort() },
+            { logicalDemand: c.logicalDemand, successful: c.successCount, unknown: c.unknownCount })) } };
     }),
   ]);
   await sql.begin(async tx => {
