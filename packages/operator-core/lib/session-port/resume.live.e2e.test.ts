@@ -131,15 +131,23 @@ function assertCodexAutoRoute(report: Record<string, unknown>) {
   const accounts = Array.isArray(report.codexAccounts)
     ? report.codexAccounts.filter((account): account is string => typeof account === 'string' && account.length > 0)
     : [];
-  const cause = report.codexUnserviceableCause;
+  // gateway:status quarantines the legacy pool-health fields under `legacy`.
+  // A missing cause remains a refusal; only the explicit healthy/null state or
+  // psu's advisory temporary-cooldown state permits the auto route.
+  const legacy = report.legacy && typeof report.legacy === 'object'
+    ? report.legacy as Record<string, unknown>
+    : {};
+  const causePresent = Object.prototype.hasOwnProperty.call(legacy, 'codexUnserviceableCause');
+  const cause = causePresent ? legacy.codexUnserviceableCause : undefined;
   // psu treats a temporary cooldown as an advisory and launches with normal
   // gateway retry handling. All other non-null causes refuse the exact route.
   if (report.ok !== true || accounts.length === 0 ||
-    (cause !== null && cause !== 'temporary-cooldown')) {
+    !causePresent || (cause !== null && cause !== 'temporary-cooldown')) {
     throw new Error('Final matrix has no launchable Codex auto-route from fresh gateway status: ' +
       JSON.stringify({ codexAccounts: report.codexAccounts,
-        codexUnserviceableCause: cause,
-        codexReachability: report.codexReachability }));
+        codexHealthyAccounts: legacy.codexHealthyAccounts,
+        codexUnserviceableCause: causePresent ? cause : '<missing>',
+        codexReachability: legacy.codexReachability }));
   }
 }
 
@@ -230,17 +238,19 @@ describe('owned matrix capacity preflight', () => {
   });
 
   it('follows psu route policy: refuse unavailable routes but allow a temporary-cooldown warning', () => {
-    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
-      codexUnserviceableCause: null })).not.toThrow();
-    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
-      codexUnserviceableCause: 'accounts-unserviceable' })).toThrow('no launchable Codex auto-route');
-    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
-      codexUnserviceableCause: 'temporary-cooldown' })).not.toThrow();
-    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
-      codexUnserviceableCause: 'upstream-unreachable' })).toThrow('no launchable Codex auto-route');
+    const route = (cause: unknown) => ({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
+      legacy: { codexUnserviceableCause: cause } });
+    expect(() => assertCodexAutoRoute(route(null))).not.toThrow();
+    expect(() => assertCodexAutoRoute(route('accounts-unserviceable')))
+      .toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute(route('temporary-cooldown'))).not.toThrow();
+    expect(() => assertCodexAutoRoute(route('upstream-unreachable')))
+      .toThrow('no launchable Codex auto-route');
     expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: [],
+      legacy: { codexUnserviceableCause: null } })).toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
       codexUnserviceableCause: null })).toThrow('no launchable Codex auto-route');
-    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'] }))
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'], legacy: {} }))
       .toThrow('no launchable Codex auto-route');
   });
 });
@@ -420,10 +430,15 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     // Read the gateway's route-level serviceability before preparing any targets;
     // psu's own launch refusal remains the final guard against state changing later.
     const route = call('gateway:status', {}, origin);
+    const legacyRoute = route.legacy && typeof route.legacy === 'object'
+      ? route.legacy as Record<string, unknown>
+      : {};
+    const routeCausePresent = Object.prototype.hasOwnProperty.call(legacyRoute, 'codexUnserviceableCause');
     console.info('CBP_FINAL_ROUTE_PREFLIGHT', JSON.stringify({ ok: route.ok,
       codexAccounts: route.codexAccounts,
-      codexUnserviceableCause: route.codexUnserviceableCause,
-      codexReachability: route.codexReachability }));
+      codexHealthyAccounts: legacyRoute.codexHealthyAccounts,
+      codexUnserviceableCause: routeCausePresent ? legacyRoute.codexUnserviceableCause : '<missing>',
+      codexReachability: legacyRoute.codexReachability }));
     assertCodexAutoRoute(route);
     // Both target backends, and Claude maintenance summarization, are required
     // by the unchanged matrix profile. Refuse known capacity walls before any
