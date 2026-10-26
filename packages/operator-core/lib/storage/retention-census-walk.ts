@@ -42,7 +42,6 @@ const census = z.object({ entries: z.array(entry), retained: z.array(z.object({ 
     lastChildPath: z.string().nullable(), timeoutMs: z.number().nullable(), progressTimeoutMs: z.number().nullable(),
     timeoutKind: z.enum(['absolute', 'progress', 'native-signal']).nullable() }).optional() });
 export const retentionCensusRequest = z.object({ version: z.literal(1), root: z.string(), rootIdentity: identity,
-  rootGeneration: z.object({ mtimeMs: z.number(), ctimeMs: z.number() }),
   excludedPaths: z.array(z.string()), collectBuildDirs: z.boolean(), progressTimeoutMs: z.number().positive(),
   requirePrivilege: z.boolean() });
 type Request = z.infer<typeof retentionCensusRequest>;
@@ -57,15 +56,19 @@ export async function runRetentionCensusWorker(input: unknown) {
   const request = retentionCensusRequest.parse(input);
   if (resolve(request.root) !== request.root) throw new Error('noncanonical retention census root');
   const before = await fs.lstat(request.root);
-  if (!before.isDirectory() || before.isSymbolicLink() || !sameIdentity(before, request.rootIdentity) ||
-      before.mtimeMs !== request.rootGeneration.mtimeMs || before.ctimeMs !== request.rootGeneration.ctimeMs) throw new Error('retention census root changed');
+  // Only the root's identity is pinned, never its mtime/ctime: an actively written
+  // root (repo scratch gains a direct child every few seconds) could otherwise never
+  // yield an adoptable census (EI-26925507003255681). Removal safety does not rest on
+  // this listing: disk-reclaim reinspects identity, newest write, bytes, hardlinks and
+  // holders of every entry immediately before its effect.
+  if (!before.isDirectory() || before.isSymbolicLink() || !sameIdentity(before, request.rootIdentity)) throw new Error('retention census root changed');
   const startedAt = Date.now();
   const result = await inspectRetentionTrees(request.root, { retainAfterMs: Infinity, includeRecent: true,
     excludedPaths: request.excludedPaths, collectBuildDirs: request.collectBuildDirs,
     progressTimeoutMs: request.progressTimeoutMs, timeoutMs: RETENTION_CENSUS_LIFETIME_MS,
     requirePrivilege: request.requirePrivilege });
   const after = await fs.lstat(request.root);
-  if (!sameIdentity(after, before) || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+  if (!sameIdentity(after, before)) {
     return { version: 1, requestKey: keyFor(request), startedAt, finishedAt: Date.now(), result: incomplete('retention census root changed during walk') };
   }
   return { version: 1, requestKey: keyFor(request), startedAt, finishedAt: Date.now(), result };
@@ -90,7 +93,6 @@ export async function inspectDetachedRetentionTrees(root: string,
   const rootStat = await fs.lstat(root);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return incomplete('retention root is not a plain directory');
   const request: Request = { version: 1, root, rootIdentity: { dev: rootStat.dev, ino: rootStat.ino },
-    rootGeneration: { mtimeMs: rootStat.mtimeMs, ctimeMs: rootStat.ctimeMs },
     excludedPaths: [...new Set(options.excludedPaths ?? [])].sort(), collectBuildDirs: options.collectBuildDirs ?? false,
     progressTimeoutMs: options.progressTimeoutMs ?? 60_000, requirePrivilege: options.requirePrivilege ?? false };
   const requestKey = keyFor(request);
@@ -147,7 +149,7 @@ export async function inspectDetachedRetentionTrees(root: string,
         const current = await fs.lstat(root);
         if (value.requestKey !== requestKey || value.startedAt < finished.launchedAt || value.finishedAt < value.startedAt ||
             value.finishedAt > Date.now() || Date.now() - value.finishedAt > RETENTION_CENSUS_LIFETIME_MS ||
-            !sameIdentity(current, rootStat) || current.mtimeMs !== rootStat.mtimeMs || current.ctimeMs !== rootStat.ctimeMs) {
+            !sameIdentity(current, rootStat)) {
           return incomplete('stale or changed retention census result');
         }
         const paths = [...value.result.entries.map(e => e.path), ...value.result.retained.map(e => e.path)];

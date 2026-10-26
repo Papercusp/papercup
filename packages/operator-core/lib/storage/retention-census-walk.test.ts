@@ -111,21 +111,36 @@ describe('complete retention census adoption', () => {
     expect(result.error).toBeDefined(); expect(result.entries).toEqual([]); expect(result.retained).toEqual([]);
     expect(launcher).toHaveBeenCalledOnce(); expect(await fs.readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
   });
-  it('reports a finished changed-input census before replacing its live slot', async () => {
+  it('reports a finished changed-options census before replacing its live slot', async () => {
     const launcher = launch(false);
+    const changedOptions = { ...options, excludedPaths: [join(root, 'excluded')] };
     await inspectDetachedRetentionTrees(root, options, walk(launcher, 15));
-    await fs.writeFile(join(root, 'arrival'), 'new');
-    expect((await inspectDetachedRetentionTrees(root, options, walk(launcher))).error).toContain('still active');
+    expect((await inspectDetachedRetentionTrees(root, changedOptions, walk(launcher))).error).toContain('still active');
     expect(launcher).toHaveBeenCalledOnce();
     await finish();
-    const changed = await inspectDetachedRetentionTrees(root, options, walk(launcher));
+    const changed = await inspectDetachedRetentionTrees(root, changedOptions, walk(launcher));
     expect(changed.error).toBe('retention census input changed since previous measurement');
     expect(changed.entries).toEqual([]); expect(changed.retained).toEqual([]);
     expect(launcher).toHaveBeenCalledOnce();
     expect(await fs.readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
     launcher.mockImplementation(async () => { await finish(); return { pid: 999_999_999, taskId: 'new', confined: true }; });
-    await inspectDetachedRetentionTrees(root, options, walk(launcher));
+    await inspectDetachedRetentionTrees(root, changedOptions, walk(launcher));
     expect(launcher).toHaveBeenCalledTimes(2);
+  });
+  // EI-26925507003255681: repo scratch gains a direct child every few seconds while a
+  // walk takes minutes. Keying adoption on the root's mtime/ctime retired every finished
+  // census, so the root could never be adopted (a livelock, not budget starvation).
+  it('adopts a finished census while the root keeps gaining direct children', async () => {
+    const launcher = launch(false);
+    expect((await inspectDetachedRetentionTrees(root, options, walk(launcher, 15))).error).toBeDefined();
+    for (let i = 0; i < 3; i++) await fs.writeFile(join(root, `arrival-${i}`), 'new');
+    await finish();
+    await fs.writeFile(join(root, 'arrival-after-finish'), 'new');
+    const adopted = await inspectDetachedRetentionTrees(root, options, walk(launcher));
+    expect(adopted.error).toBeUndefined();
+    expect(adopted.entries.map((entry) => entry.path)).toEqual([join(root, 'entry')]);
+    expect(launcher).toHaveBeenCalledOnce();
+    expect(await fs.readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
   });
   it('rejects expired successful output without treating it as a cap total', async () => {
     const launcher = launch(false);
@@ -140,16 +155,16 @@ describe('complete retention census adoption', () => {
   it.each(['consumed', 'changed-input'] as const)('retires a dead %s attempt even when no exit receipt survived', async mode => {
     const launcher = launch(false);
     await inspectDetachedRetentionTrees(root, options, walk(launcher, 15));
+    const next = mode === 'changed-input' ? { ...options, excludedPaths: [join(root, 'excluded')] } : options;
     if (mode === 'consumed') await fs.writeFile(join(slot, 'consumed'), 'consumed\n');
-    else await fs.writeFile(join(root, 'arrival'), 'new');
     launcher.mockImplementation(async () => { await finish(); return { pid: 999_999_999, taskId: 'replacement', confined: true }; });
     if (mode === 'changed-input') {
-      const changed = await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), isAlive: () => false });
+      const changed = await inspectDetachedRetentionTrees(root, next, { ...walk(launcher), isAlive: () => false });
       expect(changed.error).toBe('retention census input changed since previous measurement');
       expect(launcher).toHaveBeenCalledOnce();
       expect(await fs.readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
     }
-    const replacement = await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), isAlive: () => false });
+    const replacement = await inspectDetachedRetentionTrees(root, next, { ...walk(launcher), isAlive: () => false });
     expect(replacement.error).toBeUndefined();
     expect(launcher).toHaveBeenCalledTimes(2);
   });
