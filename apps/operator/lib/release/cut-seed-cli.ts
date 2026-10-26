@@ -460,6 +460,12 @@ export async function exportSeedUuidIdempotencyCensus(input: {
   } else if (!input.captureOriginalSpan || !potId) {
     throw new Error('UUID source requires a bound manifest or original capture with an explicit pot');
   }
+  // Preserve the measured identities even if a long export is later refused.
+  // These private, create-only records are diagnostic evidence, never custody.
+  const executionBeforeBytes = JSON.stringify(executionBinding);
+  const saveExecutionEvidence = (name: string, bytes: string) =>
+    writeFile(join(input.outputDir, `uuid-execution-${name}.private.json`), bytes, { mode: 0o600, flag: 'wx' });
+  await saveExecutionEvidence('before', executionBeforeBytes);
   const store = new Corestore(input.storeDir, { readOnly: true, wait: false });
   try {
     await store.ready();
@@ -508,7 +514,25 @@ export async function exportSeedUuidIdempotencyCensus(input: {
       } else sources.push(exported);
     }
     const configPath = join(input.outputDir, 'uuid-census.private.json');
-    if (JSON.stringify(await readExecution()) !== JSON.stringify(executionBinding)) {
+    let executionAfter: Awaited<ReturnType<typeof readExecution>>;
+    try {
+      executionAfter = await readExecution();
+    } catch (error) {
+      await saveExecutionEvidence('check', JSON.stringify({ schema: 'papercusp-uuid-census-execution-check-v1',
+        verdict: 'read-failed', error: error instanceof Error ? { name: error.name, message: error.message } : { name: 'UnknownError' } }));
+      throw error;
+    }
+    const executionAfterBytes = JSON.stringify(executionAfter);
+    await saveExecutionEvidence('after', executionAfterBytes);
+    const equal = executionAfterBytes === executionBeforeBytes;
+    const changedFields = [...new Set([...Object.keys(executionBinding), ...Object.keys(executionAfter)])]
+      .filter(key => JSON.stringify(executionBinding[key as keyof typeof executionBinding])
+        !== JSON.stringify(executionAfter[key as keyof typeof executionAfter])).sort();
+    await saveExecutionEvidence('check', JSON.stringify({ schema: 'papercusp-uuid-census-execution-check-v1',
+      verdict: equal ? 'equal' : 'changed', changedFields,
+      beforeSha256: createHash('sha256').update(executionBeforeBytes).digest('hex'),
+      afterSha256: createHash('sha256').update(executionAfterBytes).digest('hex') }));
+    if (!equal) {
       throw new Error('UUID frozen execution changed during census');
     }
     if (!manifestPath) {

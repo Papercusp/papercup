@@ -135,6 +135,15 @@ describe('D166 private row-drop plan transport', () => {
       expect(rows[1]).toMatchObject({ hbKey: 'z-private', privacyProjection: { disposition: 'drop' } });
       expect(own.length).toBe(2);
       expect(config.sources[0].sourceInput.executionBinding).toEqual(execution);
+      for (const phase of ['before', 'after']) {
+        const path = join(censusDir, `uuid-execution-${phase}.private.json`);
+        expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(execution);
+        expect((await stat(path)).mode & 0o777).toBe(0o600);
+      }
+      const executionSha256 = createHash('sha256').update(JSON.stringify(execution)).digest('hex');
+      expect(JSON.parse(await readFile(join(censusDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toEqual({ schema: 'papercusp-uuid-census-execution-check-v1', verdict: 'equal', changedFields: [],
+          beforeSha256: executionSha256, afterSha256: executionSha256 });
       await expect(exportSeedUuidIdempotencyCensus({ ...inputs, manifestSha256: '0'.repeat(64) }, deps)).rejects.toThrow('binding changed');
       await expect(exportSeedUuidIdempotencyCensus(inputs, deps)).rejects.toThrow('EEXIST');
       const captureDir = join(dir, 'capture'); await mkdir(captureDir, { mode: 0o700 });
@@ -178,6 +187,24 @@ describe('D166 private row-drop plan transport', () => {
       await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir }, { readFrozenExecution: drift }))
         .rejects.toThrow('execution changed');
       expect(await readdir(refusedDir)).not.toContain('uuid-census.private.json');
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-before.private.json'), 'utf8'))).toEqual(execution);
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-after.private.json'), 'utf8')))
+        .toEqual({ ...execution, sourceCommit: 'f'.repeat(40) });
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toMatchObject({ verdict: 'changed', changedFields: ['sourceCommit'], beforeSha256: executionSha256 });
+      // A second attempt must preserve the failed attempt's original measurements.
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir }, deps)).rejects.toThrow('EEXIST');
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toMatchObject({ verdict: 'changed', changedFields: ['sourceCommit'] });
+      const unreadableDir = join(dir, 'unreadable-after'); await mkdir(unreadableDir, { mode: 0o700 });
+      const unreadable = vi.fn().mockResolvedValueOnce(execution).mockRejectedValueOnce(new Error('fixture final binding refused'));
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: unreadableDir }, { readFrozenExecution: unreadable }))
+        .rejects.toThrow('fixture final binding refused');
+      expect(await readdir(unreadableDir)).not.toContain('uuid-census.private.json');
+      expect(JSON.parse(await readFile(join(unreadableDir, 'uuid-execution-before.private.json'), 'utf8'))).toEqual(execution);
+      expect(JSON.parse(await readFile(join(unreadableDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toEqual({ schema: 'papercusp-uuid-census-execution-check-v1', verdict: 'read-failed',
+          error: { name: 'Error', message: 'fixture final binding refused' } });
     } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
