@@ -1837,6 +1837,58 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     return { repo, subject: subjectPath, guard };
   }
 
+  it.skipIf(!containWorks)('preserves reporter Git readings and caller identity through contained mutation legs', () => {
+    // EI-26900834772734276: a root-mapped bind is not the runner's nested,
+    // caller-mapped namespace. Exercise the real setup and worker together.
+    // This small fixture guards that boundary; it cannot explain an older
+    // full-checkout timeout whose namespace and Git phase were not captured.
+    const { repo, subject: s } = makeBuildOutputRepo('reporter-provenance-repo');
+    writeFileSync(join(repo, '.gitignore'), '.papercusp/\n');
+    git(repo, ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+      'add', '.gitignore', 'src/subject.txt', 'out/index.html']);
+    git(repo, ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'reporter source']);
+    const guard = join(dir, 'reporter-provenance-guard.cjs');
+    const workerPath = resolve(__dirname, '../../../libs/test-config/src/git-read-worker.mjs');
+    writeFileSync(guard, [
+      'const assert = require("node:assert/strict");',
+      'const fs = require("node:fs");',
+      'const { Worker } = require("node:worker_threads");',
+      'const { pathToFileURL } = require("node:url");',
+      'const [subject, workerPath, uid, gid] = process.argv.slice(2);',
+      'const phase = process.env.PAPERCUSP_MUTATION_PHASE;',
+      'const worker = new Worker(pathToFileURL(workerPath), { execArgv: [],',
+      '  workerData: { cmd: "git status --porcelain --untracked-files=all", cwd: process.cwd(), timeoutMs: 2000 } });',
+      'let reading;',
+      'worker.on("message", message => { if (message.type === "result") reading = message; });',
+      'worker.on("error", error => { throw error; });',
+      'worker.on("exit", code => {',
+      '  assert.equal(code, 0);',
+      '  assert.equal(typeof reading?.output, "string", reading?.diagnostic);',
+      '  const identity = { uid: process.getuid(), gid: process.getgid() };',
+      '  fs.writeFileSync(`.papercusp/scratch/reporter-${phase}.json`, JSON.stringify({ ...identity, ...reading }));',
+      '  assert.equal(identity.uid, Number(uid));',
+      '  assert.equal(identity.gid, Number(gid));',
+      '  assert.equal(fs.readFileSync(subject, "utf8"), "keep\\n");',
+      '});',
+    ].join('\n'));
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+    const command = [process.execPath, guard, '{}', workerPath,
+      String(process.getuid!()), String(process.getgid!())].map(quote).join(' ');
+    const { code, out } = runProbeIO(['--file', s, '--mutate', 's/keep/KEEP/', '--test', command], process.env, repo);
+    expect(code, out).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_CONTAINMENT status=contained overlays=1 uncovered=0 failed=0');
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    for (const phase of ['baseline', 'copy-baseline', 'mutant']) {
+      const reading = JSON.parse(readFileSync(join(repo, '.papercusp', 'scratch', `reporter-${phase}.json`), 'utf8'));
+      expect(reading).toMatchObject({ uid: process.getuid!(), gid: process.getgid!(),
+        type: 'result', output: phase === 'mutant' ? 'M src/subject.txt' : '' });
+      expect(reading).not.toHaveProperty('diagnostic');
+    }
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+    expect(git(repo, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+  });
+
   it.skipIf(!containWorks)('discards the build output a guard writes into the checkout during post-baseline legs', () => {
     const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-repo');
     const { code, out } = runProbeIO(['--file', s, '--mutate', 's/keep/KEEP/', '--test', guard], process.env, repo);
