@@ -68,3 +68,67 @@ it('wires the production census facade through SQL intake and all four passive a
   const [parent] = await f.db.adminSql`SELECT routine_id,workflow_id FROM harness_shared.sql_intent_runs`;
   expect(parent).toMatchObject({ routine_id: 'production-facade', workflow_id: 'production-workflow' });
 });
+it('drains a fixed activity window across equal-timestamp keyset pages before grouping a search chain', async () => {
+  for (const query of ['job queue', 'job status', 'job owner']) {
+    const id = await f.seed();
+    await f.db.adminSql`UPDATE harness_shared.tool_invocations SET tool_name='tools:find',
+      args_json=${JSON.stringify({ query })}::jsonb WHERE id=${id}::bigint`;
+  }
+  const result = await runMonitoredCensus(f.opts({ rowBudget: 1, windowRowBudget: 10, timeBudgetMs: 30_000 }),
+    async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }));
+  const search = result.families.find(row => row.family === 'search-reformulation')!;
+  expect(search).toMatchObject({ scanned: 3, qualifying: 1, coverage: 'UNKNOWN', diagnostics: {
+    reviewEligible: false, sourceCoverage: { scanned: 3, denied: 0, pages: 3,
+      windowExhausted: true, stop: 'window-exhausted', unmeasuredProviders: ['claude', 'codex', 'omp'] },
+  } });
+  for (const family of ['result-recovery', 'workaround-funnel']) expect(result.families.find(row => row.family === family))
+    .toMatchObject({ scanned: 3, coverage: 'UNKNOWN', diagnostics: { sourceCoverage: { pages: 3, windowExhausted: true } } });
+  const [stored] = await f.db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
+    WHERE run_id=${result.runId}::uuid AND family='search-reformulation'`;
+  expect(stored!.diagnostics.sourceCoverage).toMatchObject({ scanned: 3, pages: 3, windowExhausted: true });
+  expect(JSON.stringify(stored)).not.toMatch(/job queue|job status|job owner|su-private-actor/);
+});
+it('caps activity scans without upgrading a partial window to measured or exposing a raw cursor', async () => {
+  for (let i = 0; i < 4; i++) await f.seed();
+  const result = await runMonitoredCensus(f.opts({ rowBudget: 1, windowRowBudget: 2, timeBudgetMs: 30_000 }),
+    async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }));
+  for (const family of ['search-reformulation', 'result-recovery', 'workaround-funnel']) {
+    const row = result.families.find(row => row.family === family)!;
+    expect(row).toMatchObject({ scanned: 2, coverage: 'truncated', diagnostics: { reviewEligible: false,
+      sourceCoverage: { pages: 2, windowExhausted: false, stop: 'row-cap' } } });
+    expect(JSON.stringify(row)).not.toContain('2026-10-24T12:00:00.123456Z');
+  }
+  expect(result.coverage.checked).toEqual([]);
+  expect(result.coverage.residue).toContain('search-reformulation:truncated');
+});
+it('drains native activity pages while retaining earlier provider cells and explicit missing transcripts', async () => {
+  for (const provider of ['codex', 'claude']) await f.db.adminSql`INSERT INTO harness_shared.agent_activity
+    (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,status,created_at)
+    VALUES ('sql-mining-test','mining-test','su-native-test',${provider},${provider + '-session'},'tool','browser',
+      'pre',${provider + '-call'},'{"action":"click","selector":"#private-target"}'::jsonb,'ok',
+      '2026-10-24T12:00:00.123456Z'::timestamptz)`;
+  const result = await runMonitoredCensus(f.opts({ rowBudget: 1, windowRowBudget: 10, timeBudgetMs: 30_000 }),
+    async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }));
+  const native = result.families.find(row => row.family === 'native-operation')!;
+  expect(native).toMatchObject({ scanned: 2, coverage: 'UNKNOWN', diagnostics: { reviewEligible: false,
+    sourceCoverage: { pages: 2, windowExhausted: true, complete: false, matrix: expect.arrayContaining([
+      { provider: 'codex', kind: 'browser', source: 'activity', status: 'truncated' },
+      { provider: 'claude', kind: 'browser', source: 'activity', status: 'truncated' },
+      { provider: 'omp', kind: 'browser', source: 'activity', status: 'missing' },
+      { provider: 'codex', kind: 'browser', source: 'transcript', status: 'missing' },
+    ]) },
+  } });
+  expect(JSON.stringify(native)).not.toMatch(/private-target|su-native-test|codex-session|claude-session/);
+});
+it('keeps existing SQL mining live when the monitored-run persistence dependency is unavailable', async () => {
+  await f.seed();
+  await f.db.adminSql`ALTER TABLE harness_shared.sql_intent_runs RENAME TO sql_intent_runs_unavailable`;
+  try {
+    const result = await runSqlOpportunityCensus(f.opts({ rowBudget: 100, timeBudgetMs: 30_000 }));
+    expect(result).toMatchObject({ sql: { status: 'ok', rows: 1 }, monitored: null, reason: 'database-42P01' });
+    expect(await f.db.adminSql`SELECT 1 FROM harness_shared.sql_intent_history`).toHaveLength(1);
+    expect(await f.db.adminSql`SELECT 1 FROM harness_shared.sql_intent_operations`).toHaveLength(1);
+  } finally {
+    await f.db.adminSql`ALTER TABLE harness_shared.sql_intent_runs_unavailable RENAME TO sql_intent_runs`;
+  }
+});

@@ -318,12 +318,18 @@ export async function runSqlOpportunityCensus(opts: Parameters<typeof censusMini
 }, deps: SqlIntentCensusDeps = {}) {
   let sqlResult: Awaited<ReturnType<typeof runSqlIntentCensus>> = {
     status: 'UNKNOWN', stage: 'source', reason: 'sql_mining_source_missing', rows: 0 };
+  let sqlWork: Promise<typeof sqlResult> | undefined;
   try {
     const miningOpts = censusMiningOptions(opts);
+    // Existing SQL mining/intake must keep running even if the new monitoring
+    // tables are unavailable. Share one promise: no second SQL slice on failure.
+    sqlWork = runSqlIntentCensus(miningOpts, deps);
     const monitored = await runMonitoredCensus({ ...miningOpts, routineId: opts.routineId, workflowId: opts.workflowId },
-      async () => { sqlResult = await runSqlIntentCensus(miningOpts, deps); return sqlResult; });
+      async () => { sqlResult = await sqlWork!; return sqlResult; });
+    sqlResult = await sqlWork;
     return { sql: sqlResult, monitored };
   } catch (error) {
+    if (sqlWork) sqlResult = await sqlWork;
     return { sql: sqlResult, monitored: null, reason: miningFailureReason(error) };
   }
 }
