@@ -411,6 +411,29 @@ describe('private API bundle durable evidence preflight', () => {
 });
 
 describe('isolated PostgreSQL durable evidence preflight', () => {
+  describe.each(['--isolated-runtime', '--isolated-runtime=operator-api'])(
+    'shared-ledger workspace admission (%s)', mode => {
+      it.each(['missing', 'blank', 'whitespace'] as const)(
+        'refuses %s caller attribution before allocating private state', kind => {
+          const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused.invalid/evidence' };
+          for (const key of ['PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACE']) delete env[key];
+          if (kind !== 'missing') {
+            env.PAPERCUSP_TEST_RUN_WORKSPACE = kind === 'blank' ? '' : '  ';
+            env.PAPERCUSP_WORKSPACE_ID = 'valid-fallback-must-not-hide-invalid-pin';
+          }
+          const startedAt = performance.now();
+          const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), mode,
+            '--', 'papercusp-missing-workspace-preflight-child'], {
+            cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          });
+          const diagnostic = childDiagnostic(result, startedAt);
+          expect(result.status, diagnostic).toBe(1);
+          expect(result.stderr, diagnostic).toContain('isolated shared-ledger runs require a nonblank caller workspace');
+          expect(result.stderr).not.toContain('child preflight failed');
+          expect(result.stdout).not.toContain('booting throwaway PG');
+        });
+    });
+
   describe.each([{ mode: [] }, { mode: ['--isolated-runtime'] },
     { mode: ['--isolated-runtime=operator-api'] }])('explicit sink validation ($mode)', ({ mode }) => {
     it.each(['[object Object]', 'postgresql://fixture:redact-me@[broken/evidence',

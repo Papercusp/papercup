@@ -94,6 +94,19 @@ if (durableEvidenceRequested && !process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim())
   process.exit(1);
 }
 
+// Capture reporter attribution BEFORE replacing the product workspace below.
+// A shared-ledger insert under test-runtime-* survives cleanup but cannot be
+// read or bound by the caller's workspace. Nested wrappers retain this pin.
+const callerTestRunWorkspace = (process.env.PAPERCUSP_TEST_RUN_WORKSPACE ||
+  process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE)?.trim();
+if (isolatedRuntime && (
+  (process.env.PAPERCUSP_TEST_RUN_WORKSPACE !== undefined && !process.env.PAPERCUSP_TEST_RUN_WORKSPACE.trim()) ||
+  (process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim() && !callerTestRunWorkspace)
+)) {
+  console.error('[with-test-pg] evidence preflight failed: isolated shared-ledger runs require a nonblank caller workspace (PAPERCUSP_TEST_RUN_WORKSPACE, PAPERCUSP_WORKSPACE_ID or PAPERCUSP_WORKSPACE)');
+  process.exit(1);
+}
+
 // spawn below runs from ROOT. Resolve that SAME executable before allocating
 // or migrating Postgres, and pin the path used by spawn. A package-relative
 // command must not burn an entire bootstrap before discovering ENOENT.
@@ -696,6 +709,7 @@ if (isolatedRuntime) {
       delete childEnv[key];
     }
   }
+  if (callerTestRunWorkspace) childEnv.PAPERCUSP_TEST_RUN_WORKSPACE = callerTestRunWorkspace;
 }
 if (operatorApi) {
   // A request journey needs the same isolation as a background test, but must
