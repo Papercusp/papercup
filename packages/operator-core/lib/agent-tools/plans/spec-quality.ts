@@ -331,6 +331,10 @@ function exemptSourceBarProjectionMismatches(input: {
 const REPO_DIR_TOKEN_RE =
   /(?:^|[\s(\[`'"])((?:\.\/)?(?:src|tests?|libs?|packages|apps|scripts|fixtures|dist|out)\/[\w*.-]*(?:\/[\w*.-]*)*)/gi;
 const NON_CODE_FILE_TOKEN_RE = /(?:^|[\s(\[`'"])([^\s()[\]`'"]+\.(?:html?|css|json|ya?ml|toml))\b/gi;
+// A code-file NAME needs a basename before its extension, like NON_CODE_FILE_TOKEN_RE.
+// A bare extension used as a population qualifier ("500 .ts edit-ledger rows") names a
+// file TYPE, not a file (WI-6554700010029504). Non-global: used with .test().
+const CODE_FILE_TOKEN_RE = /(?:^|[\s(\[`'"])[^\s()[\]`'"]+\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i;
 
 function repositoryPathReason(text: string): string | null {
   for (const match of text.matchAll(REPO_DIR_TOKEN_RE)) {
@@ -375,7 +379,7 @@ function clauseImplementationCouplingReason(clause: SpecClauseRevision): string 
 function implementationCouplingReason(behavior: string): string | null {
   const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
   if (sourcePresence) return sourcePresence;
-  if (/\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i.test(behavior)) return 'names an implementation file';
+  if (CODE_FILE_TOKEN_RE.test(behavior)) return 'names an implementation file';
   const repositoryPath = repositoryPathReason(behavior);
   if (repositoryPath) return repositoryPath;
   const internalRouteCall =
