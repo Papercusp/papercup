@@ -236,13 +236,28 @@ describe('indexed native producer integration', () => {
 
     it('preserves the original hook-before-user path', async () => {
       const c = await nativeCase();
-      expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: WS, prompt: c.user.text }, createPgTelemetryStore(sql))).toBe(true);
-      const stamp = await sql<Array<{ created_at: Date }>>`SELECT created_at FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`;
+      // nativeCase persists the launch in the active namespace; WS is only the
+      // separate routine fixture namespace and cannot select that launch ledger.
+      expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: activeWorkspaceId(), prompt: c.user.text }, createPgTelemetryStore(sql))).toBe(true);
+      const stamp = await sql<Array<{ created_at: Date; detail: { loopFire?: unknown } }>>`SELECT created_at, detail FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`;
+      expect(stamp[0]!.detail.loopFire).toEqual({ routineId: c.loop.id, wakeCount: 10 });
       c.user.ts = new Date(new Date(stamp[0]!.created_at).getTime() + 1).toISOString();
       c.reply.ts = new Date(Date.parse(c.user.ts) + 1).toISOString();
       await insertTurns(sql, [c.user, c.reply]);
       await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${c.owner} AND detail->>'source' = 'session-ingest'`;
       await assertReaders(c, true);
+    });
+
+    it('keeps a hook outside its persisted launch workspace unknown', async () => {
+      const c = await nativeCase();
+      expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: WS, prompt: c.user.text }, createPgTelemetryStore(sql))).toBe(true);
+      const stamp = await sql<Array<{ created_at: Date; detail: { loopFire?: unknown } }>>`SELECT created_at, detail FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`;
+      expect(stamp[0]!.detail).not.toHaveProperty('loopFire');
+      c.user.ts = new Date(new Date(stamp[0]!.created_at).getTime() + 1).toISOString();
+      c.reply.ts = new Date(Date.parse(c.user.ts) + 1).toISOString();
+      await insertTurns(sql, [c.user, c.reply]);
+      await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${c.owner} AND detail->>'source' = 'session-ingest'`;
+      await assertReaders(c, false);
     });
   });
 });

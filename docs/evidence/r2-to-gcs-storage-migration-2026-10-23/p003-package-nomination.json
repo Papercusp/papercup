@@ -31,7 +31,8 @@
       "bothProvenanceBuildShasMatch": true,
       "packageHeadersMatchReceiptVersion": true,
       "inspection": "Full SHA-256 and stat against each original build-provenance.json; dpkg-deb -f Package Version Architecture.",
-      "signatureVerificationPerformed": false
+      "signatureVerificationPerformed": true,
+      "signatureTrustReceipt": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p003-baseline-signature-trust.json"
     }
   },
   "candidate": null,
