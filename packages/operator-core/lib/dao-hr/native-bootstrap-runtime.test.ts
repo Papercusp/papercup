@@ -444,6 +444,7 @@ describe('native bootstrap admission and lifecycle', () => {
       const program = ['set -eu',
         // The production snapshot cleanup is defined before this slice. The
         // fixture leaves its source path empty, so preserve its no-op contract.
+        'cleanup_verifier_spa_snapshot() { :; }',
         'cleanup_verifier_source_snapshot() { :; }',
         shell.slice(start, end),
         'printf "OPTIONAL_DISABLED=%s\\n" "${VH_DISABLED:-missing}"',
