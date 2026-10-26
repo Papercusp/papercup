@@ -772,9 +772,10 @@ export class ClaudeSuSessionAdapter {
     }
   }
 
-  async consumeTranscriptSnapshot({ preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): Promise<void> {
-    this.runtimeValue.transcriptPath ??= await findClaudeTranscript(this.runtimeValue.nativeSession);
-    if (!this.runtimeValue.transcriptPath) {
+  async consumeTranscriptSnapshot({ preserveLifecycle = false, path }: { preserveLifecycle?: boolean; path?: string } = {}): Promise<void> {
+    if (!path) this.runtimeValue.transcriptPath ??= await findClaudeTranscript(this.runtimeValue.nativeSession);
+    const transcriptPath = path ?? this.runtimeValue.transcriptPath;
+    if (!transcriptPath) {
       throw new Error('Claude runtime has no resolved transcript path');
     }
     // Best-effort: without the saved receipts a restored prompt still gets its
@@ -782,7 +783,7 @@ export class ClaudeSuSessionAdapter {
     if (this.ownerTurnReceipts) {
       this.receiptMatcher.load(await this.ownerTurnReceipts(this.host.descriptor().identity).catch(() => []));
     }
-    for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
+    for await (const line of readClaudeTranscriptSnapshotLines(transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
   }
 
   /** P-004 calls this after exact Claude resume/carry replacement attaches. The
