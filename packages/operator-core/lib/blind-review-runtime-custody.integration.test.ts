@@ -330,6 +330,79 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
     expect(again.revoked_at).toEqual(cutoff.revoked_at);
   });
 
+  it('grants exactly one creator across stores and retains the complete plan after a create-before-append crash', async () => {
+    const f = await fixture(), { lease } = await f.allocate();
+    const plans = await Promise.all([
+      f.store.beginProvisioning(f.identity, lease.id),
+      f.makeStore().beginProvisioning(f.identity, lease.id),
+    ]);
+    expect(plans.filter(plan => plan.claimed)).toHaveLength(1);
+    const winner = plans.find(plan => plan.claimed)!;
+    expect(winner.resources.map(resource => resource.kind).sort())
+      .toEqual(RUNTIME_RESOURCE_KINDS.filter(kind => kind !== 'capture').sort());
+    expect(winner.resources.every(resource => resource.identity === null)).toBe(true);
+    expect(new Set(winner.resources.map(resource => resource.ownership_tag)).size).toBe(winner.resources.length);
+    const retry = await f.makeStore().beginProvisioning(f.identity, lease.id);
+    expect(retry.claimed).toBe(false);
+    expect(retry.resources.map(resource => resource.id).sort())
+      .toEqual(winner.resources.map(resource => resource.id).sort());
+    // No readiness follows from a claim or a retry: every actual identity is
+    // still missing, including an OS creation whose append never committed.
+    await expect(f.store.markReady(f.identity, lease.id)).rejects.toMatchObject({ code: 'runtime_inventory_incomplete' });
+    await expect(f.store.checkProvisioning(f.identity, lease.id)).resolves.toMatchObject({ state: 'allocating' });
+    await f.store.revoke(f.identity, lease.id, 'provisioner-crash');
+    await expect(f.store.checkProvisioning(f.identity, lease.id)).rejects.toMatchObject({ code: 'allocation_not_active' });
+    await expect(f.store.beginProvisioning(f.identity, lease.id)).rejects.toMatchObject({ code: 'allocation_not_active' });
+    expect(await f.store.confirmReleased(f.identity, lease.id, async resources => ({
+      scopeAbsent: true, absentIntentIds: resources.map(resource => resource.id), checkedKinds: [...RUNTIME_RESOURCE_KINDS],
+    }))).toBe(true);
+  });
+
+  it('serializes host lifecycle work across connections while allowing immediate durable revocation', async () => {
+    const f = await fixture(), { lease } = await f.allocate();
+    const outer = await f.store.withLifecycle(f.identity, lease.id, async () => {
+      const contender = await f.makeStore().withLifecycle(f.identity, lease.id, async () => {
+        throw new Error('duplicate lifecycle executor');
+      });
+      expect(contender).toEqual({ acquired: false });
+      // The pinned lifecycle connection must not hold the binding/lease row
+      // lock: cutoff must commit before the lifecycle holder finishes.
+      expect((await f.makeStore().revoke(f.identity, lease.id, 'cancel-during-boot')).state).toBe('releasing');
+      await expect(f.store.checkProvisioning(f.identity, lease.id)).rejects.toMatchObject({ code: 'allocation_not_active' });
+      return 'finished';
+    });
+    expect(outer).toEqual({ acquired: true, value: 'finished' });
+    await expect(f.store.withLifecycle(f.identity, lease.id, async () => {
+      throw new Error('interrupted lifecycle');
+    })).rejects.toThrow('interrupted lifecycle');
+    expect(await f.makeStore().withLifecycle(f.identity, lease.id, async () => 'recovery'))
+      .toEqual({ acquired: true, value: 'recovery' });
+  });
+
+  it('never reclaims a partial boot inventory or rolls a failed plan transaction into creation authority', async () => {
+    const f = await fixture(), { lease } = await f.allocate();
+    await fx.admin.unsafe(`CREATE FUNCTION harness_shared.custody_plan_crash() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.kind = 'database' THEN RAISE EXCEPTION 'plan commit crash'; END IF; RETURN NEW; END $$`);
+    await fx.admin.unsafe(`CREATE TRIGGER custody_plan_crash BEFORE INSERT ON harness_shared.blind_review_runtime_resources
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.custody_plan_crash()`);
+    try {
+      await expect(f.store.beginProvisioning(f.identity, lease.id)).rejects.toThrow('plan commit crash');
+      expect(await fx.admin`SELECT id FROM harness_shared.blind_review_runtime_resources WHERE lease_id = ${lease.id}`)
+        .toHaveLength(0);
+    } finally {
+      await fx.admin.unsafe('DROP TRIGGER custody_plan_crash ON harness_shared.blind_review_runtime_resources');
+      await fx.admin.unsafe('DROP FUNCTION harness_shared.custody_plan_crash()');
+    }
+    const partial = await f.store.intendResource(f.identity, lease.id, 'managed-scope', 'main');
+    const retry = await f.makeStore().beginProvisioning(f.identity, lease.id);
+    expect(retry.claimed).toBe(false);
+    expect(retry.resources).toEqual([partial]);
+    await fx.admin`UPDATE harness_shared.blind_review_runtime_leases
+      SET expires_at = clock_timestamp() - interval '1 second' WHERE id = ${lease.id}`;
+    await expect(f.store.beginProvisioning(f.identity, lease.id)).rejects.toMatchObject({ code: 'lease_expired_or_revoked' });
+    await expect(f.store.checkProvisioning(f.identity, lease.id)).rejects.toMatchObject({ code: 'lease_expired_or_revoked' });
+  });
+
   it('refuses ready until the complete boot inventory is recorded and blocks expired allocation', async () => {
     const f = await fixture(), { lease } = await f.allocate();
     await expect(f.store.markReady(f.identity, lease.id)).rejects.toMatchObject({ code: 'runtime_inventory_incomplete' });

@@ -1,0 +1,94 @@
+{
+ "checks": {
+  "canvas": {
+   "pass": true,
+   "rule": "every",
+   "passIn": "A,B"
+  },
+  "subject-is-selection": {
+   "pass": true,
+   "rule": "every",
+   "passIn": "A,B"
+  },
+  "legend-holder-row": {
+   "pass": true,
+   "rule": "every",
+   "passIn": "A,B"
+  },
+  "legend-blocker-row": {
+   "pass": true,
+   "rule": "every",
+   "passIn": "A,B"
+  },
+  "holder-await-edges": {
+   "pass": false,
+   "rule": "any",
+   "passIn": "-"
+  },
+  "item-blocker-edges": {
+   "pass": true,
+   "rule": "any",
+   "passIn": "A,B"
+  },
+  "stale-edges": {
+   "pass": false,
+   "rule": "any",
+   "passIn": "-"
+  },
+  "no-holder-as-blocker": {
+   "pass": true,
+   "rule": "every",
+   "passIn": "A,B"
+  },
+  "no-blocker-as-holder": {
+   "pass": true,
+   "rule": "every",
+   "passIn": "A,B"
+  },
+  "proving-label-on-done-key": {
+   "pass": false,
+   "rule": "any",
+   "passIn": "-"
+  },
+  "broad-label": {
+   "pass": false,
+   "rule": "any",
+   "passIn": "-"
+  },
+  "stale-event-node": {
+   "pass": false,
+   "rule": "any",
+   "passIn": "-"
+  }
+ },
+ "perView": {
+  "A": {
+   "canvas": true,
+   "subject-is-selection": true,
+   "legend-holder-row": true,
+   "legend-blocker-row": true,
+   "holder-await-edges": false,
+   "item-blocker-edges": true,
+   "stale-edges": false,
+   "no-holder-as-blocker": true,
+   "no-blocker-as-holder": true,
+   "proving-label-on-done-key": false,
+   "broad-label": false,
+   "stale-event-node": false
+  },
+  "B": {
+   "canvas": true,
+   "subject-is-selection": true,
+   "legend-holder-row": true,
+   "legend-blocker-row": true,
+   "holder-await-edges": false,
+   "item-blocker-edges": true,
+   "stale-edges": false,
+   "no-holder-as-blocker": true,
+   "no-blocker-as-holder": true,
+   "proving-label-on-done-key": false,
+   "broad-label": false,
+   "stale-event-node": false
+  }
+ }
+}

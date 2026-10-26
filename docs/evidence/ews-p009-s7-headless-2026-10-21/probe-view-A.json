@@ -1,0 +1,40 @@
+{
+ "href": "/adv?tab=harnesses&slug=papercusp&scope=self&welcome=0&sel=WI-10007890",
+ "canvas": true,
+ "legendText": "blocks (arrow points to the blocked item)blocker already done \u2014 gates nothingbroken \u2014 blocker resolves to no itemitem blocked on an event (its own event or gate blocker)holder waits on an event (an agent\u2019s await for an item it holds)stale wait \u2014 its agent\u2019s session ended, or the await expiredevent being waited on (dashed when every wait on it is stale)placeholder for that missing blockercame from a planitem state: done \u00b7 active \u00b7 blocked \u00b7 open",
+ "nodeCount": 9,
+ "eventNodeCount": 1,
+ "edges": {
+  "holderAwait": 0,
+  "itemBlocker": 1,
+  "stale": 0,
+  "holderAwaitDrawnAsBlocker": 0,
+  "blockerDrawnAsHolderAwait": 0,
+  "blocks": 7
+ },
+ "samples": {
+  "provingDone": [],
+  "broad": [],
+  "stale": [],
+  "subject": [
+   "WI-10007890 \u2014 Coordinate the existing GitNexus P-012/P-018 keep/narrow/scale-back ruling with this acceptance evidence. Inventory remaining consumers, secure the licence route for retained use, and migrate or expl\u2026 (depth 1, blocked)"
+  ],
+  "labels": [
+   "Event plan-lane:native-code-intelligence-ecosystem-and-dream-2026-10-09#P-027 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "WI-10007889 \u2014 Execute the preregistered multilingual and agent-journey acceptance matrix against the actual exposed native tools. Verify matched correctness, false empties, stale-source handling, memory/disk/query\u2026 (depth 0, open)",
+   "WI-6554700010019030 \u2014 Spec drift: native-code-intelligence-ecosystem-and-dream-2026-10-09 R-1 \u2014 Licence-safe dependencies (depth 0, done)",
+   "WI-10007890 \u2014 Coordinate the existing GitNexus P-012/P-018 keep/narrow/scale-back ruling with this acceptance evidence. Inventory remaining consumers, secure the licence route for retained use, and migrate or expl\u2026 (depth 1, blocked)",
+   "WI-10007891 \u2014 Evaluate a graph visualization in the existing product UI after reliable edge/evidence APIs exist. Include scope/freshness, uncertainty and links to code/work/spec/test records. Owner selects whether\u2026 (depth 1, dropped)",
+   "WI-10007892 \u2014 Evaluate graph-assisted architecture/wiki generation through canonical docs authorship. Generated explanations must cite current source and update via existing drift/steward machinery. Treat as optio\u2026 (depth 1, dropped)",
+   "WI-10007893 \u2014 Evaluate an expert graph-query escape hatch using the existing query surface/store where possible. Select a bounded structural-query design only after reuse search and demonstrated needs; retain auth\u2026 (depth 1, dropped)",
+   "WI-10007894 \u2014 Evaluate statement-level control/data dependence and taint/security integration as a separate validated capability using maintained analyzers where suitable. Compare precise positive/negative and dyn\u2026 (depth 1, dropped)",
+   "WI-10007895 \u2014 Evaluate apparently-unreached exports, test gaps and reusable/duplicate mechanism discovery across languages. Account for reflection, plugins, public entry points and generated consumers. Present sta\u2026 (depth 1, dropped)"
+  ],
+  "subjectHolderKey": []
+ },
+ "labelCounts": {
+  "proving": 0,
+  "broad": 0,
+  "stale": 0
+ }
+}

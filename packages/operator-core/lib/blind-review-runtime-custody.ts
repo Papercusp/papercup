@@ -96,6 +96,34 @@ export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: Run
     if (!row?.valid) refuse('lease_expired_or_revoked');
   }
   return {
+    /**
+     * Serialize OS creation and reconciliation across host processes without
+     * holding a lease-row transaction open while a child boots. Store methods
+     * inside run still commit their own write-ahead intents independently.
+     * A busy caller must return the existing pending disposition, never boot.
+     * The durable provisioning claim below also prevents a new creator after
+     * this connection or its process dies. Revocation does not take this lock:
+     * it must cut off authority even while provisioning is in progress.
+     */
+    async withLifecycle<T>(identity: RuntimeReviewerIdentity, leaseId: string, run: () => Promise<T>): Promise<
+      { acquired: false } | { acquired: true; value: T }
+    > {
+      identitySchema.parse(identity); z.string().uuid().parse(leaseId);
+      const connection = await sql.reserve();
+      const key = identity.workspaceId + ':runtime-lifecycle:' + leaseId;
+      let held = false;
+      try {
+        const [lock] = await connection<Array<{ held: boolean }>>`
+          SELECT pg_try_advisory_lock(hashtextextended(${key}, 0)) AS held`;
+        held = lock?.held === true;
+        if (!held) return { acquired: false };
+        return { acquired: true, value: await run() };
+      } finally {
+        try {
+          if (held) await connection`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`;
+        } finally { connection.release(); }
+      }
+    },
     /** Metadata only; call the source census before consumeAdmission. */
     reserve(identity: RuntimeReviewerIdentity, requestId: string, requestHash: string): Promise<RuntimeLease> {
       z.string().min(1).max(128).parse(requestId); hash.parse(requestHash);
@@ -165,6 +193,49 @@ export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: Run
             expires_at = clock_timestamp() + interval '15 minutes', updated_at = clock_timestamp()
           WHERE id = ${leaseId} RETURNING *`;
         return row!;
+      });
+    },
+    /**
+     * The sole creator claims the complete boot inventory in one transaction.
+     * Receipt idempotency alone is insufficient: two callers can both observe
+     * an allocating lease. Only claimed:true permits OS creation. Any existing
+     * intent, including create-before-append with identity=null, means the
+     * allocation already started; a successor must reconcile it, never replay
+     * creation or adopt an unverified runtime. Use withLifecycle around the
+     * provisioning/reconciliation sequence, and revalidate before each create.
+     */
+    beginProvisioning(identity: RuntimeReviewerIdentity, leaseId: string): Promise<{
+      claimed: boolean; lease: RuntimeLease; resources: RuntimeResourceIntent[];
+    }> {
+      return transaction(identity, async tx => {
+        const lease = await allocated(tx, identity, leaseId);
+        if (!['allocating', 'ready'].includes(lease.state)) refuse('allocation_not_active');
+        await assertLive(tx, leaseId);
+        const existing = await tx<RuntimeResourceIntent[]>`SELECT * FROM harness_shared.blind_review_runtime_resources
+          WHERE lease_id = ${leaseId} AND workspace_id = ${identity.workspaceId} ORDER BY kind, slot`;
+        if (existing.length) return { claimed: false, lease, resources: existing };
+        // A ready row with no inventory is corrupt, never a fresh allocation.
+        if (lease.state !== 'allocating') refuse('runtime_inventory_incomplete');
+        const resources: RuntimeResourceIntent[] = [];
+        for (const kind of RUNTIME_RESOURCE_KINDS) {
+          if (kind === 'capture') continue;
+          const slot = 'main';
+          const tag = runtimeCustodyFingerprint({ leaseId, epoch: String(lease.lease_epoch), kind, slot });
+          const [resource] = await tx<RuntimeResourceIntent[]>`INSERT INTO harness_shared.blind_review_runtime_resources
+            (id, workspace_id, lease_id, kind, slot, ownership_tag)
+            VALUES (${randomUUID()}, ${identity.workspaceId}, ${leaseId}, ${kind}, ${slot}, ${tag}) RETURNING *`;
+          resources.push(resource!);
+        }
+        return { claimed: true, lease, resources };
+      });
+    },
+    /** Check the durable cutoff immediately before each host-owned creation. */
+    checkProvisioning(identity: RuntimeReviewerIdentity, leaseId: string): Promise<RuntimeLease> {
+      return transaction(identity, async tx => {
+        const lease = await allocated(tx, identity, leaseId);
+        if (lease.state !== 'allocating') refuse('allocation_not_active');
+        await assertLive(tx, leaseId);
+        return lease;
       });
     },
     /** Commit the deterministic intent BEFORE performing the corresponding OS creation. */

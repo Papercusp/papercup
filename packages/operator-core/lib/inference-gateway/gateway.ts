@@ -3180,15 +3180,44 @@ export function createInferenceGateway(deps: GatewayDeps) {
     governor.recordResponse(headers);
     if (status !== 429) return;
     const parsed = parseCodexRateReset(headers);
+    const pausedBefore = governor.state.pausedUntil;
     // Only a transient/burst 429 changes learned RPM. Account quota walls are
     // isolated to the account pause and must not shrink sibling capacity.
     if (parsed.transient) {
+      // WI-6554700010029423: bound a burst 429's account pause to the failover backoff. Its
+      // retry-after (measured 42-570s on gpt-6.1-sol) is not enforced upstream — the same accounts
+      // served every request started inside it — and this pause is account-wide (the durable store
+      // copy makes accountHealthKey Infinity for EVERY model), so honouring it up to the 2-min
+      // re-probe cap kept ~6 of 8 codex accounts idle at once.
       governor.penalize({
         retryAfterMs: parsed.retryAfterMs ?? undefined,
         resetAt: parsed.resetAt ?? undefined,
+        maxPauseMs: bare429FailoverBackoffMs,
         rateLimited: true,
       });
     }
+    // WI-6554700010029423: the upstream 429's own rate evidence. Each transient 429 pauses the
+    // account (capped 2 min) and that pause is what idles the pool, so the size of the pause must be
+    // checked against what the provider actually said. Header VALUES are rate metadata only; names
+    // are filtered to the rate/retry families, never auth or request ids.
+    const at = Date.now();
+    const rateHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      const k = key.toLowerCase();
+      if (value !== undefined && (k === 'retry-after' || k.startsWith('x-ratelimit-') || k.startsWith('x-codex-'))) {
+        rateHeaders[k] = String(value).slice(0, 80);
+      }
+    }
+    log('info', `inference-gateway: codex upstream-429-evidence/v1 ${JSON.stringify({
+      accountId,
+      model,
+      transient: parsed.transient,
+      resetInMs: parsed.resetAt === null ? null : parsed.resetAt - at,
+      retryAfterMs: parsed.retryAfterMs,
+      pauseBeforeMs: Math.max(0, pausedBefore - at),
+      pauseAfterMs: Math.max(0, governor.state.pausedUntil - at),
+      headers: rateHeaders,
+    })}`);
   };
 
   const observeCodexCliGovernorFailure = (model: string, accountId: string, detail: string): void => {

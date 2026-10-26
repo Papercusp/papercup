@@ -661,7 +661,15 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     const headers = context.lastResponse?.metadata?.headers;
     if (headers) {
       const parsed = opts.rateReset(headers);
-      if (typeof parsed.resetAt === 'number' && Number.isFinite(parsed.resetAt)) return parsed.resetAt;
+      if (typeof parsed.resetAt === 'number' && Number.isFinite(parsed.resetAt)) {
+        // WI-6554700010029423: a TRANSIENT (burst, no exhausted usage window) 429's retry-after is not
+        // enforced upstream — measured 2026-10-26: accounts 429'd on gpt-6.1-sol with retry-after
+        // 241-570s served 36 of 36 requests started inside that window. Parking for the full
+        // retry-after idled serviceable accounts for up to ~9.5 min, so bound it to the failover
+        // backoff. A quota wall (transient:false) keeps its real reset.
+        if (parsed.transient !== false) return Math.min(parsed.resetAt, now() + opts.failoverBackoffMs);
+        return parsed.resetAt;
+      }
     }
     return now() + opts.failoverBackoffMs;
   };
