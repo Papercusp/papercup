@@ -32,6 +32,12 @@ import { listDiskRootChildrenAsync, type DiskRootChildScan } from './disk';
 import type { CensusDeviceView } from './disk-consumer-census';
 import type { DiskReclaimReceipt } from './disk-reclaim';
 import { activeWorkspaceId } from '../workspace-registry';
+import {
+  DECLARED_MOUNT_ALARM_CONDITION_KEY,
+  formatMissingMountsEscalation,
+  readMissingDeclaredMounts,
+  type DeclaredBindMount,
+} from './declared-mounts';
 
 const statPath = promisify(statCb);
 const statfs = promisify(statfsCb);
@@ -311,6 +317,9 @@ export interface DiskAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'r
   escalate?: AlarmAttentionDeps['notify'];
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
   recentlyEscalated?: () => Promise<boolean>;
+  /** Injectable for tests. Defaults to /etc/fstab bind mounts that /proc/self/mountinfo
+   *  does not show mounted; `null` = unreadable (never resolves an open alarm). */
+  readMissingMounts?: () => Promise<DeclaredBindMount[] | null>;
 }
 
 export interface DiskAlarmContext {
@@ -555,5 +564,35 @@ export async function runDiskSpaceAlarmOnce(
   } else if (snapshots.length > 0) {
     await resolveAlarm(DISK_SPACE_ALARM_CONDITION_KEY, 'disk-space-alarm', deps);
   }
+  await checkDeclaredMounts(deps);
   return { checked: snapshots.length, breaches, escalated };
+}
+
+/**
+ * A `nofail` bind mount that did not come up sends its writers to the disk underneath
+ * without any error (P-015). Free space alone cannot see this until that disk is
+ * already full, so it is checked on the same tick under its own condition. Never throws.
+ */
+async function checkDeclaredMounts(deps: DiskAlarmDeps): Promise<void> {
+  let missing: DeclaredBindMount[] | null;
+  try {
+    missing = await (deps.readMissingMounts ?? (() => readMissingDeclaredMounts()))();
+  } catch {
+    missing = null;
+  }
+  if (missing === null) return;
+  if (missing.length === 0) {
+    await resolveAlarm(DECLARED_MOUNT_ALARM_CONDITION_KEY, 'disk-space-alarm', deps);
+    return;
+  }
+  await escalateAlarm(
+    {
+      ...formatMissingMountsEscalation(missing),
+      cooldownMs: ESCALATE_COOLDOWN_MS,
+      source: 'disk-space-alarm',
+      conditionKey: DECLARED_MOUNT_ALARM_CONDITION_KEY,
+      data: { host: hostname(), missingMounts: missing.map((mount) => ({ target: mount.target, source: mount.source })) },
+    },
+    { notify: deps.escalate, recentlyEscalated: deps.recentlyEscalated, broadcast: deps.broadcast },
+  );
 }

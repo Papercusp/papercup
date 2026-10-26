@@ -20,6 +20,7 @@ import {
 
 import { assertReleaseTaskIdentity, type ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
 import {
+  acquireWorkDirLock,
   DISK_PREFLIGHT_REFUSAL_EXIT_CODE,
   describeStepExit,
   WORKSPACE_HOST_BUILD_STAGE,
@@ -34,6 +35,7 @@ import {
   cupboardBaseOverride,
   packDeterministically,
   parseWorkspaceHostReleaseCutArgs,
+  planWorkspaceHostCutIntermediates,
   pruneWorkspaceHostCutIntermediates,
   removeReleaseSourceWorktree,
   runWorkspaceHostReleaseCut,
@@ -554,6 +556,157 @@ describe('post-publish intermediate prune (WI-10003700)', () => {
   });
 });
 
+describe('workspace-host cut ownership admission', () => {
+  beforeEach(() => vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(workDir, 'cut-mutex')));
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+  it('admits exactly one concurrent writer and permits an idempotent release', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    const attempts = await Promise.allSettled([acquireWorkDirLock(lock), acquireWorkDirLock(lock)]);
+    expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter(result => result.status === 'rejected')).toHaveLength(1);
+    const winner = attempts.find(result => result.status === 'fulfilled');
+    if (winner?.status !== 'fulfilled') throw new Error('missing admitted writer');
+    await winner.value(); await winner.value();
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('keeps permission-denied ownership evidence intact', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, '123456\n');
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); });
+    await expect(acquireWorkDirLock(lock)).rejects.toThrow('denied');
+    kill.mockRestore();
+    expect(readFileSync(lock, 'utf8')).toBe('123456\n');
+  });
+
+  it('admits one replacement after positively confirming a dead owner', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, '123456\n');
+    const actualKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === 123456) throw Object.assign(new Error('dead'), { code: 'ESRCH' });
+      return actualKill(pid, signal);
+    });
+    const attempts = await Promise.allSettled([acquireWorkDirLock(lock), acquireWorkDirLock(lock)]);
+    kill.mockRestore();
+    expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\n`);
+    for (const result of attempts) if (result.status === 'fulfilled') await result.value();
+  });
+
+  it('uses the same ownership lock through a directory alias', async () => {
+    const dir = join(workDir, 'cut'); mkdirSync(dir);
+    const alias = join(workDir, 'cut-alias'); symlinkSync(dir, alias);
+    const release = await acquireWorkDirLock(join(dir, 'release-cut.lock'));
+    await expect(acquireWorkDirLock(join(alias, 'release-cut.lock'))).rejects.toThrow('another cut');
+    await release();
+    expect(existsSync(join(alias, 'release-cut.lock'))).toBe(false);
+  });
+
+  it('does not let a repeated release remove a later admission in the same process', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    const first = await acquireWorkDirLock(lock);
+    await first();
+    const second = await acquireWorkDirLock(lock);
+    await first();
+    expect(existsSync(lock)).toBe(true);
+    await second();
+  });
+
+  it.each(['', '123456junk\n', '0\n', '-1\n'])('retains malformed owner %j', async text => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, text);
+    await expect(acquireWorkDirLock(lock)).rejects.toThrow('unverifiable cut lock');
+    expect(readFileSync(lock, 'utf8')).toBe(text);
+  });
+
+  it('never overwrites a symlinked lock or releases a changed owner', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    const other = join(workDir, 'other-owner');
+    writeFileSync(other, '123456\n'); symlinkSync(other, lock);
+    await expect(acquireWorkDirLock(lock)).rejects.toThrow('unverifiable cut lock');
+    expect(readFileSync(other, 'utf8')).toBe('123456\n');
+    rmSync(lock);
+    const release = await acquireWorkDirLock(lock);
+    writeFileSync(lock, '654321\n');
+    await expect(release()).rejects.toThrow('owner changed');
+    expect(readFileSync(lock, 'utf8')).toBe('654321\n');
+  });
+});
+
+describe('workspace-host writer intermediate retention planning', () => {
+  const hour = 3_600_000;
+  const nowMs = 100 * hour;
+  type CensusEntry = Parameters<typeof planWorkspaceHostCutIntermediates>[0]['census']['entries'][number];
+  const entry = (name: string, bytes: number, ageHours: number): CensusEntry => ({
+    path: join(workDir, name), bytes, newestWriteMs: nowMs - ageHours * hour, dev: 1, ino: name.length,
+  });
+  const plan = (entries: ReturnType<typeof entry>[], maxBytes = 100, extra: Record<string, unknown> = {}) =>
+    planWorkspaceHostCutIntermediates({ workDir, nowMs, maxBytes, pins: [],
+      census: { entries, retained: [], inspectedNodes: entries.length, retainedRecentTrees: 0 }, ...extra });
+
+  it('evicts oldest eligible writer groups under the finite cap while retaining release evidence', () => {
+    const result = plan([entry('source', 60, 2), entry('sidecar', 60, 1), entry('publication', 10, 99)]);
+    expect(result.intermediates).toEqual(['source']);
+    expect(result.caps[0]).toMatchObject({ maxBytes: 100, beforeBytes: 130, overByBytes: 30 });
+    expect(result.retainedPaths).toEqual([join(workDir, 'publication')]);
+  });
+
+  it('uses the newest write across a tree and ready marker when ordering atomic groups', () => {
+    const result = plan([entry('source', 60, 2), entry('source.ready.json', 1, 0), entry('sidecar', 60, 1)]);
+    expect(result.intermediates).toEqual(['sidecar']);
+  });
+
+  it('protects a ready-marker pin across its complete group during cap selection', () => {
+    const result = plan([entry('source', 60, 2), entry('source.ready.json', 1, 2), entry('sidecar', 60, 1)], 100,
+      { pins: [{ paths: [join(workDir, 'source.ready.json')], expiresAt: new Date(nowMs + hour).toISOString() }] });
+    expect(result.intermediates).toEqual(['sidecar']);
+    expect(result.caps[0]).toMatchObject({ pinnedBytes: 61 });
+  });
+
+  it('expires old intermediates without selecting old logs, publication or unqualified children', () => {
+    const result = plan([entry('source', 10, 80), entry('source.ready.json', 1, 80), entry('sidecar', 10, 1),
+      entry('logs', 10, 99), entry('publication', 10, 99), entry('unknown', 10, 99)]);
+    expect(result.intermediates).toEqual(['source']);
+    expect(result.retainedPaths).toHaveLength(3);
+  });
+
+  it('uses the shared allocation union instead of double-counting hardlinks against the cap', () => {
+    const link = { dev: 1, ino: 99, bytes: 80, paths: [join(workDir, 'source/shared'), join(workDir, 'publication/shared')] };
+    const result = plan([{ ...entry('source', 90, 1), hardlinks: [link] }, { ...entry('publication', 90, 1), hardlinks: [link] }]);
+    expect(result.intermediates).toEqual([]);
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 100, overByBytes: 0 });
+  });
+
+  it('reports retained over-cap bytes without evicting the publication to make the cap appear satisfied', () => {
+    const result = plan([entry('publication', 200, 90), entry('source', 20, 1)]);
+    expect(result.intermediates).toEqual(['source']);
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 220, overByBytes: 120 });
+    expect(result.retainedPaths).toEqual([join(workDir, 'publication')]);
+  });
+
+  it.each([{ error: 'permission denied' }, { retainedRecentTrees: 1 }, { retained: [{ path: 'unreadable', reason: 'unknown allocation' }] }])
+    ('refuses incomplete census input %j', incomplete => {
+      expect(() => plan([], 100, { census: { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0, ...incomplete } }))
+        .toThrow('complete, unfiltered census');
+    });
+
+  it('refuses duplicate and outside-root census entries', () => {
+    expect(() => plan([entry('source', 1, 1), entry('source', 1, 1)])).toThrow('invalid or duplicate');
+    expect(() => plan([entry('../source', 1, 1)])).toThrow('invalid or duplicate');
+  });
+
+  it.each([0, Infinity, 20 * 1024 ** 3 + 1])('refuses a non-finite or widened cap %s', maxBytes => {
+    expect(() => plan([], maxBytes)).toThrow('finite cap');
+  });
+
+  it.each([{ expiresAt: 'unknown', paths: ['/kept'] }, { expiresAt: new Date(nowMs + hour).toISOString(), paths: ['relative'] }])
+    ('rejects an unverifiable pin snapshot %j', pin => {
+      expect(() => plan([entry('source', 110, 80)], 100, { pins: [pin] })).toThrow('pin snapshot');
+    });
+});
+
 describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', () => {
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', ['-C', cwd, ...args], {
@@ -626,6 +779,43 @@ describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', 
     expect(worktrees(repo)).toEqual([realpathSync(repo)]);
     // Idempotent: a second pass finds nothing left.
     expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir })).toEqual([]);
+  });
+
+  it('prunes only writer groups selected by the retention planner, preserving newer intermediates and evidence', async () => {
+    const dir = cutDir();
+    const removed = await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: ['sidecar', 'sidecar'] });
+    expect(removed).toEqual([join(dir, 'sidecar.ready.json'), join(dir, 'sidecar')]);
+    expect(worktrees(repo)).toHaveLength(2);
+    for (const kept of ['source', 'source.ready.json', 'extracted', 'vite-build.lock', 'publication/server.tgz', 'release-cut.json', 'logs/sign.log']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+  });
+
+  it('honors pins on a selected group without broadening selection to another group', async () => {
+    const dir = cutDir();
+    pin([join(dir, 'sidecar.ready.json')]);
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: ['sidecar'] })).toEqual([]);
+    for (const kept of ['source', 'source.ready.json', 'sidecar', 'sidecar.ready.json', 'extracted', 'vite-build.lock']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+  });
+
+  it('treats an empty selection as a no-op', async () => {
+    const dir = cutDir();
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: [] })).toEqual([]);
+    expect(existsSync(join(dir, 'sidecar.ready.json'))).toBe(true);
+    expect(worktrees(repo)).toHaveLength(2);
+  });
+
+  it.each(['publication', 'sidecar.ready.json', '../source', '/tmp/source'])('rejects unowned or non-atomic selection %s before any removal', async child => {
+    const dir = cutDir();
+    await expect(pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir,
+      intermediates: ['source', child] as Parameters<typeof pruneWorkspaceHostCutIntermediates>[0]['intermediates'] }))
+      .rejects.toThrow('unknown workspace-host intermediate');
+    for (const kept of ['source', 'source.ready.json', 'sidecar', 'sidecar.ready.json', 'publication/server.tgz']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+    expect(worktrees(repo)).toHaveLength(2);
   });
 
   it('falls back when git does not recognise the path, dropping only THIS registration', async () => {

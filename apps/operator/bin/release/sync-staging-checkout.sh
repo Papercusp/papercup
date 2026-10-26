@@ -308,9 +308,10 @@ staging_alias_bootstrap() {
   fi
 }
 
-# Cleanup is bounded, but candidate preparation can allocate gigabytes after
-# that budget expires. Reuse the writers' reserve so a cleanup backlog cannot
-# keep growing while shared PostgreSQL and Git already refuse new writes.
+# Retired generations are reclaimed asynchronously (launch_staging_trash_drain),
+# but candidate preparation can allocate gigabytes before that drain finishes.
+# Reuse the writers' reserve so a cleanup backlog cannot keep growing while
+# shared PostgreSQL and Git already refuse new writes.
 staging_preparation_has_headroom() {
   (
     cd "$INTEGRATION_ROOT" || exit 1
@@ -481,10 +482,102 @@ staging_generation_holder_evidence() {
   return 0
 }
 
+# WI-6554700010029246: a retired generation is a ~25 GiB node_modules-heavy
+# tree. Deleting it INSIDE this tick's exclusive lock under a 15s budget
+# reclaimed only a sliver per tick while 2-3 generations/hour were published,
+# so idle trees piled up (~300 GiB on /, 2026-10-23..26) until every writer's
+# disk reserve refused: the green-checkpoint gate recorded 150 consecutive
+# no-verdict runs and git-sync publication was refused. Retirement under the
+# lock is therefore O(1) — a same-filesystem rename of the whole generation
+# home to a .trash-* sibling — and byte reclamation runs OUTSIDE the lock in
+# launch_staging_trash_drain with no small budget.
+retire_staging_generation_home() {
+  local home="$1" root="${2:-${STAGING_GENERATIONS_ROOT:-}}" name trash
+  name="$(basename "$home")"
+  [[ -n "$root" && "$(dirname "$home")" == "$root" && "$name" == .candidate-* && -d "$home" ]] || return 1
+  trash="$root/.trash-${name#.}.$(date +%s)"
+  if ! mv -T -- "$home" "$trash"; then
+    log "ALARM: could not retire staging generation to trash (rename failed); retaining it for next tick: $home"
+    return 1
+  fi
+  rm -f -- "${home}.prune-pending"
+  STAGING_GENERATIONS_RETIRED=$((${STAGING_GENERATIONS_RETIRED:-0} + 1))
+  return 0
+}
+
+# Renaming a worktree directory leaves its registration in the integration
+# repository's .git/worktrees; `git worktree prune` drops exactly the entries
+# whose directory is gone (locked/initializing worktrees are skipped by Git).
+prune_staging_worktree_registrations() {
+  local budget="${1:-15}"
+  [[ "${STAGING_GENERATIONS_RETIRED:-0}" -gt 0 ]] || return 0
+  if ! command -v timeout >/dev/null 2>&1; then
+    log "ALARM: timeout is unavailable; leaving stale staging worktree registrations for next tick"
+    return 0
+  fi
+  local status
+  if timeout --signal=KILL "${budget}s" git -C "$INTEGRATION_ROOT" worktree prune >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  if ((status == 124 || status == 137)); then
+    log "staging generation cleanup budget exhausted after ${budget}s in git worktree prune; stale registrations are retried next tick"
+  else
+    log "git worktree prune failed (status=$status); stale staging registrations are retried next tick"
+  fi
+  return 0
+}
+
+# Reclaim .trash-* bytes in a transient systemd unit so the deletion outlives
+# this tick: the sync service's cgroup is torn down when the tick exits, which
+# would kill an ordinary background child. The unit name is keyed by the
+# generations root so a test fixture can never collide with (or wait behind)
+# the production drain, and an already-active drain is left to finish — its
+# successor picks up whatever it did not cover on the next tick. Deliberately
+# NOT idle-class IO: under fleet load the idle class starves almost completely.
+launch_staging_trash_drain() {
+  local root="${1:-${STAGING_GENERATIONS_ROOT:-}}" entry unit rm_bin status
+  local -a trash=()
+  [[ -n "$root" && -d "$root" ]] || return 0
+  while IFS= read -r -d '' entry; do
+    trash+=("$entry")
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name '.trash-*' -print0 2>/dev/null)
+  ((${#trash[@]} > 0)) || return 0
+  if [[ "${STAGING_TRASH_DRAIN_MODE:-detached}" == inline ]]; then
+    if rm -rf -- "${trash[@]}"; then
+      log "reclaimed ${#trash[@]} retired staging generation tree(s) inline"
+    else
+      status=$?
+      log "ALARM: inline reclamation of retired staging generations failed (status=$status); retrying next tick"
+    fi
+    return 0
+  fi
+  rm_bin="$(command -v rm)"
+  unit="papercup-staging-trash-drain-$(printf '%s' "$root" | sha256sum | cut -c1-12)"
+  if command -v systemd-run >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet "$unit.service" 2>/dev/null; then
+      log "retired staging generation drain already running unit=$unit; ${#trash[@]} trash tree(s) are covered by it or the next tick"
+      return 0
+    fi
+    if systemd-run --user --quiet --collect --unit="$unit" \
+        --description="Reclaim retired papercusp staging generations (WI-6554700010029246)" \
+        --nice=10 -p IOSchedulingClass=best-effort -p IOSchedulingPriority=7 \
+        -- "$rm_bin" -rf -- "${trash[@]}" >/dev/null 2>&1; then
+      log "launched detached retired staging generation drain unit=$unit trees=${#trash[@]}"
+      return 0
+    fi
+    log "systemd-run could not launch $unit; falling back to a detached session (may be cut short when this tick exits; the next tick relaunches it)"
+  fi
+  setsid nice -n 10 "$rm_bin" -rf -- "${trash[@]}" </dev/null >/dev/null 2>&1 &
+  log "launched detached retired staging generation drain pid=$! trees=${#trash[@]}"
+  return 0
+}
+
 prune_staging_generations() {
   local current_root candidate_root resolved_root candidate_home refs_collected=0
   local audit_pin audit_expiry audit_mtime audit_now audit_pinned
-  local cleanup_budget="${1:-15}" cleanup_started="" cleanup_remaining cleanup_status
+  local cleanup_budget="${1:-15}" cleanup_started="" cleanup_remaining retained_idle=0
   local pending_cleanup pending_home
   # Pruning runs before candidate preparation while this tick holds the
   # exclusive staging lock. Keep that startup path bounded; the optional
@@ -495,36 +588,17 @@ prune_staging_generations() {
     cleanup_budget=15
   fi
   [[ -d "$STAGING_GENERATIONS_ROOT" ]] || return 0
-  # Git has already detached these worktrees; finish their bounded directory
-  # cleanup on this or a later timer tick. Keep the marker outside the tree so
-  # an interrupted rm cannot erase its own retry record.
+  STAGING_GENERATIONS_RETIRED=0
+  # Legacy markers: Git already detached these worktrees and an earlier tick
+  # began (but could not finish) a budgeted rm. Retire the remainder to trash.
   while IFS= read -r -d '' pending_cleanup; do
     pending_home="${pending_cleanup%.prune-pending}"
     if [[ ! -d "$pending_home" ]]; then
       rm -f -- "$pending_cleanup"
       continue
     fi
-    [[ -n "$cleanup_started" ]] || cleanup_started="$SECONDS"
-    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
-    if ((cleanup_remaining <= 0)); then
-      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining deferred directory cleanup for next tick: $pending_home"
-      return 0
-    fi
-    if ! command -v timeout >/dev/null 2>&1; then
-      log "ALARM: timeout is unavailable; retaining deferred staging generation cleanup: $pending_home"
-      return 0
-    fi
-    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$pending_home"; then
-      rm -f -- "$pending_cleanup"
-      log "completed deferred staging generation directory cleanup: $pending_home"
-    else
-      cleanup_status=$?
-      if ((cleanup_status == 124 || cleanup_status == 137)); then
-        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial directory cleanup for next tick: $pending_home"
-      else
-        log "staging generation directory cleanup failed (status=$cleanup_status); retaining cleanup marker for next tick: $pending_home"
-      fi
-      return 0
+    if retire_staging_generation_home "$pending_home"; then
+      log "retired deferred staging generation directory to trash: $pending_home"
     fi
   done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 1 -maxdepth 1 -type f -name '.candidate-*.prune-pending' -print0 2>/dev/null)
   current_root="$(realpath -e "$STAGING_ROOT" 2>/dev/null || true)"
@@ -570,6 +644,7 @@ prune_staging_generations() {
     done
     if [[ "$audit_pinned" -eq 1 ]]; then
       log "retaining prior staging generation for a bounded audit runtime pin: $resolved_root"
+      retained_idle=$((retained_idle + 1))
       continue
     fi
     # Scan /proc only when there is something to prune, so the every-tick prune
@@ -581,100 +656,50 @@ prune_staging_generations() {
     if staging_generation_in_use "$resolved_root"; then
       log "retaining prior staging generation still referenced by a process: $resolved_root"
       staging_generation_holder_evidence "$resolved_root" || log "retention holder evidence unavailable: $resolved_root (generation retained)"
+      retained_idle=$((retained_idle + 1))
       continue
     fi
     candidate_home="$(dirname "$resolved_root")"
     [[ "$(dirname "$candidate_home")" == "$STAGING_GENERATIONS_ROOT" &&
        "$(basename "$candidate_home")" == .candidate-* ]] || continue
     [[ -n "$cleanup_started" ]] || cleanup_started="$SECONDS"
-    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
-    if ((cleanup_remaining <= 0)); then
-      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining generation for next tick: $resolved_root"
-      break
+    if retire_staging_generation_home "$candidate_home"; then
+      log "pruned unused staging generation $resolved_root (retired to trash; bytes reclaimed outside the lock)"
     fi
-    if ! command -v timeout >/dev/null 2>&1; then
-      log "ALARM: timeout is unavailable; retaining staging generation for next tick: $resolved_root"
-      break
-    fi
-    if timeout --signal=KILL "${cleanup_remaining}s" \
-      git -C "$INTEGRATION_ROOT" worktree remove --force "$resolved_root" >/dev/null 2>&1; then
-      cleanup_status=0
-    else
-      cleanup_status=$?
-      if ((cleanup_status == 124 || cleanup_status == 137)); then
-        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial generation for next tick: $resolved_root"
-        break
-      fi
-      # Preserve the prior best-effort behavior for non-timeout Git errors;
-      # the bounded filesystem cleanup below still reclaims the retired tree.
-      log "staging generation worktree removal failed (status=$cleanup_status); continuing bounded directory cleanup: $resolved_root"
-    fi
-    pending_cleanup="${candidate_home}.prune-pending"
-    if ! : > "$pending_cleanup"; then
-      log "ALARM: could not create deferred-cleanup marker; retaining staging generation directory: $candidate_home"
-      break
-    fi
-    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
-    if ((cleanup_remaining <= 0)); then
-      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; deferred directory cleanup to next tick: $candidate_home"
-      break
-    fi
-    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$candidate_home"; then
-      rm -f -- "$pending_cleanup"
-      log "pruned unused staging generation $resolved_root"
-    else
-      cleanup_status=$?
-      if ((cleanup_status == 124 || cleanup_status == 137)); then
-        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial directory cleanup for next tick: $candidate_home"
-      else
-        log "staging generation directory cleanup failed (status=$cleanup_status); retaining cleanup marker for next tick: $candidate_home"
-      fi
-      break
-    fi
-  done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 2 -maxdepth 2 -type d -name checkout -print0 2>/dev/null)
+  done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 2 -maxdepth 2 -type d -name checkout \
+    -path "$STAGING_GENERATIONS_ROOT/.candidate-*/checkout" -print0 2>/dev/null)
+  # Detector for the WI-6554700010029246 class: every retained non-serving
+  # generation costs ~25 GiB on the shared root volume, so more than two held
+  # at once is a leak (a stuck holder or an unexpired pin), not steady state.
+  if ((retained_idle > 2)); then
+    log "ALARM: ${retained_idle} non-serving staging generations retained by holders or audit pins under $STAGING_GENERATIONS_ROOT; each holds ~a full checkout of disk — inspect the staging-generation-holder lines above"
+  fi
+  cleanup_remaining=$((cleanup_budget - (SECONDS - ${cleanup_started:-$SECONDS})))
+  ((cleanup_remaining > 0)) || cleanup_remaining=1
+  prune_staging_worktree_registrations "$cleanup_remaining"
+  launch_staging_trash_drain
+  return 0
 }
 
 cleanup_staging_candidate() {
   if [[ -n "$STAGING_CANDIDATE_HOME" && "$STAGING_CANDIDATE_PUBLISHED" -eq 0 ]]; then
-    local cleanup_budget="${1:-15}" cleanup_started="$SECONDS" cleanup_remaining cleanup_status
-    local pending_cleanup="${STAGING_CANDIDATE_HOME}.prune-pending"
+    local cleanup_budget="${1:-15}"
     if [[ ! "$cleanup_budget" =~ ^[0-9]+$ ]] || ((cleanup_budget < 1 || cleanup_budget > 15)); then
       cleanup_budget=15
     fi
-    if ! command -v timeout >/dev/null 2>&1; then
-      log "ALARM: timeout is unavailable; retaining failed staging candidate for next tick: $STAGING_CANDIDATE_HOME"
-      return 0
-    fi
-    # Exit cleanup still holds the publication lease. Bound it like the normal
-    # generation pruner so a failed build cannot prevent the fixed build running.
-    if [[ -d "$STAGING_CANDIDATE_ROOT" ]]; then
-      if timeout --signal=KILL "${cleanup_budget}s" \
-        git -C "$INTEGRATION_ROOT" worktree remove --force "$STAGING_CANDIDATE_ROOT" >/dev/null 2>&1; then
-        cleanup_status=0
-      else
-        cleanup_status=$?
-        if ((cleanup_status == 124 || cleanup_status == 137)); then
-          # A remaining checkout is rediscovered by the normal pruner. If Git
-          # already removed it, preserve the existing directory-cleanup marker.
-          [[ -d "$STAGING_CANDIDATE_ROOT" ]] || : > "$pending_cleanup"
-          log "failed staging candidate cleanup budget exhausted; retaining worktree for next tick: $STAGING_CANDIDATE_HOME"
-          return 0
-        fi
-      fi
-    fi
-    if ! : > "$pending_cleanup"; then
-      log "ALARM: cannot record failed staging candidate cleanup for next tick: $STAGING_CANDIDATE_HOME"
-      return 0
-    fi
-    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
-    if ((cleanup_remaining <= 0)); then
-      log "failed staging candidate cleanup budget exhausted; deferring directory cleanup: $STAGING_CANDIDATE_HOME"
-      return 0
-    fi
-    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$STAGING_CANDIDATE_HOME"; then
-      rm -f -- "$pending_cleanup"
+    # Exit cleanup still holds the publication lease, so it stays O(1) like the
+    # generation pruner (WI-6554700010029246): retire the failed candidate to
+    # trash, drop its registration, and reclaim the bytes outside the lock.
+    [[ -d "$STAGING_CANDIDATE_HOME" ]] || return 0
+    local candidate_parent
+    candidate_parent="$(dirname "$STAGING_CANDIDATE_HOME")"
+    STAGING_GENERATIONS_RETIRED=0
+    if retire_staging_generation_home "$STAGING_CANDIDATE_HOME" "$candidate_parent"; then
+      log "retired failed staging candidate to trash: $STAGING_CANDIDATE_HOME"
+      prune_staging_worktree_registrations "$cleanup_budget"
+      launch_staging_trash_drain "$candidate_parent"
     else
-      log "failed staging candidate directory cleanup deferred to next tick: $STAGING_CANDIDATE_HOME"
+      log "ALARM: failed staging candidate could not be retired; the next tick's pruner retries it: $STAGING_CANDIDATE_HOME"
     fi
   fi
   return 0

@@ -1375,7 +1375,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }
             await measureEffect('removalAuditMs', () => outsideInspectionBudget(() => record('removed', outcome)));
           } catch (err) {
-            if (absent(err)) { outcome.status = 'changed'; outcome.reason = 'disappeared before removal'; continue; }
+            if (absent(err)) {
+              outcome.status = 'changed'; outcome.reason = 'disappeared before removal';
+              // The census may list a child removed since it was measured; it no longer
+              // occupies the cap, so it must not drive further evictions (EI-26925507003255681).
+              if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }
+              continue;
+            }
             outcome.status = 'failed'; outcome.reason = message(err);
             if (budgetExpired()) { stopAtBudget(root.path); break; }
             receipt.errors.push(`remove:${entry.path}: ${message(err)}`);
