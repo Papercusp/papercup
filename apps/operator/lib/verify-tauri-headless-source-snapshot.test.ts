@@ -42,6 +42,7 @@ const sourceReexecIdx = src.indexOf(
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
 const dependencySnapshotSource = src.slice(src.indexOf("snapshot_verifier_pinned_deps() {"), operatorSnapshotIdx);
+const spaCleanupSource = src.match(/^cleanup_verifier_spa_snapshot\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
 const operatorSnapshotCallIdx = src.indexOf("verifier_run_step operator-source-snapshot");
 const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }; preflight_verifier_runtime_assets() { :; }';
 const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
@@ -227,7 +228,6 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
     const retention = src.match(/retain_assertion_artifacts\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const bootRetention = src.match(/retain_boot_attempt_evidence\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const cleanup = src.match(/cleanup_operator_source_snapshot\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    const spaCleanup = src.match(/cleanup_verifier_spa_snapshot\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const teardown = src.match(/teardown\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const result = spawnSync('bash', ['-c', [
       'set -uo pipefail',
@@ -239,7 +239,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
       'wait_owned_ports_free() { :; }; fed_release_port_locks() { :; }; display_lock_release() { :; }',
       'cleanup_assertion_script_snapshot() { :; }; cleanup_verifier_source_snapshot() { :; }',
       options.copyFails ? 'cp() { return 1; }' : '',
-      retention, bootRetention, cleanup, spaCleanup,
+      retention, bootRetention, cleanup, spaCleanupSource,
       options.cleanupFails ? 'cleanup_operator_source_snapshot() { return 1; }' : '',
       teardown, `(exit ${exitCode}); teardown`,
     ].join('\n')], {
@@ -1343,6 +1343,7 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
           [
             "VERIFIER_DISK_RESERVATIONS=()",
             ...(badFootprint ? ['du() { echo unknown; }'] : []),
+            spaCleanupSource,
             src.slice(releaseStart, releaseEnd),
             src.slice(reservationStart, operatorSnapshotIdx),
             "reserve_verifier_disk 1073741824",

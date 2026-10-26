@@ -1656,6 +1656,7 @@ write_frozen_source_reaper_script() {
     declare -f stop_verify_process
     declare -f stop_verify_process_group
     declare -f reap_frozen_source_survivors
+    declare -f cleanup_verifier_spa_snapshot
   } >"$helper" || return 1
   chmod 700 "$helper"
 }
@@ -3332,6 +3333,14 @@ stop_verify_process "$OPENBOX_PID" "$openbox_ticks" "$TAURI_LAUNCH_PROVENANCE" |
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 stop_verify_process "$ISOLATED_PG_PID" "$pg_ticks" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
+# Boot-only hands cleanup to this persisted script after disabling the parent
+# EXIT trap. Reuse its SPA survivor guard before removing any other snapshots.
+# Assertion teardown retains reports and owns its own SPA cleanup afterward.
+if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ]; then
+  if ! WORK="$WORK" TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" cleanup_verifier_spa_snapshot; then
+    SOURCE_CLEANUP_FAILED=1
+  fi
+fi
 # Boot-only stop.sh owns the per-run source/dependency snapshot.
 # Assertion teardown retains reports first and owns its own snapshot cleanup.
 if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then

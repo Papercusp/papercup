@@ -14,6 +14,8 @@ import { describe, expect, it } from "vitest";
 
 const SCRIPT = resolve(__dirname, "../../../scripts/verify-tauri-headless.sh");
 const source = readFileSync(SCRIPT, "utf8");
+const spaCleanupFunction = source.match(/^cleanup_verifier_spa_snapshot\(\) \{[\s\S]*?^\}/m)?.[0];
+if (!spaCleanupFunction) throw new Error("Frozen SPA cleanup helper not found");
 const reaperStart = source.indexOf("frozen_source_path_is_inside() {");
 const reaperEnd = source.indexOf("\nwrite_frozen_source_reaper_script || {", reaperStart);
 const reaperFunctions = source.slice(reaperStart, reaperEnd);
@@ -82,6 +84,7 @@ function generateStopScript(root: string, sourceRoot: string, sourceWork: string
     'ASSERTION_MODE=0',
     'ISOLATED_WEBVIEW_ROOT=""',
     'write_xvfb_stop_script() { printf "#!/usr/bin/env bash\\nexit 0\\n" > "$WORK/stop-xvfb.sh"; chmod +x "$WORK/stop-xvfb.sh"; }',
+    spaCleanupFunction,
     reaperFunctions,
     stopFunction,
     "write_frozen_source_reaper_script",
@@ -253,6 +256,73 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).toContain("ownership=run");
       expect(result.stdout).toMatch(/CHILD_STATUS=(143|137)/);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 35_000);
+
+  it.each([
+    { directory: "spa", ownership: "run" },
+    { directory: "verifier-spa", ownership: "run" },
+    { directory: "spa", ownership: "unverified" },
+    { directory: "verifier-spa", ownership: "unverified" },
+  ])("applies generated stop.sh cleanup to $directory with $ownership survivors", ({ directory, ownership }) => {
+    const fixture = makeFixture("frozen-spa-stop");
+    const sourceWork = resolve(fixture.root, "source work");
+    const sourceRoot = resolve(sourceWork, "operator-source");
+    const ready = resolve(fixture.root, "child-ready");
+    mkdirSync(sourceRoot, { recursive: true });
+    const token = `test-run-spa-stop-${directory}`;
+    const generated = generateStopScript(fixture.root, sourceRoot, sourceWork, token);
+    const spaRoots = ["spa", "verifier-spa"].map(name => resolve(generated.work, name));
+    for (const root of spaRoots) {
+      mkdirSync(root);
+      writeFileSync(resolve(root, "index.html"), "owned build output");
+    }
+    const logPath = resolve(generated.work, "verifier.log");
+    writeFileSync(logPath, "retained diagnostic evidence");
+    const busyRoot = resolve(generated.work, directory);
+    const runner = [
+      "set -u",
+      'export PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TEST_CHILD_TOKEN"',
+      '( cd -- "$TEST_BUSY_ROOT" || exit 92; : > "$TEST_READY"; exec sleep 60 ) &',
+      'child_pid=$!',
+      'trap \'kill -KILL "$child_pid" 2>/dev/null || true; wait "$child_pid" 2>/dev/null || true\' EXIT',
+      'for attempt in {1..300}; do [ -f "$TEST_READY" ] && break; sleep 0.01; done',
+      '[ -f "$TEST_READY" ] || { echo "child did not become ready" >&2; exit 92; }',
+      'bash "$TEST_STOP"',
+      'stop_status=$?',
+      'child_state="$(ps -o stat= -p "$child_pid" 2>/dev/null)"',
+      'case "$child_state" in ""|Z*) echo CHILD_AFTER_STOP=exited ;; *) echo CHILD_AFTER_STOP=alive ;; esac',
+      'exit "$stop_status"',
+    ].join("\n");
+    try {
+      expect(generated.generated.status, generated.generated.stderr).toBe(0);
+      const result = spawnSync("bash", ["-c", runner], {
+        encoding: "utf8",
+        timeout: 25_000,
+        env: {
+          ...process.env,
+          TEST_CHILD_TOKEN: ownership === "run" ? token : `${token}-other`,
+          TEST_BUSY_ROOT: busyRoot,
+          TEST_READY: ready,
+          TEST_STOP: generated.stopPath,
+        },
+      });
+      if (ownership === "run") {
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain("CHILD_AFTER_STOP=exited");
+        for (const root of spaRoots) expect(existsSync(root), root).toBe(false);
+        expect(existsSync(sourceWork)).toBe(false);
+      } else {
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toContain("ownership=unverified; preserving snapshot");
+        expect(result.stdout).toContain("CHILD_AFTER_STOP=alive");
+        expect(existsSync(busyRoot)).toBe(true);
+        expect(existsSync(sourceWork)).toBe(true);
+      }
+      expect(readFileSync(logPath, "utf8")).toBe("retained diagnostic evidence");
+      expect(existsSync(resolve(generated.work, "frozen-source-reaper.sh"))).toBe(true);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
