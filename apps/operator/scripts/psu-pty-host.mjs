@@ -11798,7 +11798,11 @@ export function hostThroughPty(o) {
     // host never adopts newer host code (shouldAdoptHostCode, D-008), so a host
     // loaded before that fix lacks the cap and scripts/mcp-reconnect.mjs sends the
     // agent to the carry-respawn rung instead of queueing a reconnect that no-ops.
-    caps: ['carry-respawn', 'pending-carry-fence-v1', 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+    // EI-27053660657887116: advertise the pending-carry fence ONLY when this host can
+    // name its native session id. The fence identity requires it, and only codex wires
+    // resolveRespawnNativeId; a Claude host that advertised the cap refused every
+    // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
+    caps: ['carry-respawn', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
@@ -15437,7 +15441,15 @@ export function hostThroughPty(o) {
       // attempt concludes, via the runGatedDelivery().finally() below.
       if (msg.mode === 'carry-respawn') {
         const refusal = pendingCarryFence.admit(msg);
-        if (refusal) return { ok: false, reason: refusal };
+        if (refusal) {
+          // EI-27053660657887116: a refused carry used to leave NO host event, so the
+          // only trace of a fleet-wide refusal was a caller's generic socket error.
+          appendHostEvent(ownerId, 'respawn-carry-refused', {
+            reason: refusal,
+            bound: msg.carryNonce !== undefined,
+          });
+          return { ok: false, reason: refusal };
+        }
         carryRearm.beginFirstAttempt(msg);
       }
       // P-001a: a same-source turn already waiting at the gates absorbs this one —

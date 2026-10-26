@@ -6539,6 +6539,11 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       // Advertised so a would-be requester can see the verdict before sending.
       expect(m.caps).toContain('shutdown');
       expect(m.caps).toContain('shutdown-identity');
+      // EI-27053660657887116: this host has no resolveRespawnNativeId (the Claude
+      // shape), so it can never match a pending-carry fence identity and must not
+      // advertise one; advertising it made every request-compaction a refusal.
+      expect(m.caps).toContain('carry-respawn');
+      expect(m.caps).not.toContain('pending-carry-fence-v1');
       expect(m.launchedBy).toBe('su-the-launching-agent');
 
       const staleAck = await injectForAck(sock, {
