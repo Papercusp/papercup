@@ -266,6 +266,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   it('carries exactly the expected ephemeral probe set (the EI-1622 conversions + later additions)', () => {
     expect([...byName.keys()].sort()).toEqual(
       [
+        'blind-review-runtime-reaper',
         'completion-ref-verify',
         'connection-pressure',
         'dbos-history-ceiling',
@@ -346,6 +347,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     }
 
     const timeoutReaper = [
+      'blind-review-runtime-reaper',
       'spawn-reclaim-sweep',
       'stale-claim-sweep',
       'release-request-sweep',

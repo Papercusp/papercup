@@ -1413,6 +1413,19 @@ const hiveEpochKeyReconcileCheck: PeriodicCheck = {
   },
 };
 
+// Finite runtime custody: deadline, missed post/end/replacement hooks, and
+// create-before-append/restart recovery. Host-scoped, with durable lifecycle
+// locks; the OS fuse remains independent of this process and this timer.
+const blindReviewRuntimeReaperCheck: PeriodicCheck = {
+  name: 'blind-review-runtime-reaper', intervalMs: 30_000, shed: false, fireOnArm: true,
+  classification: 'timeout-reaper',
+  tick: async () => {
+    const { reconcileRuntimeNamespaces } = await import('../blind-review-runtime-recovery');
+    const result = await reconcileRuntimeNamespaces();
+    if (result.failures.length) throw new Error('runtime custody recovery failed for ' + result.failures.join(','));
+  },
+};
+
 // Every 5min: FEDERATED presence reaper (cross-machine-coord-parity-and-trust
 // P-057 / M8, audit D-013). shared_presence / shared_session_presence are
 // gossip-published liveness beats with NO retention — a crashed device's rows are
@@ -1558,6 +1571,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     steeringChurnSweepCheck,
     federationDrainReconcileCheck,
     hiveEpochKeyReconcileCheck,
+    blindReviewRuntimeReaperCheck,
     sharedPresenceReaperCheck,
     scorecardEmissionPulseCheck,
     pollSuspectScanCheck,

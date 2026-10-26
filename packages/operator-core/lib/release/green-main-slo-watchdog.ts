@@ -83,8 +83,18 @@ export interface GreenMainSloPassResult {
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-const conditionKey = (deps: GreenMainSloPassDeps, metric: string, episode: string, subject: string | null = null): string =>
-  `alarm:green-main-slo:${encodeURIComponent(JSON.stringify([deps.workspaceId, deps.installSlug, metric, episode, subject]))}`;
+/**
+ * The alarm item's condition key. Exported so the LIVE_GATE_OPS reservation
+ * (work-items-admission.ts liveGateOpsReservedPatterns) is tested against the real encoding.
+ */
+export const greenMainSloConditionKey = (
+  scope: Pick<GreenMainSloPassDeps, 'workspaceId' | 'installSlug'>,
+  metric: string,
+  episode: string,
+  subject: string | null = null,
+): string =>
+  `alarm:green-main-slo:${encodeURIComponent(JSON.stringify([scope.workspaceId, scope.installSlug, metric, episode, subject]))}`;
+const conditionKey = greenMainSloConditionKey;
 
 const epoch = (value: unknown, nowMs: number): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= nowMs;

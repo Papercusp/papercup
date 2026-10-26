@@ -2136,6 +2136,9 @@ async function readLoopDeliverySupersession(
         // stale imperative text, so the safe rebuilt representation has no note.
         note: null,
         coalescedCount: survivors.length,
+        ...(typeof latest.delivery_id === 'number' && Number.isSafeInteger(latest.delivery_id)
+          ? { inboxDeliveryId: latest.delivery_id }
+          : {}),
         ...(typeof latest.createdAt === 'string' ? { createdAt: latest.createdAt } : {}),
       },
       supersession: null,
@@ -2747,19 +2750,21 @@ export async function degradeToInboxOrDrop(
   d: DeliveryWork,
   reason: string,
   send: typeof sendMessage,
-  options: { allowLoopMarkerFallback?: boolean } = {},
 ): Promise<WakeOutcome> {
   // An inbox notice proves that a message was queued, not that a loop iteration
   // started. Keep a surviving loop marker as a visible drop so reconciliation
   // can retry/backstop it; mixed wakes whose stale loop component was stripped
   // above remain eligible for the ordinary inbox fallback.
-  if (!options.allowLoopMarkerFallback && readLoopDeliveryMarkers(d.payload).length > 0) {
+  if (readLoopDeliveryMarkers(d.payload).length > 0) {
     return {
       kind: 'drop',
       reason: 'loop turn delivery cannot fall back to inbox: ' + reason,
     };
   }
-  const inboxDelivery = deferredLockGrantInboxSnapshot(d);
+  const inboxDelivery = deferredLockGrantInboxSnapshot({
+    ...d,
+    id: d.inboxDeliveryId ?? d.id,
+  });
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
       to: [inboxDelivery.subscriberId],
@@ -4726,21 +4731,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
             ? 'the loop was re-armed after this delivery was created'
             : `the wake harness lineage ${loopSupersession.markerHarness} does not match the current active loop ` +
               `harness ${loopSupersession.currentHarness}`;
-      if (loopSupersession.kind === 'lineage-mismatch') {
-        // EI-21567207447038868: the lineage guard protects the CURRENT loop
-        // from stale loop state, but the delivery may be the sole result of a
-        // one-shot await (for example claim:released:<id>). A bare drop consumes
-        // that delivery attempt without telling the subscriber its event fired,
-        // silently stranding an await with no timeout. Preserve the no-resume /
-        // no-injection safety decision while routing the event and exact
-        // withholding reason through the durable inbox fallback.
-        return degradeToInboxOrDrop(
-          d,
-          `${lifecycleReason}; loop injection/resume was withheld`,
-          sendCoordMessage,
-          { allowLoopMarkerFallback: true },
-        );
-      }
+      // A non-loop sibling is stripped above and proceeds independently. This
+      // branch therefore represents a pure loop delivery; an inbox notice cannot
+      // satisfy its turn contract or remain a retryable loop failure.
       return {
         kind: 'drop',
         reason:

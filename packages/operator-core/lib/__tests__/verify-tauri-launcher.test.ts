@@ -578,6 +578,7 @@ printf '%s' "$VERIFIER_SPA_DIST"
 `], { encoding: 'utf8', timeout: 15_000, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`,
         FIXTURE_DIR: dir, FIXTURE_FROZEN: frozen, FIXTURE_CAPTURE: capture, FIXTURE_EVENTS: events,
         VERIFY_TAURI_SOURCE_RECEIPT: resolve(dir, 'source-receipt.json'),
+        VERIFY_TAURI_SOURCE_REPO_DIR: repo,
         VERIFY_TAURI_SOURCE_REF: options.pinned === false ? '' : 'committed-pin',
         PAPERCUSP_SHARED_SPA_DIST: options.external ? resolve(dir, 'unbound-donor-dist') : '',
         VITE_BUILD_CMD: 'unbound-command', VITE_BUILD_LOCK: 'donor-lock', VITE_BUILD_SNAPSHOT_DIR: 'donor-snapshot' } });
@@ -629,7 +630,7 @@ printf '%s' "$VERIFIER_SPA_DIST"
   it.each([
     [{ missingBuilder: true }, 3, 'VERIFY_TAURI_SPA_BUILD_MISSING'],
     [{ incomplete: true }, 3, 'VERIFY_TAURI_SPA_BUILD_INCOMPLETE'],
-    [{ external: true }, 3, 'VERIFY_TAURI_SPA_UNBOUND'],
+    [{ external: true }, 2, 'VERIFY_TAURI_SPA_UNBOUND'],
     [{ buildExit: 17 }, 17, ''],
     [{ buildExit: 28 }, 28, ''],
   ] as const)('refuses boot when frozen SPA preparation fails (%j)', (options, status, marker) => {

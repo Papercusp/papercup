@@ -1097,9 +1097,17 @@ export async function markAdvSessionEnded(
            AND (${opts.expectedBinding?.planSlug === undefined} OR plan_slug = ${opts.expectedBinding?.planSlug ?? null})
          ))
          AND (${opts.observedAt == null} OR started_at <= ${opts.observedAt ?? null}::timestamptz)
-       RETURNING id
+       RETURNING id, workspace_id, session_id
     `;
     if (r.length) {
+      // Carry the winning end's exact native identity. Re-reading the adv row
+      // later could select a resumed successor and retire its new resources.
+      for (const row of r) if (typeof row.workspace_id === 'string' && typeof row.session_id === 'string') {
+        void trackDetached(import('./blind-review-runtime-recovery').then(m =>
+          m.retireRuntimeNamespacesForNativeEnd({ workspaceId: row.workspace_id,
+            advSessionId: Number(row.id), nativeSessionId: row.session_id })))
+          .catch(() => console.warn('[blind-review-runtime] native-end cleanup pending'));
+      }
       // Only the winning terminal CAS may stop this launch's private native
       // route. A stale exit rejected for a resumed successor has no effect.
       try {
@@ -1842,43 +1850,52 @@ export async function reanchorAdvSessionNativeId(
     // EI-21417550055038906: clear the COMPLETE terminal tuple (ended_by/
     // ended_signal too, matching claimAdvSessionResume) — leaving them behind
     // creates a half-live row whose residue later reads as terminal evidence.
-    const rows = await sql<{ id: number; owner: string | null; workspace_id: string }[]>`
-      UPDATE harness_shared.adv_sessions
-         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
-             ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
-             resume_claim_key = NULL, resume_claimed_at = NULL
-       WHERE id = ${id} AND retired_at IS NULL
-         AND session_id IS DISTINCT FROM ${sessionId}
-      RETURNING id, coord_owner_id AS owner, workspace_id
-    `;
-    // The owner rides back so the respawn route can clear the frozen context
-    // gauge (the successor keeps the coord ownerId, so the in-process usage
-    // cache would otherwise serve the DEAD predecessor's near-limit estimate
-    // for up to a watchdog cadence — the "89% on a fresh successor" bug).
-    if (rows.length > 0) {
-      await recordReanchorSpan(rows[0]?.workspace_id ?? null, rows[0]?.owner ?? null, sessionId);
-      return { reanchored: true, owner: rows[0]?.owner ?? null };
-    }
-    // WI-41555: a NO-OP re-anchor is NOT "no owner". The UPDATE above is guarded
-    // by `session_id IS DISTINCT FROM`, so a row that ALREADY names this native
-    // id matches ZERO rows — exactly what happens when the spawn path stamped the
-    // new id onto the row before this report arrived (the cold-loop recycle
-    // cohort), and on any retried or duplicated report. Returning owner:null
-    // there made the caller skip the very context-cache clears the comment above
-    // promises, and the anchored gauge then served the DEAD predecessor's
-    // reading FOREVER — not merely "for up to a watchdog cadence", because
-    // advanceAnchor's fast path never re-resolves whether its cached path is
-    // still the live transcript for this owner.
-    // `reanchored` answers "did I change the row"; `owner` answers "whose row is
-    // it". They are independent facts, and respawn hygiene keys off the second.
-    const existing = await sql<{ owner: string | null; workspace_id: string; retired_at: Date | string | null }[]>`
-      SELECT coord_owner_id AS owner, workspace_id, retired_at
-        FROM harness_shared.adv_sessions
-       WHERE id = ${id}
-    `;
-    if (existing[0]?.retired_at != null) return { reanchored: false, owner: null };
-    await recordReanchorSpan(existing[0]?.workspace_id ?? null, existing[0]?.owner ?? null, sessionId);
-    return { reanchored: false, owner: existing[0]?.owner ?? null };
+    const result = await sql.begin(async (tx) => {
+      const rows = await tx<{ id: number; owner: string | null; workspace_id: string }[]>`
+        UPDATE harness_shared.adv_sessions
+           SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
+               ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
+               resume_claim_key = NULL, resume_claimed_at = NULL
+         WHERE id = ${id} AND retired_at IS NULL
+           AND session_id IS DISTINCT FROM ${sessionId}
+        RETURNING id, coord_owner_id AS owner, workspace_id
+      `;
+      // The owner rides back so the respawn route can clear the frozen context
+      // gauge (the successor keeps the coord ownerId, so the in-process usage
+      // cache would otherwise serve the DEAD predecessor's near-limit estimate
+      // for up to a watchdog cadence — the "89% on a fresh successor" bug).
+      if (rows.length > 0) {
+        // Carry-respawn uses this seam rather than keyed resume finalization.
+        // Keep its native binding and the genuine already-applied receipt atomic.
+        await recordSuLaunchSpecInTransaction(tx, id, null);
+        return { reanchored: true, owner: rows[0].owner, workspaceId: rows[0].workspace_id };
+      }
+      // WI-41555: a NO-OP re-anchor is NOT "no owner". The UPDATE above is guarded
+      // by `session_id IS DISTINCT FROM`, so a row that ALREADY names this native
+      // id matches ZERO rows — exactly what happens when the spawn path stamped the
+      // new id onto the row before this report arrived (the cold-loop recycle
+      // cohort), and on any retried or duplicated report. Returning owner:null
+      // there made the caller skip the very context-cache clears the comment above
+      // promises, and the anchored gauge then served the DEAD predecessor's
+      // reading FOREVER — not merely "for up to a watchdog cadence", because
+      // advanceAnchor's fast path never re-resolves whether its cached path is
+      // still the live transcript for this owner.
+      // `reanchored` answers "did I change the row"; `owner` answers "whose row is
+      // it". They are independent facts, and respawn hygiene keys off the second.
+      const existing = await tx<{ owner: string | null; workspace_id: string; retired_at: Date | string | null }[]>`
+        SELECT coord_owner_id AS owner, workspace_id, retired_at
+          FROM harness_shared.adv_sessions
+         WHERE id = ${id}
+      `;
+      if (!existing[0] || existing[0].retired_at != null) {
+        return { reanchored: false, owner: null, workspaceId: null };
+      }
+      // A repeated native-id report must also heal an omitted receipt.
+      await recordSuLaunchSpecInTransaction(tx, id, null);
+      return { reanchored: false, owner: existing[0].owner, workspaceId: existing[0].workspace_id };
+    });
+    await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
+    return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
     return { reanchored: false, owner: null };
@@ -1913,45 +1930,49 @@ export async function reanchorAdvSessionNativeIdByOwner(
     // non-retired row. A fleet-kill fence is terminal for re-anchor.
     // Two active rows (or two terminal rows) are ambiguous and must not let one
     // session's native id overwrite another session's home key.
-    const target = await sql<{ id: number; workspace_id: string }[]>`
-      WITH owner_rows AS (
-        SELECT id,
-               workspace_id,
-               ended_at,
-               ended_by,
-               count(*) FILTER (WHERE ended_at IS NULL AND ended_by IS NULL) OVER () AS active_count,
-               count(*) OVER () AS total_count
-          FROM harness_shared.adv_sessions
-         WHERE coord_owner_id = ${coordOwnerId}
-           AND retired_at IS NULL
-      ), target AS (
-        SELECT id, workspace_id
-          FROM owner_rows
-         WHERE (active_count = 1 AND ended_at IS NULL AND ended_by IS NULL)
-            OR (active_count = 0 AND total_count = 1)
-      )
-      SELECT id, workspace_id FROM target LIMIT 1
-    `;
-    const targetId = target[0]?.id;
-    if (targetId == null) return { reanchored: false, owner: null };
-    const targetWorkspaceId = target[0]?.workspace_id ?? null;
-    const rows = await sql<{ id: number }[]>`
-      UPDATE harness_shared.adv_sessions
-         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
-             ended_by = NULL, ended_signal = NULL, started_at = now(),
-             shutdown_accepted_at = NULL, resume_claim_key = NULL,
-             resume_claimed_at = NULL
-       WHERE id = ${targetId} AND retired_at IS NULL
-         AND session_id IS DISTINCT FROM ${sessionId}
-      RETURNING id
-    `;
-    // WI-41555 (see the sibling above for the full reasoning): a row that ALREADY
-    // names this native id updates zero rows, and the caller's respawn hygiene —
-    // the context-usage + anchor cache clears — must still run for that owner.
-    // Confirm the owner really does have a row, then report it with
-    // reanchored:false so "did I change it" stays honest.
-    await recordReanchorSpan(targetWorkspaceId, coordOwnerId, sessionId);
-    return { reanchored: rows.length > 0, owner: coordOwnerId };
+    const result = await sql.begin(async (tx) => {
+      const target = await tx<{ id: number; workspace_id: string }[]>`
+        WITH owner_rows AS (
+          SELECT id,
+                 workspace_id,
+                 ended_at,
+                 ended_by,
+                 count(*) FILTER (WHERE ended_at IS NULL AND ended_by IS NULL) OVER () AS active_count,
+                 count(*) OVER () AS total_count
+            FROM harness_shared.adv_sessions
+           WHERE coord_owner_id = ${coordOwnerId}
+             AND retired_at IS NULL
+        ), target AS (
+          SELECT id, workspace_id
+            FROM owner_rows
+           WHERE (active_count = 1 AND ended_at IS NULL AND ended_by IS NULL)
+              OR (active_count = 0 AND total_count = 1)
+        )
+        SELECT id, workspace_id FROM target LIMIT 1
+      `;
+      const targetId = target[0]?.id;
+      if (targetId == null) return { reanchored: false, owner: null, workspaceId: null };
+      const targetWorkspaceId = target[0]?.workspace_id ?? null;
+      const rows = await tx<{ id: number }[]>`
+        UPDATE harness_shared.adv_sessions
+           SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
+               ended_by = NULL, ended_signal = NULL, started_at = now(),
+               shutdown_accepted_at = NULL, resume_claim_key = NULL,
+               resume_claimed_at = NULL
+         WHERE id = ${targetId} AND retired_at IS NULL
+           AND session_id IS DISTINCT FROM ${sessionId}
+        RETURNING id
+      `;
+      // WI-41555 (see the sibling above for the full reasoning): a row that ALREADY
+      // names this native id updates zero rows, and the caller's respawn hygiene —
+      // the context-usage + anchor cache clears — must still run for that owner.
+      // Confirm the owner really does have a row, then report it with
+      // reanchored:false so "did I change it" stays honest.
+      await recordSuLaunchSpecInTransaction(tx, targetId, null);
+      return { reanchored: rows.length > 0, owner: coordOwnerId, workspaceId: targetWorkspaceId };
+    });
+    await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
+    return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeIdByOwner');
     return { reanchored: false, owner: null };

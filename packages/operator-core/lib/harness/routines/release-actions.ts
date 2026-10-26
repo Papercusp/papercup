@@ -1570,7 +1570,7 @@ export interface CheckpointVerdict {
     /** Structural mirror of RedTriage.autoRefire. Optional for old CLI payloads; absent is not
      *  proof that the cap was reached, so callers must fail closed before persisting stale fields. */
     autoRefire?: boolean;
-    refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
+    refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'unlocked-preparation' | 'absolute-ceiling' | 'deadline' | null;
   };
   /** isolation-retry-resilience-2026-07-19 (EI-15849): the load-flake / worker-crash
    *  absorption attempt's own human-readable verdict note, persisted REGARDLESS of
@@ -3831,7 +3831,7 @@ export type GateStallClass = 'reset' | 'noop' | 'red' | 'record-only' | 'no-verd
 export type GateStallRetriage = {
   classification?: 'real-red' | 'stale-candidate' | 'unknown' | null;
   autoRefire?: boolean;
-  refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
+  refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'unlocked-preparation' | 'absolute-ceiling' | 'deadline' | null;
 };
 
 /**
@@ -3867,10 +3867,11 @@ export type GateStallRetriage = {
  * ONE exception is preserved deliberately: `refireBlockedBy === 'charged-budget'` means the SAME
  * breakage survived every rescue attempt, which green-checkpoint.ts:2609-2611 calls out as the
  * loop guard "that must survive: it is what converges a genuinely-broken tip to a held gate and a
- * human". That one still counts as a red. The other three blockers are not evidentiary at all —
- * `deadline` is a clock, `cap-disabled` is a feature switch, and `absolute-ceiling`'s own operator
- * text says "every individual red WAS rescued ... the fix is to slow the tree or widen the window,
- * NOT to debug the files named above".
+ * human". That one still counts as a red. The other blockers are not evidentiary at all —
+ * `deadline` is a clock, `cap-disabled` is a feature switch, `unlocked-preparation`
+ * (WI-6554700010029570) is refire mechanics (the tip needs a fresh unlocked preflight in a later
+ * run), and `absolute-ceiling`'s own operator text says "every individual red WAS rescued ... the
+ * fix is to slow the tree or widen the window, NOT to debug the files named above".
  *
  * Under-alerting is NOT a new risk here: this leaves `lastGreenAt` stale on purpose, exactly as
  * 'noop' does, so the two backstops documented above still fire — `checkMainBehindStaging`
@@ -4556,7 +4557,7 @@ export async function trackGateStall(
     tip: string | null;
     detail: string;
     autoRefire?: boolean;
-    refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
+    refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'unlocked-preparation' | 'absolute-ceiling' | 'deadline' | null;
   },
   /** EI-19405864032365760: the verdict's own prose (`CheckpointVerdict.summary`). Only read on the
    *  `migrations-pending` noop path, where it is the ONLY place the pending migration is named. */
@@ -6083,9 +6084,10 @@ export interface ReleaseFixerRecord {
  * whenever the re-triage proved staleness". `refireBlockedBy === 'charged-budget'` means the SAME
  * breakage survived every rescue, which the operator text calls out as "the tip is genuinely
  * broken: a human is needed" — precisely when a fixer IS wanted. `isProvenStaleCandidate` already
- * encodes that single exclusion; the other three blockers are not evidentiary (`deadline` is a
- * clock, `cap-disabled` a feature switch, and `absolute-ceiling`'s own operator text says "the fix
- * is to slow the tree or widen the window, NOT to debug the files named above").
+ * encodes that single exclusion; the other blockers are not evidentiary (`deadline` is a
+ * clock, `cap-disabled` a feature switch, `unlocked-preparation` refire mechanics, and
+ * `absolute-ceiling`'s own operator text says "the fix is to slow the tree or widen the window,
+ * NOT to debug the files named above").
  *
  * `retriage` is REQUIRED, not optional, so a future dispatch site must ANSWER the question instead
  * of silently inheriting the un-guarded behaviour. Pass `undefined` when the caller genuinely has

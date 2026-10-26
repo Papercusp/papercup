@@ -6100,10 +6100,15 @@ export interface RedTriage {
    *  the operator's action: `charged-budget` = the same breakage survived N rescues, so the tip is
    *  genuinely broken and a human is needed; `absolute-ceiling`/`deadline` = every individual red
    *  was rescued but the tree was never simultaneously green inside one run window, so the answer
-   *  is to slow the tree or widen the window, NOT to debug the last-named files. */
+   *  is to slow the tree or widen the window, NOT to debug the last-named files.
+   *  `unlocked-preparation` (WI-6554700010029570) = the run executes a committed prepared selection
+   *  for one candidate, so an in-process recursion onto the tip would hit the runner's entry guard
+   *  ("prepared selection candidate changed"). The tip needs a new unlocked preflight in a later
+   *  checkpoint run; the evidence still proves the red stale. */
   refireBlockedBy:
     | "cap-disabled"
     | "charged-budget"
+    | "unlocked-preparation"
     | "absolute-ceiling"
     | "deadline"
     | null;
@@ -6403,6 +6408,10 @@ export function classifyRedAgainstTip(input: {
   absoluteCeiling?: number;
   /** Would one more pass overrun the run's wall-clock budget (see `refireDeadlineExceeded`)? */
   deadlineExceeded?: boolean;
+  /** WI-6554700010029570: does a refire onto `tip` need a new unlocked preparation (this run holds
+   *  a committed prepared selection for a different candidate)? Mirrors the admission refire's
+   *  `requiresUnlockedPreparation`. */
+  requiresUnlockedPreparation?: boolean;
   /** Completion time of the tip measurement. Injectable so the pure classifier's wording and
    *  machine-readable provenance share one exact instant. */
   tipObservedAtMs?: number;
@@ -6475,6 +6484,10 @@ export function classifyRedAgainstTip(input: {
         ? "cap-disabled"
         : refireAttempts >= maxRefires
           ? "charged-budget"
+          // After charged-budget: a breakage that survived every rescue is still reported as the
+          // genuinely-broken tip (isProvenStaleCandidate's one carve-out, which dispatches a fixer).
+          : input.requiresUnlockedPreparation === true
+            ? "unlocked-preparation"
           : totalRefires >= absoluteCeiling
             ? "absolute-ceiling"
             : input.deadlineExceeded === true
@@ -6489,6 +6502,10 @@ export function classifyRedAgainstTip(input: {
       "charged-budget":
         `refire cap reached (charged budget ${refireAttempts}/${maxRefires} spent — the SAME breakage ` +
         "survived every rescue, so the tip is genuinely broken: a human is needed)",
+      "unlocked-preparation":
+        "refire DEFERRED — this run executes a committed prepared selection for the candidate, so the " +
+        "tip needs a new unlocked preflight in a later checkpoint run; recursing here would trip the " +
+        "prepared-selection entry guard",
       "absolute-ceiling":
         `refire ABSOLUTE CEILING reached (${totalRefires}/${absoluteCeiling} refires, charged budget only ` +
         `${refireAttempts}/${maxRefires}) — every individual red WAS rescued, but the tree was never ` +
@@ -16807,6 +16824,11 @@ async function runGreenCheckpointInner(
                     runStartedAtMs,
                     passStartedAtMs,
                   ),
+                  // WI-6554700010029570: the refire below recurses with `candidate: tip` and the
+                  // SAME opts.preparedSelection, which the entry guard refuses for any other sha.
+                  ...(refireRequiresUnlockedPreparation(opts.preparedSelection, tip)
+                    ? { requiresUnlockedPreparation: true }
+                    : {}),
                 }], decisionTrace);
         retriage = {
           ...verdict,
@@ -18765,8 +18787,8 @@ export async function runGreenCheckpoint(
       // head needs a new unlocked preflight; recursive execution must neither reuse the
       // old generation nor discard its identity guard. The refire decision retains the
       // durable marker, so a later run can select and prepare under current authority.
-      const requiresUnlockedPreparation = Boolean(opts.preparedSelection &&
-        consumed.request.repairHead !== opts.preparedSelection.candidate);
+      const requiresUnlockedPreparation = refireRequiresUnlockedPreparation(
+        opts.preparedSelection, consumed.request.repairHead);
       const nowMs = Date.now();
       const deadlineExceeded = refireDeadlineExceeded({
         elapsedMs: nowMs - admissionRunStartedAtMs,
@@ -19417,6 +19439,21 @@ export function checkpointRunnerCandidate(
   preparedSelection: Pick<PreparedCheckpointSelectionRecord, "candidate"> | undefined,
 ): string | undefined {
   return candidateArg && preparedSelection ? preparedSelection.candidate : candidateArg;
+}
+
+/**
+ * WI-6554700010029570: would an in-process refire onto `nextCandidate` trip the runner's entry
+ * guard? Preparation is committed before the checkpoint serializer is acquired, so a recursion
+ * that keeps `opts.preparedSelection` may only re-judge the prepared candidate itself; any other
+ * sha needs a new unlocked preflight in a later checkpoint run. ONE definition shared by both
+ * in-process refires (the repair-admission refire and the stale-red auto-refire), so they cannot
+ * drift into disagreeing about when recursion is safe.
+ */
+export function refireRequiresUnlockedPreparation(
+  preparedSelection: Pick<PreparedCheckpointSelectionRecord, "candidate"> | undefined,
+  nextCandidate: string | null | undefined,
+): boolean {
+  return Boolean(preparedSelection && nextCandidate && nextCandidate !== preparedSelection.candidate);
 }
 
 async function readCheckpointSelectionQueue(deps: CheckpointDeps): Promise<FrozenCandidateRepairQueue | null> {

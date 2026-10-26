@@ -1321,22 +1321,44 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         ) {
           resumes++;
         }
+        // A mixed wake whose superseded loop components were stripped can reach
+        // the inbox through its surviving event. An inbox write proves no loop
+        // turn started, so settle only non-loop rows and leave the event root
+        // independent from every stale loop row it shared a pump group with.
+        const inboxFallbackWithLoopComponents = outcome.channel === 'inbox' && loopDeliveryGroup;
+        const loopRowsToDrop = inboxFallbackWithLoopComponents
+          ? group.filter((d) => deliveryContainsLoopMarker(d.payload))
+          : [];
+        const settlementGroup = inboxFallbackWithLoopComponents
+          ? group.filter((d) => !deliveryContainsLoopMarker(d.payload))
+          : group;
+        for (const loopRow of loopRowsToDrop) {
+          await markDeliveryDropped(loopRow.id, 'loop turn was not started; this delivery only reached the inbox');
+          stats.dropped++;
+        }
+        if (settlementGroup.length === 0) {
+          deliveryRowsSettled = true;
+          log(`wake #${headline.id} inbox notice did not satisfy its loop turn; dropped ${loopRowsToDrop.length} loop component(s)`);
+          continue;
+        }
+        const settlementHeadline = settlementGroup[settlementGroup.length - 1];
+        const settlementSiblings = settlementGroup.slice(0, -1);
         // P-006/D-004: forward the executor's turn-start attestation only when it has one, so an
         // unattested delivery is booked exactly as before (awaiting the pump's pickup sweep).
         await (outcome.turnProof
-          ? markDeliveryDelivered(headline.id, outcome.channel, group.length, outcome.turnProof)
-          : markDeliveryDelivered(headline.id, outcome.channel, group.length));
+          ? markDeliveryDelivered(settlementHeadline.id, outcome.channel, settlementGroup.length, outcome.turnProof)
+          : markDeliveryDelivered(settlementHeadline.id, outcome.channel, settlementGroup.length));
         recordSettledDeliveryStats(stats, outcome.channel);
-        if (siblings.length > 0) {
-          await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
-          stats.coalesced += siblings.length;
+        if (settlementSiblings.length > 0) {
+          await markDeliveriesCoalesced(settlementSiblings.map((d) => d.id), settlementHeadline.id);
+          stats.coalesced += settlementSiblings.length;
         }
         deliveryRowsSettled = true;
         if (earlyResumeExit) {
           const observed = earlyResumeExit as { d: DeliveryWork; exit: ResumeTurnExitRaw; context?: ResumeTurnContext };
           void handleSettledResumeTurnExit(group, observed.d, observed.exit, downstreamOutcomeHandler, observed.context);
         }
-        log(`wake #${headline.id} delivered → ${subscriberId} via ${outcome.channel} (${group.length} event(s): ${group.map((d) => d.eventKey).join(', ')})`);
+        log(`wake #${settlementHeadline.id} delivered → ${subscriberId} via ${outcome.channel} (${settlementGroup.length} event(s): ${settlementGroup.map((d) => d.eventKey).join(', ')})`);
         continue;
       }
       if (outcome.kind === 'park') {

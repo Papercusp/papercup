@@ -52,6 +52,7 @@ import {
   ISOLATION_MAX_NAMED_CASES,
   stripAnsi,
   classifyRedAgainstTip,
+  refireRequiresUnlockedPreparation,
   describeRealRedAtTip,
   splitTipFailuresPerFile,
   TIP_SPLIT_MAX_FILES,
@@ -11052,6 +11053,41 @@ describe("refire charge accounting (EI-19343532231631821)", () => {
         refireBlockedBy: "charged-budget",
       });
       expect(v.detail).toContain("refire cap reached");
+    });
+
+    // WI-6554700010029570: the refire recurses with `candidate: tip` and the run's
+    // preparedSelection, which the entry guard refuses for any other sha. The classifier must
+    // defer instead, and still report the evidence (stale) rather than a real red.
+    it("defers the refire when the tip needs an unlocked preparation, keeping the stale verdict", () => {
+      const v = classifyRedAgainstTip({ ...base, requiresUnlockedPreparation: true });
+      expect(v).toMatchObject({
+        classification: "stale-candidate",
+        autoRefire: false,
+        refireBlockedBy: "unlocked-preparation",
+      });
+      expect(v.detail).toMatch(/refire DEFERRED/);
+      expect(v.detail).toContain("unlocked preflight");
+    });
+
+    // The one predicate both in-process refires use (stale-red auto-refire and repair-admission
+    // refire): recursion keeps opts.preparedSelection, so only the prepared candidate itself is safe.
+    it("refireRequiresUnlockedPreparation: true only for a prepared run moving to a different sha", () => {
+      const prepared = { candidate: "aaaaaaaa1111" };
+      expect(refireRequiresUnlockedPreparation(prepared, "bbbbbbbb2222")).toBe(true);
+      expect(refireRequiresUnlockedPreparation(prepared, "aaaaaaaa1111")).toBe(false);
+      expect(refireRequiresUnlockedPreparation(undefined, "bbbbbbbb2222")).toBe(false);
+      expect(refireRequiresUnlockedPreparation(prepared, null)).toBe(false);
+    });
+
+    it("the charged budget outranks unlocked-preparation, so a genuinely-broken tip is still reported", () => {
+      const v = classifyRedAgainstTip({
+        ...base,
+        refireAttempts: 2,
+        priorFailing: ["old.test.ts"],
+        currentFailing: [{ workspace: "ws", file: "old.test.ts" }],
+        requiresUnlockedPreparation: true,
+      });
+      expect(v).toMatchObject({ autoRefire: false, refireBlockedBy: "charged-budget" });
     });
 
     it("reports cap-disabled distinctly from a spent budget", () => {

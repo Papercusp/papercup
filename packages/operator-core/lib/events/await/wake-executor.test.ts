@@ -2280,6 +2280,51 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(d.getLoopCarryNoteWithMetaFn).not.toHaveBeenCalled();
   });
 
+  it('uses the surviving event delivery id for inbox replay after removing a stale loop headline', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const awaitFire = work({
+      id: 40,
+      eventKey: 'candidate:ready',
+      summary: 'candidate c-1 is ready for the parked waiter',
+      payload: { candidate: 'c-1', state: 'ready' },
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const endedLoopHeadline = work({
+      id: 41,
+      eventKey: 'coord:inbox-wake:su-abc',
+      source: 'loop:rt-loop',
+      payload: loopPayload,
+      summary: 'STALE LOOP CHECKPOINT: continue the ended loop',
+      createdAt: new Date().toISOString(),
+    });
+    const coalesced = coalesceDeliveries([awaitFire, endedLoopHeadline]);
+    const sent: Array<{ msgId?: string; body?: string; extra?: Record<string, unknown> }> = [];
+    const sendCoordMessage = vi.fn(async (
+      _identity: unknown,
+      message: { msgId?: string; body?: string; extra?: Record<string, unknown> },
+    ) => {
+      sent.push(message);
+      return {} as never;
+    });
+    const d = deps({
+      getLoopStatusFn: vi.fn(async () => null) as never,
+      presence: vi.fn(async () => stalePresence) as never,
+      sendCoordMessage: sendCoordMessage as never,
+    });
+
+    const out = await executeWake(coalesced, d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      msgId: 'event-wake-inbox-40',
+      extra: { event_key: 'candidate:ready', wake_delivery_id: 40 },
+    });
+    expect(sent[0]?.body).toContain('event-wake delivery #40');
+    expect(sent[0]?.body).toContain('candidate:ready');
+    expect(sent[0]?.body).not.toContain('STALE LOOP CHECKPOINT');
+  });
+
   it('still drops a coalesced attempt whose every folded component is a loop fire', async () => {
     const { coalesceDeliveries } = await import('./engine');
     const olderLoop = work({
@@ -2330,7 +2375,7 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(d.spawnDetached).not.toHaveBeenCalled();
   });
 
-  it('delivers a lineage-mismatched wake to the durable inbox without resuming the wrong loop', async () => {
+  it('drops a lineage-mismatched loop wake instead of marking an inbox notice as its turn', async () => {
     const d = deps({
       getLoopStatusFn: vi.fn(async () => ({
         active: true,
@@ -2346,15 +2391,10 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
       d,
     );
 
-    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
-    expect(d.sendCoordMessage).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        to: ['su-abc'],
-        category: 'event',
-        summary: expect.stringMatching(/stale-loop-harness.*current-loop-harness/),
-      }),
-    );
+    expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('queued loop delivery') });
+    expect((out as { reason: string }).reason).toContain('stale-loop-harness');
+    expect((out as { reason: string }).reason).toContain('current-loop-harness');
+    expect(d.sendCoordMessage).not.toHaveBeenCalled();
     expect(d.findPsuHost).not.toHaveBeenCalled();
     expect(d.injectPsuHost).not.toHaveBeenCalled();
     expect(d.resumePlanRun).not.toHaveBeenCalled();

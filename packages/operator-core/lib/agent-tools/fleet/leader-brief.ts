@@ -301,6 +301,46 @@ export interface LeaderBriefFleetMetricsDeps {
   ): Promise<FleetMetricsResult>;
 }
 
+type LeaderBriefFleetMetricTimingPhase =
+  | 'resolveFleetMetricScope'
+  | 'readFleetMetricSource'
+  | 'readIssueOccurrences'
+  | 'terminalContributions'
+  | 'buildFleetMetricsResult';
+
+type LeaderBriefFleetMetricPhaseTiming = {
+  status: 'running' | 'completed' | 'failed';
+  elapsedMs: number;
+  errorName?: string;
+};
+
+/** Keep production-only subleg measurements on the existing invocation ledger. */
+function recordLeaderBriefFleetMetricTiming(input: {
+  metadata?: (value: Record<string, unknown>) => void;
+  fleet: string;
+  harness: string;
+  startedAtMs: number;
+  startedAt: string;
+  phases: Partial<Record<LeaderBriefFleetMetricTimingPhase, LeaderBriefFleetMetricPhaseTiming>>;
+}): void {
+  try {
+    input.metadata?.({
+      fleetMetricReadTiming: {
+        schemaVersion: 'fleet-metric-read-timing-v1',
+        fleet: input.fleet,
+        harness: input.harness,
+        flowMode: 'current-spec',
+        startedAt: input.startedAt,
+        updatedAt: new Date().toISOString(),
+        elapsedMs: Math.max(0, Math.round(performance.now() - input.startedAtMs)),
+        phases: { ...input.phases },
+      },
+    });
+  } catch {
+    // Timing diagnostics must not change the metrics result or fail the brief.
+  }
+}
+
 const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
   resolveScope: resolveFleetMetricScope,
   listItems: input => readFleetMetricSource(input.resolution),
@@ -334,7 +374,13 @@ export function leaderBriefFleetMetricsUnavailable(input: {
 
 /** P-005 / D-001: reuse work_items:burn_down's canonical resolver + builder. */
 export async function readLeaderBriefFleetMetrics(
-  input: { workspaceId: string; fleet: string; harness: string | null; assignee?: string },
+  input: {
+    workspaceId: string;
+    fleet: string;
+    harness: string | null;
+    assignee?: string;
+    metadata?: (value: Record<string, unknown>) => void;
+  },
   deps: LeaderBriefFleetMetricsDeps = LEADER_BRIEF_FLEET_METRICS_DEPS,
 ): Promise<FleetMetricsResult> {
   if (!input.harness) {
@@ -345,40 +391,77 @@ export async function readLeaderBriefFleetMetrics(
       recoverVia: 'fleet:leader-brief { fleet, harness }',
     });
   }
+  const harness = input.harness;
+  const startedAtMs = performance.now();
+  const startedAt = new Date().toISOString();
+  const phases: Partial<Record<LeaderBriefFleetMetricTimingPhase, LeaderBriefFleetMetricPhaseTiming>> = {};
+  const recordTiming = () => recordLeaderBriefFleetMetricTiming({
+    metadata: input.metadata,
+    fleet: input.fleet,
+    harness,
+    startedAtMs,
+    startedAt,
+    phases,
+  });
+  const measure = async <T>(phase: LeaderBriefFleetMetricTimingPhase, work: () => Promise<T>): Promise<T> => {
+    const phaseStartedAt = performance.now();
+    phases[phase] = { status: 'running', elapsedMs: 0 };
+    recordTiming();
+    try {
+      const value = await work();
+      phases[phase] = { status: 'completed', elapsedMs: Math.max(0, Math.round(performance.now() - phaseStartedAt)) };
+      recordTiming();
+      return value;
+    } catch (error) {
+      phases[phase] = {
+        status: 'failed',
+        elapsedMs: Math.max(0, Math.round(performance.now() - phaseStartedAt)),
+        ...(error instanceof Error ? { errorName: error.name } : {}),
+      };
+      recordTiming();
+      throw error;
+    }
+  };
   try {
-    const resolution = await deps.resolveScope({
+    const resolution = await measure('resolveFleetMetricScope', () => deps.resolveScope({
       workspaceId: input.workspaceId,
-      harness: input.harness,
+      harness,
       fleet: input.fleet,
       flowMode: 'current-spec',
-    });
+    }));
     if (!resolution.ok) return parseFleetMetricsResult(resolution);
     // The exact predicate must be fixed before payload hydration. Reading the
     // whole harness in parallel costs ~19s on the measured production cohort.
-    const itemsPromise = Promise.resolve(deps.listItems({
-      harness: input.harness, includeObservations: true, resolution,
-    }));
+    const itemsPromise = measure('readFleetMetricSource', () => Promise.resolve(deps.listItems({
+      harness, includeObservations: true, resolution,
+    })));
     void itemsPromise.catch(() => undefined);
-    const issueOccurrences = deps.readOccurrences({
+    const issueOccurrences = measure('readIssueOccurrences', () => deps.readOccurrences({
       workspaceId: input.workspaceId,
-      harnessSlug: input.harness,
+      harnessSlug: harness,
       since: resolution.scope.window.startAt,
-    });
+    }));
     // The builder consumes this promise after it has started its floor read, so
     // the two independent aggregate queries can overlap.
     void issueOccurrences.catch(() => undefined);
     const source = await itemsPromise;
-    return await deps.build(resolution, Array.isArray(source) ? source : source.items, {
-      ...(Array.isArray(source) ? {} : { terminalContributions: source.terminalContributions }),
-      issueOccurrences,
-      sourceCapExhausted: false,
-      assignee: input.assignee,
-      workspaceId: input.workspaceId,
-    });
+    const terminalContributions = Array.isArray(source)
+      ? undefined
+      : measure('terminalContributions', () => Promise.resolve(source.terminalContributions));
+    return await measure('buildFleetMetricsResult', () =>
+      deps.build(resolution, Array.isArray(source) ? source : source.items, {
+        ...(terminalContributions ? { terminalContributions } : {}),
+        issueOccurrences,
+        sourceCapExhausted: false,
+        assignee: input.assignee,
+        workspaceId: input.workspaceId,
+      }),
+    );
   } catch (error) {
+    recordTiming();
     return leaderBriefFleetMetricsUnavailable({
       fleet: input.fleet,
-      harness: input.harness,
+      harness,
       reason: `canonical fleet metric read failed${error instanceof Error && error.message ? `: ${error.message}` : ''}`,
       recoverVia:
         `work_items:burn_down { harness: '${input.harness}', fleet: '${input.fleet}', ` +
@@ -395,6 +478,7 @@ export function startLeaderBriefFleetMetricsRead(input: {
   fleet: string;
   harness: string | null | PromiseLike<string | null>;
   assignee?: string;
+  metadata?: (value: Record<string, unknown>) => void;
 }, read = readLeaderBriefFleetMetrics) {
   return Promise.resolve(input.harness).then((harness) => {
     const fallback = leaderBriefFleetMetricsUnavailable({
@@ -411,6 +495,7 @@ export function startLeaderBriefFleetMetricsRead(input: {
         fleet: input.fleet,
         harness,
         assignee: input.assignee,
+        ...(input.metadata ? { metadata: input.metadata } : {}),
       }),
       fallback,
     );
@@ -4300,7 +4385,7 @@ export async function buildLeaderBrief(
   },
   caller: LeaderBriefCaller,
 ) {
-  const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites } = caller;
+  const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites, metadata } = caller;
   // Resolve the workspace before the omitted-fleet lookup. `listFleetsLedBy`
   // is the durable per-fleet leadership authority, and unlike presence it can
   // answer for every fleet this owner leads.
@@ -4371,6 +4456,7 @@ export async function buildLeaderBrief(
     fleet,
     harness: args.harness ?? fleetLaneHealthPromise.then((read) => read.laneHealth?.spec.harness ?? null),
     assignee: ownerId,
+    metadata,
   });
   const rosterResult = await boundedLeaderBriefRead<ListFleetRosterResult>(
     'roster',

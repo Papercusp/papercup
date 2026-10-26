@@ -17,11 +17,13 @@ import json
 import os
 import re
 import resource
+import socket
 import stat
 import subprocess
 import sys
 
 SOURCE_FD = 3
+CONTROL_FD = 5
 SEALS = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
 MAX_IMAGE_BYTES = 2 * 1024 * 1024 * 1024
 MANIFEST_NAME = '.broker-closure.json'
@@ -101,22 +103,60 @@ def export_source(expected, max_bytes):
         refuse('sealed_export_not_acknowledged')
 
 
-def clean_exec(command, expected, size, extra_fds=0):
+def verify_control(fd):
+    # Private host/guest management socket, separate from reviewer invocation.
+    if fd != CONTROL_FD:
+        refuse('control_descriptor_invalid')
+    with socket.socket(fileno=os.dup(fd)) as channel:
+        if (channel.family != socket.AF_UNIX or channel.type != socket.SOCK_STREAM or
+                channel.getsockname() not in ('', b'') or channel.getpeername() not in ('', b'')):
+            refuse('inherited_control_socket_required')
+
+
+def clean_exec(command, expected, size, extra_fds=0, control_fd=None):
     if not command or not os.path.isabs(command[0]):
         refuse('host_command_must_be_absolute')
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     # An arbitrary same-UID host env, startup hook or inherited secret fd must
     # not become a dependency of the isolated source reader.
-    os.closerange(SOURCE_FD + 1 + extra_fds, resource.getrlimit(resource.RLIMIT_NOFILE)[0])
+    keep = set(range(SOURCE_FD, SOURCE_FD + 1 + extra_fds))
+    if control_fd is not None:
+        verify_control(control_fd)
+        keep.add(control_fd)
+    # Preserve explicit descriptors only, including the gap at fd 4 in the
+    # final namespace. A range through fd 5 would leak unrelated fd 4.
+    first = SOURCE_FD
+    for fd in sorted(keep):
+        os.closerange(first, fd)
+        os.set_inheritable(fd, True)
+        first = fd + 1
+    os.closerange(first, resource.getrlimit(resource.RLIMIT_NOFILE)[0])
     os.set_inheritable(SOURCE_FD, True)
     env = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
            'PAPERCUSP_RUNTIME_SOURCE_FD': str(SOURCE_FD),
            'PAPERCUSP_RUNTIME_SOURCE_SHA256': expected, 'PAPERCUSP_RUNTIME_SOURCE_BYTES': str(size)}
+    if control_fd is not None:
+        env['PAPERCUSP_RUNTIME_CONTROL_FD'] = str(control_fd)
     os.execve(command[0], command, env)
 
 
-def mount_source(command, expected, size, manifest_hash):
+def mount_source(command, expected, size, manifest_hash, control_fd=None, runtime_boot=False):
     verify_source(expected, size)
+    if control_fd is not None:
+        verify_control(control_fd)
+    if runtime_boot:
+        # Pin trusted management code before executing any product input. It
+        # remains outside the source image and is never selected by a caller.
+        with open(os.path.join(os.path.dirname(__file__), 'blind-review-runtime-guest.py'), 'rb') as guest:
+            bootstrap = os.memfd_create('blind-review-runtime-init', os.MFD_ALLOW_SEALING)
+            with os.fdopen(os.dup(bootstrap), 'wb') as output:
+                output.write(guest.read())
+        fcntl.fcntl(bootstrap, fcntl.F_ADD_SEALS, SEALS)
+        os.lseek(bootstrap, 0, os.SEEK_SET)
+        if bootstrap != 6:
+            os.dup2(bootstrap, 6, inheritable=True)
+            os.close(bootstrap)
+        command = ['/usr/bin/python3', '-I', '-S', '/runtime.py']
     # The namespace init program itself is pinned by a sealed descriptor, so
     # bwrap does not reopen this mutable checkout after the host starts it.
     with open(__file__, 'rb') as helper:
@@ -134,10 +174,12 @@ def mount_source(command, expected, size, manifest_hash):
             '--symlink', 'usr/lib', '/lib', '--ro-bind', '/lib64', '/lib64',
             '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/source', '--dir', '/etc',
             '--ro-bind-data', '4', '/init.py',
+            *(['--ro-bind-data', '6', '/runtime.py'] if runtime_boot else []),
             '/usr/bin/python3', '-I', '-S', '/init.py', '_extract-exec',
             '--sha256', expected, '--max-bytes', str(size),
-            '--manifest-sha256', manifest_hash, '--', *command]
-    clean_exec(argv, expected, size, extra_fds=1)
+            '--manifest-sha256', manifest_hash,
+            *([] if control_fd is None else ['--control-fd', str(control_fd)]), '--', *command]
+    clean_exec(argv, expected, size, extra_fds=3 if runtime_boot else 1, control_fd=control_fd)
 
 
 def read_manifest(root, expected):
@@ -245,7 +287,7 @@ def inspect_source(expected, size, manifest_hash):
                      separators=(',', ':')), flush=True)
 
 
-def extract_source(command, expected, size, manifest_hash):
+def extract_source(command, expected, size, manifest_hash, control_fd=None):
     verify_source(expected, size)
     # The only extraction is inside the new mount/PID/network/IPC/user scope.
     # Never extract source into a host directory or reopen an image pathname.
@@ -298,21 +340,24 @@ def extract_source(command, expected, size, manifest_hash):
             '--tmpfs', '/tmp', '--perms', '0700', '--dir', '/tmp/home', '--perms', '0700', '--dir', '/tmp/run',
             '--setenv', 'HOME', '/tmp/home', '--setenv', 'XDG_RUNTIME_DIR', '/tmp/run',
             '--chdir', '/source', *command]
-    clean_exec(argv, expected, size)
+    clean_exec(argv, expected, size, control_fd=control_fd)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['seal-exec', 'seal-export', 'mount-exec', '_extract-exec', 'inspect', '_inspect'])
+    parser.add_argument('mode', choices=['seal-exec', 'seal-export', 'mount-exec', 'runtime-exec', '_extract-exec', 'inspect', '_inspect'])
     parser.add_argument('--sha256', required=True)
     parser.add_argument('--max-bytes', required=True, type=int)
     parser.add_argument('--manifest-sha256')
+    parser.add_argument('--control-fd', type=int)
     options, command = parser.parse_known_args()
     if command[:1] == ['--']:
         command = command[1:]
     if (not re.fullmatch('[a-f0-9]{64}', options.sha256) or
             not 0 < options.max_bytes <= MAX_IMAGE_BYTES):
         refuse('invalid_image_identity')
+    if options.control_fd is not None and options.mode not in ['mount-exec', 'runtime-exec', '_extract-exec']:
+        refuse('control_mode_invalid')
     if options.mode == 'seal-export':
         export_source(options.sha256, options.max_bytes)
     elif options.mode == 'seal-exec':
@@ -328,10 +373,14 @@ def main():
                          options.sha256, options.max_bytes, options.manifest_sha256)
         elif options.mode == '_inspect':
             inspect_source(options.sha256, options.max_bytes, options.manifest_sha256)
+        elif options.mode == 'runtime-exec':
+            if command or options.control_fd != CONTROL_FD:
+                refuse('runtime_boot_arguments_invalid')
+            mount_source([], options.sha256, options.max_bytes, options.manifest_sha256, CONTROL_FD, runtime_boot=True)
         elif options.mode == 'mount-exec':
-            mount_source(command, options.sha256, options.max_bytes, options.manifest_sha256)
+            mount_source(command, options.sha256, options.max_bytes, options.manifest_sha256, options.control_fd)
         else:
-            extract_source(command, options.sha256, options.max_bytes, options.manifest_sha256)
+            extract_source(command, options.sha256, options.max_bytes, options.manifest_sha256, options.control_fd)
 
 
 if __name__ == '__main__':

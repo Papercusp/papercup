@@ -39,6 +39,13 @@ export type RuntimeResourceIntent = {
   id: string; lease_id: string; kind: RuntimeResourceKind; slot: string; ownership_tag: string;
   identity: Record<string, unknown> | null;
 };
+/** Recovery uses the immutable consumed tuple, never a replacement's identity. */
+export function runtimeReviewerIdentityFromLease(lease: RuntimeLease): RuntimeReviewerIdentity {
+  return identitySchema.parse({ workspaceId: lease.workspace_id, bindingId: Number(lease.binding_id),
+    activationAuditSeq: lease.activation_audit_seq, replacementEpoch: lease.replacement_epoch,
+    reviewerOwnerId: lease.admission?.reviewerOwnerId, nativeSessionId: lease.admission?.nativeSessionId,
+    confinementFingerprint: lease.admission?.confinementFingerprint });
+}
 export class RuntimeCustodyRefusal extends Error {
   constructor(readonly code: string) { super(code); this.name = 'RuntimeCustodyRefusal'; }
 }
@@ -102,6 +109,31 @@ export function createRuntimeCustodyStore(deps: {
     if (!row?.valid) refuse('lease_expired_or_revoked');
   }
   return {
+    /** Recheck authority under the same transaction/locks as every grant. */
+    reconciliationDisposition(identity: RuntimeReviewerIdentity, leaseId: string): Promise<{
+      lease: RuntimeLease; reason: string | null; staleAllocation: boolean; resources: RuntimeResourceIntent[];
+    }> {
+      return transaction(identity, async tx => {
+        let lease = await allocated(tx, identity, leaseId);
+        const [clock] = await tx<Array<{ expired: boolean; stale: boolean }>>`
+          SELECT expires_at <= clock_timestamp() OR revoked_at IS NOT NULL AS expired,
+            updated_at < clock_timestamp() - interval '30 seconds' AS stale
+          FROM harness_shared.blind_review_runtime_leases WHERE id = ${leaseId}`;
+        const reason = lease.state === 'releasing' ? 'runtime-reconcile-pending'
+          : lease.state === 'released' ? null : clock?.expired ? 'runtime-expired'
+            : !await deps.checkAuthority(tx, identity) ? 'reviewer-authority-ended' : null;
+        if (reason && lease.state !== 'released') {
+          const [cutoff] = await tx<RuntimeLease[]>`UPDATE harness_shared.blind_review_runtime_leases
+            SET state = 'releasing', revoked_at = COALESCE(revoked_at, clock_timestamp()),
+              release_reason = COALESCE(release_reason, ${reason}), updated_at = clock_timestamp()
+            WHERE id = ${leaseId} RETURNING *`;
+          lease = cutoff!;
+        }
+        const resources = await tx<RuntimeResourceIntent[]>`SELECT * FROM harness_shared.blind_review_runtime_resources
+          WHERE workspace_id = ${identity.workspaceId} AND lease_id = ${leaseId}`;
+        return { lease, reason, staleAllocation: lease.state === 'allocating' && clock?.stale === true, resources };
+      }, true);
+    },
     /**
      * Serialize OS creation and reconciliation across host processes without
      * holding a lease-row transaction open while a child boots. Store methods

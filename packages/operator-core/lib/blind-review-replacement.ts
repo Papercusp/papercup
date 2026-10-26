@@ -204,6 +204,15 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
       return { attempt, launch: true, excluded: [...new Set([plan.owner, caller, source.reviewer_owner_id, ...implementers].filter((v): v is string => !!v))] };
     });
     let attempt = selected.attempt;
+    // The replacement reservation is now committed and already cuts off old
+    // dispatch authority. Retire its original runtime before launching further.
+    try {
+      const { retireRuntimeNamespacesForBinding } = await import('./blind-review-runtime-recovery');
+      await retireRuntimeNamespacesForBinding({ workspaceId: input.workspaceId,
+        bindingId: Number(attempt.replacement_of), reason: 'review-replaced' }, { sql });
+    } catch {
+      console.warn('[blind-review-runtime] replacement cleanup pending; periodic recovery will retry');
+    }
     let outcome: unknown = attempt.launch_result;
     if (selected.launch) {
       let invoked = false;

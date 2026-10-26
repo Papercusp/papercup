@@ -1750,7 +1750,7 @@ describe('shouldDispatchReleaseFixer — proven-stale reds do not spend a fixer 
   // The reported case: the verdict carried its OWN re-triage proving these exact files pass at
   // tip (the reader-side `verdictStaleReasonCode: 'retriage-proven'`), and a fixer was dispatched
   // anyway — one full agent spent re-deriving a conclusion the verdict already held.
-  it.each(['deadline', 'absolute-ceiling', 'cap-disabled'] as const)(
+  it.each(['deadline', 'absolute-ceiling', 'cap-disabled', 'unlocked-preparation'] as const)(
     'does NOT dispatch when the run re-ran the named files at tip and they PASSED (refireBlockedBy=%s)',
     (refireBlockedBy) => {
       expect(
@@ -1807,7 +1807,7 @@ describe('shouldDispatchReleaseFixer — proven-stale reds do not spend a fixer 
   // ONE definition of "proven stale" governs both the streak decision and the spend decision.
   // Pinned so the two cannot drift into disagreeing about the same evidence.
   it('agrees with isProvenStaleCandidate, the same predicate the streak classifier uses', () => {
-    for (const refireBlockedBy of ['deadline', 'absolute-ceiling', 'cap-disabled', 'charged-budget'] as const) {
+    for (const refireBlockedBy of ['deadline', 'absolute-ceiling', 'cap-disabled', 'unlocked-preparation', 'charged-budget'] as const) {
       const retriage = { classification: 'stale-candidate' as const, autoRefire: false, refireBlockedBy };
       expect(shouldDispatchReleaseFixer('not-green', 'ee4e3c80', RED, retriage)).toBe(
         !isProvenStaleCandidate(retriage),

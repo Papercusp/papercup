@@ -361,5 +361,16 @@ export async function recordBlindReviewSessionPost(input: {
        AND launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
        AND (status IN ('ready', 'resuming') OR (status = 'posted' AND review_id = ${input.reviewId}))
     RETURNING id`;
+  if (rows.length) {
+    // Canonical post commits before resource cleanup takes a lifecycle lock.
+    try {
+      const { retireRuntimeNamespacesForBinding } = await import('./blind-review-runtime-recovery');
+      for (const row of rows) await retireRuntimeNamespacesForBinding({
+        workspaceId: input.workspaceId, bindingId: Number(row.id), reason: 'review-posted',
+      }, { sql });
+    } catch {
+      console.warn('[blind-review-runtime] post cleanup pending; canonical post already cuts off authority');
+    }
+  }
   return rows.length > 0;
 }
