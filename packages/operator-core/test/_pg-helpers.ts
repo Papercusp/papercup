@@ -13,7 +13,7 @@
  *      reproduce here exactly as in production, not a test-only client artifact.
  *   2. the `harness_shared` schema.
  *
- * cleanup() closes the client and drops the throwaway DB but leaves the container
+ * cleanup() drains ambient telemetry, closes the client and drops the throwaway DB but leaves the container
  * up for reuse by the next test file (testcontainers `.withReuse()`), so a serial
  * integration run doesn't pay the ~2s boot per file.
  */
@@ -757,8 +757,21 @@ export async function createFreshPgDb(
   await sql.unsafe(FALLBACK_OBSERVATIONS_MIN_DDL).simple();
 
   const cleanup = async () => {
-    await sql.end({ timeout: 5 });
-    await db.drop();
+    try {
+      // The debounced writer can outlive the last test. Its default handle may
+      // already be retiring, so drain through this fixture before closing it.
+      // Lazy import avoids loading operator runtime modules during provisioning.
+      const { flushFallbackObservations, fallbackObservationCounters } =
+        await import('../lib/degradation/fallback-observations');
+      const failedBefore = fallbackObservationCounters().failed;
+      const flush = await flushFallbackObservations({ sql });
+      if (flush.failed > 0 || fallbackObservationCounters().failed > failedBefore) {
+        throw new Error('Fresh PG cleanup lost fallback observations while draining telemetry');
+      }
+    } finally {
+      try { await sql.end({ timeout: 5 }); }
+      finally { await db.drop(); }
+    }
   };
 
   return { url: db.url, sql, cleanup };
