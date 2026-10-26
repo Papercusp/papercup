@@ -3589,6 +3589,9 @@ describe('mutation-probe.sh — child source substitutions invalidate guard evid
     ['copy-baseline', 0, 'TEST_FILE_CHILD_SUBSTITUTED count=1'],
     ['mutant', 0, 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=12 skippedTests=0'],
     ['mutant', 1, 'TEST_FILE_RESULT requested=1 status=failed childSubstituted=1 skippedTests=0'],
+    ['baseline', 0, 'TEST_FILE_VERIFIER_SOURCE ref=' + 'a'.repeat(40) + ' receipt=/tmp/proof.json'],
+    ['mutant', 0, 'TEST_FILE_VERIFIER_SOURCE ref=' + 'a'.repeat(40) + ' receipt=/tmp/proof.json'],
+    ['mutant', 1, 'TEST_FILE_VERIFIER_SOURCE ref=' + 'a'.repeat(40) + ' receipt=/tmp/proof.json'],
   ])('refuses %s substitution even when its guard exits %s', (phase, exitCode, notice) => {
     const guard = join(dir, 'substituted-router.sh');
     writeFileSync(guard, `#!/usr/bin/env bash
@@ -3603,7 +3606,8 @@ printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0\\n'
     ]);
     expect(code, out).toBe(2);
     expect(out).toContain('verdict=harness-error');
-    expect(out).toContain(`child_source_substituted=yes phase=${phase}`);
+    const reason = notice.startsWith('TEST_FILE_VERIFIER_SOURCE') ? 'verifier_source_refrozen' : 'child_source_substituted';
+    expect(out).toContain(`${reason}=yes phase=${phase}`);
     expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
     expect(out).not.toContain('VERDICT: MUTANT SURVIVED');
     expect(read()).toBe(ORIGINAL);
