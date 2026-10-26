@@ -1,8 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   continueReleasedOperation,
+  readReleasedOperationContinuationEligibility,
   type ReleasedOperationContinuationDeps,
 } from './continue-released-operation';
+
+const readBindingMock = vi.hoisted(() => vi.fn());
+const eligibilitySqlMock = vi.hoisted(() => vi.fn());
+const eligibilityUnsafeMock = vi.hoisted(() => vi.fn((text: string) => ({ unsafe: text })));
+const eligibilityJsonMock = vi.hoisted(() => vi.fn((value: unknown) => ({ json: value })));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: Object.assign(eligibilitySqlMock, {
+    unsafe: eligibilityUnsafeMock, json: eligibilityJsonMock,
+  }) }),
+}));
+vi.mock('../../blueprint/operation-worker-binding', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  readActiveOperationWorkerClaimBinding: (...args: unknown[]) => readBindingMock(...args),
+}));
 
 const OWNER = 'role-operation-1';
 const WORKSPACE = 'workspace-a';
@@ -17,6 +33,38 @@ const BINDING = {
   operationId: 'op-1', specificationRevision: 'b'.repeat(64), pin: {}, identity: {},
   stack: ['domain:worker'], requiredTools: ['work_items:complete'],
 } as never;
+const BOUND_READ = {
+  status: 'bound' as const,
+  binding: BINDING,
+  receipt: {
+    sessionId: 91, workspaceId: WORKSPACE, ownerId: OWNER,
+    specificationRevision: 'b'.repeat(64), stateRevision: 'c'.repeat(64),
+    acceptedOperation: {},
+  },
+};
+
+let directiveRows: Array<{ id: number }>;
+let claimRows: Array<{ ok: number }>;
+
+beforeEach(() => {
+  directiveRows = [{ id: INPUT.directiveId }];
+  claimRows = [];
+  readBindingMock.mockReset().mockResolvedValue(BOUND_READ);
+  eligibilityUnsafeMock.mockClear();
+  eligibilityJsonMock.mockClear();
+  eligibilitySqlMock.mockReset().mockImplementation(
+    (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?');
+      if (query.includes('harness_shared.owner_directives')) {
+        const exact = [INPUT.directiveId, WORKSPACE, OWNER, INPUT.sessionRef,
+          INPUT.sourceTurnRef, INPUT.prompt].every(value => values.includes(value));
+        return Promise.resolve(exact ? directiveRows : []);
+      }
+      if (query.includes('FROM harness_shared.work_items')) return Promise.resolve(claimRows);
+      return { fragment: query, values };
+    },
+  );
+});
 
 function ctx(origin: 'hook' | 'agent' = 'hook') {
   return {
@@ -35,7 +83,11 @@ function deps(status: 'eligible' | 'active' | 'unavailable' = 'eligible') {
       : { status: 'unavailable' as const, reason: 'database unavailable' });
   const launch = vi.fn(async () => ({
     content: [{ type: 'text' as const, text: 'launched' }],
-    data: { ok: true, tasks: [{ taskId: 'task-1' }] },
+    data: {
+      deduped: false,
+      launch: { opened: 1, ownerIds: ['su-engineering-continuation'], tasks: [{ taskId: 'task-1' }] },
+      completionReceipt: { status: 'recorded', effectRef: 'agent-launch:released-operation-engineering' },
+    },
   }));
   return { readEligibility, launch } as unknown as ReleasedOperationContinuationDeps & {
     readEligibility: typeof readEligibility; launch: typeof launch;
@@ -43,6 +95,51 @@ function deps(status: 'eligible' | 'active' | 'unavailable' = 'eligible') {
 }
 
 describe('sessions:continue-released-operation', () => {
+  describe('durable continuation eligibility', () => {
+    it('accepts only the exact hook-captured directive after the operation claim is released', async () => {
+      await expect(readReleasedOperationContinuationEligibility({
+        workspaceId: WORKSPACE, ownerId: OWNER, ...INPUT,
+      })).resolves.toEqual({ status: 'eligible', binding: BINDING });
+      expect(readBindingMock).toHaveBeenCalledWith(WORKSPACE, OWNER);
+      expect(eligibilityUnsafeMock).toHaveBeenCalledWith('wi.taken_by');
+    });
+
+    it.each([
+      ['prompt', { prompt: INPUT.prompt + ' altered' }],
+      ['source turn', { sourceTurnRef: INPUT.sourceTurnRef + '-other' }],
+      ['session', { sessionRef: INPUT.sessionRef + '-other' }],
+      ['directive id', { directiveId: INPUT.directiveId + 1 }],
+    ])('rejects a mismatched stored %s', async (_label, changed) => {
+      await expect(readReleasedOperationContinuationEligibility({
+        workspaceId: WORKSPACE, ownerId: OWNER, ...INPUT, ...changed,
+      })).resolves.toEqual({
+        status: 'ineligible', reason: 'no exact hook-captured owner directive backs this continuation',
+      });
+    });
+
+    it('rejects continuation while the exact accepted-operation effect claim is still held', async () => {
+      claimRows = [{ ok: 1 }];
+      await expect(readReleasedOperationContinuationEligibility({
+        workspaceId: WORKSPACE, ownerId: OWNER, ...INPUT,
+      })).resolves.toEqual({
+        status: 'ineligible', reason: 'the accepted operation still holds its exact effect claim',
+      });
+    });
+
+    it.each([
+      [{ status: 'none' }, 'the current session has no applied accepted-operation receipt'],
+      [{ status: 'unavailable', reason: 'receipt store unavailable' }, 'receipt store unavailable'],
+    ] as const)('fails closed for unreadable or absent operation authority', async (bindingRead, reason) => {
+      readBindingMock.mockResolvedValueOnce(bindingRead);
+      await expect(readReleasedOperationContinuationEligibility({
+        workspaceId: WORKSPACE, ownerId: OWNER, ...INPUT,
+      })).resolves.toEqual({
+        status: bindingRead.status === 'unavailable' ? 'unavailable' : 'ineligible', reason,
+      });
+      expect(eligibilitySqlMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('refuses a model-originated call before reading operation state', async () => {
     const d = deps();
     const result = await continueReleasedOperation(INPUT, ctx('agent'), d);
@@ -88,6 +185,15 @@ describe('sessions:continue-released-operation', () => {
       ok: true,
       launched: true,
       assignmentRef: expect.stringMatching(/^released-operation-engineering:[a-f0-9]{64}$/),
+      launch: {
+        opened: 1,
+        ownerIds: ['su-engineering-continuation'],
+        tasks: [{ taskId: 'task-1' }],
+      },
+      completionReceipt: {
+        status: 'recorded',
+        effectRef: 'agent-launch:released-operation-engineering',
+      },
     } });
   });
 

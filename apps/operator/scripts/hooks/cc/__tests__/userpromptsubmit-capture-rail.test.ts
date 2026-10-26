@@ -414,6 +414,7 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(ctx).not.toContain('OWNER (interactive)');
     expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
     expect(captureCalls()).toHaveLength(0);
+    expect(continuationCalls()).toHaveLength(0);
   });
 
   it('a human prompt after the scripted-launch startup window remains capturable', async () => {
@@ -449,6 +450,7 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(ctx).toContain('UNVERIFIED partial loop-fire input');
     expect(ctx).not.toContain('OWNER (interactive)');
     expect(captureCalls()).toHaveLength(0);
+    expect(continuationCalls()).toHaveLength(0);
     expect(calls.some((call) => call.name === 'sessions:record-prompt-origin')).toBe(false);
   });
 
@@ -468,6 +470,7 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(ctx).toContain('UNVERIFIED partial loop-fire input');
     expect(ctx).not.toContain('OWNER (interactive)');
     expect(captureCalls()).toHaveLength(0);
+    expect(continuationCalls()).toHaveLength(0);
     expect(calls.some((call) => call.name === 'sessions:record-prompt-origin')).toBe(false);
   });
 
@@ -504,6 +507,9 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
       // The falsifier this control exists for: capture escaping the owner branch
       // and recording injected turns as if the human had typed them.
       expect(captureCalls()).toHaveLength(0);
+      // Continuation is a second owner-only side effect. A regression that
+      // bypassed capture but still exposed this door must fail the same control.
+      expect(continuationCalls()).toHaveLength(0);
     });
   }
 
