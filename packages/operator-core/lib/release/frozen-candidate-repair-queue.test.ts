@@ -2799,6 +2799,26 @@ describe('WI-6554700010019177 — frozenRepairAdmissionHandoffBlock mirrors the 
     expect(block!.detail).toContain('records its verdict');
   });
 
+  // WI-6554700010030197: a parked, runner-less direct successor never records a verdict, so
+  // "wait for its verdict" sent admitters into a wait that could not end.
+  it('names the scheduled resume, not a verdict, for a parked direct successor of the origin', () => {
+    const parked = {
+      status: 'present',
+      transaction: { attemptId: 'live-2-bbbb', phase: 'waiting', repairHead: head, previousAttemptId: 'origin-1-aaaa',
+        currentPhysicalRunner: null },
+    } as const;
+    const block = frozenRepairAdmissionHandoffBlock(queueWith('origin-1-aaaa'), parked);
+    expect(block).toMatchObject({ reason: 'qualification-attempt-mismatch', transactionPhase: 'waiting' });
+    expect(block!.detail).toContain('next scheduled qualification resume re-stamps the origin');
+    expect(block!.detail).not.toContain('records its verdict');
+    // A waiting attempt that is NOT the origin's direct successor keeps the generic wording.
+    const unrelated = frozenRepairAdmissionHandoffBlock(queueWith('origin-1-aaaa'), {
+      ...parked,
+      transaction: { ...parked.transaction, previousAttemptId: 'someone-else' },
+    });
+    expect(unrelated!.detail).toContain('records its verdict');
+  });
+
   it('blocks a terminal non-origin attempt and a missing transaction, each with its own retry point', () => {
     expect(frozenRepairAdmissionHandoffBlock(queueWith('origin-1'), present('other-2', 'terminal'))!.detail)
       .toContain('re-stamps the origin');

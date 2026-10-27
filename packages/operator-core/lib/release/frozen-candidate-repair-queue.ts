@@ -4427,7 +4427,16 @@ export function isJudgingPinnedActiveRepair(input: {
  * has this shape.
  */
 export type FrozenRepairAdmissionQualificationRead =
-  | { status: 'present'; transaction: { attemptId: string; phase?: string | null; repairHead?: string | null } }
+  | {
+      status: 'present';
+      transaction: {
+        attemptId: string;
+        phase?: string | null;
+        repairHead?: string | null;
+        previousAttemptId?: string | null;
+        currentPhysicalRunner?: unknown;
+      };
+    }
   | { status: 'none' | 'unreadable'; error?: string };
 
 export interface FrozenRepairAdmissionHandoffBlock {
@@ -4478,7 +4487,15 @@ export function frozenRepairAdmissionHandoffBlock(
       ? `Terminal qualification attempt ${short(transactionAttemptId)} does not own this queue (origin ` +
         `${short(origin)}), so the admission handoff guard cannot match. Nothing was published. The next ` +
         'qualification begin re-stamps the origin; admit after it. Do not retry-loop.'
-      : `Qualification attempt ${short(transactionAttemptId)} (phase ${transactionPhase ?? 'unknown'}) is judging ` +
+      : transactionPhase === 'waiting' && !transaction.currentPhysicalRunner &&
+          transaction.previousAttemptId === origin
+        // WI-6554700010030197: a parked attempt records no verdict, so "after the run ends" never
+        // arrives. Its next scheduled resume re-stamps the one-hop-stale origin to itself.
+        ? `Qualification attempt ${short(transactionAttemptId)} is parked waiting with no runner and is the ` +
+          `direct successor of this queue's origin ${short(origin)}, which a stale queue write restored. It ` +
+          'records no verdict while parked. Its next scheduled qualification resume re-stamps the origin to it; ' +
+          'admit after that fire begins. Nothing was published. Do not retry-loop.'
+        : `Qualification attempt ${short(transactionAttemptId)} (phase ${transactionPhase ?? 'unknown'}) is judging ` +
         `repairHead ${short(transactionRepairHead ?? queue.repairHead)}. This queue's origin is attempt ` +
         `${short(origin)}, so the admission handoff guard cannot match until that attempt records its verdict. ` +
         'Nothing was published. Admit again after the run ends. Do not retry-loop.';

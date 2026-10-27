@@ -2445,6 +2445,20 @@ const QUALIFICATION_STORE_TXN_OPTIONS = {
   connectionSetupBackoffMs: 1_000,
 } as const;
 
+/** The stored queue's origin attempt, read structurally (null when absent or malformed). */
+function repairQueueOriginAttemptId(rawRepairQueue: unknown): string | null {
+  if (!rawRepairQueue || typeof rawRepairQueue !== 'object' || Array.isArray(rawRepairQueue)) return null;
+  const origin = (rawRepairQueue as { qualificationAttemptId?: unknown }).qualificationAttemptId;
+  return typeof origin === 'string' && origin ? origin : null;
+}
+
+/** The stored queue's CAS version (0 when absent or malformed, so a bump is still positive). */
+function repairQueueUpdatedAtMs(rawRepairQueue: unknown): number {
+  if (!rawRepairQueue || typeof rawRepairQueue !== 'object' || Array.isArray(rawRepairQueue)) return 0;
+  const value = Number((rawRepairQueue as { updatedAtMs?: unknown }).updatedAtMs);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
 async function mutateStoredQualification(
   target: GateVerdictTarget,
   change: (
@@ -2478,10 +2492,38 @@ async function mutateStoredQualification(
       // Keep async probes under this row lock. Moving the probe outside the mutation would let
       // it describe one runner while the following decision acts on a replacement.
       const changed = await change(current, rowContext);
-      if (changed.status !== 'updated') return changed;
+      const successorInput =
+        typeof options.successorInput === 'function' ? options.successorInput(rowContext) : options.successorInput;
+      // WI-6554700010030197: a SAME-attempt resume never reaches the successor reconciliation
+      // below. When the queue's origin sits exactly one hop behind this attempt (its own begin
+      // re-stamped the queue, then a queue write built from an older snapshot restored the
+      // predecessor id), every later fire resumes this attempt and the admission handoff guard,
+      // which needs origin === attemptId, refuses every admit until a verdict an awaiting-fixer
+      // queue never produces. Heal exactly that one-hop lineage under this row lock, and only on
+      // a 'preserved' verdict: a fenced or blocked assessment leaves the resume's result as it was.
+      const staleOriginResume =
+        successorInput &&
+        current &&
+        (changed.status === 'updated' || changed.status === 'idempotent') &&
+        changed.transaction.attemptId === current.attemptId &&
+        current.previousAttemptId != null &&
+        repairQueueOriginAttemptId(metadata.repair_queue) === current.previousAttemptId
+          ? current
+          : null;
+      const staleOriginHeal =
+        staleOriginResume && successorInput
+          ? assessTerminalRepairQueueReconciliation(staleOriginResume, successorInput, metadata.repair_queue)
+          : null;
+      const healStaleOrigin = staleOriginHeal?.status === 'preserved';
+      if (changed.status !== 'updated' && !(healStaleOrigin && changed.status === 'idempotent')) return changed;
       // One choke point for every candidate-moving transition (settlement, retarget, reserve).
-      const transition = { ...changed, transaction: voidPreparedSelectionForMovedCandidate(changed.transaction) };
+      // An idempotent resume moved nothing, so it is carried through unchanged.
+      const transition =
+        changed.status === 'updated'
+          ? { ...changed, transaction: voidPreparedSelectionForMovedCandidate(changed.transaction) }
+          : changed;
       const persistTerminalEvent = async (): Promise<void> => {
+        if (transition.status !== 'updated') return;
         if (options.historicalRecovery && current && transition.transaction.previousAttemptId === current.attemptId) {
           await appendPipelineEvent({
             workspaceId: target.workspaceId,
@@ -2508,8 +2550,6 @@ async function mutateStoredQualification(
           detail: { ...options.terminalEvent.detail, attemptId: transition.transaction.attemptId },
         }, tx as unknown as Sql, { required: true });
       };
-      const successorInput =
-        typeof options.successorInput === 'function' ? options.successorInput(rowContext) : options.successorInput;
       // A distinct successor may replace a proved-dead nonterminal runner as well as a
       // terminal attempt. Both inherit the predecessor's queue, so both must reconcile and
       // re-stamp its owner in the same row write. Leaving the abandoned queue's old id in
@@ -2521,11 +2561,14 @@ async function mutateStoredQualification(
       const reconciliation =
         predecessor && successorInput
           ? assessTerminalRepairQueueReconciliation(predecessor, successorInput, metadata.repair_queue)
-          : null;
+          : healStaleOrigin
+            ? staleOriginHeal
+            : null;
+      const reconciledFrom = predecessor ?? staleOriginResume;
       if (reconciliation?.status === 'blocked') {
         return {
           status: 'conflict' as const,
-          transaction: predecessor!,
+          transaction: reconciledFrom!,
           repairQueueReconciliation: reconciliation,
           ...(options.historicalRecovery ? { refusalReason: 'repair-queue-reconciliation' } : {}),
         };
@@ -2535,13 +2578,28 @@ async function mutateStoredQualification(
         // Re-stamp the queue to the successor in the SAME exact-row CAS that installs the
         // successor transaction. Otherwise the next inconclusive run sees ancestry two hops
         // old and wedges on queue-origin-mismatch again.
+        //
+        // WI-6554700010030197: the re-stamp is a queue change, so it advances the queue's CAS
+        // version too. Every queue writer CASes on repair_queue.updatedAtMs and writes its whole
+        // snapshot back; with the version unchanged, a writer that read the queue before this
+        // begin passed its CAS and silently restored the predecessor id (measured 2026-10-27:
+        // origin e4eaae3b restored under successor a7dca9be, every admit then refused).
+        const restampedQueueUpdatedAtMs = Math.max(
+          repairQueueUpdatedAtMs(metadata.repair_queue) + 1,
+          transition.transaction.updatedAtMs,
+        );
         const updatedRows = await tx<{ metadata: Record<string, unknown> }[]>`
           UPDATE harness_shared.routines
              SET metadata = jsonb_set(
                    jsonb_set(
-                     COALESCE(metadata, '{}'::jsonb),
-                     '{repair_queue,qualificationAttemptId}',
-                     ${JSON.stringify(transition.transaction.attemptId)}::text::jsonb,
+                     jsonb_set(
+                       COALESCE(metadata, '{}'::jsonb),
+                       '{repair_queue,qualificationAttemptId}',
+                       ${JSON.stringify(transition.transaction.attemptId)}::text::jsonb,
+                       true
+                     ),
+                     '{repair_queue,updatedAtMs}',
+                     ${String(restampedQueueUpdatedAtMs)}::text::jsonb,
                      true
                    ),
                    '{${tx.unsafe(CHECKPOINT_QUALIFICATION_METADATA_KEY)}}',
@@ -2558,7 +2616,7 @@ async function mutateStoredQualification(
         if (updatedRows.length === 0) {
           return {
             status: 'conflict' as const,
-            transaction: predecessor!,
+            transaction: reconciledFrom!,
             repairQueueReconciliation: {
               ...reconciliation,
               status: 'blocked',
