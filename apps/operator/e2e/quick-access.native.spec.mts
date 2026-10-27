@@ -92,7 +92,8 @@ test('Quick Access opens as an independent native launcher with reports and exac
     expect((await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim()).toBe(windowId);
     await exec('xdotool', ['key', '--clearmodifiers', 'ctrl+shift+k'], { env: displayEnv, timeout: 15_000 });
     await expect.poll(async () => {
-      const found = await exec('xdotool', ['search', '--onlyvisible', '--pid', pid, '--name', '^Quick Access$'],
+      // xdotool combines PID and name with OR unless --all is explicit.
+      const found = await exec('xdotool', ['search', '--all', '--onlyvisible', '--pid', pid, '--name', '^Quick Access$'],
         { env: displayEnv, timeout: 5_000 }).catch(() => ({ stdout: '' }));
       return found.stdout.trim().split('\n').filter(Boolean).length;
     }, { timeout: 30_000 }).toBe(1);
@@ -131,7 +132,7 @@ test('Quick Access opens as an independent native launcher with reports and exac
     await escape();
     await wait('document.querySelector(".pc-qa__search input")?.value === ""');
     expect(await visible()).toBe(true);
-    const popupWindows = (await exec('xdotool', ['search', '--onlyvisible', '--pid', pid, '--name', '^Quick Access$'], { env: displayEnv })).stdout.trim().split('\n');
+    const popupWindows = (await exec('xdotool', ['search', '--all', '--onlyvisible', '--pid', pid, '--name', '^Quick Access$'], { env: displayEnv })).stdout.trim().split('\n');
     expect(popupWindows).toHaveLength(1);
     const screenshot = info.outputPath('quick-access-native.png');
     await exec(tool, ['screenshot', '--pid', pid, '--window-id', popupWindows[0], '--output', screenshot], { env: displayEnv, timeout: 30_000 });

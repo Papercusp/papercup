@@ -48,7 +48,9 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 function mount(params = '') {
-  return render(<NuqsTestingAdapter searchParams={params} hasMemory onUrlUpdate={mocks.urlUpdate}>
+  // The memory adapter re-renders for URL changes. Resetting its global queue
+  // during those renders can notify the mounted launcher during React render.
+  return render(<NuqsTestingAdapter searchParams={params} hasMemory resetUrlUpdateQueueOnMount={false} onUrlUpdate={mocks.urlUpdate}>
     <QuickAccessLauncher />
   </NuqsTestingAdapter>);
 }
