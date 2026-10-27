@@ -252,6 +252,7 @@ import {
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
 import { nativeProcessTraceEnv } from "./lib/vitest-startup-trace.mjs";
+import { ciTestRunGroupGuardFailure } from "./lib/test-run-group-guard.mjs";
 import { readTaskCgroupMemoryScope } from "./lib/task-cgroup-limits.mjs";
 import {
   classifyAffectedBlastRadius,
@@ -7429,6 +7430,10 @@ function runCapturedTask(
   const qualificationTaskOut = qualificationPhysicalExecution?.tasks.includes(spawnTaskKey) &&
     extraArgs.length === 0 && scriptOverride == null
     ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.task.sources.json` : null;
+  const requiresCiRunGroup = Boolean(
+    process.env.CI || process.env.PAPERCUSP_TEST_RUN_SOURCE === "ci",
+  );
+  const expectedCiRunGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
     [PC_TEST_PARTIAL_SKIP_LIST_ENV]: _inheritedPartialSkipList,
@@ -7488,6 +7493,12 @@ function runCapturedTask(
   // router makes that router collide with its live parent and refuse the test
   // with EEXIST before executing a single assertion. Nested children own no
   // outer barrier, so keep the same boundary testing:run already enforces.
+  const runGroupGuardFailure = ciTestRunGroupGuardFailure({
+    required: requiresCiRunGroup,
+    expectedRunGroupId: expectedCiRunGroupId,
+    actualRunGroupId: childEnv.PAPERCUSP_TEST_RUN_GROUP,
+    boundary: "before-admission",
+  });
   delete childEnv.PC_HEAVY_PREEMPT_READY_FILE;
   delete childEnv.PC_HEAVY_PSI_FINALIZATION_FILE;
   // The caller's selector and partial-resume channel are task-local. Strip both from a direct
@@ -7760,9 +7771,24 @@ function runCapturedTask(
     env: childEnv,
     settle: classifyGovernedTestProcessOutcome,
   };
-  return runGovernedTestProcess(
+  const runExecution = runGroupGuardFailure
+    ? Promise.reject(runGroupGuardFailure)
+    : runGovernedTestProcess(
     governedOptions,
     (_admissionContext, governedEnv, { inherited }) => new Promise((resolveRun) => {
+    const admissionRunGroupGuardFailure = ciTestRunGroupGuardFailure({
+      required: requiresCiRunGroup,
+      expectedRunGroupId: expectedCiRunGroupId,
+      actualRunGroupId: governedEnv.PAPERCUSP_TEST_RUN_GROUP,
+      boundary: "after-admission",
+    });
+    if (admissionRunGroupGuardFailure ||
+        governedEnv.PAPERCUSP_TEST_RUN_GROUP !== childEnv.PAPERCUSP_TEST_RUN_GROUP) {
+      throw admissionRunGroupGuardFailure ?? Object.assign(
+        new Error("test-run-group-changed-after-admission"),
+        { code: "AFFECTED_TEST_RUN_GROUP_GUARD" },
+      );
+    }
     const startedAt = Date.now();
     // Register before spawn, using the maintained native config selector rather than
     // deriving the population from whatever outcomes happen to survive interruption.
@@ -8147,7 +8173,9 @@ function runCapturedTask(
       resolveRun(result);
     });
     }),
-  ).catch((error) => {
+  );
+  return runExecution.catch((error) => {
+    const isRunGroupGuardFailure = error?.code === "AFFECTED_TEST_RUN_GROUP_GUARD";
     // Admission/loader failures are attributed to this task rather than
     // rejecting the scheduler shard and losing the terminal run marker.
     const message = error instanceof Error ? error.message : String(error);
@@ -8156,7 +8184,9 @@ function runCapturedTask(
       signal: null,
       stdout: "",
       stderr: "",
-      error: Object.assign(new Error(message), { code: "GOVERNED_ADMISSION_FAILED" }),
+      error: Object.assign(new Error(message), {
+        code: isRunGroupGuardFailure ? "AFFECTED_TEST_RUN_GROUP_GUARD" : "GOVERNED_ADMISSION_FAILED",
+      }),
       __elapsedMs: 0,
       __timeoutMs: taskTimeoutMs,
       __timeoutSource: taskTimeoutSource,
@@ -8165,7 +8195,7 @@ function runCapturedTask(
       __watchdogTimedOut: false,
       __watchdogDeadlineMs: taskTimeoutMs,
       __watchdogKillReason: null,
-      __governedAdmissionError: true,
+      __governedAdmissionError: !isRunGroupGuardFailure,
       ...(cacheDecision
         ? {
             __cacheStatus: "miss",
@@ -8182,9 +8212,9 @@ function runCapturedTask(
     // pre-empted — leaving a verdict of failed=0 while this admission error sat in the log
     // three lines above it.
     observedNonzeroExits++;
-    observedAdmissionErrors++;
+    if (!isRunGroupGuardFailure) observedAdmissionErrors++;
     rawErrSync(
-      `AFFECTED_TASK_PROGRESS state=governed-admission-error task=${JSON.stringify(taskKey(spawnTask))} ` +
+      `AFFECTED_TASK_PROGRESS state=${isRunGroupGuardFailure ? "run-group-guard-error" : "governed-admission-error"} task=${JSON.stringify(taskKey(spawnTask))} ` +
         `elapsedSec=0 capturedBytes=0 stalledForSec=0 timeoutMs=${taskTimeoutMs} ` +
         `timeoutSource=${taskTimeoutSource} durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
         `exitStatus=1 signal=none reason=${JSON.stringify(message)}`,

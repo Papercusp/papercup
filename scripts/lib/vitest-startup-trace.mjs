@@ -116,7 +116,8 @@ function installNativeProcessTrace(out) {
   try {
     emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
       execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
-      nodeOptions: loaderIdentity(process.env.NODE_OPTIONS), reporterOut: process.env.PC_EXECUTED_SOURCE_MAP_OUT ?? null });
+      nodeOptions: loaderIdentity(process.env.NODE_OPTIONS), reporterOut: process.env.PC_EXECUTED_SOURCE_MAP_OUT ?? null,
+      runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null });
   } catch { /* Even an unavailable cwd must not prevent the native entry. */ }
   // A preload's exit listener would run before the program's later listeners
   // and silently lose their writes. Delegate the original emission first and
