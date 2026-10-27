@@ -66,8 +66,13 @@
     },
     {
       "leg": "completion",
-      "disposition": "pending",
-      "note": "Fix in packages/operator-core/lib/agent-tools/work_items/complete.ts (recordCompletionTimeBrief) awaits commit; git-sync held it behind a clean locked dependency (EI-27150393521466774). A replayed completion push is recorded separately once it is on :3170."
+      "disposition": "switched-off-with-reason",
+      "flag": "papercusp-code-intel-push-completion",
+      "switchedOffAt": "2026-10-27T17:33Z",
+      "backend": "pg-override (flags:set via :3170, read back enabled:false)",
+      "reason": "The ledger wiring (recordCompletionTimeBrief in complete.ts) is live on :3170 5475dc1b4b, but the completion brief can never measure on this repository: each exported symbol's change report spawns a cold callers worker that builds a whole-repo program (6034 ms against a 4950 ms budget), so getCompletionTimeBrief always hits its 6000 ms deadline with no change, and complete.ts's equal 6000 ms outer bound then drops the brief as null (:3170 journal 17:26:21Z 'work_items:complete:change-brief exceeded 6000ms'). Replays WI-6554700010030383 and WI-6554700010030384 wrote no leg=completion row. Left ON, every close with filesChanged paid up to 6 s for nothing.",
+      "fixTrackedBy": "WI-6554700010030397",
+      "reEnable": "flags:set enabled:null once the brief runs on a warm graph backend and a replayed measured leg=completion row is recorded on :3170"
     }
   ]
 }
