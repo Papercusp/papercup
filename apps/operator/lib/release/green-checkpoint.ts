@@ -13135,6 +13135,8 @@ async function selectCheckpointFreshCandidate(
 ): Promise<{ candidate: string; tip: string; quietCutApplied: boolean; freezeCut: FreezeCutRecord | null }> {
   let { candidate } = input;
   const { lastReady, opts, repairVerification, initialCandidateVerification, diagnosticOnly, repairQueue } = input;
+  // A supplied candidate can be a tip hint; only pinned provenance suppresses fresh cuts.
+  const isPinnedCandidate = checkpointCandidateProvenance(opts).candidateSource === "pinned";
   // QUIET CUT (2026-07-01): never judge a tip younger than the quiet window. On a shared
   // tree, a logically-atomic cross-package change lands across SEVERAL ~3-min git-sync
   // ticks — a candidate cut between the halves is TORN and reds the whole run on a state
@@ -13151,7 +13153,7 @@ async function selectCheckpointFreshCandidate(
   const candidateBeforeQuietCut = candidate;
   let quietCutApplied = false;
   if (
-    !opts.candidate &&
+    !isPinnedCandidate &&
     !repairVerification &&
     !initialCandidateVerification &&
     // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
@@ -13199,7 +13201,7 @@ async function selectCheckpointFreshCandidate(
   // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
   let freezeCut: FreezeCutRecord | null = null;
   if (
-    !opts.candidate &&
+    !isPinnedCandidate &&
     !repairVerification &&
     !initialCandidateVerification &&
     !diagnosticOnly &&
