@@ -18,6 +18,7 @@ import {
   type IdleRungResult,
 } from './idle-repair-queue-actuator';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import { currentRepairLimbExecutor, parseRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import { createFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import { buildCandidateSnapshot, candidateSnapshotMatchesDispatch } from './candidate-snapshot';
 
@@ -603,16 +604,41 @@ describe('pass-record content marker (gate-repair-plane R-6)', () => {
   const pass = () => ({ startedAtMs: OPENED, completedAtMs: OPENED + MIN, snapshot: snapshot(), episode: null,
     result: { decision: 'not-idle' as const, acted: [] } });
 
+  const writer: RepairLimbExecutor = {
+    hostId: 'port-3271',
+    processId: '424242',
+    executingBuild: { sha: 'abc1234def5678', source: 'baked' },
+  };
+
   it('stamps every pass record with the build marker and keeps the pass fields intact', () => {
-    const record = buildIdleQueueActuatorObservation(pass());
+    const record = buildIdleQueueActuatorObservation(pass(), writer);
     expect(IDLE_ACTUATOR_PASS_MARKER).toMatch(/\S/);
-    expect(record).toEqual({ version: 1, ...pass(), marker: IDLE_ACTUATOR_PASS_MARKER });
+    expect(record).toEqual({ version: 1, ...pass(), executor: writer, marker: IDLE_ACTUATOR_PASS_MARKER });
   });
 
   it('leaves a marked record valid for the original-history measurement', () => {
-    const marked = buildIdleQueueActuatorObservation(pass());
+    const marked = buildIdleQueueActuatorObservation(pass(), writer);
     expect(marked.version).toBe(1);
     expect(Object.keys(marked).sort()).toEqual(
-      ['completedAtMs', 'episode', 'marker', 'result', 'snapshot', 'startedAtMs', 'version']);
+      ['completedAtMs', 'episode', 'executor', 'marker', 'result', 'snapshot', 'startedAtMs', 'version']);
+  });
+
+  // #P-038 / #D-010: R-6's subject is the first record carrying the marker whose OWN stamped
+  // build contains it, so the stamp must be on the pass record itself, not only on the
+  // upserted episode row (pipeline_events 842662/843492 carried none).
+  it('stamps the pass record with the writing executor (host, process, loaded build) by default', () => {
+    const record = buildIdleQueueActuatorObservation(pass());
+    expect(record.executor).toEqual(currentRepairLimbExecutor());
+    expect(record.executor?.hostId).toMatch(/\S/);
+  });
+
+  it('keeps the executor stamp evaluable from the stored record alone (JSON round trip)', () => {
+    const stored = JSON.parse(JSON.stringify(buildIdleQueueActuatorObservation(pass(), writer))) as Record<string, unknown>;
+    expect(stored.marker).toBe(IDLE_ACTUATOR_PASS_MARKER);
+    expect(parseRepairLimbExecutor(stored.executor)).toEqual(writer);
+  });
+
+  it('runs a fresh proof: the marker is not the unstamped 2026-10-27 value whose records are residue', () => {
+    expect(IDLE_ACTUATOR_PASS_MARKER).not.toBe('gate-repair-plane-r6-proof-2026-10-27');
   });
 });

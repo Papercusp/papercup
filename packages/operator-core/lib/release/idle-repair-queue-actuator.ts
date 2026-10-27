@@ -718,6 +718,11 @@ export interface IdleQueueActuatorObservation {
   snapshot: IdleQueueSnapshot;
   episode: IdleQueueEpisode | null;
   result: IdleQueuePassResult;
+  /**
+   * The writing executor: host, process and loaded build (R-1; absent on records written
+   * before gate-repair-plane-on-current-build-2026-10-15#P-038).
+   */
+  executor?: RepairLimbExecutor;
   /** The code-content marker of the writing build (absent on records written before it). */
   marker?: string;
 }
@@ -725,16 +730,21 @@ export interface IdleQueueActuatorObservation {
 /**
  * gate-repair-plane-on-current-build-2026-10-15 R-6 / P-006: a constant every pass record
  * carries, so a record proves WHICH CODE executed by content, not by a build sha that can
- * describe a dirty bundle. The live proof compares the first record carrying a new value with
- * main's tree at that moment. Change the value only to run a fresh proof.
+ * describe a dirty bundle. Change the value only to run a fresh proof.
+ *
+ * #D-010 / #P-038: the first value's records carried no executor stamp, so R-6 could not tell
+ * from a record alone whether the build that wrote it contains the marker. The R-6 subject is
+ * now the first pass record carrying THIS value whose own `executor.executingBuild.sha`
+ * contains it; a record whose stamped sha lacks it is a dirty-bundle execution (residue).
  */
-export const IDLE_ACTUATOR_PASS_MARKER = 'gate-repair-plane-r6-proof-2026-10-27';
+export const IDLE_ACTUATOR_PASS_MARKER = 'gate-repair-plane-r6-proof-2026-10-27-stamped';
 
-/** One pass record, stamped with this build's marker. */
+/** One pass record, stamped with the writing executor and this build's marker. */
 export function buildIdleQueueActuatorObservation(
-  pass: Omit<IdleQueueActuatorObservation, 'version' | 'marker'>,
+  pass: Omit<IdleQueueActuatorObservation, 'version' | 'marker' | 'executor'>,
+  executor: RepairLimbExecutor = currentRepairLimbExecutor(),
 ): IdleQueueActuatorObservation {
-  return { version: 1, ...pass, marker: IDLE_ACTUATOR_PASS_MARKER };
+  return { version: 1, ...pass, executor, marker: IDLE_ACTUATOR_PASS_MARKER };
 }
 
 export async function recordIdleQueueActuatorObservation(sql: Sql,
@@ -1055,7 +1065,7 @@ export async function checkIdleRepairQueue(
       await recordIdleQueueActuatorObservation(sql, { workspaceId, installSlug }, queue,
         buildIdleQueueActuatorObservation({
           startedAtMs, completedAtMs: (opts.nowMs ?? Date.now)(), snapshot, episode, result,
-        }));
+        }, executor));
     }
     if (queueMeasured && result.decision === 'not-idle') {
       const { resolveAlarm } = await import('../alarm-attention');
