@@ -1791,16 +1791,45 @@ mutation_descriptor_reader_ready() {
     *) die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT must be auto, always or never (got: '${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT}')" ;;
   esac
   url="$MUTATION_DESCRIPTOR_READER_HEALTH_URL"
-  reader_http="$(curl -sS -m 3 --max-filesize 65536 -o "$SCRATCH/reader-health.body" \
-    -w '%{http_code}\t%{time_total}' "$url" 2>"$SCRATCH/reader-health.err")" || reader_curl_exit=$?
+  # A restarting reader is not an absent one: the staging :3170 operator
+  # restarts on every staging advance, and for those seconds it refuses the
+  # connection, times out, or its proxy answers 5xx. A single read then
+  # refused a whole proof run as reader-unavailable (EI-27128359939578808).
+  # Retry exactly those transient answers within a bounded budget; any other
+  # answer (a 2xx/4xx, an unreadable file:// URL) is final on the first read.
+  local wait_sec="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC:-120}"
+  local retry_sec="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC:-5}"
+  case "$wait_sec" in ''|*[!0-9]*) die "PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC must be a whole number of seconds (got: '$wait_sec')" ;; esac
+  case "$retry_sec" in ''|*[!0-9]*|0) die "PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC must be a positive whole number of seconds (got: '$retry_sec')" ;; esac
+  local deadline=$(( $(date +%s) + wait_sec )) attempt=0 transient
+  while :; do
+    attempt=$((attempt + 1))
+    reader_curl_exit=0
+    reader_http="$(curl -sS -m 3 --max-filesize 65536 -o "$SCRATCH/reader-health.body" \
+      -w '%{http_code}\t%{time_total}' "$url" 2>"$SCRATCH/reader-health.err")" || reader_curl_exit=$?
+    transient=0
+    case "$reader_curl_exit:${reader_http%%$'\t'*}" in
+      7:*|28:*|52:*|56:*) transient=1 ;;   # refused, timed out, empty reply, reset
+      0:5??) transient=1 ;;                # the reader's proxy answered 5xx
+    esac
+    [ "$transient" -eq 1 ] && [ "$(date +%s)" -lt "$deadline" ] || break
+    printf 'MUTATION_PROBE_READER_RETRY attempt=%s curl_exit=%s http=%s url=%s retry_in=%ss\n' \
+      "$attempt" "$reader_curl_exit" "${reader_http%%$'\t'*}" "$url" "$retry_sec" >&2
+    sleep "$retry_sec"
+  done
   sha="$(MPD_READER_BODY="$SCRATCH/reader-health.body" MPD_READER_HTTP="$reader_http" \
-    MPD_READER_CURL_EXIT="$reader_curl_exit" node --input-type=module - <<'NODE'
+    MPD_READER_CURL_EXIT="$reader_curl_exit" MPD_READER_ATTEMPTS="$attempt" MPD_READER_URL="$url" \
+    node --input-type=module - <<'NODE'
 import { readFileSync } from 'node:fs';
 const [httpStatus, elapsedSeconds] = (process.env.MPD_READER_HTTP ?? '').split('\t');
 const curlExit = Number(process.env.MPD_READER_CURL_EXIT);
+const attempts = Number(process.env.MPD_READER_ATTEMPTS);
+// A file:// transfer has no response code: curl reports 000 for a file it read
+// successfully, so only an HTTP(S) reader is held to a 2xx status.
+const fileUrl = /^file:/i.test(process.env.MPD_READER_URL ?? '');
 let reason = curlExit === 0 ? null : 'curl-error';
 let sha = null;
-if (!reason && !/^2\d\d$/.test(httpStatus ?? '')) reason = 'http-error';
+if (!reason && !/^2\d\d$/.test(httpStatus ?? '') && !(fileUrl && httpStatus === '000')) reason = 'http-error';
 if (!reason) {
   try {
     const health = JSON.parse(readFileSync(process.env.MPD_READER_BODY, 'utf8'));
@@ -1809,7 +1838,7 @@ if (!reason) {
   } catch { reason = 'invalid-json'; }
 }
 console.error('MUTATION_PROBE_READER_HTTP_JSON=' + JSON.stringify({
-  curlExit, httpStatus: httpStatus || null, elapsedSeconds: elapsedSeconds || null, reason, sha,
+  curlExit, httpStatus: httpStatus || null, elapsedSeconds: elapsedSeconds || null, attempts, reason, sha,
 }));
 if (sha) process.stdout.write(sha);
 NODE
