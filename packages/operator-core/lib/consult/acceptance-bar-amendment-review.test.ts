@@ -328,7 +328,11 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       hasLaterPost,
     });
 
-    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42' });
+    expect(hasLaterPost).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      previewPostRef: 'thread-post:42',
+      excludeAuthorId: 'su-implementer',
+    });
     expect(launchFresh).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       state: 'no-eligible-reviewer',
@@ -336,6 +340,34 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       freshReviewer: { state: 'not-launched', reason: expect.stringContaining('later thread reply') },
     });
     expect(result.next).toContain('reviewEvidencePost');
+  });
+
+  it('does not treat requester-authored persistence as a prior reviewer reply', async () => {
+    const route = vi.fn().mockResolvedValue({
+      state: 'no-eligible-reviewer',
+      conversationId: null,
+      reason: 'no_available_responder',
+      screenedOut: [],
+    });
+    const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'fresh launch attempted' });
+    const hasLaterPost = vi.fn(async (args: { excludeAuthorId?: string }) =>
+      args.excludeAuthorId !== 'su-implementer');
+
+    const result = await openAcceptanceBarAmendmentReview(baseInput, {
+      verifyPreviewPost: vi.fn(),
+      route,
+      launchFresh,
+      hasLaterPost,
+    });
+
+    expect(hasLaterPost).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      previewPostRef: 'thread-post:42',
+      excludeAuthorId: 'su-implementer',
+    });
+    expect(launchFresh).toHaveBeenCalledTimes(1);
+    expect(result.freshReviewer).toEqual({ state: 'not-launched', reason: 'fresh launch attempted' });
+    expect(result.next).not.toContain('later thread reply');
   });
 
   // WI-10003299: an empty menu used to end the review ("re-request later"), so a

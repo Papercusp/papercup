@@ -417,12 +417,14 @@ function reviewerEndedOnProviderError(
   }
 }
 
-/** True when anyone (or `authorId`, when known) posted on the preview post's
- * thread after it: the reviewer's verdict, or a reply worth not stomping on. */
+/** True when a matching author posted on the preview post's thread after it.
+ * `excludeAuthorId` omits requester-authored artifact notes, which are not an
+ * independent review disposition. */
 export async function previewThreadHasLaterPost(args: {
   workspaceId: string;
   previewPostRef: string;
   authorId?: string;
+  excludeAuthorId?: string;
   /** Only an answer newer than this validated evidence settles its re-review. */
   afterPostRef?: string;
 }, providedSql?: import('postgres').Sql): Promise<boolean> {
@@ -439,6 +441,7 @@ export async function previewThreadHasLaterPost(args: {
        AND pv.id = ${postId}::bigint
        AND p.id > ${afterPostId}::bigint
        AND (${args.authorId ?? null}::text IS NULL OR p.author_id = ${args.authorId ?? null})
+       AND (${args.excludeAuthorId ?? null}::text IS NULL OR p.author_id <> ${args.excludeAuthorId ?? null})
      LIMIT 1`;
   return rows.length > 0;
 }
@@ -931,6 +934,7 @@ export async function openAcceptanceBarAmendmentReview(
   if (!reviewEvidence && await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
     workspaceId: input.workspaceId,
     previewPostRef,
+    excludeAuthorId: input.identity.ownerId,
   })) {
     const reason = `preview ${previewPostRef} already has a later thread reply; post new verification evidence on that thread and pass reviewEvidencePost to request a re-review`;
     return {
