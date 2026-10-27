@@ -26,6 +26,11 @@ import {
   withAcquisitionDeadline,
 } from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
+import {
+  CODE_INTEL_RESULT_METADATA_KEY,
+  classifyCodeIntelExit,
+  isNativeCodeIntelTool,
+} from './code-intelligence/code-intel-result-status';
 import { resolveDispatchPremises } from './agent-tools/premises-gate';
 import {
   PASS_THROUGH,
@@ -1249,6 +1254,8 @@ interface RecordInvocationInput {
   args?: unknown;
   eventCount?: number;
   metadataJson?: Record<string, unknown> | null;
+  /** The ToolResult the handler returned on a normal return; read only to classify native code-intel results. */
+  resultSnapshot?: unknown;
   /** Actual applied revision from the final kernel enforcement seat. */
   executionRevision?: KernelExecutionRevision | null;
   /** Structured kernel decisions for audit/debug consumers. */
@@ -1368,6 +1375,25 @@ INSERT INTO harness_shared.tool_invocations
 // telemetry-buffer-config.ts). Kill-switch OFF / empty override ⇒ those defaults ⇒ byte-identical.
 
 let telemetryQueue: TelemetryRow[] = [];
+
+// One native code-intel status row per invocation id (code-intel-delivery-and-outcomes P-004 / R-2).
+// flushPendingTelemetry splices batches and never requeues, so the only duplicate source is a second
+// recordInvocation for the same callId; a retry carries a new callId and records its own row.
+const CODE_INTEL_SEEN_CAP = 4096;
+const codeIntelSeen = pinModuleState('@papercusp/operator-core.projected-tool-deps.code-intel-seen', () => ({
+  callIds: new Set<string>(),
+}));
+export function isDuplicateCodeIntelRecord(callId: string | null | undefined): boolean {
+  if (!callId) return false;
+  const seen = codeIntelSeen.callIds;
+  if (seen.has(callId)) return true;
+  seen.add(callId);
+  if (seen.size > CODE_INTEL_SEEN_CAP) {
+    const oldest = seen.values().next().value;
+    if (oldest !== undefined) seen.delete(oldest);
+  }
+  return false;
+}
 let telemetryFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let telemetryFlushInFlight: Promise<void> | null = null;
 let telemetryDropped = 0;
@@ -2063,11 +2089,32 @@ export function isPaletteUiPollRead(input: {
 }
 
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
+  // Native code-intel calls carry a queryable result status (code-intel-delivery-and-outcomes
+  // P-004 / R-2): one row per invocation id, so a second record for the same callId is dropped.
+  const codeIntel = isNativeCodeIntelTool(input.toolName);
+  if (codeIntel && isDuplicateCodeIntelRecord(input.callId)) return;
   const otel = finishToolTrace(input);
   // OTel identity and child receipts are host-owned, including when tracing was
   // unavailable. Caller metadata must never survive as a guessed observation.
-  const { otel: _untrustedOtel, ...metadata } = input.metadataJson ?? {};
-  input = { ...input, metadataJson: { ...metadata, ...(otel ? { otel } : {}) } };
+  const { otel: _untrustedOtel, [CODE_INTEL_RESULT_METADATA_KEY]: _untrustedCodeIntel, ...metadata } = input.metadataJson ?? {};
+  const codeIntelResult = codeIntel
+    ? classifyCodeIntelExit({
+        toolName: input.toolName,
+        invocationId: input.callId ?? null,
+        status: input.status,
+        errorCode: input.errorCode,
+        errorMessage: input.errorMessage,
+        resultSnapshot: input.resultSnapshot,
+      })
+    : null;
+  input = {
+    ...input,
+    metadataJson: {
+      ...metadata,
+      ...(otel ? { otel } : {}),
+      ...(codeIntelResult ? { [CODE_INTEL_RESULT_METADATA_KEY]: codeIntelResult } : {}),
+    },
+  };
   // Close this call's in-flight entry FIRST — before every early return below.
   // Placement is load-bearing: the palette-poll drop and the buildTelemetryRow bail
   // both `return` without writing a row, and settling after either of them would
@@ -2312,6 +2359,9 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
     papercuspComputeQuotaWindow(ctx, toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota, toolName, input),
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
+  // Native code-intel calls record a result status even on a transport with no quota window
+  // (HTTP/IPC/unscoped internal), so the unknown-rate denominator covers every call (P-004 / R-2).
+  recordWithoutWindow: isNativeCodeIntelTool,
   overrideTool: overrideToolImpl,
   // Capability-envelope port (agent-capability-confinement B-06 / P-012). Evaluates the
   // cheap per-role envelope at the dispatch chokepoint; SU/non-fleet callers are exempt
