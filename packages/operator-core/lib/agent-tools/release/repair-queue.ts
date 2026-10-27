@@ -926,9 +926,15 @@ function sameAdmissionPrecheck(
 ): state is FrozenRepairAdmissionPrecheck {
   if (!state || state.testEnvironment !== ADMISSION_TEST_ENVIRONMENT) return false;
   // Resume retains the original measured commit. A rebuilt synthetic commit may
-  // have a new message/time but must prove the same tree and source provenance.
+  // have a new message/time but must prove the same TREE (checked below).
+  // WI-6554700010030176: the source commit is NOT part of that proof. For a path
+  // admission input.sourceCommit is the staging tip at admit time, which git-sync
+  // advances every few minutes; requiring it to match discarded a passed 151-file
+  // pre-check whose built tree was byte-identical, so any pre-check spanning one
+  // git-sync commit could never be confirmed. The measured tree is the content that
+  // was tested, and the identity hash below still binds the stored measurement to
+  // its own operation (including the source it was measured from).
   if (state.measurement && (
-    state.sourceCommit !== input.sourceCommit ||
     // EI-27114233692780034: state.radius is a jsonb read-back (keys re-ordered), so compare canonically.
     canonicalJson(state.radius) !== canonicalJson(input.radius) ||
     state.measurement.identity !== admissionPrecheckMeasurementIdentity(state, input.signature)

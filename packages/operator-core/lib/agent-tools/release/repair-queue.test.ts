@@ -1495,6 +1495,44 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true, false]);
     });
 
+    // WI-6554700010030176: git-sync advanced staging between the pre-check and the confirm, so
+    // the path admission resolves a NEW source sha, but the built tree is byte-identical.
+    const stagingMovedAdmission = (published: boolean) => {
+      const outcome = admissionOf(published);
+      return { ...outcome, entry: { ...outcome.entry, source: { ref: 'staging', sha: '9'.repeat(40) } } };
+    };
+    const confirmArgs = {
+      op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+      expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs,
+    };
+
+    it('adopts a passed measured aggregate after staging advanced when the built tree is identical (WI-6554700010030176)', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      mocks.admit.mockImplementation((input: { dryRun: boolean }) => stagingMovedAdmission(!input.dryRun));
+      // Non-vacuous: the stored measurement really was taken from a different source commit.
+      expect(fixture.operation.sourceCommit).not.toBe('9'.repeat(40));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...fixture.operation, measurement: fixture.measurement } } });
+      const result = body(await tool.handler(confirmArgs as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: true, precheck: { ran: true } });
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true, false]);
+    });
+
+    it('still re-measures after staging advanced when the built tree differs (WI-6554700010030176)', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      mocks.admit.mockImplementation((input: { dryRun: boolean }) => stagingMovedAdmission(!input.dryRun));
+      const otherTree = { ...fixture.operation, builtTree: '1'.repeat(40) };
+      const measurement = { ...fixture.measurement, identity: admissionPrecheckMeasurementIdentity(otherTree, queue.signature) };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...otherTree, measurement } } });
+      const result = body(await tool.handler(confirmArgs as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: false });
+      expect(dryRuns()).not.toContain(false);
+    });
+
     it('resumes a dead managed task on the same immutable operation and retains a completed red', async () => {
       const fixture = wideFixture();
       wideDoor(fixture);
@@ -1545,8 +1583,11 @@ describe('release:repair-queue', () => {
         measurement: { ...fixture.measurement, results: fixture.measurement.results.slice(0, 40) } };
       const current = { ...queue, admissionPrecheck: previous };
       if (kind === 'source') {
-        // The old measurement remains self-consistent; the newly proved source changed.
+        // The old measurement remains self-consistent; the newly proved source changed the
+        // admitted CONTENT (a different built tree). A source-sha move alone over a
+        // byte-identical tree is reused instead (WI-6554700010030176, tests above).
         mocks.admit.mockImplementation((input: { dryRun: boolean }) => ({ ...admissionOf(!input.dryRun),
+          tree: '1'.repeat(40),
           entry: { ...admissionOf(false).entry, source: { ref: 'staging', sha: '9'.repeat(40) } } }));
       } else if (kind === 'partition') {
         mocks.population.mockImplementation(input => ({ ok: true, population: precheckPopulation({ ...input,
