@@ -3818,6 +3818,58 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     expect(byHand).toMatchObject({ status: 'test_run_not_found', scopeMismatch: { rowHarnessSlug: null } });
   });
 
+  it('links a bound mutant to its same-invocation calibration row left harness-NULL, never a foreign one (EI-26696103067780835)', async () => {
+    await specs.setSpecClause(clause());
+    const failedCase = 'guard > catches the mutant';
+    const descriptor = {
+      schemaVersion: 1, probeInvocationId: 'probe-null-harness-calibration-0001', mode: 'copy-out',
+      // A subject the fixture checkout really contains: the bind fingerprints it as a source path.
+      subjectPath: 'src/reconnect.ts', mutateExpression: 's/true/false/', againstCommit: null,
+      subjectBeforeSha256: 'b'.repeat(64), subjectAfterSha256: 'c'.repeat(64),
+      mutantDiff: '-verified\n+true\n', mutantDiffTruncated: false,
+      testCommandSha256: 'd'.repeat(64), testFileSha256: 'a'.repeat(64),
+    };
+    const execution = (leg: string, failed: number) => ({
+      schemaVersion: 1, root: h.repoRoot, filePath: DERIVE_TEST, runGroupId: null,
+      workspaceId: WORKSPACE, harnessSlug: null, testNamePattern: null,
+      passed: 10, failed, skipped: 0, collectionFailed: false, mutationPhase: leg,
+      commitSha: 'c0ffee1234567890', worktreeDirty: false, testLayer: 'unit',
+      ...(failed > 0 ? { failedCaseTitles: [failedCase] } : {}),
+      mutation: { ...descriptor, leg },
+    });
+    // The probe records every leg with harness NULL (it is env-stamped).
+    const calibration = await recordRun({ harnessSlug: null, source: 'mutation-probe' });
+    await setRunExecutionDetails(calibration, execution('copy-baseline', 0));
+    // A HIGHER-id row with the same invocation identity already attributed to another
+    // harness: the reader picks newest-first, so only the harness rule keeps it out.
+    const foreign = await recordRun({ harnessSlug: 'some-other-harness', source: 'mutation-probe' });
+    await setRunExecutionDetails(foreign, execution('copy-baseline', 0));
+    const mutant = await recordRun({ harnessSlug: null, source: 'mutation-probe', status: 'fail' });
+    await setRunExecutionDetails(mutant, execution('mutant', 1));
+
+    // Bound WITHOUT causalControls: only the mutant row is adopted into the plan harness.
+    const bound = await bindFromRun(mutant, 'WI-101', {
+      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCase] },
+    });
+    if (!bound?.ok) throw new Error(JSON.stringify(bound));
+    expect(bound).toMatchObject({ ok: true, status: 'created' });
+    const harnesses = await db.sql<{ id: number; harness_slug: string | null }[]>`
+      SELECT id, harness_slug FROM harness_shared.test_runs
+       WHERE id IN (${calibration}, ${foreign}, ${mutant}) ORDER BY id`;
+    expect(harnesses.map((r) => [Number(r.id), r.harness_slug])).toEqual([
+      [calibration, null], [foreign, 'some-other-harness'], [mutant, HARNESS],
+    ]);
+
+    const [evidence] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'],
+    });
+    expect(evidence?.testRunId).toBe(mutant);
+    expect(evidence?.testRunProvenance?.mutationBaseline).toMatchObject({
+      testRunId: calibration, status: 'pass',
+      mutation: { leg: 'copy-baseline', probeInvocationId: descriptor.probeInvocationId },
+    });
+  });
+
   it('refuses CI rows, foreign-harness rows, and adequacy the run contradicts', async () => {
     await specs.setSpecClause(clause());
     const ciRun = await recordRun({ workspaceId: null, harnessSlug: null, source: 'ci' });

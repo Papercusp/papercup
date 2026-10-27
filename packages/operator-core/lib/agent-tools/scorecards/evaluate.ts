@@ -222,7 +222,7 @@ async function reportGraderEligibility(
         advice:
           `STOP — do not grade: scorecards:emit will refuse this card with '${verdict.refusal.code}' ` +
           `however complete it is. Report this to whoever assigned the review so a different ` +
-          `independent grader is named; the ratings skeleton below is still useful to hand them.`,
+          'independent grader is named.',
         refusal: verdict.refusal,
       };
     }
@@ -247,7 +247,7 @@ async function reportGraderEligibility(
       principalImplementers: verdict.principalImplementers,
       advice:
         'Eligible to emit the independent grading (omit acceptance — that is the rubric author’s call). ' +
-        'Identity rails only; the ratings/evidence rails are what this call validates.',
+        'Identity rails only; ordinary evaluation and emission must still validate BAR readiness, ratings and evidence.',
     };
   } catch (error) {
     // A pre-flight that cannot answer must say so, not imply clearance.

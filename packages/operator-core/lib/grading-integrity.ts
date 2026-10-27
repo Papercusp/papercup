@@ -82,6 +82,7 @@ import {
 } from './inference-gateway/observability';
 import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
 
@@ -1001,7 +1002,7 @@ export async function confirmPendingGradingAuditReservation(
         FROM harness_shared.work_items AS scorecard
        WHERE scorecard.workspace_id = ${workspaceId}
          AND scorecard.feature_id = ${issueId}
-         AND scorecard.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND scorecard.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND scorecard.payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
          AND (${options.dispatchClaimReservedAt ?? null}::text IS NULL OR
@@ -1594,7 +1595,7 @@ export async function reservePendingGradingAudit(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        FOR UPDATE`;
     const priorRow = priorRows[0];
     const prior = priorRow?.prior_state === 'pending'
@@ -1629,7 +1630,7 @@ export async function reservePendingGradingAudit(
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND payload->'observation'->'retracted' IS NULL
          AND (
            (
@@ -1705,7 +1706,7 @@ export async function reservePendingGradingAudit(
                  updated_ts = ${Date.now()}
            WHERE workspace_id = ${workspaceId}
              AND feature_id = ${issueId}
-             AND item_kind = ANY (ARRAY['bug', 'change', 'task'])`;
+             AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])`;
       }
       return {
         status: 'claimed' as const,
@@ -1730,7 +1731,7 @@ export async function reservePendingGradingAudit(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        FOR UPDATE`;
     const row = current[0];
     if (row?.state !== 'pending' || row.retracted) return { status: 'not-pending' as const };
@@ -1825,7 +1826,7 @@ export async function releasePendingGradingAudit(
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
          AND (
@@ -1859,7 +1860,7 @@ export async function promotePendingGradingAuditClaim(
                '{observation,gradingAudit,lastDispatchReservation}', ${lease}::text::jsonb, true),
              origin = 'local', updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId} AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND payload->'observation'->'retracted' IS NULL
          AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${prior.key}

@@ -2244,7 +2244,10 @@ describe('eligibility-only acceptance preflight (EI-27075741789891557)', () => {
       rubricRevision: 8,
       criteriaHash: 'criteria:identity-only',
       rubricMeaningRevision: 3,
-      graderEligibility: { role: 'independent-grader', canEmitGrading: true, blocksEmit: false },
+      graderEligibility: {
+        role: 'independent-grader', canEmitGrading: true, blocksEmit: false,
+        advice: expect.stringContaining('must still validate BAR readiness, ratings and evidence'),
+      },
     });
     for (const key of ['skeleton', 'latest', 'canonicalRatings', 'instrumentContract', 'releaseGateBinding']) {
       expect(result).not.toHaveProperty(key);
@@ -2286,6 +2289,7 @@ describe('eligibility-only acceptance preflight (EI-27075741789891557)', () => {
       ok: true,
       graderEligibility: {
         role: 'disqualified', canEmitGrading: false, blocksEmit: true,
+        advice: expect.not.stringContaining('skeleton below'),
         refusal: { code: 'grader_in_implementer_lineage' },
       },
     });

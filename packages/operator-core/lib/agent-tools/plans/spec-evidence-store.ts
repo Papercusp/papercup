@@ -4433,7 +4433,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            AND tr.source = 'mutation-probe'
            AND tr.execution_details->'mutation'->>'leg' = 'mutant'
            AND baseline.workspace_id = tr.workspace_id
-           AND baseline.harness_slug = tr.harness_slug
+           -- EI-26696103067780835: binding a mutant adopts only that row into the
+           -- plan harness; its same-invocation calibration rows can stay harness
+           -- NULL. A NULL-harness calibration row from the SAME probe invocation
+           -- (same workspace/file/probeInvocationId/subjectBeforeSha256) is the
+           -- same measurement, never another harness's evidence, so accept it.
+           -- A calibration attributed to a DIFFERENT harness still never matches.
+           AND (baseline.harness_slug = tr.harness_slug OR baseline.harness_slug IS NULL)
            AND baseline.file_path = tr.file_path
            AND baseline.source = 'mutation-probe'
            AND baseline.status = 'pass'
@@ -4442,7 +4448,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                = tr.execution_details->'mutation'->>'probeInvocationId'
            AND baseline.execution_details->'mutation'->>'subjectBeforeSha256'
                = tr.execution_details->'mutation'->>'subjectBeforeSha256'
-         ORDER BY baseline.id DESC
+         ORDER BY (baseline.harness_slug IS NULL), baseline.id DESC
          LIMIT 1
       ) mutation_baseline ON TRUE
       JOIN harness_shared.plan_spec_clauses c
