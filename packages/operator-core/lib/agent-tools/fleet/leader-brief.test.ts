@@ -570,10 +570,11 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       });
       return items;
     });
-    const occurrencePromise = new Promise<never>(() => {});
+    const occurrenceCounts = new Map([['WI-1', 2]]);
+    const occurrencePromise = Promise.resolve(occurrenceCounts);
     const readOccurrences = vi.fn(() => occurrencePromise);
     const build = vi.fn(async (_resolution, _items, opts) => {
-      expect(opts.issueOccurrences).toBe(occurrencePromise);
+      await expect(opts.issueOccurrences).resolves.toBe(occurrenceCounts);
       return unavailable;
     });
 
@@ -581,11 +582,13 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       { workspaceId: 'ws', fleet: 'fleet-a', harness: 'papercusp' },
       { resolveScope, listItems, readOccurrences, build },
     );
-    await Promise.resolve();
+    await vi.waitFor(() => expect(scopeStarted).toBe(true));
     const itemsStartedBeforeScope = itemsStarted;
     releaseScope?.();
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(itemsStarted).toBe(true);
+      expect(readOccurrences).toHaveBeenCalledTimes(1);
+    });
     const occurrenceStartedBeforeItemsReleased = readOccurrences.mock.calls.length === 1;
     releaseItems?.();
 
