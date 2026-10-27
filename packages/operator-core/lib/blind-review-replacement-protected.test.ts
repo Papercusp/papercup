@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
 
 describe('recruiter replacement eligibility interleaving', () => {
@@ -62,5 +62,30 @@ describe('unobserved reviewer end', () => {
     expect(f.state.reconciledEnd).toBe(false);
     expect(f.state.attempts).toEqual([]);
     expect(f.launch).not.toHaveBeenCalled();
+  });
+});
+
+// EI-27120299877087815: review #109 was told to call tools its own ceiling refuses, so it
+// spent the review on capability_denied. The replacement path refuses such a howToRun
+// before it opens the reservation transaction.
+describe('howToRun outside the reviewer ceiling', () => {
+  const fixture = () => replacementFixture(resolve(__dirname, '../../..'),
+    'packages/operator-core/lib/blind-review-replacement-protected.test.ts');
+
+  it('how-to-run-outside-ceiling: refuses before any reservation and launch', async () => {
+    const f = fixture();
+    const begin = vi.spyOn(f.sql, 'begin');
+    expect(await f.run({ howToRun: 'Run the suite, then file findings with work_items:create.' }))
+      .toMatchObject({ ok: false, error: 'how_to_run_outside_ceiling' });
+    expect(begin).not.toHaveBeenCalled();
+    expect(f.state.attempts).toEqual([]);
+    expect(f.launch).not.toHaveBeenCalled();
+  });
+
+  it('how-to-run-admitted: replaces when howToRun names only admitted tools', async () => {
+    const f = fixture();
+    expect(await f.run({ howToRun: 'Run the suite with testing:run, then read testing:run-status.' }))
+      .toMatchObject({ ok: true, attempt: { status: 'ready' } });
+    expect(f.launch).toHaveBeenCalledTimes(1);
   });
 });
