@@ -8,7 +8,7 @@ import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTou
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
-import { readPushIncidentAttribution, readPushPriorWork, priorWorkSubject, type PushInput, type ReadPriorWorkContextDeps } from './push-channel';
+import { readPushIncidentAttribution, readPushPriorWork, priorWorkSubject, pushLegRank, type PushInput, type PushLegId, type ReadPriorWorkContextDeps } from './push-channel';
 import { priorWorkReport, type PriorWorkLedgerRow } from './change-history';
 import { classifyShellLookup } from './native-adoption';
 
@@ -691,5 +691,33 @@ describe('shared snapshot-backed push channel', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('code-intel-push exceeded'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('store unavailable'));
     warn.mockRestore();
+  });
+});
+
+// code-intel-delivery-and-outcomes-2026-10-26#P-002: the incident leg never committed a
+// push. Its attribution read seq-scanned every open work-item (~300 ms against a 75 ms
+// statement timeout) and it ran after the legs that wait, so the 250 ms wall fired first.
+describe('P-002 incident leg reaches commit', () => {
+  it('runs interface, then incident, then the remaining legs in registration order', async () => {
+    const ran: PushLegId[] = [];
+    const d = deps();
+    d.legs = () => new Map((['first-touch', 'grep', 'incident', 'interface', 'clone'] as PushLegId[])
+      .map(id => [id, () => { ran.push(id); return []; }]));
+    await codeIntelPushText(input, 0, d);
+    expect(ran).toEqual(['interface', 'incident', 'first-touch', 'grep', 'clone']);
+    expect([pushLegRank('interface'), pushLegRank('incident'), pushLegRank('resume')]).toEqual([0, 1, 2]);
+  });
+
+  it('reads open-on-path items through the partial GIN index predicates (migration 1595)', async () => {
+    const queries: string[] = [];
+    const tx = vi.fn(async (strings: TemplateStringsArray) => { queries.push(strings.join('$')); return []; });
+    const sql = { begin: async (fn: (t: unknown) => unknown) => fn(tx) } as unknown as Parameters<typeof readPushIncidentAttribution>[2];
+    const result = await readPushIncidentAttribution(input as PushInput, ['lib/target.ts'], sql);
+    expect(result).toEqual({ status: 'measured', changedSymbols: [], workItems: [] });
+    const attribution = queries.find(text => text.includes('open-on-path'));
+    // Both predicates are required: the first is the index's WHERE clause (so the
+    // planner may use the partial index), the second is the indexable operator.
+    expect(attribution).toContain("jsonb_typeof(w.payload->'paths') = 'array'");
+    expect(attribution).toMatch(/\(w\.payload->'paths'\) \?\| \$::text\[\]/);
   });
 });

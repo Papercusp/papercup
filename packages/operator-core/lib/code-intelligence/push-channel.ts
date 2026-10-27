@@ -135,6 +135,11 @@ export async function readPushIncidentAttribution(input: PushInput, paths: strin
       CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(w.payload->'paths') = 'array'
         THEN w.payload->'paths' ELSE '[]'::jsonb END) p(path)
       WHERE w.workspace_id = ${input.workspace} AND w.harness_slug = ${harness}
+        -- Migration 1595's partial GIN index (work_items_payload_paths_gin). Without
+        -- these two predicates this half seq-scans every open item (measured ~300 ms
+        -- against the 75 ms statement_timeout above), so the read always failed.
+        AND jsonb_typeof(w.payload->'paths') = 'array'
+        AND (w.payload->'paths') ?| ${paths}::text[]
         AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
         AND p.path = ANY(${paths}::text[])
       )
@@ -1280,6 +1285,13 @@ async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps,
   return links.value ? { ...context, links: links.value } : context;
 }
 
+/** Leg run order inside the push wall; unlisted legs keep registration order (stable sort). */
+const PUSH_LEG_PRIORITY: readonly PushLegId[] = ['interface', 'incident'];
+export function pushLegRank(id: PushLegId): number {
+  const rank = PUSH_LEG_PRIORITY.indexOf(id);
+  return rank === -1 ? PUSH_LEG_PRIORITY.length : rank;
+}
+
 /** A failed optional push never drops memory, worn rules, or the failure hint. */
 export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps: PushChannelDeps = defaults): Promise<string> {
   // Capture is independent of push flags, snapshot warmth and available text budget.
@@ -1311,8 +1323,12 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
       : null;
     const facts: PushFact[] = [];
     const dropped: PushFact[] = [];
-    // Consequences take precedence over a first-touch brief for the same edit.
-    for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => Number(b === 'interface') - Number(a === 'interface'))) {
+    // Consequences take precedence over a first-touch brief for the same edit. An
+    // observed test failure (incident, P-038) goes next: it is rare, authoritative and
+    // cheap, and its attribution read then overlaps the resume/notes reads already in
+    // flight. Queued after them it started past the 250ms wall and never committed
+    // (measured on :3170 2026-10-27, code-intel-delivery-and-outcomes-2026-10-26#P-002).
+    for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => pushLegRank(a) - pushLegRank(b))) {
       if (signal.aborted || !await deps.enabled(PUSH_LEG_FLAGS[id])) continue;
       try {
         if (id === 'interface' && deps.interfaceContext && interfaceSignatureEdits(input).length) {

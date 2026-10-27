@@ -100,6 +100,24 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     ]);
   });
 
+  it('serves open-on-path from the partial GIN index and still ignores non-array paths (P-002, migration 1595)', async () => {
+    const [index] = await db.adminSql<{ indexdef: string }[]>`SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'harness_shared' AND indexname = 'work_items_payload_paths_gin'`;
+    expect(index?.indexdef).toMatch(/USING gin \(+payload -> 'paths'::text\)+ WHERE \(jsonb_typeof\(+payload -> 'paths'::text\)+ = 'array'::text\)/);
+    const workspace = 'push-incident-gin';
+    // `?|` also matches a scalar string or an object key, so the array predicate is
+    // what keeps these two out, exactly as the old CASE ... ELSE '[]' did.
+    for (const [id, paths] of [['WI-array', ['target.ts']], ['WI-scalar', 'target.ts'], ['WI-object', { 'target.ts': true }]] as const) {
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, kind, title, status, payload)
+        VALUES (${workspace}, 'papercusp', ${id}, 'feature', ${id}, 'open', ${JSON.stringify({ paths })}::jsonb)`;
+    }
+    const result = await readPushIncidentAttribution({ ...input, workspace }, ['target.ts'], db.adminSql);
+    expect(result.workItems).toEqual([
+      expect.objectContaining({ id: 'WI-array', relation: 'open-on-path', paths: ['target.ts'] }),
+    ]);
+  });
+
   it('groups multi-path work items before bounding attribution so repeated files cannot crowd out other items', async () => {
     const workspace = 'push-incident-multi-path';
     const paths = Array.from({ length: 12 }, (_, index) => `source-${index}.ts`);
