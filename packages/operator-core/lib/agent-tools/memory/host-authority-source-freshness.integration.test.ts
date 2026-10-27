@@ -132,7 +132,7 @@ async function app(capabilities = ['memory:search:read']) {
   const minted = mintAppKey();
   await db.sql`INSERT INTO harness_shared.connected_apps (id,user_email,workspace_id,kind,label,scopes,token_hash)
     VALUES (${minted.id},'fixture@example.invalid',${WS},'app','P001 fixture',
-      ${db.sql.json({ capabilities })},${minted.tokenHash})`;
+      ${JSON.stringify({ capabilities })}::jsonb,${minted.tokenHash})`;
   return minted;
 }
 async function signed() {
@@ -175,7 +175,7 @@ beforeEach(async () => {
   await db.sql.unsafe(`TRUNCATE harness_shared.operator_secrets,harness_shared.users,harness_shared.harness_registry,
     harness_shared.connected_apps,harness_shared.connected_app_access_settings,harness_shared.memory_recall_stats`);
   await db.sql`INSERT INTO harness_shared.users VALUES ('p001-authority-default','default','Default',true)`;
-  await db.sql`INSERT INTO harness_shared.harness_registry VALUES (${WS},${db.sql.json({ projects: [] })})`;
+  await db.sql`INSERT INTO harness_shared.harness_registry VALUES (${WS},${JSON.stringify({ projects: [] })}::jsonb)`;
 });
 
 describe('P001 actual additional host authority branches', () => {
