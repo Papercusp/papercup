@@ -5116,13 +5116,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const active = pool.peek ? pool.peek() : pool.active(); // H3: observe WITHOUT advancing the rr-cursor
     const gov = governorForAccount('claude-opus-4', active.accountId);
     const snap = gov.snapshot();
+    const now = Date.now();
     const admission = queue.snapshot();
     const codexAdmission = codexQueue.snapshot();
     // The pool-wide serviceable-account count (EI-11511): governor-narrowed so a weekly-usage-walled
     // account (util7d≈1.0, governor predictively paused) does NOT inflate the capacity denominator, matching
     // what the admission clamp already enforces + the WI-390 spawn-readiness gate reads. `null` (single-account
-    // pool) → 1.
-    const healthyAccounts = serviceableHealthyCount() ?? 1;
+    // pool) → infer the sole route from its active governor instead of reporting a paused account as healthy.
+    const serviceableClaudeAccounts = serviceableHealthyCount();
+    const healthyAccounts = serviceableClaudeAccounts ?? (snap.pausedUntil <= now ? 1 : 0);
     // Priority-tier /stats (step 5): per-tier demand from the queue + the pool-wide healthy-account
     // capacity denominator. Present only with the tier layer (admission.byTier set) → flag-OFF stays
     // byte-identical.
@@ -5138,7 +5140,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // `smoothRpm` on a per-account governor → typeof boolean uniquely selects them; the fleet
     // concurrency governor leaves it undefined). The active/bound account is added from `snap` first
     // so it is present even when a test injects governors via deps.governorFor (registry bypassed).
-    const now = Date.now();
     const codexHealthyAccounts =
       codexServiceableCount(deps.codexPool, now) +
       codexServiceableCount(codexCliPool, now, codexCliPool ? [] : codexCliHealthEntries());
@@ -11451,7 +11452,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // every prober. A sustained durable-path failure is a REAL not-ready condition: report it as one,
       // and 503 so the existing load-balancer/watchdog semantics apply with no new plumbing.
       const dbDown = s.db?.ok === false;
-      sendJson(res, s.pausedUntil > Date.now() || dbDown ? 503 : 200, { ok: !dbDown, ...s });
+      const providerReadiness = {
+        claude: s.healthyAccounts > 0,
+        codex: s.codexHealthyAccounts > 0,
+      };
+      const providerReady = providerReadiness.claude || providerReadiness.codex;
+      const ready = !dbDown && providerReady;
+      // A pause on the active Claude account is account-scoped. The gateway remains ready while
+      // any supported provider has a serviceable route; DB health remains an independent hard gate.
+      sendJson(res, ready ? 200 : 503, { ...s, ok: ready, providerReadiness });
       return;
     }
     if (req.method === 'GET' && (requestPath === '/stats' || requestPath === '/admin/stats')) {
