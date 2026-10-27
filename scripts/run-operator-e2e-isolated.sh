@@ -49,6 +49,18 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 source "$ROOT/libs/generic/verification-harness/bin/vh.sh"
 
+# The task reconciler recovers a lost managed-task watcher from this terminal
+# marker. Register it before vh_bracket_trap so the harness finalizer runs first
+# and the durable task outcome is the last line emitted on every shell exit.
+write_task_terminal_marker() {
+  local rc=$?
+  local status=completed
+  if [ "$rc" -ne 0 ]; then status=failed; fi
+  printf '[capability:bash] JOB END: status=%s exit=%s at %s\n' \
+    "$status" "$rc" "$(date -u +'%Y-%m-%dT%H:%M:%S.%3NZ')"
+}
+trap 'write_task_terminal_marker' EXIT
+
 # The native Inbox acknowledgement acceptance drives a post-onboarding route,
 # and writes a full JSON receipt separately from the reporter's JSONL ledger
 # receipts. Refuse a misconfigured or stale receipt before harness initialization
