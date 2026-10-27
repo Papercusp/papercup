@@ -9,6 +9,8 @@ import {
   parseEpisode,
   runIdleQueueActuatorPass,
   evaluateIdleQueueActuatorWindow,
+  buildIdleQueueActuatorObservation,
+  IDLE_ACTUATOR_PASS_MARKER,
   type IdleQueueActuatorObservation,
   type IdleQueueActuatorDeps,
   type IdleQueueEpisode,
@@ -594,5 +596,23 @@ describe('original idle-actuator history acceptance', () => {
     const h = history();
     expect(evaluateIdleQueueActuatorWindow(h, h.windowEndMs - 1).assertions.every(a => a.passed)).toBe(false);
     expect(evaluateIdleQueueActuatorWindow(h, h.windowEndMs, Infinity).assertions.every(a => a.passed)).toBe(false);
+  });
+});
+
+describe('pass-record content marker (gate-repair-plane R-6)', () => {
+  const pass = () => ({ startedAtMs: OPENED, completedAtMs: OPENED + MIN, snapshot: snapshot(), episode: null,
+    result: { decision: 'not-idle' as const, acted: [] } });
+
+  it('stamps every pass record with the build marker and keeps the pass fields intact', () => {
+    const record = buildIdleQueueActuatorObservation(pass());
+    expect(IDLE_ACTUATOR_PASS_MARKER).toMatch(/\S/);
+    expect(record).toEqual({ version: 1, ...pass(), marker: IDLE_ACTUATOR_PASS_MARKER });
+  });
+
+  it('leaves a marked record valid for the original-history measurement', () => {
+    const marked = buildIdleQueueActuatorObservation(pass());
+    expect(marked.version).toBe(1);
+    expect(Object.keys(marked).sort()).toEqual(
+      ['completedAtMs', 'episode', 'marker', 'result', 'snapshot', 'startedAtMs', 'version']);
   });
 });

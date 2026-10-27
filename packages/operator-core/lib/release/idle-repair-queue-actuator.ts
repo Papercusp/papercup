@@ -718,6 +718,23 @@ export interface IdleQueueActuatorObservation {
   snapshot: IdleQueueSnapshot;
   episode: IdleQueueEpisode | null;
   result: IdleQueuePassResult;
+  /** The code-content marker of the writing build (absent on records written before it). */
+  marker?: string;
+}
+
+/**
+ * gate-repair-plane-on-current-build-2026-10-15 R-6 / P-006: a constant every pass record
+ * carries, so a record proves WHICH CODE executed by content, not by a build sha that can
+ * describe a dirty bundle. The live proof compares the first record carrying a new value with
+ * main's tree at that moment. Change the value only to run a fresh proof.
+ */
+export const IDLE_ACTUATOR_PASS_MARKER = 'gate-repair-plane-r6-proof-2026-10-27';
+
+/** One pass record, stamped with this build's marker. */
+export function buildIdleQueueActuatorObservation(
+  pass: Omit<IdleQueueActuatorObservation, 'version' | 'marker'>,
+): IdleQueueActuatorObservation {
+  return { version: 1, ...pass, marker: IDLE_ACTUATOR_PASS_MARKER };
 }
 
 export async function recordIdleQueueActuatorObservation(sql: Sql,
@@ -1035,9 +1052,10 @@ export async function checkIdleRepairQueue(
       },
     });
     if (queue && snapshot) {
-      await recordIdleQueueActuatorObservation(sql, { workspaceId, installSlug }, queue, {
-        version: 1, startedAtMs, completedAtMs: (opts.nowMs ?? Date.now)(), snapshot, episode, result,
-      });
+      await recordIdleQueueActuatorObservation(sql, { workspaceId, installSlug }, queue,
+        buildIdleQueueActuatorObservation({
+          startedAtMs, completedAtMs: (opts.nowMs ?? Date.now)(), snapshot, episode, result,
+        }));
     }
     if (queueMeasured && result.decision === 'not-idle') {
       const { resolveAlarm } = await import('../alarm-attention');
