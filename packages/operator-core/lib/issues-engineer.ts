@@ -300,8 +300,10 @@ export type IssueState = 'open' | 'wip' | 'blocked' | 'needs-human' | 'done' | '
 export type IssueKind = 'bug' | 'change';
 /** Every kind physically stored in engineer_issues (collapse-delegate D-001):
  *  the issue-surface kinds PLUS `task` — a delegated unit of work (retired delegate
- *  durable record). `task` is a work_item kind only; the issues:* surface excludes it. */
-export type IssueStoreKind = IssueKind | 'task';
+ *  durable record). `task` is a work_item kind only; the issues:* surface excludes it.
+ *  `cleanup` is the low-priority code-cleanup kind (code-cleanup-campaigns-2026-10-26
+ *  P-003): stored with the issue family, excluded from bug/change backlog totals. */
+export type IssueStoreKind = IssueKind | 'task' | 'cleanup';
 
 export const ISSUE_KIND = 'issue';
 export const ISSUE_SEVERITIES: readonly IssueSeverity[] = ['critical', 'major', 'minor', 'nit'];
