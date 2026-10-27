@@ -11961,8 +11961,13 @@ export function hostThroughPty(o) {
           if (!bridgeTty) {
             const diagnostic = `[psu] native-turn-failed agent=${env.PAPERCUSP_AGENT} code=${execution.failure.code}`
               + ` retryable=${execution.failure.retryable} retryAfterMs=${execution.failure.retryAfterMs ?? 'unknown'}\n`;
-            terminalOutput.write(diagnostic);
-            normalizedLog?.push(diagnostic);
+            // WI-6554700010030184: start the receipt on its own line, like every
+            // other [psu] host line. A TUI positions its cursor instead of writing
+            // newlines, so once ANSI is stripped an unprefixed receipt joins the
+            // previous redraw ("2 warnings · f2 to view [psu] …") and the
+            // grading-audit terminal detector's line-anchored match never fires.
+            terminalOutput.write(`\r\n${diagnostic}`);
+            normalizedLog?.push(`\n${diagnostic}`);
             normalizedLog?.flush();
           }
         }

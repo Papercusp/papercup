@@ -2024,6 +2024,33 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     })).toBeNull();
   });
 
+  // WI-6554700010030184: psu-pty-host prints the native transcript's own failure
+  // code. Codex names its codex_error_info variant, so a 429 retry budget arrives
+  // as response_too_many_failed_attempts, not native_error, and an auditor that
+  // printed it was kept viable while every repair deduped to it.
+  it.each([
+    ['codex', 'response_too_many_failed_attempts'],
+    ['codex', 'usage_limit_exceeded'],
+    ['claude', 'api_error'],
+  ])('recognizes a non-retryable %s receipt with code %s', (agent, code) => {
+    const receipt = `[psu] native-turn-failed agent=${agent} code=${code} retryable=false retryAfterMs=unknown`;
+    const raw = '\u001b[38;5;1;49m■ exceeded retry limit, last status: 429 Too Many Requests\u001b[39m\r\n'
+      + `${receipt}\r\n\u001b[1m›\u001b[22m Ask Codex to do anything\r\n`;
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'native_turn_failed', evidence: receipt,
+    });
+    expect(classifyAcceptanceGraderTerminalFailure(raw.replace('retryable=false', 'retryable=true'), {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(`${raw}• Called scorecards:get`, {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(receipt.replace(`code=${code}`, 'code=bad code'), {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+  });
+
   it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
     const raw =
       '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +

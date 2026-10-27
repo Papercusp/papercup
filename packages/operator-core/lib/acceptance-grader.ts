@@ -797,8 +797,13 @@ export function classifyAcceptanceGraderTerminalFailure(
   // after the native turn fails. PTY redraws can corrupt the provider screen
   // and its footer while leaving this host-owned line intact. Restrict it to
   // controlled audit briefs, and invalidate it when a later turn resumes.
+  // WI-6554700010030184: the host prints whatever sanitized failure code the
+  // native transcript carried (codex writes its codex_error_info variant, e.g.
+  // response_too_many_failed_attempts after a 429 retry budget), so match the
+  // host's own code alphabet. retryable=false is the host's terminal verdict;
+  // a retryable=true receipt stays non-terminal.
   const nativeFailure = allowInferenceGatewayError
-    ? [...normalized.matchAll(/^[ \t]*\[psu\] native-turn-failed agent=(?:claude|codex) code=native_error retryable=false retryAfterMs=(?:unknown|\d+)[ \t]*$/gm)].at(-1)
+    ? [...normalized.matchAll(/^[ \t]*\[psu\] native-turn-failed agent=(?:claude|codex) code=[A-Za-z0-9_.-]{1,120} retryable=false retryAfterMs=(?:unknown|\d+)[ \t]*$/gm)].at(-1)
     : undefined;
   if (nativeFailure) {
     const before = normalized.slice(0, nativeFailure.index);

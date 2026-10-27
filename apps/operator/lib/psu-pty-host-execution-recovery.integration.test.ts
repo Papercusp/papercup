@@ -210,7 +210,10 @@ describe('cross-client native recovery handshake', () => {
         childGeneration: original.execution!.childGeneration,
         failure: { code: 'server_overloaded', retryable: true } });
       expect(f.output().match(/\[psu\] native-turn-failed/g)).toHaveLength(1);
-      expect(readFileSync(f.normalizedLogPath, 'utf8')).toContain('native-turn-failed agent=codex code=server_overloaded');
+      // WI-6554700010030184: the grading-audit detector line-anchors this receipt
+      // (its quote guard), so the host must start it on its own line.
+      expect(f.output()).toMatch(/\r\n\[psu\] native-turn-failed agent=codex code=server_overloaded /);
+      expect(readFileSync(f.normalizedLogPath, 'utf8')).toMatch(/(?:^|\n)\[psu\] native-turn-failed agent=codex code=server_overloaded /);
       // This explicit bounded wake exercises the same host/socket. There is no
       // routine, automatic retry, new child, model substitution, or new session.
       const retry = { ...f.message, deliveryId: 'capacity-recovery',
