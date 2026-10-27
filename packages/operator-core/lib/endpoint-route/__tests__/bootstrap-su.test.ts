@@ -328,8 +328,9 @@ vi.mock('../../agent-launch-core', async (importOriginal) => ({
   releaseAgentLaunchClaim: (...args: unknown[]) =>
     releaseAgentLaunchClaimMock(...(args as [any])),
 }));
-vi.mock('../../role-codex-home', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../role-codex-home')>()),
+// bootstrap-su only needs these mocked boundaries; importing the real module
+// also loads its CODEX_HOME filesystem and worker graph during routesOf().
+vi.mock('../../role-codex-home', () => ({
   assertSuCodexHomeNotOwnedByLiveSession: (...args: unknown[]) =>
     assertSuCodexHomeNotOwnedByLiveSessionMock(...(args as Parameters<typeof assertSuCodexHomeNotOwnedByLiveSessionMock>)),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),

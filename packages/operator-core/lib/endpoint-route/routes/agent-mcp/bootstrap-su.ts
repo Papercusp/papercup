@@ -80,7 +80,8 @@ import {
   releaseAgentLaunchClaim,
   type LaunchMode,
 } from '../../../agent-launch-core';
-import { renderModeInstructionsFact } from '../../../agent-tools/mode/set';
+// Keep this prompt-only formatter out of mode:set's persistence and admin graph.
+import { renderModeInstructionsFact } from '../../../agent-tools/mode/instructions-fact';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
 import { writeSuCodexHomeAsync } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
