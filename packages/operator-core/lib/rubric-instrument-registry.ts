@@ -3,6 +3,7 @@ import type { RecordedRubricCheckSubject } from '@papercusp/test-config/executio
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
+import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY, codeIntelUnknownRateRescore } from './code-intelligence/code-intel-unknown-rate-probe';
 import { lunaCapacityInstruments } from './fleet/capacity-recovery-evidence';
 import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-filing-instrument';
 import { liveForkserverInstrument } from './fleet/forkserver/live-instrument';
@@ -807,6 +808,8 @@ export function platformComputedInstrumentKeys(): string[] {
     RATCHET_METRICS_INSTRUMENT_KEY,
     // WI-6554700010018579: autonomous holders the silent-halt sweep calls halted.
     SILENT_HALT_STRANDED_INSTRUMENT_KEY,
+    // code-intel-delivery-and-outcomes-2026-10-26 P-004 (R-9): the unknown-rate probe.
+    CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
   ];
 }
 
@@ -834,7 +837,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(reuseMetric ? { rescore: {
+      ...(key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() } : reuseMetric ? { rescore: {
         windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' || reuseMetric === 'providerOutcomes' ? 'count' as const : '%' as const,
         scope: 'harness' as const,
         resolve: async window => {
