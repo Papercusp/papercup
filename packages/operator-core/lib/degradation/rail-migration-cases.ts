@@ -3471,7 +3471,15 @@ RAIL_MIGRATION_CASES.push({
     const sql = Object.assign(async () => Object.assign([], { count: 1 }), { unsafe: async (text: string) =>
       text.includes('SELECT') ? [{ lf: null, ftm: 'true', cs: snapshot }]
         : Object.assign([{ written: true }], { count: 1 }) });
+    // The stale-candidate check (the only path that RESOLVES this alarm) runs only with a
+    // resolved fixer root. Pin a fixture root and routing so the case does not depend on
+    // which tree runs it: the gate's checkpoint checkout makes integrationRoot() refuse, and
+    // the real routing reads live install config.
+    const routing = await import('../harness/routines/hive-release-env');
+    const priorRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/coverage';
     const mocks = [
+      vi.spyOn(routing, 'resolveCheckpointRouting').mockResolvedValue({ skip: false, extraEnv: {}, clearEnv: [] } as never),
       vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
       vi.spyOn(scope, 'gateWorkScope').mockResolvedValue({ allowed: true } as never),
       vi.spyOn(blueprint, 'fireLaunchBlueprintForEvent').mockResolvedValue({
@@ -3492,7 +3500,11 @@ RAIL_MIGRATION_CASES.push({
       await producer.dispatchReleaseFixer(ctx, candidate, failures, undefined, undefined,
         { alarm, checkCandidate: async () => ({ candidateExists: true, candidatePromoted: true }) });
       return { route: 'condition', openedKeys, resolvedKeys };
-    } finally { mocks.reverse().forEach((mock) => mock.mockRestore()); }
+    } finally {
+      mocks.reverse().forEach((mock) => mock.mockRestore());
+      if (priorRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorRoot;
+    }
   },
 }, {
   id: 'idle-repair-owner-escalation-readable-recovery', item: 'P-008', route: 'condition',
