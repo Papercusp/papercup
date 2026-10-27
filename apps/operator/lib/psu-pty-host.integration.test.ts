@@ -2762,7 +2762,12 @@ describe('hostThroughPty real round-trip', () => {
           return reportSessionPortDelivery(
             { portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 999 },
             { persisted: true, renderedHash: hash, nativeRef: nativeFile },
-            { fetchImpl, operatorUrl: 'http://operator', token: 'test', coordOwnerId: ownerId, appendEventImpl: appendHostEvent },
+            // WI-6554700010029943: this case asserts ordering and the emitted ack event, not
+            // timing. Every fetch after the two mocked ones is unanswered, so the status-read
+            // re-read backoff (WI-6554700010029882: 2+4+8+16s) would run on the real clock
+            // and overrun the 15s test timeout. Keep the retry SEMANTICS, drop the wall time.
+            { fetchImpl, operatorUrl: 'http://operator', token: 'test', coordOwnerId: ownerId, appendEventImpl: appendHostEvent,
+              sleepImpl: async () => {} },
           );
         }
       });
@@ -4824,6 +4829,70 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
       expect(existsSync(meta)).toBe(false);
     },
     25_000,
+  );
+});
+
+describe('Codex RECYCLE re-anchors the successor native id (WI-6554700010029835)', () => {
+  // A Codex recycle mints no native id (mintRecycleArgs returns nativeId:null):
+  // the successor's id exists only once Codex starts. The host must resolve it
+  // from the exact successor PTY child and report it through onRespawn, or a
+  // later untracked resume orphans this owner. The verified-carry announcement
+  // cannot stand in for that binding here: a plain recycle has no carry.
+  it(
+    'resolves the successor id from the new child and reports it through onRespawn',
+    async () => {
+      const ownerId = `su-codex-recycle-reanchor-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+' ARGV:'+process.argv[process.argv.length-1]+'\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      const PREDECESSOR_NATIVE = '01a1aaaa-0000-7000-8000-000000000001';
+      const SUCCESSOR_NATIVE = '01a1bbbb-0000-7000-8000-000000000002';
+      let sourcePid: number | null = null;
+      const respawns: string[] = [];
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'ORIGINAL'],
+        cwd: '/tmp',
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        mintRecycleArgs: (a: string[]) => ({ args: a.slice(0, -1).concat('RECYCLED'), nativeId: null }),
+        resolveRespawnNativeId: (pid: number) => {
+          sourcePid ??= pid;
+          return pid === sourcePid ? PREDECESSOR_NATIVE : SUCCESSOR_NATIVE;
+        },
+        onRespawn: async (nativeId: string) => { respawns.push(nativeId); return true; },
+        onExit: () => {},
+      });
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('ARGV:ORIGINAL'), { timeout: 8000 });
+        await vi.waitFor(() => expect(sourcePid).not.toBeNull(), { timeout: 8000 });
+        await controlInject(sock, 'recycle', '');
+        await vi.waitFor(() => expect(captured()).toContain('ARGV:RECYCLED'), { timeout: 10_000 });
+        await vi.waitFor(() => expect(respawns).toContain(SUCCESSOR_NATIVE), { timeout: 8000 });
+        expect(respawns).not.toContain(PREDECESSOR_NATIVE);
+        await vi.waitFor(() => {
+          const rows = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+          expect(rows).toContainEqual(expect.objectContaining({
+            kind: 'respawn-binding-confirmed', nativeId: SUCCESSOR_NATIVE,
+          }));
+        }, { timeout: 8000 });
+        await rawInject(sock, 'QUIT\n');
+        expect(await done).toBe(0);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+    },
+    30_000,
   );
 });
 
