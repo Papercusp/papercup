@@ -1784,10 +1784,16 @@ function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: NonNullable<ListIs
     return aliased ? sql`ei.issue_id = ANY(${ids as string[]}::text[])` : sql`issue_id = ANY(${ids as string[]}::text[])`;
   }
   // Internal complete readers can compose a one-column identity query without
-  // sending tens of thousands of IDs to the client and back. List/count/state
-  // companions share this fragment, retaining their existing visibility rules.
+  // sending tens of thousands of IDs to the client and back. Keep that selection
+  // behind a planner fence: when it reads work_items and the outer engineer_issues
+  // view also resolves to work_items, flattening IN can turn the identity filter
+  // into a correlated primary-key probe for every outer row. On a 64k-row fleet
+  // cohort that re-ran the claim-spec word predicates 76k times (11s measured).
+  // OFFSET 0 preserves the one-column set while making PostgreSQL evaluate it once.
+  // List/count/state companions share this fragment and its visibility rules.
   const source = ids as ReturnType<OrgSql>;
-  return aliased ? sql`ei.issue_id IN (${source})` : sql`issue_id IN (${source})`;
+  const selectedIds = sql`SELECT * FROM (${source}) identity_source OFFSET 0`;
+  return aliased ? sql`ei.issue_id IN (${selectedIds})` : sql`issue_id IN (${selectedIds})`;
 }
 
 /**

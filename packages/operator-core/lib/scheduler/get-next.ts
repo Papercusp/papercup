@@ -113,6 +113,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from '../flag-distinct-id';
 import { trackDetached } from '../detached-imports';
 import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
+import { CLEANUP_ITEM_KIND } from '../code-cleanup/cleanup-item-kind';
 import {
   intakeStageClaimFloorSql,
   LEGACY_AGENT_REVIEW_SUBMITTER,
@@ -3087,6 +3088,12 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
     ) THEN 1 ELSE 0 END`;
     return sql`${conflict} ASC, ${base}`;
   };
+  // code-cleanup-campaigns-2026-10-26 P-003 (R-3): a 'cleanup' item is claimed only when
+  // no feature, bug or change item is claimable. A HARD precedence ahead of the authored
+  // rank and the soft lock-placement bit, so no claim spec can reorder cleanup above real
+  // work; with nothing else claimable the cleanup item still sorts first and is returned.
+  const cleanupLast = (base: SqlFragment): SqlFragment =>
+    sql`(CASE WHEN COALESCE(item_kind, kind) = ${CLEANUP_ITEM_KIND} THEN 1 ELSE 0 END) ASC, ${withLockPlacement(base)}`;
 
   if (spec.rank.mode === 'weighted') {
     // Σ wᵢ·termᵢ — only terms that compile to a numeric value contribute, which this
@@ -3108,17 +3115,17 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
         return sql`(${w} * ${dirSign})`;
       })
       .filter((c): c is SqlFragment => c != null);
-    if (contribs.length === 0) return withLockPlacement(sql`created_ts ASC`);
+    if (contribs.length === 0) return cleanupLast(sql`created_ts ASC`);
     const sum = contribs.reduce((acc, c) => sql`${acc} + ${c}`);
-    return withLockPlacement(sql`(${sum}) DESC, created_ts ASC`);
+    return cleanupLast(sql`(${sum}) DESC, created_ts ASC`);
   }
 
   // lexicographic: each term ASC/DESC in order, then the total-order tiebreaker.
   const orderings = terms.map((t) => compileTermOrdering(sql, t, bee)).filter((o): o is SqlFragment => o != null);
-  if (orderings.length === 0) return withLockPlacement(sql`created_ts ASC`);
+  if (orderings.length === 0) return cleanupLast(sql`created_ts ASC`);
   const joined = orderings.reduce((acc, o) => sql`${acc}, ${o}`);
   // created_ts ASC as the final tiebreaker (skip if already the last bare term).
-  return withLockPlacement(sql`${joined}, created_ts ASC`);
+  return cleanupLast(sql`${joined}, created_ts ASC`);
 }
 
 /** One lexicographic term → `<col> ASC|DESC NULLS LAST`, honoring inversion. */

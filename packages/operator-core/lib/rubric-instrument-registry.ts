@@ -1,4 +1,5 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
+import type { RecordedRubricCheckSubject } from '@papercusp/test-config/execution-details';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
@@ -263,8 +264,11 @@ export interface PlatformInstrument {
   rescore?: {
     windowMs: number;
     unit: InstrumentUnit;
-    scope?: 'workspace' | 'harness';
-    resolve(window: { workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string }): Promise<{
+    scope?: 'workspace' | 'harness' | 'subject';
+    resolve(window: { workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string;
+      /** Present only for a subject-scoped instrument; a label is not identity authority. */
+      subject?: RecordedRubricCheckSubject;
+    }): Promise<{
       verdict: 'pass' | 'fail' | 'unknown';
       detail: string;
       /**

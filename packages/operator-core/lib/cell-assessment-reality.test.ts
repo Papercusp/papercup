@@ -76,7 +76,7 @@ import { assessRunStatus, type RunStatusReading } from './release/run-status-cel
 import { assessAgentGoal } from './agent-tools/coordination/agent-goal-sources';
 import { assessHostMemoryPressure } from './agent-tools/state/host-memory';
 import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './agent-tools/testing/coverage';
-import { deriveCapacityVerdict, type AdmissionTerms } from './fleet/capacity-verdict';
+import { deriveCapacityVerdict, type AdmissionTerms, type GatewayOutcomeTerms } from './fleet/capacity-verdict';
 import type { ProviderPoolVerdict } from './deployment/account-pool-store';
 import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
@@ -464,14 +464,24 @@ const CAPACITY_POOL = (over: Partial<ProviderPoolVerdict> = {}): ProviderPoolVer
   reason: 'assessment reality control',
   ...over,
 });
+/** A measured gateway outcome window with no refusals (the clear control). */
+const CAPACITY_OUTCOMES: GatewayOutcomeTerms = {
+  windowMinutes: 15,
+  refused: 0,
+  served: 100,
+  refusedOwners: 0,
+  topRefusedOwner: null,
+};
 const CAPACITY = (
   pool: Partial<ProviderPoolVerdict> = {},
   admission: AdmissionTerms = CAPACITY_ADMISSION,
+  outcomes: GatewayOutcomeTerms = CAPACITY_OUTCOMES,
 ) =>
   deriveCapacityVerdict({
     provider: 'claude',
     pool: CAPACITY_POOL(pool),
     admission,
+    outcomes,
   }).binding;
 
 const ROLE_LAUNCH_ROW = (over: Partial<RoleLaunch> = {}): RoleLaunch => ({
@@ -1188,6 +1198,10 @@ const CONTROLS: Record<string, readonly Control[]> = {
       label: 'burn governor is pacing an otherwise serviceable pool',
       expect: CAPACITY({ serviceable: 0, pacing: 7, atCapacity: true, binding: 'pacing-policy' }),
     },
+    {
+      label: 'gateway refused requests while both point-in-time legs read clear',
+      expect: CAPACITY({}, CAPACITY_ADMISSION, { ...CAPACITY_OUTCOMES, refused: 164, served: 714, refusedOwners: 1 }),
+    },
     { label: 'both measured legs are clear', expect: CAPACITY() },
   ],
   'agent.roleLaunch': [
@@ -1437,7 +1451,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'lsp.admission': ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'unknown'],
   'lsp.warmServers': ['healthy', 'degraded', 'unhealthy', 'unknown', 'unknown', 'unknown'],
   'lsp.readiness': ['reported', 'unproven', 'unproven', 'unproven', 'unknown', 'unknown', 'unknown', 'unknown'],
-  'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
+  'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'gateway-shed', 'none'],
   'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
   'workspace.workScope': ['absent', 'off', 'off', 'enforce'],
   'owner.directive.status': [

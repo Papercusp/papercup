@@ -2,8 +2,8 @@
  * code-cleanup-campaigns-2026-10-26 P-003 (R-3): item kind 'cleanup' is issue-family.
  *
  * Guards the ONE exported list and every hand-maintained copy of it: source copies are
- * ratcheted against a shrink-only baseline (cleanup-item-kind.baseline.json) until none is
- * left; SQL copies were extended by migration 1590, and any later migration that spells
+ * banned outright (the former shrink-only baseline reached zero); SQL copies were
+ * extended by migration 1590, and any later migration that spells
  * the three-kind list without 'cleanup' fails here.
  */
 import { readdirSync, readFileSync } from 'node:fs';
@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 import { ISSUE_FAMILY_KINDS } from '../work-items';
+import { BUG_INFLOW_KINDS } from '../harness/improvements/bug-inflow';
 import {
   CLEANUP_IS_ISSUE_FAMILY,
   CLEANUP_ITEM_KIND,
@@ -23,9 +24,6 @@ import {
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const SQL_DIR = join(REPO_ROOT, 'libs/papercusp/libs/db/sql');
-const BASELINE: Record<string, number> = JSON.parse(
-  readFileSync(new URL('./cleanup-item-kind.baseline.json', import.meta.url), 'utf8'),
-);
 
 describe('cleanup item kind', () => {
   it('is routed with the issue family through the one exported list', () => {
@@ -36,6 +34,11 @@ describe('cleanup item kind', () => {
     expect(isCleanupKind('cleanup')).toBe(true);
     expect(isCleanupKind('change')).toBe(false);
     expect(isCleanupKind(null)).toBe(false);
+  });
+
+  it('is excluded from the bug/change backlog rollup while staying issue-family', () => {
+    expect(BUG_INFLOW_KINDS).not.toContain('cleanup');
+    expect([...BUG_INFLOW_KINDS, 'cleanup'].sort()).toEqual([...ISSUE_FAMILY_ROUTE_KINDS].sort());
   });
 
   it('counts a bare three-kind list in every spelling and skips extended lists and comments', () => {
@@ -50,19 +53,14 @@ describe('cleanup item kind', () => {
     expect(countBareIssueFamilyTriples("['bug', 'change']")).toBe(0);
   });
 
-  it('never adds a hand-maintained copy of the issue-family list (shrink-only baseline)', () => {
+  it('has no hand-maintained copy of the issue-family list anywhere in the tree', () => {
+    // The shrink-only baseline reached zero (P-003 codemod converted all 105 sites in 45
+    // files), so the ratchet is now a strict ban: any literal list fails.
     const census = censusHardcodedIssueFamilyLists(REPO_ROOT);
-    const grown = Object.entries(census)
-      .filter(([file, n]) => n > (BASELINE[file] ?? 0))
-      .map(([file, n]) => `${file}: ${n} (baseline ${BASELINE[file] ?? 0})`);
     expect(
-      grown,
-      `route these through ISSUE_FAMILY_ROUTE_KINDS / issueFamilyRouteSql instead of a literal list`,
+      Object.entries(census).map(([file, n]) => `${file}: ${n}`),
+      `route these through ISSUE_FAMILY_ROUTE_KINDS / ISSUE_FAMILY_KINDS_SQL_LIST instead of a literal list`,
     ).toEqual([]);
-    const shrunk = Object.entries(BASELINE)
-      .filter(([file, n]) => (census[file] ?? 0) < n)
-      .map(([file, n]) => `${file}: ${census[file] ?? 0} (baseline ${n})`);
-    expect(shrunk, 'lower these baseline entries in cleanup-item-kind.baseline.json').toEqual([]);
   });
 
   it('SQL: the issue-family lists in migrations 866 and 965 use spellings migration 1590 extends', () => {

@@ -176,6 +176,7 @@ import {
 import { trackDetached } from './detached-imports';
 import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
 export const WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC = 'work-on-everything-stewardship-health';
@@ -2498,7 +2499,7 @@ export async function retractScorecardAtomically(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        FOR UPDATE`;
     const row = rows[0];
     if (!row) return null;
@@ -2547,7 +2548,7 @@ export async function retractScorecardAtomically(
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
       RETURNING feature_id`;
     if (!updated[0]) return null;
     return { retraction, updated: true };
@@ -2586,14 +2587,14 @@ export async function cancelSupersededPendingGradingAuditAtomically(
            updated_ts = ${Date.now()}
      WHERE target.workspace_id = ${workspaceId}
        AND target.feature_id = ${issueId}
-       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
        AND EXISTS (
          SELECT 1
            FROM harness_shared.work_items AS superseder
           WHERE superseder.workspace_id = target.workspace_id
             AND superseder.feature_id = ${supersedingIssueId}
-            AND superseder.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+            AND superseder.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
             AND superseder.payload->'observation'->>'supersedes' = target.feature_id
             AND superseder.payload->'observation'->>'rubricRef' = target.payload->'observation'->>'rubricRef'
             AND superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM target.payload->'observation'->>'sourceHive'
@@ -2661,7 +2662,7 @@ export async function cancelStaleEvidencePendingGradingAuditAtomically(
            updated_ts = ${Date.now()}
      WHERE target.workspace_id = ${workspaceId}
        AND target.feature_id = ${issueId}
-       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
        AND target.payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
        AND target.payload->'observation'->>'evidenceFingerprint' IS NOT DISTINCT FROM ${expected.evidenceFingerprint ?? null}
@@ -2730,7 +2731,7 @@ export async function cancelPendingGradingAuditsForBindingInTransaction(
          origin = 'local',
          updated_ts = ${Date.now()}
      WHERE target.workspace_id = ${workspaceId}
-       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
        AND jsonb_typeof(target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds') = 'array'
        AND EXISTS (
@@ -2827,7 +2828,7 @@ async function retractGradingAuditAtomically(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ANY(${refs}::text[])
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        ORDER BY feature_id
        FOR UPDATE`;
     const auditRow = rows.find((row) => row.feature_id === auditIssueId);
@@ -2864,7 +2865,7 @@ async function retractGradingAuditAtomically(
                updated_ts = ${Date.now()}
          WHERE workspace_id = ${workspaceId}
            AND feature_id = ${auditIssueId}
-           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+           AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
         RETURNING feature_id`;
       if (!updated[0]) return null;
     }
@@ -2893,7 +2894,7 @@ async function retractGradingAuditAtomically(
                updated_ts = ${Date.now()}
          WHERE workspace_id = ${workspaceId}
            AND feature_id = ${subjectIssueId}
-           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+           AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
            AND (
              payload->'observation'->'gradingAudit'->>'auditIssueId' = ${auditIssueId}
              OR (
@@ -3055,14 +3056,14 @@ async function replaceSettledGradingAuditAtomically(
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${workspaceId}
        AND feature_id = ${issueId}
-       AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND payload->'observation'->'retracted' IS NULL
        AND target.ctid = (
          SELECT candidate.ctid
            FROM harness_shared.work_items AS candidate
           WHERE candidate.workspace_id = ${workspaceId}
             AND candidate.feature_id = ${issueId}
-            AND candidate.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+            AND candidate.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
           ORDER BY candidate.updated_ts DESC NULLS LAST
           LIMIT 1
        )
@@ -3199,7 +3200,7 @@ export async function settlePendingGradingAuditAtomically(
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND payload->'observation'->'retracted' IS NULL
          AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND payload->'observation'->'gradingAudit'->>'metaRubricRef' = ${expected.metaRubricRef}

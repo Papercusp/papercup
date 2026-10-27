@@ -31,6 +31,7 @@ import {
   RUBRIC_CHECK_FRAMEWORK,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseRecordedRubricCheck,
+  parseRecordedRubricCheckSubject,
   parseTestRunExecutionDetails,
   parseRecordedMeasurementProvenance,
   type RecordedRubricCheck,
@@ -39,7 +40,7 @@ import {
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import type { ScorecardProbeCheckRun } from './harness/improvements/observation-types';
-import { measurementProvenanceStatus } from './measurement-provenance';
+import { measurementProvenanceStatus, retainMeasurementProvenance } from './measurement-provenance';
 import {
   getRegisteredInstrument,
   isManualInstrumentKey,
@@ -236,8 +237,12 @@ export async function runInstrumentChecks(input: {
   now?: () => number;
   workspaceId?: string | null;
   harnessSlug?: string | null;
+  /** Only an explicitly subject-scoped instrument consumes/stamps this identity. */
+  subject?: RecordedRubricCheckSubject;
   resolvePlatform?: NonNullable<PlatformInstrument['rescore']>['resolve'];
 }): Promise<RubricCheckResult[]> {
+  const subject = input.subject === undefined ? undefined : parseRecordedRubricCheckSubject(input.subject);
+  if (input.subject !== undefined && !subject) throw new Error('invalid_rubric_check_subject');
   const run = input.run ?? ((key: string) => runInstrument(key));
   const now = input.now ?? Date.now;
   const out: RubricCheckResult[] = [];
@@ -249,20 +254,25 @@ export async function runInstrumentChecks(input: {
     if (!instrument) continue;
     if (instrument.evaluator === 'platform' && instrument.rescore) {
       const started = now();
+      const subjectScoped = instrument.rescore.scope === 'subject';
       const measuredAt = new Date(windowEndMs).toISOString();
       const window = {
         workspaceId: input.workspaceId ?? '',
         ...(input.harnessSlug?.trim() ? { harnessSlug: input.harnessSlug.trim() } : {}),
         windowStart: new Date(windowEndMs - instrument.rescore.windowMs).toISOString(),
         windowEnd: measuredAt,
+        ...(subjectScoped && subject ? { subject } : {}),
       };
       let verdict: RubricCheckVerdict = 'error';
-      let detail = 'A canonical workspace and any required rubric harness are required for a scheduled platform instrument.';
+      let detail = 'A canonical workspace and any required rubric harness/subject are required for a scheduled platform instrument.';
       let value: number | boolean | null = null;
       let unit: string | null = instrument.rescore.unit;
-      if (window.workspaceId.trim() && (instrument.rescore.scope !== 'harness' || window.harnessSlug)) {
+      let observed: unknown = { verdict: 'unknown', detail };
+      if (window.workspaceId.trim() && (instrument.rescore.scope !== 'harness' || window.harnessSlug) &&
+          (!subjectScoped || subject)) {
         try {
           const result = await (input.resolvePlatform ?? instrument.rescore.resolve)(window);
+          observed = result;
           verdict = result.verdict === 'unknown' ? 'error' : result.verdict;
           detail = result.detail;
           if (verdict !== 'error') {
@@ -276,13 +286,20 @@ export async function runInstrumentChecks(input: {
           }
         } catch (error) {
           detail = `Scheduled instrument unavailable: ${error instanceof Error ? error.message : String(error)}`;
+          observed = { verdict: 'unknown', detail };
         }
       }
+      const finished = now();
+      const provenance = retainMeasurementProvenance({
+        procedure: { kind: 'platform-instrument', instrumentKey: instrument.key, window },
+        result: observed, startedAt: new Date(started).toISOString(), finishedAt: new Date(finished).toISOString(),
+      });
       out.push({
         check: { id: instrumentCheckId(criterion.key), rubricRef: input.rubricRef,
-          criterionKey: criterion.key, kind: 'instrument', value, unit,
+          criterionKey: criterion.key, kind: 'instrument', value, unit, provenance,
+          ...(subjectScoped && subject ? { subject } : {}),
           ...(check.expect ? { expect: check.expect } : {}) },
-        verdict, measuredAt, durationMs: Math.max(0, now() - started), detail,
+        verdict, measuredAt, durationMs: Math.max(0, finished - started), detail,
       });
       continue;
     }

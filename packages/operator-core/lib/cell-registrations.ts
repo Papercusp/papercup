@@ -2242,6 +2242,12 @@ export const CAPACITY_VERDICT_CELL: CellSpec = {
         safeAction:
           'Decide whether to accept the burn or change the pacing policy. Do NOT wait it out and do NOT report a provider wall — treating a pacing projection as a measured wall is the specific error this cell exists to prevent.',
       },
+      'gateway-shed': {
+        meaning:
+          'No point-in-time term binds (no wall, admission open, no pacing), yet the gateway measurably REFUSED this provider\'s requests (shed + upstream 429) in the last 15 minutes, above the count and share floors. The reason names the dominant caller when the refusals are concentrated in one.',
+        safeAction:
+          'Do NOT read the lane as a measured green. When the reason names one caller, fix that caller\'s account routing (it is usually pinned to walled accounts) rather than shrinking the fleet. Otherwise check selected_account_id on the refused gateway_request_outcomes rows before launching more work. atCapacity is true only when nothing was served.',
+      },
       none: {
         meaning:
           'No term is measurably binding this provider. ⚠ Read capacityUnknown before acting: when it is non-empty this means "no measured blocker", NOT "measured clear".',

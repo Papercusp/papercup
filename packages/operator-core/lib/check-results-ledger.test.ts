@@ -5,7 +5,8 @@
  * baseline. Before this, probe rows were always written with unit null, which left a
  * baseline-vs-ledger comparison without a unit for every SQL-probe criterion.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as instruments from './rubric-instrument-registry';
 import {
   buildRubricCheckLedgerRow, probeCheckResults, probeCheckUnit, runInstrumentChecks, recordRubricCheckResults,
   readLatestRubricCheckResults, rubricCheckLedgerPath,
@@ -148,6 +149,50 @@ describe('per-subject check rows (crm plan D-049)', () => {
 });
 
 describe('scheduled platform instrument results', () => {
+  it('passes a validated subject only to an explicitly subject-scoped resolver and retains its original measurement', async () => {
+    const registered = instruments.getRegisteredInstrument(adoption.check.instrumentKey);
+    if (registered?.evaluator !== 'platform' || !registered.rescore) throw new Error('fixture instrument unavailable');
+    const lookup = vi.spyOn(instruments, 'getRegisteredInstrument').mockReturnValue({ ...registered,
+      rescore: { ...registered.rescore, scope: 'subject' } });
+    try {
+      const windows: unknown[] = [];
+      const results = [];
+      for (const ref of ['PER-a', 'PER-b']) {
+        results.push(...await runInstrumentChecks({ rubricRef: 'leads', criteria: [adoption],
+          workspaceId: 'ws', subject: { kind: 'person', ref }, now: () => Date.parse(AT),
+          resolvePlatform: async window => {
+            windows.push(window);
+            return { verdict: 'pass', value: ref === 'PER-a' ? 80 : 20, detail: `source:${ref}` };
+          } }));
+      }
+      expect(windows).toEqual(['PER-a', 'PER-b'].map(ref => ({ workspaceId: 'ws', subject: { kind: 'person', ref },
+        windowStart: '2026-10-10T04:00:00.000Z', windowEnd: AT })));
+      expect(results.map(row => [row.check.subject?.ref, row.check.value])).toEqual([['PER-a', 80], ['PER-b', 20]]);
+      expect(JSON.parse(results[0]!.check.provenance!.procedure.snapshot).window.subject.ref).toBe('PER-a');
+      expect(results[0]!.check.provenance!.diagnostics).toContainEqual({ path: '$["value"]', value: 80 });
+      expect(buildRubricCheckLedgerRow(results[0]!, { workspaceId: 'ws', harnessSlug: 'crm' }).filePath)
+        .toBe('rubric-check/leads/r-31:instrument@subject/person/PER-a');
+      const resolvePlatform = vi.fn(async () => ({ verdict: 'pass' as const, value: 99, detail: 'unsafe' }));
+      const [missing] = await runInstrumentChecks({ rubricRef: 'leads', criteria: [adoption], workspaceId: 'ws', resolvePlatform });
+      expect(resolvePlatform).not.toHaveBeenCalled();
+      expect(missing).toMatchObject({ verdict: 'error', check: { value: null } });
+      await expect(runInstrumentChecks({ rubricRef: 'leads', criteria: [adoption], workspaceId: 'ws',
+        subject: { ref: '' }, resolvePlatform })).rejects.toThrow('invalid_rubric_check_subject');
+      expect(resolvePlatform).not.toHaveBeenCalled();
+    } finally { lookup.mockRestore(); }
+  });
+
+  it('does not relabel a rubric-wide measurement as a subject measurement', async () => {
+    const resolvePlatform = vi.fn(async (_window: Parameters<NonNullable<Parameters<typeof runInstrumentChecks>[0]['resolvePlatform']>>[0]) =>
+      ({ verdict: 'pass' as const, value: 12, detail: 'workspace total' }));
+    const [result] = await runInstrumentChecks({ rubricRef: 'native', criteria: [adoption], workspaceId: 'ws',
+      subject: { kind: 'person', ref: 'PER-a' }, resolvePlatform });
+    expect(resolvePlatform.mock.calls[0]![0]).not.toHaveProperty('subject');
+    expect(result!.check).not.toHaveProperty('subject');
+    expect(buildRubricCheckLedgerRow(result!, { workspaceId: 'ws', harnessSlug: 'crm' }).filePath)
+      .toBe('rubric-check/native/r-31:instrument');
+  });
+
   it('runs work-overhead checks in the canonical rubric harness and completed daily window', async () => {
     const criterion = { key: 'R-15', check: { kind: 'instrument', instrumentKey: 'agents:acceptance-machinery-share' } };
     const windows: unknown[] = [];
