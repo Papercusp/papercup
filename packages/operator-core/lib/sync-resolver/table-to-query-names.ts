@@ -80,8 +80,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // tables push the single provider-neutral projection. workspace_host_logs
   // is intentionally absent because appendWorkspaceHostLogs emits one scoped
   // producer invalidation after each batch instead of one PG NOTIFY per line.
-  'harness_shared.workspace_host_connections': ['workspaceHosts.control'],
-  'harness_shared.workspace_hosts': ['workspaceHosts.control'],
+  // remoteAccess.overview also renders the workspace's hosts and their live
+  // connections (it declares both as backing tables), so a host or connection
+  // change must refresh an open Remote access screen too.
+  'harness_shared.workspace_host_connections': ['workspaceHosts.control', 'remoteAccess.overview'],
+  'harness_shared.workspace_hosts': ['workspaceHosts.control', 'remoteAccess.overview'],
   'harness_shared.workspace_host_operations': ['workspaceHosts.control'],
   'harness_shared.workspace_host_resources': ['workspaceHosts.control'],
   'harness_shared.workspace_host_events': ['workspaceHosts.control'],

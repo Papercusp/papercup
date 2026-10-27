@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync 
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
+import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
@@ -521,9 +522,9 @@ catch (error) {
     // hub scenario this is the only point where the shared listen-hub client
     // can be observed; stopping it first made the canonical cleanup assertion
     // contradict the fixture's own setup.
-    const { sql } = getOrgPg();
-    const pgConnections = await sql`SELECT client_port, application_name, state
-      FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`
+    // Read through the admin-only census module: harness_app cannot see other
+    // roles' backends, and this file also drives the app-role pool above.
+    const pgConnections = await readPgBackendCensus()
       .catch(error => {
         retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable', { error: String(error) });
         // A missing census is not evidence that cleanup succeeded. Keep going
