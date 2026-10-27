@@ -4,6 +4,7 @@ import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
   type PreparedCheckpointSelectionRecord,
+  checkpointSelectionQueueAuthorityMatches,
   preparedCheckpointQueueMatches,
   classifyScheduledQualificationJoin,
   cancelQualificationTransaction,
@@ -216,6 +217,20 @@ describe('prepared selection authority shape', () => {
     ]) expect(preparedCheckpointQueueMatches(record, live)).toBe(false);
     expect(preparedCheckpointQueueMatches(record, null)).toBe(false);
     expect(preparedCheckpointQueueMatches({ ...record, queue: { repairHead: red.repairHead } }, red)).toBe(false);
+  });
+
+  // WI-6554700010030147: the fresh preparation's pre-commit re-read uses the same authority.
+  it('judges a live queue by its selection authority, and a queue appearing or vanishing as a change', () => {
+    const roundTrip = (q: unknown) => parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(q)))!;
+    const red = roundTrip(markFrozenCandidateVerificationRed(createFrozenCandidateQueue({ candidate: 'candidate-1',
+      qualificationAttemptId: 'attempt-1', base: 'base-1', nowMs: 200, affectedTestProofGroup: 'g' }),
+      { failingTests: ['lib/a.test.ts'], nowMs: 300 }));
+    expect(checkpointSelectionQueueAuthorityMatches(null, null)).toBe(true);
+    expect(checkpointSelectionQueueAuthorityMatches(red, null)).toBe(false);
+    expect(checkpointSelectionQueueAuthorityMatches(null, red)).toBe(false);
+    expect(checkpointSelectionQueueAuthorityMatches(red, { ...red, updatedAtMs: 901, attempts: 3 })).toBe(true);
+    expect(checkpointSelectionQueueAuthorityMatches(red, { ...red, repairHead: 'head-2' })).toBe(false);
+    expect(checkpointSelectionQueueAuthorityMatches(red, { ...red, phase: 'ready-to-test' as const })).toBe(false);
   });
 });
 

@@ -17,6 +17,7 @@ import {
   readFrozenCandidateRepairQueueState,
 } from '../harness/routines/release-actions';
 import {
+  admissionPrecheckFileConcurrency,
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
   precheckPopulation,
@@ -205,6 +206,7 @@ export interface AdmissionPrecheckWorkerDeps {
     update: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   ) => Promise<unknown>;
   createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string;
+    fileConcurrency?: number;
     prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv>;
     /** D-004: the paired previous-head baseline measures in a second tree. */
     precheckRootSuffix?: string }) => FixPrecheckRunner;
@@ -559,6 +561,8 @@ export async function runAdmissionPrecheckWorker(
     integrationRoot: input.integrationRoot,
     checkpointRoot: input.checkpointRoot,
     testRunHarness: input.queueTarget.installSlug,
+    // WI-6554700010030140: measure files concurrently; the baseline runner inherits it.
+    fileConcurrency: admissionPrecheckFileConcurrency(),
     ...(input.toolingRoot ? { toolingRoot: input.toolingRoot } : {}),
     ...(input.testCommand ? { testCommand: input.testCommand } : {}),
     ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),

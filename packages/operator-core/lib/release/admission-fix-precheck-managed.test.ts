@@ -18,7 +18,7 @@ import {
   startAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
 } from './admission-fix-precheck-managed';
-import { ADMISSION_PRECHECK_MAX_FILES, type FixPrecheckRunner } from './admission-fix-precheck';
+import { ADMISSION_PRECHECK_MAX_FILES, admissionPrecheckFileConcurrency, type FixPrecheckRunner } from './admission-fix-precheck';
 import type { FrozenCandidateRepairQueue, FrozenRepairAdmissionPrecheck } from './frozen-candidate-repair-queue';
 
 const operation = (overrides: Partial<FrozenRepairAdmissionPrecheck> = {}): FrozenRepairAdmissionPrecheck => ({
@@ -497,6 +497,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       prepareTestEnvironment: expect.any(Function),
       assertTestEnvironment: expect.any(Function),
       testRunHarness: harness,
+      fileConcurrency: admissionPrecheckFileConcurrency(),
       toolingRoot: '/operator',
       testCommand: ['npm', 'test'],
       clearEnv: ['DATABASE_URL'],
@@ -587,6 +588,28 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       ]);
       expect(persisted.admissionPrecheck).toMatchObject({ status: 'passed', verdict: { ok: true, fixes: ['lib/red.test.ts'],
         carriedRed: ['ws-a/near.test.ts'], previousHead: { commit: 'b'.repeat(40), results: [{ path: 'ws-a/near.test.ts', status: 'fail' }] } } });
+    });
+
+    it('WI-6554700010030140: the admission runner AND its paired baseline both measure files concurrently', async () => {
+      let persisted = queue(operation({ files, totalCount: files.length, radius }));
+      const seen: Array<{ suffix: string | undefined; fileConcurrency: number | undefined }> = [];
+      await runAdmissionPrecheckWorker(input, {
+        getTask: async () => ({ state: 'running', confined: true }),
+        readQueue: async () => ({ status: 'value', queue: persisted }),
+        transition: async (_target, update) => { persisted = update(persisted); },
+        createRunner: options => async run => {
+          seen.push({ suffix: options.precheckRootSuffix, fileConcurrency: options.fileConcurrency });
+          const results = run.files.map(path => ({ path, status: path === 'ws-a/near.test.ts' ? 'fail' as const : 'pass' as const }));
+          for (const result of results) await run.onFileResult?.(result);
+          return { ran: true, commit: run.commit, results };
+        },
+        now: () => 30,
+      });
+      expect(admissionPrecheckFileConcurrency()).toBeGreaterThan(1);
+      expect(seen).toEqual([
+        { suffix: undefined, fileConcurrency: admissionPrecheckFileConcurrency() },
+        { suffix: '-previous-head', fileConcurrency: admissionPrecheckFileConcurrency() },
+      ]);
     });
 
     it('a guarded red that PASSED at the measured previous head still refuses admission-imports-red', async () => {

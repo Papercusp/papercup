@@ -670,6 +670,12 @@ export interface CheckpointTreeRunnerOptions {
   testRunHarness?: string;
   /** Per-file wall-clock budget (default 10 min). */
   perFileTimeoutMs?: number;
+  /**
+   * WI-6554700010030140: files measured at once (default 1 = strictly serial). Above 1, no new
+   * file starts after a failure, every running child is awaited before the error surfaces, and
+   * progress and `onFileResult` writes stay serialized in completion order.
+   */
+  fileConcurrency?: number;
   /** Setup budget (default 20 min — dependency materialization can take minutes). */
   setupTimeoutMs?: number;
   /** Injectable for tests: is a gate run holding the checkpoint tree right now? */
@@ -750,6 +756,25 @@ export const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
 export const ADMISSION_PRECHECK_MAX_FILES = 200;
 /** Bound queue writes from chatty children; silent children never manufacture a heartbeat. */
 export const ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS = 5_000;
+/**
+ * WI-6554700010030140: test files the managed pre-check measures at once inside one execution
+ * group. Measured 2026-10-27: a single-file child spends 15-35s transforming and importing the
+ * operator-core graph and milliseconds in its tests, so a serial 151-file population held the
+ * frozen repair queue ~5-6h. Each child is still an ordinary `test:file` run (pc-heavy admitted,
+ * isolated, its own exit code), exactly as the gate's own legs run files in parallel against the
+ * same private test PG. The runner's built-in default stays 1 (strictly serial); the managed
+ * worker opts in through {@link admissionPrecheckFileConcurrency}.
+ */
+export const ADMISSION_PRECHECK_FILE_CONCURRENCY = 4;
+/** Upper bound on the operator override, so a typo cannot fork-bomb the host. */
+export const ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX = 16;
+/** The managed pre-check's file concurrency: `PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY`, else the default. */
+export function admissionPrecheckFileConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return ADMISSION_PRECHECK_FILE_CONCURRENCY;
+  const value = Number(raw);
+  return value >= 1 ? Math.min(value, ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX) : ADMISSION_PRECHECK_FILE_CONCURRENCY;
+}
 /** Output kept in memory: the first HEAD bytes plus the LAST TAIL bytes. */
 export const EXEC_OUTPUT_HEAD_CHARS = 32_000;
 export const EXEC_OUTPUT_TAIL_CHARS = 224_000;
@@ -1160,41 +1185,57 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       }
     }
     const setupScript = path.join(toolingRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
-    const reportProgress = async (progress: FixPrecheckProgress): Promise<void> => {
+    // WI-6554700010030140: with concurrent files, every queue write (progress AND per-file
+    // result) runs on ONE chain, so the queue's CAS writes never interleave and a snapshot is
+    // built when it is written — its completedCount can never fall behind a recorded result.
+    let writeChain: Promise<unknown> = Promise.resolve();
+    let writesInFlight = 0;
+    const serializedWrite = <T>(write: () => Promise<T> | T): Promise<T> => {
+      // An idle chain starts the write at once (the unserialized timing); a busy one queues it.
+      const run: Promise<T> = writesInFlight === 0
+        ? (async () => write())()
+        : writeChain.catch(() => undefined).then(write);
+      writesInFlight += 1;
+      writeChain = run;
+      void run.then(() => { writesInFlight -= 1; }, () => { writesInFlight -= 1; });
+      return run;
+    };
+    const reportProgress = (progress: () => FixPrecheckProgress): Promise<void> => serializedWrite(async () => {
       if (!onProgress) return;
+      const snapshot = progress();
       try {
-        await onProgress(progress);
+        await onProgress(snapshot);
       } catch (err) {
         // Progress is a liveness aid, never a substitute for the measured verdict. A transient
         // queue/DB write failure must not convert a real test result into runner-failed.
         log(
-          `[admission-precheck] progress callback failed for ${progress.currentFile}: ` +
+          `[admission-precheck] progress callback failed for ${snapshot.currentFile}: ` +
             `${err instanceof Error ? err.message : String(err)}`,
         );
       }
-    };
+    });
     const execWithProgress = async (
       argv: readonly string[],
       execOpts: ExecOptions,
-      fileProgress: Omit<FixPrecheckProgress, 'heartbeatAtMs'>,
+      fileProgress: () => Omit<FixPrecheckProgress, 'heartbeatAtMs'>,
     ): Promise<ExecResult> => {
       let lastHeartbeatAtMs = -Infinity;
-      let pendingProgress: FixPrecheckProgress | null = null;
+      let pendingHeartbeatAtMs: number | null = null;
       let reporting: Promise<void> | null = null;
       const onOutput = () => {
         if (!onProgress) return;
         const heartbeatAtMs = Date.now();
         if (heartbeatAtMs - lastHeartbeatAtMs < ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS) return;
         lastHeartbeatAtMs = heartbeatAtMs;
-        pendingProgress = { ...fileProgress, heartbeatAtMs };
+        pendingHeartbeatAtMs = heartbeatAtMs;
         if (reporting) return;
         // Keep at most one pending snapshot while a CAS write is in flight. Await the last
         // write before advancing phases so delayed setup progress cannot overwrite a file.
         reporting = (async () => {
-          while (pendingProgress) {
-            const progress = pendingProgress;
-            pendingProgress = null;
-            await reportProgress(progress);
+          while (pendingHeartbeatAtMs !== null) {
+            const at = pendingHeartbeatAtMs;
+            pendingHeartbeatAtMs = null;
+            await reportProgress(() => ({ ...fileProgress(), heartbeatAtMs: at }));
           }
         })().finally(() => { reporting = null; });
       };
@@ -1237,7 +1278,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         env: { ...admissionPrecheckSetupEnv(), ...clearedEnv },
         logFile,
       },
-      { currentFile: files[0] as string, completedCount: 0, totalCount: files.length },
+      () => ({ currentFile: files[0] as string, completedCount: 0, totalCount: files.length }),
     );
     if (setup.exitCode !== 0) {
       const infra = dependencyGenerationInfraCode(setup.exitCode, setup.output);
@@ -1287,45 +1328,67 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       const heartbeatAtMs = Date.now();
       if (environmentProgress || heartbeatAtMs - lastEnvironmentHeartbeat < ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS) return;
       lastEnvironmentHeartbeat = heartbeatAtMs;
-      environmentProgress = reportProgress({ currentFile: files[0] as string, completedCount: 0,
-        totalCount: files.length, heartbeatAtMs }).finally(() => { environmentProgress = undefined; });
+      environmentProgress = reportProgress(() => ({ currentFile: files[0] as string, completedCount: 0,
+        totalCount: files.length, heartbeatAtMs })).finally(() => { environmentProgress = undefined; });
     }) ?? {};
     await environmentProgress;
-    const results: FixPrecheckFileResult[] = [];
-    for (let index = 0; index < files.length; index += 1) {
-      opts.assertTestEnvironment?.();
-      const file = files[index] as string;
-      await reportProgress({
-        currentFile: file,
-        completedCount: index,
-        totalCount: files.length,
-        heartbeatAtMs: Date.now(),
-      });
-      log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
-      const argv = fileTestCommand?.length
-        ? [...fileTestCommand, '--', file]
-        : ['node', 'scripts/test-files.mjs', file];
-      const r = await execWithProgress(argv, {
-        cwd: precheckRoot,
-        timeoutMs: perFileTimeoutMs,
-        env: {
-          PAPERCUSP_ADMISSION_PRECHECK: '1',
-          PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
-          ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
-          ...clearedEnv,
-          ...testEnvironment,
-          // Frozen candidates can predate the exact-file router's test-mode
-          // boundary. Never inherit the operator's production Vite/React mode.
-          NODE_ENV: 'test',
-        },
-        logFile,
-      }, { currentFile: file, completedCount: index, totalCount: files.length });
-      opts.assertTestEnvironment?.();
-      const c = classifyTestFileRun(r);
-      const result: FixPrecheckFileResult = { path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs };
-      results.push(result);
-      await onFileResult?.(result);
-    }
-    return { ran: true, commit, results, setup: { durationMs: setup.durationMs } };
+    // WI-6554700010030140: up to `concurrency` files run at once; 1 is the historical strict
+    // serial order. `completed` counts DURABLY recorded results only (it advances inside the
+    // write chain, after onFileResult), so no progress snapshot ever claims an unrecorded file.
+    const concurrency = Math.max(1, Math.min(Math.floor(opts.fileConcurrency ?? 1), files.length));
+    const results: (FixPrecheckFileResult | undefined)[] = new Array(files.length);
+    let nextIndex = 0;
+    let completed = 0;
+    let stopped = false;
+    const progressFor = (file: string) => (): Omit<FixPrecheckProgress, 'heartbeatAtMs'> =>
+      ({ currentFile: file, completedCount: completed, totalCount: files.length });
+    const measureFiles = async (): Promise<void> => {
+      try {
+        while (!stopped && nextIndex < files.length) {
+          opts.assertTestEnvironment?.();
+          const index = nextIndex;
+          nextIndex += 1;
+          const file = files[index] as string;
+          await reportProgress(() => ({ ...progressFor(file)(), heartbeatAtMs: Date.now() }));
+          log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
+          const argv = fileTestCommand?.length
+            ? [...fileTestCommand, '--', file]
+            : ['node', 'scripts/test-files.mjs', file];
+          const r = await execWithProgress(argv, {
+            cwd: precheckRoot,
+            timeoutMs: perFileTimeoutMs,
+            env: {
+              PAPERCUSP_ADMISSION_PRECHECK: '1',
+              PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
+              ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
+              ...clearedEnv,
+              ...testEnvironment,
+              // Frozen candidates can predate the exact-file router's test-mode
+              // boundary. Never inherit the operator's production Vite/React mode.
+              NODE_ENV: 'test',
+            },
+            logFile,
+          }, progressFor(file));
+          opts.assertTestEnvironment?.();
+          const c = classifyTestFileRun(r);
+          const result: FixPrecheckFileResult = { path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs };
+          results[index] = result;
+          await serializedWrite(async () => {
+            await onFileResult?.(result);
+            completed += 1;
+          });
+        }
+      } catch (err) {
+        // Set synchronously in the failing continuation: no sibling may START another file.
+        stopped = true;
+        throw err;
+      }
+    };
+    // allSettled, not all: a failure must not return while a sibling's child is still running
+    // against the operation-owned fixture. Siblings finish their current file, then stop.
+    const settled = await Promise.allSettled(Array.from({ length: concurrency }, measureFiles));
+    const failure = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
+    if (failure) throw failure.reason;
+    return { ran: true, commit, results: results as FixPrecheckFileResult[], setup: { durationMs: setup.durationMs } };
   };
 }

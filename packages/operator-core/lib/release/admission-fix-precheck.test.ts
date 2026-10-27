@@ -4,9 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ADMISSION_PRECHECK_FILE_CONCURRENCY,
+  ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX,
   ADMISSION_PRECHECK_SETUP_BUDGET_MS,
   ADMISSION_PRECHECK_SETUP_IDLE_MS,
   ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS,
+  admissionPrecheckFileConcurrency,
   admissionPrecheckSetupEnv,
   classifyTestFileRun,
   confirmationRerunFiles,
@@ -1066,6 +1069,126 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(await runner({ commit: C, files: Array.from({ length: 201 }, (_, i) => `lib/${i}.test.ts`) }))
       .toMatchObject({ ran: false, reason: 'runner-failed', detail: expect.stringContaining('200-file bound') });
     expect(exec).not.toHaveBeenCalled();
+  });
+
+  describe('WI-6554700010030140: bounded file concurrency', () => {
+    const ok: ExecResult = { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+    const gate = () => {
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => { open = resolve; });
+      return { opened, open };
+    };
+    const idle = () => ({ held: false, elapsedSec: null });
+
+    it('runs at most fileConcurrency files at once, serializes every queue write and returns results in input order', async () => {
+      const files = Array.from({ length: 7 }, (_, i) => `lib/f${i}.test.ts`);
+      const gates = new Map(files.map((f) => [f, gate()]));
+      const started: string[] = [];
+      let active = 0;
+      let maxActive = 0;
+      const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+        if (argv[1] !== 'scripts/test-files.mjs') return ok;
+        const file = argv[2]!;
+        started.push(file);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gates.get(file)!.opened;
+        active -= 1;
+        return file === 'lib/f3.test.ts' ? { ...ok, exitCode: 1, output: 'Tests 1 failed (1)' } : ok;
+      });
+      let activeWrites = 0;
+      let maxActiveWrites = 0;
+      const write = async () => {
+        activeWrites += 1;
+        maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+        await Promise.resolve();
+        await Promise.resolve();
+        activeWrites -= 1;
+      };
+      const recorded: string[] = [];
+      const snapshots: FixPrecheckProgress[] = [];
+      const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, fileConcurrency: 3, runLockHeld: idle });
+      const pending = runner({
+        commit: C, files,
+        onFileResult: async (r) => { await write(); recorded.push(r.path); },
+        onProgress: async (p) => { await write(); snapshots.push(p); },
+      });
+      await vi.waitFor(() => expect(started).toEqual(files.slice(0, 3)));
+      // Finish the THIRD file first: its slot is refilled before the first two complete.
+      gates.get('lib/f2.test.ts')!.open();
+      await vi.waitFor(() => expect(started).toHaveLength(4));
+      for (const f of [...files].reverse()) gates.get(f)!.open();
+      const out = await pending;
+
+      expect(maxActive).toBe(3);
+      expect(maxActiveWrites).toBe(1);
+      expect(recorded[0]).toBe('lib/f2.test.ts');
+      expect([...recorded].sort()).toEqual([...files].sort());
+      expect(out.ran && out.results.map((r) => r.path)).toEqual(files);
+      expect(out.ran && out.results.find((r) => r.path === 'lib/f3.test.ts')?.status).toBe('fail');
+      // A snapshot is built when written: completedCount never goes backwards and never
+      // claims a file whose result was not yet durably recorded.
+      const counts = snapshots.map((s) => s.completedCount);
+      expect(counts).toEqual([...counts].sort((a, b) => a - b));
+      expect(Math.max(...counts)).toBeLessThan(files.length);
+    });
+
+    it('after a failure no new file starts, and the error surfaces only after running siblings finish', async () => {
+      const files = ['lib/a.test.ts', 'lib/b.test.ts', 'lib/c.test.ts', 'lib/d.test.ts'];
+      const gates = new Map(files.map((f) => [f, gate()]));
+      const started: string[] = [];
+      let healthy = true;
+      const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+        if (argv[1] !== 'scripts/test-files.mjs') return ok;
+        const file = argv[2]!;
+        started.push(file);
+        await gates.get(file)!.opened;
+        if (file === 'lib/a.test.ts') healthy = false;
+        return ok;
+      });
+      const recorded = vi.fn();
+      const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, fileConcurrency: 2, runLockHeld: idle,
+        assertTestEnvironment: () => { if (!healthy) throw new Error('private fixture lost'); } });
+      let settled = false;
+      const pending = runner({ commit: C, files, onFileResult: recorded });
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await vi.waitFor(() => expect(started).toEqual(['lib/a.test.ts', 'lib/b.test.ts']));
+      gates.get('lib/a.test.ts')!.open();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(settled).toBe(false);
+      expect(started).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+      gates.get('lib/b.test.ts')!.open();
+      await expect(pending).rejects.toThrow('private fixture lost');
+      expect(started).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+      expect(recorded).not.toHaveBeenCalled();
+    });
+
+    it('defaults to strictly serial when fileConcurrency is unset', async () => {
+      let active = 0;
+      let maxActive = 0;
+      const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+        if (argv[1] !== 'scripts/test-files.mjs') return ok;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        active -= 1;
+        return ok;
+      });
+      const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: idle });
+      expect(await runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts', 'lib/c.test.ts'] })).toMatchObject({ ran: true });
+      expect(maxActive).toBe(1);
+    });
+
+    it('reads the operator override within bounds and rejects anything else', () => {
+      expect(ADMISSION_PRECHECK_FILE_CONCURRENCY).toBeGreaterThan(1);
+      expect(admissionPrecheckFileConcurrency({})).toBe(ADMISSION_PRECHECK_FILE_CONCURRENCY);
+      expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: '1' })).toBe(1);
+      expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: ' 6 ' })).toBe(6);
+      expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: '999' }))
+        .toBe(ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX);
+      for (const bad of ['0', '-2', '2.5', 'many', ''])
+        expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: bad })).toBe(ADMISSION_PRECHECK_FILE_CONCURRENCY);
+    });
   });
 });
 

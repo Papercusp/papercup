@@ -414,6 +414,23 @@ function preparedSelectionQueueAuthority(queue: FrozenCandidateRepairQueue) {
   };
 }
 
+/**
+ * WI-6554700010030147: the preflight's pre-commit re-read and the commit CAS ask the same
+ * question the recovery path above asks — "would this queue still select the same candidate?" —
+ * so they compare the same authority, never the whole row. A running admission pre-check rewrites
+ * its heartbeat, currentFile and per-file results every few seconds; whole-row equality made every
+ * preparation replan until the run budget expired (papercusp 2026-10-27 10:23Z, candidate
+ * 8c03b5dcd156: "prepared selection authority churn exhausted run deadline/refire budget").
+ * The runner still re-reads the queue under the serializer, so this stays fail-closed.
+ */
+export function checkpointSelectionQueueAuthorityMatches(
+  a: FrozenCandidateRepairQueue | null,
+  b: FrozenCandidateRepairQueue | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return isDeepStrictEqual(preparedSelectionQueueAuthority(a), preparedSelectionQueueAuthority(b));
+}
+
 /** A fresh run may have persisted its own initial queue before dying in materialization. */
 export function preparedCheckpointQueueMatches(
   record: PreparedCheckpointSelectionRecord,
@@ -521,7 +538,7 @@ export async function commitPreparedCheckpointSelection(
     const pending = pendingRaw === null ? null : parseFrozenRepairPendingCarry(pendingRaw);
     if ((queueRaw !== null && !queue) || (pendingRaw !== null && !pending))
       throw new Error('unreadable prepared selection queue/carry authority');
-    if (!isDeepStrictEqual(queue, expected.queue) || !isDeepStrictEqual(pending, expected.pendingCarry)) return false;
+    if (!checkpointSelectionQueueAuthorityMatches(queue, expected.queue) || !isDeepStrictEqual(pending, expected.pendingCarry)) return false;
     // WI-6554700010029754: fail fast instead of returning false. The caller would replan, the
     // selector would pick the same candidate until the run budget expired, and the attached
     // runner's post-preflight refresh refuses it anyway. Publishing it would also hand this

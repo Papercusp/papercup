@@ -38,6 +38,7 @@ import {
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
   markFrozenRepairFixerDispatched,
+  parseFrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
 describe('stored qualification child scope custody', () => {
@@ -1184,6 +1185,29 @@ describe('committing a prepared selection honours the attempt candidate (WI-6554
     }).transaction });
     expect(await commitPreparedCheckpointSelection(target, selectionFor('repair-head-1'), expected)).toBe(true);
     expect(written(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+  });
+
+  // WI-6554700010030147: a running admission pre-check rewrites the queue row every few seconds.
+  // The commit CAS must judge the selection authority, or every preparation replans to exhaustion.
+  it('commits across queue bookkeeping drift but refuses a queue that would select another candidate', async () => {
+    const roundTrip = (q: unknown) => parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(q)))!;
+    const red = roundTrip(markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'frozen-candidate-1', qualificationAttemptId: 'attempt-1', base: 'base-1', nowMs: 50,
+      affectedTestProofGroup: 'group-1' }), { failingTests: ['lib/a.test.ts'], nowMs: 60 }));
+    const captured = { queue: red, pendingCarry: null };
+    const drifted = roundTrip({ ...markFrozenRepairFixerDispatched(red, { spawnId: 'durable-spawn:fixer-1', nowMs: 70 }),
+      updatedAtMs: 999 });
+    expect(drifted).not.toEqual(red);
+    const live = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1'), repair_queue: drifted });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), captured)).toBe(true);
+    expect(updates(live.statements)).toHaveLength(1);
+
+    const admitted = roundTrip(markFrozenRepairAdmitted(red, { atMs: 80, actor: 'su-test',
+      source: { ref: 'head-2', sha: 'head-2' }, fromRepairHead: red.repairHead, toRepairHead: 'head-2',
+      paths: ['lib/a.test.ts'], unchanged: [], blobs: { 'lib/a.test.ts': 'blob-2' } }));
+    const moved = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1'), repair_queue: admitted });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), captured)).toBe(false);
+    expect(updates(moved.statements)).toHaveLength(0);
   });
 
   it('treats an unpinned attempt as accepting any selection', () => {
