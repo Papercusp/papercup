@@ -17,6 +17,8 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
 const store = await import('./store');
+const { HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER } = await import('./cancel-reasons');
+const { lastLoopFireParked } = await import('../../agent-tools/loop/next-wake');
 const { reconcileInterestEventAwaits } = await import('../../interest-auto-arm');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
@@ -513,6 +515,33 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
       DELETE FROM harness_shared.event_wake_deliveries
        WHERE subscriber_id LIKE ${`${prefix}-%`}
     `;
+  });
+
+  it('keeps the host-accepted fact when SessionEnd drops a parked cold reset (WI-6554700010030084)', async () => {
+    const key = `${store.INBOX_WAKE_KEY_PREFIX}su-cold-reset-wake`;
+    await store.upsertInboxWakeAwait({ subscriberId: 'su-cold-reset-wake', eventKey: key, note: 'standing wake' });
+    const first = await store.fireAwaitsForKey({ eventKey: key });
+    await store.insertDeliveries({ awaits: first, summary: 'cold-reset-accepted' });
+    const [claimed] = await store.claimDueDeliveries({ limit: 5 });
+    await store.markDeliveryParked(
+      claimed.id,
+      'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+      60_000,
+    );
+    const second = await store.fireAwaitsForKey({ eventKey: key });
+    await store.insertDeliveries({ awaits: second, summary: 'pending-not-accepted' });
+
+    expect(await store.cancelInboxWakeAwaits('su-cold-reset-wake')).toBe(1);
+
+    const recent = await store.listRecentDeliveries('su-cold-reset-wake', 10);
+    const accepted = recent.find((delivery) => delivery.summary === 'cold-reset-accepted');
+    const pending = recent.find((delivery) => delivery.summary === 'pending-not-accepted');
+    expect(accepted).toMatchObject({ status: 'dropped' });
+    expect(pending).toMatchObject({ status: 'dropped' });
+    expect(accepted?.lastError).toContain(HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER);
+    expect(pending?.lastError).not.toContain(HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER);
+    expect(lastLoopFireParked({ lastWakeStatus: 'dropped', lastWakeError: accepted?.lastError })).toBe(false);
+    expect(lastLoopFireParked({ lastWakeStatus: 'dropped', lastWakeError: pending?.lastError })).toBe(true);
   });
 
   it('drops queued and claimed deliveries for any cancelled await before wake execution', async () => {

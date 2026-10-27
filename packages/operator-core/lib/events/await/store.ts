@@ -52,7 +52,11 @@ import {
   type SystemClearedBlockerItem,
 } from '../../work-item-ref-blocker-auto-clear';
 import { fireCertifiesCondition } from '../../external-condition-reachability';
-import { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
+import {
+  AWAIT_CANCEL_REASONS,
+  HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER,
+  type AwaitSystemCancelReason,
+} from './cancel-reasons';
 export { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 import type {
   AwaitPolicy,
@@ -3399,10 +3403,16 @@ export async function settleQueuedDeliveriesForCancelledAwaits(
   if (ids.length === 0) return 0;
   const sql = opts.client ?? getOrgPg().sql;
   const ws = eventsWs();
+  // WI-6554700010030084: keep the host-accepted fact on a parked row the host already owns.
+  const acceptedReason = `${reason} ${HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER}; the host-owned commit is not an undelivered wake (WI-1062047, WI-6554700010030084)`;
   const rows = await sql<Array<{ id: number }>>`
     UPDATE harness_shared.event_wake_deliveries AS d
        SET status = 'dropped',
-           last_error = ${`${reason} (WI-1062047)`}
+           last_error = CASE
+             WHEN d.status = 'parked' AND d.last_error LIKE ${'%delivery accepted before turn-start proof%'}
+               THEN ${acceptedReason}
+             ELSE ${`${reason} (WI-1062047)`}
+           END
       FROM harness_shared.event_awaits AS a
      WHERE d.workspace_id = ${ws}
        AND d.await_id = ANY(${ids}::bigint[])

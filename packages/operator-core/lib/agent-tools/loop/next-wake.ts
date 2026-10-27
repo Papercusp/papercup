@@ -44,6 +44,7 @@
  * produced no loop-origin turn and recorded that failure in lastDeliveryOutcome.
  */
 import type { LoopStatus } from '../../harness/routines/loop';
+import { HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER } from '../../events/await/cancel-reasons';
 import type { ActiveLoopRewakeBlockedReason } from '../coordination/tools/continuation-gate';
 
 export type LoopNextWakeInput =
@@ -100,7 +101,12 @@ export type LoopNextWakeInput =
 export function lastLoopFireParked(
   loop: Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError'>> | null | undefined,
 ): boolean {
-  if (loop?.lastWakeStatus === 'dropped') return true;
+  // WI-6554700010030084: a drop that records the psu host had already accepted the delivery is a
+  // cold reset whose own SessionEnd cancelled the old session's inbox wake — delivered by the
+  // respawn, not stuck. Without this, every cold-wake turn read rewakeGuaranteed:false.
+  if (loop?.lastWakeStatus === 'dropped') {
+    return !(loop.lastWakeError ?? '').includes(HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER);
+  }
   if (loop?.lastWakeStatus !== 'parked') return false;
   return !/retry remains durable/i.test(loop.lastWakeError ?? '');
 }

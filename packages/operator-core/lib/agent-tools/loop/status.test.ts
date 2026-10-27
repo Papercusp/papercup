@@ -335,6 +335,28 @@ describe('loop:status rewake verdict (P-013)', () => {
     expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-parked' });
   });
 
+  // WI-6554700010030084: a cold reset ends the session it was delivered to; SessionEnd hygiene then
+  // drops the reset's own (host-accepted) row. That drop is not an undelivered fire.
+  it('does not read a cold reset dropped by its own SessionEnd as a parked fire', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastWakeStatus: 'dropped',
+      lastWakeError: 'standing inbox-wake await cancelled before delivery after the psu host had accepted this delivery; the host-owned commit is not an undelivered wake (WI-1062047, WI-6554700010030084)',
+    });
+    const out = await run();
+    expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
+  it('still reads a drop the host never accepted as last-fire-parked', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastWakeStatus: 'dropped',
+      lastWakeError: 'standing inbox-wake await cancelled before delivery (WI-1062047)',
+    });
+    const out = await run();
+    expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-parked' });
+  });
+
   it('reports rewakeGuaranteed:true for the same loop once its last fire was delivered', async () => {
     getLoopStatusMock.mockResolvedValue({ ...armed, lastWakeStatus: 'delivered', lastWakeError: null });
     const out = await run();
