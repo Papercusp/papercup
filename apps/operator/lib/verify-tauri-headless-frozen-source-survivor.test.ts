@@ -105,6 +105,24 @@ function generateStopScript(root: string, sourceRoot: string, sourceWork: string
 }
 
 describe("verify-tauri-headless frozen-source survivor reaper", () => {
+  it("preserves the snapshot when its process census fails", () => {
+    const fixture = makeFixture("frozen-source-census-failure");
+    try {
+      const result = spawnSync("bash", ["-c", [
+        "set -u",
+        reaperFunctions,
+        "frozen_source_rooted_processes() { return 73; }",
+        'reap_frozen_source_survivors "$TEST_SOURCE" this-run',
+      ].join("\n")], {
+        encoding: "utf8", timeout: 8000,
+        env: { ...process.env, TEST_SOURCE: fixture.sourceRoot },
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain("cannot census frozen operator source");
+      expect(existsSync(fixture.sourceRoot)).toBe(true);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
   it("accepts a process that exits between the initial liveness and ownership reads", () => {
     const script = [
       'set -u',

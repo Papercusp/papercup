@@ -1477,22 +1477,36 @@ frozen_source_process_rooted() {
 }
 
 frozen_source_rooted_processes() {
-  local root="$1" escaped_root
-  escaped_root="${root//\\/\\134}"
-  escaped_root="${escaped_root// /\\040}"
-  escaped_root="${escaped_root//$'\n'/\\012}"
-  {
-    # Let find resolve procfs links in C instead of spawning readlink once per
-    # pid; only matching processes need their environment inspected.
-    find /proc -mindepth 2 -maxdepth 2 -uid "$EUID" -type l \
-      \( -name cwd -o -name root -o -name exe \) \
-      \( -lname "$root" -o -lname "$root/*" \) -printf '%h\n' 2>/dev/null
-    # Search maps files in a bounded grep process set; include procfs's escaped
-    # spelling for roots containing whitespace or backslashes.
-    find /proc/[0-9]*/maps -uid "$EUID" -type f -print0 2>/dev/null |
-      xargs -0 -r grep -lF -e "$root/" -e "$escaped_root/" 2>/dev/null |
-      sed 's#/maps$##'
-  } | sort -u
+  # Read each account-owned process once. Walking every proc entry with find
+  # and then spawning a maps pipeline made the six cleanup censuses alone
+  # approach the generated-stop deadline. Node is already a verifier dependency.
+  node - "$1" "$EUID" <<'FROZEN_SOURCE_CENSUS'
+  const fs = require('node:fs');
+  const root = process.argv[2];
+  const uid = Number(process.argv[3]);
+  const prefix = root.endsWith('/') ? root : root + '/';
+  const escaped = prefix.replaceAll('\\', '\\134').replaceAll(' ', '\\040').replaceAll('\n', '\\012');
+  const patterns = [Buffer.from(prefix), Buffer.from(escaped)];
+  for (const entry of fs.readdirSync('/proc')) {
+    if (!/^[0-9]+$/.test(entry)) continue;
+    const proc = '/proc/' + entry;
+    try { if (fs.statSync(proc).uid !== uid) continue; } catch { continue; }
+    let rooted = false;
+    for (const link of ['cwd', 'root', 'exe']) {
+      try {
+        const path = fs.readlinkSync(proc + '/' + link).replace(/ \(deleted\)$/, '');
+        if (path === root || path.startsWith(prefix)) { rooted = true; break; }
+      } catch { /* An exiting process or inaccessible link is not a candidate. */ }
+    }
+    if (!rooted) {
+      try {
+        const maps = fs.readFileSync(proc + '/maps');
+        rooted = patterns.some(pattern => maps.includes(pattern));
+      } catch { /* Match the existing account-scoped procfs visibility contract. */ }
+    }
+    if (rooted) process.stdout.write(proc + '\n');
+  }
+FROZEN_SOURCE_CENSUS
 }
 
 frozen_source_process_start_ticks() {
@@ -1601,7 +1615,7 @@ stop_verify_process_group() {
 }
 
 reap_frozen_source_survivors() (
-  local root="$1" provenance="$2" proc pid uid ticks owned unowned=0
+  local root="$1" provenance="$2" proc pid uid ticks owned census unowned=0
   local attempt any_owned
   local -a owned_pids=() owned_ticks=()
   [ -n "$root" ] && [ -d "$root" ] || return 0
@@ -1616,6 +1630,10 @@ reap_frozen_source_survivors() (
   # Do not let the cleanup shell itself keep the snapshot busy through cwd.
   cd / || {
     echo "FATAL: cannot leave the frozen operator source before cleanup; preserving $root" >&2
+    return 1
+  }
+  census="$(frozen_source_rooted_processes "$root")" || {
+    echo "FATAL: cannot census frozen operator source; preserving $root" >&2
     return 1
   }
   while IFS= read -r proc; do
@@ -1637,7 +1655,7 @@ reap_frozen_source_survivors() (
       printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=unverified; preserving snapshot\n' "$pid" >&2
       unowned=1
     fi
-  done < <(frozen_source_rooted_processes "$root")
+  done <<<"$census"
 
   local i
   for i in "${!owned_pids[@]}"; do
@@ -1665,6 +1683,10 @@ reap_frozen_source_survivors() (
 
   # Re-census after signalling. Any process still rooted here without the exact
   # run marker is outside our authority; fail closed and leave the source intact.
+  census="$(frozen_source_rooted_processes "$root")" || {
+    echo "FATAL: cannot census frozen operator source after reap; preserving $root" >&2
+    return 1
+  }
   while IFS= read -r proc; do
     [ -d "$proc" ] || continue
     pid="${proc##*/}"
@@ -1679,7 +1701,7 @@ reap_frozen_source_survivors() (
       printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=unverified; preserving snapshot\n' "$pid" >&2
     fi
     unowned=1
-  done < <(frozen_source_rooted_processes "$root")
+  done <<<"$census"
   if [ "$unowned" -ne 0 ]; then
     echo "FATAL: frozen operator source still has unverified or unreaped process survivors; preserving $root" >&2
     return 1
