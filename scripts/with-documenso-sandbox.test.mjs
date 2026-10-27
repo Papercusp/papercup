@@ -280,6 +280,8 @@ test('pinned source receipt preparation precedes providers and is required by th
     'the pinned source must be frozen before image pulls, the reaper, or provider allocation');
   assert.match(wrapper, /prepareVerifierSource\(/);
   assert.match(wrapper, /prepareVerifierDependencies\(/);
+  assert.match(wrapper, /prepareVerifierDependencies\(\{ donor: committedWorkRootDependencyDonor\(donor\), dest: sourceRoot/,
+    'materialized committed source is a reader; dependency snapshots must use its physical donor');
   assert.match(wrapper, /verifierSourceChildEnv\(/);
   assert.match(wrapper, /childEnvironment\.PAPERCUSP_REPO_DIR = sourceRoot/);
   assert.match(wrapper, /childEnvironment\.VERIFY_TAURI_SOURCE_INPUTS = receipt\.testedInputs/);

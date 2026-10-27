@@ -19,6 +19,7 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createServer, createConnection } from 'node:net';
 import { getContainerRuntimeClient, Wait } from 'testcontainers';
 import { prepareVerifierSource, prepareVerifierDependencies, verifierSourceChildEnv } from './source-preview.mjs';
+import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 
 const PG_IMAGE = 'postgres@sha256:5a65324fe84dc41709ff914e90b07f3e2f577073ed27bf917d4873aca0c9ec51';
 const MAIL_IMAGE = 'maildev/maildev@sha256:180ef51f65eefebb0e7122d8308813c1fd7bff164bc440ce5a3c2feee167a810';
@@ -642,7 +643,7 @@ async function prepareSandboxSource(env = process.env, { signal } = {}) {
       ...(inputs.length ? { inputs } : {}), ...(inputsFile ? { inputsFile } : {}),
       tauriInputs: true, gitCheckout: true });
     writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
-    await prepareVerifierDependencies({ donor, dest: sourceRoot, receipt, env, signal });
+    await prepareVerifierDependencies({ donor: committedWorkRootDependencyDonor(donor), dest: sourceRoot, receipt, env, signal });
     signal?.throwIfAborted();
     const childEnvironment = verifierSourceChildEnv({ root: sourceRoot, receiptPath, env });
     childEnvironment.PAPERCUSP_REPO_DIR = sourceRoot;
