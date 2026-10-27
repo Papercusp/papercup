@@ -1,6 +1,6 @@
 /** Real current-su launcher, private current-build operator and task container.
  * Local refusal/scripted protocol listeners have no provider forwarding code. */
-import { fork } from 'node:child_process';
+import { fork, type ChildProcess } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';

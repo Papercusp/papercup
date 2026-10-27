@@ -27,6 +27,8 @@ import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-instal
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler } from './current-su-native-http-protocol';
 
+const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
+
 /** Seed only the disposable private pool before its operator boots. The
  * credential is deliberately invalid; inference still terminates at the local
  * refusal listener and authenticateProvider below can never forward it. */
@@ -300,7 +302,14 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       }; },
     }, {
       startBridge: async options => { phase('bridge-start'); bridge = await startCodexHookBridge(options); phase('bridge-ready'); return bridge; },
-      startEgress: async options => { phase('egress-start'); const egress = await startBenchEgress(options); phase('egress-ready'); return egress; },
+      startEgress: async options => {
+        phase('egress-start');
+        writeFileSync(join(evidenceDir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST), options.runId + '\n',
+          { mode: 0o600, flag: 'wx' });
+        const egress = await startBenchEgress(options);
+        phase('egress-ready');
+        return egress;
+      },
       sweep: sweepBenchEgress,
       createDriver: (options, context, observations) => {
         phase('driver-start');
