@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -252,7 +252,7 @@ describe('Codex typed native input', () => {
     expect(f.close).not.toHaveBeenCalled();
   });
 
-  it('delivers image bytes through turn/start and turn/steer instead of plain text', async () => {
+  it('SU-EXEC R-6 acceptance contract: delivers image bytes through turn/start and turn/steer instead of plain text', async () => {
     const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? { turnId: 'native-turn' } : undefined });
     await f.engine.ready;
     const host = f.engine.adapter.host;
@@ -268,6 +268,38 @@ describe('Codex typed native input', () => {
     });
     completeCodex(f);
   });
+  it.each(['revoked', 'moved', 'expired', 'foreign-workspace', 'changed', 'unsupported-media'] as const)(
+    'SU-EXEC R-6 acceptance contract: refuses %s references at the native RPC boundary', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'su-codex-reference-')); nativeDirs.push(root);
+      const path = join(root, 'notes.txt'), bytes = Buffer.from('Selected file answer: 雪');
+      writeFileSync(path, bytes);
+      const f = fixture('codex', { cwd: root }); await f.engine.ready;
+      const host = f.engine.adapter.host;
+      const input = [{ type: 'file' as const, uri: 'project:notes.txt', workspaceId: 'workspace',
+        sha256: createHash('sha256').update(bytes).digest('hex'), mediaType: 'text/plain' }];
+      expect(await host.startCommand({ ...command(f.engine, 'owner_turn', 'valid-reference'), input } as never).terminal)
+        .toMatchObject({ status: 'completed' });
+      expect(f.sent.find(frame => frame.method === 'turn/start')?.params).toMatchObject({
+        input: [{ type: 'text', text: 'Hello from PUI' }, { type: 'text', text: `File project:notes.txt\n${bytes.toString()}` }],
+      });
+      completeCodex(f);
+      if (scenario === 'revoked') chmodSync(path, 0);
+      if (scenario === 'moved') renameSync(path, join(root, 'moved.txt'));
+      if (scenario === 'changed') writeFileSync(path, 'Replacement content');
+      const replay = JSON.parse(JSON.stringify(input));
+      if (scenario === 'expired') replay[0].expiresAt = '2000-01-01T00:00:00Z';
+      if (scenario === 'foreign-workspace') replay[0].workspaceId = 'other-workspace';
+      if (scenario === 'unsupported-media') replay[0].mediaType = 'application/zip';
+      const expected = scenario === 'expired' ? 'input_expired'
+        : scenario === 'foreign-workspace' ? 'input_workspace_mismatch'
+          : scenario === 'changed' ? 'input_identity_changed'
+            : scenario === 'unsupported-media' ? 'unsupported_input_media_type' : 'input_unreadable';
+      expect(await host.startCommand({ ...command(f.engine, 'owner_turn', `replay-${scenario}`), input: replay } as never).terminal)
+        .toMatchObject({ status: 'refused', refusal: { code: expected } });
+      expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+      expect(f.close).not.toHaveBeenCalled();
+    },
+  );
   it('refuses invalid content before native delivery and keeps the connection usable', async () => {
     const f = fixture('codex'); await f.engine.ready;
     const host = f.engine.adapter.host;

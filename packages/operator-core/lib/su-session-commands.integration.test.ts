@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { Hono } from 'hono';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -88,7 +88,7 @@ async function storedTurns() {
 }
 
 describe('SU command acceptance through real PostgreSQL', () => {
-  it('preserves usable image bytes through durable command storage and reconnect for both providers', async () => {
+  it('SU-EXEC R-6 acceptance contract: preserves usable image bytes through durable command storage and reconnect for both providers', async () => {
     const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
     for (const backend of ['claude', 'codex'] as const) {
       await sql`UPDATE harness_shared.adv_sessions SET agent = ${backend} WHERE id = ${advSessionId}`;
@@ -122,6 +122,55 @@ describe('SU command acceptance through real PostgreSQL', () => {
       } finally { replacement.dispose(); }
     }
   });
+
+  it.each(['revoked', 'moved', 'deleted', 'expired', 'foreign-workspace', 'changed', 'unsupported-media'] as const)(
+    'SU-EXEC R-6 acceptance contract: revalidates a persisted %s reference for both providers', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'su-durable-reference-'));
+      const path = join(root, 'notes.txt'), bytes = Buffer.from('Only this file contains the answer: 雪');
+      const acceptedAt = Date.parse('2026-10-26T12:00:00Z');
+      try {
+        for (const backend of ['claude', 'codex'] as const) {
+          writeFileSync(path, bytes); chmodSync(path, 0o600);
+          await sql`UPDATE harness_shared.adv_sessions SET agent = ${backend} WHERE id = ${advSessionId}`;
+          const snapshot = { ...descriptor(), identity: { ...descriptor().identity, backend },
+            backendExtension: backend === 'claude' ? descriptor().backendExtension : { backend, codexHome: null },
+            capabilities: { ...descriptor().capabilities, input: { parts: ['text', 'image', 'file'], origins: ['owner'] } },
+          } as SuSessionDescriptor;
+          const command = { ...ownerTurn(`${backend}-${scenario}`), target: snapshot.identity,
+            input: [{ type: 'file' as const, uri: 'project:notes.txt', workspaceId,
+              sha256: createHash('sha256').update(bytes).digest('hex'), mediaType: 'text/plain',
+              expiresAt: new Date(acceptedAt + 60_000).toISOString() }] };
+          const host = new SuSessionHost({ descriptor: snapshot, executeCommand: async () => ({ status: 'completed' }) });
+          try { await expect((await host.acceptCommand(command)).terminal).resolves.toMatchObject({ status: 'completed' }); }
+          finally { host.dispose(); }
+          const saved = (await storedTurns()).find(turn => (turn.su_command.command as SuSessionCommand).commandId === command.commandId)!
+            .su_command.command as typeof command;
+          const authority = { workspaceId, root, now: acceptedAt };
+          const prepared = await prepareSuSessionInput(saved, authority);
+          expect(JSON.stringify(prepared[backend])).toContain(bytes.toString());
+          expect(saved.input).toEqual(command.input);
+          if (scenario === 'revoked') chmodSync(path, 0);
+          if (scenario === 'moved') renameSync(path, join(root, 'moved.txt'));
+          if (scenario === 'deleted') rmSync(path);
+          if (scenario === 'changed') writeFileSync(path, 'Different content under the same name');
+          const replay = scenario === 'unsupported-media'
+            ? { ...saved, input: saved.input.map(part => ({ ...part, mediaType: 'application/zip' })) } : saved;
+          const expected = scenario === 'expired' ? 'input_expired'
+            : scenario === 'foreign-workspace' ? 'input_workspace_mismatch'
+              : scenario === 'changed' ? 'input_identity_changed'
+                : scenario === 'unsupported-media' ? 'unsupported_input_media_type' : 'input_unreadable';
+          await expect(prepareSuSessionInput(replay, { ...authority,
+            ...(scenario === 'expired' ? { now: acceptedAt + 60_000 } : {}),
+            ...(scenario === 'foreign-workspace' ? { workspaceId: 'other-workspace' } : {}),
+          })).rejects.toMatchObject({ code: expected, retryable: false });
+          // The durable receipt remains the selected reference, not an expanded path or newly granted authority.
+          const retained = (await storedTurns()).find(turn => (turn.su_command.command as SuSessionCommand).commandId === command.commandId)!;
+          expect((retained.su_command.command as typeof command).input).toEqual(command.input);
+          rmSync(path, { force: true });
+        }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    },
+  );
 
   it('refuses a revoked persisted file when content is prepared for a replacement runtime', async () => {
     const root = mkdtempSync(join(tmpdir(), 'su-durable-input-'));

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -185,7 +185,7 @@ describe('structured Claude SU engine', () => {
     expect(p.close).not.toHaveBeenCalled();
   });
 
-  it('delivers typed image content and advertises only attached rich input', async () => {
+  it('SU-EXEC R-6 acceptance contract: delivers typed image content and advertises only attached rich input', async () => {
     const p = peer(), engine = open(p);
     await engine.ready;
     expect(engine.adapter.host.descriptor().capabilities.input?.parts).toEqual(['text', 'image', 'file']);
@@ -195,6 +195,40 @@ describe('structured Claude SU engine', () => {
     expect(p.prompts[0].message.content).toEqual([{ type: 'text', text: '  hi 雪\n\n' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data } }]);
   });
+
+  it.each(['revoked', 'moved', 'expired', 'foreign-workspace', 'changed', 'unsupported-media'] as const)(
+    'SU-EXEC R-6 acceptance contract: refuses %s references at the SDK delivery boundary', async scenario => {
+      const root = mkdtempSync(join(dir, 'reference-'));
+      const path = join(root, 'notes.txt'), bytes = Buffer.from('Selected file answer: 雪');
+      writeFileSync(path, bytes);
+      const p = peer(), engine = open(p);
+      // The engine's authenticated project root selects authority.
+      const relativePath = path.slice(dir.length + 1);
+      const input = [{ type: 'file' as const, uri: `project:${relativePath}`, workspaceId: 'workspace',
+        sha256: createHash('sha256').update(bytes).digest('hex'), mediaType: 'text/plain' }];
+      await engine.ready;
+      await expect(engine.adapter.host.startCommand({ ...command(engine), input }).terminal)
+        .resolves.toMatchObject({ status: 'completed' });
+      expect(p.prompts[0].message.content).toEqual([{ type: 'text', text: '  hi 雪\n\n' },
+        { type: 'text', text: `File project:${relativePath}\n${bytes.toString()}` }]);
+      if (scenario === 'revoked') chmodSync(path, 0);
+      if (scenario === 'moved') renameSync(path, join(root, 'moved.txt'));
+      if (scenario === 'changed') writeFileSync(path, 'Replacement content');
+      const replay = JSON.parse(JSON.stringify(input));
+      if (scenario === 'expired') replay[0].expiresAt = '2000-01-01T00:00:00Z';
+      if (scenario === 'foreign-workspace') replay[0].workspaceId = 'other-workspace';
+      if (scenario === 'unsupported-media') replay[0].mediaType = 'application/zip';
+      const expected = scenario === 'expired' ? 'input_expired'
+        : scenario === 'foreign-workspace' ? 'input_workspace_mismatch'
+          : scenario === 'changed' ? 'input_identity_changed'
+            : scenario === 'unsupported-media' ? 'unsupported_input_media_type' : 'input_unreadable';
+      await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: `replay-${scenario}`,
+        turnId: `replay-${scenario}`, input: replay }).terminal)
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: expected } });
+      expect(p.prompts).toHaveLength(1);
+      expect(p.close).not.toHaveBeenCalled();
+    },
+  );
 
   it('preserves typed input refusal without closing the Claude connection', async () => {
     const p = peer(), engine = open(p);
