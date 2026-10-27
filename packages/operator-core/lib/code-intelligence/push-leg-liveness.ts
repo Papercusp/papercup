@@ -27,6 +27,8 @@ export type LivenessOp = (typeof LIVENESS_OPS)[number];
 export const SYMBOL_CAPTURE_SIGNAL = 'symbol-capture';
 export const LIVENESS_PROBE_ACTOR = 'system:code-intel-liveness-probe';
 export const LIVENESS_PROBE_ACTION = 'code-intel.liveness.probe';
+/** The plan whose implementer lineage is excluded from the outside-lineage counts. */
+export const LIVENESS_SUBJECT_PLAN = 'code-intel-delivery-and-outcomes-2026-10-26';
 /** The bar's maximum check interval. */
 export const LIVENESS_CHECK_INTERVAL_MS = 24 * 3_600_000;
 
@@ -339,14 +341,18 @@ export function codeIntelLivenessRescore() {
     scope: 'workspace' as const,
     resolve: async (window: { workspaceId: string; windowStart: string; windowEnd: string }) => {
       if (!window.workspaceId.trim()) return { verdict: 'unknown' as const, detail: 'Exact workspace required.' };
-      const [{ getOrgPg }, { getBuildInfo }, { broadcastSevereEvent }, { resolveAlarm }, { getFlag }] = await Promise.all([
+      const [{ getOrgPg }, { getBuildInfo }, { broadcastSevereEvent }, { resolveAlarm }, { getFlag }, { resolvePlanImplementerIdentities }] = await Promise.all([
         import('@papercusp/db-org'), import('../build-info'), import('../severe-event-broadcast'), import('../alarm-attention'), import('@papercusp/flags/server'),
+        import('../acceptance-author-identity'),
       ]);
       const sql = getOrgPg().sql as unknown as Sql;
-      const implementers = (await sql.unsafe(`SELECT DISTINCT assignee FROM harness_shared.work_items
-          WHERE workspace_id = $1 AND source_plan_slug = 'code-intel-delivery-and-outcomes-2026-10-26' AND assignee IS NOT NULL
-            AND source_plan_item_ids && ARRAY['P-002','P-003','P-007']::text[]`, [window.workspaceId]) as Array<{ assignee: string }>)
-        .map(r => r.assignee);
+      // WI-6554700010030221: the lineage comes from the shared, real-PG-tested resolver
+      // (taken_by / terminal_owner / last_released_by / worked_by_history / auditors /
+      // editors), never a hand-written work_items query — the previous one selected a
+      // non-existent `assignee` column and threw 42703 on every scheduled rescore, so the
+      // instrument never wrote a single probe row. Whole-plan lineage is a superset of the
+      // P-002/P-003/P-007 holders: stricter, so it can only make a dead leg alarm sooner.
+      const implementers = await resolvePlanImplementerIdentities(LIVENESS_SUBJECT_PLAN, { workspaceId: window.workspaceId });
       const readers = pgLivenessReaders(sql, [...implementers, CANARY_OWNER]);
       const result = await runPushLegLivenessProbe(window.workspaceId, {
         enabled: flag => getFlag(flag as never, 'system').then(Boolean).catch(() => false),
