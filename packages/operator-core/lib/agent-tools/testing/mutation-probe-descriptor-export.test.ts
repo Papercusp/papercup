@@ -387,6 +387,9 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${join(dir, 'no-such-health.json')}`,
+      // An explicit HEALTH_URL now REQUIRES the reader (3f9bb0a4d3), so the
+      // withheld/unbound path these auto cases pin needs the explicit opt-out.
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR: '{"stale":"caller value"}',
     });
 
@@ -415,6 +418,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
     });
 
@@ -447,6 +451,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
     });
 
@@ -498,6 +503,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
       const result = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
         PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
         PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
         PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
       });
       return { ...result, legs: legs(log) };
