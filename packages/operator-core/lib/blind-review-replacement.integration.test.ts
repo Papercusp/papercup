@@ -6,7 +6,7 @@ import path from 'node:path';
 import { setupPlanPgFixture, seedPlan, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 import { declareSessionConfinement } from './capability-envelope/session-confinement-store';
 import { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
-import { blindReviewerConfinement } from './blind-reviewer-mint';
+import { BLIND_REVIEWER_BACKENDS, blindReviewerConfinement } from './blind-reviewer-mint';
 import { assertMigrationPassesPreApplyLints } from './migration-preapply-lint';
 import { replaceBlindGapReviewer, type BlindReviewReplacementDeps, type BlindReviewReplacementInput } from './blind-review-replacement';
 
@@ -148,7 +148,14 @@ describe('same-activation replacement on private PostgreSQL', () => {
     const next = await replaceBlindGapReviewer({ ...s.input, requestKey: 'retry-after-refusal' }, s.deps);
     expect(next).toMatchObject({ ok: true, attempt: { attemptSeq: 2, status: 'failed' },
       attempts: [{ attemptSeq: 1, requestKey: 'corrected-manifest' }, { attemptSeq: 2, requestKey: 'retry-after-refusal' }] });
-    expect(launch).toHaveBeenCalledTimes(2);
+    // Each launching request walks the whole backend ladder (EI-27127088253419654): a proven
+    // pre-spawn refusal falls through, in order, reusing the reservation's launch key.
+    expect(launch).toHaveBeenCalledTimes(2 * BLIND_REVIEWER_BACKENDS.length);
+    const firstRequest = (launch.mock.calls as unknown as Array<[Record<string, unknown>]>)
+      .slice(0, BLIND_REVIEWER_BACKENDS.length).map(([args]) => args);
+    expect(firstRequest.map(a => [a.agent, a.model, a.effort]))
+      .toEqual(BLIND_REVIEWER_BACKENDS.map(b => [b.agent, b.model, b.effort]));
+    expect(new Set(firstRequest.map(a => a.idempotencyKey)).size).toBe(1);
   });
 
   it('never repeats an uncertain launch, and reconciles a lost reply using the original native ledger receipt', async () => {

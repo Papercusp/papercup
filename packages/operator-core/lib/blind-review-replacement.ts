@@ -10,7 +10,7 @@ import { blindReviewCompletion, loadBlindReviewBrief } from './blind-review-gate
 import { briefTurnCount } from './blind-review-brief';
 import { validProductReadBoundary, type ProductReadBoundary, type SessionToolConfinement } from './capability-envelope/session-confinement';
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
-import { blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, defaultKnownToolNames,
+import { blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, BLIND_REVIEWER_BACKENDS, defaultKnownToolNames, launchProvablyNotStarted,
   howToRunOutsideCeilingMessage, howToRunToolsOutsideCeiling, type BlindReviewerProductReads } from './blind-reviewer-mint';
 import { BLIND_GAP_REVIEW_ACTOR, createBlindReviewSessionBinding, recordBlindReviewSessionPost } from './blind-review-session-bindings';
 import { TERMINAL_TASK_STATES } from './task-manager/types';
@@ -138,15 +138,10 @@ export function replacementLaunchReceipt(value: unknown):
   | { kind: 'not-started' }
   | { kind: 'native'; ownerId: string; advSessionId: number; sessionId: string }
   | { kind: 'uncertain' } {
+  if (launchProvablyNotStarted(value)) return { kind: 'not-started' };
   const env = obj(value);
-  const data = obj(env?.data);
-  const failure = obj(data?.launchFailure);
-  if (failure?.stage === 'pre-spawn' && failure.processesOpened === 0) return { kind: 'not-started' };
-  const launch = obj(data?.launch) ?? obj(env?.launch) ?? env;
+  const launch = obj(obj(env?.data)?.launch) ?? obj(env?.launch) ?? env;
   if (!launch || launch.mode === 'deduped') return { kind: 'uncertain' };
-  if (launch.opened === 0 && launch.partial === false && Array.isArray(launch.tasks) && launch.tasks.length === 0) {
-    return { kind: 'not-started' };
-  }
   const identity = openedNativeIdentity(value);
   return identity?.sessionId ? { kind: 'native', ...identity, sessionId: identity.sessionId } : { kind: 'uncertain' };
 }
@@ -277,14 +272,23 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
             confinementKey: mod.INTERNAL_SCOPED_SESSION_CONFINEMENT };
         }))();
         invoked = true;
-        outcome = await launcher.handler({ harness: input.harness, brief: attempt.request_snapshot.kickoff,
-          headless: true, agent: 'codex', account: BLIND_GAP_REVIEW_ACCOUNT, independent: true,
-          mcpTarget: 'spawn-host', idempotencyKey: attempt.launch_key }, {
-          ...input.ctx, workspaceId: input.workspaceId, harnessSlug: input.harness, uiClientId: null,
-          isSuperuser: false, isPowerUser: false, userId: null, ownerId: BLIND_GAP_REVIEW_ACTOR,
-          principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: input.workspaceId },
-          [launcher.confinementKey]: attempt.confinement_snapshot,
-        } as never);
+        // Walk the same backend ladder as the mint (EI-27127088253419654). Every rung reuses
+        // the reservation's launch_key: a proven-not-started launch left or released that
+        // key, so the ledger lookup below still finds whichever rung actually claimed it.
+        for (const backend of BLIND_REVIEWER_BACKENDS) {
+          outcome = await launcher.handler({ harness: input.harness, brief: attempt.request_snapshot.kickoff,
+            headless: true, agent: backend.agent,
+            ...(backend.model ? { model: backend.model } : {}),
+            ...(backend.effort ? { effort: backend.effort } : {}),
+            account: BLIND_GAP_REVIEW_ACCOUNT, independent: true,
+            mcpTarget: 'spawn-host', idempotencyKey: attempt.launch_key }, {
+            ...input.ctx, workspaceId: input.workspaceId, harnessSlug: input.harness, uiClientId: null,
+            isSuperuser: false, isPowerUser: false, userId: null, ownerId: BLIND_GAP_REVIEW_ACTOR,
+            principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: input.workspaceId },
+            [launcher.confinementKey]: attempt.confinement_snapshot,
+          } as never);
+          if (!launchProvablyNotStarted(outcome)) break;
+        }
       } catch (error) {
         // A thrown transport/launcher exception may follow spawn. Never release on it.
         const message = error instanceof Error ? error.message : String(error);

@@ -48,6 +48,49 @@ export { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
  */
 export const BLIND_GAP_REVIEW_ACCOUNT = 'auto' as const;
 
+/** One backend the reviewer may launch on. `model`/`effort` resolve through launch-agent. */
+export interface BlindReviewerBackend {
+  readonly agent: 'claude' | 'codex';
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+/**
+ * The backends the reviewer launches on, in preference order (owner directive #2503,
+ * 2026-10-27). The mint and the replacement path try each in turn; a launch whose receipt
+ * PROVES nothing started (`launchProvablyNotStarted` — e.g. every account of that provider
+ * is walled) falls through to the next. A single pinned backend made one provider's
+ * capacity a hard wall for every blind review: the earlier `agent: 'codex'` pin (a
+ * mitigation for EI-25752839878478687) left reviews unmintable whenever all Codex accounts
+ * were walled (EI-27127088253419654).
+ */
+export const BLIND_REVIEWER_BACKENDS: readonly BlindReviewerBackend[] = Object.freeze([
+  Object.freeze({ agent: 'claude', model: 'opus', effort: 'xhigh' } as const),
+  Object.freeze({ agent: 'codex' } as const),
+]);
+
+function receiptRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/**
+ * Does a launch-agent receipt PROVE no process started? `isError` alone never does: a
+ * launcher can fail after spawning. Only an explicit pre-spawn failure with zero processes
+ * (launch-agent's `err()`), or a non-deduped `opened: 0` receipt that is not partial and has
+ * no tasks, proves it. The backend ladder falls through only on this proof, so it can never
+ * start a second reviewer beside a live first one. A pre-spawn refusal also leaves (or
+ * releases) the launch idempotency key, so the next rung may reuse it.
+ */
+export function launchProvablyNotStarted(value: unknown): boolean {
+  const env = receiptRecord(value);
+  const data = receiptRecord(env?.data);
+  const failure = receiptRecord(data?.launchFailure);
+  if (failure?.stage === 'pre-spawn' && failure.processesOpened === 0) return true;
+  const launch = receiptRecord(data?.launch) ?? receiptRecord(env?.launch) ?? env;
+  return !!launch && launch.mode !== 'deduped' && launch.opened === 0 && launch.partial === false
+    && Array.isArray(launch.tasks) && launch.tasks.length === 0;
+}
+
 /**
  * Everything a blind reviewer may call. Each entry carries why it is here; nothing in this
  * list returns plan artifacts.
@@ -266,22 +309,28 @@ export async function mintBlindGapReviewer(
     userId: null,
     [confinementKey]: blindReviewerConfinement(input.slug, productReads, scratchPlans),
   };
-  const launch = await handler(
-    {
-      brief: kickoff,
-      harness: input.harness,
-      headless: true,
-      // Use the native backend used by grading-audit recovery. An implicit
-      // Claude launch can strand a confined review on a completed provider
-      // API error while its PTY remains live (EI-25752839878478687).
-      agent: 'codex',
-      account: BLIND_GAP_REVIEW_ACCOUNT,
-      // A confined reviewer must reach the door and product on the build that
-      // minted it. The stable endpoint may still serve an older tool catalog.
-      mcpTarget: 'spawn-host',
-    },
-    systemCtx as never,
-  );
+  // Walk the backend ladder. Only a launch PROVEN not started falls through; anything
+  // else (spawned, partial, or an isError that may follow a spawn) stops the walk, so no
+  // second reviewer starts.
+  let launch: unknown = null;
+  for (const backend of BLIND_REVIEWER_BACKENDS) {
+    launch = await handler(
+      {
+        brief: kickoff,
+        harness: input.harness,
+        headless: true,
+        agent: backend.agent,
+        ...(backend.model ? { model: backend.model } : {}),
+        ...(backend.effort ? { effort: backend.effort } : {}),
+        account: BLIND_GAP_REVIEW_ACCOUNT,
+        // A confined reviewer must reach the door and product on the build that
+        // minted it. The stable endpoint may still serve an older tool catalog.
+        mcpTarget: 'spawn-host',
+      },
+      systemCtx as never,
+    );
+    if (!launchProvablyNotStarted(launch)) break;
+  }
   if ((launch as { isError?: unknown } | null)?.isError === true) {
     return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
       scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null };

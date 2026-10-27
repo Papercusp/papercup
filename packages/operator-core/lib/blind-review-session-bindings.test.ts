@@ -35,6 +35,7 @@ import {
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
 import { resolve } from 'node:path';
 import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
+import { BLIND_REVIEWER_BACKENDS } from './blind-reviewer-mint';
 
 describe('replacement binding ledger protocol', () => {
   const fixture = () => replacementFixture(resolve(__dirname, '../../..'), 'packages/operator-core/lib/blind-review-session-bindings.test.ts');
@@ -47,7 +48,10 @@ describe('replacement binding ledger protocol', () => {
   });
   it('replacement-history and append-only-attempts: preserves material and prior request identity across failures and retries', async () => {
     const f = fixture(); const material = structuredClone(f.state.material);
-    f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    // A definite failure is every backend rung refusing before spawn (EI-27127088253419654).
+    for (const _rung of BLIND_REVIEWER_BACKENDS) {
+      f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    }
     await f.run(); const previous = structuredClone(f.state.attempts[0]);
     await f.run({ requestKey: 'retry-2' });
     expect(f.state.attempts[0]).toEqual(previous);

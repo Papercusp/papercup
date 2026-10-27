@@ -118,7 +118,7 @@ describe('judgeRepairPassMarker (R-6 oracle)', () => {
 });
 
 describe('executeGateRepairPlaneReading (native, runtime-witnessed)', () => {
-  function fixture(opts: { executedPort?: number; mainContains?: boolean } = {}) {
+  function fixture(opts: { executedPort?: number; mainContains?: boolean; mainPath?: 'absent' | 'unreadable-commit' } = {}) {
     const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [77] }));
     const readRuntime = vi.fn(async (_units: string[], _workspaceId: string) => 'c'.repeat(64));
     const execution = { sourceRoot: vi.fn(async () => process.cwd()),
@@ -135,7 +135,14 @@ describe('executeGateRepairPlaneReading (native, runtime-witnessed)', () => {
     };
     const git = vi.fn(async (_cwd: string, args: readonly string[]) => {
       if (args[0] === 'rev-list') return `${'d'.repeat(40)}\n`;
-      if (args[0] === 'show') return args[1]!.startsWith('d') && !opts.mainContains ? 'no marker here' : 'export const M = "the-marker";';
+      const atMain = (args[0] === 'show' ? args[1]! : args[2]!).startsWith('d');
+      if (atMain && opts.mainPath === 'absent') {
+        // git show of a path the commit's tree lacks exits 128; ls-tree of that path prints nothing.
+        if (args[0] === 'show') throw new Error(`fatal: path '${IDLE_ACTUATOR_SOURCE_PATH}' exists on disk, but not in 'ddd'`);
+        if (args[0] === 'ls-tree') return '';
+      }
+      if (atMain && opts.mainPath === 'unreadable-commit') throw new Error('fatal: bad object ddd');
+      if (args[0] === 'show') return atMain && !opts.mainContains ? 'no marker here' : 'export const M = "the-marker";';
       throw new Error(`unexpected git ${args.join(' ')}`);
     });
     const ctx = { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() };
@@ -163,6 +170,18 @@ describe('executeGateRepairPlaneReading (native, runtime-witnessed)', () => {
     const f = fixture({ mainContains: true });
     expect(await executeGateRepairPlaneReading('r6-pass-marker', f.ctx, f.deps)).toMatchObject({ ok: true, status: 'fail' });
     expect(recorded(f).outputTail).toContain('r6-main-lacks-marker-at-subject');
+  });
+
+  it('reads main as lacking the marker when main predates the actuator file (path absent from a readable commit)', async () => {
+    const f = fixture({ mainPath: 'absent' });
+    expect(await executeGateRepairPlaneReading('r6-pass-marker', f.ctx, f.deps)).toMatchObject({ ok: true, status: 'pass' });
+    expect(f.git).toHaveBeenCalledWith(process.cwd(), ['ls-tree', '--name-only', 'd'.repeat(40), '--', IDLE_ACTUATOR_SOURCE_PATH]);
+  });
+
+  it('still fails R-6 when main at the subject is an unreadable commit (absence is not inferred from an unreadable tree)', async () => {
+    const f = fixture({ mainPath: 'unreadable-commit' });
+    expect(await executeGateRepairPlaneReading('r6-pass-marker', f.ctx, f.deps)).toMatchObject({ ok: true, status: 'fail' });
+    expect(recorded(f).outputTail).toContain('marker present there: unreadable');
   });
 
   it('records a failing row when execution reaches a different database than the one witnessed', async () => {

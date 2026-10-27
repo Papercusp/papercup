@@ -17,6 +17,8 @@ import type { BlindReviewBrief } from './blind-review-brief';
 import { BLIND_REVIEW_TOOL } from './blind-review-gate';
 import {
   BLIND_GAP_REVIEW_ACCOUNT,
+  BLIND_REVIEWER_BACKENDS,
+  launchProvablyNotStarted,
   BLIND_GAP_REVIEW_ACTOR,
   BLIND_REVIEWER_TOOL_CEILING,
   blindReviewerConfinement,
@@ -72,12 +74,15 @@ describe('recruiter replacement protocol', () => {
   });
   it('recover-failed-launch: records no-process failures, preserves them, then succeeds on a new ordered request', async () => {
     const f = fixture();
-    f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    // A definite failure is every backend rung refusing before spawn (EI-27127088253419654).
+    for (const _rung of BLIND_REVIEWER_BACKENDS) {
+      f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    }
     expect(await f.run()).toMatchObject({ ok: true, attempt: { attemptSeq: 1, status: 'failed' } });
     expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { attemptSeq: 1 } });
     expect(await f.run({ requestKey: 'after-definite-failure' })).toMatchObject({ ok: true, attempt: { attemptSeq: 2, status: 'ready' } });
     expect(f.state.attempts.map(a => [a.attempt_seq, a.status])).toEqual([[1, 'failed'], [2, 'ready']]);
-    expect(f.launch).toHaveBeenCalledTimes(2);
+    expect(f.launch).toHaveBeenCalledTimes(BLIND_REVIEWER_BACKENDS.length + 1);
   });
   it('retry-one-active: an interleaved equivalent request observes the same attempt and launches only once', async () => {
     const f = fixture();
@@ -461,7 +466,8 @@ describe('mintBlindGapReviewer', () => {
   const KEY = Symbol('test-confinement-key');
 
   function deps(brief: BlindReviewBrief | null = BRIEF) {
-    const handler = vi.fn(async () => ({ data: { launch: {
+    // Returns unknown, like the real launcher envelope, so a case can install a refusal.
+    const handler = vi.fn(async (): Promise<unknown> => ({ data: { launch: {
       ownerIds: ['su-reviewer-1'],
       freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },
     } } }));
@@ -522,6 +528,56 @@ describe('mintBlindGapReviewer', () => {
     expect(d.handler).not.toHaveBeenCalled();
   });
 
+  // launch-agent's err(): every refusal before the spawn loop carries this proof.
+  const preSpawnRefusal = () => ({ isError: true, content: [{ type: 'text', text: 'account_walled' }],
+    data: { ok: false, error: 'account_walled', launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+
+  it('falls through to the next backend only when a launch is refused, and stops at the first that spawns', async () => {
+    const d = deps();
+    // First backend (claude opus) refused before spawn — e.g. every Claude account walled.
+    d.handler.mockImplementationOnce(async () => preSpawnRefusal());
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    expect(d.handler).toHaveBeenCalledTimes(2);
+    const agents = d.handler.mock.calls.map(c => (c as unknown as [{ agent: string; model?: string }])[0]);
+    expect(agents.map(a => a.agent)).toEqual(BLIND_REVIEWER_BACKENDS.map(b => b.agent));
+    expect(agents[0]).toMatchObject({ agent: 'claude', model: 'opus', effort: 'xhigh' });
+    expect(agents[1]).toMatchObject({ agent: 'codex' });
+    expect(agents[1]).not.toHaveProperty('model');
+  });
+
+  it('returns the last refusal when every backend refuses, without spawning past the ladder', async () => {
+    const d = deps();
+    const refusal = preSpawnRefusal();
+    d.handler.mockImplementation(async () => refusal);
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(d.handler).toHaveBeenCalledTimes(BLIND_REVIEWER_BACKENDS.length);
+    expect(result).toMatchObject({ ok: true, launch: refusal, binding: null });
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+  });
+
+  it('never falls through on an isError that does not prove no process started (it may follow a spawn)', async () => {
+    const d = deps();
+    const unproven = { isError: true, content: [{ type: 'text', text: 'verifier timed out after spawn' }] };
+    d.handler.mockImplementation(async () => unproven);
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(d.handler).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, launch: unproven, binding: null });
+  });
+
+  it.each([
+    [{ data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } }, true],
+    [{ data: { launch: { opened: 0, partial: false, tasks: [] } } }, true],
+    [{ isError: true }, false],
+    [{ data: { launchFailure: { stage: 'pre-spawn', processesOpened: 1 } } }, false],
+    [{ data: { launch: { mode: 'deduped', opened: 0, partial: false, tasks: [] } } }, false],
+    [{ data: { launch: { opened: 0, partial: true, tasks: [] } } }, false],
+    [{ data: { launch: { opened: 1, ownerIds: ['su-x'] } } }, false],
+    [null, false],
+  ])('launchProvablyNotStarted(%j) is %s', (receipt, expected) => {
+    expect(launchProvablyNotStarted(receipt)).toBe(expected);
+  });
+
   it('launches headless under the system actor with the confinement on the launcher key', async () => {
     const d = deps();
     const result = await mintBlindGapReviewer(
@@ -534,11 +590,14 @@ describe('mintBlindGapReviewer', () => {
     expect(d.loadBrief).toHaveBeenCalledWith({ workspaceId: 'ws-1', planSlug: SLUG, harnessSlug: 'papercusp' });
     expect(d.handler).toHaveBeenCalledTimes(1);
     const [args, ctx] = d.handler.mock.calls[0] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
+    // The first backend on the ladder launches: Claude Opus at xhigh (owner directive #2503).
     expect(args).toEqual({
       brief: result.kickoff,
       harness: 'papercusp',
       headless: true,
-      agent: 'codex',
+      agent: 'claude',
+      model: 'opus',
+      effort: 'xhigh',
       account: 'auto',
       mcpTarget: 'spawn-host',
     });

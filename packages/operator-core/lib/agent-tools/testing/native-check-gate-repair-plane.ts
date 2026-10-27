@@ -202,10 +202,17 @@ export const defaultGateRepairPlaneQueries: GateRepairPlaneQueries = {
   }),
 };
 
-/** Does `path` at `sha` carry `marker`? null when the commit or path cannot be read. */
+/**
+ * Does `path` at `sha` carry `marker`? A readable commit whose tree has no such path answers
+ * false (a file that does not exist carries no marker; main predating the actuator file is the
+ * live case). null only when the commit itself, or a path it does list, cannot be read.
+ */
 async function containsAt(git: GitRunner, root: string, sha: string, path: string, marker: string): Promise<boolean | null> {
   try { return (await git(root, ['show', `${sha}:${path}`])).includes(marker); }
-  catch { return null; }
+  catch {
+    try { return (await git(root, ['ls-tree', '--name-only', sha, '--', path])).trim() === '' ? false : null; }
+    catch { return null; }
+  }
 }
 
 /** main's tip as of `at` (first-parent history only: main moves by fast-forward). */
