@@ -3203,6 +3203,7 @@ export const bootstrapSu = defineTool({
           // WI-3280: park the playbook so the SessionStart recovery hook can
           // re-deliver it if claude's self-re-exec drops the launch argv.
           recovery: { playbookPath: promptFile || null, nativeSessionId },
+          agentTaskId: body.agent_task_id ?? undefined,
           // EI-16574: pre-trust this launch's cwd so a brand-new project
           // directory (e.g. a fresh pot:create_from_repo clone, headless
           // fleet member) can't wedge forever on an external-CLAUDE.md-
@@ -3365,6 +3366,7 @@ export const bootstrapSu = defineTool({
         drainMode,
         loopArmed,
         headless,
+          agentTaskId: body.agent_task_id ?? undefined,
         fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
         stack: spec.stack,
         ...(body.selected_identity_revision && body.stack?.length === 1

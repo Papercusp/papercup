@@ -28,7 +28,8 @@ export const SAVED_FLEET_LAUNCH_SPEC_SOURCE = 'fleet:headcount-target' as const;
 export const LEGACY_FLEET_LAUNCH_SPEC_SOURCE = 'adv_sessions.launch_spec' as const;
 export type SavedFleetLaunchSpecSource =
   | typeof SAVED_FLEET_LAUNCH_SPEC_SOURCE
-  | typeof LEGACY_FLEET_LAUNCH_SPEC_SOURCE;
+  | typeof LEGACY_FLEET_LAUNCH_SPEC_SOURCE
+  | 'adv_sessions.launch_spec.originalMemberLaunch';
 
 /**
  * A saved launch config may lack a plan: a legacy member launched through the

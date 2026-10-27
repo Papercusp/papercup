@@ -228,6 +228,29 @@ describe('activity:report SessionStart → adv_sessions reanchor (WI-37420)', ()
     expect(h.bindTasks).not.toHaveBeenCalled();
   });
 
+  it('binds the exact enrolled task row and still reconciles other live rows', async () => {
+    const taskId = '0123456789abcdefghj';
+    await run({
+      owner: 'su-abc',
+      kind: 'lifecycle',
+      summary: '▶ session started',
+      session_id: validId,
+      adv_session_id: 42,
+      agent_task_id: taskId,
+    });
+    expect(h.bindTasks).toHaveBeenNthCalledWith(1, {
+      workspaceId: 'ws-report',
+      coordOwnerId: 'su-abc',
+      sessionId: validId,
+      initialTaskId: taskId,
+    });
+    expect(h.bindTasks).toHaveBeenNthCalledWith(2, {
+      workspaceId: 'ws-report',
+      coordOwnerId: 'su-abc',
+      sessionId: validId,
+    });
+  });
+
   it('SessionStart with a non-UUID session_id does NOT call the reanchor (no malformed write)', async () => {
     await run({ owner: 'su-abc', kind: 'lifecycle', summary: '▶ session started', session_id: 'sid' });
     expect(h.reanchor).not.toHaveBeenCalled();

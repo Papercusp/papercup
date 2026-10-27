@@ -802,6 +802,8 @@ export function writeCodexLockHooks(
     activitySid?: string;
     /** Durable adv_sessions row id for exact lifecycle re-anchors. */
     advSessionId?: string | number;
+    /** Exact initial headless task id, scoped to lifecycle hook commands only. */
+    agentTaskId?: string | null;
     objectiveSid?: string;
     /** codex-context-injection-parity-2026-08-09 P-004: session id baked into
      *  the context-injection dispatcher invocation. Absent ⇒ no injection hooks
@@ -900,12 +902,19 @@ export function writeCodexLockHooks(
   const sessionEnd: CodexHook[] = [];
   const lifecycleStop: CodexHook[] = [];
   if (opts.activitySid && existsSync(lifecycle)) {
-    const lifecycleIdentity =
+    let lifecycleIdentity =
       `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex ` +
       `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)}` +
       (numericAdvSessionId(opts.advSessionId)
         ? ` PAPERCUSP_ADV_SESSION_ID=${shellSingleQuote(numericAdvSessionId(opts.advSessionId)!)}`
         : '');
+    const lifecycleTaskId =
+      typeof opts.agentTaskId === 'string' && /^[0-9a-z]{19}$/.test(opts.agentTaskId)
+        ? opts.agentTaskId
+        : null;
+    if (lifecycleTaskId) {
+      lifecycleIdentity += ' PAPERCUSP_AGENT_TASK_ID=' + shellSingleQuote(lifecycleTaskId);
+    }
     sessionStart.push({
       matcher: '.*',
       hooks: [{ type: 'command', command: `${lifecycleIdentity} ${lifecycle}` }],
@@ -1536,6 +1545,8 @@ function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerd
 export type WriteRoleCodexHomeOptions = {
   capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'];
   sessionKey: string | number;
+  /** Exact initial headless task id, scoped to lifecycle hook commands only. */
+  agentTaskId?: string | null;
   /** Repair managed files in place without removing the native resume history. */
   preserveExisting?: boolean;
   /** Persisted native-state binding, used when archive/GC removed config.toml. */
@@ -2187,6 +2198,7 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
     coordSid: opts.sid,
     activitySid: opts.sid,
     advSessionId: opts.sessionKey,
+    agentTaskId: opts.agentTaskId,
     objectiveSid: opts.sid,
     injectSid: opts.sid,
     mcpUrl: mcpUrlWithClient(opts.mcpUrl, opts.sid),

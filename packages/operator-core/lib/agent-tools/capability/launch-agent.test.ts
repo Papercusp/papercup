@@ -2062,7 +2062,7 @@ describe('resume + fork (D-004/D-007)', () => {
 
   describe('D019 original member restoration', () => {
     const uuid = '0123abcd-1234-5678-9abc-def012345678';
-    const source = { ...dead, agent: 'codex', sessionId: uuid, account: 'auto',
+    const source = { ...dead, workspaceId: 'ws-test', harnessSlug: 'papercusp', agent: 'codex', sessionId: uuid, account: 'auto',
       model: 'gpt-6:high', headless: true, binding: { ...dead.binding, sessionId: uuid } };
     const pin = { ownerId: source.ownerId, advSessionId: source.advSessionId, sessionId: uuid };
     const original = { v: 1, ...pin, workspaceId: 'ws-test', agent: 'codex',
@@ -2104,6 +2104,7 @@ describe('resume + fork (D-004/D-007)', () => {
       readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({ ...record, launchSpec: {} });
       const result = await launchAgent.handler(request as never, ctx);
       expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('Original member routing provenance is missing');
       expect(spawnConsoleMock).not.toHaveBeenCalled();
       expect(spawnHeadlessMock).not.toHaveBeenCalled();
     });
@@ -2118,9 +2119,54 @@ describe('resume + fork (D-004/D-007)', () => {
         .mockResolvedValue({ ...record, launchArgv: ['changed'] });
       const result = await launchAgent.handler(request as never, ctx);
       expect(isError(result), textOf(result)).toBe(true);
+      expect(textOf(result)).toMatch(failure === 'changed-profile' ? /routing settings changed/ :
+        failure === 'changed-binding' ? /source custody changed/ : failure === 'writer' ? /LIVE|writer/ :
+          /exact original binding must be terminal/);
       expect(spawnConsoleMock).not.toHaveBeenCalled();
       expect(spawnHeadlessMock).not.toHaveBeenCalled();
     });
+
+    it('keeps the real originalRouting guard gateway-only for a default account', async () => {
+      const actual = await vi.importActual<typeof import('../../../../../apps/operator/scripts/psu-launcher.mjs')>(
+        '../../../../../apps/operator/scripts/psu-launcher.mjs');
+      expect(() => actual.assertOriginalCodexRouting({ id: pin.advSessionId, agent: 'codex',
+        coordOwnerId: pin.ownerId, sessionId: uuid, endedAt: source.endedAt, account: 'default' },
+      { ...pin, codexHome: '/unused', profileFingerprint: 'a'.repeat(64) })).toThrow('saved gateway account is missing');
+    });
+
+    it('rechecks receipt settings after governed admission before opening a process', async () => {
+      readAdvSessionLaunchRecordByOwnerMock.mockResolvedValueOnce(record).mockResolvedValueOnce(record)
+        .mockResolvedValue({ ...record, launchArgv: ['changed-after-admission'] });
+      const result = await launchAgent.handler(request as never, ctx);
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('routing settings changed');
+      expect(spawnGovernedAgentProcessMock).toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(releaseAdvSessionResumeMock).toHaveBeenCalled();
+    });
+
+    it('refuses inherited goal placement that conflicts with the original visible member', async () => {
+      goalLaunchResolveMock.mockResolvedValueOnce({ goalId: 'goal-1', settings: null,
+        effective: { account: 'default', model: 'gpt-6:high', headless: true }, refusal: null, budget: null,
+        goalBrief: null, ceilings: { maxAgents: 12, maxPerFleet: 5 }, headcount: { total: 1, fleet: null },
+        degraded: false, degradedReasons: [] });
+      const result = await launchAgent.handler(request as never, ctx);
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('inherited goal profile conflicts');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it.each([{ account: 'auto' }, { model: 'gpt-6:xhigh' }, { fork: true }, { carry: 'cold' },
+      { originalRouting: { ...pin, codexHome: '/unused', profileFingerprint: 'a'.repeat(64) } }])(
+      'refuses caller settings overrides %j', async (override) => {
+        const result = await launchAgent.handler({ ...request, ...override } as never, ctx);
+        expect(isError(result)).toBe(true);
+        expect(textOf(result)).toContain('without fork, successor or profile overrides');
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      });
   });
 
   describe('originalRouting custody contract', () => {

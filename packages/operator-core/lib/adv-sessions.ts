@@ -1463,7 +1463,7 @@ async function recordResumedLaunchPostureInTransaction(
            CASE WHEN launch_spec ? 'originalMemberLaunch' THEN launch_spec
              WHEN jsonb_typeof(launch_argv) = 'array'
                AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(launch_argv) AS arg(value)
-                 WHERE value = '--resume' OR value LIKE '--resume=%' OR value = '--fork')
+                 WHERE value ~ '(^|[[:space:]])--(resume|fork)(=|[[:space:]]|$)')
              THEN jsonb_set(launch_spec, '{originalMemberLaunch}', jsonb_build_object(
                'v', 1, 'advSessionId', id, 'ownerId', coord_owner_id, 'sessionId', session_id,
                'workspaceId', workspace_id, 'agent', agent, 'launchArgv', launch_argv,

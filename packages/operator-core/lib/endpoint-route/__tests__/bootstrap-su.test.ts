@@ -677,6 +677,11 @@ describe('bootstrap headless task/session binding', () => {
     expect(bindAgentTasksMock).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'default', coordOwnerId: 'su-headless-owner', initialTaskId: taskId,
     }));
+    expect(writeInteractiveClaudeConfigMock).toHaveBeenCalledWith(expect.objectContaining({
+      sid: 'su-headless-owner', agentTaskId: taskId,
+    }));
+    const launch = await response.json();
+    expect(launch.envelopeEnv).not.toHaveProperty('PAPERCUSP_AGENT_TASK_ID');
   });
 
   it('rejects malformed or non-headless task ids before recording a session', async () => {

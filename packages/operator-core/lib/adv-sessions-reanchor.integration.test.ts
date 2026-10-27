@@ -32,6 +32,7 @@ import {
   latestAdvSessionByCoordOwner,
   markAdvSessionEnded,
   readSuLaunchSpecByOwner,
+  readAdvSessionLaunchRecordByOwner,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
   recordSuLaunchSpec,
@@ -1574,6 +1575,11 @@ describe('resume finalization records the current headless posture (real PG)', (
     const original = await read();
     expect(original).toMatchObject({ v: 1, advSessionId: id, ownerId: OWNER, sessionId: DEAD_ID,
       workspaceId: WS, agent: 'codex', launchArgv: originalArgv, launchSpec });
+    expect((await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id, sessionId: DEAD_ID }))?.launchSpec)
+      .toMatchObject({ originalMemberLaunch: original });
+    expect(await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id, sessionId: 'wrong-native' })).toBeNull();
+    expect(await readAdvSessionLaunchRecordByOwner('su-wrong-owner', WS, { advSessionId: id, sessionId: DEAD_ID })).toBeNull();
+    expect(await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id + 1000, sessionId: DEAD_ID })).toBeNull();
     const secondKey = randomUUID();
     await admin`UPDATE harness_shared.adv_sessions SET resume_claim_key = ${secondKey}, resume_claimed_at = now() WHERE id = ${id}`;
     await expect(finalizeAdvSessionResume(id, secondKey, ['psu', `--resume=${DEAD_ID}`, '--account=auto'])).resolves.toBe(true);
@@ -1619,6 +1625,9 @@ describe('resume finalization records the current headless posture (real PG)', (
     `;
     expect(row.launch_spec.headless).toBe(false);
     expect(row.launch_argv).toEqual(visibleArgv);
+    // A legacy already-resumed row has lost its original routing. Never bless
+    // that current command as original provenance during receipt backfill.
+    expect(row.launch_spec).not.toHaveProperty('originalMemberLaunch');
 
     // Model a prior runtime that finalized the row but left the launch spec stale.
     await admin`

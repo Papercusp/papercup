@@ -2107,6 +2107,7 @@ describe('writeSuCodexHome', () => {
       mcpUrl: 'http://x/api/mcp?superuser=1',
       promptText: 'P',
       sid: 'su-abc-123',
+      agentTaskId: '0123456789abcdefghj',
     });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     // Four PostToolUse entries: lock-release + byte-integrity + activity report (coord-folding) +
@@ -2170,6 +2171,7 @@ describe('writeSuCodexHome', () => {
       expect(hooks.hooks[event][0].hooks[0].command).toContain('lifecycle-report.sh');
       expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
       expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='12'");
+      expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_AGENT_TASK_ID='0123456789abcdefghj'");
     }
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
     const lifecycleStop = hooks.hooks.Stop.find((e: { hooks: { command: string }[] }) =>

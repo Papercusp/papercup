@@ -110,6 +110,7 @@ import {
   describeSessionEndTime,
   hasAdvSessionTerminalEvidence,
   markAdvSessionEnded,
+  readAdvSessionLaunchRecordByOwner,
   releaseAdvSessionResume,
   RESUME_RESERVATION_MAX_LEASE_SEC,
 } from '../../adv-sessions';
@@ -134,6 +135,7 @@ import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
   resolveSavedFleetLaunchSpec,
+  savedOriginalMemberLaunchSpec,
   type SavedFleetLaunchConfig,
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
@@ -675,6 +677,13 @@ export default defineTool({
       }).strict().optional().describe(
         "Repair quiescent Codex via saved gateway; pin owner/adv/UUID/home/codexOriginalRoutingFingerprint. Requires unchanged healthy custody. LIVE or changed profile/transcript refuses. No fork/successor/shutdown/profile repair or runtime overrides.",
       ),
+      restoreOriginalMember: z.object({
+        ownerId: z.string().min(1).max(120),
+        advSessionId: z.number().int().positive(),
+        sessionId: z.string().uuid(),
+      }).strict().optional().describe(
+        'Restore a terminal Codex fleet member using its immutable pre-resume routing receipt. Exact native resume only; missing original provenance, live/unknown writer, changed binding/settings or caller profile overrides refuse. Uses ordinary supported psu account routing, including default; not gateway provider repair.',
+      ),
       fork: z
         .boolean()
         .optional()
@@ -1045,6 +1054,17 @@ export default defineTool({
       return err('An internal expected source binding requires an identity-preserving successor.');
     }
     const sourceAction = isResume || isSuccessor;
+    if (args.restoreOriginalMember) {
+      const pin = args.restoreOriginalMember;
+      if (!isResume || args.resume?.sessionId !== pin.sessionId || args.resume?.agentId ||
+          (args.fork !== undefined && args.fork !== false) ||
+          ['successor', 'successorLineageMode', 'originalRouting', 'restoreVisible', 'agent', 'account',
+            'model', 'effort', 'carry', 'fleet', 'extraArgs', 'members', 'plan', 'cwd', 'role', 'headless',
+            'independent', 'goalVerifier', 'feature', 'stack', 'contextSize', 'compactionLimit']
+            .some((key) => (args as Record<string, unknown>)[key] !== undefined))
+        return err('restoreOriginalMember requires an exact resume without fork, successor or profile overrides.');
+      args = { ...args, fork: false };
+    }
     if (args.originalRouting && (!isResume || !args.resume?.sessionId || args.resume.agentId ||
         args.resume.sessionId !== args.originalRouting.sessionId ||
         ['successor', 'fork', 'restoreVisible', 'agent', 'account', 'model', 'carry', 'fleet', 'extraArgs',
@@ -1223,6 +1243,8 @@ export default defineTool({
       beforeSpawn?: () => Promise<void>; release?: () => Promise<void> } = {};
     let reconcileOriginalRouting: (() => Promise<void>) | null = null;
     let recheckInPlaceResume: (() => Promise<void>) | null = null;
+    let originalMemberTarget: ResumeTarget | null = null;
+    let recheckOriginalMember: (() => Promise<void>) | null = null;
     let fork = !!args.fork;
     let sourceStillLive = false;
     let blindReviewResumeAuthorized = false;
@@ -1297,6 +1319,15 @@ export default defineTool({
       resumeSourceEnded = hasAdvSessionTerminalEvidence(target);
       resumeModel = target.model;
       resumeAccount = target.account;
+      if (args.restoreOriginalMember) {
+        const pin = args.restoreOriginalMember;
+        if (target.agent !== 'codex' || target.workspaceId !== workspaceId || target.live || !target.endedAt ||
+            target.ownerId !== pin.ownerId || target.advSessionId !== pin.advSessionId ||
+            target.sessionId !== pin.sessionId || target.binding?.coordOwnerId !== pin.ownerId ||
+            target.binding?.sessionId !== pin.sessionId || !target.binding.startedAt)
+          return err('restoreOriginalMember refused: exact original binding must be terminal and unchanged.');
+        originalMemberTarget = target;
+      }
       if (args.originalRouting) {
         const pin = args.originalRouting;
         if (typeof target.headless !== 'boolean') return err('originalRouting refused: recorded placement is unavailable.');
@@ -1944,7 +1975,33 @@ export default defineTool({
       provenance: SavedFleetLaunchSpecProvenance;
       reusePath: string;
     } | null = null;
-    if (fleetSlug) {
+    if (args.restoreOriginalMember && !fleetSlug)
+      return err('restoreOriginalMember refused: durable target fleet membership is unavailable.');
+    if (fleetSlug && args.restoreOriginalMember && originalMemberTarget) {
+      const pin = args.restoreOriginalMember;
+      const exact = { advSessionId: pin.advSessionId, sessionId: pin.sessionId };
+      const record = await readAdvSessionLaunchRecordByOwner(pin.ownerId, workspaceId, exact);
+      const original = savedOriginalMemberLaunchSpec(record, pin, workspaceId, fleetSlug);
+      if (!original.ok) return err(`restoreOriginalMember refused: ${original.message}`);
+      const targetSnapshot = JSON.stringify({ ok: true, ...originalMemberTarget });
+      const recordSnapshot = JSON.stringify(record);
+      recheckOriginalMember = async () => {
+        const current = await resolveResumeTarget({ sessionId: pin.sessionId });
+        const currentRecord = await readAdvSessionLaunchRecordByOwner(pin.ownerId, workspaceId, exact);
+        if (!current.ok || !current.endedAt || current.live || JSON.stringify(current) !== targetSnapshot ||
+            JSON.stringify(currentRecord) !== recordSnapshot)
+          throw new Error('restoreOriginalMember refused: original binding or routing settings changed before spawn.');
+      };
+      args = { ...args, headless: original.config.headless ?? false, account: original.config.account,
+        model: composeModelSpec(original.config.model, original.config.effort),
+        extraArgs: original.config.extraArgs };
+      savedLaunchCarry = original.config.carry;
+      persistedHeadcountProfile = { workspaceId, fleetSlug, target: 1, enabled: true, config: original.config,
+        nextAttemptAt: null, backoffMs: 0, lastError: null };
+      savedLaunchSpecMeta = { provenance: { source: 'adv_sessions.launch_spec.originalMemberLaunch',
+        workspaceId, fleetSlug, target: null }, reusePath: 'exact native original-member receipt -> capability:launch-agent resume' };
+      notes.push('✓ Restored original member routing from its immutable exact native receipt.');
+    } else if (fleetSlug) {
       if (sourceAction) {
         const requestedExtraArgs = neutralLineageRequested ? undefined : args.extraArgs;
         const { profileArgs, modeArgs } = splitSavedProfileExtraArgs(requestedExtraArgs);
@@ -2164,6 +2221,14 @@ export default defineTool({
         strandNote = stranded.goalPlacementRefusalNote(record);
       }
       return err(goalLaunch.refusal.message + strandNote);
+    }
+    if (args.restoreOriginalMember) {
+      const profile = goalLaunch.effective;
+      if ((profile.agent !== undefined && profile.agent !== resumeAgent) ||
+          (profile.account !== undefined && profile.account !== args.account) ||
+          (profile.model !== undefined && composeModelSpec(profile.model, profile.effort) !== args.model) ||
+          (profile.headless !== undefined && profile.headless !== args.headless))
+        return err('restoreOriginalMember refused: inherited goal profile conflicts with original member routing.');
     }
 
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
@@ -2464,7 +2529,7 @@ export default defineTool({
               modelSource: args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
               headless: !!args.headless,
               carry: savedLaunchCarry ?? null,
-              launchMode: args.originalRouting ? null : launchMode,
+              launchMode: args.originalRouting || args.restoreOriginalMember ? null : launchMode,
               extraArgs: args.extraArgs ?? null,
             })
           : buildAgentLaunchCommand({
@@ -2710,6 +2775,7 @@ export default defineTool({
         };
         try {
           if (recheckInPlaceResume) await recheckInPlaceResume();
+          if (recheckOriginalMember) await recheckOriginalMember();
           if (reconcileOriginalRouting) await reconcileOriginalRouting();
           if (isResume && !fork && resumeSourceEnded) {
             if (!resumeSourceAdvSessionId || !targetOwnerId || !callerOwnerId)
@@ -2742,6 +2808,7 @@ export default defineTool({
           },
           async (admissionContext) => {
             if (recheckInPlaceResume) await recheckInPlaceResume();
+            if (recheckOriginalMember) await recheckOriginalMember();
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
             await successorPreparation.beforeSpawn?.();
             if (startupReservation && startupReservation.expiresAtMs <= Date.now())

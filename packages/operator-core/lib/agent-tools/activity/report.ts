@@ -182,6 +182,8 @@ export default defineTool({
     session_id: z.string().max(256).optional(),
     /** The stable adv_sessions row id, when the launcher can carry it. */
     adv_session_id: z.coerce.number().int().positive().optional(),
+    /** Exact initial headless task row id, carried only by lifecycle hooks. */
+    agent_task_id: z.string().regex(/^[0-9a-z]{19}$/).optional(),
     /** PAPERCUSP_WAKE_DELIVERY_ID: set only on a child the wake executor spawned
      *  as a one-turn resume. Verified against the delivery ledger (WI-10005679). */
     wake_delivery_id: z.coerce.number().int().positive().optional(),
@@ -418,17 +420,26 @@ export default defineTool({
             });
             // Codex/OMP learn their native id only after bootstrap. If enrollment's
             // one-shot task binder ran before this SessionStart, the adv row now has
-            // the missing id but task_ledger would stay unbound forever. Reconcile
-            // live tasks only after the exact adv row confirms this owner; the store
-            // scopes the update by workspace + coord owner and never reopens tasks.
-            if (args.adv_session_id != null && receipt?.owner === owner) {
+            // the missing id but task_ledger would stay unbound forever. Bind the
+            // exact enrolled row even if it already ended, then preserve the
+            // owner-wide live-row reconciliation for duplicate launches.
+            if (receipt?.owner === owner && (args.adv_session_id != null || args.agent_task_id != null)) {
               try {
                 const { bindLiveAgentSessionTasksToNativeSession } = await import('../../task-manager/store');
-                await bindLiveAgentSessionTasksToNativeSession({
+                const binding = {
                   workspaceId,
                   coordOwnerId: owner,
                   sessionId: args.session_id.trim(),
-                });
+                };
+                if (args.agent_task_id) {
+                  await bindLiveAgentSessionTasksToNativeSession({
+                    ...binding,
+                    initialTaskId: args.agent_task_id,
+                  });
+                }
+                if (args.adv_session_id != null) {
+                  await bindLiveAgentSessionTasksToNativeSession(binding);
+                }
               } catch (e) {
                 console.warn(
                   `[activity:report] SessionStart task/session bind for ${owner} failed: ${e instanceof Error ? e.message : e}`,
