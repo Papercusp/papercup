@@ -441,7 +441,7 @@ const argsSchema = z.preprocess(
         refinementCtx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['patchCommit'],
-          message: 'Use one reviewed patch source: patchCommit or distinct ordered patchCommits, without other source modes',
+          message: 'Use one reviewed patch source: patchCommit or distinct ordered patchCommits, without other source modes (wholeBlob, sourceCommit, includeHunksFrom, ledgerRowIds), and give a reason of at least 8 characters',
         });
       }
       if (value.sourceCommit !== undefined && value.wholeBlob !== true) {
@@ -1463,7 +1463,7 @@ export default defineTool({
           verdict: 'refused',
           mode,
           reason: 'invalid-patch-source',
-          detail: 'Use one reviewed patch source: patchCommit or distinct ordered patchCommits, without other source modes',
+          detail: 'Use one reviewed patch source: patchCommit or distinct ordered patchCommits, without other source modes (wholeBlob, sourceCommit, includeHunksFrom, ledgerRowIds), and give a reason of at least 8 characters',
         });
       }
       if (args.sourceCommit !== undefined && !wholeBlob) {
