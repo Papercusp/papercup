@@ -202,8 +202,7 @@ const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => SESSION_PORT
 const recordSessionPortTelemetryMock = vi.fn(async (_event: unknown) => true);
 const bindAgentTasksMock = vi.hoisted(() => vi.fn(async (_input: unknown) => [] as string[]));
 
-vi.mock('../../task-manager/store', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../task-manager/store')>()),
+vi.mock('../../task-manager/store', () => ({
   bindLiveAgentSessionTasksToNativeSession: (...args: unknown[]) => bindAgentTasksMock(...args),
 }));
 

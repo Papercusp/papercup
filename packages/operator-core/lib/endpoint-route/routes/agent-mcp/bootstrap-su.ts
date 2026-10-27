@@ -98,7 +98,6 @@ import {
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { sessionAllowsAmbientContext } from '../../../capability-envelope/session-confinement-port';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
-import { parseLaunchCompactionLimitArgv } from '../../../compaction-usage';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
 import {
@@ -115,7 +114,7 @@ import {
 } from '../../../session-brief';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
-import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
+import { parseLaunchCompactionLimitArgv, resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 import type { ModeRow } from '../../../modes/store';
 import { completeTrackedCodexFork, resolveTrackedCodexForkSource, type NativeForkLineage, type TrackedCodexForkSource } from '../../../su-session-tracked-codex-fork';

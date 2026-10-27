@@ -198,9 +198,33 @@ for (const { backend, registrationFailure, pty, name } of [
         features: { apps: false, shell_tool: false }, web_search: 'disabled' }));
       // Use the production tracked-fork transaction before attaching the exact
       // registered child. A direct engine fork does not prove that route.
+      const forkCalls: Array<{ frame: RpcFrame; result: RpcFrame }> = [];
       const fork = child ? await completeTrackedCodexFork(boot, {
         advSessionId: parentAdvSessionId, nativeSessionId: parentNativeId,
-      }) : null;
+      }, { startPeer: async options => {
+        const peer = await startSuStdioPeer(options);
+        return { ...peer, request: async (frame, timeout) => {
+          const result = await peer.request(frame, timeout);
+          forkCalls.push({ frame, result });
+          return result;
+        } };
+      } }) : null;
+      if (fork) {
+        const read = forkCalls.find(call => call.frame.method === 'thread/read');
+        expect(read).toBeDefined();
+        const parent = read!.result.thread as { id: string; turns: Array<{ id: string; status: string }> };
+        expect(parent.id).toBe(parentNativeId);
+        const completed = parent.turns.filter(turn => turn.status === 'completed');
+        const pages = forkCalls.filter(call => call.frame.method === 'thread/turns/list');
+        const boundary = completed.at(-1)
+          ?? pages.flatMap(call => call.result.data as Array<{ id: string; status: string }>)
+            .find(turn => turn.status === 'completed');
+        expect(boundary, 'the native parent must expose a completed fork boundary').toBeDefined();
+        const request = forkCalls.find(call => call.frame.method === 'thread/fork');
+        expect(request?.frame.params).toMatchObject({ threadId: parentNativeId, lastTurnId: boundary!.id });
+        const pendingIds = parent.turns.filter(turn => turn.status !== 'completed').map(turn => turn.id);
+        expect(pendingIds).not.toContain((request!.frame.params as { lastTurnId: string }).lastTurnId);
+      }
       const resumed = fork ? { backend: 'codex' as const, source: 'adv_sessions' as const, ownerId: owner,
         codexHome: home, rolloutId: fork.nativeSessionId, exactResumeSupported: true, missingReason: null } : null;
       if (fork) {
