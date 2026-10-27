@@ -5,7 +5,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../task-manager/store', () => ({ listTasks: vi.fn(async () => []) }));
+vi.mock('../../task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../task-manager/store')>()),
+  listTasks: vi.fn(async () => []),
+}));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 vi.mock('../../agent-tools/work_items/_create-core', () => ({ createOneWorkItem: vi.fn() }));
 vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn() }));
