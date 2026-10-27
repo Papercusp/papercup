@@ -686,7 +686,10 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
   }
 }
 
-/** @typedef {<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>} VerifierPhaseRunner */
+/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string }} VerifierDependencyProgress */
+/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+ *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
+ * }} VerifierPhaseRunner */
 
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
@@ -715,9 +718,23 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
     appendFileSync(archivePath, bytes);
     appendFileSync(path, bytes);
   };
+  const active = new Set();
+  const reportProgress = (phase, progress) => {
+    assert.ok(active.has(phase) && ['deps.census', 'deps.postverify'].includes(phase),
+      'Verifier dependency progress requires an active census phase');
+    assert.deepEqual(Object.keys(progress ?? {}).sort(), ['completedTrees', 'currentTree', 'totalTrees'],
+      'Verifier dependency progress must remain bounded');
+    assert.ok(Number.isSafeInteger(progress.completedTrees) && Number.isSafeInteger(progress.totalTrees) &&
+      progress.totalTrees > 0 && progress.totalTrees <= 1000 &&
+      progress.completedTrees >= 0 && progress.completedTrees < progress.totalTrees &&
+      typeof progress.currentTree === 'string' && progress.currentTree.length > 0 &&
+      progress.currentTree.length <= 256, 'Invalid verifier dependency progress');
+    record(phase, 'progress', { progress });
+  };
   const run = async (phase, operation) => {
     const before = performance.now();
     record(phase, 'started');
+    active.add(phase);
     try {
       const result = await operation();
       record(phase, 'completed', { durationMs: Math.round(performance.now() - before),
@@ -729,9 +746,11 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
         ...(phase === 'child.run' ? { diagnosticsPath: childDiagnosticsPath } : {}),
         error: String(error?.message ?? error).slice(0, 2000) });
       throw error;
+    } finally {
+      active.delete(phase);
     }
   };
-  return Object.assign(run, { archivePath });
+  return Object.assign(run, { archivePath, reportProgress });
 }
 
 /** Retain bounded child tails outside the cleaned source tree, including failures
@@ -1966,16 +1985,18 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
       throw new PreviewError('verifier dependency preflight returned no source size', 2);
   });
   await runPhase('deps.source.after-preflight', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
-  return runPhase('deps.census', () => captureVerifierDependencies({ dest, receipt, env }));
+  return runPhase('deps.census', () => captureVerifierDependencies({ dest, receipt, env,
+    onProgress: progress => runPhase.reportProgress?.('deps.census', progress) }));
 }
 
 /** Measure installed bytes, not lockfile intent. Reuse the release helper's
  * product-owned tree population and the source verifier's exact file census.
  * Workspace link targets still need source verification; this receipt does
  * not claim final transformed code or a complete runtime import closure.
- * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv }} options
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv,
+ *   onProgress?: (progress: VerifierDependencyProgress) => void }} options
  */
-export function captureVerifierDependencies({ dest, receipt, env = process.env }) {
+export function captureVerifierDependencies({ dest, receipt, env = process.env, onProgress }) {
   const root = realpathSync(dest);
   const result = spawnSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'trees', root],
     { cwd: root, env: { ...env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
@@ -1988,7 +2009,8 @@ export function captureVerifierDependencies({ dest, receipt, env = process.env }
   const policyPath = 'apps/operator/bin/release/dependency-generation.sh';
   const policy = { path: policyPath,
     sha256: createHash('sha256').update(readFileSync(join(root, policyPath))).digest('hex') };
-  const trees = paths.map(path => {
+  const trees = [];
+  for (const [treeIndex, path] of paths.entries()) {
     assert.ok(!isAbsolute(path) && !path.includes('\\') &&
       !path.split('/').some(part => !part || part === '.' || part === '..') &&
       path.split('/').at(-1) === 'node_modules' &&
@@ -1996,6 +2018,7 @@ export function captureVerifierDependencies({ dest, receipt, env = process.env }
     const tree = join(root, path);
     assert.ok(lstatSync(tree).isDirectory() && realpathSync(tree) === tree,
       `Verifier dependency tree must be independent: ${path}`);
+    onProgress?.({ completedTrees: treeIndex, totalTrees: paths.length, currentTree: path.slice(0, 256) });
     // Use the generation writer's population, including its exact ephemeral
     // output policy. A second cache-name list would eventually disagree with
     // the immutable install whose bytes this verifier is meant to measure.
@@ -2015,8 +2038,8 @@ export function captureVerifierDependencies({ dest, receipt, env = process.env }
       includedPaths: new Set(population.map(row => row[0])) });
     assert.equal(files.length, population.filter(row => row[1] !== 'd').length,
       'Verifier dependency population changed during census');
-    return { path, files };
-  });
+    trees.push({ path, files });
+  }
   return { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files',
     root, sourceCommit: receipt.sourceCommit, policy,
     sourceReceiptSha256: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), trees };
@@ -2119,7 +2142,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       path: `${resolve(receiptPath)}.phases.jsonl`, archivePath: tracedPhase.archivePath,
     })}\n`);
     const measurements = {};
-    runPhase = async (phase, operation) => {
+    const executePhase = async (phase, operation) => {
       // Synchronous archive/census work delays JS signal delivery. Yield before
       // admitting the next phase, so a pending cancellation cannot start tests.
       if (phase !== 'cleanup') {
@@ -2135,6 +2158,9 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       }
       return result;
     };
+    runPhase = Object.assign(executePhase, {
+      reportProgress: (phase, progress) => tracedPhase.reportProgress?.(phase, progress),
+    });
     let previousMeasurements;
     await runPhase('source.admission', () => {
       previousMeasurements = budgetFrom ? readVerifierPhaseMeasurements(budgetFrom) : null;
@@ -2246,7 +2272,8 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       }
     });
     await runPhase('deps.postverify', async () => {
-      const after = captureVerifierDependencies({ dest: root, receipt, env });
+      const after = captureVerifierDependencies({ dest: root, receipt, env,
+        onProgress: progress => runPhase.reportProgress?.('deps.postverify', progress) });
       // Keep the actual final census even on drift; never overwrite the
       // original observation with a reconstructed matching receipt.
       await fs.writeFile(`${receiptPath}.dependencies.after.json`, `${JSON.stringify(after)}\n`,
@@ -2488,6 +2515,14 @@ export function readVerifierPhaseMeasurements(path) {
     if (row.event === 'started') {
       assert.ok(!started.has(row.phase), 'Duplicate verifier phase start');
       started.add(row.phase);
+    } else if (row.event === 'progress') {
+      const progress = row.progress;
+      assert.ok(started.has(row.phase) && ['deps.census', 'deps.postverify'].includes(row.phase) &&
+        Number.isSafeInteger(progress?.completedTrees) && Number.isSafeInteger(progress?.totalTrees) &&
+        progress.totalTrees > 0 && progress.totalTrees <= 1000 &&
+        progress.completedTrees >= 0 && progress.completedTrees < progress.totalTrees &&
+        typeof progress.currentTree === 'string' && progress.currentTree.length > 0 &&
+        progress.currentTree.length <= 256, 'Invalid verifier phase progress receipt');
     } else {
       assert.ok(started.delete(row.phase) && ['completed', 'failed'].includes(row.event),
         'Verifier phase terminal record lacks a start');
