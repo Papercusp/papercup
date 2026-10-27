@@ -290,6 +290,23 @@ test('pinned source receipt preparation precedes providers and is required by th
     'the native bootstrap must fail closed instead of freezing after providers have started');
 });
 
+test('pinned verifier preparation seeds the gitignored Porcupine model through the committed source helper', () => {
+  const sourcePreview = readFileSync(new URL('./source-preview.mjs', import.meta.url), 'utf8');
+  const start = sourcePreview.indexOf('export async function prepareVerifierDependencies');
+  const end = sourcePreview.indexOf('/** Measure installed bytes', start);
+  assert.ok(start >= 0 && end > start, 'the dependency preparation implementation must remain discoverable');
+  const preparation = sourcePreview.slice(start, end);
+  const sourceCheck = preparation.indexOf('{ runtimeArtifacts: false, dependencyStaging: true }');
+  const assetSeed = preparation.indexOf("runPhase('deps.runtime-assets'");
+  const runtimeCheck = preparation.indexOf("runPhase('deps.source.after-runtime-assets'");
+  assert.ok(sourceCheck >= 0 && assetSeed > sourceCheck && runtimeCheck > assetSeed,
+    'verify the committed source, seed ignored runtime assets, then verify runtime artifacts');
+  assert.match(preparation, /join\(dest, 'apps\/operator\/scripts\/setup-porcupine-runtime\.sh'\)/);
+  assert.match(preparation, /join\(donor, 'apps\/operator\/public\/porcupine\/porcupine_params\.pv'\)/);
+  assert.match(preparation, /run\('bash', \[runtimeSetup, '--source', modelDonor\]\)/,
+    'the immutable source helper must checksum and copy the donor bytes');
+});
+
 test('pinned source without declared inputs fails before image or provider allocation', async () => {
   const keys = ['VERIFY_TAURI_SOURCE_REF', 'VERIFY_TAURI_SOURCE_INPUTS',
     'VERIFY_TAURI_SOURCE_INPUTS_FILE', 'VERIFY_TAURI_SOURCE_RECEIPT'];
