@@ -740,6 +740,7 @@ import './testing/flakiness';
 import './testing/case-categories';
 import './testing/run';
 import './testing/record-run';
+import './testing/record-native-check';
 import './testing/run-status';
 import './testing/runs';
 import './testing/verdict-diff';
