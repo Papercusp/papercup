@@ -132,7 +132,7 @@ async function app(capabilities = ['memory:search:read']) {
   const minted = mintAppKey();
   await db.sql`INSERT INTO harness_shared.connected_apps (id,user_email,workspace_id,kind,label,scopes,token_hash)
     VALUES (${minted.id},'fixture@example.invalid',${WS},'app','P001 fixture',
-      ${JSON.stringify({ capabilities })}::jsonb,${minted.tokenHash})`;
+      ${JSON.stringify({ capabilities, tools: ['memory:search'] })}::jsonb,${minted.tokenHash})`;
   return minted;
 }
 async function signed() {
@@ -152,8 +152,10 @@ beforeAll(async () => {
   writeFileSync(join(home, 'superuser-token'), superuserToken, { mode: 0o600 });
   vi.stubEnv('PAPERCUSP_HOME', home);
   await db.sql.unsafe(`
-    CREATE TABLE harness_shared.operator_secrets (name text PRIMARY KEY,value_b64 text NOT NULL,rotated_at timestamptz NOT NULL DEFAULT now());
-    CREATE TABLE harness_shared.users (id text PRIMARY KEY,username text UNIQUE,display_name text,is_active boolean DEFAULT true);
+    CREATE TABLE harness_shared.operator_secrets (name text PRIMARY KEY,value_b64 text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),rotated_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE harness_shared.users (id text PRIMARY KEY DEFAULT gen_random_uuid()::text,username text UNIQUE,
+      display_name text,password_hash text,is_active boolean DEFAULT true);
     CREATE TABLE harness_shared.harness_registry (workspace_id text PRIMARY KEY,payload jsonb);
     CREATE TABLE harness_shared.blueprint_package_installations (workspace_id text,dependent_id text,owner_id text,phase text);
     CREATE TABLE harness_shared.blueprint_package_dependents (workspace_id text,dependent_id text,resource_key text,phase text);
@@ -161,7 +163,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.connected_apps (id text PRIMARY KEY,user_email text,workspace_id text,kind text,label text,
       scopes jsonb,limits jsonb DEFAULT '{}',paired_at timestamptz DEFAULT now(),expires_at timestamptz,paused_at timestamptz,
       revoked_at timestamptz,last_seen timestamptz,last_ip text,spend_cap_cents bigint,spend_cap_window_sec integer,
-      rotated_at timestamptz,previous_token_valid_until timestamptz,client_auth boolean DEFAULT false,token_hash text,previous_token_hash text);
+      rotated_at timestamptz,previous_token_valid_until timestamptz,client_auth text,token_hash text,previous_token_hash text);
     CREATE TABLE harness_shared.connected_app_access_settings (workspace_id text PRIMARY KEY,enabled boolean);
     CREATE TABLE harness_shared.memory_recall_stats (id bigserial PRIMARY KEY,surface text,hit_count integer,
       top_score double precision,scores jsonb,fragment_count integer,pools jsonb,workspace_id text,pot_slug text,
@@ -174,7 +176,8 @@ beforeEach(async () => {
   seams.scopes.length = 0;
   await db.sql.unsafe(`TRUNCATE harness_shared.operator_secrets,harness_shared.users,harness_shared.harness_registry,
     harness_shared.connected_apps,harness_shared.connected_app_access_settings,harness_shared.memory_recall_stats`);
-  await db.sql`INSERT INTO harness_shared.users VALUES ('p001-authority-default','default','Default',true)`;
+  await db.sql`INSERT INTO harness_shared.users (id,username,display_name,is_active)
+    VALUES ('p001-authority-default','default','Default',true)`;
   await db.sql`INSERT INTO harness_shared.harness_registry VALUES (${WS},${JSON.stringify({ projects: [] })}::jsonb)`;
 });
 
