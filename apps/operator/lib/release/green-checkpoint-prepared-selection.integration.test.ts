@@ -583,6 +583,34 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     expect(Reflect.get(prepared, "preparedSelection")).toBeDefined();
   }, 180_000);
 
+  it("re-cuts a tip-sourced candidate hint before preparing its exact dependency inputs", async () => {
+    const f = await lineage();
+    const prepared = await f.prepare({
+      candidate: f.tip,
+      candidateSource: "tip",
+      noPush: true,
+    });
+    const selection = Reflect.get(prepared, "preparedSelection");
+
+    expect(prepared.candidate).toBe(f.knownGood);
+    expect(prepared.prewarmedDependencyGeneration).toMatchObject({
+      candidate: f.knownGood,
+      identity: f.knownGoodGeneration.identity,
+      inputFingerprint: f.knownGoodGeneration.inputFingerprint,
+    });
+    expect(selection).toMatchObject({
+      candidate: f.knownGood,
+      tip: f.tip,
+      freezeCut: {
+        source: "known-good",
+        candidate: f.knownGood,
+        tip: f.tip,
+      },
+    });
+    expect(f.events).toContain("select-known-good");
+    expect(prepared.lock.acquired).toBe(true);
+  }, 180_000);
+
   it("an explicit candidate keeps precedence and prepares its own exact generation", async () => {
     const f = await lineage();
     const prepared = await f.prepare({
