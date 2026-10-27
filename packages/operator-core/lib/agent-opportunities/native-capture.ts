@@ -383,21 +383,30 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     // Re-census every root before using earlier batches. A stat change forces a
     // fresh parse; a missing predecessor can never vanish from the manifest.
     // This final metadata pass retains the original deadline and fails closed.
-    for (const binding of bindings) {
-      const runtime = digest([binding.id, binding.owner, binding.provider]);
-      const scan = scans[runtime];
-      const current = await canonicalNativeRuntimeManifest(binding, deadline);
-      if (!scan || current.snapshot !== scan.snapshot) {
-        delete scans[runtime]; await savePartial(); return 'unknown';
+    for (let offset = 0; offset < bindings.length; offset += ENROLLMENT_BATCH) {
+      if (Date.now() >= deadline) return 'unknown';
+      const wave = bindings.slice(offset, offset + ENROLLMENT_BATCH);
+      // Bound outstanding filesystem work and drain the entire wave even when
+      // one root fails. Never certify a saved snapshot without a fresh read.
+      const results = await Promise.allSettled(wave.map(binding => canonicalNativeRuntimeManifest(binding, deadline)));
+      let changed = false;
+      for (const [index, result] of results.entries()) {
+        const binding = wave[index]!;
+        const runtime = digest([binding.id, binding.owner, binding.provider]);
+        const scan = scans[runtime];
+        if (result.status === 'rejected' || !scan || result.value.snapshot !== scan.snapshot) {
+          delete scans[runtime]; changed = true; continue;
+        }
+        sourceCount += result.value.identities.length;
+        fingerprints.push(scan.fingerprint);
+        for (const [key, value] of Object.entries(scan.calls)) {
+          if (!inWindow(value.at)) continue;
+          if (calls.has(key) && calls.get(key) !== value.fingerprint) return 'unknown';
+          calls.set(key, value.fingerprint);
+          if (calls.size > 2000) return 'unknown';
+        }
       }
-      sourceCount += current.identities.length;
-      fingerprints.push(scan.fingerprint);
-      for (const [key, value] of Object.entries(scan.calls)) {
-        if (!inWindow(value.at)) continue;
-        if (calls.has(key) && calls.get(key) !== value.fingerprint) return 'unknown';
-        calls.set(key, value.fingerprint);
-        if (calls.size > 2000) return 'unknown';
-      }
+      if (changed) { await savePartial(); return 'unknown'; }
     }
     if (Date.now() >= deadline || !await opts.authorize() || JSON.stringify(await population()) !== JSON.stringify(roster)) return 'unknown';
     if (micros(progress.since) >= micros(opts.until)) return 'gap';

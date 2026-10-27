@@ -1,6 +1,6 @@
 /** Five-family pass on the existing SQL census cadence; only minimized diagnostics are persisted. */
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { hostname } from 'node:os';
+import { monitoredRuntimeId } from '../harness/routines/fire-provenance';
 import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../build-info';
 import type { SqlMiningOptions, SqlMiningResult } from '../bash-substitution/sql-tool-candidates';
@@ -175,7 +175,7 @@ function identityIndex(rows: readonly { sourceToken: string; operationToken: str
     return { sourceRefs: [...sources].sort(), operationRefs: [...operations].sort() };
   };
 }
-const runtimeId = `${hostname()}:${process.pid}:${Math.round(Date.now() - process.uptime() * 1000)}`;
+const runtimeId = monitoredRuntimeId;
 const positive = (value: number | undefined, fallback: number, max: number) =>
   Number.isFinite(value) ? Math.min(max, Math.max(1, Math.floor(value!))) : fallback;
 

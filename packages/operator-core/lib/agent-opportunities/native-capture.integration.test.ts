@@ -1,14 +1,35 @@
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { canonicalNativeRuntimeSources, reconcileNativeCapture } from './native-capture';
 import { productionOpportunityReaders } from './source-readers';
 import type { NativeProvider } from './native-operation';
 import { readProductionMonitoredCandidate, runMonitoredCensus } from './census';
+
+// Delay the real filesystem boundary, never supply a synthetic manifest. Only
+// the final pass is delayed after the fixture has completed its source scans.
+const metadataIO = vi.hoisted(() => ({ delayMs: 0, fastRoot: '', active: 0, peak: 0, roots: [] as string[] }));
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, realpath: async (...args: Parameters<typeof actual.realpath>) => {
+    if (!metadataIO.delayMs) return actual.realpath(...args);
+    const path = String(args[0]);
+    metadataIO.roots.push(path); metadataIO.active++;
+    metadataIO.peak = Math.max(metadataIO.peak, metadataIO.active);
+    try {
+      await new Promise(resolve => setTimeout(resolve, path === metadataIO.fastRoot ? 5 : metadataIO.delayMs));
+      return await actual.realpath(...args);
+    } finally { metadataIO.active--; }
+  } };
+});
+afterEach(() => {
+  expect(metadataIO.active).toBe(0);
+  Object.assign(metadataIO, { delayMs: 0, fastRoot: '', peak: 0, roots: [] });
+});
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>, root: string;
 const envKeys = ['PAPERCUSP_SU_CODEX_HOMES_DIR', 'PAPERCUSP_SESSION_CLAUDE_DIR', 'PAPERCUSP_SU_OMP_HOMES_DIR'] as const;
@@ -258,6 +279,46 @@ it('R13-NATIVE resumes bounded postbaseline scans across all providers and keeps
   expect(rows).toHaveLength(3);
   expect(rows.every(row => row.calls === 44)).toBe(true);
 }, 120_000);
+
+it('R13-NATIVE revalidates every cached root in bounded concurrent metadata waves under real filesystem delay', async () => {
+  for (let i = 0; i < 40; i++) await seed((['codex', 'claude', 'omp'] as const)[i % 3]!);
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  await installed();
+  expect(await finishRuntimeBatches()).toBe('complete');
+  metadataIO.delayMs = 35; // Serial IO alone would exceed the unchanged 1s deadline.
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  expect(new Set(metadataIO.roots).size).toBe(40);
+  expect(metadataIO.peak).toBe(32);
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  expect(row!.receipt).toMatchObject({ runtimes: 40, sources: 80, calls: 80 });
+}, 120_000);
+
+it.each(['missing-root', 'deadline'] as const)(
+  'R13-NATIVE drains final metadata waves and refuses cached completeness after %s', async failure => {
+    const first = await seed();
+    for (let i = 1; i < 40; i++) await seed();
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+    await installed();
+    expect(await finishRuntimeBatches()).toBe('complete');
+    const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+      FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
+    const before = await receipt();
+    // The first root rejects before its siblings finish; every started read
+    // must settle before returning, and no second wave may start after failure.
+    metadataIO.delayMs = failure === 'deadline' ? 1100 : 50;
+    if (failure === 'missing-root') {
+      metadataIO.fastRoot = dirname(dirname(dirname(dirname(first.paths[0]!))));
+      await rm(metadataIO.fastRoot, { recursive: true });
+    }
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+    expect(metadataIO.active).toBe(0);
+    expect(metadataIO.peak).toBe(32);
+    expect(metadataIO.roots).toHaveLength(32);
+    const after = await receipt();
+    if (failure === 'deadline') expect(after).toEqual(before);
+    else expect(after).toMatchObject({ reconciling: true });
+  }, 120_000);
 
 it.each(['rewrite', 'predecessor-loss'] as const)(
   'R13-NATIVE revalidates earlier runtime batches after %s', async change => {

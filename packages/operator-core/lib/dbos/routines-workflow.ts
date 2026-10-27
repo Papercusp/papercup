@@ -49,6 +49,7 @@ import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
+import { routineFireProvenance, readMonitoredFireSnapshot, type RoutineFireProvenance } from '../harness/routines/fire-provenance';
 import {
   classifyClaimSkip,
   recordUnclaimableRoutine,
@@ -696,6 +697,7 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
       routine.name,
       routine.rescheduleIntervalSec,
       routine.targetOwnerId,
+      routineFireProvenance(routine, 'manual'),
     ] as const;
     if (dbosStarted()) {
       await DBOS.startWorkflow(routineFireWorkflow, {
@@ -795,6 +797,7 @@ async function routineFireImpl(
   routineName?: string,
   rescheduleIntervalSec?: number | null,
   targetOwnerId?: string | null,
+  provenance?: RoutineFireProvenance,
 ): Promise<void> {
   await runWithWorkspace(workspaceId, async () => {
     // Checkpoint immediately so the executor reaper can distinguish "workflow
@@ -806,6 +809,9 @@ async function routineFireImpl(
         installSlug,
         targetRole,
         routineName: routineName ?? routineId,
+        provenance: provenance ?? null,
+        ...(targetRole === 'system:sql-read-census' ? { snapshot: await readMonitoredFireSnapshot(
+          getOrgPg().sql, workspaceId, routineId).catch(() => null) } : {}),
       }),
       { name: 'routine-fire-start' },
     );
@@ -1054,6 +1060,11 @@ async function routineFireImpl(
         { name: `spawn:${targetRole}` },
       );
     }
+
+    if (targetRole === 'system:sql-read-census') await DBOS.runStep(async () => ({
+      provenance: provenance ?? null,
+      snapshot: await readMonitoredFireSnapshot(getOrgPg().sql, workspaceId, routineId).catch(() => null),
+    }), { name: 'routine-fire-finish' });
 
     // A completed dispatch (loop:wake / system:<action> / spawn:<role>) produced DBOS
     // operation output, which DISPROVES any prior reaper verdict of "produced no DBOS
@@ -1359,6 +1370,7 @@ async function routinesTickImpl(): Promise<void> {
         r.name,
         r.rescheduleIntervalSec ?? null,
         r.targetOwnerId ?? null,
+        routineFireProvenance(r, 'scheduler', r.nextFireAt),
       );
       remainingStartsByQueue.set(queueName, remainingStarts - 1);
     } catch (e) {

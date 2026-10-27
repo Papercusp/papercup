@@ -1039,6 +1039,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
           installSlug: 'papercusp',
           targetRole: 'su',
           routineName: 'loop-su-pinned',
+          provenance: null,
         },
       },
       { name: 'routine-fire-active-fence', output: true },
@@ -1163,6 +1164,17 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
 });
 
 describe('enqueueRoutineFire — on-demand durable dispatch', () => {
+  it('persists explicit census origin at both boundaries while legacy fires keep unknown origin', async () => {
+    const { registerSystemAction } = await import('../harness/routines/system-actions');
+    registerSystemAction('sql-read-census', async () => undefined);
+    const provenance = { version: 1 as const, origin: 'scheduler' as const,
+      scheduledAt: '2026-10-27T08:17:00Z', configHash: 'a'.repeat(64) };
+    await routineFireWorkflow('census-proof', 'workspace-1', 'home', 'system:sql-read-census', {}, null,
+      'census-proof', null, null, provenance);
+    expect(state.stepOutputs).toContainEqual({ name: 'routine-fire-start', output: expect.objectContaining({ provenance }) });
+    expect(state.stepOutputs).toContainEqual({ name: 'routine-fire-finish', output: expect.objectContaining({ provenance }) });
+  });
+
   const routine = {
     id: 'rt_home_git_sync',
     workspaceId: 'workspace-1',
@@ -1237,6 +1249,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       routine.name,
       routine.rescheduleIntervalSec,
       routine.targetOwnerId,
+      expect.objectContaining({ version: 1, origin: 'manual', scheduledAt: null }),
     );
     expect(state.startWorkflow).not.toHaveBeenCalled();
   });
@@ -1258,6 +1271,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       routine.name,
       routine.rescheduleIntervalSec,
       routine.targetOwnerId,
+      expect.objectContaining({ version: 1, origin: 'manual', scheduledAt: null }),
     );
   });
 
