@@ -3301,14 +3301,16 @@ export const SCORECARD_MUTEX_POOL_ACQUIRE_TIMEOUT_MS = 30_000;
 
 export class ScorecardEmitMutexWaitTimeoutError extends Error {
   readonly code = 'scorecard_emit_mutex_timeout';
-  readonly phase: 'pool-reservation' | 'advisory-lock';
+  readonly phase: 'pool-reservation' | 'advisory-lock' | 'local-queue';
 
   constructor(
     mutex: 'dedup' | 'grading-audit-subject',
     timeoutMs: number,
-    phase: 'pool-reservation' | 'advisory-lock' = 'advisory-lock',
+    phase: 'pool-reservation' | 'advisory-lock' | 'local-queue' = 'advisory-lock',
   ) {
-    const waitingFor = phase === 'pool-reservation' ? 'pool connection' : 'mutex';
+    const waitingFor = phase === 'pool-reservation'
+      ? 'pool connection'
+      : phase === 'local-queue' ? 'in-process mutex queue' : 'mutex';
     super(
       `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} ${waitingFor}. ` +
         'No scorecard was persisted by this attempt; retry after the current emitter settles.',
@@ -3378,6 +3380,53 @@ function gradingAuditSubjectMutexKey(input: {
     .join('|');
 }
 
+// PostgreSQL remains the cross-process authority. This local keyed queue keeps
+// same-process waiters from each reserving a dedicated connection before they
+// reach that advisory lock, leaving pool capacity for unrelated subjects.
+const gradingAuditSubjectMutexTails = new Map<string, Promise<void>>();
+
+async function acquireGradingAuditSubjectLocalQueue(
+  key: string,
+  timeoutMs: number,
+): Promise<() => void> {
+  const previous = gradingAuditSubjectMutexTails.get(key);
+  let openGate!: () => void;
+  const gate = new Promise<void>((resolve) => { openGate = resolve; });
+  const tail = (previous ?? Promise.resolve()).then(() => gate);
+  gradingAuditSubjectMutexTails.set(key, tail);
+  void tail.then(() => {
+    if (gradingAuditSubjectMutexTails.get(key) === tail) gradingAuditSubjectMutexTails.delete(key);
+  });
+
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    openGate();
+  };
+
+  if (previous) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        previous,
+        new Promise<void>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            release();
+            reject(new ScorecardEmitMutexWaitTimeoutError(
+              'grading-audit-subject', timeoutMs, 'local-queue',
+            ));
+          }, Math.max(1, Math.trunc(timeoutMs)));
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  return release;
+}
+
 /**
  * Serialize grading-audit reservation and emission for one scorecard subject.
  * This uses a dedicated direct connection because session advisory locks must
@@ -3388,19 +3437,30 @@ export async function acquireGradingAuditSubjectMutex(input: {
   subjectIssueId: string;
 }, phases?: PhaseTracker, waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS): Promise<() => Promise<void>> {
   const key = gradingAuditSubjectMutexKey(input);
+  const waitBudgetMs = Math.max(1, Math.trunc(waitTimeoutMs));
+  const deadlineAt = Date.now() + waitBudgetMs;
+  const localQueuePhase = 'scorecards:emit:mutex:grading-audit-subject:local-queue';
   const poolPhase = 'scorecards:emit:mutex:grading-audit-subject:pool-reservation';
-  const reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitTimeoutMs);
+  let reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitBudgetMs);
+  let advisoryTimeoutMs = waitBudgetMs;
+  let releaseLocal: (() => void) | undefined;
   let reserved: Awaited<ReturnType<ReturnType<typeof gradingAuditSubjectMutexSql>['reserve']>> | undefined;
   let acquired = false;
   try {
+    releaseLocal = await trackPhase(phases, localQueuePhase, () =>
+      acquireGradingAuditSubjectLocalQueue(key, waitBudgetMs),
+    );
+    const reserveBudgetMs = Math.max(1, Math.trunc(deadlineAt - Date.now()));
+    reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(reserveBudgetMs);
     const connection = await reserveScorecardMutexConnection(
       () => gradingAuditSubjectMutexSql().reserve(),
       phases,
       poolPhase,
-      waitTimeoutMs,
+      reserveBudgetMs,
     );
     reserved = connection;
-    await connection.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${waitTimeoutMs}ms`]);
+    advisoryTimeoutMs = Math.max(1, Math.trunc(deadlineAt - Date.now()));
+    await connection.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${advisoryTimeoutMs}ms`]);
     await connection.unsafe('SET statement_timeout = 0');
     await trackPhase(phases, 'scorecards:emit:mutex:grading-audit-subject:advisory-lock', () =>
       connection.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
@@ -3414,16 +3474,24 @@ export async function acquireGradingAuditSubjectMutex(input: {
           .unsafe('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key])
           .catch(() => {});
       } finally {
-        connection.release();
+        try {
+          connection.release();
+        } finally {
+          releaseLocal?.();
+        }
       }
     };
   } catch (error) {
-    reserved?.release();
+    try {
+      reserved?.release();
+    } finally {
+      releaseLocal?.();
+    }
     if (isScorecardMutexPoolAcquisitionError(error)) {
       throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', reservationTimeoutMs, 'pool-reservation');
     }
     if ((error as { code?: string } | null)?.code === '55P03') {
-      throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', waitTimeoutMs);
+      throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', advisoryTimeoutMs);
     }
     throw error;
   }
