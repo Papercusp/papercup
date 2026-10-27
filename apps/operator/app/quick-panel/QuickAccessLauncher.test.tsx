@@ -3,6 +3,7 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { bindQuickPanelEscape } from '@papercusp/operator-core/lib/client-navigation';
 import QuickAccessLauncher, { focusQuickAgent } from './QuickAccessLauncher';
 import type { QuickAgent } from './quick-access-model';
 
@@ -94,6 +95,24 @@ describe('Quick Access launcher', () => {
     expect(await screen.findByText('Exact report body')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Read report' }));
     expect(await screen.findByRole('dialog', { name: 'Report' })).toBeTruthy();
+  });
+  it('dismisses the nested report with Escape before dismissing the native popup', async () => {
+    const dismiss = vi.fn();
+    const unbind = bindQuickPanelEscape(document, null, dismiss);
+    try {
+      mount();
+      fireEvent.click(scope('Reports'));
+      await screen.findByText('Exact report body');
+      fireEvent.click(screen.getByRole('button', { name: 'Read report' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Report' });
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Report' })).toBeNull());
+      expect(dismiss).not.toHaveBeenCalled();
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(dismiss).toHaveBeenCalledOnce();
+    } finally {
+      unbind();
+    }
   });
   it('refuses a stale body from a different report identity', async () => {
     const normal = mocks.queries.getMockImplementation()!;
