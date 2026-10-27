@@ -1,13 +1,13 @@
 {
   "plan": "event-wait-settlement-2026-10-20",
   "clause": "AUTO-BAR-R-3-P-002@3",
-  "measuredAt": "2026-10-27T07:20:51.100Z",
+  "measuredAt": "2026-10-27T14:01:34.337Z",
   "key": "work-item:done:WI-r3-live-explain-absent",
   "thresholdMs": 10,
-  "workItemsRows": 437654,
+  "workItemsRows": 438777,
   "externalBlockers": {
     "verdict": "pass",
-    "executionMs": 2.054,
+    "executionMs": 1.153,
     "seqScanOnWorkItems": false,
     "indexes": [
       "work_items_external_blockers_gin_idx"
@@ -17,7 +17,7 @@
       "Bitmap Heap Scan[work_items]",
       "Bitmap Index Scan(work_items_external_blockers_gin_idx)"
     ],
-    "sharedHitBlocks": 394,
+    "sharedHitBlocks": 274,
     "sharedReadBlocks": 0,
     "assertions": [
       {
@@ -33,7 +33,7 @@
       {
         "id": "within-threshold",
         "passed": true,
-        "evidence": "execution 2.054 ms, threshold 10 ms"
+        "evidence": "execution 1.153 ms, threshold 10 ms"
       }
     ],
     "statement": "SELECT workspace_id, feature_id, item_kind, status, payload, harness_slug, taken_by FROM harness_shared.work_items WHERE ( (payload -> 'externalBlockers') @> jsonb_build_array( jsonb_build_object('ref', $1::text, 'status', 'active') ) AND jsonb_path_exists( payload -> 'externalBlockers', '$[*] ? (@.ref == $ref && @.status == \"active\" && (@.kind == \"event\" || @.kind == \"gate\"))', jsonb_build_object('ref', $2::text) ) ) FOR UPDATE",
@@ -44,7 +44,7 @@
   },
   "durableParks": {
     "verdict": "pass",
-    "executionMs": 0.038,
+    "executionMs": 0.376,
     "seqScanOnWorkItems": false,
     "indexes": [
       "work_items_claim_hold_release_trigger_idx"
@@ -69,7 +69,7 @@
       {
         "id": "within-threshold",
         "passed": true,
-        "evidence": "execution 0.038 ms, threshold 10 ms"
+        "evidence": "execution 0.376 ms, threshold 10 ms"
       }
     ],
     "statement": "SELECT workspace_id, harness_slug, feature_id, item_kind, status AS state, taken_by, payload FROM harness_shared.work_items WHERE ( payload ? 'claim_hold_release' AND (payload -> 'claim_hold_release') ->> 'trigger' = $1 AND payload ->> '_claimHold' = 'true' AND NULLIF(payload ->> 'claim_hold_by', '') IS NOT NULL AND (taken_by IS NULL OR btrim(taken_by) = '') ) FOR UPDATE",
