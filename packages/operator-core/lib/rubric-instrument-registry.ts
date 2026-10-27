@@ -4,6 +4,7 @@ import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY, codeIntelUnknownRateRescore } from './code-intelligence/code-intel-unknown-rate-probe';
+import { CODE_INTEL_LIVENESS_INSTRUMENT_KEY, codeIntelLivenessRescore } from './code-intelligence/push-leg-liveness';
 import { CLEANUP_OUTCOME_INSTRUMENT_KEYS, cleanupOutcomeRescore, metricForCleanupInstrument } from './code-cleanup/outcome';
 import { lunaCapacityInstruments } from './fleet/capacity-recovery-evidence';
 import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-filing-instrument';
@@ -811,6 +812,8 @@ export function platformComputedInstrumentKeys(): string[] {
     SILENT_HALT_STRANDED_INSTRUMENT_KEY,
     // code-intel-delivery-and-outcomes-2026-10-26 P-004 (R-9): the unknown-rate probe.
     CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
+    // code-intel-delivery-and-outcomes-2026-10-26 P-003 (R-1): the per-leg/op liveness check.
+    CODE_INTEL_LIVENESS_INSTRUMENT_KEY,
     // code-cleanup-campaigns-2026-10-26 P-008: the campaign outcome rubric's three metrics.
     ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
   ];
@@ -842,6 +845,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
       ...(key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() }
+        : key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY ? { rescore: codeIntelLivenessRescore() }
         : cleanupMetric ? { rescore: cleanupOutcomeRescore(cleanupMetric) } : reuseMetric ? { rescore: {
         windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' || reuseMetric === 'providerOutcomes' ? 'count' as const : '%' as const,
         scope: 'harness' as const,

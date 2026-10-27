@@ -15,6 +15,7 @@ import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY } from './code-intelligence/code-intel-unknown-rate-probe';
+import { CODE_INTEL_LIVENESS_INSTRUMENT_KEY } from './code-intelligence/push-leg-liveness';
 import { CLEANUP_OUTCOME_INSTRUMENT_KEYS } from './code-cleanup/outcome';
 import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-instrument';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
@@ -269,6 +270,7 @@ describe('the registry seed set', () => {
       POSTGRES_RETENTION_INSTRUMENT_KEY,
       SILENT_HALT_STRANDED_INSTRUMENT_KEY,
       CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
+      CODE_INTEL_LIVENESS_INSTRUMENT_KEY,
       ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
@@ -317,6 +319,12 @@ describe('the registry seed set', () => {
             // P-004 (R-9): one 24 h probe window per run, unknown share in %.
             expect(instrument.rescore?.windowMs).toBe(24 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('%');
+            expect(instrument.rescore?.scope).toBe('workspace');
+            expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
+          } else if (key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY) {
+            // P-003 (R-1): one 7-day liveness window per run, alarmed-signal count.
+            expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
             expect(instrument.rescore?.scope).toBe('workspace');
             expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
           } else if (Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS).some(k => k === key)) {
