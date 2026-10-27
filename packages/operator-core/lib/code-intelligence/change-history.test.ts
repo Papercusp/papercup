@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { realpathSync } from 'node:fs';
-import { boundChangeHistoryProviders, changeHistoryProviders, coChangeFromCommits, coChangeOverlap,
+import { boundChangeHistoryProviders, buildCoChangeIndex, changeHistoryProviders, coChangeFromCommits, coChangeFromIndex,
+  coChangeOverlap,
   FULL_WINDOW_HISTORY_BOUNDS, IN_PROCESS_HISTORY_BOUNDS, parseHistoryLog, readHistoryCommits,
   fileSymbolNames, formatPriorWorkLine, ledgerSymbolProvenance, priorWorkReport, rankPriorWork, readCoChange, readPriorWork,
   registerChangeHistoryProviders, symbolProvenance,
@@ -338,6 +339,43 @@ describe('parseHistoryLog (git log -z --name-status)', () => {
     const report = history([commit(1), commit(2), commit(3), renamed]);
     expect(report.unknownPaths).toEqual(expect.arrayContaining(['a.ts', 'back\\slash.ts']));
     expect(report.pairs).toEqual([]);
+  });
+});
+
+describe('buildCoChangeIndex + coChangeFromIndex (P-009)', () => {
+  const at = (n: number, files: HistoryCommit['files']): HistoryCommit => ({ ...commit(n, []), files });
+  const commits = [
+    ...[1, 2, 3, 4].map(n => commit(n, ['a.ts', 'b.ts', 'c.ts'])),
+    at(5, [{ status: 'R090', from: 'c.ts', path: 'd.ts' }]),
+    ...[6, 7, 8].map(n => commit(n, ['a.ts', 'd.ts', 'e.ts'])),
+    at(9, [{ status: 'A', path: 'c.ts' }]),
+  ];
+  const input = { commits, end: END, commit: 'a'.repeat(40), complete: true };
+
+  it('answers exactly what coChangeFromCommits answers, for every scope, from one prepared window', () => {
+    const index = buildCoChangeIndex(input);
+    for (const paths of [['a.ts'], ['b.ts'], ['a.ts', 'd.ts'], ['c.ts'], ['e.ts']]) {
+      expect(coChangeFromIndex(index, paths)).toEqual(coChangeFromCommits({ ...input, paths }));
+    }
+    // Re-adding the retired c.ts breaks the c.ts -> d.ts identity: both are unknown.
+    expect([...index.unknown].sort()).toEqual(['c.ts', 'd.ts']);
+  });
+
+  it('restricts partners to the requested scope and applies the limit after sorting', () => {
+    const index = buildCoChangeIndex(input);
+    const all = coChangeFromIndex(index, ['a.ts']);
+    expect(all.pairs.map(p => [p.partner, p.shared])).toEqual([['b.ts', 4], ['e.ts', 3]]);
+    const scoped = coChangeFromIndex(index, ['a.ts'], { partners: ['e.ts'] });
+    expect(scoped.pairs.map(p => p.partner)).toEqual(['e.ts']);
+    expect(scoped.limitations).toContain('Partners restricted to the requested scope.');
+    expect(coChangeFromIndex(index, ['a.ts'], { limit: 1 }).pairs).toEqual(all.pairs.slice(0, 1));
+  });
+
+  it('refuses an unsafe scope, a negative limit and an invalid window end', () => {
+    const index = buildCoChangeIndex(input);
+    expect(() => coChangeFromIndex(index, ['back\\slash.ts'])).toThrow(/Invalid history scope/);
+    expect(() => coChangeFromIndex(index, ['a.ts'], { limit: -1 })).toThrow(/non-negative/);
+    expect(() => buildCoChangeIndex({ ...input, end: 'not a date' })).toThrow(/Invalid history scope/);
   });
 });
 
