@@ -137,7 +137,8 @@ export function loadCapturedProofRows({ client, sha, runGroupId, files, sinceMs 
  * @param {Partial<typeof defaultDeps>} [o.deps]
  * @returns {Promise<{ state: string, reason: string | null, sha: string | null, slices: number,
  *   files: number, rows: number, retired: number, failed: number, isolatedFail: number,
- *   remaining: number, stoppedBy: string | null, evidence: { version: 1, runGroupId: string,
+ *   remaining: number, stoppedBy: string | null, timedOutSlices?: number, hung?: string[],
+ *   evidence: { version: 1, runGroupId: string,
  *   startedAtMs: number, completedAtMs: number, clean: boolean | null,
  *   proofs: Awaited<ReturnType<typeof loadCapturedProofRows>> | null }, lines: string[] }>}
  */
@@ -178,6 +179,8 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceM
     isolatedFail: number;
     remaining: number;
     stoppedBy: string | null;
+    timedOutSlices?: number;
+    hung?: string[];
     evidence: {
         version: 1;
         runGroupId: string;

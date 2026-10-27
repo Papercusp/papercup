@@ -76,9 +76,10 @@ export function parsePureProofCaptureResult(value: unknown): PureProofCaptureRes
     slices: v.slices as number, files: v.files as number, rows: v.rows as number,
     retired: v.retired as number, failed: v.failed as number, isolatedFail: v.isolatedFail as number,
     remaining: v.remaining as number, stoppedBy: v.stoppedBy as string | null,
-    // WI-6554700010030061: absent on records written before slice-timeout splitting.
-    timedOutSlices: isCount(v.timedOutSlices) ? v.timedOutSlices : 0,
-    hung: Array.isArray(v.hung) ? v.hung.filter((f): f is string => text(f)) : [],
+    // WI-6554700010030061: absent on records written before slice-timeout splitting; carried
+    // only when present so an archived record round-trips exactly.
+    ...(isCount(v.timedOutSlices) ? { timedOutSlices: v.timedOutSlices } : {}),
+    ...(Array.isArray(v.hung) && v.hung.every((f) => text(f)) ? { hung: v.hung as string[] } : {}),
     evidence: { version: 1, runGroupId: e.runGroupId, startedAtMs: e.startedAtMs,
       completedAtMs: e.completedAtMs, clean: e.clean as boolean | null, proofs } };
 }

@@ -21161,7 +21161,7 @@
           "POST"
         ]
       },
-      "description": "Fetch canonical persons by PER- id from the workspace relationship graph. A merged-away id resolves to its survivor (the returned person.id is the survivor). Pass `id` or `ids`. Returns { ok, results:[{ ok, id, person? | error }], counts }. Read-only.",
+      "description": "Fetch canonical persons by PER- id from the workspace relationship graph. A merged-away id resolves to its survivor (the returned person.id is the survivor). Pass `id` or `ids`. Optional includeQualificationEvidence adds bounded cited source observations for a collector; these are not a score, verified product identity or communication consent. Returns { ok, results:[{ ok, id, person?, qualificationEvidence? | error }], counts }. Read-only.",
       "capabilities": [
         "intel:read"
       ],
