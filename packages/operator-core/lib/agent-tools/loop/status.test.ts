@@ -238,7 +238,8 @@ describe('loop:status owner-scoped argument contract (EI-21137205137669557)', ()
       guidance?: { when?: string };
       args: {
         safeParse: (value: unknown) => { success: boolean };
-        shape: { ownerId?: { description?: string }; harness?: { description?: string } };
+        // WI-6554700010029664: args is a preprocess pipe (owner → ownerId fold); `out` is the object.
+        out: { shape: { ownerId?: { description?: string }; harness?: { description?: string } } };
       };
     };
 
@@ -260,8 +261,8 @@ describe('loop:status owner-scoped argument contract (EI-21137205137669557)', ()
     expect(tool().description).toMatch(/accepted and ignored/i);
     expect(tool().guidance?.when).toMatch(/ignores `harness`/i);
     // The canonical sentence loop:end already uses, kept verbatim across the family.
-    expect(tool().args.shape.harness?.description).toMatch(/Accepted for compatibility and IGNORED/);
-    expect(tool().args.shape.harness?.description).toMatch(/keyed by owner, not by harness/);
+    expect(tool().args.out.shape.harness?.description).toMatch(/Accepted for compatibility and IGNORED/);
+    expect(tool().args.out.shape.harness?.description).toMatch(/keyed by owner, not by harness/);
   });
 });
 
