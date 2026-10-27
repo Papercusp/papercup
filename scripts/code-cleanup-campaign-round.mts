@@ -9,9 +9,10 @@
  *           aggressiveness?, defaultReview?, cap?, running?, maxPaths?, live? }
  *
  * Like scripts/clone-family-sweep.mts, only this child enumerates and parses the repository.
- * It ranks clone families, turns the top ones (bounded so the coverage map can answer for every
- * member path) into triage inputs, reads change history, the coverage map, the landed batches and
- * gate reds, and runs planCampaignRound with the native deps. The full result (including each
+ * It ranks clone families, turns the top ones (bounded by a triage path budget) into triage inputs,
+ * reads change history, pre-triages them, reads the coverage map for the surviving families' members
+ * only (at most 50 paths), reads the landed batches and gate reds, and runs planCampaignRound with
+ * the native deps. The full result (including each
  * started batch's planned edits) is written to `out`; a summary is printed.
  *
  * Dry by default. `live: true` files diverged-copy bugs, saves a throttle trip, and admits batches
@@ -30,11 +31,16 @@ import { editPathAcquire, nativeCampaignRoundDeps, readNativeThrottleInputs } fr
 import { coverageViewFromScope, type CleanupAggressiveness, type CoverageView } from '../packages/operator-core/lib/code-cleanup/executor';
 import { DEFAULT_CAMPAIGN_REVIEW, type CampaignReview } from '../packages/operator-core/lib/code-cleanup/campaign-plan';
 import { DEFAULT_REGRESSION_WINDOW_MS } from '../packages/operator-core/lib/code-cleanup/throttle';
-import { triageFamilyFromRanked, type TriageFamily } from '../packages/operator-core/lib/code-cleanup/triage';
+import { boundCoveragePaths, nativeDivergenceBugLookup, selectRoundFamilies, triageCloneFamilies, triageFamilyFromRanked,
+  type TriageFamily } from '../packages/operator-core/lib/code-cleanup/triage';
 import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 /** readTestCoverage answers for at most 50 source paths; a round never asks past that. */
 const COVERAGE_PATH_LIMIT = 50;
+/** Bounds triage cost (file reads and co-change queries), not coverage: coverage is read only
+ * for the families that survive triage (boundCoveragePaths). Round 4 (2026-10-27) triaged 36
+ * families, and 3 survived. */
+const TRIAGE_PATH_LIMIT = 1000;
 
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8')) as {
   root: string; workspaceId: string; harness: string; campaignId: string; runnerItemId: string; self: string; out: string;
@@ -67,19 +73,12 @@ if (!index.size || incomplete.length) throw new Error(`Campaign round corpus inc
 
 // ── ranked families, bounded by the coverage map's path limit ───────────────
 const ranked = rankCloneSweep(index, cloneSweepInputSchema.parse({ root }), now);
-const pathLimit = Math.min(config.maxPaths ?? COVERAGE_PATH_LIMIT, COVERAGE_PATH_LIMIT);
-const chosen: typeof ranked = [];
-const memberPaths = new Set<string>();
-for (const row of ranked) {
-  if (row.accepted) continue;
-  const paths = row.family.members.map(m => m.path);
-  if (new Set([...memberPaths, ...paths]).size > pathLimit) continue;
-  chosen.push(row);
-  for (const p of paths) memberPaths.add(p);
-}
+const pathLimit = config.maxPaths ?? TRIAGE_PATH_LIMIT;
+const selection = selectRoundFamilies(ranked, pathLimit);
+const memberPaths = new Set(selection.memberPaths);
 const read = (path: string) => readFile(join(root, path), 'utf8');
 const families: TriageFamily[] = [];
-for (const row of chosen) families.push(await triageFamilyFromRanked(row, read));
+for (const row of selection.chosen) families.push(await triageFamilyFromRanked(row, read));
 
 // ── history, coverage, throttle inputs ──────────────────────────────────────
 // The in-process cap (1000 commits) never reads complete on a tree that commits every few minutes,
@@ -87,11 +86,19 @@ for (const row of chosen) families.push(await triageFamilyFromRanked(row, read))
 const historyRead = await readHistoryCommits(root, now.toISOString(), undefined, FULL_WINDOW_HISTORY_BOUNDS);
 const history = { commits: historyRead.commits, end: now.toISOString(), commit: historyRead.commit, complete: historyRead.complete };
 
+// Only families that survive triage need coverage. Pre-triage (planCampaignRound triages again over
+// the same index-backed history, which is cheap) and read coverage for the survivors' members.
+const divergenceBug = nativeDivergenceBugLookup({ workspaceId: config.workspaceId, harness: config.harness });
+const preTriage = await triageCloneFamilies({ families, history, divergenceBug });
+const coverageBound = boundCoveragePaths(preTriage.batches, COVERAGE_PATH_LIMIT);
+const dropped = new Set(coverageBound.dropped);
+const roundFamilies = families.filter(f => !dropped.has(f.id));
+
 const NO_COVERAGE: CoverageView = { takenAt: { commit: null, observedAt: null }, coveringTests: () => null };
 let coverage = NO_COVERAGE;
-let coverageNote = 'no member paths';
-if (memberPaths.size) {
-  const paths = [...memberPaths].sort();
+let coverageNote = 'no surviving family members';
+if (coverageBound.paths.length) {
+  const paths = coverageBound.paths;
   const sourceFiles = await Promise.all(paths.map(async path => ({ path, sha256: coverageHash(await readFile(join(root, path))) })));
   const scope = await readNativeCoverageScope({
     surface: 'completion', workspaceId: config.workspaceId, owner: config.self, invocation: 'code-cleanup:campaign-round',
@@ -114,17 +121,21 @@ const deps = nativeCampaignRoundDeps({
 });
 const result = await planCampaignRound({
   campaignId: config.campaignId, self: config.self, aggressiveness: config.aggressiveness ?? 'safe',
-  families, history, coverage, running: config.running ?? [],
+  families: roundFamilies, history, coverage, running: config.running ?? [],
   reds: throttleInputs.reds, landed: throttleInputs.landed, cap: config.cap, now, dryRun: !live,
 }, deps);
 
 const inputs = {
-  indexed: index.size, ranked: ranked.length, chosenFamilies: families.length, memberPaths: memberPaths.size, pathLimit,
+  indexed: index.size, ranked: ranked.length, chosenFamilies: families.length, notChosen: selection.skipped,
+  memberPaths: memberPaths.size, pathLimit,
+  survivingFamilies: preTriage.batches.reduce((n, b) => n + b.families.length, 0),
+  coveragePaths: coverageBound.paths.length, coverageDropped: coverageBound.dropped.length,
   historyCommits: history.commits.length, historyComplete: history.complete, coverage: coverageNote,
   landed: throttleInputs.landed.length, reds: throttleInputs.reds.length, redsWithoutRadius: throttleInputs.redsWithoutRadius,
 };
 writeFileSync(config.out, JSON.stringify({
-  schemaVersion: 1, at: now.toISOString(), live, inputs, memberPaths: [...memberPaths].sort(), result,
+  schemaVersion: 1, at: now.toISOString(), live, inputs, memberPaths: [...memberPaths].sort(),
+  coveragePaths: coverageBound.paths, coverageDropped: coverageBound.dropped, result,
 }, null, 2));
 console.log(JSON.stringify({
   schemaVersion: 1, live, out: config.out, inputs,

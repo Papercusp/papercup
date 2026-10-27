@@ -9,8 +9,8 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoryCommit } from '../code-intelligence/change-history';
 import {
-  TRIAGE_BATCH_FAMILY_CAP, compareCopies, divergedCopyConditionKey, familyChurn, triageCloneFamilies, triageFamilyFromRanked,
-  triageScore,
+  TRIAGE_BATCH_FAMILY_CAP, boundCoveragePaths, compareCopies, divergedCopyConditionKey, familyChurn, selectRoundFamilies, triageCloneFamilies,
+  triageFamilyFromRanked, triageScore,
   type DivergenceBug, type TriageFamily, type TriageHistory,
 } from './triage';
 
@@ -163,6 +163,20 @@ describe('triageCloneFamilies (P-005, R-5)', () => {
   });
 });
 
+describe('triage co-change scope (P-009)', () => {
+  it('finds the in-family link even when a member file has more than 100 stronger outside partners', async () => {
+    // A1 is in 10 commits and A2 in 3 of them: in-family Jaccard 0.3, above the floor. Each of 120
+    // partners shares 4 of A1's commits (0.4), so A1's outside pairs alone outnumber a top-100 cut.
+    const partner = (k: number) => `packages/alpha/src/partners/p${k}.ts`;
+    const commits = Array.from({ length: 10 }, (_, i) => commit(i + 1, A1, ...(i < 3 ? [A2] : []),
+      ...Array.from({ length: 120 }, (_, k) => k).filter(k => [0, 1, 2, 3].some(d => (k + d) % 10 === i)).map(partner)));
+    const result = await triageCloneFamilies({ families: [coChanging],
+      history: { end: END, commit: 'e'.repeat(40), complete: true, commits }, divergenceBug: bugs('missing').lookup });
+    expect(result.excluded).toEqual([]);
+    expect(result.batches.flatMap(b => b.families)).toMatchObject([{ id: 'family-co-changing', coChange: { minLinkScore: 0.3, files: 2 } }]);
+  });
+});
+
 describe('compareCopies', () => {
   it('treats renamed copies as identical', () => {
     expect(compareCopies(unguarded, unguarded.replace(/cache/g, 'store').replace(/entry/g, 'hit'))).toEqual({ status: 'identical' });
@@ -207,6 +221,63 @@ describe('triageFamilyFromRanked', () => {
     const blind = await triageFamilyFromRanked(row('semantic', [fn(C1, 'a', 0, 5), fn(C2, 'b', 0, 5)]),
       async () => { throw new Error('ENOENT'); });
     expect(blind.members.every(m => m.source === undefined)).toBe(true);
+  });
+});
+
+describe('selectRoundFamilies (P-009)', () => {
+  const fn = (path: string) => ({ id: `${path}:1`, path, line: 1, column: 0, start: 0, end: 5, name: 'f', signature: '',
+    mass: 100, exact: 'x', renamed: 'y', blobSha: 'b', classification: { test: false, vendored: path.startsWith('templates/'), retired: false } });
+  const ranked = (id: string, paths: string[], over: { accepted?: boolean } = {}) => ({
+    family: { id, version: 'v', kind: 'renamed' as const, fingerprint: id, members: paths.map(fn) },
+    membersDigest: 'd'.repeat(64), redundantMass: 50, copies: paths.length, packageDistance: 1,
+    disposition: paths.some(p => p.startsWith('templates/')) ? 'derive-and-sync' as const : 'consolidate' as const,
+    generic: false, accepted: over.accepted ?? false });
+
+  it('takes consolidation families in ranked order and skips vendored, accepted and over-budget ones', () => {
+    const rows = [
+      ranked('vendored', ['libs/generic/kit/src/a.ts', 'templates/app/kit/src/a.ts']),
+      ranked('accepted', [A1, A2], { accepted: true }),
+      ranked('first', [A1, A2]),
+      ranked('too-wide', [B1, B2, C1]),
+      ranked('second', [A1, C1]),
+    ];
+    const selection = selectRoundFamilies(rows, 3);
+    expect(selection.chosen.map(r => r.family.id)).toEqual(['first', 'second']);
+    expect(selection.memberPaths).toEqual([A2, A1, C1].sort());
+    expect(selection.skipped).toEqual({ accepted: 1, 'derive-and-sync': 1, 'path-budget': 1 });
+  });
+
+  it('never spends the path budget on a derive-and-sync family, however high it ranks', () => {
+    const vendored = Array.from({ length: 5 }, (_, i) =>
+      ranked(`vendored-${i}`, [`libs/generic/kit/src/m${i}.ts`, `templates/app/kit/src/m${i}.ts`]));
+    const selection = selectRoundFamilies([...vendored, ranked('real', [A1, A2])], 2);
+    expect(selection.chosen.map(r => r.family.id)).toEqual(['real']);
+    expect(selection.memberPaths.some(p => p.startsWith('templates/'))).toBe(false);
+  });
+
+  it('refuses a non-positive path limit', () => {
+    expect(() => selectRoundFamilies([], 0)).toThrow(/positive integer/);
+  });
+});
+
+describe('boundCoveragePaths (P-009)', () => {
+  const fam = (id: string, paths: string[]) => ({ id, score: 1, churn: 0, redundantMass: 1, packageDistance: 0,
+    coChange: { minLinkScore: 1, files: paths.length }, members: paths.map((path, i) => ({ path, line: i + 1, symbol: 'f' })) });
+  const batch = (area: string, families: ReturnType<typeof fam>[]) => ({ area, index: 0, score: 1, redundantMass: 1, families });
+
+  it('reads coverage for surviving families in batch order and drops, never under-covers, the ones that do not fit', () => {
+    const batches = [batch('a', [fam('first', [A1, A2]), fam('wide', [B1, B2, C1])]), batch('b', [fam('shares', [A1, C1])])];
+    const bound = boundCoveragePaths(batches, 3);
+    expect(bound.paths).toEqual([A1, A2, C1].sort());
+    expect(bound.dropped).toEqual(['wide']);
+  });
+
+  it('asks for nothing when no family survived triage', () => {
+    expect(boundCoveragePaths([], 50)).toEqual({ paths: [], dropped: [] });
+  });
+
+  it('refuses a non-positive path limit', () => {
+    expect(() => boundCoveragePaths([], 0)).toThrow(/positive integer/);
   });
 });
 

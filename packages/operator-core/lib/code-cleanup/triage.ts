@@ -21,7 +21,7 @@
  * stays one reviewable change.
  */
 import * as ts from 'typescript';
-import { coChangeFromCommits, type HistoryCommit } from '../code-intelligence/change-history';
+import { buildCoChangeIndex, coChangeFromIndex, type CoChangeIndex, type HistoryCommit } from '../code-intelligence/change-history';
 import { cloneMemberSymbol } from '../code-intelligence/clone-index';
 import { cloneFamilyArea, type RankedCloneFamily } from '../code-intelligence/clone-sweep';
 
@@ -191,9 +191,10 @@ export function familyChurn(paths: readonly string[], history: TriageHistory): n
 /** Members co-change when the files are CONNECTED by links at or above the floor:
  * every file shares a history with the rest, not just one lucky pair. Returns the
  * weakest link of the maximum spanning tree, or null when the files are not connected. */
-function coChangeLink(paths: readonly string[], history: TriageHistory, floor: number): number | null {
-  const report = coChangeFromCommits({ commits: history.commits, paths, end: history.end, commit: history.commit,
-    complete: history.complete });
+function coChangeLink(paths: readonly string[], index: CoChangeIndex, floor: number): number | null {
+  // Only in-family links matter. Unrestricted, the global top-100 cut could drop them in favour of
+  // a member file's stronger outside partners and misreport the family as independent.
+  const report = coChangeFromIndex(index, paths, { partners: paths, limit: paths.length * paths.length });
   const inFamily = new Set(paths);
   const links = report.pairs.filter(p => inFamily.has(p.path) && inFamily.has(p.partner) && p.score >= floor)
     .sort((a, b) => b.score - a.score);
@@ -229,6 +230,7 @@ export async function triageCloneFamilies(input: {
   const excluded: TriageExclusion[] = [];
   const diverged: DivergedHold[] = [];
   const eligible: (TriagedFamily & { area: string })[] = [];
+  let coChange: CoChangeIndex | null = null;
   const exclude = (family: TriageFamily, reason: TriageExclusionReason, detail: string) =>
     excluded.push({ familyId: family.id, reason, detail });
 
@@ -272,7 +274,10 @@ export async function triageCloneFamilies(input: {
     const paths = [...new Set(family.members.map(m => m.path))].sort();
     if (paths.length < 2) { exclude(family, 'single-file', 'all copies are in one file; file history cannot show whether they change together'); continue; }
     if (paths.length > MAX_FAMILY_FILES) { exclude(family, 'too-many-files', `${paths.length} files exceeds the ${MAX_FAMILY_FILES}-file co-change scope`); continue; }
-    const link = coChangeLink(paths, input.history, floor);
+    // The window is prepared once per triage run: each family only queries it.
+    coChange ??= buildCoChangeIndex({ commits: input.history.commits, end: input.history.end,
+      commit: input.history.commit, complete: input.history.complete });
+    const link = coChangeLink(paths, coChange, floor);
     if (link === null) {
       exclude(family, 'independent', `member files are not connected by co-change >= ${floor} in the 90-day window`);
       continue;
@@ -321,6 +326,54 @@ export async function triageFamilyFromRanked(row: RankedCloneFamily,
   }
   return { id: row.family.id, kind: row.family.kind, members, redundantMass: row.redundantMass,
     packageDistance: row.packageDistance, accepted: row.accepted };
+}
+
+/** Why a sweep-ranked family was not chosen for a campaign round. */
+export type RoundSelectionSkip = 'accepted' | 'derive-and-sync' | 'path-budget';
+export interface RoundFamilySelection {
+  chosen: RankedCloneFamily[];
+  memberPaths: string[];
+  skipped: Record<RoundSelectionSkip, number>;
+}
+
+/** The families one campaign round triages: in ranked order, consolidation candidates only,
+ * while their member files fit `pathLimit` (a bound on triage cost; coverage is bounded after
+ * triage by `boundCoveragePaths`, since only surviving families need it).
+ * An accepted family is an intentional copy. A derive-and-sync family has a vendored member
+ * (templates/, template-kit/, env-sidecars/) that a sync script derives from one canonical
+ * source: its fix is that derivation, never an extraction, and a round that took it would
+ * spend the path budget on files no batch may edit. */
+export function selectRoundFamilies(ranked: readonly RankedCloneFamily[], pathLimit: number): RoundFamilySelection {
+  if (!Number.isInteger(pathLimit) || pathLimit < 1) throw new Error('Round path limit must be a positive integer');
+  const chosen: RankedCloneFamily[] = [];
+  const paths = new Set<string>();
+  const skipped: Record<RoundSelectionSkip, number> = { accepted: 0, 'derive-and-sync': 0, 'path-budget': 0 };
+  for (const row of ranked) {
+    if (row.accepted) { skipped.accepted++; continue; }
+    if (row.disposition === 'derive-and-sync') { skipped['derive-and-sync']++; continue; }
+    const own = row.family.members.map(m => m.path);
+    if (new Set([...paths, ...own]).size > pathLimit) { skipped['path-budget']++; continue; }
+    chosen.push(row);
+    for (const path of own) paths.add(path);
+  }
+  return { chosen, memberPaths: [...paths].sort(), skipped };
+}
+
+/** The member paths a round reads coverage for, and the eligible families that did not fit.
+ * Only families that survive triage reach the aggressiveness selection, so only their members
+ * need coverage. Families are taken in batch order (highest score first, then each batch's own
+ * order) while their files fit `pathLimit` (readTestCoverage answers for at most 50 paths). A
+ * family left out is dropped from the round rather than read as uncovered. */
+export function boundCoveragePaths(batches: readonly TriageBatch[], pathLimit: number): { paths: string[]; dropped: string[] } {
+  if (!Number.isInteger(pathLimit) || pathLimit < 1) throw new Error('Coverage path limit must be a positive integer');
+  const paths = new Set<string>();
+  const dropped: string[] = [];
+  for (const batch of batches) for (const family of batch.families) {
+    const own = family.members.map(m => m.path);
+    if (new Set([...paths, ...own]).size > pathLimit) { dropped.push(family.id); continue; }
+    for (const path of own) paths.add(path);
+  }
+  return { paths: [...paths].sort(), dropped };
 }
 
 /** Production lookup: the issue-family row holding the diverged pair's condition key
