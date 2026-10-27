@@ -78,13 +78,22 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
     function start() {
       if (!pending) return; pending = false;
       if (${Boolean(failInitially)} && count === 1) {
-        if (${failInitially === 'active-tool'}) append({type:'response_item',payload:{type:'function_call',call_id:'unfinished',name:'exec_command'}});
-        append(agent === 'codex' ? {type:'event_msg',payload: ${failInitially === 'capacity'
-          ? JSON.stringify({type:'task_complete',turn_id:'capacity-turn',error:{codex_error_info:'server_overloaded',message:'Selected model is at capacity.'}})
-          : "{type:'turn_aborted'}"}} :
-          agent === 'claude' ? {type:'system',subtype:'api_error'} :
-          {type:'message',message:{role:'assistant',stopReason:'aborted',content:[]}});
-        process.stdout.write('NATIVE_FAILED\\n'); return;
+        // WI-6554700010030184: in capacity mode the child first leaves a status
+        // redraw with NO trailing newline, as a real TUI does, so the host's
+        // failure receipt must supply its own line break to stay line-anchored.
+        const capacity = ${failInitially === 'capacity'};
+        const fail = () => {
+          if (${failInitially === 'active-tool'}) append({type:'response_item',payload:{type:'function_call',call_id:'unfinished',name:'exec_command'}});
+          append(agent === 'codex' ? {type:'event_msg',payload: ${failInitially === 'capacity'
+            ? JSON.stringify({type:'task_complete',turn_id:'capacity-turn',error:{codex_error_info:'server_overloaded',message:'Selected model is at capacity.'}})
+            : "{type:'turn_aborted'}"}} :
+            agent === 'claude' ? {type:'system',subtype:'api_error'} :
+            {type:'message',message:{role:'assistant',stopReason:'aborted',content:[]}});
+          if (!capacity) process.stdout.write('NATIVE_FAILED\\n');
+        };
+        if (capacity) { process.stdout.write('NATIVE_FAILED · 2 warnings · f2 to view'); setTimeout(fail, 60); }
+        else fail();
+        return;
       }
       append(agent === 'codex' ? {type:'event_msg',payload:{type:'task_started'}} :
         agent === 'claude' ? {type:'assistant',message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'working'}]}} :
@@ -211,8 +220,15 @@ describe('cross-client native recovery handshake', () => {
         failure: { code: 'server_overloaded', retryable: true } });
       expect(f.output().match(/\[psu\] native-turn-failed/g)).toHaveLength(1);
       // WI-6554700010030184: the grading-audit detector line-anchors this receipt
-      // (its quote guard), so the host must start it on its own line.
-      expect(f.output()).toMatch(/\r\n\[psu\] native-turn-failed agent=codex code=server_overloaded /);
+      // (its quote guard), so the host must start it on its own line. The
+      // fixture's newline-less redraw must precede the receipt, or this
+      // assertion stops distinguishing a receipt that brings its own line break.
+      const capacityOutput = f.output();
+      expect(capacityOutput).toContain('NATIVE_FAILED · 2 warnings · f2 to view');
+      expect(capacityOutput.indexOf('f2 to view'), 'the newline-less redraw must precede the receipt')
+        .toBeLessThan(capacityOutput.indexOf('[psu] native-turn-failed'));
+      expect(capacityOutput).not.toMatch(/f2 to view\[psu\]/);
+      expect(capacityOutput).toMatch(/\r\n\[psu\] native-turn-failed agent=codex code=server_overloaded /);
       expect(readFileSync(f.normalizedLogPath, 'utf8')).toMatch(/(?:^|\n)\[psu\] native-turn-failed agent=codex code=server_overloaded /);
       // This explicit bounded wake exercises the same host/socket. There is no
       // routine, automatic retry, new child, model substitution, or new session.
