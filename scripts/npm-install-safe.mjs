@@ -959,10 +959,15 @@ export async function verifyDepsExtracted({
   }
   // The root lock owns every workspace's installed paths. A repair scoped to
   // the originally selected workspace cannot repair drift elsewhere in it.
-  const repairArgs = [
+  // The repair must keep the install's dev-dependency selection: a bare
+  // `npm install` under NODE_ENV=production prunes every devDependency, so a
+  // repair that dropped it deleted the very toolchain it was repairing
+  // (WI-6554700010029990).
+  const repairArgs = developmentInstallArgs(repoRoot, [
     ...REPAIR_ARGS,
     ...(first.lockTreeDefects.length > 0 || runtimeFindings.length > 0 ? [] : repairWorkspaceArgs),
-  ];
+    ...dependencySelectionArgs(npmArgs),
+  ]);
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
   );
@@ -1906,6 +1911,27 @@ export function developmentInstallArgs(repoRoot, npmArgs) {
         ["--production", "--no-production", "--dev"].includes(flag)) return npmArgs;
   }
   return [...npmArgs, "--include=dev"];
+}
+
+/** The dev-dependency selection flags of an npm command, verbatim and in order
+ * (`--include=dev`, `--omit dev`, `--production`, ...), so a follow-up reify can
+ * apply exactly the selection the original install used.
+ * @param {string[]} npmArgs
+ * @returns {string[]}
+ */
+export function dependencySelectionArgs(npmArgs) {
+  const selected = [];
+  for (let index = 1; index < npmArgs.length; index++) {
+    const token = npmArgs[index];
+    const [flag, inline] = token.split(/=(.*)/s);
+    if (["--production", "--no-production", "--dev"].includes(flag)) {
+      selected.push(token);
+    } else if (["--omit", "--include", "--only", "--also"].includes(flag)) {
+      if (inline !== undefined) selected.push(token);
+      else if (index + 1 < npmArgs.length) selected.push(token, npmArgs[++index]);
+    }
+  }
+  return selected;
 }
 
 /**

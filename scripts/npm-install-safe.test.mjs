@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   cacheVerifyArgs,
+  dependencySelectionArgs,
   installLockWaitReporter,
   lockfileDepFlagOnlyChanges,
   main,
@@ -1811,6 +1812,58 @@ test("verifyDepsExtracted passes the selected npm environment to bounded repairs
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+test("dependencySelectionArgs keeps every dev-selection form verbatim and nothing else", () => {
+  assert.deepEqual(
+    dependencySelectionArgs([
+      "install", "--include=dev", "--omit", "optional", "--production",
+      "--legacy-peer-deps", "--workspace=a", "--only=prod", "--also", "dev", "--no-production", "--dev",
+    ]),
+    ["--include=dev", "--omit", "optional", "--production", "--only=prod", "--also", "dev", "--no-production", "--dev"],
+  );
+  assert.deepEqual(dependencySelectionArgs(["install", "--legacy-peer-deps"]), []);
+});
+
+// WI-6554700010029990: the repair reify ran a bare `npm install --legacy-peer-deps`
+// under the caller's NODE_ENV=production env, so npm's default omit=dev deleted every
+// devDependency the main install had just restored.
+for (const [label, npmArgs, rootDevDependencies, expected] of [
+  ["carries the install's --include=dev", ["install", "--include=dev"], false,
+    ["install", "--legacy-peer-deps", "--include=dev"]],
+  ["keeps an explicit production selection", ["install", "--omit=dev"], true,
+    ["install", "--legacy-peer-deps", "--omit=dev"]],
+  ["includes dev for a dev checkout when no selection was passed", [], true,
+    ["install", "--legacy-peer-deps", "--include=dev"]],
+]) {
+  test(`verifyDepsExtracted repair ${label}`, async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-repair-dev-selection-"));
+    const workspace = join(repoRoot, "apps/operator");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+      workspaces: ["apps/operator"],
+      ...(rootDevDependencies ? { devDependencies: { "dev-tool": "^1" } } : {}),
+    }));
+    writeFileSync(join(workspace, "package.json"), JSON.stringify({ dependencies: { "was-missing": "^1" } }));
+    const calls = [];
+    try {
+      const status = await verifyDepsExtracted({
+        repoRoot,
+        npmArgs,
+        env: { PATH: "/bin", NODE_ENV: "production", PAPERCUSP_INSTALL_SAFE_ACTIVE: "1" },
+        runNpm: (args) => {
+          calls.push(args);
+          mkdirSync(join(repoRoot, "node_modules/was-missing"), { recursive: true });
+          return 0;
+        },
+        deps: { sleep: async () => {} },
+      });
+      assert.equal(status, 0);
+      assert.deepEqual(calls, [expected]);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 for (const inlinePrefix of [false, true]) {
   for (const installed of [false, true]) {
