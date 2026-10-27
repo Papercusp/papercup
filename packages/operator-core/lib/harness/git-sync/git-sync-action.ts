@@ -47,7 +47,7 @@ import {
   clearResourceWaiter,
   getTxPool,
   readResourceQueue,
-  releaseAllResourcesForOwner,
+  releaseOwnerResourcesScoped,
   tryAcquireResource,
   tryHeartbeatResource,
   tryReleaseResource,
@@ -1075,8 +1075,15 @@ async function releaseAll(
     // settled together, those teardown transactions contended with each other,
     // routinely outliving the 15s cleanup budget and keeping dev:restart's
     // exclusive barrier draining for its full 45s (EI-22047168222679674).
+    // EI-27114494366587753: the fire's owner token is private to this fire, so the
+    // names it holds are exactly `acquired`. Lock just those names (shared gate +
+    // per-resource keys) instead of the EXCLUSIVE workspace key, which serialized
+    // every agent's file-lock operation behind every git-sync teardown.
+    const names = acquired.map(({ resource }) => resource);
     const released = await acquireWithContentionRetry(() =>
-      inWorkspaceTxn(cd, owner, (tx) => releaseAllResourcesForOwner(tx, cd, owner)),
+      inWorkspaceTxn(cd, owner, (tx) => releaseOwnerResourcesScoped(tx, cd, owner, names), {
+        resources: names,
+      }),
     );
     // The bulk store release bypasses locks:release and its broadcast helper.
     // Emit only after the transaction has removed each exclusive row so a
@@ -1216,10 +1223,13 @@ async function reclaimOrphanedSelfSharedHolds(
   const { holders } = await readResourceQueue(tx, { coordinationDomain, resource });
   for (const holder of holders) {
     if (holder.mode !== 'shared' || !isOrphanedSelfOwner(holder.owner)) continue;
+    // The caller holds only this resource's key (acquireLocks): stay inside it.
     const released = await tryReleaseResource(tx, {
       coordinationDomain,
       owner: holder.owner,
       lockId: holder.lock_id,
+      resource,
+      scope: 'resource',
     }).catch(() => null);
     if (released && released.released > 0) {
       console.error(
@@ -1268,8 +1278,13 @@ async function acquireLocks(
             ownerLabel: `git-sync:${slug}`,
             reason: `auto-commit ${slug}`,
             ttlSec: LOCK_TTL_SEC,
+            scope: 'resource',
           });
-        }),
+          // EI-27114494366587753: every statement above touches only `resource`'s
+          // rows (and its own registry row), so hold that resource's key under the
+          // SHARED workspace gate rather than the exclusive workspace key. Measured
+          // 2026-10-24..27: the exclusive key took 444k calls at a 636 ms mean wait.
+        }, { resources: [resource] }),
       );
     let r: ResourceAcquireResult;
     try {
@@ -1310,8 +1325,18 @@ async function acquireLocks(
         // this can never touch a lease a concurrent fire here legitimately holds.
         for (const holder of r.holders ?? []) {
           if (holder.mode !== 'exclusive' || !isOrphanedSelfOwner(holder.owner)) continue;
-          const released = await inWorkspaceTxn(cd, owner, (tx) =>
-            tryReleaseResource(tx, { coordinationDomain: cd, owner: holder.owner, lockId: holder.lock_id }),
+          const released = await inWorkspaceTxn(
+            cd,
+            owner,
+            (tx) =>
+              tryReleaseResource(tx, {
+                coordinationDomain: cd,
+                owner: holder.owner,
+                lockId: holder.lock_id,
+                resource,
+                scope: 'resource',
+              }),
+            { resources: [resource] },
           ).catch(() => null);
           if (released && released.released > 0) {
             reclaimed = true;
@@ -1350,8 +1375,8 @@ async function acquireLocks(
             await clearQueuedGitSyncOwners(tx, cd, resource);
             await clearResourceExclusiveQueue(tx, cd, resource, owner);
             await clearResourceWaiter(tx, cd, resource, owner);
-            await tryReleaseResource(tx, { coordinationDomain: cd, owner, resource });
-          }),
+            await tryReleaseResource(tx, { coordinationDomain: cd, owner, resource, scope: 'resource' });
+          }, { resources: [resource] }),
         );
       } catch (error) {
         console.error(

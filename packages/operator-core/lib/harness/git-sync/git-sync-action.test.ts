@@ -131,6 +131,7 @@ const releaseAllResourcesForOwnerMock = vi.fn(
 );
 const heldResourcesByOwner = new Map<string, string[]>();
 const releaseTrace: Array<{ owner: string; resource: string }> = [];
+const releaseOwnerResourcesScopedNames: string[][] = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
   holders: [] as Array<Record<string, unknown>>,
   draining: false,
@@ -178,6 +179,21 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
     heldResourcesByOwner.delete(owner);
     return result;
   },
+  // EI-27114494366587753: the fire's teardown now names its lock set and runs under
+  // resource scope. Same bookkeeping as the bulk form, confined to those names.
+  releaseOwnerResourcesScoped: async (...a: unknown[]) => {
+    const owner = a[2] as string;
+    const names = a[3] as string[];
+    releaseOwnerResourcesScopedNames.push([...names]);
+    const held = heldResourcesByOwner.get(owner) ?? [];
+    const result = await releaseAllResourcesForOwnerMock(a[0], a[1] as string, owner);
+    const freed = held.filter((resource) => names.includes(resource));
+    releaseTrace.push(...[...freed].reverse().map((resource) => ({ owner, resource })));
+    const kept = held.filter((resource) => !names.includes(resource));
+    if (kept.length > 0) heldResourcesByOwner.set(owner, kept);
+    else heldResourcesByOwner.delete(owner);
+    return result;
+  },
   readResourceQueue: (...a: unknown[]) => readResourceQueueMock(a[0], a[1] as Record<string, unknown>),
   clearResourceExclusiveQueue: (...a: unknown[]) =>
     clearResourceExclusiveQueueMock(a[0], a[1] as string, a[2] as string, a[3] as string),
@@ -209,7 +225,11 @@ const recordingTx: FakeTx = (strings, ...values) => {
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
 const lockReadPool: FakeTx = () => Promise.resolve([]);
-const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string; options?: { leaseRenewal?: boolean } }> = [];
+const workspaceTxnCalls: Array<{
+  coordinationDomain: string;
+  owner: string;
+  options?: { leaseRenewal?: boolean; resources?: readonly string[] };
+}> = [];
 let workspaceTxnFailure: Error | null = null;
 // EI-22078335832051825: the session half of the dead-holder reclaim. Mocked so
 // no test here reaches the presence store / liveness oracle; the adapter's own
@@ -1099,6 +1119,7 @@ beforeEach(() => {
   clearResourceExclusiveQueueMock.mockResolvedValue(undefined);
   clearResourceWaiterMock.mockReset();
   clearResourceWaiterMock.mockResolvedValue(undefined);
+  releaseOwnerResourcesScopedNames.length = 0;
   liveLockHoldingsMock.mockReset();
   liveLockHoldingsMock.mockResolvedValue([]);
   liveLockHoldingsStrictMock.mockReset();
@@ -3452,6 +3473,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       const initialResources = ['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule'];
       expect(acquiredResources()).toEqual(initialResources);
       const initialOwner = (tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner;
+      // EI-27114494366587753: each acquire holds only ITS resource's key (shared
+      // workspace gate + per-resource key), never the exclusive workspace key that
+      // serialized every agent's file-lock op behind git-sync.
+      expect(workspaceTxnCalls.slice(0, 3).map((call) => call.options)).toEqual(
+        initialResources.map((resource) => ({ resources: [resource] })),
+      );
+      expect(
+        tryAcquireResourceMock.mock.calls.slice(0, 3).map(([, opts]) => (opts as { scope?: string }).scope),
+      ).toEqual(['resource', 'resource', 'resource']);
 
       const heartbeatTimer = timers.find((timer) => timer.ms === 60_000);
       expect(heartbeatTimer).toBeDefined();
@@ -3471,6 +3501,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(releasedResources()).toEqual([...initialResources].reverse());
       // Primary cleanup plus the settlement barrier's acquire/release transactions.
       expect(workspaceTxnCalls).toHaveLength(7);
+      // The teardown names exactly the fire's lock set and locks only those names.
+      expect(releaseOwnerResourcesScopedNames[0]).toEqual(initialResources);
+      expect(workspaceTxnCalls[4]?.options).toEqual({ resources: initialResources });
 
       const callsAfterRelease = tryHeartbeatResourceMock.mock.calls.length;
       expect(heartbeatTimer!.stopped).toBe(true);
