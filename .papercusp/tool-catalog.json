@@ -33673,7 +33673,7 @@
           "POST"
         ]
       },
-      "description": "Execute a registered native operational check and record it in test_runs with before/after runtime witnesses, so a live-plane binding can read environment-current. consultReceiptMatrix:{evidenceFile} re-verifies a committed get-feedback receipt matrix against the operator database in one read-only snapshot.",
+      "description": "Execute a registered native operational check and record it in test_runs with before/after runtime witnesses, so a live-plane binding can read environment-current. Pass exactly one arm. consultReceiptMatrix:{evidenceFile} re-verifies a committed get-feedback receipt matrix against the operator database in one read-only snapshot; gateRepairPlane:{reading} takes a gate-repair-plane R-6/R-7 live reading.",
       "capabilities": [
         "testing:run"
       ],
