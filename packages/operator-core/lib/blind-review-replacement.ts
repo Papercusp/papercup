@@ -10,7 +10,8 @@ import { blindReviewCompletion, loadBlindReviewBrief } from './blind-review-gate
 import { briefTurnCount } from './blind-review-brief';
 import { validProductReadBoundary, type ProductReadBoundary, type SessionToolConfinement } from './capability-envelope/session-confinement';
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
-import { blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, type BlindReviewerProductReads } from './blind-reviewer-mint';
+import { blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, defaultKnownToolNames,
+  howToRunOutsideCeilingMessage, howToRunToolsOutsideCeiling, type BlindReviewerProductReads } from './blind-reviewer-mint';
 import { BLIND_GAP_REVIEW_ACTOR, createBlindReviewSessionBinding, recordBlindReviewSessionPost } from './blind-review-session-bindings';
 import { TERMINAL_TASK_STATES } from './task-manager/types';
 
@@ -41,6 +42,8 @@ export type BlindReviewReplacementDeps = {
   bind?: typeof createBlindReviewSessionBinding;
   /** Live psu host for an owner, or null. Injected in tests (EI-27120731037609627). */
   liveHost?: (ownerId: string, workspaceId: string) => Promise<unknown>;
+  /** Registered tool names for the howToRun ceiling check (EI-27120299877087815). */
+  knownTools?: () => Promise<ReadonlySet<string>>;
 };
 
 async function defaultLiveHost(ownerId: string, workspaceId: string): Promise<unknown> {
@@ -185,6 +188,8 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
       slug: input.slug, activation: input.activationAuditSeq, sourceReviewId: input.sourceReviewId, reads, howToRun })).digest('hex');
     const scratch = { scratchPrefix: blindReviewScratchPrefix(), reviewedSlug: input.slug, harness: input.harness };
     const confinement = blindReviewerConfinement(input.slug, reads, scratch);
+    const refusedTools = howToRunToolsOutsideCeiling(howToRun, confinement, await (deps.knownTools ?? defaultKnownToolNames)());
+    if (refusedTools.length > 0) refuse('how_to_run_outside_ceiling', howToRunOutsideCeilingMessage(refusedTools, confinement));
     const kickoff = buildBlindReviewerKickoff(brief, howToRun, reads, scratch);
 
     // The plan, source binding, material and native writer are locked before eligibility

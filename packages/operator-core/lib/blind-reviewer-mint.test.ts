@@ -479,9 +479,29 @@ describe('mintBlindGapReviewer', () => {
     }));
     const acquireSessionResume = vi.fn(async () => ({ ok: true as const, binding: { ...binding, status: 'resuming' as const, resumeLeaseId: 'lease-1' }, leaseId: 'lease-1' }));
     const releaseSessionResume = vi.fn(async () => true);
+    const knownTools = async () => new Set(['capability:bash', 'testing:run', 'work_items:create', 'coord:send', 'events:emit']);
     return { handler, loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume,
-      deps: { loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume } };
+      deps: { loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume, knownTools } };
   }
+
+  // EI-27120299877087815: review #109 was told to call tools its ceiling refuses.
+  it('refuses a howToRun naming a registered tool outside the ceiling before launching', async () => {
+    const d = deps();
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      howToRun: 'Create a scratch item with work_items:create, then do not call coord:send.', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'how_to_run_outside_ceiling', refusedTools: ['coord:send', 'work_items:create'] });
+    expect(result.ok === false && result.message).toContain('capability:bash');
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.handler).not.toHaveBeenCalled();
+  });
+
+  it('launches a howToRun naming only admitted tools and unregistered event keys', async () => {
+    const d = deps();
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      howToRun: 'Use capability:bash; a park on work-item:done:WI-1 or events:custom-thing must clear.', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    expect(d.handler).toHaveBeenCalledTimes(1);
+  });
 
   it('attaches the nominated product read boundary before launch and supplies executable read hints', async () => {
     const d = deps();

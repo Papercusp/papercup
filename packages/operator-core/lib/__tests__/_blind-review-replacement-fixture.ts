@@ -89,6 +89,7 @@ export function replacementFixture(repoRoot: string, testFile: string) {
     loadBrief: async () => ({ planSlug: input.slug, activationAuditSeq: 5, ownerTurns: [{ ref: 'owner:1', text: 'Use product' }], unverifiedTurns: [], excludedRefs: [], text: 'Use product' }),
     repoRoot: async () => repoRoot, resolveImplementers: async () => ['su-author'], authorIdentity: async (_author, caller) => caller === 'su-author',
     lineageRelated: async () => false, bind, liveHost: async () => state.liveHost,
+    knownTools: async () => new Set(['testing:run', 'testing:run-status', 'capability:bash', 'work_items:create', 'coord:send']),
     launcher: async () => ({ handler: launch, confinementKey: key }) };
   const run = (patch: Partial<BlindReviewReplacementInput> = {}) => replaceBlindGapReviewer({ ...input, ...patch }, deps);
   return { input, deps, state, run, launch, bind, launchSummary, key, sql, actor: BLIND_GAP_REVIEW_ACTOR };

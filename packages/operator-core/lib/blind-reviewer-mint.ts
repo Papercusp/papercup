@@ -100,6 +100,42 @@ export function blindReviewerConfinement(slug: string, productReads?: ProductRea
   });
 }
 
+/**
+ * Registered tools a howToRun names that the reviewer's ceiling refuses (EI-27120299877087815).
+ * A reviewer told to call one spends its review on capability_denied and posts inconclusive
+ * (#109; #53 recorded the same setup error). Only names in the live catalog count, so event
+ * keys such as work-item:done:<id> pass. Same token grammar as tools:find's exactToolNamesInQuery.
+ */
+export function howToRunToolsOutsideCeiling(howToRun: string | null | undefined,
+  confinement: SessionToolConfinement, knownTools: ReadonlySet<string>): string[] {
+  const text = howToRun?.trim();
+  if (!text || !confinement.denyOutside) return [];
+  const admitted = new Set(confinement.denyOutside);
+  const refused = new Set<string>();
+  for (const match of text.matchAll(/(?:^|[^a-z0-9_.-])([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)(?=$|[^a-z0-9_-])/gi)) {
+    const name = match[1].toLowerCase();
+    if (knownTools.has(name) && !admitted.has(name)) refused.add(name);
+  }
+  return [...refused].sort();
+}
+
+export function howToRunOutsideCeilingMessage(refused: readonly string[], confinement: SessionToolConfinement): string {
+  return `howToRun names ${refused.join(', ')}, which this reviewer's tool ceiling refuses; the reviewer ` +
+    'would spend its review on capability_denied. Remove every such name, including from "do not call" ' +
+    `clauses, and describe the work in terms of the admitted tools: ${[...(confinement.denyOutside ?? [])].join(', ')}.`;
+}
+
+/** The live projected tool catalog, lower-cased. Empty when the catalog is not loaded. */
+export async function defaultKnownToolNames(): Promise<ReadonlySet<string>> {
+  const { listAllProjectedTools } = await import('@papercusp/agent-mcp');
+  const names = new Set<string>();
+  for (const tool of listAllProjectedTools()) {
+    const name = tool.expose?.mcp?.name;
+    if (name) names.add(name.toLowerCase());
+  }
+  return names;
+}
+
 export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: string | null, productReads?: ProductReadBoundary,
   scratchPlans?: ScratchPlanBoundary): string {
   const run = howToRun?.trim()
@@ -156,11 +192,14 @@ export interface MintBlindGapReviewerDeps {
   createSessionBinding?: typeof createBlindReviewSessionBinding;
   acquireSessionResume?: typeof acquireBlindReviewSessionResume;
   releaseSessionResume?: typeof releaseBlindReviewSessionResume;
+  /** Registered tool names for the howToRun ceiling check; injected in tests. */
+  knownTools?: () => Promise<ReadonlySet<string>>;
 }
 
 export type MintBlindGapReviewerResult =
   | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null; binding: BlindReviewSessionBinding | null }
-  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_source_turns' | 'invalid_product_reads' | 'session_binding_failed'; message: string };
+  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_source_turns' | 'invalid_product_reads'
+      | 'how_to_run_outside_ceiling' | 'session_binding_failed'; message: string; refusedTools?: string[] };
 
 async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementKey: symbol }> {
   const mod = await import('./agent-tools/capability/launch-agent');
@@ -203,6 +242,13 @@ export async function mintBlindGapReviewer(
   const scratchCandidate: ScratchPlanBoundary = { scratchPrefix: blindReviewScratchPrefix(),
     reviewedSlug: input.slug, harness: input.harness };
   const scratchPlans = validScratchPlanBoundary(scratchCandidate) ? scratchCandidate : undefined;
+  const confinement = blindReviewerConfinement(input.slug, productReads, scratchPlans);
+  const refusedTools = howToRunToolsOutsideCeiling(input.howToRun, confinement,
+    await (deps.knownTools ?? defaultKnownToolNames)());
+  if (refusedTools.length > 0) {
+    return { ok: false, code: 'how_to_run_outside_ceiling', refusedTools,
+      message: howToRunOutsideCeilingMessage(refusedTools, confinement) };
+  }
   const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
   const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
   // A SYSTEM effect, not the caller's personal launch: the reviewer must descend from this
