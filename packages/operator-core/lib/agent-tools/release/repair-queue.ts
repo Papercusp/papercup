@@ -42,6 +42,7 @@ import {
   type FrozenCandidateRepairQueueRead,
   type FrozenRepairAdmission,
   type FrozenRepairAdmissionPrecheck,
+  FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX,
 } from '../../release/frozen-candidate-repair-queue';
 import {
   parseFrozenRepairEditHunk,
@@ -1936,7 +1937,7 @@ export default defineTool({
             ? matchingPrecheck : undefined;
           const operationId =
             resume?.operationId ??
-            `repair-precheck-${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
+            `${FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX}${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
             `${startedAtMs.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
           const freshOperation: FrozenRepairAdmissionPrecheck = {
             schemaVersion: 1,

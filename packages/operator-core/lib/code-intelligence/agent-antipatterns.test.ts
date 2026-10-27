@@ -11,7 +11,7 @@ vi.mock('@papercusp/host-platform/home', async original => {
   return { ...actual, papercuspPath: (...parts: string[]) => join(homedir(), '.papercusp', ...parts) };
 });
 import { AGENT_ANTIPATTERN_RULES, agentAntipatterns, antipatternHash } from './agent-antipatterns';
-import { codeIntelPushText, formatPushFact, snapshotAntipatternLeg, type PushInput } from './push-channel';
+import { codeIntelPushText, formatPushFact, snapshotAntipatternLeg, type PushFact, type PushInput } from './push-channel';
 import { parsePushSnapshot } from './push-snapshot';
 import structuralTool from '../agent-tools/lsp/astgrep';
 import { collectAntipatternEdits } from '../../../../apps/operator/scripts/hooks/inject/core.mjs';
@@ -103,7 +103,7 @@ describe('R8 bounded advisory delivery', () => {
     await expect(collectAntipatternEdits(body, async () => { throw new Error('parser unavailable'); })).resolves.toBeUndefined();
   });
   it('uses the existing push commit/issued boundary; no-match never commits', async () => {
-    const commit = vi.fn(async (_input, _snapshot, facts) => facts.map(fact => fact.text).join('\n'));
+    const commit = vi.fn(async (_input, _snapshot, facts) => facts.map((fact: PushFact) => fact.text).join('\n'));
     const deps = { snapshot: async () => snapshot(), enabled: async () => true,
       legs: () => new Map([['antipattern' as const, snapshotAntipatternLeg]]), commit };
     // Source corroboration deliberately fails for a missing root, withholding stale evidence.
@@ -116,7 +116,7 @@ describe('R8 bounded advisory delivery', () => {
     const root = await mkdtemp(join(tmpdir(), 'agent-antipatterns-'));
     const source = 'const x = input as any;';
     await writeFile(join(root, 'file.ts'), source);
-    const commit = vi.fn(async (_input, _snapshot, facts) => facts.map(fact => formatPushFact(fact, _snapshot)).join('\n'));
+    const commit = vi.fn(async (_input, _snapshot, facts) => facts.map((fact: PushFact) => formatPushFact(fact, _snapshot)).join('\n'));
     const deps = { snapshot: async () => snapshot(), enabled: async () => true,
       legs: () => new Map([['antipattern' as const, snapshotAntipatternLeg]]), commit };
     const measured = { ...input(), root, calls: [{ tool: 'Edit', antipatternEdits: [{ ...edit, sha256: antipatternHash(source) }] }] };

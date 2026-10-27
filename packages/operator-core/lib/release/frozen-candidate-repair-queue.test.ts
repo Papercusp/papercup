@@ -37,6 +37,7 @@ import {
   parseFrozenRepairConvergence,
   assessFrozenRepairConvergence,
   FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX,
   projectFrozenRepairConvergenceCell,
   projectFrozenRepairConvergenceScope,
   frozenRepairAdmissionHandoffBlock,
@@ -2805,6 +2806,61 @@ describe('WI-6554700010019177 — frozenRepairAdmissionHandoffBlock mirrors the 
       transactionAttemptId: null,
       detail: expect.stringContaining('no qualification transaction is stored'),
     });
+  });
+});
+
+describe('orphaned admission pre-check reservation (measured 2026-10-27)', () => {
+  const op = `${FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX}${C.slice(0, 12)}-${C1.slice(0, 12)}-a1-b2`;
+  const marker = (operationId: string) => ({
+    schemaVersion: 1,
+    operationId,
+    status: 'running',
+    candidate: C,
+    repairHead: C,
+    builtCommit: C1,
+    builtTree: C2,
+    testEnvironment: 'pinned-private-pg-v1',
+    files: ['lib/a.test.ts'],
+    actor: 'su-test',
+    runnerPid: 123,
+    runnerPidIdentity: 'boot-id:456',
+    startedAtMs: T0 + 1,
+    updatedAtMs: T0 + 1,
+    expiresAtMs: T0 + 90_000_000,
+    currentFile: 'lib/a.test.ts',
+    completedCount: 0,
+    totalCount: 1,
+    heartbeatAtMs: T0 + 1,
+  });
+  const reservation = (token: string) => ({ token, claimedAtMs: T0 + 1, expiresAtMs: T0 + 90_000_000 });
+  const parse = (extra: Record<string, unknown>) =>
+    parseFrozenCandidateRepairQueue({ ...JSON.parse(JSON.stringify(fresh())), ...extra });
+
+  it('keeps a pre-check reservation while its marker names the same operation', () => {
+    const parsed = parse({ admissionPrecheck: marker(op), dispatchReservation: reservation(op) });
+    expect(parsed?.dispatchReservation?.token).toBe(op);
+    expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 })?.decision).toBe(
+      'wait-for-dispatch-reservation',
+    );
+  });
+
+  it('reads a pre-check reservation as absent when its marker is gone or names another operation', () => {
+    for (const admissionPrecheck of [undefined, marker(`${op}-other`)]) {
+      const parsed = parse({
+        ...(admissionPrecheck ? { admissionPrecheck } : {}),
+        dispatchReservation: reservation(op),
+      });
+      expect(parsed, JSON.stringify(admissionPrecheck ?? null)).not.toBeNull();
+      expect(parsed?.dispatchReservation).toBeUndefined();
+      expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 })?.decision).not.toBe(
+        'wait-for-dispatch-reservation',
+      );
+    }
+  });
+
+  it('never treats a fixer-dispatch reservation as a pre-check orphan', () => {
+    const parsed = parse({ dispatchReservation: reservation('tok-1') });
+    expect(parsed?.dispatchReservation?.token).toBe('tok-1');
   });
 });
 

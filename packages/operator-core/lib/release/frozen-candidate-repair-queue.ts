@@ -424,6 +424,14 @@ export function frozenRepairAgeEscalationRung(
 export const FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS = 5 * 60 * 1_000;
 
 /**
+ * Token prefix of the dispatch reservation an admission pre-check holds. The pre-check writes
+ * its marker and this reservation in ONE queue write (agent-tools/release/repair-queue.ts),
+ * and its worker drops the reservation when it settles, so a reservation with this prefix and
+ * no marker of the same operationId is an orphan (see parseFrozenCandidateRepairQueue).
+ */
+export const FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX = 'repair-precheck-';
+
+/**
  * A freshly-created queue can legitimately spend a short interval at zero attempts while the
  * checkpoint moves from the red verdict to dispatch. Past this bound, zero attempts means no
  * fixer ever started — categorically different from a fixer that ran and failed.
@@ -2479,6 +2487,15 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (dispatchReservation === null) return null;
   const fixerDispatchReceipt = parseFixerDispatchReceipt(row.fixerDispatchReceipt);
   const admissionPrecheck = parseAdmissionPrecheck(row.admissionPrecheck);
+  // A pre-check reservation whose marker is gone guards nothing. Measured 2026-10-27: a reader
+  // that could not parse the marker wrote the queue back without it, and the orphaned
+  // reservation held fixer dispatch and resume behind a ~25h pre-check deadline. Read it as
+  // absent; the next queue write then drops it.
+  const liveDispatchReservation =
+    dispatchReservation?.token.startsWith(FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX) &&
+    admissionPrecheck?.operationId !== dispatchReservation.token
+      ? undefined
+      : dispatchReservation;
   if (!Array.isArray(row.failingTests) || !row.failingTests.every((v) => typeof v === 'string')) {
     return null;
   }
@@ -2575,7 +2592,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     fixerSpawnId: row.fixerSpawnId as string | null,
     ...(blockedReason ? { blockedReason } : {}),
     ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
-    ...(dispatchReservation ? { dispatchReservation } : {}),
+    ...(liveDispatchReservation ? { dispatchReservation: liveDispatchReservation } : {}),
     ...(fixerDispatchReceipt ? { fixerDispatchReceipt } : {}),
     ...(admissionPrecheck ? { admissionPrecheck } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
