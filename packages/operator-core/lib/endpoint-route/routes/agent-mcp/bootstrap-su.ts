@@ -3924,12 +3924,20 @@ const sessionRespawned = defineTool({
     let advSessionId: number | null = null;
     let coordOwnerId: string | null = null;
     let sessionId: string | null = null;
+    // WI-6554700010030031: present only on an in-place context-reset report — the
+    // launch id of the SAME child, kept as an accepted alias of the rotated id.
+    let childLaunchSessionId: string | null = null;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
         coordOwnerId?: unknown;
         sessionId?: unknown;
+        childLaunchSessionId?: unknown;
       };
+      if (typeof body.childLaunchSessionId === 'string'
+        && NATIVE_SESSION_ID_RE.test(body.childLaunchSessionId.trim())) {
+        childLaunchSessionId = body.childLaunchSessionId.trim();
+      }
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
@@ -3952,7 +3960,7 @@ const sessionRespawned = defineTool({
       let reanchored = false;
       let owner: string | null = null;
       if (advSessionId != null && advSessionId > 0) {
-        ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId));
+        ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId, { childLaunchSessionId }));
       }
       // Owner-keyed fallback is reserved for legacy reports that genuinely carry
       // no adv id. A supplied id that touches no row is NOT permission to choose

@@ -1849,8 +1849,18 @@ async function recordReanchorSpan(
 export async function reanchorAdvSessionNativeId(
   id: number,
   sessionId: string,
+  opts: { childLaunchSessionId?: string | null } = {},
 ): Promise<{ reanchored: boolean; owner: string | null }> {
   if (!sessionId) return { reanchored: false, owner: null };
+  // WI-6554700010030031: an in-place context reset (`/clear`) rotates the native
+  // id INSIDE the same child process, whose MCP header and inherited shells keep
+  // presenting PAPERCUSP_NATIVE_SESSION_ID — the id that child was LAUNCHED with,
+  // immutable in a running process. Only the reset path reports that launch id;
+  // it becomes an accepted alias (classifyOwnerNativeSessionRows). Every other
+  // report (a new process: recycle / carry-respawn / legacy hosts) clears it, so a
+  // killed predecessor's id can never classify as bound for this row.
+  const childLaunch = opts.childLaunchSessionId?.trim() || null;
+  const childLaunchAlias = childLaunch && childLaunch !== sessionId ? childLaunch : null;
   try {
     const { sql } = getOrgPg();
     // ⚠ `RETURNING coord_owner_id` — there is NO `owner` column on adv_sessions.
@@ -1866,7 +1876,8 @@ export async function reanchorAdvSessionNativeId(
         UPDATE harness_shared.adv_sessions
            SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
                ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
-               resume_claim_key = NULL, resume_claimed_at = NULL
+               resume_claim_key = NULL, resume_claimed_at = NULL,
+               child_launch_session_id = ${childLaunchAlias}
          WHERE id = ${id} AND retired_at IS NULL
            AND session_id IS DISTINCT FROM ${sessionId}
         RETURNING id, coord_owner_id AS owner, workspace_id
@@ -2003,6 +2014,8 @@ export type NativeSessionVerificationPhase =
 export interface OwnerNativeSessionRow {
   id: number;
   session_id: string | null;
+  /** Launch id of the row's current child after an in-place context reset (WI-6554700010030031). */
+  child_launch_session_id?: string | null;
   active: boolean;
 }
 
@@ -2026,7 +2039,12 @@ export function classifyOwnerNativeSessionRows(
 ): { binding: OwnerNativeSessionBinding; boundSessionId: string | null; advSessionId: number | null } {
   const active = rows.filter((r) => r.active);
   const candidates = active.length > 0 ? active : rows.slice(0, 1);
-  const match = candidates.find((r) => r.session_id?.trim() === sessionId);
+  // WI-6554700010030031: the same child process presents its LAUNCH id (MCP
+  // header, inherited PAPERCUSP_NATIVE_SESSION_ID) after a context reset rotated
+  // session_id. Only an ACTIVE row's alias counts — an ended row's child is gone.
+  const match = candidates.find((r) =>
+    r.session_id?.trim() === sessionId ||
+    (r.active && r.child_launch_session_id?.trim() === sessionId));
   if (match) return { binding: 'bound', boundSessionId: sessionId, advSessionId: Number(match.id) };
   const bound = candidates.find((r) => r.session_id?.trim());
   if (!bound) {
@@ -2150,7 +2168,7 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       if (advSessionId != null) {
         phase = 'owner_row_lookup_by_id';
         rows = await traceNamedQueryStage('native-session-verifier-owner-row-lookup', () => sql<OwnerNativeSessionRow[]>`
-          SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+          SELECT id, session_id, child_launch_session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
             FROM harness_shared.adv_sessions
            WHERE id = ${advSessionId} AND coord_owner_id = ${opts.ownerId}
         `);
@@ -2160,7 +2178,7 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       } else {
         phase = 'owner_candidate_rows_lookup';
         rows = await traceNamedQueryStage('native-session-verifier-owner-candidate-rows-lookup', () => sql<OwnerNativeSessionRow[]>`
-          SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+          SELECT id, session_id, child_launch_session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
             FROM harness_shared.adv_sessions
            WHERE coord_owner_id = ${opts.ownerId}
            ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
