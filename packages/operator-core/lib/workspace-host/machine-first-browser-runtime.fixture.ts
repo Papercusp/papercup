@@ -17,10 +17,10 @@ import { createServer as httpsServer } from 'node:https';
 import { chmod, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { openSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { serve } from '@hono/node-server';
 
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const repo = moduleRepoRoot(import.meta.url);
 const control = process.env.PAPERCUSP_WORKSPACE_ID ?? '';
 const admin = new URL(process.env.HARNESS_ADMIN_DATABASE_URL ?? 'file:missing');
 const appDb = new URL(process.env.HARNESS_DATABASE_URL ?? 'file:missing');

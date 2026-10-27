@@ -4,7 +4,7 @@ import Module, { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { writeStdoutSync } from '../../../scripts/lib/write-stdout-sync.mjs';
 import { parseArgs } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 import { prepareDesktopPortalHostBundle } from './desktop-portal-host-bundle.ts';
 import { createDesktopPortalHost } from './desktop-portal-host.ts';
 
@@ -13,7 +13,7 @@ const { values } = parseArgs({ options: {
   'compile-only': { type: 'boolean', default: false },
 } });
 if (!values['portal-root']) throw new Error('--portal-root must name the maintained portal checkout');
-const papercuspRoot = values['papercusp-root'] ?? fileURLToPath(new URL('../../../', import.meta.url));
+const papercuspRoot = values['papercusp-root'] ?? moduleRepoRoot(import.meta.url);
 const result = await prepareDesktopPortalHostBundle({
   portalRoot: values['portal-root'], papercuspRoot,
   outputFile: resolve(values['portal-root'], 'desktop-portal-memory-only.cjs'),
