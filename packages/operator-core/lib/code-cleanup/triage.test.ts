@@ -6,12 +6,17 @@
  * second, and creates no merge batch for the third until a bug naming both
  * locations is terminal.
  */
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import type { HistoryCommit } from '../code-intelligence/change-history';
 import {
-  TRIAGE_BATCH_FAMILY_CAP, boundCoveragePaths, compareCopies, divergedCopyConditionKey, familyChurn, selectRoundFamilies, triageCloneFamilies,
-  triageFamilyFromRanked, triageScore,
-  type DivergenceBug, type TriageFamily, type TriageHistory,
+  TRIAGE_BATCH_FAMILY_CAP, boundCoveragePaths, compareCopies, divergedCopyConditionKey, familyChurn, memberCoChangeLink,
+  nativeMemberHistory, selectRoundFamilies, triageCloneFamilies, triageFamilyFromRanked, triageScore,
+  type DivergenceBug, type MemberHistoryLookup, type TriageFamily, type TriageHistory, type TriageMember,
 } from './triage';
 
 const END = '2026-10-01T00:00:00.000Z';
@@ -114,7 +119,7 @@ describe('triageCloneFamilies (P-005, R-5)', () => {
   it('records the co-change evidence and the rank inputs on a batched family', async () => {
     const result = await triageCloneFamilies({ families: [coChanging], history: history(), divergenceBug: bugs('missing').lookup });
     const family = result.batches[0]!.families[0]!;
-    expect(family.coChange).toEqual({ minLinkScore: 1, files: 2 });
+    expect(family.coChange).toEqual({ minLinkScore: 1, files: 2, basis: 'file' });
     expect(family.churn).toBe(5);
     expect(family.score).toBe(triageScore({ redundantMass: 120, churn: 5, packageDistance: 0 }));
     expect(result.batches[0]!.area).toBe('packages/alpha/src/orders');
@@ -177,6 +182,150 @@ describe('triage co-change scope (P-009)', () => {
   });
 });
 
+describe('member-level co-change (D-022)', () => {
+  /** A fake member history: commit shas per member id; null = unmeasured, absent = not returned. */
+  const lookup = (bySha: Record<string, string[] | null>) => {
+    const calls: { ids: string[]; window: { start: string; end: string } }[] = [];
+    const fn: MemberHistoryLookup = async (members, window) => {
+      calls.push({ ids: members.map(m => m.id), window });
+      const out = new Map<string, ReadonlySet<string> | null>();
+      for (const m of members) if (m.id in bySha) out.set(m.id, bySha[m.id] === null ? null : new Set(bySha[m.id]));
+      return out;
+    };
+    return { calls, fn };
+  };
+  const single: TriageFamily = { id: 'family-single', kind: 'exact', redundantMass: 50, packageDistance: 0,
+    members: [member(A1, 'first', 1), member(A1, 'second', 90)] };
+  const run = (families: TriageFamily[], memberHistory?: MemberHistoryLookup) =>
+    triageCloneFamilies({ families, history: history(), divergenceBug: bugs('missing').lookup, ...(memberHistory ? { memberHistory } : {}) });
+
+  it('batches a single-file family whose member functions change together, on the member basis', async () => {
+    // Jaccard {s1,s2,s3} vs {s1,s2,s4} = 2/4.
+    const { calls, fn } = lookup({ [`${A1}:1`]: ['s1', 's2', 's3'], [`${A1}:90`]: ['s1', 's2', 's4'] });
+    const result = await run([single], fn);
+    expect(result.excluded).toEqual([]);
+    expect(result.batches.flatMap(b => b.families)).toMatchObject([{ id: 'family-single', churn: 4,
+      coChange: { minLinkScore: 0.5, files: 1, basis: 'member' } }]);
+    expect(calls).toEqual([{ ids: [`${A1}:1`, `${A1}:90`],
+      window: { start: new Date(Date.parse(END) - 90 * 86_400_000).toISOString(), end: END } }]);
+  });
+
+  it('keeps the single-file exclusion when the member functions change apart', async () => {
+    const result = await run([single], lookup({ [`${A1}:1`]: ['s1', 's2'], [`${A1}:90`]: ['s3'] }).fn);
+    expect(result.batches).toEqual([]);
+    expect(result.excluded).toEqual([{ familyId: 'family-single', reason: 'single-file',
+      detail: expect.stringMatching(/member functions are not connected by co-change >= 0\.25/) }]);
+  });
+
+  it('admits a family that file history calls independent when its member functions change together', async () => {
+    const result = await run([independent], lookup({ [`${B1}:10`]: ['x1', 'x2'], [`${B2}:10`]: ['x1', 'x2'] }).fn);
+    expect(result.excluded).toEqual([]);
+    expect(result.batches.flatMap(b => b.families)).toMatchObject([{ id: 'family-independent',
+      coChange: { minLinkScore: 1, files: 2, basis: 'member' } }]);
+  });
+
+  it('fails closed: a null or missing member set keeps the original exclusion, in family order', async () => {
+    const accepted: TriageFamily = { ...coChanging, id: 'family-accepted', accepted: true };
+    const result = await run([independent, single, accepted], lookup({ [`${B1}:10`]: null, [`${B2}:10`]: ['x1'],
+      [`${A1}:1`]: ['s1'] }).fn);
+    expect(result.batches).toEqual([]);
+    expect(result.excluded.map(e => [e.familyId, e.reason])).toEqual([
+      ['family-accepted', 'accepted'], ['family-independent', 'independent'], ['family-single', 'single-file']]);
+    expect(result.excluded[1]!.detail).toMatch(new RegExp(`member history unmeasured for ${B1}#clampPoint$`));
+    expect(result.excluded[2]!.detail).toMatch(new RegExp(`member history unmeasured for ${A1}#second$`));
+  });
+
+  it('requires every member function to be connected, not one lucky pair', async () => {
+    const three: TriageFamily = { ...single, id: 'family-three', members: [...single.members, member(A1, 'third', 200)] };
+    const result = await run([three], lookup({ [`${A1}:1`]: ['s1', 's2'], [`${A1}:90`]: ['s1', 's2'], [`${A1}:200`]: ['s9'] }).fn);
+    expect(result.excluded).toEqual([expect.objectContaining({ familyId: 'family-three', reason: 'single-file' })]);
+  });
+
+  it('leaves file-level admissions alone and never measures their members', async () => {
+    const { calls, fn } = lookup({ [`${B1}:10`]: ['x1'], [`${B2}:10`]: ['x2'] });
+    const result = await run([coChanging, independent], fn);
+    expect(result.batches.flatMap(b => b.families)).toMatchObject([{ id: 'family-co-changing', coChange: { basis: 'file' } }]);
+    expect(calls.map(c => c.ids)).toEqual([[`${B1}:10`, `${B2}:10`]]);
+  });
+
+  it('without a member history lookup, excludes as before', async () => {
+    const result = await run([single, independent]);
+    expect(result.excluded.map(e => [e.familyId, e.reason])).toEqual([
+      ['family-independent', 'independent'], ['family-single', 'single-file']]);
+  });
+
+  it('memberCoChangeLink returns the weakest spanning link, or null when the members are not connected', () => {
+    const s = (...shas: string[]) => new Set(shas);
+    // Links: 0-1 = 2/3, 1-2 = 1/4, 0-2 = 0. The tree needs the 1/4 link.
+    expect(memberCoChangeLink([s('a', 'b'), s('a', 'b', 'c'), s('c', 'd')], 0.25)).toBe(0.25);
+    expect(memberCoChangeLink([s('a'), s('b')], 0.25)).toBeNull();
+    expect(memberCoChangeLink([s(), s()], 0.25)).toBeNull();
+  });
+});
+
+describe('nativeMemberHistory (D-022)', () => {
+  const run = promisify(execFile);
+  const repo = async (dir: string) => {
+    const git = async (...args: string[]) => (await run('git', ['-C', dir, ...args])).stdout.trim();
+    await git('init', '-q'); await git('config', 'user.email', 'fixture@example.invalid'); await git('config', 'user.name', 'fixture');
+    return git;
+  };
+  /** Three functions: first on lines 1-3, second on 5-7, third on 9-11. */
+  const copies = (a: number, b: number, c: number) => [
+    'export function first(x: number) {', `  return x + ${a};`, '}', '',
+    'export function second(y: number) {', `  return y + ${b};`, '}', '',
+    'export function third(z: number) {', `  return z + ${c};`, '}', ''].join('\n');
+  const at = (path: string) => (id: string, line: number, endLine?: number): TriageMember =>
+    ({ id, path, line, symbol: id, ...(endLine === undefined ? {} : { endLine }) });
+  const window = () => ({ start: new Date(Date.now() - 86_400_000).toISOString(), end: new Date(Date.now() + 60_000).toISOString() });
+
+  it('returns the commits that changed each member range, and reads an unmeasurable member as null', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'member-history-'));
+    try {
+      const git = await repo(root);
+      await mkdir(join(root, 'src'));
+      const step = async (a: number, b: number, c: number, message: string) => {
+        await writeFile(join(root, 'src/copies.ts'), copies(a, b, c));
+        await git('add', 'src/copies.ts'); await git('commit', '-qm', message);
+        return git('rev-parse', 'HEAD');
+      };
+      const base = await step(0, 0, 0, 'base');
+      const both = await step(1, 1, 0, 'both');
+      const again = await step(2, 2, 0, 'both again');
+      const thirdOnly = await step(2, 2, 1, 'third only');
+      const thirdAgain = await step(2, 2, 2, 'third again');
+      const m = at('src/copies.ts');
+      const sets = await nativeMemberHistory(root)([m('first', 1, 3), m('second', 5, 7), m('third', 9, 11),
+        m('no-end', 1), at('../outside.ts')('outside', 1, 3), at('src/missing.ts')('missing', 1, 3)], window());
+      expect([...sets.get('first')!].sort()).toEqual([base, both, again].sort());
+      expect(sets.get('second')).toEqual(sets.get('first'));
+      expect([...sets.get('third')!].sort()).toEqual([base, thirdOnly, thirdAgain].sort());
+      expect(memberCoChangeLink([sets.get('first')!, sets.get('second')!], 0.25)).toBe(1);
+      // Only the creating commit is shared: 1/5, below the floor.
+      expect(memberCoChangeLink([sets.get('first')!, sets.get('third')!], 0.25)).toBeNull();
+      for (const id of ['no-end', 'outside', 'missing']) expect(sets.get(id)).toBeNull();
+
+      // Working-tree line numbers no longer match HEAD: unmeasured, not misread.
+      await writeFile(join(root, 'src/copies.ts'), `// moved\n${copies(3, 3, 3)}`);
+      expect((await nativeMemberHistory(root)([m('first', 1, 3)], window())).get('first')).toBeNull();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reads a member inside a nested repository (a submodule) in that repository', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'member-history-nested-'));
+    try {
+      await repo(root);
+      const nested = join(root, 'libs/generic/kit');
+      await mkdir(nested, { recursive: true });
+      const git = await repo(nested);
+      await writeFile(join(nested, 'copies.ts'), copies(0, 0, 0)); await git('add', 'copies.ts'); await git('commit', '-qm', 'kit');
+      const sha = await git('rev-parse', 'HEAD');
+      const sets = await nativeMemberHistory(root)([at('libs/generic/kit/copies.ts')('kit', 1, 3)], window());
+      expect([...sets.get('kit')!]).toEqual([sha]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('compareCopies', () => {
   it('treats renamed copies as identical', () => {
     expect(compareCopies(unguarded, unguarded.replace(/cache/g, 'store').replace(/entry/g, 'hit'))).toEqual({ status: 'identical' });
@@ -212,15 +361,20 @@ describe('triageFamilyFromRanked', () => {
     expect(compareCopies(family.members[0]!.source, family.members[1]!.source)).toMatchObject({ status: 'diverged', guard: true });
   });
 
-  it('reads nothing for renamed families and leaves an unreadable semantic member without source', async () => {
+  it('gives renamed members their last line but no source, reading each file once', async () => {
     const reads: string[] = [];
-    const renamed = await triageFamilyFromRanked(row('renamed', [fn(A1, 'a', 0, 5), fn(A2, 'b', 0, 5)]),
-      async path => { reads.push(path); return 'x'; });
-    expect(reads).toEqual([]);
+    const text = 'function a() {\n  return 1;\n}\nfunction b() {\n  return 2;\n}\n';
+    const renamed = await triageFamilyFromRanked(row('renamed', [fn(A1, 'a', 0, 28), fn(A1, 'b', 29, 57), fn(A2, 'c', 0, 28)]),
+      async path => { reads.push(path); return text; });
+    expect(reads).toEqual([A1, A2]);
     expect(renamed.members.every(m => m.source === undefined)).toBe(true);
+    expect(renamed.members.map(m => m.endLine)).toEqual([3, 6, 3]);
+  });
+
+  it('leaves an unreadable member without source or last line', async () => {
     const blind = await triageFamilyFromRanked(row('semantic', [fn(C1, 'a', 0, 5), fn(C2, 'b', 0, 5)]),
       async () => { throw new Error('ENOENT'); });
-    expect(blind.members.every(m => m.source === undefined)).toBe(true);
+    expect(blind.members.every(m => m.source === undefined && m.endLine === undefined)).toBe(true);
   });
 });
 
@@ -262,7 +416,7 @@ describe('selectRoundFamilies (P-009)', () => {
 
 describe('boundCoveragePaths (P-009)', () => {
   const fam = (id: string, paths: string[]) => ({ id, score: 1, churn: 0, redundantMass: 1, packageDistance: 0,
-    coChange: { minLinkScore: 1, files: paths.length }, members: paths.map((path, i) => ({ path, line: i + 1, symbol: 'f' })) });
+    coChange: { minLinkScore: 1, files: paths.length, basis: 'file' as const }, members: paths.map((path, i) => ({ path, line: i + 1, symbol: 'f' })) });
   const batch = (area: string, families: ReturnType<typeof fam>[]) => ({ area, index: 0, score: 1, redundantMass: 1, families });
 
   it('reads coverage for surviving families in batch order and drops, never under-covers, the ones that do not fit', () => {

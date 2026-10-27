@@ -81,7 +81,7 @@ describe('resolveCleanupAggressiveness — a new campaign defaults to safe (R-12
 
   it('a campaign plan built without a level runs at safe', () => {
     const batch: TriageBatch = { area: 'packages/x', index: 0, score: 1, redundantMass: 4, families: [
-      { id: 'fam-exact', score: 1, churn: 0, redundantMass: 4, packageDistance: 1, coChange: { minLinkScore: 1, files: 2 },
+      { id: 'fam-exact', score: 1, churn: 0, redundantMass: 4, packageDistance: 1, coChange: { minLinkScore: 1, files: 2, basis: 'file' },
         members: [{ path: 'lib/exact-1.ts', line: 1, symbol: 'f' }, { path: 'lib/exact-2.ts', line: 1, symbol: 'f' }] },
     ] };
     expect(buildCampaignPlan({ slug: 'cleanup-default-level', batches: [batch] }).settings.aggressiveness).toBe('safe');
@@ -178,9 +178,9 @@ describe('selectBatchesForAggressiveness — batch shape', () => {
 
 describe('aggressivenessCandidatesFromTriage', () => {
   const batch: TriageBatch = { area: 'packages/x', index: 2, score: 1, redundantMass: 10, families: [
-    { id: 'fam-exact', score: 1, churn: 0, redundantMass: 5, packageDistance: 1, coChange: { minLinkScore: 1, files: 2 },
+    { id: 'fam-exact', score: 1, churn: 0, redundantMass: 5, packageDistance: 1, coChange: { minLinkScore: 1, files: 2, basis: 'file' },
       members: [{ path: 'lib/exact-1.ts', line: 1, symbol: 'f' }, { path: 'lib/exact-2.ts', line: 1, symbol: 'f' }] },
-    { id: 'fam-missing', score: 1, churn: 0, redundantMass: 5, packageDistance: 1, coChange: { minLinkScore: 1, files: 2 },
+    { id: 'fam-missing', score: 1, churn: 0, redundantMass: 5, packageDistance: 1, coChange: { minLinkScore: 1, files: 2, basis: 'file' },
       members: [{ path: 'lib/nokind-1.ts', line: 1, symbol: 'q' }, { path: 'lib/nokind-2.ts', line: 1, symbol: 'q' }] },
   ] };
 

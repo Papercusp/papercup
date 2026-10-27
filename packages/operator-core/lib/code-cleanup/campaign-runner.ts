@@ -25,7 +25,7 @@ import type { CharacterizationRecord, CleanupAggressiveness, CoverageView, Execu
 import { planExtraction } from './extract-codemod';
 import type { ExtractionPlan, FileEdit } from './extract-codemod';
 import { triageCloneFamilies } from './triage';
-import type { DivergedHold, DivergenceBugLookup, TriageExclusion, TriageFamily, TriageHistory } from './triage';
+import type { DivergedHold, DivergenceBugLookup, MemberHistoryLookup, TriageExclusion, TriageFamily, TriageHistory } from './triage';
 import type { DivergedFilingRow } from './divergence';
 import type { CleanupBatchRecord } from './outcome';
 
@@ -59,6 +59,9 @@ export interface CampaignRoundInput {
 
 export interface CampaignRoundDeps {
   divergenceBug: DivergenceBugLookup;
+  /** Member-level co-change for families file history cannot connect (D-022). Absent, triage
+   * excludes them as single-file or independent. */
+  memberHistory?: MemberHistoryLookup;
   fileDiverged(holds: readonly DivergedHold[]): Promise<DivergedFilingRow[]>;
   /** Read a member's file, relative to the scanned root; null = unreadable. */
   readFile(path: string): Promise<string | null>;
@@ -102,7 +105,8 @@ function dryAdmission(deps: AdmissionDeps): AdmissionDeps {
 /** Run one campaign round. See the module header for the order of steps. */
 export async function planCampaignRound(input: CampaignRoundInput, deps: CampaignRoundDeps): Promise<CampaignRoundResult> {
   const dryRun = input.dryRun === true;
-  const triage = await triageCloneFamilies({ families: input.families, history: input.history, divergenceBug: deps.divergenceBug });
+  const triage = await triageCloneFamilies({ families: input.families, history: input.history, divergenceBug: deps.divergenceBug,
+    ...(deps.memberHistory ? { memberHistory: deps.memberHistory } : {}) });
 
   // Divergence is filed before any batch can be admitted (R-5).
   const divergedFiled = dryRun || !triage.diverged.length ? [] : await deps.fileDiverged(triage.diverged);

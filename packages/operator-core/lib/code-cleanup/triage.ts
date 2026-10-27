@@ -11,15 +11,25 @@
  * bug naming both locations is terminal; merging first would silently drop or
  * spread the fix.
  *
+ * File-level co-change cannot see a family whose copies share one file, and it misses
+ * copies that change together inside files that otherwise change apart. When a member
+ * history lookup is supplied (D-022), those families are measured again per member
+ * function (90-day first-parent `git log -L`): the same floor, the same connectivity
+ * rule, over members instead of files. A batched family records which basis admitted it.
+ *
  * Every family that is not batched is reported with a reason. Missing evidence
- * (incomplete history, a single-file family, near copies without source) is an
- * exclusion, never a batch: triage fails closed.
+ * (incomplete history, a single-file family with no member history, an unmeasured
+ * member, near copies without source) is an exclusion, never a batch: triage fails closed.
  *
  * Ranking is redundant mass × churn × package distance (each churn/distance term
  * offset by one so a zero does not erase the others). A batch is one area's
  * qualifying families, at most TRIAGE_BATCH_FAMILY_CAP per batch, so each batch
  * stays one reviewable change.
  */
+import { execFile } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import * as ts from 'typescript';
 import { buildCoChangeIndex, coChangeFromIndex, type CoChangeIndex, type HistoryCommit } from '../code-intelligence/change-history';
 import { cloneMemberSymbol } from '../code-intelligence/clone-index';
@@ -38,7 +48,16 @@ export interface TriageMember {
   /** The member's function text. Required for near/semantic families, whose copies
    * are not identical by construction and must be compared for divergence. */
   source?: string;
+  /** Last line of the member function (1-based, inclusive). Member-level co-change needs it:
+   * a member without it is unmeasured there. */
+  endLine?: number;
 }
+/** In-window first-parent commits that changed one member function; null = unmeasured. */
+export type MemberCommits = ReadonlySet<string> | null;
+/** Commit sets for the given members over `window`, keyed by member id (D-022). A member missing
+ * from the result, or null, is unmeasured and keeps its family excluded. */
+export type MemberHistoryLookup = (members: readonly TriageMember[], window: { start: string; end: string })
+  => Promise<ReadonlyMap<string, MemberCommits>>;
 export interface TriageFamily {
   id: string;
   /** exact/renamed families are identical modulo renames by construction; near and
@@ -70,8 +89,9 @@ export interface DivergedHold {
 export interface TriageLocation { path: string; line: number; symbol: string }
 export interface TriagedFamily {
   id: string; score: number; churn: number; redundantMass: number; packageDistance: number;
-  /** The weakest co-change link that still connects every member file. */
-  coChange: { minLinkScore: number; files: number };
+  /** The weakest co-change link that still connects every member file ('file') or, when file
+   * history could not connect them, every member function ('member', D-022). */
+  coChange: { minLinkScore: number; files: number; basis: 'file' | 'member' };
   /** Set when the family diverged and the bug naming both copies is terminal. */
   divergenceResolvedBy?: string;
   members: readonly TriageLocation[];
@@ -188,6 +208,21 @@ export function familyChurn(paths: readonly string[], history: TriageHistory): n
     .map(c => c.sha)).size;
 }
 
+/** The weakest link of the maximum spanning tree over `nodes`, using only links at or above
+ * `floor`; null when those links do not connect every node. */
+function weakestSpanningLink(nodes: readonly string[], links: readonly { a: string; b: string; score: number }[],
+  floor: number): number | null {
+  const parent = new Map(nodes.map(n => [n, n] as const));
+  const root = (n: string): string => { while (parent.get(n) !== n) n = parent.get(n)!; return n; };
+  let weakest = Infinity, joined = 1;
+  for (const link of [...links].filter(l => l.score >= floor && parent.has(l.a) && parent.has(l.b)).sort((x, y) => y.score - x.score)) {
+    const a = root(link.a), b = root(link.b);
+    if (a === b) continue;
+    parent.set(a, b); joined++; weakest = Math.min(weakest, link.score);
+  }
+  return joined === nodes.length ? weakest : null;
+}
+
 /** Members co-change when the files are CONNECTED by links at or above the floor:
  * every file shares a history with the rest, not just one lucky pair. Returns the
  * weakest link of the maximum spanning tree, or null when the files are not connected. */
@@ -195,18 +230,19 @@ function coChangeLink(paths: readonly string[], index: CoChangeIndex, floor: num
   // Only in-family links matter. Unrestricted, the global top-100 cut could drop them in favour of
   // a member file's stronger outside partners and misreport the family as independent.
   const report = coChangeFromIndex(index, paths, { partners: paths, limit: paths.length * paths.length });
-  const inFamily = new Set(paths);
-  const links = report.pairs.filter(p => inFamily.has(p.path) && inFamily.has(p.partner) && p.score >= floor)
-    .sort((a, b) => b.score - a.score);
-  const parent = new Map(paths.map(p => [p, p] as const));
-  const root = (p: string): string => { while (parent.get(p) !== p) p = parent.get(p)!; return p; };
-  let weakest = Infinity, joined = 1;
-  for (const link of links) {
-    const a = root(link.path), b = root(link.partner);
-    if (a === b) continue;
-    parent.set(a, b); joined++; weakest = Math.min(weakest, link.score);
+  return weakestSpanningLink(paths, report.pairs.map(p => ({ a: p.path, b: p.partner, score: p.score })), floor);
+}
+
+/** The same rule over member functions (D-022): Jaccard of their in-window commit sets. */
+export function memberCoChangeLink(sets: readonly ReadonlySet<string>[], floor: number): number | null {
+  const links: { a: string; b: string; score: number }[] = [];
+  for (let i = 0; i < sets.length; i++) for (let j = i + 1; j < sets.length; j++) {
+    let shared = 0;
+    for (const sha of sets[i]!) if (sets[j]!.has(sha)) shared++;
+    const union = sets[i]!.size + sets[j]!.size - shared;
+    links.push({ a: String(i), b: String(j), score: union ? shared / union : 0 });
   }
-  return joined === paths.length ? weakest : null;
+  return weakestSpanningLink(sets.map((_, i) => String(i)), links, floor);
 }
 
 export const triageScore = (row: { redundantMass: number; churn: number; packageDistance: number }) =>
@@ -220,6 +256,9 @@ export async function triageCloneFamilies(input: {
   divergenceBug: DivergenceBugLookup;
   coChangeFloor?: number;
   batchFamilyCap?: number;
+  /** Member-level co-change (D-022) for families file history cannot connect. Absent, those
+   * families are excluded as before. */
+  memberHistory?: MemberHistoryLookup;
 }): Promise<TriageResult> {
   const floor = input.coChangeFloor ?? TRIAGE_CO_CHANGE_FLOOR;
   const cap = input.batchFamilyCap ?? TRIAGE_BATCH_FAMILY_CAP;
@@ -233,6 +272,20 @@ export async function triageCloneFamilies(input: {
   let coChange: CoChangeIndex | null = null;
   const exclude = (family: TriageFamily, reason: TriageExclusionReason, detail: string) =>
     excluded.push({ familyId: family.id, reason, detail });
+  /** Families file history could not connect, awaiting the member-level measurement. */
+  const pending: { family: TriageFamily; paths: string[]; reason: 'single-file' | 'independent'; detail: string;
+    resolvedBy?: string }[] = [];
+  const admit = (family: TriageFamily, paths: readonly string[], churn: number,
+    coChangeEvidence: TriagedFamily['coChange'], resolvedBy: string | undefined) =>
+    eligible.push({ id: family.id, area: cloneFamilyArea(family.members), churn, redundantMass: family.redundantMass,
+      packageDistance: family.packageDistance, score: triageScore({ ...family, churn }),
+      coChange: coChangeEvidence, members: family.members.map(location),
+      ...(resolvedBy ? { divergenceResolvedBy: resolvedBy } : {}) });
+  const fileUnconnected = (family: TriageFamily, paths: string[], reason: 'single-file' | 'independent', detail: string,
+    resolvedBy: string | undefined) => {
+    if (input.memberHistory) pending.push({ family, paths, reason, detail, ...(resolvedBy ? { resolvedBy } : {}) });
+    else exclude(family, reason, detail);
+  };
 
   for (const family of [...input.families].sort((a, b) => a.id.localeCompare(b.id))) {
     if (family.members.length < 2) continue;
@@ -272,22 +325,46 @@ export async function triageCloneFamilies(input: {
 
     if (!input.history.complete) { exclude(family, 'history-incomplete', 'change history is truncated or unavailable'); continue; }
     const paths = [...new Set(family.members.map(m => m.path))].sort();
-    if (paths.length < 2) { exclude(family, 'single-file', 'all copies are in one file; file history cannot show whether they change together'); continue; }
+    if (paths.length < 2) {
+      fileUnconnected(family, paths, 'single-file', 'all copies are in one file; file history cannot show whether they change together', resolvedBy);
+      continue;
+    }
     if (paths.length > MAX_FAMILY_FILES) { exclude(family, 'too-many-files', `${paths.length} files exceeds the ${MAX_FAMILY_FILES}-file co-change scope`); continue; }
     // The window is prepared once per triage run: each family only queries it.
     coChange ??= buildCoChangeIndex({ commits: input.history.commits, end: input.history.end,
       commit: input.history.commit, complete: input.history.complete });
     const link = coChangeLink(paths, coChange, floor);
     if (link === null) {
-      exclude(family, 'independent', `member files are not connected by co-change >= ${floor} in the 90-day window`);
+      fileUnconnected(family, paths, 'independent', `member files are not connected by co-change >= ${floor} in the 90-day window`, resolvedBy);
       continue;
     }
-    const churn = familyChurn(paths, input.history);
-    eligible.push({ id: family.id, area: cloneFamilyArea(family.members), churn, redundantMass: family.redundantMass,
-      packageDistance: family.packageDistance, score: triageScore({ ...family, churn }),
-      coChange: { minLinkScore: link, files: paths.length }, members: family.members.map(location),
-      ...(resolvedBy ? { divergenceResolvedBy: resolvedBy } : {}) });
+    admit(family, paths, familyChurn(paths, input.history), { minLinkScore: link, files: paths.length, basis: 'file' }, resolvedBy);
   }
+
+  // Member-level co-change (D-022): one lookup for every pending family's members.
+  if (pending.length && input.memberHistory) {
+    const end = input.history.end;
+    const sets = await input.memberHistory(pending.flatMap(p => p.family.members),
+      { start: new Date(Date.parse(end) - 90 * DAY).toISOString(), end });
+    for (const { family, paths, reason, detail, resolvedBy } of pending) {
+      const measured = family.members.map(m => sets.get(m.id) ?? null);
+      const unmeasured = family.members.filter((_, i) => measured[i] === null);
+      if (unmeasured.length) {
+        exclude(family, reason, `${detail}; member history unmeasured for ${unmeasured.map(locKey).join(', ')}`);
+        continue;
+      }
+      const memberSets = measured as ReadonlySet<string>[];
+      const link = memberCoChangeLink(memberSets, floor);
+      if (link === null) {
+        exclude(family, reason, `${detail}; the member functions are not connected by co-change >= ${floor} either`);
+        continue;
+      }
+      // Churn on this basis is the member functions' own: their distinct in-window commits.
+      const churn = new Set(memberSets.flatMap(s => [...s])).size;
+      admit(family, paths, churn, { minLinkScore: link, files: paths.length, basis: 'member' }, resolvedBy);
+    }
+  }
+  excluded.sort((a, b) => a.familyId.localeCompare(b.familyId));
 
   const byArea = new Map<string, (TriagedFamily & { area: string })[]>();
   for (const row of eligible) byArea.set(row.area, [...(byArea.get(row.area) ?? []), row]);
@@ -306,23 +383,23 @@ export async function triageCloneFamilies(input: {
 
 // ── production adapters ─────────────────────────────────────────────────────
 
-/** A sweep-ranked family as a triage input. Semantic families are not identical by
- * construction, so their members' function text is read (via `readFile`, relative to
- * the scanned root) for the divergence check; a member whose file cannot be read
- * carries no source, which triage reports as divergence-unmeasured. */
+/** A sweep-ranked family as a triage input. Each member file is read once (via `readFile`,
+ * relative to the scanned root) for the member's last line, which member-level co-change needs.
+ * Semantic families are not identical by construction, so their members also carry their
+ * function text for the divergence check. A member whose file cannot be read carries neither:
+ * triage reports it as divergence-unmeasured or member-history-unmeasured. */
 export async function triageFamilyFromRanked(row: RankedCloneFamily,
   readFile: (path: string) => Promise<string>): Promise<TriageFamily> {
   const needsSource = row.family.kind === 'semantic';
   const texts = new Map<string, string | null>();
   const members: TriageMember[] = [];
   for (const fn of row.family.members) {
-    let source: string | undefined;
-    if (needsSource) {
-      if (!texts.has(fn.path)) texts.set(fn.path, await readFile(fn.path).catch(() => null));
-      const text = texts.get(fn.path);
-      source = text == null ? undefined : text.slice(fn.start, fn.end);
-    }
-    members.push({ id: fn.id, path: fn.path, line: fn.line, symbol: cloneMemberSymbol(fn), ...(source ? { source } : {}) });
+    if (!texts.has(fn.path)) texts.set(fn.path, await readFile(fn.path).catch(() => null));
+    const text = texts.get(fn.path);
+    const source = needsSource && text != null ? text.slice(fn.start, fn.end) : undefined;
+    const endLine = text == null ? undefined : text.slice(0, fn.end).split('\n').length;
+    members.push({ id: fn.id, path: fn.path, line: fn.line, symbol: cloneMemberSymbol(fn), ...(source ? { source } : {}),
+      ...(endLine !== undefined && endLine >= fn.line ? { endLine } : {}) });
   }
   return { id: row.family.id, kind: row.family.kind, members, redundantMass: row.redundantMass,
     packageDistance: row.packageDistance, accepted: row.accepted };
@@ -374,6 +451,73 @@ export function boundCoveragePaths(batches: readonly TriageBatch[], pathLimit: n
     for (const path of own) paths.add(path);
   }
   return { paths: [...paths].sort(), dropped };
+}
+
+const execGit = promisify(execFile);
+/** Concurrent `git log -L` reads; each walks the window's first-parent history. */
+const MEMBER_HISTORY_CONCURRENCY = 8;
+
+/**
+ * Production member history (D-022): for each member, the first-parent commits in the window
+ * that changed its line range, read with `git log -L` in the repository that holds the file (a
+ * member under a submodule is read in the submodule, whose commits are its own). Line ranges are
+ * the working tree's, so a file that differs from HEAD is unmeasured rather than misread; so is a
+ * member with no last line, a path outside `root`, and any git failure. Results are cached per
+ * range, so a second triage over the same members runs no git.
+ */
+export function nativeMemberHistory(root: string): MemberHistoryLookup {
+  const base = resolve(root);
+  const toplevels = new Map<string, Promise<string | null>>();
+  const clean = new Map<string, Promise<boolean>>();
+  const ranges = new Map<string, Promise<MemberCommits>>();
+  const toplevel = (dir: string) => {
+    if (!toplevels.has(dir)) toplevels.set(dir, execGit('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { timeout: 30_000 })
+      .then(r => r.stdout.trim() || null, () => null));
+    return toplevels.get(dir)!;
+  };
+  const isClean = (top: string, rel: string) => {
+    const key = `${top}\0${rel}`;
+    // `diff --quiet` exits 1 on a difference; any failure also reads as not clean.
+    if (!clean.has(key)) clean.set(key, execGit('git', ['-C', top, 'diff', '--quiet', 'HEAD', '--', rel], { timeout: 30_000 })
+      .then(() => true, () => false));
+    return clean.get(key)!;
+  };
+  const read = async (m: TriageMember, window: { start: string; end: string }): Promise<MemberCommits> => {
+    if (m.endLine === undefined || !Number.isInteger(m.line) || !Number.isInteger(m.endLine) || m.line < 1
+      || m.endLine < m.line || isAbsolute(m.path)) return null;
+    const abs = resolve(base, m.path);
+    const inRoot = relative(base, abs);
+    if (!inRoot || inRoot.startsWith('..') || isAbsolute(inRoot)) return null;
+    // git reports a resolved toplevel, so the path it is relative to must be resolved too.
+    const real = await realpath(abs).catch(() => null);
+    if (!real) return null;
+    const top = await toplevel(dirname(real));
+    if (!top) return null;
+    const rel = relative(top, real);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel) || !(await isClean(top, rel))) return null;
+    try {
+      const { stdout } = await execGit('git', ['-C', top, 'log', '--first-parent', `--since=${window.start}`,
+        `--until=${window.end}`, '--format=%H', '-s', `-L${m.line},${m.endLine}:${rel}`],
+      { timeout: 60_000, maxBuffer: 16 << 20 });
+      return new Set(stdout.split('\n').filter(l => /^[0-9a-f]{40}$/.test(l)));
+    } catch { return null; }
+  };
+  return async (members, window) => {
+    const keyOf = (m: TriageMember) => `${m.path}:${m.line}:${m.endLine ?? ''}:${window.start}:${window.end}`;
+    const queue = [...new Map(members.map(m => [keyOf(m), m] as const)).entries()].filter(([key]) => !ranges.has(key));
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(MEMBER_HISTORY_CONCURRENCY, queue.length) }, async () => {
+      while (next < queue.length) {
+        const [key, m] = queue[next++]!;
+        const pending = read(m, window);
+        ranges.set(key, pending);
+        await pending;
+      }
+    }));
+    const out = new Map<string, MemberCommits>();
+    for (const m of members) out.set(m.id, await ranges.get(keyOf(m))!);
+    return out;
+  };
 }
 
 /** Production lookup: the issue-family row holding the diverged pair's condition key

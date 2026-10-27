@@ -159,7 +159,7 @@ describe('validateExecutorChange — characterization and refactor never share a
 describe('executorBatchFromTriage', () => {
   it('names the batch area#index and lists every family member with its resolved end line', () => {
     const triage: TriageBatch = { area: 'packages/x/lib', index: 2, score: 1, redundantMass: 9, families: [
-      { id: 'f1', score: 1, churn: 0, redundantMass: 9, packageDistance: 0, coChange: { minLinkScore: 1, files: 2 },
+      { id: 'f1', score: 1, churn: 0, redundantMass: 9, packageDistance: 0, coChange: { minLinkScore: 1, files: 2, basis: 'file' },
         members: [{ path: 'packages/x/lib/a.ts', line: 3, symbol: 'f' }, { path: 'packages/x/lib/b.ts', line: 7, symbol: 'g' }] },
     ] };
     const out = executorBatchFromTriage(triage, m => m.line + 4);

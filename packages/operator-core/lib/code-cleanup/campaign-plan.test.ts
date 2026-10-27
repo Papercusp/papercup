@@ -6,7 +6,7 @@ import type { TriageBatch, TriagedFamily } from './triage';
 
 const family = (id: string, paths: string[]): TriagedFamily => ({
   id, score: 1, churn: 2, redundantMass: 100, packageDistance: 0,
-  coChange: { minLinkScore: 0.5, files: paths.length },
+  coChange: { minLinkScore: 0.5, files: paths.length, basis: 'file' as const },
   members: paths.map((path, i) => ({ path, line: 10 + i, symbol: `fn${i}` })),
 });
 const batch = (area: string, index: number, families: TriagedFamily[], score = 2.5): TriageBatch =>

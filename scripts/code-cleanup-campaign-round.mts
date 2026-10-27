@@ -31,8 +31,8 @@ import { editPathAcquire, nativeCampaignRoundDeps, readNativeThrottleInputs } fr
 import { coverageViewFromScope, type CleanupAggressiveness, type CoverageView } from '../packages/operator-core/lib/code-cleanup/executor';
 import { DEFAULT_CAMPAIGN_REVIEW, type CampaignReview } from '../packages/operator-core/lib/code-cleanup/campaign-plan';
 import { DEFAULT_REGRESSION_WINDOW_MS } from '../packages/operator-core/lib/code-cleanup/throttle';
-import { boundCoveragePaths, nativeDivergenceBugLookup, selectRoundFamilies, triageCloneFamilies, triageFamilyFromRanked,
-  type TriageFamily } from '../packages/operator-core/lib/code-cleanup/triage';
+import { boundCoveragePaths, nativeDivergenceBugLookup, nativeMemberHistory, selectRoundFamilies, triageCloneFamilies,
+  triageFamilyFromRanked, type TriageFamily } from '../packages/operator-core/lib/code-cleanup/triage';
 import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 /** readTestCoverage answers for at most 50 source paths; a round never asks past that. */
@@ -89,7 +89,10 @@ const history = { commits: historyRead.commits, end: now.toISOString(), commit: 
 // Only families that survive triage need coverage. Pre-triage (planCampaignRound triages again over
 // the same index-backed history, which is cheap) and read coverage for the survivors' members.
 const divergenceBug = nativeDivergenceBugLookup({ workspaceId: config.workspaceId, harness: config.harness });
-const preTriage = await triageCloneFamilies({ families, history, divergenceBug });
+// Member-level co-change (D-022). One lookup serves both triages: its per-range cache means the
+// round's own triage runs no git.
+const memberHistory = nativeMemberHistory(root);
+const preTriage = await triageCloneFamilies({ families, history, divergenceBug, memberHistory });
 const coverageBound = boundCoveragePaths(preTriage.batches, COVERAGE_PATH_LIMIT);
 const dropped = new Set(coverageBound.dropped);
 const roundFamilies = families.filter(f => !dropped.has(f.id));
@@ -117,7 +120,7 @@ const throttleInputs = await readNativeThrottleInputs({
 // ── the round ───────────────────────────────────────────────────────────────
 const deps = nativeCampaignRoundDeps({
   root, workspaceId: config.workspaceId, harness: config.harness, runnerItemId: config.runnerItemId,
-  defaultReview: config.defaultReview ?? DEFAULT_CAMPAIGN_REVIEW, ...(live ? { acquire: editPathAcquire } : {}),
+  defaultReview: config.defaultReview ?? DEFAULT_CAMPAIGN_REVIEW, ...(live ? { acquire: editPathAcquire } : {}), memberHistory,
 });
 const result = await planCampaignRound({
   campaignId: config.campaignId, self: config.self, aggressiveness: config.aggressiveness ?? 'safe',
@@ -129,6 +132,8 @@ const inputs = {
   indexed: index.size, ranked: ranked.length, chosenFamilies: families.length, notChosen: selection.skipped,
   memberPaths: memberPaths.size, pathLimit,
   survivingFamilies: preTriage.batches.reduce((n, b) => n + b.families.length, 0),
+  survivingByBasis: preTriage.batches.flatMap(b => b.families).reduce<Record<string, number>>(
+    (n, f) => ({ ...n, [f.coChange.basis]: (n[f.coChange.basis] ?? 0) + 1 }), {}),
   coveragePaths: coverageBound.paths.length, coverageDropped: coverageBound.dropped.length,
   historyCommits: history.commits.length, historyComplete: history.complete, coverage: coverageNote,
   landed: throttleInputs.landed.length, reds: throttleInputs.reds.length, redsWithoutRadius: throttleInputs.redsWithoutRadius,

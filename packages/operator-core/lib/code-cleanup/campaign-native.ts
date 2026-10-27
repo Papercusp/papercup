@@ -19,7 +19,7 @@ import { nativeExecutorDeps } from './executor';
 import { parseCleanupBatchRecord, readLandedCleanupBatches, type LandedBatchRow } from './outcome';
 import { initialThrottleState, resetRegressionThrottle, type CampaignThrottleState, type GateRed, type LandedBatch,
   type ThrottleResetResult } from './throttle';
-import { nativeDivergenceBugLookup } from './triage';
+import { nativeDivergenceBugLookup, nativeMemberHistory, type MemberHistoryLookup } from './triage';
 import type { TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
 
 /** Payload key on the runner work-item holding the throttle state (D-016). */
@@ -246,10 +246,13 @@ export async function readNativeThrottleInputs(scope: {
 export function nativeCampaignRoundDeps(scope: ThrottleStoreScope & {
   root: string;
   acquire?: AdmissionDeps['acquire'];
+  /** Pass the lookup a caller already used (its per-range cache then serves this round too). */
+  memberHistory?: MemberHistoryLookup;
 }): CampaignRoundDeps {
   const where = { workspaceId: scope.workspaceId, harness: scope.harness };
   return {
     divergenceBug: nativeDivergenceBugLookup(where),
+    memberHistory: scope.memberHistory ?? nativeMemberHistory(scope.root),
     fileDiverged: holds => fileDivergedCopyBugs(holds, where),
     readFile: repoFileReader(scope.root),
     executor: nativeExecutorDeps(scope.root),
