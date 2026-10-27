@@ -76,8 +76,9 @@ export interface AdmissionRadius {
   /** Previously green radius test files: one failing at the built commit refuses `admission-imports-red`. */
   guarded: string[];
   /**
-   * Radius files inside a workspace whose `workspace-task` leg the signature already names red:
-   * measured and reported (`reportOnlyRed`), but they cannot refuse — that leg was not green.
+   * Radius files inside a workspace whose `workspace-task` leg the signature already names red.
+   * They cannot refuse — that leg was not green — so the pre-check does not execute them
+   * (WI-6554700010029981); the verdict reports them as `reportOnlyDeferred`.
    */
   reportOnly: string[];
   /** Test file (radius or admitted) → its leg: the owning npm workspace name, when known. */
@@ -95,7 +96,7 @@ export interface FixPrecheckPopulation {
   canProveDoesNotFix: boolean;
   /** P-007: the admitted paths' related-test radius; absent when none was computed (gitlink or legacy). */
   radius?: AdmissionRadius;
-  /** Every file to run, in run order: signature, admitted, guarded radius, report-only radius. */
+  /** Every file to run, in run order: signature, admitted, guarded radius. Report-only radius files are never run. */
   files: string[];
 }
 
@@ -171,7 +172,12 @@ export function precheckPopulation(input: {
     nonTestKinds: [...nonTestKinds],
     canProveDoesNotFix: signatureTestFiles.length > 0 && nonTestKinds.size === 0,
     ...(radius ? { radius } : {}),
-    files: [...signatureTestFiles, ...admittedTestFiles, ...(radius?.guarded ?? []), ...(radius?.reportOnly ?? [])],
+    // WI-6554700010029981: report-only radius files are NOT executed. They can never refuse
+    // (green-main-cycle-time-2026-10-08#D-036 point 3), so measuring them buys no admission decision,
+    // and on a red workspace-task leg they are the whole workspace (measured: 6,602 files, days of
+    // serial runs). The queue's verify round on the new repairHead measures them. They stay on
+    // `radius.reportOnly` and the verdict reports them as `reportOnlyDeferred`.
+    files: [...signatureTestFiles, ...admittedTestFiles, ...(radius?.guarded ?? [])],
   };
 }
 
@@ -299,6 +305,21 @@ export type FixPrecheckRunner = (input: {
   onFileResult?: (result: FixPrecheckFileResult) => Promise<void> | void;
 }) => Promise<FixPrecheckRunResult>;
 
+/** Cap on the paths `reportOnlyDeferred.sample` carries; `count` is always the full number. */
+export const REPORT_ONLY_DEFERRED_SAMPLE_CAP = 20;
+
+/**
+ * WI-6554700010029981: report-only radius files the pre-check did not execute. A report-only file
+ * cannot refuse even when measured red (green-main-cycle-time-2026-10-08#D-036 point 3), so its
+ * measurement cannot change the verdict; the queue's verify round on the new repairHead measures it.
+ */
+export interface FixPrecheckReportOnlyDeferred {
+  count: number;
+  reason: 'deferred-to-verify-run';
+  /** At most REPORT_ONLY_DEFERRED_SAMPLE_CAP paths, in radius order. */
+  sample: string[];
+}
+
 export type FixPrecheckVerdict =
   | {
       ok: true;
@@ -313,11 +334,8 @@ export type FixPrecheckVerdict =
       fixes: string[];
       /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
       reportOnlyRed?: string[];
-      /**
-       * Report-only radius files that went unmeasured. They are reported but never refuse: a report-only
-       * file cannot refuse even when measured red (green-main-cycle-time-2026-10-08#D-036 point 3).
-       */
-      reportOnlyUnmeasured?: string[];
+      /** WI-6554700010029981: report-only radius files the pre-check did not execute. */
+      reportOnlyDeferred?: FixPrecheckReportOnlyDeferred;
       /** D-004: guarded files red at BOTH heads (measured) — carried by the lineage, never attributed. */
       carriedRed?: string[];
       /** D-004: the paired baseline this verdict was judged against, when one was measured. */
@@ -365,8 +383,8 @@ export type FixPrecheckVerdict =
       alsoImportsRed: boolean;
       /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
       reportOnlyRed?: string[];
-      /** Report-only radius files that went unmeasured; reported, never a refusal (D-036 point 3). */
-      reportOnlyUnmeasured?: string[];
+      /** WI-6554700010029981: report-only radius files the pre-check did not execute. */
+      reportOnlyDeferred?: FixPrecheckReportOnlyDeferred;
       /** P-007: the previously green legs the imported reds belong to, when known. */
       newlyRedLegs?: string[];
       /**
@@ -470,16 +488,20 @@ export function evaluateFixPrecheck(
   const ratchetFinding = ratchet.verdict === 'reject'
     ? { ratchet: { newFailures: ratchet.newFailures, routeTo: ratchet.routeTo } }
     : {};
-  const reportOnlyRed = (population.radius?.reportOnly ?? []).filter((p) => failing.includes(p));
   // A report-only radius file cannot refuse even when measured red (green-main-cycle-time-2026-10-08
-  // #D-036 point 3), so its MISSING measurement cannot change the verdict either. It is reported, and
-  // only signature, admitted and guarded files that went unmeasured make the pre-check unavailable.
-  const reportOnlySet = new Set(population.radius?.reportOnly ?? []);
-  const reportOnlyUnmeasured = unmeasured.filter((p) => reportOnlySet.has(p));
-  const blockingUnmeasured = unmeasured.filter((p) => !reportOnlySet.has(p));
+  // #D-036 point 3), so the pre-check never executes it (WI-6554700010029981). A result a runner
+  // returned for one anyway is still reported; the rest are deferred to the queue's verify round.
+  // Only signature, admitted and guarded files that went unmeasured make the pre-check unavailable.
+  const reportOnly = population.radius?.reportOnly ?? [];
+  const reportOnlyRed = reportOnly.filter((p) => byPath.get(p)?.status === 'fail');
+  const deferred = reportOnly.filter((p) => { const s = byPath.get(p)?.status; return s !== 'pass' && s !== 'fail'; });
+  const reportOnlyDeferred: FixPrecheckReportOnlyDeferred | null = deferred.length
+    ? { count: deferred.length, reason: 'deferred-to-verify-run', sample: deferred.slice(0, REPORT_ONLY_DEFERRED_SAMPLE_CAP) }
+    : null;
+  const blockingUnmeasured = unmeasured;
   const newlyRedLegs = [...new Set(importedRed.map((p) => population.radius?.legs[p]).filter((leg): leg is string => !!leg))].sort();
   const radiusFindings = population.radius
-    ? { reportOnlyRed, newlyRedLegs, ...(reportOnlyUnmeasured.length ? { reportOnlyUnmeasured } : {}) }
+    ? { reportOnlyRed, newlyRedLegs, ...(reportOnlyDeferred ? { reportOnlyDeferred } : {}) }
     : {};
   const importedList = importedRed.map((p) => withLeg(population, p)).join(', ');
   const legNote = newlyRedLegs.length ? `; previously green leg(s) turned red: ${newlyRedLegs.join(', ')}` : '';
@@ -577,7 +599,7 @@ export function evaluateFixPrecheck(
     ...base,
     fixes,
     ...(population.radius ? { reportOnlyRed } : {}),
-    ...(reportOnlyUnmeasured.length ? { reportOnlyUnmeasured } : {}),
+    ...(reportOnlyDeferred ? { reportOnlyDeferred } : {}),
     ...(carriedRed.length ? { carriedRed } : {}),
     ...(previous ? { previousHead: previous } : {}),
     ...confirmationFindings,

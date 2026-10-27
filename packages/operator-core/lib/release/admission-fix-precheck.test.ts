@@ -18,6 +18,7 @@ import {
   isTestFilePath,
   precheckPopulation,
   previousHeadBaselineFiles,
+  REPORT_ONLY_DEFERRED_SAMPLE_CAP,
   defaultGitCommonDir,
   resolveCanonicalIntegrationRoot,
   ROUTER_EXIT_NOT_MEASURED,
@@ -176,11 +177,23 @@ describe('admission radius (green-main-cycle-time-2026-10-08 P-007, #D-036)', ()
   const withRadius = (r: AdmissionRadius = radius()) =>
     precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: ['lib/fix.ts', 'lib/new.test.ts'], radius: r });
 
-  it('runs radius files after the admitted ones without ever counting them as admitted', () => {
+  it('runs guarded radius files after the admitted ones, never counts them as admitted, and never runs report-only ones', () => {
     const pop = withRadius();
     expect(pop.admittedTestFiles).toEqual(['lib/new.test.ts']);
     expect(pop.radius).toMatchObject({ guarded: ['ws-a/lib/near.test.ts'], reportOnly: ['ws-b/lib/known-red-leg.test.ts'] });
-    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts', 'ws-a/lib/near.test.ts', 'ws-b/lib/known-red-leg.test.ts']);
+    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts', 'ws-a/lib/near.test.ts']);
+  });
+
+  it('WI-6554700010029981: a whole red-leg workspace of report-only files stays out of the executed set', () => {
+    // Measured 2026-10-27: guarded=111, reportOnly=6602 made a pre-check of 6,758 serial files (days).
+    const reportOnly = Array.from({ length: 6602 }, (_, i) => `ws-b/lib/r${i}.test.ts`);
+    const pop = withRadius(radius({ reportOnly }));
+    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts', 'ws-a/lib/near.test.ts']);
+    expect(pop.radius?.reportOnly).toHaveLength(6602);
+    const v = evaluateFixPrecheck(pop, ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'pass']]));
+    expect(v).toMatchObject({ ok: true, ran: true, fixes: ['lib/red.test.ts'], unmeasured: [] });
+    if (!v.ok || !v.ran) throw new Error('expected a measured pass');
+    expect(v.reportOnlyDeferred).toEqual({ count: 6602, reason: 'deferred-to-verify-run', sample: reportOnly.slice(0, REPORT_ONLY_DEFERRED_SAMPLE_CAP) });
   });
 
   it('the managed worker rebuilds the same population from the persisted files plus the partition', () => {
@@ -345,23 +358,23 @@ describe('admission radius (green-main-cycle-time-2026-10-08 P-007, #D-036)', ()
     expect(v.detail).toContain('ws-a/lib/near.test.ts');
   });
 
-  it('an unmeasured REPORT-ONLY radius file is reported but cannot refuse, exactly like a red one (D-036 point 3)', () => {
+  it('a REPORT-ONLY radius file is deferred to the verify run, never unmeasured and never a refusal (D-036 point 3)', () => {
     const v = evaluateFixPrecheck(withRadius(), ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'pass']]));
     expect(v).toMatchObject({
       ok: true,
       ran: true,
       fixes: ['lib/red.test.ts'],
-      unmeasured: ['ws-b/lib/known-red-leg.test.ts'],
-      reportOnlyUnmeasured: ['ws-b/lib/known-red-leg.test.ts'],
+      unmeasured: [],
+      reportOnlyDeferred: { count: 1, reason: 'deferred-to-verify-run', sample: ['ws-b/lib/known-red-leg.test.ts'] },
     });
   });
 
-  it('a report-only unmeasured file never hides a blocking unmeasured guarded file', () => {
+  it('a deferred report-only file never hides a blocking unmeasured guarded file', () => {
     const v = evaluateFixPrecheck(withRadius(), ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass']]));
     expect(v).toMatchObject({
       ok: false,
       code: 'admission-precheck-unavailable',
-      reportOnlyUnmeasured: ['ws-b/lib/known-red-leg.test.ts'],
+      reportOnlyDeferred: { count: 1, reason: 'deferred-to-verify-run', sample: ['ws-b/lib/known-red-leg.test.ts'] },
     });
     if (v.ok) throw new Error('expected refusal');
     expect(v.detail).toContain('1 admission pre-check file(s) were not measured: ws-a/lib/near.test.ts;');
