@@ -27,7 +27,7 @@ vi.mock('../../release-cut-launch', async (importOriginal) => ({
   launchDetachedCut: vi.fn(),
   readCutStatus: vi.fn(),
   collectHandoff: vi.fn(),
-  preflightCut: vi.fn(),
+  preflightCutAsync: vi.fn(),
   abortLeg: vi.fn(),
   readOrCreateGate: vi.fn(),
 }));
@@ -76,7 +76,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
   execFile: vi.fn(),
 }));
 
-import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
+import { launchDetachedCut, readCutStatus, collectHandoff, preflightCutAsync, abortLeg, readOrCreateGate } from '../../release-cut-launch';
 import { beginCutOperation } from '../../release-cut-operation';
 import { markSpawned } from '../../task-manager/store';
 import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
@@ -89,7 +89,7 @@ const provenanceM = vi.mocked(resolveBashTaskProvenance);
 const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
-const preflightM = vi.mocked(preflightCut);
+const preflightM = vi.mocked(preflightCutAsync);
 
 describe('release:cut transport budget (EI-26107428212758754)', () => {
   it('declares a handler budget above the flat MCP deadline for reclaim scans', async () => {
@@ -175,7 +175,7 @@ beforeEach(() => {
   });
   auditSqlM.mockResolvedValue([]);
   registryM.mockResolvedValue({ projects: [] });
-  preflightM.mockReturnValue(mkPreflight());
+  preflightM.mockResolvedValue(mkPreflight());
   launchM.mockResolvedValue({
     launched: true,
     unit: 'pc-task1.service',
@@ -806,13 +806,13 @@ describe('release:cut — explicit registered root routing', () => {
 
 describe('release:cut — preflight (read-only)', () => {
   it('returns the go/no-go, never launches', async () => {
-    preflightM.mockReturnValue(mkPreflight());
+    preflightM.mockResolvedValue(mkPreflight());
     const b = body(await tool.handler({ op: 'preflight' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'preflight', go: true });
     expect(launchM).not.toHaveBeenCalled();
   });
   it('surfaces blockers when not ready', async () => {
-    preflightM.mockReturnValue(mkPreflight({ go: false, blockers: ['signing-key: missing'] }));
+    preflightM.mockResolvedValue(mkPreflight({ go: false, blockers: ['signing-key: missing'] }));
     const b = body(await tool.handler({ op: 'preflight' } as never, { role: 'operator' } as never));
     expect(b.go).toBe(false);
     expect(b.note).toMatch(/signing-key: missing/);
@@ -1256,7 +1256,7 @@ describe('release:cut — run (operator-gated write)', () => {
   });
 
   it('refuses to start a second cut when one is already in flight', async () => {
-    preflightM.mockReturnValue(mkPreflight({}, /* inFlight */ true));
+    preflightM.mockResolvedValue(mkPreflight({}, /* inFlight */ true));
     const b = body(await tool.handler({ ...runArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/cut_in_flight/);
@@ -1416,7 +1416,7 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     expect(launchM).not.toHaveBeenCalled();
   });
   it('refuses to start a leg already in flight (checks its OWN unit, via preflightCut)', async () => {
-    preflightM.mockReturnValue(mkPreflight({}, /* inFlight */ true));
+    preflightM.mockResolvedValue(mkPreflight({}, /* inFlight */ true));
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/cut_in_flight/);

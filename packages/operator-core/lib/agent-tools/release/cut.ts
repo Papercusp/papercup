@@ -70,7 +70,7 @@ import {
   launchDetachedCut,
   readCutStatus,
   collectHandoff,
-  preflightCut,
+  preflightCutAsync,
   desktopReleaseTag,
   buildCutArgv,
   desktopRoot,
@@ -1222,7 +1222,7 @@ export default defineTool({
         args.version && args.sourceSha
           ? { version: args.version, channel: (args.channel ?? 'alpha') as Channel, sourceSha: args.sourceSha }
           : undefined;
-      const result = preflightCut(legsFrom(args), {
+      const result = await preflightCutAsync(legsFrom(args), {
         root: selected.desktopRoot, release, ...(args.deferTag ? { deferTag: true } : {}),
       });
       return json({
@@ -1586,7 +1586,7 @@ export default defineTool({
       const selected = await resolveCutRoot(args.root, undefined, { ...seedMode.rootOptions, sourceSha: args.sourceSha });
       if (!selected.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: selected.reason });
 
-      const pre = preflightCut(legs, {
+      const pre = await preflightCutAsync(legs, {
         platform,
         root: selected.desktopRoot,
         release: { version: args.version, channel, sourceSha: args.sourceSha },
@@ -1806,7 +1806,7 @@ export default defineTool({
     if (!selected.ok) return json({ ok: false, op: 'run', refused: true, reason: selected.reason });
 
     // Refuse to start a second cut over an in-flight one (structured, so the caller waits).
-    const pre = preflightCut(legs, {
+    const pre = await preflightCutAsync(legs, {
       root: selected.desktopRoot,
       release: { version: args.version, channel, sourceSha: args.sourceSha },
       ...(args.deferTag ? { deferTag: true } : {}),

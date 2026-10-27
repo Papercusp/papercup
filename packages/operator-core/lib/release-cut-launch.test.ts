@@ -36,6 +36,12 @@ import {
   readCutStatus,
   collectHandoff,
   preflightCut,
+  preflightCutAsync,
+  runProbeSpecAsync,
+  parseRemoteTagSha,
+  SOURCE_IDENTITY_GUARDS,
+  type ProbeSpec,
+  type SmokeTargetProbe,
   desktopReleaseTag,
   DOGFOOD_CANONICAL_REMOTE,
   isReleaseArtifact,
@@ -804,6 +810,131 @@ const dependencyReady = {
   runModelCachePreflight: () => ({ exitCode: 0, output: 'fixture model cache ready' }),
   runSourceIdentityPreflight: () => ({ exitCode: 0, output: 'fixture source identity clean' }),
 };
+
+// EI-27109514509838099: the release:cut handler ran preflightCut's spawnSync probes on the
+// operator's main thread (three source-identity guards measured 21.6s back to back), and
+// the event-loop sentinel SIGKILLed the host at its 20s wedge limit mid-call.
+describe('preflightCutAsync (event-loop-safe preflight, EI-27109514509838099)', () => {
+  const root = '/root/papercusp-desktop';
+  const workspace = '/root';
+  const { runSourceIdentityPreflight: _identity, runModelCachePreflight: _model, ...asyncReady } = dependencyReady;
+  const deps = { ...asyncReady, home: '/home/tester', exists: () => true, isUnitActive: () => false };
+  const spinner = () => {
+    const state = { ticks: 0, spinning: true };
+    const spin = (): void => {
+      if (!state.spinning) return;
+      state.ticks++;
+      setImmediate(spin);
+    };
+    setImmediate(spin);
+    return state;
+  };
+
+  it('routes every source-identity and model probe through the async runner and reports its results', async () => {
+    const specs: ProbeSpec[] = [];
+    const run = (spec: ProbeSpec): Promise<SmokeTargetProbe> => {
+      specs.push(spec);
+      const label = spec.command === 'bash' ? 'model' : path.basename(spec.args[0]!);
+      return new Promise((resolve) => setTimeout(() => resolve({ exitCode: 0, output: `async:${label}` }), 20));
+    };
+    const r = await preflightCutAsync({}, { root }, deps, run);
+    const identity = specs.filter((s) => s.command === process.execPath);
+    expect(identity.map((s) => s.args[0])).toEqual(SOURCE_IDENTITY_GUARDS.map((g) => path.join(workspace, 'scripts', g)));
+    expect(identity.every((s) => s.cwd === workspace && s.timeoutMs === 30_000)).toBe(true);
+    expect(specs.filter((s) => s.command === 'bash')).toHaveLength(1);
+    for (const guard of SOURCE_IDENTITY_GUARDS) {
+      expect(r.checks.find((c) => c.name === `source-identity:${guard}`)).toMatchObject({ ok: true, detail: `async:${guard}` });
+    }
+    expect(r.checks.find((c) => c.name === 'embedding-models')).toMatchObject({ ok: true, detail: 'async:model' });
+  });
+
+  it('surfaces an async probe failure as the same hard blocker the sync path reports', async () => {
+    const run = async (spec: ProbeSpec): Promise<SmokeTargetProbe> =>
+      spec.args[0]?.endsWith('check-no-box-identity.mjs')
+        ? { exitCode: 1, output: 'box identity leaked' }
+        : { exitCode: 0, output: 'clean' };
+    const r = await preflightCutAsync({}, { root }, deps, run);
+    expect(r.go).toBe(false);
+    expect(r.blockers.join('\n')).toMatch(/source-identity:check-no-box-identity\.mjs: .*exit 1.*box identity leaked/);
+  });
+
+  it('runProbeSpecAsync keeps the event loop serving while the child runs, and reports exit, timeout and spawn failure like spawnSync', async () => {
+    const loop = spinner();
+    const done = await runProbeSpecAsync({
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => { console.log("probe-out"); process.exit(3); }, 300)'],
+      timeoutMs: 10_000,
+    });
+    loop.spinning = false;
+    expect(done.exitCode).toBe(3);
+    expect(done.output).toContain('probe-out');
+    // spawnSync would have starved the loop for the whole 300ms child.
+    expect(loop.ticks).toBeGreaterThan(10);
+
+    const timedOut = await runProbeSpecAsync({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 10000)'], timeoutMs: 200 });
+    expect(timedOut.exitCode).toBeNull();
+    expect(timedOut.output).toMatch(/timed out after 200ms/);
+
+    const missing = await runProbeSpecAsync({ command: '/nonexistent/papercusp-probe-binary', args: [], timeoutMs: 1_000 });
+    expect(missing.exitCode).toBeNull();
+  });
+
+  describe('release-tag network probe (20s ls-remote bound = the sentinel limit)', () => {
+    const sourceSha = 'b'.repeat(40);
+    const release = { version: '0.0.32', channel: 'alpha' as const, sourceSha };
+    const tag = 'desktop-v0.0.32-alpha';
+    const tagRun = (answer: SmokeTargetProbe, specs: ProbeSpec[] = []) =>
+      async (spec: ProbeSpec): Promise<SmokeTargetProbe> => {
+        specs.push(spec);
+        return spec.command === 'git' ? answer : { exitCode: 0, output: 'clean' };
+      };
+
+    it('prefetches git ls-remote through the async runner and passes a tag at sourceSha', async () => {
+      const specs: ProbeSpec[] = [];
+      const r = await preflightCutAsync({}, { root, release }, deps,
+        tagRun({ exitCode: 0, output: `warning: redirecting to elsewhere\n${sourceSha}\trefs/tags/${tag}\n` }, specs));
+      const git = specs.filter((s) => s.command === 'git');
+      expect(git).toHaveLength(1);
+      expect(git[0]!.args).toEqual(['-C', workspace, 'ls-remote', '--refs', '--tags', DOGFOOD_CANONICAL_REMOTE, `refs/tags/${tag}`]);
+      expect(git[0]!.timeoutMs).toBe(20_000);
+      expect(r.checks.find((c) => c.name === 'release-tag')).toMatchObject({ ok: true });
+    });
+
+    it('a remote that answered without the tag is the hard missing-tag blocker', async () => {
+      const r = await preflightCutAsync({}, { root, release }, deps, tagRun({ exitCode: 0, output: '' }));
+      expect(r.go).toBe(false);
+      expect(r.blockers.join('\n')).toMatch(/release-tag: .*desktop-v0\.0\.32-alpha is missing .*prepare-tag/);
+    });
+
+    it.each([128, null])('a failed or timed-out probe (exit %s) is WARN-only UNMEASURED, never "missing"', async (exitCode) => {
+      const r = await preflightCutAsync({}, { root, release }, deps,
+        tagRun({ exitCode, output: 'fatal: unable to access remote' }));
+      const check = r.checks.find((c) => c.name === 'release-tag')!;
+      expect(check).toMatchObject({ ok: false, warnOnly: true });
+      expect(check.detail).toMatch(/could NOT read .*UNMEASURED/);
+      expect(r.blockers.some((b) => b.startsWith('release-tag'))).toBe(false);
+    });
+
+    it('a deferred tag never probes the network', async () => {
+      const specs: ProbeSpec[] = [];
+      await preflightCutAsync({}, { root, release, deferTag: true }, deps, tagRun({ exitCode: 0, output: '' }, specs));
+      expect(specs.some((s) => s.command === 'git')).toBe(false);
+    });
+
+    it('parseRemoteTagSha only accepts a full-sha line naming the exact tag', () => {
+      expect(parseRemoteTagSha({ exitCode: 0, output: `${'c'.repeat(40)}\trefs/tags/${tag}-rc\n` }, tag)).toBeNull();
+      expect(parseRemoteTagSha({ exitCode: 0, output: `deadbeef\trefs/tags/${tag}\n` }, tag)).toBeNull();
+      expect(parseRemoteTagSha({ exitCode: 0, output: `${'c'.repeat(40)}\trefs/tags/${tag}\n` }, tag)).toBe('c'.repeat(40));
+      expect(() => parseRemoteTagSha({ exitCode: null, output: 'probe timed out after 20000ms' }, tag)).toThrow(/unmeasured.*timed out/);
+    });
+  });
+
+  it('the release:cut tool handler never calls the synchronous preflightCut', () => {
+    const handler = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'agent-tools', 'release', 'cut.ts'), 'utf8');
+    expect(handler).not.toMatch(/\bpreflightCut\s*\(/);
+    expect(handler).toMatch(/await preflightCutAsync\(/);
+  });
+});
 
 describe('preflightCut', () => {
   const root = '/root/papercusp-desktop';
