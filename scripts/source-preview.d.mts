@@ -151,7 +151,10 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         sha256: string;
     };
 }>;
-/** @typedef {<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>} VerifierPhaseRunner */
+/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string }} VerifierDependencyProgress */
+/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+ *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
+ * }} VerifierPhaseRunner */
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
  * Mirror exact records into the existing checkpoint-log store so temporary
@@ -1898,12 +1901,14 @@ export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, si
  * product-owned tree population and the source verifier's exact file census.
  * Workspace link targets still need source verification; this receipt does
  * not claim final transformed code or a complete runtime import closure.
- * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv }} options
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv,
+ *   onProgress?: (progress: VerifierDependencyProgress) => void }} options
  */
-export function captureVerifierDependencies({ dest, receipt, env }: {
+export function captureVerifierDependencies({ dest, receipt, env, onProgress }: {
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     env?: NodeJS.ProcessEnv;
+    onProgress?: (progress: VerifierDependencyProgress) => void;
 }): {
     schemaVersion: string;
     scope: string;
@@ -2452,7 +2457,14 @@ export type PublicRepositoryLicenseRow = {
     licenses: PublicRepositoryLicense[];
     errors: string[];
 };
-export type VerifierPhaseRunner = <T>(phase: string, operation: () => T | Promise<T>) => Promise<T>;
+export type VerifierDependencyProgress = {
+    completedTrees: number;
+    totalTrees: number;
+    currentTree: string;
+};
+export type VerifierPhaseRunner = (<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+    reportProgress?: (phase: "deps.census" | "deps.postverify", progress: VerifierDependencyProgress) => void;
+};
 /**
  * The expected population comes from the parent's accepted evidence, never
  * the candidate or compiler metafile. `path` retains the original artifact
