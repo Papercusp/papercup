@@ -96,6 +96,30 @@ describe('complete retention census adoption', () => {
     expect((await inspectDetachedRetentionTrees(root, options, walk(launcher))).error).toBeUndefined();
     expect(launcher).toHaveBeenCalledTimes(2);
   });
+  it('yields the held retention mutex to a queued writer by abandoning only the census wait (EI-26942454413534533)', async () => {
+    const launcher = launch(false);
+    let waiter = false;
+    vi.mocked(withFsMutex).mockImplementationOnce((async (_name: string,
+      action: (held: { hasWaiters: () => Promise<boolean> }) => Promise<unknown>) =>
+      action({ hasWaiters: async () => waiter })) as unknown as typeof withFsMutex);
+    const started = Date.now();
+    // The caller's wait allowance is a full minute: before the fix the holder kept
+    // the mutex for all of it while a queued writer spent its own budget waiting.
+    const result = await withRetentionMutex(async retentionMutex => {
+      setTimeout(() => { waiter = true; }, 20);
+      return inspectDetachedRetentionTrees(root, options, { ...walk(launcher, 60_000), retentionMutex });
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.error).toBe('retention census pending; managed walk continues for adoption');
+    expect(result.entries).toEqual([]);
+    // Only the wait was abandoned: the measurement is unconsumed and adoptable.
+    expect(existsSync(join(slot, 'consumed'))).toBe(false);
+    await finish();
+    const adopted = await inspectDetachedRetentionTrees(root, options, walk(launcher));
+    expect(adopted.error).toBeUndefined();
+    expect(adopted.entries.map(entry => entry.path)).toEqual([join(root, 'entry')]);
+    expect(launcher).toHaveBeenCalledOnce();
+  });
   it.each(['partial', 'exit', 'foreign-key', 'outside-root', 'malformed'] as const)('refuses terminal %s output before selection', async mode => {
     const launcher = launch(false);
     await inspectDetachedRetentionTrees(root, options, walk(launcher, 15));

@@ -98,7 +98,7 @@ export async function inspectDetachedRetentionTrees(root: string,
   const requestKey = keyFor(request);
   const remaining = () => deadline - Date.now();
   const deadline = Date.now() + Math.max(1, Math.min(walk.waitMs, options.timeoutMs ?? walk.waitMs));
-  const inspect = async () => {
+  const inspect = async (held: RetentionMutexContext) => {
     const state = await readWalkState(walk.dir);
     // The wrapper may die before it writes exit.<attempt>. A consumed or
     // obsolete measurement can be retired once its process identity is dead;
@@ -122,6 +122,21 @@ export async function inspectDetachedRetentionTrees(root: string,
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(1, remaining()));
+    // EI-26942454413534533: waiting for the detached walk held the retention
+    // mutex for the caller's whole remaining run budget without consulting the
+    // FIFO queue, so a concurrent pass (or a pin/lease writer) queued behind it
+    // spent its entire budget in reacquisition. The walk is detached and is
+    // adopted by a later visit, so a queued writer abandons only this WAIT —
+    // with the same pending outcome a caller deadline produces.
+    let watching = true;
+    const pollMs = Math.max(1, Math.min(walk.pollMs ?? 250, 250));
+    const watchWaiters = (async () => {
+      while (watching && !controller.signal.aborted) {
+        await new Promise(resolveSleep => setTimeout(resolveSleep, pollMs));
+        if (!watching || controller.signal.aborted) return;
+        if (await held.hasWaiters().catch(() => false)) { controller.abort(); return; }
+      }
+    })();
     try {
       const worker = walk.workerPath ?? fileURLToPath(new URL('../../../../scripts/retention-census-worker.mjs', import.meta.url));
       return await runDetachedWalk(root, { ...walk, timeoutMs: RETENTION_CENSUS_LIFETIME_MS, maxAttempts: 1,
@@ -160,7 +175,7 @@ export async function inspectDetachedRetentionTrees(root: string,
       }, requestKey);
     } catch (error) {
       return incomplete(error instanceof DetachedWalkAbandoned ? 'retention census pending; managed walk continues for adoption' : `retention census: ${String(error)}`);
-    } finally { clearTimeout(timer); }
+    } finally { watching = false; clearTimeout(timer); await watchWaiters; }
   };
   const underLease = async (held: RetentionMutexContext) => {
     const slots = activeRetentionMutexes.get(held);
@@ -169,7 +184,7 @@ export async function inspectDetachedRetentionTrees(root: string,
     if (slots.has(slot)) throw new Error('retention census slot already in use');
     if (remaining() <= 0) return incomplete('retention census caller budget exhausted before slot access');
     slots.add(slot);
-    try { return await inspect(); }
+    try { return await inspect(held); }
     finally { slots.delete(slot); }
   };
   return walk.retentionMutex ? underLease(walk.retentionMutex) : withRetentionMutex(underLease,
