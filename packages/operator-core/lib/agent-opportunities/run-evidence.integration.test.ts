@@ -141,6 +141,46 @@ it('requires the canonical grade rather than an authored approved flag and rejec
   result = await read();
   if (result.status === 'read') expect(result.evidence.reviews).toEqual([]);
 });
+it('requires the applied round and grade to fall inside its canonical review interval', async () => {
+  await seedReviewAndTest();
+  await db.adminSql`UPDATE harness_shared.work_items
+    SET payload=jsonb_set(payload,'{agentReview,timing,round}','2'::jsonb) WHERE workspace_id=${ws}`;
+  let result = await read(); expect(result.status).toBe('read');
+  if (result.status === 'read') expect(result.evidence.reviews).toEqual([]);
+  await db.adminSql`UPDATE harness_shared.work_items
+    SET payload=jsonb_set(payload,'{agentReview,timing,round}','1'::jsonb) WHERE workspace_id=${ws}`;
+  await db.adminSql`UPDATE harness_shared.scout_routed_ideas
+    SET graded_at=${new Date(Date.parse(finished) + 1000).toISOString()}::timestamptz WHERE idea_id='reader-idea'`;
+  result = await read(); expect(result.status).toBe('read');
+  if (result.status === 'read') expect(result.evidence.reviews).toEqual([]);
+});
+it.each(['family', 'review-grade', 'review-reservation', 'test-status', 'test-case'] as const)(
+  'fails closed when %s evidence changes after hydration while the parent is unchanged', async kind => {
+    await seedReviewAndTest();
+    let changed = false;
+    const client = new Proxy(db.adminSql, { apply(target, thisArg, args) {
+      const rows = Reflect.apply(target, thisArg, args);
+      if (!(args[0] as TemplateStringsArray).join('?').includes('FROM harness_shared.test_runs')) return rows;
+      return Promise.resolve(rows).then(async result => {
+        if (!changed) {
+          changed = true;
+          if (kind === 'family') await db.adminSql`DELETE FROM harness_shared.sql_intent_family_runs
+            WHERE workspace_id=${ws} AND family='sql'`;
+          if (kind === 'review-grade') await db.adminSql`UPDATE harness_shared.scout_routed_ideas
+            SET human_grade=1 WHERE idea_id='reader-idea'`;
+          if (kind === 'review-reservation') await db.adminSql`UPDATE harness_shared.sql_candidate_reviews
+            SET suppressed=true WHERE workspace_id=${ws}`;
+          if (kind === 'test-status') await db.adminSql`UPDATE harness_shared.test_runs
+            SET status='fail' WHERE workspace_id=${ws}`;
+          if (kind === 'test-case') await db.adminSql`UPDATE harness_shared.test_case_runs SET status='fail'
+            WHERE test_run_id IN (SELECT id FROM harness_shared.test_runs WHERE workspace_id=${ws})`;
+        }
+        return result;
+      });
+    } });
+    expect(await read({ client })).toEqual({ status: 'UNKNOWN', reasons: ['normalized-evidence-changed'] });
+    expect(changed).toBe(true);
+  });
 it('rejects dirty, skipped, wrong-group and wrong-case test evidence independently of the asserted pass', async () => {
   await seedReviewAndTest();
   for (const mutation of ["worktree_dirty=true", "run_group_id='unbound'", "execution_details='{}'::jsonb"]) {

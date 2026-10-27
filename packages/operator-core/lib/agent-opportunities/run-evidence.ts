@@ -95,9 +95,10 @@ export async function readMonitoredRunEvidence(opts: MonitoredRunReadOptions,
       || current.configHash !== provenance.configHash || current.expression !== before.expression
       || before.expression !== after.expression || current.timezone !== before.timezone || before.timezone !== after.timezone)
       return unknown('current-schedule-drift');
-    const families = await sql`SELECT family,coverage,scanned,qualifying,diagnostics
+    const loadFamilies = () => sql`SELECT family,coverage,scanned,qualifying,diagnostics
       FROM harness_shared.sql_intent_family_runs WHERE workspace_id=${opts.workspaceId} AND run_id=${opts.runId}::uuid
       ORDER BY family LIMIT 6`;
+    const families = await loadFamilies();
     if (families.length !== MONITORED_FAMILIES.length || MONITORED_FAMILIES.some(f => families.filter(r => r.family === f).length !== 1))
       return unknown('family-population-missing-or-duplicate');
     const familyRows: MonitoredRunEvidence['families'] = [];
@@ -112,7 +113,7 @@ export async function readMonitoredRunEvidence(opts: MonitoredRunReadOptions,
     }
     // Approval is grounded in the native grading ledger AND the applied round,
     // not a work-item success boolean or the filer's original assignment.
-    const reviews = await sql`SELECT w.feature_id, w.taken_by, w.payload->'monitoredCandidateReview' AS pointer,
+    const loadReviews = () => sql`SELECT w.feature_id, w.taken_by, w.payload->'monitoredCandidateReview' AS pointer,
       w.payload->'agentReview' AS review, g.idea_id,g.human_grade,g.graded_by,g.graded_at
       FROM harness_shared.work_items w JOIN harness_shared.scout_routed_ideas g
         ON g.workspace_id=w.workspace_id AND g.harness_slug=w.harness_slug AND g.routed_ref='wi:'||w.feature_id
@@ -124,21 +125,25 @@ export async function readMonitoredRunEvidence(opts: MonitoredRunReadOptions,
       WHERE w.workspace_id=${opts.workspaceId} AND w.harness_slug=${opts.harnessSlug}
         AND w.payload->'monitoredCandidateReview'->>'runId'=${opts.runId}
       ORDER BY w.feature_id LIMIT 257`;
+    const reviews = await loadReviews();
     if (reviews.length >= 257) return unknown('review-evidence-truncated');
     const reviewRows: MonitoredRunEvidence['reviews'] = reviews.flatMap(r => {
       const p = r.pointer, review = r.review;
       if (!record(p) || !record(review) || review.status !== 'approved'
+        || !Number.isSafeInteger(review.round) || Number(review.round) < 1
         || !Number.isInteger(Number(r.human_grade)) || Number(r.human_grade) < 4 || Number(r.human_grade) > 5
-        || !r.graded_by || !r.graded_at || !record(review.timing) || !iso(review.timing.enteredAt)
+        || !r.graded_by || !r.graded_at || !record(review.timing) || review.timing.round !== review.round
+        || !iso(review.timing.enteredAt)
         || !iso(review.timing.decidedAt) || !iso(r.graded_at)
         || Date.parse(iso(r.graded_at)!) < Date.parse(iso(review.timing.enteredAt)!)
+        || Date.parse(iso(r.graded_at)!) > Date.parse(iso(review.timing.decidedAt)!)
         || !familyRows.some(f => f.family === p.family && f.plantedCandidateIds.includes(String(p.candidateId)))) return [];
       return [{ runId: run.run_id, family: p.family as MonitoredFamily, candidateId: String(p.candidateId),
         workItemId: r.feature_id, transitionId: `agent-review:${r.idea_id}:${review.round}:${iso(r.graded_at)}`,
         outcome: 'accepted' as const, owner: r.taken_by ?? r.graded_by }];
     });
     const group = monitoredTestRunGroup(run.run_id, run.runtime_id);
-    const tests = await sql`SELECT t.id::text,t.file_path,t.commit_sha,c.case_key
+    const loadTests = () => sql`SELECT t.id::text,t.file_path,t.commit_sha,c.case_key
       FROM harness_shared.test_runs t JOIN harness_shared.test_case_runs c ON c.test_run_id=t.id
       WHERE t.workspace_id=${opts.workspaceId} AND t.harness_slug=${opts.harnessSlug}
         AND t.run_group_id=${group} AND t.status='pass' AND c.status='pass' AND c.case_key='R13-DEPLOYED'
@@ -147,7 +152,17 @@ export async function readMonitoredRunEvidence(opts: MonitoredRunReadOptions,
         AND t.execution_details->>'testLayer'='integration' AND t.execution_details->>'skipped'='0'
         AND t.started_at<=${startedAt}::timestamptz AND t.finished_at>=${finishedAt}::timestamptz
       ORDER BY t.id LIMIT 33`;
+    const tests = await loadTests();
     if (tests.length >= 33) return unknown('test-evidence-truncated');
+    // A stable parent alone cannot certify independently mutable children,
+    // review grades/reservations or native test rows. Re-read the same bounded,
+    // ordered joins so a revocation/deletion during hydration fails closed.
+    const [finalFamilies, finalReviews, finalTests] = await Promise.all([
+      loadFamilies(), loadReviews(), loadTests(),
+    ]);
+    if (JSON.stringify(finalFamilies) !== JSON.stringify(families)
+      || JSON.stringify(finalReviews) !== JSON.stringify(reviews)
+      || JSON.stringify(finalTests) !== JSON.stringify(tests)) return unknown('normalized-evidence-changed');
     const [sameRun] = await load();
     const finalSchedule = await readMonitoredFireSnapshot(sql, opts.workspaceId, run.routine_id);
     if (JSON.stringify(sameRun) !== JSON.stringify(run) || !finalSchedule || !finalSchedule.active
