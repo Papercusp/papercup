@@ -96,8 +96,8 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
         const snapshot = pgResultDiagnosticSnapshot('org-admin', 32);
         const queries = snapshot.results
           .filter(query => query.correlation?.attemptId === attempt.context.attemptId)
-          .map(({ connectionId, queryId, backendPid, elapsedMs, preBuildMs, status }) => ({
-            connectionId, queryId, backendPid, elapsedMs, preBuildMs, status,
+          .map(({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status }) => ({
+            connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status,
           }));
         return {
           attemptId: attempt.context.attemptId,
