@@ -2727,7 +2727,14 @@ export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
   "/api/agent-mcp/console/bootstrap-su/session-resumed",
   "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
   "/api/agent-mcp/console/bootstrap-su/session-resume-released",
-  "/api/agent-mcp/console/bootstrap-su/session-respawned",
+  // NOT session-respawned (WI-6554700010029903). Its caller (the psu host's
+  // carry-respawn identity binding) gives each attempt ~2s and holds the
+  // successor's continuation prompt until one is accepted. On this FIFO it
+  // waited behind every in-flight continuation write fleet-wide, and those may
+  // hold the socket for 60s+ by design. Measured 2026-10-27: 38% of attempts
+  // timed out in 24h, and 35 continuations were dropped as
+  // successor-reanchor-unconfirmed. It still takes the reserved control-plane
+  // slot via RESERVED_CONTROL_PLANE_PATHS.
 ]);
 
 /** Match a REST control-plane path without letting query strings or a harmless

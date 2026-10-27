@@ -6442,7 +6442,6 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/agent-mcp/console/bootstrap-su/session-resumed",
       "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
       "/api/agent-mcp/console/bootstrap-su/session-resume-released",
-      "/api/agent-mcp/console/bootstrap-su/session-respawned",
       "/api/adv/sessions/port/delivery",
       "/api/adv/sessions/port/status",
     ]) {
@@ -6452,6 +6451,12 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         `rest:${path}`,
       ]);
     }
+    // WI-6554700010029903: the carry-respawn identity report is reserved but
+    // must not join the single-socket continuation FIFO.
+    const respawned = "/api/agent-mcp/console/bootstrap-su/session-respawned";
+    expect(isReservedControlPlanePath(respawned)).toBe(true);
+    expect(isReservedControlPlaneCall(ordinaryBody, respawned)).toBe(true);
+    expect(isCriticalContinuationCall(ordinaryBody, respawned)).toBe(false);
     expect(isReservedControlPlanePath("/api/tui/identity")).toBe(true);
     expect(isReservedControlPlanePath("/api/tui/identity/")).toBe(true);
     expect(isReservedControlPlanePath("/api/tui/identity?probe=startup")).toBe(
@@ -10812,6 +10817,60 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     } finally {
       releaseHome();
       releaseCompletion();
+      await Promise.allSettled(pending);
+    }
+  }, 10_000);
+
+  it("WI-6554700010029903: a carry-respawn identity report is forwarded while unkeyed continuation writes hold the critical socket", async () => {
+    let releaseHeld: () => void = () => {};
+    const heldGate = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const pending: Array<Promise<unknown>> = [];
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("client") ?? "";
+      hits.push(client);
+      const gate = client.startsWith("held-") ? heldGate : Promise.resolve();
+      void gate.then(() => res.end('{"ok":true}'));
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: "127.0.0.1",
+      targetPort: port(upstream),
+      retryWindowMs: 1_000,
+      maxInFlight: 10,
+      controlPlaneReserve: 3,
+      maxCriticalContinuationQueue: 8,
+      criticalContinuationQueueWaitLogMs: 10,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    const toolCall = (client: string, name: string, args: Record<string, unknown>) => {
+      const result = request(port(proxy), JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args },
+      }), "/api/mcp?client=" + client);
+      pending.push(result);
+      return result;
+    };
+    try {
+      // Unkeyed loop:checkpoint is a global barrier on the critical lane: it holds the
+      // socket, and a second one queues behind it (the 2026-10-27 proxy journal shape).
+      toolCall("held-loop-checkpoint", "loop:checkpoint", { did: "x" });
+      await waitFor(() => hits.includes("held-loop-checkpoint"));
+      toolCall("queued-loop-checkpoint", "loop:checkpoint", { did: "y" });
+      await waitFor(() =>
+        logs.some((line) => line.includes("queued critical-continuation request")));
+
+      const respawned = await request(port(proxy), JSON.stringify({
+        coordOwnerId: "su-respawn", sessionId: "11111111-1111-4111-8111-111111111111",
+      }), "/api/agent-mcp/console/bootstrap-su/session-respawned?client=respawn-report");
+      expect(respawned.status).toBe(200);
+      expect(hits).toContain("respawn-report");
+      expect(hits).not.toContain("queued-loop-checkpoint");
+      expect(logs.some((line) => line.includes("session-respawned"))).toBe(false);
+    } finally {
+      releaseHeld();
       await Promise.allSettled(pending);
     }
   }, 10_000);
