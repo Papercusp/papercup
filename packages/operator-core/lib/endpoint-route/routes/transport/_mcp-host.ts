@@ -5130,8 +5130,20 @@ export function registerMcpHost(server: McpServer): void {
                   _meta: { replayed: true, replaySourceUnavailable: stored._meta.replaySourceUnavailable },
                 }, dispatchSpawnCtx);
               }
+              // The replay marker and error state belong to the durable receipt
+              // wrapper. Rebuilding from the pre-door source must carry them
+              // forward or clients can mistake a replay for a fresh success.
+              const replaySourceResult = storedReplaySource
+                ? {
+                    ...storedReplaySource,
+                    ...(storedClientResult.isError === true ? { isError: true } : {}),
+                    ...(storedClientResult._meta?.replayed === true
+                      ? { _meta: { ...(storedReplaySource._meta ?? {}), replayed: true } }
+                      : {}),
+                  }
+                : undefined;
               const storedResult = normalizeStructuredReplayResult(
-                (storedReplaySource ?? storedClientResult) as StoredMcpResult,
+                (replaySourceResult ?? storedClientResult) as StoredMcpResult,
                 requestedStructured,
               );
               const hasReplaySource = storedReplaySource !== undefined;
