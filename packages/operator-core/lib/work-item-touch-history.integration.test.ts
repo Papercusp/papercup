@@ -17,10 +17,10 @@ beforeAll(async () => {
     '784-edit-attribution-acquired-via.sql',
     '1367-edit-attribution-dispatch-call-id.sql',
     '1540-git-sync-commit-attribution-repo-committed-at.sql',
+    // P-007's producer migration: the real nullable symbols text[] column and its indexes.
+    '1584-edit-attribution-symbols.sql',
     '1587-edit-attribution-signal-eligibility.sql',
   ]);
-  // P-007 owns the producer migration. Exercise its nullable text[] interface here.
-  await h.db.sql`ALTER TABLE harness_shared.edit_attribution_ledger ADD COLUMN symbols text[]`;
 }, 120_000);
 afterAll(async () => { await h.db?.cleanup(); });
 beforeEach(async () => { await h.db!.sql`TRUNCATE harness_shared.edit_attribution_ledger`; });
