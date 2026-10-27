@@ -2217,6 +2217,80 @@ describe('durable detached snapshot lifecycle', () => {
     expect(updates).toHaveLength(1);
   });
 
+  it('recovers a withheld Vitest PASS when an unavailable ledger later returns exact file evidence', async () => {
+    const runId = 'terminal-pass-ledger-unavailable-then-readable';
+    const requestedFiles = ['lib/first.test.ts'];
+    const ledgerRows = [{
+      file_path: requestedFiles[0]!,
+      status: 'pass',
+      finished_at: new Date(1_700_000_011_000),
+      output_tail: null,
+      execution_details: measuredPass(requestedFiles[0]!, runId),
+    }];
+    let failFirstLedgerRead = true;
+    const durableRow: Record<string, unknown> = {
+      run_id: runId,
+      task_id: 'task-terminal-pass-ledger-unavailable',
+      kind: 'vitest',
+      label: 'detached Vitest run',
+      file_path: null,
+      command: ['node', 'scripts/test-files.mjs'],
+      status: 'pass',
+      exit_code: 0,
+      started_at: new Date(1_700_000_000_000),
+      finished_at: new Date(1_700_000_010_000),
+      output: '',
+      truncated: false,
+    };
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{
+          ...durableRow,
+          task_state: 'exited',
+          task_exit_code: 0,
+          task_ended_at: new Date(1_700_000_010_000),
+          task_detail: { requestedFiles },
+        }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) {
+        if (failFirstLedgerRead) {
+          failFirstLedgerRead = false;
+          throw Object.assign(new Error('private query text'), { code: '57014' });
+        }
+        return ledgerRows;
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        Object.assign(durableRow, {
+          status: values[0],
+          exit_code: values[1],
+          finished_at: values[2],
+          output: values[3],
+          truncated: values[4],
+        });
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const withheld = await store.getRunAsync(runId, sql);
+    expect(withheld).toMatchObject({ runId, status: 'error', exitCode: 0 });
+    const diagnostic = withheld!.output.split('\n').find(line => line.startsWith('[coverage-gate:verification] '));
+    expect(JSON.parse(diagnostic!.slice('[coverage-gate:verification] '.length))).toMatchObject({
+      reason: 'ledger-read-unavailable',
+      ledgerReadFailure: { phase: 'query', errorName: 'Error', errorCode: '57014' },
+    });
+    expect(withheld?.output).not.toContain('private query text');
+
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered).toMatchObject({ runId, status: 'pass', exitCode: 0 });
+    expect(recovered?.output).not.toContain('[coverage-gate]');
+    expect(updates.map(([status]) => status)).toEqual(['error', 'pass']);
+  });
+
   it('rechecks a withheld Vitest PASS when exact requested-file ledger rows arrive later', async () => {
     const runId = 'terminal-pass-ledger-late';
     const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts'];
