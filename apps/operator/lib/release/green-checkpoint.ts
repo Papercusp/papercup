@@ -209,6 +209,7 @@ import {
   reserveStoredQualificationRunner,
   readPreparedCheckpointSelection,
   commitPreparedCheckpointSelection,
+  checkpointSelectionQueueAuthorityMatches,
   isPreparedCheckpointSelectionRecord,
   preparedCheckpointQueueMatches,
   type PreparedCheckpointSelectionRecord,
@@ -19585,7 +19586,9 @@ async function beginPreparedCheckpointPreflight(
     if (!ready.lock.acquired) return ready; // A contender never consumes authority.
     let handoff = false;
     try {
-      if (!isDeepStrictEqual(queue, await readCheckpointSelectionQueue(deps)) ||
+      // WI-6554700010030147: compare the selection authority, not the row — a running admission
+      // pre-check's heartbeats otherwise replan every preparation until the run budget expires.
+      if (!checkpointSelectionQueueAuthorityMatches(queue, await readCheckpointSelectionQueue(deps)) ||
           !isDeepStrictEqual(pendingCarry, await deps.readFrozenRepairPendingCarry?.() ?? null)) continue;
       const record: PreparedCheckpointSelectionRecord = {
         schemaVersion: 1, ...roots, ...selected, base, candidateSource: queue && !explicit ? "frozen-repair-queue" : provenance.candidateSource,

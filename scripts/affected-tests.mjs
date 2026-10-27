@@ -115,6 +115,7 @@ import {
   TEST_REUSE_SKIP_LIST_ENV,
   estimateReuseSavings,
   formatReuseAlarmLine,
+  formatReuseExclusionLines,
   formatTestReuseLine,
   formatTestReuseTotalLine,
   laneOfFromSplit,
@@ -6506,7 +6507,7 @@ async function armTestPassReuse(taskList) {
           laneNote ??= ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
         }
       }
-      const { skip, summary, watch } = selectReusablePasses({
+      const { skip, summary, watch, exclusions } = selectReusablePasses({
         candidates,
         proofs,
         judgedSha,
@@ -6575,6 +6576,16 @@ async function armTestPassReuse(taskList) {
             runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null, dirty: false },
         ),
       );
+      // WI-6554700010026699 (R-3/R-4): every excluded candidate's cause goes to the retained
+      // journal in full (one write, so a large task costs one append); stdout carries a bounded
+      // sample that names the journal and run group holding the rest. Diagnostic only: nothing
+      // here can change `skip`, which was decided above.
+      const exclusionLines = formatReuseExclusionLines(label, exclusions, {
+        runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
+        journal: RUN_LOG_PATH,
+      });
+      if (exclusionLines.records.length > 0) logLine(`${exclusionLines.records.join("\n")}\n`);
+      outSync(exclusionLines.sample);
     }
     if (reuseTotals.tasks > 0) outSync(formatTestReuseTotalLine(reuseTotals));
   } finally {

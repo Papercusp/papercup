@@ -313,6 +313,93 @@ describe('selectReusablePasses', () => {
   });
 });
 
+/**
+ * WI-6554700010026699 (test-pass-reuse-exclusion-cause-diagnostics-2026-10-25 P-001): every candidate
+ * that is not reused yields ONE exclusion record carrying the cause its exclusive counter used to
+ * discard. Per reason the records equal the counter, and candidates === reused + exclusions.
+ */
+describe('selectReusablePasses exclusion records', () => {
+  const SETUP = 'libs/test-config/src/setup-hermetic-env.ts';
+  const MAIN = new Set(['libs/test-config/src/vitest-config.ts']);
+  const EXCLUSIVE = ['noProof', 'otherContext', 'otherRunner', 'legacyFormatDrift', 'notCaptured', 'opaque', 'unknownDrift', 'globalInput', 'inputChanged', 'audited'];
+
+  const reconcile = (r: ReturnType<typeof selectReusablePasses>) => {
+    for (const reason of EXCLUSIVE) {
+      expect(r.exclusions.filter((x) => x.reason === reason).length, reason).toBe(r.summary[reason] ?? 0);
+    }
+    expect(r.summary.candidates).toBe(r.summary.reused + r.exclusions.length);
+    expect(new Set(r.exclusions.map((x) => x.file)).size).toBe(r.exclusions.length);
+  };
+
+  const one = (proofs: Map<string, Proof>, drift: Set<string> | null, extra: Partial<Parameters<typeof selectReusablePasses>[0]> = {}) => {
+    const r = selectReusablePasses({
+      candidates: [T],
+      proofs,
+      judgedSha: 'new',
+      changedBetween: () => drift,
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      ...extra,
+    });
+    reconcile(r);
+    expect(r.skip).toEqual([]);
+    expect(r.exclusions).toHaveLength(1);
+    return r.exclusions[0]!;
+  };
+
+  it('records the cause of each exclusive reason, with the recorded and judged SHA', () => {
+    expect(one(new Map(), new Set())).toEqual({ file: T, reason: 'noProof', recordedSha: null, judgedSha: 'new', evidence: { missing: 'proof' } });
+    expect(one(new Map([[T, proof(T, { executedModules: ['pkg/src/a.ts'] })]]), new Set()))
+      .toMatchObject({ reason: 'noProof', recordedSha: 'old', evidence: { missing: 'thisFile' } });
+    expect(one(new Map([[T, proof(T, { runContext: 'clean-local' })]]), new Set()))
+      .toMatchObject({ reason: 'otherContext', evidence: { recorded: 'clean-local', expected: CTX } });
+    expect(one(new Map([[T, proof(T, { runnerIdentity: 'v22.0.0 linux x64' })]]), new Set()))
+      .toMatchObject({ reason: 'otherRunner', evidence: { recorded: 'v22.0.0 linux x64', expected: RUNNER } });
+    expect(one(new Map([[T, proof(T, { inputsCaptured: false })]]), new Set())).toMatchObject({ reason: 'notCaptured' });
+    expect(one(new Map([[T, proof(T, { opaqueReasons: ['child-process'] })]]), new Set()))
+      .toMatchObject({ reason: 'opaque', evidence: { opaqueReasons: ['child-process'] } });
+    expect(one(new Map([[T, proof(T)]]), null))
+      .toEqual({ file: T, reason: 'unknownDrift', recordedSha: 'old', judgedSha: 'new' });
+  });
+
+  it('names the drift path that caused globalInput, inputChanged and legacyFormatDrift', () => {
+    // The FIRST global path in drift order, not the first drift path overall.
+    expect(one(new Map([[T, proof(T)]]), new Set(['other/unrelated.ts', 'package-lock.json', 'patches/x.patch'])))
+      .toMatchObject({ reason: 'globalInput', evidence: { path: 'package-lock.json' } });
+    // The FIRST invalidating input, not an unrelated drift path before it.
+    expect(one(new Map([[T, proof(T)]]), new Set(['other/unrelated.ts', 'pkg/src/a.ts', T])))
+      .toMatchObject({ reason: 'inputChanged', evidence: { path: 'pkg/src/a.ts' } });
+    // The FIRST unsafe legacy drift path (D-003 B3): a safe sibling test file before it is skipped.
+    expect(one(new Map([[T, proof(T)]]), new Set(['pkg/src/other.test.ts', 'docs/x.md', T]), { proofFormat: 'proof-v0' }))
+      .toMatchObject({ reason: 'legacyFormatDrift', evidence: { path: 'docs/x.md' } });
+  });
+
+  it('records the import cap for the D-004 capped-record branch, and the rate for the audit sample', () => {
+    const capped = Array.from({ length: EXECUTED_SOURCE_MAP_IMPORT_LIMIT }, (_, i) => `pkg/src/m${i}.ts`);
+    expect(one(new Map([[T, proof(T, { executedModules: [T, ...capped] })]]), new Set([SETUP]), { testConfigMainProcess: MAIN }))
+      .toMatchObject({ reason: 'opaque', evidence: { importCap: { executedModules: capped.length + 1, limit: EXECUTED_SOURCE_MAP_IMPORT_LIMIT } } });
+    expect(one(new Map([[T, proof(T)]]), new Set(), { auditRate: 1 }))
+      .toMatchObject({ reason: 'audited', evidence: { auditRate: 1 } });
+  });
+
+  it('reconciles a mixed population without changing the skip decision', () => {
+    const files = ['a/1.test.ts', 'a/2.test.ts', 'a/3.test.ts', 'a/4.test.ts'];
+    const proofs = new Map<string, Proof>([
+      ['a/1.test.ts', proof('a/1.test.ts')],
+      ['a/2.test.ts', proof('a/2.test.ts', { inputsCaptured: false })],
+      ['a/3.test.ts', proof('a/3.test.ts', { runContext: 'clean-local' })],
+    ]);
+    const r = run(files, proofs, new Set(['other/unrelated.ts']));
+    reconcile(r);
+    expect(r.skip).toEqual(['a/1.test.ts']);
+    expect(r.exclusions.map((x) => [x.file, x.reason])).toEqual([
+      ['a/2.test.ts', 'notCaptured'],
+      ['a/3.test.ts', 'otherContext'],
+      ['a/4.test.ts', 'noProof'],
+    ]);
+  });
+});
+
 describe('gateReuseObservations', () => {
   it('does not invent an eligible file for an off-path decision with unknown population', () => {
     expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout' })).toEqual([
