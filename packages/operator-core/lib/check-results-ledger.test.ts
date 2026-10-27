@@ -6,7 +6,10 @@
  * baseline-vs-ledger comparison without a unit for every SQL-probe criterion.
  */
 import { describe, expect, it } from 'vitest';
-import { probeCheckResults, probeCheckUnit, runInstrumentChecks, recordRubricCheckResults, readLatestRubricCheckResults } from './check-results-ledger';
+import {
+  buildRubricCheckLedgerRow, probeCheckResults, probeCheckUnit, runInstrumentChecks, recordRubricCheckResults,
+  readLatestRubricCheckResults, rubricCheckLedgerPath,
+} from './check-results-ledger';
 import { retainMeasurementProvenance } from './measurement-provenance';
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { asStructuredObservation } from './harness/improvements/observation-types';
@@ -82,6 +85,65 @@ describe('historical measurement writer-reader-scorecard roundtrip', () => {
     for (const secret of ['tiny', 'opaque-secret', 'short', 'hidden']) {
       expect(JSON.stringify({ persisted, saved })).not.toContain(secret);
     }
+  });
+});
+
+describe('per-subject check rows (crm plan D-049)', () => {
+  const lead = (ref: string) => ({ kind: 'person', ref });
+  const row = (id: number, checkId: string, value: number, subject?: { kind?: string; ref: string }) => {
+    const check = { id: checkId, rubricRef: 'leads', criterionKey: checkId.split(':')[0]!, kind: 'instrument' as const,
+      value, unit: 'score', ...(subject ? { subject } : {}) };
+    const built = buildRubricCheckLedgerRow({ check, verdict: 'pass', measuredAt: AT, durationMs: 1 },
+      { workspaceId: 'ws', harnessSlug: 'crm', root: '/tmp' });
+    return { id, status: 'pass', file_path: built.filePath, finished_at: AT, output_tail: null,
+      execution_details: JSON.parse(JSON.stringify(built.executionDetails)) };
+  };
+  const rows = [
+    row(1, 'usage:instrument', 80, lead('PER-a')),
+    row(2, 'usage:instrument', 10, lead('PER-b')),
+    row(3, 'usage:instrument', 55), // legacy rubric-wide row of a now per-subject check
+    row(4, 'fit:instrument', 70, lead('PER-a')),
+    row(5, 'freshness:instrument', 99), // a rubric-wide check never recorded per subject
+  ];
+  const read = (subject?: { kind?: string; ref: string }) =>
+    readLatestRubricCheckResults({ rubricRef: 'leads', workspaceId: 'ws', ...(subject ? { subject } : {}) }, async () => rows);
+
+  it('writes a subject row to its own file under the rubric prefix', () => {
+    expect(rows[0]!.file_path).toBe('rubric-check/leads/usage:instrument@subject/person/PER-a');
+    expect(rubricCheckLedgerPath('leads', 'c:0', { ref: 'a/b c' })).toBe('rubric-check/leads/c:0@subject/-/a%2Fb%20c');
+    expect(rubricCheckLedgerPath('leads', 'c:0')).toBe('rubric-check/leads/c:0');
+  });
+
+  it('a rubric-wide read never sees a subject measurement', async () => {
+    const latest = await read();
+    expect([...latest.keys()].sort()).toEqual(['freshness:instrument', 'usage:instrument']);
+    expect(latest.get('usage:instrument')!.testRunId).toBe(3);
+  });
+
+  it("a subject read returns only that subject's rows, plus checks never recorded per subject", async () => {
+    const a = await read(lead('PER-a'));
+    expect(Object.fromEntries([...a].map(([id, r]) => [id, r.testRunId])))
+      .toEqual({ 'usage:instrument': 1, 'fit:instrument': 4, 'freshness:instrument': 5 });
+  });
+
+  it("never borrows another subject's or the rubric-wide row for a per-subject check", async () => {
+    const b = await read(lead('PER-b'));
+    expect(b.get('usage:instrument')!.testRunId).toBe(2);
+    expect(b.has('fit:instrument')).toBe(false);
+    const unknown = await read(lead('PER-unmeasured'));
+    expect(unknown.has('usage:instrument')).toBe(false);
+    expect(unknown.has('fit:instrument')).toBe(false);
+    expect(unknown.get('freshness:instrument')!.testRunId).toBe(5);
+    // kind is part of the identity: the same ref under another kind is another subject.
+    expect((await read({ ref: 'PER-a' })).has('usage:instrument')).toBe(false);
+  });
+
+  it('a per-subject check left unmeasured fills as unknown, not as the borrowed value', async () => {
+    const out = fillRatingsFromLedger({ criteria: [{ key: 'fit', check: { kind: 'instrument',
+      instrumentKey: 'code-intel:native-adoption-good-use' } }], callerRatings: undefined,
+      latest: await read(lead('PER-b')) });
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.unrecorded).toEqual(['fit']);
   });
 });
 

@@ -77,6 +77,74 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     const legacy = { ...current, testEnvironment: undefined };
     expect(admissionPrecheckMeasurementIdentity(current, [])).not.toBe(admissionPrecheckMeasurementIdentity(legacy, []));
   });
+
+  describe('EI-27092183951452642: identity follows the judged classification, not verdict detail', () => {
+    type Signature = FrozenCandidateRepairQueue['signature'];
+    const entry = (fields: Record<string, unknown>) =>
+      ({ recipe: 'test:file', admittedRound: 1, measuredHead: 'b'.repeat(40), ...fields });
+    const base = [
+      entry({ kind: 'test-file', id: 'lib/red.test.ts' }),
+      entry({ kind: 'test-file', id: 'lib/other-red.test.ts' }),
+      entry({ kind: 'workspace-task', id: '@t/core :: test' }),
+    ] as unknown as Signature;
+
+    it('keeps the identity when a verdict re-stamps, reorders and adds an id of a present non-test kind', () => {
+      const restamped = [
+        { ...base[2], measuredHead: 'f'.repeat(40), errors: ['exit 1'] },
+        { ...base[1], measuredHead: 'f'.repeat(40), cases: ['re-measured case'] },
+        { ...base[0], measuredHead: 'f'.repeat(40), admittedRound: 3 },
+        entry({ kind: 'workspace-task', id: '@t/desktop :: test', admittedRound: 3, measuredHead: 'f'.repeat(40) }),
+      ] as unknown as Signature;
+      expect(admissionPrecheckMeasurementIdentity(operation(), restamped))
+        .toBe(admissionPrecheckMeasurementIdentity(operation(), base));
+    });
+
+    it.each([
+      ['a signature test file is dropped', (s: Signature) => s.filter(e => e.id !== 'lib/other-red.test.ts')],
+      ['a signature test file is added', (s: Signature) => [...s, entry({ kind: 'test-file', id: 'lib/new-red.test.ts' })]],
+      ['a new non-test kind appears', (s: Signature) => [...s, entry({ kind: 'lint-leg', id: 'lint:tsc' })]],
+    ])('changes the identity when %s', (_label, mutate) => {
+      expect(admissionPrecheckMeasurementIdentity(operation(), mutate(base) as Signature))
+        .not.toBe(admissionPrecheckMeasurementIdentity(operation(), base));
+    });
+
+    it.each([
+      ['re-stamps the same population: the pre-check completes', false],
+      ['promotes a radius file into the signature: the pre-check stops', true],
+    ])('a gate verdict written mid-run that %s', async (_label, reclassifies) => {
+      let persisted = wide(41);
+      let verdictWritten = false;
+      const outcome = await runAdmissionPrecheckWorker(input, {
+        getTask: async () => ({ state: 'running', confined: true }),
+        readQueue: async () => ({ status: 'value', queue: persisted }),
+        transition: async (_target, update) => { persisted = update(persisted); },
+        now: () => 30,
+        createRunner: () => async run => {
+          const results = run.files.map(path => ({ path, status: 'pass' as const }));
+          for (const result of results) {
+            await run.onFileResult?.(result);
+            if (verdictWritten) continue;
+            verdictWritten = true;
+            // The gate records its verdict: every entry re-stamped at the head it measured.
+            persisted = { ...persisted, lastVerdictAtMs: 25, signature: [
+              ...persisted.signature.map(e => ({ ...e, measuredHead: 'f'.repeat(40), cases: ['re-measured case'] })),
+              ...(reclassifies ? [entry({ kind: 'test-file', id: 'lib/file-0.test.ts', admittedRound: 2 })] : []),
+            ] } as unknown as FrozenCandidateRepairQueue;
+          }
+          return { ran: true, commit: run.commit, results };
+        },
+      });
+      expect(verdictWritten).toBe(true);
+      if (reclassifies) {
+        expect(outcome).toMatchObject({ status: 'interrupted', reason: expect.stringContaining('identity changed') });
+      } else {
+        expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: true, ran: true } });
+        expect(persisted.admissionPrecheck?.status).toBe('passed');
+        expect(persisted.admissionPrecheck?.completedCount).toBe(41);
+      }
+    });
+  });
+
   const wide = (size = 81) => {
     const files = ['lib/red.test.ts', ...Array.from({ length: size - 1 }, (_, i) => `lib/file-${i}.test.ts`)];
     return queue(operation({ files, totalCount: files.length, radius: { status: 'measured', reason: 'ok',

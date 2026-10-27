@@ -1303,7 +1303,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // so a known-dead account is disqualified immediately after a restart. Independent try so it works even
     // before the owner-pins table (migration 416) exists.
     try {
-      const [{ loadAccountPool }, { accountBurnAction }] = await Promise.all([
+      const [{ loadAccountPool }, { accountGatewayBurnAction }] = await Promise.all([
         import('../deployment/account-pool-store'),
         import('../deployment/account-pool'),
       ]);
@@ -1322,9 +1322,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           readingAt: Math.max(a.rate?.utilizationAt ?? 0, a.rate?.usageCreditsObservedAt ?? 0) || undefined,
           usageCreditsAvailable: a.rate?.usageCreditsAvailable,
           // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
-          // accountBurnAction applies the canonical freshness gate, so a days-old SHED verdict cannot
-          // strand an otherwise recovered account after its projection has gone stale.
-          burnAction: accountBurnAction(a, hintNow),
+          // The verdict applies the canonical freshness gate, so a days-old SHED verdict cannot
+          // strand an otherwise recovered account after its projection has gone stale. The GATEWAY
+          // form refuses only a measured wall; a pacing-projection shed ranks as throttle here and
+          // keeps serving (it still refuses the spawn hard pin) — WI-6554700010029796.
+          burnAction: accountGatewayBurnAction(a, hintNow),
         })),
       );
       recordDbOutcome('rate-hints', true);

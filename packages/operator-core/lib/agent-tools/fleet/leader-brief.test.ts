@@ -66,6 +66,7 @@ import {
   runBoundedLeaderBriefReads,
   runLeaderBriefWithinDeadline,
   bindLeaderBriefResult,
+  createLeaderBriefMetadataRecorder,
   runLeaderBriefReads,
   resolveLeaderBriefFleet,
   selectLeaderBriefMembers,
@@ -190,17 +191,26 @@ describe('P-004 identity binding at the existing fleet brief sink', () => {
     const data = { ok: true, summary: { fleet: 'alpha', members: 2 } };
     const producer = vi.fn(async () => ({ data }));
     const metadata = vi.fn();
+    const recordMetadata = createLeaderBriefMetadataRecorder(metadata);
+    const metricTiming = {
+      schemaVersion: 'fleet-metric-read-timing-v1',
+      phases: { readFleetMetricSource: { status: 'failed', elapsedMs: 5001 } },
+    };
+    recordMetadata({ fleetMetricReadTiming: metricTiming });
     const binder = vi.fn(async () => ({ identityId: 'su.fleet-leader', status: 'bound',
       specificationRevision: 'a'.repeat(64) })) as never;
     const produced = await runLeaderBriefWithinDeadline(producer, { data: {
       ok: false, summary: { fleet: 'alpha', members: 0 },
     } });
-    const delivered = await bindLeaderBriefResult(produced, { fleet: 'alpha', workspace: 'ws' }, metadata, binder);
+    const delivered = await bindLeaderBriefResult(produced, { fleet: 'alpha', workspace: 'ws' }, recordMetadata, binder);
     expect(producer).toHaveBeenCalledTimes(1);
     expect(delivered).toBe(produced);
     expect(delivered.data).toBe(data);
-    expect(metadata).toHaveBeenCalledTimes(1);
-    expect(metadata).toHaveBeenCalledWith({ identityContribution: expect.objectContaining({ status: 'bound' }) });
+    expect(metadata).toHaveBeenCalledTimes(2);
+    expect(metadata).toHaveBeenLastCalledWith({
+      fleetMetricReadTiming: metricTiming,
+      identityContribution: expect.objectContaining({ status: 'bound' }),
+    });
   });
 });
 

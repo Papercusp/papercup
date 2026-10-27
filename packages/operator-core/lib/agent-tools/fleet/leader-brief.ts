@@ -341,6 +341,23 @@ function recordLeaderBriefFleetMetricTiming(input: {
   }
 }
 
+/** `ctx.metadata` intentionally replaces the current snapshot. A single handler
+ * can emit several independent diagnostics, so retain them locally and publish
+ * the accumulated snapshot after each update. */
+export function createLeaderBriefMetadataRecorder(
+  metadata?: (value: Record<string, unknown>) => void,
+): (value: Record<string, unknown>) => void {
+  let snapshot: Record<string, unknown> = {};
+  return (value) => {
+    snapshot = { ...snapshot, ...value };
+    try {
+      metadata?.({ ...snapshot });
+    } catch {
+      // Invocation diagnostics must never change the brief result.
+    }
+  };
+}
+
 const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
   resolveScope: resolveFleetMetricScope,
   listItems: input => readFleetMetricSource(input.resolution),
@@ -4168,6 +4185,7 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    const recordMetadata = createLeaderBriefMetadataRecorder(ctx.metadata);
     let actorWorkspace: string | null = null;
     let ownerId: string | undefined;
     // P-004/D-096: kept beyond the destructure because takeFleetLeadership needs
@@ -4193,7 +4211,7 @@ export default defineTool({
           // so the caller is installed when the seat is empty.
           allowLeadershipWrites: true,
           resolveCallerMembership: true,
-          metadata: ctx.metadata,
+          metadata: recordMetadata,
         }),
       {
         data: {
@@ -4206,7 +4224,7 @@ export default defineTool({
       },
     );
     return bindLeaderBriefResult(brief, { fleet: args.fleet, harness: args.harness,
-      workspace: args.workspace ?? actorWorkspace }, ctx.metadata);
+      workspace: args.workspace ?? actorWorkspace }, recordMetadata);
   },
 });
 

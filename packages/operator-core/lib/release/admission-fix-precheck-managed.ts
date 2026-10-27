@@ -223,11 +223,26 @@ const defaultWorkerDeps: AdmissionPrecheckWorkerDeps = {
   createRunner: createCheckpointTreeFixPrecheckRunner,
 };
 
-/** Ordered membership and every classification/queue pin are part of the resume identity. */
+/**
+ * Ordered membership and every classification/queue pin are part of the resume identity.
+ *
+ * EI-27092183951452642: the signature enters ONLY as the classification the pre-check judges
+ * with — `precheckPopulation`'s signature test-file ids and non-test kinds, as sorted sets.
+ * Every gate verdict rewrites each entry's `measuredHead` / `cases` / `errors`, may reorder
+ * entries, and may add an id of a non-test kind that is already present. None of that changes
+ * what the pre-check measures or how it classifies a result, so none of it may abort an
+ * in-flight pre-check or orphan its saved measurement. A changed test-file id set or a new
+ * non-test kind DOES change the classification, and still changes the identity.
+ */
 export function admissionPrecheckMeasurementIdentity(operation: FrozenRepairAdmissionPrecheck, signature: readonly RepairSignatureEntry[]): string {
+  const population = precheckPopulation({ signature, admittedPaths: operation.files });
+  const classification = {
+    signatureTestFiles: [...population.signatureTestFiles].sort(),
+    nonTestKinds: [...population.nonTestKinds].sort(),
+  };
   return createHash('sha256').update(JSON.stringify({ operationId: operation.operationId, candidate: operation.candidate,
     repairHead: operation.repairHead, builtCommit: operation.builtCommit, builtTree: operation.builtTree,
-    sourceCommit: operation.sourceCommit, files: operation.files, radius: operation.radius, signature,
+    sourceCommit: operation.sourceCommit, files: operation.files, radius: operation.radius, classification,
     testEnvironment: operation.testEnvironment })).digest('hex');
 }
 

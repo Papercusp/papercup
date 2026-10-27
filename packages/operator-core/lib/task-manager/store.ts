@@ -1945,6 +1945,12 @@ export async function clearVanishedUnaccounted(
  * the provider's billing export settles. Deleting the row a week after the PUBLISH
  * process ended erased every one of those receipts, with nothing to rebuild them from.
  */
+/** Keep operator E2E task rows aligned with the routine's per-run log window. */
+export const OPERATOR_E2E_TASK_RETENTION_RUNS = 14;
+export const OPERATOR_E2E_TASK_CLASS = 'test-run';
+export const OPERATOR_E2E_TASK_LAUNCHED_BY = 'system:operator-e2e-isolated';
+export const OPERATOR_E2E_TASK_SUBSYSTEM = 'operator-e2e';
+
 export async function gcTerminalTasks(
   olderThanHours = 168,
   opts: { workspaceId?: string } = {},
@@ -1956,8 +1962,34 @@ export async function gcTerminalTasks(
     DELETE FROM harness_shared.task_ledger
      WHERE workspace_id = ${ws}
        AND ended_at IS NOT NULL
-       AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
        AND NOT (detail ? 'release')
+       AND (
+         (
+           class = ${OPERATOR_E2E_TASK_CLASS}
+           AND launched_by = ${OPERATOR_E2E_TASK_LAUNCHED_BY}
+           AND detail->>'subsystem' = ${OPERATOR_E2E_TASK_SUBSYSTEM}
+           AND task_id NOT IN (
+             SELECT task_id
+               FROM harness_shared.task_ledger
+              WHERE workspace_id = ${ws}
+                AND ended_at IS NOT NULL
+                AND class = ${OPERATOR_E2E_TASK_CLASS}
+                AND launched_by = ${OPERATOR_E2E_TASK_LAUNCHED_BY}
+                AND detail->>'subsystem' = ${OPERATOR_E2E_TASK_SUBSYSTEM}
+                AND NOT (detail ? 'release')
+              ORDER BY started_at DESC, task_id DESC
+              LIMIT ${OPERATOR_E2E_TASK_RETENTION_RUNS}
+           )
+         )
+         OR (
+           (
+             class <> ${OPERATOR_E2E_TASK_CLASS}
+             OR launched_by <> ${OPERATOR_E2E_TASK_LAUNCHED_BY}
+             OR detail->>'subsystem' IS DISTINCT FROM ${OPERATOR_E2E_TASK_SUBSYSTEM}
+           )
+           AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
+         )
+       )
     RETURNING task_id, log_path
   `;
 

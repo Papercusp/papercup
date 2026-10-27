@@ -890,6 +890,25 @@ export function accountBurnAction(a: Pick<ClaudeAccount, 'rate'>, now: number): 
   return accountBurnVerdict(a.rate, now).action;
 }
 
+/**
+ * The burn action the inference GATEWAY applies to individual requests — NOT the spawn pin.
+ *
+ * A `shed` resting on a `measured-wall` (the provider's own meter says the window is spent) keeps
+ * the account out of the gateway race. A `shed` resting on a `pacing-projection` only refuses the
+ * hard spawn PIN (see `selectAccountForSpawn`): the account still serves, so at the gateway it
+ * ranks as `throttle` — behind every non-burning account, never refused outright.
+ *
+ * Passing the raw spawn action to the gateway made `accountLoadKey` score a projected shed as
+ * Infinity, so the gateway answered 429 to every request for a model only those accounts serve
+ * while the provider returned zero 429s (WI-6554700010029796: the two Pro Codex accounts at 7d
+ * utilization 0.91, gpt-6.1-sol shed in bursts for hours).
+ */
+export function accountGatewayBurnAction(a: Pick<ClaudeAccount, 'rate'>, now: number): BurnAction {
+  const verdict = accountBurnVerdict(a.rate, now);
+  if (verdict.action === 'shed' && verdict.disposition !== 'measured-wall') return 'throttle';
+  return verdict.action;
+}
+
 /** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never
  *  observed / stale / window-expired (treat as most-available so a cold pool degrades gracefully). */
 export function drainUtil(a: ClaudeAccount, now: number): number {

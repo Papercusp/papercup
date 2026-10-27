@@ -35,6 +35,7 @@ import {
   parseRecordedMeasurementProvenance,
   type RecordedRubricCheck,
   type RecordedRubricCheckExpect,
+  type RecordedRubricCheckSubject,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import type { ScorecardProbeCheckRun } from './harness/improvements/observation-types';
@@ -72,9 +73,22 @@ export interface RubricCheckLedgerScope {
   commitSha?: string | null;
 }
 
-/** One ledger "file" per check, so latest-per-file is latest-per-check. */
-export function rubricCheckLedgerPath(rubricRef: string, checkId: string): string {
-  return `rubric-check/${rubricRef}/${checkId}`;
+/**
+ * One ledger "file" per check (per subject, for a subject row), so latest-per-file is
+ * latest-per-check. A subject row keeps the rubric prefix — its history stays beside the
+ * rubric's — and appends the subject, so no unscoped or other-subject row shares its file.
+ */
+export function rubricCheckLedgerPath(rubricRef: string, checkId: string, subject?: RecordedRubricCheckSubject): string {
+  return `rubric-check/${rubricRef}/${checkId}${subject ? rubricCheckSubjectSuffix(subject) : ''}`;
+}
+
+/** The file_path suffix that marks a subject row. `-` stands for an absent kind. */
+export function rubricCheckSubjectSuffix(subject: RecordedRubricCheckSubject): string {
+  return `@subject/${encodeURIComponent(subject.kind ?? '-')}/${encodeURIComponent(subject.ref)}`;
+}
+
+function sameRecordedSubject(a: RecordedRubricCheckSubject | undefined, b: RecordedRubricCheckSubject): boolean {
+  return a !== undefined && a.ref === b.ref && (a.kind ?? null) === (b.kind ?? null);
 }
 
 export function probeCheckId(criterionKey: string, childIndex: number): string {
@@ -311,7 +325,7 @@ export interface RubricCheckLedgerRow {
 
 /** Build the test_runs row for one check result. Throws if the details would not read back. */
 export function buildRubricCheckLedgerRow(result: RubricCheckResult, scope: RubricCheckLedgerScope): RubricCheckLedgerRow {
-  const filePath = rubricCheckLedgerPath(result.check.rubricRef, result.check.id);
+  const filePath = rubricCheckLedgerPath(result.check.rubricRef, result.check.id, result.check.subject);
   const finishedAt = result.measuredAt;
   const startedAt = result.durationMs === null
     ? finishedAt
@@ -420,9 +434,15 @@ export interface LatestRubricCheckResult {
 /**
  * The latest ledger row for every check of a rubric in one workspace, keyed by check id. Rows
  * whose details no longer parse are skipped rather than guessed at.
+ *
+ * Subjects (crm plan D-049): without `subject` the read is rubric-wide and every subject row is
+ * excluded, so a per-lead measurement never becomes the rubric's result. With `subject` it
+ * returns that subject's latest row per check; a check that has NO subject row for any subject
+ * is a rubric-wide check and keeps its unscoped row, but a check ever recorded per subject is
+ * never filled from another subject's row or from an unscoped one — it is simply absent.
  */
 export async function readLatestRubricCheckResults(
-  input: { rubricRef: string; workspaceId: string | null },
+  input: { rubricRef: string; workspaceId: string | null; subject?: RecordedRubricCheckSubject },
   sql: SqlLike = getOrgPg().sql as unknown as SqlLike,
 ): Promise<Map<string, LatestRubricCheckResult>> {
   const prefix = `rubric-check/${input.rubricRef}/`;
@@ -439,17 +459,29 @@ export async function readLatestRubricCheckResults(
     output_tail: string | null; execution_details: unknown;
   }>;
   const out = new Map<string, LatestRubricCheckResult>();
+  const own = new Map<string, LatestRubricCheckResult>();
+  const perSubjectChecks = new Set<string>();
   for (const row of rows) {
     const check = parseTestRunExecutionDetails(row.execution_details)?.check;
     if (!check || check.rubricRef !== input.rubricRef) continue;
-    out.set(check.id, {
+    const result: LatestRubricCheckResult = {
       testRunId: Number(row.id),
       check,
       status: row.status as RubricCheckVerdict,
       finishedAt: row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at),
       detail: typeof row.output_tail === 'string' && row.output_tail.length > 0 ? row.output_tail : null,
       provenanceStatus: measurementProvenanceStatus(check.provenance),
-    });
+    };
+    if (check.subject) {
+      perSubjectChecks.add(check.id);
+      if (input.subject && sameRecordedSubject(check.subject, input.subject)) own.set(check.id, result);
+      continue;
+    }
+    out.set(check.id, result);
   }
-  return out;
+  if (!input.subject) return out;
+  for (const [checkId, result] of out) {
+    if (!own.has(checkId) && !perSubjectChecks.has(checkId)) own.set(checkId, result);
+  }
+  return own;
 }

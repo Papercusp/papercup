@@ -55,7 +55,7 @@ async function statePlanDowngrade(t: PlanTransition, ws?: string): Promise<void>
   const summary = `Codex account '${t.accountId}' was DOWNGRADED from ${t.from} to ${t.to}: its usage windows now wall much sooner. Renew the ${t.from} subscription to restore its capacity`;
   const body =
     `The provider now reports plan '${t.to}' (x-codex-plan-type) for account '${t.accountId}', which previously reported '${t.from}'. ` +
-    `A lower tier caps its 5h and weekly windows far lower, so once the remaining accounts wall, Codex requests are shed (429) and turns slow down. ` +
+    `A lower tier caps its 5h and weekly windows far lower, so once the remaining accounts wall, the gateway answers Codex requests with 429 and turns slow down. ` +
     `Fix: renew or re-upgrade the ${t.from} subscription for this account. A later reading at the higher tier re-arms this alert.`;
   const { openEscalation, listEscalations } = await import('../agent-tools/coordination/escalations');
   const open = await listEscalations({ status: 'open' });

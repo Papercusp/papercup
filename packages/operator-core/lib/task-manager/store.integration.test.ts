@@ -1069,18 +1069,26 @@ describe('gcTerminalTasks retention', () => {
     taskId: string,
     endedHoursAgo: number,
     detail: Record<string, unknown>,
-    options: { taskClass?: string; logPath?: string | null } = {},
+    options: { taskClass?: string; launchedBy?: string; logPath?: string | null; startedHoursAgo?: number } = {},
   ) {
     await db.sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
         launched_by, confined, state, ended_at, log_path, detail
       ) VALUES (
-        ${taskId}, ${WS}, ${taskId}, ${options.taskClass ?? 'deploy'}, ${taskId}, '[]'::jsonb, 'test', false, 'exited',
+        ${taskId}, ${WS}, ${taskId}, ${options.taskClass ?? 'deploy'}, ${taskId}, '[]'::jsonb,
+        ${options.launchedBy ?? 'test'}, false, 'exited',
         now() - make_interval(hours => ${endedHoursAgo}::int), ${options.logPath ?? null},
         ${db.sql.json(detail as postgres.JSONValue)}
       )
     `;
+    if (options.startedHoursAgo !== undefined) {
+      await db.sql`
+        UPDATE harness_shared.task_ledger
+           SET started_at = now() - make_interval(hours => ${options.startedHoursAgo}::int)
+         WHERE workspace_id = ${WS} AND task_id = ${taskId}
+      `;
+    }
   }
 
   it('never deletes a release journal, however long ago its process exited', async () => {
@@ -1092,6 +1100,74 @@ describe('gcTerminalTasks retention', () => {
     await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(1);
     const rows = await db.sql`SELECT task_id FROM harness_shared.task_ledger ORDER BY task_id`;
     expect(rows.map((row) => row.task_id)).toEqual(['old-release', 'young-plain']);
+  });
+
+  it('retains the latest operator E2E task rows to match the per-run log window', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'operator-e2e-task-retention-'));
+    const oldestLog = join(stateDir, 'operator-e2e-oldest.log');
+    const latestLog = join(stateDir, 'operator-e2e-latest.log');
+    writeFileSync(oldestLog, 'old E2E output\n', 'utf8');
+    writeFileSync(latestLog, 'retained E2E output\n', 'utf8');
+
+    try {
+      const runIds = Array.from(
+        { length: store.OPERATOR_E2E_TASK_RETENTION_RUNS + 1 },
+        (_, index) => `operator-e2e-run-${String(index + 1).padStart(2, '0')}`,
+      );
+      for (const [index, taskId] of runIds.entries()) {
+        const endedHoursAgo = 200 + runIds.length - index - 1;
+        await insertTerminal(
+          taskId,
+          endedHoursAgo,
+          { subsystem: store.OPERATOR_E2E_TASK_SUBSYSTEM, runGroup: `operator-e2e-nightly:fire-${index}` },
+          {
+            taskClass: store.OPERATOR_E2E_TASK_CLASS,
+            launchedBy: store.OPERATOR_E2E_TASK_LAUNCHED_BY,
+            logPath: index === 0 ? oldestLog : index === runIds.length - 1 ? latestLog : null,
+            startedHoursAgo: endedHoursAgo + 1,
+          },
+        );
+      }
+
+      // Similar metadata outside the exact class/launcher/subsystem fence must
+      // continue to use the ordinary age policy.
+      await insertTerminal('wrong-launcher-e2e', 400, { subsystem: store.OPERATOR_E2E_TASK_SUBSYSTEM }, {
+        taskClass: store.OPERATOR_E2E_TASK_CLASS,
+      });
+      await insertTerminal('wrong-class-e2e', 400, { subsystem: store.OPERATOR_E2E_TASK_SUBSYSTEM }, {
+        taskClass: 'other',
+        launchedBy: store.OPERATOR_E2E_TASK_LAUNCHED_BY,
+      });
+      await insertTerminal('wrong-subsystem-e2e', 400, { subsystem: 'other' }, {
+        taskClass: store.OPERATOR_E2E_TASK_CLASS,
+        launchedBy: store.OPERATOR_E2E_TASK_LAUNCHED_BY,
+      });
+
+      await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(4);
+
+      const retained = await db.sql`
+        SELECT task_id
+          FROM harness_shared.task_ledger
+         WHERE workspace_id = ${WS}
+           AND class = ${store.OPERATOR_E2E_TASK_CLASS}
+           AND launched_by = ${store.OPERATOR_E2E_TASK_LAUNCHED_BY}
+           AND detail->>'subsystem' = ${store.OPERATOR_E2E_TASK_SUBSYSTEM}
+         ORDER BY started_at DESC, task_id DESC
+      `;
+      expect(retained.map((row) => row.task_id)).toEqual(runIds.slice(1).reverse());
+      expect(await store.getTask(runIds[0])).toBeNull();
+      expect(await store.getTask('wrong-launcher-e2e')).toBeNull();
+      expect(await store.getTask('wrong-class-e2e')).toBeNull();
+      expect(await store.getTask('wrong-subsystem-e2e')).toBeNull();
+      expect(existsSync(oldestLog)).toBe(false);
+      expect(await store.getTask(runIds[runIds.length - 1])).toMatchObject({
+        logPath: latestLog,
+        class: store.OPERATOR_E2E_TASK_CLASS,
+      });
+      expect(existsSync(latestLog)).toBe(true);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps terminal logs reattachable until expiry, then retires only deleted-row logs', async () => {

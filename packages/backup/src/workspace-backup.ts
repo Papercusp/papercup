@@ -1037,7 +1037,10 @@ export class WorkspaceBackup {
       throw new Error(`snapshot ${snapshotId} has a protected terminal receipt; refusing to overwrite it`);
     }
     if ((await this.taggedSnapshotManifests(snapshotId)).length !== 0) {
-      throw new Error(`snapshot ${snapshotId} already has a tagged artifact; refusing orphan producer recovery`);
+      // Do not reopen a producer when its artifact already exists. Let the
+      // receipt reconciler validate that exact row-tagged artifact and attach
+      // its verified result instead of treating it as a reason to fail closed.
+      return null;
     }
     const updated = await sql<{ id: number }[]>`
       UPDATE harness_shared.backup_snapshots
@@ -1065,6 +1068,7 @@ export class WorkspaceBackup {
     const rows = await sql<{
       id: number;
       status: SnapshotInfo['status'];
+      error_text: string | null;
       db_dump_ok: boolean | null;
       kopia_snapshot_id: string | null;
       started_at: string;
@@ -1079,6 +1083,7 @@ export class WorkspaceBackup {
              snapshot.kopia_snapshot_id,
              snapshot.started_at,
              snapshot.finished_at,
+             snapshot.error_text,
              snapshot.bytes_added,
              snapshot.bytes_total,
              (
@@ -1098,8 +1103,14 @@ export class WorkspaceBackup {
     const row = rows[0];
     if (!row) throw new Error(`backup snapshot row ${snapshotId} was not found in ${this.workspaceId}`);
     const knownDbDumpOk = resolveDbDumpOk(row.db_dump_ok, row.hook_payload);
+    const recoverableOrphan = row.status === 'failed'
+      && /^orphan-sweep: status='running' for >\d+min$/.test(row.error_text ?? '')
+      && row.kopia_snapshot_id === null
+      && row.db_dump_ok !== false
+      && row.finished_at !== null
+      && Number.isFinite(Date.parse(row.finished_at));
 
-    if (row.status !== 'running') {
+    if (row.status !== 'running' && !recoverableOrphan) {
       return {
         snapshotId,
         reconciled: false,
@@ -1116,18 +1127,21 @@ export class WorkspaceBackup {
 
     const manifests = await this.taggedSnapshotManifests(snapshotId);
     if (manifests.length === 0) {
+      const stillRunning = row.status === 'running';
       return {
         snapshotId,
         reconciled: false,
-        stillRunning: true,
-        status: 'running',
+        stillRunning,
+        status: stillRunning ? 'running' : 'failed',
         dbDumpOk: knownDbDumpOk,
         kopiaSnapshotId: null,
         bytesAdded: null,
         bytesTotal: null,
         durationMs: null,
         artifactAbsent: row.kopia_snapshot_id === null,
-        note: 'No completed Kopia artifact carries this row id yet; keep polling the receipt.',
+        note: stillRunning
+          ? 'No completed Kopia artifact carries this row id yet; keep polling the receipt.'
+          : 'The failed orphan receipt has no completed tagged artifact to reconcile.',
       };
     }
     if (manifests.length !== 1) {
@@ -1175,8 +1189,13 @@ export class WorkspaceBackup {
              db_dump_ok        = ${dbDumpOk}
        WHERE workspace_id = ${this.workspaceId}
          AND id = ${snapshotId}
-         AND status = 'running'
          AND kopia_snapshot_id IS NULL
+         AND status = ${row.status}
+         AND (status <> 'failed' OR (
+           error_text = ${row.error_text}
+           AND finished_at = ${row.finished_at}::timestamptz
+           AND db_dump_ok IS NOT DISTINCT FROM ${row.db_dump_ok}
+         ))
        RETURNING id
     `;
     if (updated.length === 0) {

@@ -2462,9 +2462,14 @@ export async function emitScorecard(
           error: 'fromLedger rates from the results ledger; it cannot be combined with acceptanceOf or a computed-card supersede.',
         };
       }
+      // crm plan D-049: a subject's card reads that subject's measurements; a check recorded per
+      // subject is never filled from another subject's (or a rubric-wide) row.
       const latest = await (deps.readLatestCheckResults ?? readLatestRubricCheckResults)({
         rubricRef: rubric.rubricId,
         workspaceId: rubric.workspaceId ?? null,
+        ...(args.subject
+          ? { subject: { ...(args.subject.kind ? { kind: args.subject.kind } : {}), ref: args.subject.ref } }
+          : {}),
       });
       const fill = fillRatingsFromLedger({
         criteria: rubric.criteria,
