@@ -40,7 +40,10 @@ import {
   GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS,
   GRADING_AUDIT_DISPATCH_ACTOR,
   GRADING_INTEGRITY_RUBRIC_REF,
+  GRADING_AUDIT_FALLBACK,
+  gradingAuditFallbackModelCanServe,
   gradingAuditFallbackVerdictCanServe,
+  gradingAuditProviderCanServe,
   gradingAuditorLaunchCtx,
   readGradingAuditDispatchSuppression,
   reconcilePendingGradingAudits,
@@ -5022,5 +5025,75 @@ describe('gradingAuditFallbackVerdictCanServe', () => {
   it('a provider with no registered accounts cannot serve', () => {
     expect(verdictFor([row({ id: 'a', provider: 'claude' })], 'codex')).toBeUndefined();
     expect(gradingAuditFallbackVerdictCanServe(undefined)).toBe(false);
+  });
+});
+
+// WI-6554700010030250: a serviceable Codex ACCOUNT that refuses the fallback MODEL
+// cannot serve the bounded retry — the launch would die on its first turn.
+describe('gradingAuditProviderCanServe — fallback model awareness', () => {
+  const NOW = Date.parse('2026-10-27T12:57:00.000Z');
+  const model = GRADING_AUDIT_FALLBACK.model;
+  const oneServiceable = async () => ({ serviceable: 1 });
+
+  it('THE INCIDENT: one serviceable Codex account that refuses the fallback model cannot serve', async () => {
+    const readPoolVerdict = vi.fn(oneServiceable);
+    const readCodexHeadroom = vi.fn(async () => ({ reachable: true, serviceableByModel: { [model]: 0 } }));
+    await expect(
+      gradingAuditProviderCanServe('codex', NOW, { readPoolVerdict, readCodexHeadroom }),
+    ).resolves.toBe(false);
+    expect(readPoolVerdict).toHaveBeenCalledWith('codex', NOW);
+    expect(readCodexHeadroom).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refusal for some OTHER model, or a positive count, leaves the fallback serviceable', async () => {
+    const maps: Array<Record<string, number>> = [{ 'gpt-other': 0 }, { [model]: 1 }, {}];
+    for (const serviceableByModel of maps) {
+      await expect(
+        gradingAuditProviderCanServe('codex', NOW, {
+          readPoolVerdict: oneServiceable,
+          readCodexHeadroom: async () => ({ reachable: true, serviceableByModel }),
+        }),
+      ).resolves.toBe(true);
+    }
+  });
+
+  it('an unreachable or failing gateway read is unknown, so the account-pool verdict stands', async () => {
+    await expect(
+      gradingAuditProviderCanServe('codex', NOW, {
+        readPoolVerdict: oneServiceable,
+        readCodexHeadroom: async () => ({ reachable: false }),
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      gradingAuditProviderCanServe('codex', NOW, {
+        readPoolVerdict: oneServiceable,
+        readCodexHeadroom: async () => { throw new Error('ECONNREFUSED'); },
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('an unserviceable pool refuses without reading the gateway; Claude never reads the Codex model map', async () => {
+    const readCodexHeadroom = vi.fn(async () => ({ reachable: true, serviceableByModel: { [model]: 1 } }));
+    await expect(
+      gradingAuditProviderCanServe('codex', NOW, { readPoolVerdict: async () => ({ serviceable: 0 }), readCodexHeadroom }),
+    ).resolves.toBe(false);
+    await expect(
+      gradingAuditProviderCanServe('claude', NOW, { readPoolVerdict: oneServiceable, readCodexHeadroom }),
+    ).resolves.toBe(true);
+    expect(readCodexHeadroom).not.toHaveBeenCalled();
+  });
+
+  it('a failed account-pool read still fails open (the pre-existing contract)', async () => {
+    await expect(
+      gradingAuditProviderCanServe('codex', NOW, {
+        readPoolVerdict: async () => { throw new Error('pg down'); },
+        readCodexHeadroom: async () => ({ reachable: true, serviceableByModel: { [model]: 0 } }),
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('the model match is case- and whitespace-insensitive, like the launcher preflight', () => {
+    expect(gradingAuditFallbackModelCanServe({ reachable: true, serviceableByModel: { 'gpt-5.6-sol': 0 } }, ' GPT-5.6-Sol ')).toBe(false);
+    expect(gradingAuditFallbackModelCanServe(null, model)).toBe(true);
   });
 });

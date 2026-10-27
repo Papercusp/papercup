@@ -77,7 +77,9 @@ import type { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { lineagePartyKeys } from './acceptance-author-identity';
 import type { LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
 import {
+  fetchGatewayHeadroom,
   fetchGatewayOwnerExecution,
+  type GatewayHeadroom,
   type GatewayOwnerExecution,
 } from './inference-gateway/observability';
 import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
@@ -501,7 +503,7 @@ const CODEX_PREFLIGHT_REFUSAL =
   /REFUSING TO LAUNCH — (?:no Codex account will serve model|Codex auto-route (?:has no serviceable accounts|pool is fully walled)|Codex upstream has not responded)/;
 const GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS = 250;
 const GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS = 4;
-const GRADING_AUDIT_FALLBACK = {
+export const GRADING_AUDIT_FALLBACK = {
   agent: 'codex' as const,
   model: 'gpt-5.6-sol' as const,
   effort: 'high' as const,
@@ -1441,23 +1443,64 @@ export async function readWalledAccountResets(nowMs: number): Promise<number[]> 
  * Fail-OPEN (true) on any read failure, matching readWalledAccountResets: a
  * missing ledger must degrade to the previous unconditional behaviour, never
  * strand the queue by refusing to try at all.
+ *
+ * WI-6554700010030250: for the Codex fallback a serviceable ACCOUNT is not
+ * enough — the account must also accept GRADING_AUDIT_FALLBACK.model. Measured
+ * 2026-10-27 12:57Z: the pool had one serviceable Codex account, so the retry
+ * was routed to Codex, and that account answered `model_not_found` ("The
+ * 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT
+ * account") on the auditor's first turn, burning the single terminal retry.
+ * The gateway publishes the per-model reading the launcher's preflight already
+ * refuses on (`/stats.codexServiceableByModel`); this check reads the same one.
  */
 export async function gradingAuditProviderCanServe(
   provider: string,
   nowMs = Date.now(),
+  deps: {
+    readPoolVerdict?: (provider: string, nowMs: number) => Promise<{ serviceable: number } | undefined>;
+    readCodexHeadroom?: () => Promise<Pick<GatewayHeadroom, 'reachable' | 'serviceableByModel'>>;
+  } = {},
 ): Promise<boolean> {
+  let poolCanServe: boolean;
   try {
-    const [{ accountStatus, poolVerdictByProvider }, { activeWorkspaceId }] = await Promise.all([
-      import('./deployment/account-pool-store'),
-      import('./workspace-registry'),
-    ]);
-    const rows = await accountStatus(activeWorkspaceId(), nowMs);
-    return gradingAuditFallbackVerdictCanServe(
-      poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider),
+    poolCanServe = gradingAuditFallbackVerdictCanServe(
+      await (deps.readPoolVerdict ?? readGradingAuditPoolVerdict)(provider, nowMs),
     );
   } catch {
     return true;
   }
+  if (!poolCanServe || provider !== GRADING_AUDIT_FALLBACK.agent) return poolCanServe;
+  const headroom = await (deps.readCodexHeadroom ?? (() => fetchGatewayHeadroom({ provider: 'codex' })))()
+    .catch(() => null);
+  return gradingAuditFallbackModelCanServe(headroom, GRADING_AUDIT_FALLBACK.model);
+}
+
+async function readGradingAuditPoolVerdict(
+  provider: string,
+  nowMs: number,
+): Promise<{ serviceable: number } | undefined> {
+  const [{ accountStatus, poolVerdictByProvider }, { activeWorkspaceId }] = await Promise.all([
+    import('./deployment/account-pool-store'),
+    import('./workspace-registry'),
+  ]);
+  const rows = await accountStatus(activeWorkspaceId(), nowMs);
+  return poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider);
+}
+
+/**
+ * Does the live gateway reading leave the fallback MODEL serviceable?
+ *
+ * Only a MEASURED zero refuses: the gateway reports a count only for models with
+ * a live refusal, so an absent model, a malformed count, or an unreachable
+ * gateway is unknown and keeps the account-pool verdict (fail-open, the same
+ * reading psu-launcher.mjs `codexAutoPoolVerdict` applies at boot).
+ */
+export function gradingAuditFallbackModelCanServe(
+  headroom: Pick<GatewayHeadroom, 'reachable' | 'serviceableByModel'> | null | undefined,
+  model: string,
+): boolean {
+  if (!headroom?.reachable) return true;
+  return headroom.serviceableByModel?.[model.trim().toLowerCase()] !== 0;
 }
 
 /**
