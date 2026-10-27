@@ -16,7 +16,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { composeReuseBrief, encodeClaimReuseContribution, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
   type ReuseContribution, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
 import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-ledger';
-import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange } from './change-history';
+import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange, type PriorWorkReader } from './change-history';
 import { readTaskEngineeringEvidence, type TaskEngineeringEvidence } from './task-brief-engineering';
 import type { EngineeringQuery, readEngineeringEvidence } from './engineering-evidence';
 import { withBoundedTimeout } from '../bounded-timeout';
@@ -95,6 +95,8 @@ export interface TaskBriefDeps {
     providers?: readonly ReuseBriefProvider[];
     adapters?: Partial<Record<ReuseBriefDestination, TaskBriefReuseAdapter>>;
     recordIssued?: (input: ReuseIssuedRecord, signal: AbortSignal) => Promise<boolean>;
+    /** P-008: the shared prior-work reader behind the claim brief's provenance section. */
+    priorWork?: PriorWorkReader;
   };
 }
 const defaults: TaskBriefDeps = {
@@ -510,13 +512,7 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
     ...Object.fromEntries(reuseAdapters),
   };
   const history = harness ? boundChangeHistoryProviders({ harness,
-    root: () => deps.root(context.workspaceId, harness),
-    plannedAt: async () => {
-      if (!context.plan) return null;
-      const { readPlanBySlug } = await import('../agent-tools/plans/source');
-      const plan = await readPlanBySlug(context.plan, { harnessSlug: harness, workspaceId: context.workspaceId });
-      return plan?.row.created ?? null;
-    } }) : [];
+    root: () => deps.root(context.workspaceId, harness), priorWork: deps.reuse?.priorWork }) : [];
   const result = await composeReuseBrief({ base, context, deadline: deadline - 150,
     maxChars: ref.maxChars ?? TASK_BRIEF_MAX_CHARS,
     providers: deps.reuse?.providers ?? (() => {

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { applyRawSerializerFixes, createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { changeHistoryProviders, coChangeFromCommits, readSymbolProvenance } from './change-history';
+import { changeHistoryProviders, coChangeFromCommits, fileSymbolNames, readPriorWork, readSymbolProvenance } from './change-history';
 import { enrichTaskBriefWithReuse, type TaskBrief, type TaskBriefDeps } from './task-brief';
 import graphQuery from '../agent-tools/gitnexus/query';
 const holder = vi.hoisted(() => ({ sql: null as unknown }));
@@ -83,8 +83,10 @@ describe('P001 migrated edit-time attribution ledger', () => {
     const report = coChangeFromCommits({ end: '2026-10-23T00:00:00Z', paths: ['a.ts'], commit: 'a'.repeat(40), complete: true,
       commits: [1, 2, 3].map(n => ({ sha: String(n), parents: ['parent'], at: `2026-10-0${n}T00:00:00Z`,
         files: [{ status: 'M', path: 'a.ts' }, { status: 'M', path: 'b.ts' }] })) });
-    const providers = changeHistoryProviders({ cochange: async () => report, provenance: async () =>
-      (await readSymbolProvenance({ workspaceId: WS, harness: HARNESS, root, path: 'a.ts', since: '2026-10-01T00:00:00Z' }, db.adminSql)).symbols });
+    // P-008: the claim brief's provenance section is the shared prior-work reader (the first-touch note's source).
+    const providers = changeHistoryProviders({ harness: HARNESS, cochange: async () => report, provenance: async ctx =>
+      [await readPriorWork({ workspaceId: WS, root, path: 'a.ts', names: fileSymbolNames('a.ts', source),
+        excludeWorkItem: ctx.workItem ?? null, since }, db.adminSql)] });
     const base: TaskBrief = { status: 'current', scope: { harness: HARNESS, paths: ['a.ts'] }, sourceFingerprint: sourceVersion,
       repository: { workspaceId: WS, rootPath: root }, commit: report.commit, files: [{ path: 'a.ts', sha256: hash(source), kind: 'implementation' }],
       excerpts: [], graph: { status: 'measured', consumers: [], relationships: [] }, exclusions: [],
@@ -97,7 +99,9 @@ describe('P001 migrated edit-time attribution ledger', () => {
       workItem: { id: 'WI-recorded-edit', harness: HARNESS }, reuse: { owner: OWNER, invocation: 'claim-fixture', observe } }, deps, Date.now() + 6000);
     expect(result.files).toEqual(base.files); expect(result.exclusions.join('\n')).toContain('WI-done');
     expect(result.exclusions.join('\n')).toContain('WI-released');
-    expect(result.exclusions.join('\n')).toContain('current identity unknown');
+    expect(result.exclusions.join('\n')).toContain('Prior work on `work`');
+    // Ledger rows whose item is invisible to this workspace (WI-other-harness has no work_items row) never render.
+    expect(result.exclusions.join('\n')).not.toContain('WI-other-harness');
     expect(result.exclusions.join('\n')).toContain('Unanchored b.ts');
     expect(observe.mock.calls[0]?.[0].observations.map((row: { status: string }) => row.status)).toEqual(['issued', 'issued']);
   });

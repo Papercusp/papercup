@@ -13,6 +13,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { eligibleHistoryPath, safeHistoryPath as safe } from './history-path';
 import { hunksFromToolCall } from '../release/frozen-repair-edit-ledger';
 import { measureCodeHealth } from './code-health';
+import { symbolSpans } from './edited-symbols';
 import type { ReuseBriefProvider, ReuseProviderContext } from './reuse-brief-providers';
 import { registerReuseBriefProvider } from './reuse-brief-providers';
 
@@ -261,6 +262,152 @@ export async function readSymbolProvenance(input: { workspaceId: string; harness
     error instanceof Error ? error.message : 'Provenance ledger unavailable'] }; }
 }
 
+/** code-intel-delivery-and-outcomes-2026-10-26 P-008: prior work on the functions a
+ * session touches, from the edit-time ledger's `symbols` (P-007). One reader serves the
+ * first-touch push note and the claim brief's provenance section. Ranking: bugs and
+ * decisions first, then the most recent edit of the symbol, ties by most recent close. */
+export const PRIOR_WORK_CAP = 3;
+export const PRIOR_WORK_WINDOW_DAYS = 90;
+/** Distinct (work item, capture) groups read per query; beyond this the total is a floor. */
+export const PRIOR_WORK_GROUP_CAP = 200;
+const PRIORITY_KINDS = new Set(['bug', 'decision']);
+export interface PriorWorkItem {
+  workItem: string; title: string; state: string; kind: string | null;
+  lastEditAt: string; closedAt: string | null; symbols: readonly string[];
+}
+/** One grouped ledger read row. `visible` = the reader's workspace holds the item;
+ * `measured` = the edits carried symbol capture (NULL capture is file-level evidence). */
+export interface PriorWorkLedgerRow extends PriorWorkItem { visible: boolean; measured: boolean }
+export interface PriorWorkReport {
+  status: 'measured' | 'unknown'; path: string;
+  /** Touched symbols; `null` = the touched symbol could not be resolved. */
+  names: readonly string[] | null;
+  items: PriorWorkItem[]; total: number;
+  /** Items whose edits to this file predate symbol capture, so may or may not touch `names`. */
+  fileLevel: PriorWorkItem[]; fileLevelTotal: number;
+  truncated: boolean; error: string | null;
+}
+export interface PriorWorkQuery {
+  workspaceId: string; root: string; path: string; names: readonly string[] | null;
+  /** The reader's own claimed item, which is current work, not prior work. */
+  excludeWorkItem?: string | null; since?: string;
+}
+export type PriorWorkReader = (query: PriorWorkQuery) => Promise<PriorWorkReport>;
+
+/** One entry per work item however many ledger rows name it, ranked and capped. */
+export function rankPriorWork(rows: readonly PriorWorkItem[], cap = PRIOR_WORK_CAP): { items: PriorWorkItem[]; total: number } {
+  const merged = new Map<string, PriorWorkItem>();
+  for (const row of rows) {
+    const prev = merged.get(row.workItem);
+    const item: PriorWorkItem = { workItem: row.workItem, title: row.title, state: row.state, kind: row.kind,
+      lastEditAt: row.lastEditAt, closedAt: row.closedAt, symbols: [...new Set(row.symbols)].sort() };
+    merged.set(row.workItem, !prev ? item : { ...prev,
+      lastEditAt: Date.parse(item.lastEditAt) > Date.parse(prev.lastEditAt) ? item.lastEditAt : prev.lastEditAt,
+      symbols: [...new Set([...prev.symbols, ...item.symbols])].sort() });
+  }
+  const closed = (row: PriorWorkItem) => row.closedAt ? Date.parse(row.closedAt) : -1;
+  const ordered = [...merged.values()].sort((a, b) =>
+    Number(PRIORITY_KINDS.has(b.kind ?? '')) - Number(PRIORITY_KINDS.has(a.kind ?? ''))
+    || Date.parse(b.lastEditAt) - Date.parse(a.lastEditAt)
+    || closed(b) - closed(a) || a.workItem.localeCompare(b.workItem));
+  return { items: ordered.slice(0, Math.max(0, cap)), total: ordered.length };
+}
+
+/** Items the reader may not see are dropped before ranking, so they are in neither the list nor the count. */
+export function priorWorkReport(input: { path: string; names: readonly string[] | null;
+  rows: readonly PriorWorkLedgerRow[]; truncated: boolean }): PriorWorkReport {
+  const visible = input.rows.filter(row => row.visible && row.workItem);
+  const measured = input.names === null ? [] : visible.filter(row => row.measured);
+  const ranked = rankPriorWork(measured);
+  const measuredItems = new Set(measured.map(row => row.workItem));
+  const file = rankPriorWork(visible.filter(row => !measuredItems.has(row.workItem)));
+  return { status: input.names === null || (!ranked.total && file.total) ? 'unknown' : 'measured',
+    path: input.path, names: input.names, items: ranked.items, total: ranked.total,
+    fileLevel: file.items, fileLevelTotal: file.total, truncated: input.truncated, error: null };
+}
+
+const clipTitle = (title: string) => title.length > 60 ? `${title.slice(0, 59)}…` : title;
+function priorWorkAge(iso: string, now: number): string {
+  const ms = Math.max(0, now - Date.parse(iso));
+  return ms < 3_600_000 ? `${Math.max(1, Math.round(ms / 60_000))}m`
+    : ms < DAY ? `${Math.round(ms / 3_600_000)}h` : `${Math.round(ms / DAY)}d`;
+}
+export function priorWorkPointer(path: string, names: readonly string[] | null, harness: string): string {
+  return `graph:query ${JSON.stringify({ op: 'provenance', file_path: path,
+    ...(names?.length === 1 ? { name: names[0] } : {}), harnesses: [harness] })}`;
+}
+
+/** The single prior-work line, or null when there is nothing to say: zero prior rows,
+ * no named symbol touched, or a failed read (a failed read never renders as absence). */
+export function formatPriorWorkLine(report: PriorWorkReport, opts: { harness: string; now?: number }): string | null {
+  if (report.error || (report.names !== null && !report.names.length)) return null;
+  const now = opts.now ?? Date.now();
+  const label = report.names === null ? `\`${report.path}\``
+    : report.names.length <= 3 ? report.names.map(name => `\`${name}\``).join(', ')
+      : `\`${report.path}\` (${report.names.length} functions)`;
+  const list = (items: readonly PriorWorkItem[]) => items.map(item =>
+    `${item.workItem} (${clipTitle(item.title)}, ${item.state}, ${priorWorkAge(item.lastEditAt, now)})`).join('; ');
+  const more = `more: ${priorWorkPointer(report.path, report.names, opts.harness)}`;
+  const floor = report.truncated ? '+' : '';
+  // The total and the recovery pointer are printed only when the line omits something: the
+  // note shares a bounded brief/push budget, so a complete list carries no tail.
+  if (report.total) {
+    const omitted = report.total > report.items.length || report.truncated || report.fileLevelTotal > 0;
+    const fileLevel = report.fileLevelTotal ? `; +${report.fileLevelTotal}${floor} file-level without symbol capture` : '';
+    return `Prior work on ${label}: ${list(report.items)}.`
+      + (omitted ? ` ${report.total}${floor} total${fileLevel}; ${more}` : '');
+  }
+  if (!report.fileLevelTotal) return null;
+  const why = report.names === null ? 'touched symbol not resolved' : 'earlier edits have no symbol capture';
+  const omitted = report.fileLevelTotal > report.fileLevel.length || report.truncated;
+  return `Prior work on ${label}: unknown (${why}); file-level: ${list(report.fileLevel)}.`
+    + (omitted ? ` ${report.fileLevelTotal}${floor} total; ${more}` : '');
+}
+
+/** Indexed, bounded read: one grouped row per (work item, capture), visibility by workspace join. */
+export async function readPriorWork(query: PriorWorkQuery, sql: Sql = getOrgPg().sql): Promise<PriorWorkReport> {
+  const failed = (error: string): PriorWorkReport => ({ status: 'unknown', path: query.path, names: query.names,
+    items: [], total: 0, fileLevel: [], fileLevelTotal: 0, truncated: false, error });
+  if (!query.workspaceId || !query.root || !safe(query.path)) return failed('Exact workspace/root/path required');
+  if (query.names && !query.names.length) return priorWorkReport({ path: query.path, names: [], rows: [], truncated: false });
+  try {
+    const root = await realpath(query.root);
+    const since = query.since ?? new Date(Date.now() - PRIOR_WORK_WINDOW_DAYS * DAY).toISOString();
+    if (!Number.isFinite(Date.parse(since))) throw new Error('Invalid prior-work window');
+    const names = query.names ? [...query.names] : null;
+    const rows = await sql.begin(async tx => {
+      await tx`SELECT set_config('statement_timeout', '75ms', true)`;
+      return tx<{ work_item: string; visible: boolean; title: string | null; state: string | null; kind: string | null;
+        closed_at: Date | string | null; last_edit_at: Date | string; measured: boolean; symbols: string[] }[]>`
+        SELECT e.work_item_id AS work_item, (w.feature_id IS NOT NULL) AS visible, left(w.title, 120) AS title,
+          w.status AS state, COALESCE(w.item_kind, w.kind) AS kind, w.closed_ts AS closed_at,
+          max(e.ts) AS last_edit_at, (e.symbols IS NOT NULL) AS measured,
+          COALESCE(array_agg(DISTINCT s.name) FILTER (WHERE s.name IS NOT NULL), '{}') AS symbols
+        FROM harness_shared.edit_attribution_ledger e
+        LEFT JOIN harness_shared.work_items w ON w.workspace_id = e.workspace_id AND w.feature_id = e.work_item_id
+        LEFT JOIN LATERAL unnest(e.symbols) AS s(name) ON s.name = ANY(${names}::text[])
+        WHERE e.workspace_id = ${query.workspaceId} AND e.repo_root = ${root} AND e.file = ${query.path}
+          AND e.ts >= ${since}::timestamptz AND e.work_item_id IS NOT NULL
+          AND e.work_item_id IS DISTINCT FROM ${query.excludeWorkItem ?? null}
+          AND (${names}::text[] IS NULL OR e.symbols IS NULL OR e.symbols && ${names}::text[])
+        GROUP BY e.work_item_id, w.feature_id, w.title, w.status, w.item_kind, w.kind, w.closed_ts, (e.symbols IS NOT NULL)
+        ORDER BY max(e.ts) DESC, e.work_item_id
+        LIMIT ${PRIOR_WORK_GROUP_CAP + 1}`;
+    });
+    const iso = (value: Date | string) => new Date(value).toISOString();
+    return priorWorkReport({ path: query.path, names: query.names, truncated: rows.length > PRIOR_WORK_GROUP_CAP,
+      rows: rows.slice(0, PRIOR_WORK_GROUP_CAP).map(row => ({ workItem: row.work_item, visible: row.visible,
+        title: row.title ?? '', state: row.state ?? 'unknown', kind: row.kind, measured: row.measured,
+        lastEditAt: iso(row.last_edit_at), closedAt: row.closed_at ? iso(row.closed_at) : null, symbols: row.symbols ?? [] })) });
+  } catch (error) { return failed(error instanceof Error ? error.message : 'Prior-work ledger unavailable'); }
+}
+
+/** Every function/class name in a file, derived from its current source (the claim brief's symbols). */
+export function fileSymbolNames(path: string, source: string): string[] | null {
+  const spans = symbolSpans(path, source);
+  return spans ? [...new Set(spans.map(span => span.name))].sort() : null;
+}
+
 export function coChangeOverlap(report: CoChangeReport, tasks: readonly { itemId: string; paths: readonly string[] }[]) {
   return { status: report.status, pairs: report.pairs.flatMap(pair => tasks.flatMap(a => tasks.filter(b => a.itemId < b.itemId
     && (a.paths.includes(pair.path) && b.paths.includes(pair.partner) || a.paths.includes(pair.partner) && b.paths.includes(pair.path)))
@@ -269,10 +416,12 @@ export function coChangeOverlap(report: CoChangeReport, tasks: readonly { itemId
   limitations: report.limitations };
 }
 
-/** P009 provider seam: the caller supplies the shared registered repository resolver. */
+/** P009 provider seam: the caller supplies the shared registered repository resolver.
+ * P-008: the provenance section is the prior-work reader the first-touch note uses. */
 export function changeHistoryProviders(deps: {
+  harness?: string;
   cochange(context: Readonly<ReuseProviderContext>, signal: AbortSignal): Promise<CoChangeReport>;
-  provenance(context: Readonly<ReuseProviderContext>, signal: AbortSignal): Promise<SymbolProvenance[]>;
+  provenance(context: Readonly<ReuseProviderContext>, signal: AbortSignal): Promise<PriorWorkReport[]>;
 }): ReuseBriefProvider[] {
   return [{ id: 'cochange', read: async (ctx, signal) => {
     const report = await deps.cochange(ctx, signal);
@@ -282,15 +431,13 @@ export function changeHistoryProviders(deps: {
       lines: measured ? report.pairs.filter(p => !ctx.paths.includes(p.partner)).slice(0, 3)
         .map(p => `${ctx.surface === 'completion' ? 'Untouched' : 'Unanchored'} ${p.partner} (${p.shared}/${p.union};90d)`) : [] };
   } }, { id: 'provenance', read: async (ctx, signal) => {
-    const rows = await deps.provenance(ctx, signal);
-    const measured = Boolean(ctx.sourceVersion) && rows.length > 0
-      && rows.every(row => row.recordedHistory ? row.recordedHistory.status === 'measured' : row.status === 'measured');
+    const reports = await deps.provenance(ctx, signal);
+    // A completed read is measured even when a file's line is an explicit unknown; a failed one never is.
+    const measured = Boolean(ctx.sourceVersion) && reports.length > 0 && reports.every(report => !report.error);
+    const harness = deps.harness ?? ctx.repository?.harness ?? 'unknown';
     return { status: measured ? 'measured' : 'unknown', sourceVersion: measured ? ctx.sourceVersion : null,
-      indexVersion: digest(JSON.stringify(rows)).slice(0, 12), citedPaths: rows.map(row => row.path),
-      lines: rows.flatMap(row => row.recordedHistory?.status === 'measured'
-        ? [`${row.path}#${row.symbol}: ${row.recordedHistory.workItems.join(', ')} (edit-time label; current identity unknown)`]
-        : row.status === 'measured' && row.workItem
-          ? [`${row.path}#${row.symbol}: ${row.workItem} (edit ${row.edits[0]!.invocation}; current bytes)`] : []).slice(0, 3) };
+      indexVersion: digest(JSON.stringify(reports)).slice(0, 12), citedPaths: reports.map(report => report.path),
+      lines: measured ? reports.flatMap(report => formatPriorWorkLine(report, { harness }) ?? []).slice(0, 3) : [] };
   } }];
 }
 
@@ -305,7 +452,8 @@ export function registerChangeHistoryProviders(deps: Parameters<typeof changeHis
 /** Production binding to the same source fingerprint used by task-brief. No side index. */
 export function boundChangeHistoryProviders(input: {
   root: () => Promise<string | null>; harness: string;
-  plannedAt?: () => Promise<string | null>;
+  /** Injectable for tests; production reads the edit-attribution ledger. */
+  priorWork?: PriorWorkReader;
 }): ReuseBriefProvider[] {
   const current = async (ctx: Readonly<ReuseProviderContext>, signal: AbortSignal) => {
     const root = await input.root();
@@ -319,22 +467,25 @@ export function boundChangeHistoryProviders(input: {
     if (signal.aborted || digest(JSON.stringify(sources)) !== ctx.sourceVersion) throw new Error('History source fingerprint changed');
     return root;
   };
+  const priorWork = input.priorWork ?? (query => readPriorWork(query));
   return changeHistoryProviders({
+    harness: input.harness,
     cochange: async (ctx, signal) => {
       const root = await current(ctx, signal);
       const report = await readCoChange(root, ctx.paths, undefined, signal);
       await current(ctx, signal);
       return report;
     },
+    // Symbols come from the item's files as they are at claim time, never from a declared list.
     provenance: async (ctx, signal) => {
       const root = await current(ctx, signal);
-      const since = await input.plannedAt?.();
-      if (!since || signal.aborted) throw new Error('Planning timestamp unavailable');
-      const reports = await Promise.all(ctx.paths.filter(path => /\.[cm]?tsx?$/.test(path)).slice(0, 4).map(path =>
-        readSymbolProvenance({ workspaceId: ctx.workspaceId, harness: input.harness, root, path, since })));
+      const reports = await Promise.all(ctx.paths.filter(path => /\.[cm]?[jt]sx?$/.test(path)).slice(0, 4).map(async path => {
+        const names = fileSymbolNames(path, await readFile(resolve(root, path), 'utf8'));
+        return priorWork({ workspaceId: ctx.workspaceId, root, path, names, excludeWorkItem: ctx.workItem ?? null });
+      }));
       await current(ctx, signal);
-      if (reports.some(report => report.status === 'unknown')) throw new Error('Partial provenance ledger');
-      return reports.flatMap(report => report.symbols);
+      if (signal.aborted) throw new Error('Prior-work read aborted');
+      return reports;
     },
   });
 }

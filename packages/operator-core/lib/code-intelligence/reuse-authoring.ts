@@ -70,12 +70,7 @@ export async function authoringReuse(ctx: UnifiedToolContext, input: {
         ? JSON.stringify(sourceFiles.map(file => [file.path, file.sha256])) : input.text).digest('hex'),
       itemText: input.text, repository: { workspaceId: input.workspaceId, rootPath: root, harness: input.harness }, commit };
     const registered = registeredReuseBriefProviders();
-    const history = boundChangeHistoryProviders({ harness: input.harness, root: async () => root,
-      plannedAt: async () => {
-        const { readPlanBySlug } = await import('../agent-tools/plans/source');
-        // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/reuse-authoring.ts#<module>/authoringReuse/<callback>/plannedAt:a420e840f1446c45a0ed:1","classification":"durable","reason":"Plan history lookup reaches shared notification paths; no reviewed safe-to-lose exemption exists for their terminal consequences.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-        return (await readPlanBySlug(input.plan, { harnessSlug: input.harness, workspaceId: input.workspaceId }))?.row.created ?? null;
-      } });
+    const history = boundChangeHistoryProviders({ harness: input.harness, root: async () => root });
     // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/reuse-authoring.ts#<module>/authoringReuse/<callback>:29cff27bb9cca60acf47:1","classification":"durable","reason":"Reuse provider composition can reach notification paths through its providers; retain their terminal delivery obligations without claiming delivery is proved.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const composed = await composeReuseBrief({ base: { hints: [] as ReuseContribution[] }, context, deadline: deadline - 150,
       providers: deps.providers ?? [...registered, ...history.filter(provider => !registered.some(row => row.id === provider.id))],

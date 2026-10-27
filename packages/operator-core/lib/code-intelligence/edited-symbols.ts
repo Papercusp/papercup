@@ -73,24 +73,36 @@ export function changedLineRanges(before: string, after: string): ChangedLines[]
   return ranges;
 }
 
-/** Names of every function/class whose declaration lines contain a changed line. */
-export function editedSymbols(path: string, before: string, after: string): string[] | null {
+/** A named function or class and its 0-based, inclusive declaration lines. */
+export interface SymbolSpan { name: string; kind: 'function' | 'class'; first: number; last: number }
+
+/** Every function/class span in `source`, named exactly as the ledger records them.
+ * `null` = unknown (non-TS/JS path or parse diagnostics). Shared by the edit-time
+ * writer and the prior-work readers (P-008), so all three use one vocabulary. */
+export function symbolSpans(path: string, source: string): SymbolSpan[] | null {
   if (!SOURCE_PATH.test(path)) return null;
-  const sf = ts.createSourceFile(path, after, ts.ScriptTarget.Latest, true,
+  const sf = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true,
     /x$/.test(path) ? (path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.JSX)
       : /\.[cm]?js$/.test(path) ? ts.ScriptKind.JS : ts.ScriptKind.TS);
   const health = measureCodeHealth(ts, sf, path);
   if (health.status !== 'measured') return null;
   const line = (at: number) => sf.getLineAndCharacterOfPosition(Math.max(0, at)).line;
-  const spans: { name: string; first: number; last: number }[] = health.functions.map(fn => ({
-    name: fn.name, first: fn.line1 - 1, last: line(fn.end - 1) }));
+  const spans: SymbolSpan[] = health.functions.map(fn => ({
+    name: fn.name, kind: 'function' as const, first: fn.line1 - 1, last: line(fn.end - 1) }));
   const visit = (node: TS.Node) => {
     if (ts.isClassLike(node) && node.name) {
-      spans.push({ name: node.name.getText(sf), first: line(node.getStart(sf)), last: line(node.end - 1) });
+      spans.push({ name: node.name.getText(sf), kind: 'class', first: line(node.getStart(sf)), last: line(node.end - 1) });
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
+  return spans;
+}
+
+/** Names of every function/class whose declaration lines contain a changed line. */
+export function editedSymbols(path: string, before: string, after: string): string[] | null {
+  const spans = symbolSpans(path, after);
+  if (!spans) return null;
   const touched = new Set<string>();
   for (const range of changedLineRanges(before, after)) {
     for (const span of spans) {

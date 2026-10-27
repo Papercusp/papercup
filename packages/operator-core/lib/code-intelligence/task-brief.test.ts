@@ -7,7 +7,7 @@ import { buildTaskBrief, enrichTaskBriefWithReuse, getClaimTimeTaskBrief, getInt
 import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
-import { coChangeFromCommits } from './change-history';
+import { coChangeFromCommits, formatPriorWorkLine, type PriorWorkQuery, type PriorWorkReport } from './change-history';
 import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
 import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
 import { decodeClaimReuseContribution } from './reuse-brief-providers';
@@ -328,6 +328,30 @@ describe('native engineering evidence task context', () => {
     expect(result.graph.relationships.map(line => decodeClaimReuseContribution(result, line)?.provider)).toEqual(['coverage']);
     expect({ ...result, graph: { ...result.graph, relationships: base.graph.relationships } }).toEqual(base);
     expect(JSON.stringify(result).length).toBeLessThanOrEqual(maxChars);
+  });
+  it('SPEC-P-008-B: the claim brief lists the prior work the first-touch note shows for the same function', async () => {
+    const { subject, deps } = engineeringFixture();
+    // The brief derives the touched names from the file at claim time (target.ts declares target()).
+    const report: PriorWorkReport = { status: 'measured', path: 'target.ts', names: ['target'], total: 1,
+      items: [{ workItem: 'WI-prior', title: 'Fix target overflow', state: 'done', kind: 'bug',
+        lastEditAt: new Date(Date.now() - 2 * 86_400_000).toISOString(), closedAt: null, symbols: ['target'] }],
+      fileLevel: [], fileLevelTotal: 0, truncated: false, error: null };
+    const priorWork = vi.fn(async (query: PriorWorkQuery): Promise<PriorWorkReport> =>
+      ({ ...report, path: query.path, names: query.names }));
+    const observe = vi.fn();
+    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject,
+      reuse: { owner: 'su-fixture', invocation: 'claim-prior-work', observe } },
+    { ...deps, reuse: { recordIssued: async () => true, priorWork } }))!.taskBrief;
+    expect(priorWork).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w', path: 'target.ts',
+      names: ['target'], excludeWorkItem: 'WI-ee' }));
+    const contributions = brief.graph.relationships.flatMap(line => {
+      const row = decodeClaimReuseContribution(brief, line); return row ? [row] : [];
+    });
+    const provenance = contributions.find(row => row.provider === 'provenance');
+    // The exact line the first-touch push renders for this report (shared formatter, same harness).
+    expect(provenance?.text).toContain(formatPriorWorkLine(report, { harness: 'h' })!);
+    expect(observe.mock.calls[0][0].observations).toContainEqual(
+      expect.objectContaining({ provider: 'provenance', status: 'issued', cohort: 'treatment' }));
   });
   it('ee.brief-budget: fits the complete caller brief in 2400 characters and retains scoped recovery for omitted data', async () => {
     const { subject, deps } = engineeringFixture();

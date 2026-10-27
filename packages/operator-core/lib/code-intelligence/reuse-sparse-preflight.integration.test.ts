@@ -1,7 +1,7 @@
 /** P010/D029: size preflight, not a native claim or acceptance receipt. */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ts from 'typescript';
@@ -15,7 +15,7 @@ import { enrichTaskBriefWithReuse, getClaimTimeTaskBrief, readTaskFailureSignals
 import { DEFAULT_PACKER_EFFECTS, packerFacade } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import { readEngineeringEvidence } from './engineering-evidence';
-import { boundChangeHistoryProviders } from './change-history';
+import { boundChangeHistoryProviders, fileSymbolNames } from './change-history';
 import { cloneBriefProvider } from './clone-brief-provider';
 import { buildCloneIndex } from './clone-index';
 import { prepareCloneAdvisories } from './clone-advisory';
@@ -102,11 +102,16 @@ it('records a truthful sparse baseline and five actual producer envelopes before
   // The issued writer requires an existing turn; it must never invent one.
   await fx.admin`INSERT INTO harness_shared.identity_hook_turns (workspace_id,owner_id,turn_id)
     VALUES (${fx.workspaceId},${owner},'controlled-sparse-preflight')`;
-  const args = { session_id: 'controlled-sparse', tool_name: 'Write', status: 'ok',
-    tool_input: { file_path: 'a.ts', content: edited } };
-  await fx.admin`INSERT INTO harness_shared.tool_invocations
-    (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,invoked_at,status,coord_owner_id,args_json)
-    VALUES (${fx.workspaceId},${harness},'papercusp','activity:report','su','fixture','fixture',${editedAt},'ok',${owner},${fx.admin.json(args)})`;
+  // P-008: provenance is the prior-work reader over the edit-attribution ledger. Seed one earlier,
+  // visible item that edited a.ts's functions (the claimed item itself is current work, not prior).
+  const names = fileSymbolNames('a.ts', edited);
+  expect(names?.length, 'a.ts declares at least one function').toBeGreaterThan(0);
+  await fx.admin`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,item_kind,status,title,summary,created_ts,updated_ts)
+    VALUES (${fx.workspaceId},${harness},'WI-prior','bug','done','Earlier a.ts fix','R',1,1)`;
+  await fx.admin`INSERT INTO harness_shared.edit_attribution_ledger
+    (workspace_id,harness_slug,repo_root,file,agent_id,session_id,work_item_id,ts,symbols)
+    VALUES (${fx.workspaceId},${harness},${await realpath(root)},'a.ts',${owner},'controlled-sparse','WI-prior',${editedAt},${names!})`;
   const item = { id: workItem, harness, sourcePlanSlug: plan, sourcePlanItemIds: [added.itemId], payload: { paths: ['a.ts'] } };
   // Cold producer setup is outside this deterministic SIZE preflight. Capture
   // real safe-pack/compiler results; neither a timeout nor a stub shrinks base.
@@ -130,8 +135,7 @@ it('records a truthful sparse baseline and five actual producer envelopes before
     index: { backend: 'first-party-imports', lastCommit: base.commit }, edges: [], clones: { schema: 'clone-advisory-v1', files: cloneFiles } }));
   const sql = registeredReuseBriefProviders().find(p => p.id === 'sql')!;
   const providers = [cloneBriefProvider({ snapshot: () => snapshot }),
-    ...boundChangeHistoryProviders({ root: async () => root, harness,
-      plannedAt: async () => persisted!.row.created }), sql, nativeCoverageBriefProvider];
+    ...boundChangeHistoryProviders({ root: async () => root, harness }), sql, nativeCoverageBriefProvider];
   const captured = await Promise.all(providers.map(async provider => ({ provider: provider.id,
     result: await provider.read(context, new AbortController().signal) })));
   setFlagOverridesForTest(Object.fromEntries(providers.map(p => [REUSE_PROVIDER_FLAGS[p.id], true])));

@@ -49,7 +49,8 @@ if (input.semantic) {
 const families = [...rankCloneSweep(index, input), ...rankSemanticSweep(index, semantic?.candidates ?? [], input)];
 const outcome = await fileCloneSweep(families, {
   workspaceId: request.workspaceId, harness: request.harness, fireId: request.fireId, root,
-}, { signals: nativeCloneFilingSignals({ root, workspaceId: request.workspaceId, harness: request.harness }) });
+}, { signals: nativeCloneFilingSignals({ root, workspaceId: request.workspaceId, harness: request.harness }),
+  closeResolved: { unscanned: incomplete } });
 console.log(JSON.stringify({ schemaVersion: 1, fireId: request.fireId,
   sourceDigest: digest.digest('hex'), indexed: index.size, excluded, incomplete, semantic, ...outcome }));
 // The ordinary host retains its DB pool; this single-use CLI must release it.

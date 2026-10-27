@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { realpathSync } from 'node:fs';
 import { boundChangeHistoryProviders, changeHistoryProviders, coChangeFromCommits, coChangeOverlap,
-  ledgerSymbolProvenance, readCoChange, readSymbolProvenance, registerChangeHistoryProviders, symbolProvenance,
-  type HistoryCommit, type ProvenanceEdit, type LedgerProvenanceEdit } from './change-history';
+  fileSymbolNames, formatPriorWorkLine, ledgerSymbolProvenance, priorWorkReport, rankPriorWork, readCoChange, readPriorWork,
+  registerChangeHistoryProviders, symbolProvenance,
+  type HistoryCommit, type PriorWorkLedgerRow, type ProvenanceEdit, type LedgerProvenanceEdit } from './change-history';
 import { composeReuseBrief, registeredReuseBriefProviders, type ReuseContribution } from './reuse-brief-providers';
 import graphQuery from '../agent-tools/gitnexus/query';
 
@@ -25,6 +27,91 @@ const provenance = (patch: Partial<Parameters<typeof symbolProvenance>[0]> = {})
   source, edits: [edit], assignments: [assignment], complete: true, ...patch });
 const ledgerEdit = (patch: Partial<LedgerProvenanceEdit> = {}): LedgerProvenanceEdit => ({
   id: '1', at: END, owner: 'former-owner', session: 'ended-session', workItem: 'WI-done', symbols: ['work'], ...patch });
+const NOW = Date.parse('2026-10-27T00:00:00Z');
+const DAY_MS = 86_400_000;
+const prior = (n: number, patch: Partial<PriorWorkLedgerRow> = {}): PriorWorkLedgerRow => ({
+  workItem: `WI-${n}`, title: `Item ${n}`, state: 'done', kind: 'task', visible: true, measured: true,
+  lastEditAt: new Date(NOW - n * DAY_MS).toISOString(), closedAt: null, symbols: ['work'], ...patch });
+const priorReport = (rows: PriorWorkLedgerRow[], names: string[] | null = ['work'], truncated = false) =>
+  priorWorkReport({ path: 'a.ts', names, rows, truncated });
+const note = (rows: PriorWorkLedgerRow[], names: string[] | null = ['work'], truncated = false) =>
+  formatPriorWorkLine(priorReport(rows, names, truncated), { harness: 'papercusp', now: NOW });
+const ids = (text: string | null) => [...(text ?? '').matchAll(/(WI-\d+) \(/g)].map(match => match[1]);
+
+describe('P-008 prior work on the touched function', () => {
+  it('SPEC-P-008: renders no note for zero prior rows, and one line; a complete list carries no total or pointer', () => {
+    expect(note([])).toBeNull();
+    expect(note([prior(1)])).toBe('Prior work on `work`: WI-1 (Item 1, done, 1d).');
+    expect(note([prior(1)], [])).toBeNull(); // the touch named no function
+  });
+  it('SPEC-P-008-D: lists exactly 3 of 3 and of more than 3 prior items; an omission shows the total and a pointer', () => {
+    const three = note([1, 2, 3].map(n => prior(n)));
+    expect(ids(three)).toEqual(['WI-1', 'WI-2', 'WI-3']); expect(three).not.toContain('total');
+    const five = note([1, 2, 3, 4, 5].map(n => prior(n)));
+    expect(ids(five)).toEqual(['WI-1', 'WI-2', 'WI-3']);
+    expect(five).toBe('Prior work on `work`: WI-1 (Item 1, done, 1d); WI-2 (Item 2, done, 2d); WI-3 (Item 3, done, 3d). '
+      + '5 total; more: graph:query {"op":"provenance","file_path":"a.ts","name":"work","harnesses":["papercusp"]}');
+    // A capped read is a floor, so its tail stays even when every read row is listed.
+    expect(note([1, 2].map(n => prior(n)), ['work'], true)).toContain('. 2+ total; more: graph:query');
+  });
+  it('SPEC-P-008-C: lists an older bug or decision before a newer task, then recency, ties by most recent close', () => {
+    expect(ids(note([prior(1), prior(9, { kind: 'bug' }), prior(2, { kind: 'decision' })]))).toEqual(['WI-2', 'WI-9', 'WI-1']);
+    const at = new Date(NOW - DAY_MS).toISOString();
+    expect(rankPriorWork([prior(1, { lastEditAt: at, closedAt: '2026-10-20T00:00:00Z' }),
+      prior(2, { lastEditAt: at, closedAt: '2026-10-25T00:00:00Z' }), prior(3, { lastEditAt: at })])
+      .items.map(item => item.workItem)).toEqual(['WI-2', 'WI-1', 'WI-3']);
+  });
+  it('SPEC-P-008-E: lists a work item recorded in several rows, or on several symbols, once', () => {
+    const text = note([prior(1), prior(1, { symbols: ['other'], lastEditAt: new Date(NOW - 7 * DAY_MS).toISOString() }), prior(2)],
+      ['other', 'work']);
+    expect(ids(text)).toEqual(['WI-1', 'WI-2']); expect(text).toContain('Prior work on `other`, `work`:');
+    expect(text?.match(/WI-1 \(/g)).toHaveLength(1);
+    expect(rankPriorWork([prior(1), prior(1, { symbols: ['other'] })]).items[0]?.symbols).toEqual(['other', 'work']);
+  });
+  it('omits items the reader may not see from both the list and the count', () => {
+    const text = note([prior(1, { visible: false }), prior(2)]);
+    // The invisible item is not counted: the line is complete, so no "2 total" tail appears.
+    expect(ids(text)).toEqual(['WI-2']); expect(text).not.toContain('total');
+    expect(note([1, 2, 3, 4].map(n => prior(n)).concat(prior(5, { visible: false })))).toContain('. 4 total;');
+    expect(note([prior(1, { visible: false })])).toBeNull();
+  });
+  it('gives an explicit unknown note for an unresolved symbol or uncaptured edits, never a measured absence', () => {
+    expect(note([prior(1, { measured: false })], null))
+      .toMatch(/^Prior work on `a\.ts`: unknown \(touched symbol not resolved\); file-level: WI-1 \(/);
+    expect(note([prior(1, { measured: false })])).toMatch(/^Prior work on `work`: unknown \(earlier edits have no symbol capture\)/);
+    expect(note([prior(1), prior(2, { measured: false })])).toContain('1 total; +1 file-level without symbol capture;');
+    expect(note([], null)).toBeNull();
+    expect(formatPriorWorkLine({ ...priorReport([prior(1)]), error: 'statement timeout' }, { harness: 'papercusp' })).toBeNull();
+  });
+  it('reads one bounded, workspace-scoped grouped query and excludes the reader\'s own item', async () => {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const tx = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return strings.join('').includes('edit_attribution_ledger') ? [
+        { work_item: 'WI-1', visible: true, title: 'Fix', state: 'done', kind: 'bug', closed_at: new Date(NOW),
+          last_edit_at: new Date(NOW - DAY_MS), measured: true, symbols: ['work'] },
+        { work_item: 'WI-2', visible: false, title: null, state: null, kind: null, closed_at: null,
+          last_edit_at: new Date(NOW), measured: true, symbols: ['work'] }] : [];
+    };
+    const sql = { begin: async (run: (t: typeof tx) => unknown) => run(tx) } as unknown as Parameters<typeof readPriorWork>[1];
+    const root = realpathSync(tmpdir());
+    const report = await readPriorWork({ workspaceId: 'ws', root, path: 'a.ts', names: ['work'], excludeWorkItem: 'WI-mine' }, sql);
+    expect(report).toMatchObject({ status: 'measured', total: 1, error: null, items: [{ workItem: 'WI-1', kind: 'bug' }] });
+    const query = calls.find(call => call.text.includes('edit_attribution_ledger'))!;
+    expect(calls[0]?.text).toContain('statement_timeout');
+    expect(query.values).toEqual(expect.arrayContaining(['ws', root, 'a.ts', 'WI-mine', ['work']]));
+    expect(query.text).toMatch(/LEFT JOIN harness_shared\.work_items w ON w\.workspace_id = e\.workspace_id/);
+    calls.length = 0;
+    expect((await readPriorWork({ workspaceId: 'ws', root, path: 'a.ts', names: [] }, sql)).total).toBe(0);
+    expect(calls).toEqual([]);
+    expect((await readPriorWork({ workspaceId: 'ws', root, path: '../escape.ts', names: ['work'] }, sql)).error).toBeTruthy();
+  });
+  it('derives claim-brief symbols from the file source itself', () => {
+    expect(fileSymbolNames('a.ts', 'export function alpha() {}\nexport const beta = () => 1;\nclass Gamma {}'))
+      .toEqual(expect.arrayContaining(['Gamma', 'alpha', 'beta']));
+    expect(fileSymbolNames('a.md', '# not code')).toBeNull();
+  });
+});
 
 describe('P001 edit-time ledger history', () => {
   const read = (rows: LedgerProvenanceEdit[], patch: Partial<Parameters<typeof ledgerSymbolProvenance>[0]> = {}) =>
@@ -116,7 +203,8 @@ describe('P013 declared history and source provenance contracts', () => {
   });
   it.each(['claim', 'authoring', 'completion'] as const)('uses the P009 composition budget on %s', async surface => {
     const report = history([commit(1), commit(2), commit(3)]);
-    const providers = changeHistoryProviders({ cochange: async () => report, provenance: async () => provenance() });
+    const providers = changeHistoryProviders({ harness: 'papercusp', cochange: async () => report,
+      provenance: async () => [priorReport([prior(1)])] });
     const result = await composeReuseBrief({ base: { mandatory: 'unchanged', sections: [] as ReuseContribution[] }, providers,
       context: { surface, paths: ['a.ts'], sourceVersion: 'source-v1', commit: report.commit,
         workspaceId: 'workspace', owner: 'su-editor', invocation: 'claim-real' }, deadline: Date.now() + 6000,
@@ -124,17 +212,18 @@ describe('P013 declared history and source provenance contracts', () => {
     expect(result.brief.mandatory).toBe('unchanged');
     expect(result.brief.sections.map(p => p.provider)).toEqual(['cochange', 'provenance']);
     expect(result.brief.sections[0]?.text).toContain(surface === 'completion' ? 'Untouched' : 'Unanchored');
+    expect(result.brief.sections[1]?.text).toContain('Prior work on `work`: WI-1');
     expect(result.observations.map(row => row.status)).toEqual(['issued', 'issued']);
   });
   it('does not publish partial/stale provider results as measured absence', async () => {
     const providers = changeHistoryProviders({ cochange: async () => ({ ...history([]), status: 'unknown' }),
-      provenance: async () => provenance({ complete: false }) });
+      provenance: async () => [{ ...priorReport([prior(1)]), error: 'statement timeout' }] });
     const context = { surface: 'claim' as const, paths: ['a.ts'], sourceVersion: 'source-v1', commit: 'other',
       workspaceId: 'workspace', owner: 'su-editor', invocation: 'claim-real' };
     for (const provider of providers) expect((await provider.read(context, new AbortController().signal)).status).toBe('unknown');
   });
   it('registers both producers once at P009 and rolls back duplicate installation', () => {
-    const deps = { cochange: async () => history([]), provenance: async () => provenance() };
+    const deps = { cochange: async () => history([]), provenance: async () => [priorReport([prior(1)])] };
     const dispose = registerChangeHistoryProviders(deps);
     try {
       expect(registeredReuseBriefProviders().filter(row => ['cochange', 'provenance'].includes(row.id)).map(row => row.id))

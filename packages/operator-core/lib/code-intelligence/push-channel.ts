@@ -1,8 +1,12 @@
 /** P-034/D-016: one code-intelligence leg at the existing PostToolBatch sink. */
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { snapshotCloneLeg } from './clone-advisory';
 import { AGENT_ANTIPATTERN_RULES } from './agent-antipatterns';
-import { isAbsolute, join, posix, relative } from 'node:path';
+import { formatPriorWorkLine, readPriorWork, type PriorWorkReader, type PriorWorkReport } from './change-history';
+import { symbolSpans } from './edited-symbols';
+import { getActiveClaimForOwner } from '../work-item-claims';
+import { isAbsolute, join, posix, relative, resolve } from 'node:path';
 import type { Sql, TransactionSql } from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
@@ -61,6 +65,8 @@ export interface FirstTouchContext {
   specs: readonly string[] | null;
   locks: readonly LiveLockHolding[] | null;
   byPath?: Readonly<Record<string, { docs: readonly string[]; specs: readonly string[] }>>;
+  /** P-008: prior work on the symbols this batch touched. */
+  priorWork?: PriorWorkContext | null;
 }
 export interface PushFact {
   leg: PushLegId;
@@ -70,6 +76,8 @@ export interface PushFact {
   citedPaths: readonly string[];
   suggestedCall?: string;
   sourceHashes?: readonly PushProofSource[];
+  /** A self-contained one-line note, rendered without the snapshot header. */
+  bare?: boolean;
 }
 /** WI-6554700010018440: a fact dropped whole for budget, recorded in code_intel_push_skips.
  * `request-budget` = the request's share (1,500 minus the memory block) was strictly the
@@ -281,11 +289,14 @@ function touchedRawPaths(call: PushCall, root: string | undefined): string[] {
   return [];
 }
 
+function touchPath(input: PushInput, raw: string): string | null {
+  const path = isAbsolute(raw) ? (input.root ? relative(input.root, raw) : raw) : posix.normalize(raw);
+  return safeSnapshotPath(path) ? path : null;
+}
+
 export function firstTouchPaths(input: PushInput): string[] {
-  return [...new Set(input.calls.flatMap(rawCall => touchedRawPaths(normalizePushCall(rawCall), input.root).flatMap(raw => {
-    const path = isAbsolute(raw) ? (input.root ? relative(input.root, raw) : raw) : posix.normalize(raw);
-    return safeSnapshotPath(path) ? [path] : [];
-  })))].slice(0, 4);
+  return [...new Set(input.calls.flatMap(rawCall => touchedRawPaths(normalizePushCall(rawCall), input.root)
+    .flatMap(raw => { const path = touchPath(input, raw); return path ? [path] : []; })))].slice(0, 4);
 }
 
 /** Existing P-016 anchors and P-015 measurement recipes; these are links, not proof of acceptance. */
@@ -355,8 +366,143 @@ export function firstTouchFact(input: PushInput, snapshot: PushSnapshot, path: s
         + '\nSnapshot lower bounds only; current source hashes, unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown.' };
   }
 }
-export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) =>
-  firstTouchPaths(input).flatMap(path => { const fact = firstTouchFact(input, snapshot, path); return fact ? [fact] : []; });
+/** code-intel-delivery-and-outcomes-2026-10-26 P-008: which part of a file one call touched,
+ * resolved to function names against the current source in the context read. */
+export type SymbolTouch = { kind: 'lines'; start: number; end: number } | { kind: 'tail'; count: number }
+  | { kind: 'text'; needles: readonly string[] } | { kind: 'file' };
+/** A touch spanning more functions than this is a file read, not a symbol touch: no note. */
+export const PRIOR_WORK_MAX_TOUCH_NAMES = 6;
+export const PRIOR_WORK_CONTEXT_TIMEOUT_MS = 80;
+export const PRIOR_WORK_SUBJECT_PREFIX = 'prior-work:';
+const asRecord = (value: unknown) => value && typeof value === 'object' ? value as Record<string, unknown> : null;
+
+function callTouch(call: PushCall): SymbolTouch {
+  const args = pushCallInput(call.toolInput);
+  const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+  if (/(?:Read|read)$/.test(call.tool ?? '')) {
+    const tail = count(args?.tail);
+    if (tail) return { kind: 'tail', count: tail };
+    const offset = count(args?.offset), limit = count(args?.limit);
+    if (offset === null && limit === null) return { kind: 'file' };
+    const start = Math.max(0, (offset ?? 1) - 1);
+    return { kind: 'lines', start, end: start + (limit ?? 2000) };
+  }
+  if (/(?:Edit|edit)$/.test(call.tool ?? '')) {
+    const edits = Array.isArray(args?.edits) ? args.edits.map(asRecord) : [args];
+    const needles = edits.map(edit => edit?.new_string);
+    // An empty or missing new_string (a pure deletion) cannot be located: unknown symbol.
+    return { kind: 'text', needles: needles.every(n => typeof n === 'string' && n.length > 0) ? needles as string[] : [] };
+  }
+  return { kind: 'file' }; // Write and shell reads cover the whole file.
+}
+
+export function symbolTouches(input: PushInput): Map<string, SymbolTouch[]> {
+  const touches = new Map<string, SymbolTouch[]>();
+  for (const call of input.calls.map(normalizePushCall)) {
+    const touch: SymbolTouch | null = FIRST_TOUCH_TOOL_RE.test(call.tool ?? '') ? callTouch(call)
+      : SHELL_TOOL_RE.test(call.tool ?? '') ? { kind: 'file' } : null;
+    if (!touch) continue;
+    for (const raw of touchedRawPaths(call, input.root)) {
+      const path = touchPath(input, raw);
+      if (path) touches.set(path, [...(touches.get(path) ?? []), touch]);
+    }
+  }
+  return touches;
+}
+
+/** Function names a touch covers (classes only when no function is hit). `null` = the touched
+ * symbol is unknown (parse failure or an edit that cannot be located once); `'broad'` = too many. */
+export function touchedSymbolNames(path: string, source: string, touches: readonly SymbolTouch[]): string[] | null | 'broad' {
+  const spans = symbolSpans(path, source);
+  if (!spans) return null;
+  const lineCount = source.split('\n').length;
+  const ranges: { start: number; end: number }[] = [];
+  for (const touch of touches) {
+    if (touch.kind === 'file') ranges.push({ start: 0, end: lineCount });
+    else if (touch.kind === 'tail') ranges.push({ start: Math.max(0, lineCount - touch.count), end: lineCount });
+    else if (touch.kind === 'lines') ranges.push({ start: touch.start, end: Math.min(touch.end, lineCount) });
+    else {
+      if (!touch.needles.length) return null;
+      for (const needle of touch.needles) {
+        const at = source.indexOf(needle);
+        if (at < 0 || source.indexOf(needle, at + 1) >= 0) return null;
+        const start = source.slice(0, at).split('\n').length - 1;
+        ranges.push({ start, end: start + needle.split('\n').length });
+      }
+    }
+  }
+  const hits = spans.filter(span => ranges.some(range => span.first < range.end && span.last >= range.start));
+  const functions = hits.filter(span => span.kind === 'function');
+  const names = [...new Set((functions.length ? functions : hits).map(span => span.name))].sort();
+  return names.length > PRIOR_WORK_MAX_TOUCH_NAMES ? 'broad' : names;
+}
+
+/** The session's claimed work item and, per touched path, prior work on symbols it has not been shown. */
+export interface PriorWorkContext { workItem: string; reports: Readonly<Record<string, PriorWorkReport>> }
+export interface ReadPriorWorkContextDeps {
+  claim(workspace: string, owner: string): Promise<string | null>;
+  /** prior-work subjects already pushed to this owner in its current epoch. */
+  noted(input: PushInput): Promise<readonly string[]>;
+  source(root: string, path: string): Promise<string>;
+  read: PriorWorkReader;
+}
+/** A session's first touch of a symbol within one claimed work item: the commit's
+ * (owner, epoch, leg, subject) dedup makes a second touch of the same symbol silent. */
+export const priorWorkSubject = (workItem: string, path: string, names: readonly string[] | null) =>
+  `${PRIOR_WORK_SUBJECT_PREFIX}${workItem}:${path}#${names ? names.join(',') : '?'}`;
+function notedNames(subjects: readonly string[], workItem: string, path: string): Set<string> {
+  const prefix = `${PRIOR_WORK_SUBJECT_PREFIX}${workItem}:${path}#`;
+  return new Set(subjects.filter(subject => subject.startsWith(prefix)).flatMap(subject => subject.slice(prefix.length).split(',')));
+}
+const priorWorkDefaults: ReadPriorWorkContextDeps = {
+  claim: async (workspace, owner) => (await getActiveClaimForOwner(workspace, owner))?.workItemId ?? null,
+  noted: input => withWorkspace(input.workspace, async tx => {
+    await tx`SELECT set_config('statement_timeout', '50ms', true)`;
+    const rows = await tx<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner} AND leg = 'first-touch'
+        AND epoch = COALESCE((SELECT epoch FROM harness_shared.memory_session_epochs WHERE session_id = ${input.owner}), 0)
+        AND subject LIKE ${PRIOR_WORK_SUBJECT_PREFIX + '%'} ORDER BY pushed_at DESC LIMIT 500`;
+    return rows.map(row => row.subject);
+  }),
+  source: (root, path) => readFile(resolve(root, path), 'utf8'),
+  read: query => readPriorWork(query),
+};
+
+export async function readPushPriorWork(input: PushInput, paths: readonly string[],
+  deps: ReadPriorWorkContextDeps = priorWorkDefaults): Promise<PriorWorkContext | null> {
+  const touches = symbolTouches(input);
+  const touched = paths.filter(path => touches.has(path));
+  const root = input.root;
+  if (!root || !input.workspace || !input.owner || !touched.length) return null;
+  const [claimed, noted] = await Promise.all([deps.claim(input.workspace, input.owner).catch(() => null),
+    deps.noted(input).catch((): readonly string[] => [])]);
+  const workItem = claimed ?? 'none';
+  const reports: Record<string, PriorWorkReport> = {};
+  await Promise.all(touched.map(async path => {
+    let source: string;
+    try { source = await deps.source(root, path); } catch { return; }
+    const resolved = touchedSymbolNames(path, source, touches.get(path)!);
+    if (resolved === 'broad') return;
+    const shown = notedNames(noted, workItem, path);
+    const names = resolved === null ? null : resolved.filter(name => !shown.has(name));
+    if (names === null ? shown.has('?') : !names.length) return;
+    reports[path] = await deps.read({ workspaceId: input.workspace, root, path, names, excludeWorkItem: claimed });
+  }));
+  return { workItem, reports };
+}
+
+/** The one-line prior-work note for a first-touched path, or null when there is nothing to say. */
+export function priorWorkFact(input: PushInput, path: string): PushFact | null {
+  const context = input.firstTouchContext?.priorWork;
+  const report = context?.reports[path];
+  if (!context || !report || !input.harness) return null;
+  const text = formatPriorWorkLine(report, { harness: input.harness });
+  return text ? { leg: 'first-touch', subject: priorWorkSubject(context.workItem, path, report.names),
+    text, citedPaths: [path], bare: true } : null;
+}
+
+export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => firstTouchPaths(input).flatMap(path =>
+  [firstTouchFact(input, snapshot, path), priorWorkFact(input, path)].filter((fact): fact is PushFact => fact !== null));
 registerCodeIntelPushLeg('first-touch', snapshotFirstTouchLeg);
 
 /** code-intel-epoch-carry-2026-10-20 P-003/P-004: working-set files a NEW epoch (or
@@ -1064,7 +1210,7 @@ export async function recordIntentTaskBrief(input: { workspace: string; owner: s
 }
 
 export function formatPushFact(fact: PushFact, snapshot: PushSnapshot): string {
-  if (fact.leg === 'antipattern' || fact.leg === 'clone') return fact.text;
+  if (fact.leg === 'antipattern' || fact.leg === 'clone' || fact.bare) return fact.text;
   return `## Code intelligence (${fact.leg})\nSnapshot ${snapshot.commit.slice(0, 12)} · ${snapshot.generatedAt}\n${fact.text}`;
 }
 
@@ -1084,7 +1230,7 @@ const defaults: PushChannelDeps = {
   enabled: flag => getFlag(flag, 'system'),
   legs: () => state.legs,
   context: async (input, paths, diagnostics) => {
-    const [links, locks] = await Promise.allSettled([
+    const [links, locks, priorWork] = await Promise.allSettled([
       timeResumeReadPhase(diagnostics, 'context.sourceLinks', () => readPushSourceLinks(input, paths, undefined, diagnostics)),
       timeResumeReadPhase(diagnostics, 'context.liveLockHoldings', () => liveLockHoldingsStrict({
         onPhase: event => {
@@ -1097,6 +1243,10 @@ const defaults: PushChannelDeps = {
           }
         },
       })),
+      // Its own bound: a slow prior-work read must not cost this batch its links and locks.
+      timeResumeReadPhase(diagnostics, 'context.priorWork', () => withBoundedTimeout(() => readPushPriorWork(input, paths),
+        { timeoutMs: PRIOR_WORK_CONTEXT_TIMEOUT_MS, fallback: null, label: 'code-intel-prior-work', warn: false })
+        .then(result => result.value)),
     ]);
     if (diagnostics?.label === FIRST_TOUCH_CONTEXT_LABEL &&
       Date.now() - diagnostics.startedAtMs >= FIRST_TOUCH_CONTEXT_TIMEOUT_MS) {
@@ -1106,7 +1256,8 @@ const defaults: PushChannelDeps = {
         Date.now() - diagnostics.startedAtMs, FIRST_TOUCH_CONTEXT_TIMEOUT_MS);
     }
     return { ...(links.status === 'fulfilled' ? links.value : { docs: null, specs: null }),
-      locks: locks.status === 'fulfilled' ? locks.value : null };
+      locks: locks.status === 'fulfilled' ? locks.value : null,
+      priorWork: priorWork.status === 'fulfilled' ? priorWork.value ?? null : null };
   },
   commit: commitPushFacts,
   incidentContext: readPushIncidentAttribution,

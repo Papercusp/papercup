@@ -8,7 +8,8 @@ import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTou
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
-import { readPushIncidentAttribution, type PushInput } from './push-channel';
+import { readPushIncidentAttribution, readPushPriorWork, priorWorkSubject, type PushInput, type ReadPriorWorkContextDeps } from './push-channel';
+import { priorWorkReport, type PriorWorkLedgerRow } from './change-history';
 import { classifyShellLookup } from './native-adoption';
 
 const now = Date.now();
@@ -25,6 +26,57 @@ function deps(): PushChannelDeps {
     legs: () => new Map([['first-touch', () => [fact]]]),
     commit: vi.fn(async (_input, _snapshot, facts: readonly PushFact[]) => facts.map(f => f.text).join('\n')) };
 }
+
+describe('P-008 prior work on first touch', () => {
+  const source = 'export function alpha() {\n  return 1;\n}\nexport function beta() {\n  return 2;\n}\n';
+  const row = (n: number, symbol: string, patch: Partial<PriorWorkLedgerRow> = {}): PriorWorkLedgerRow => ({
+    workItem: `WI-${n}`, title: `Item ${n}`, state: 'done', kind: 'task', visible: true, measured: true,
+    lastEditAt: new Date(now - n * 3_600_000).toISOString(), closedAt: null, symbols: [symbol], ...patch });
+  // Fixture ledger: five items on alpha (an older bug among them, one item in two rows), one on beta.
+  const ledger = [row(1, 'alpha'), row(2, 'alpha'), row(2, 'alpha'), row(3, 'alpha'), row(4, 'alpha'),
+    row(9, 'alpha', { kind: 'bug' }), row(5, 'beta')];
+  async function push(calls: PushInput['calls'], patch: Partial<ReadPriorWorkContextDeps> = {}) {
+    const root = await mkdtemp(join(tmpdir(), 'prior-work-'));
+    await mkdir(join(root, 'lib'), { recursive: true }); await writeFile(join(root, 'lib/target.ts'), source);
+    const read = vi.fn<ReadPriorWorkContextDeps['read']>(async query => priorWorkReport({ path: query.path, names: query.names,
+      truncated: false, rows: ledger.filter(r => query.names === null || r.symbols.some(s => query.names!.includes(s))) }));
+    const priorDeps: ReadPriorWorkContextDeps = { claim: async () => 'WI-mine', noted: async () => [],
+      source: async (base, path) => (await import('node:fs/promises')).readFile(join(base, path), 'utf8'), read, ...patch };
+    const d: PushChannelDeps = { ...deps(), legs: () => new Map([['first-touch', snapshotFirstTouchLeg]]),
+      context: async (pushInput, paths) => ({ docs: null, specs: null, locks: null,
+        priorWork: await readPushPriorWork(pushInput, paths, priorDeps) }) };
+    try {
+      const text = await codeIntelPushText({ ...input, root, calls }, 0, d);
+      const facts = vi.mocked(d.commit).mock.calls[0]?.[2] ?? [];
+      return { text, read, prior: facts.filter(fact => fact.subject.startsWith('prior-work:')) };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+  it('a Read of a function with several prior items yields one capped, ranked, bare line', async () => {
+    const { text, prior, read } = await push([{ tool: 'Read', toolInput: { file_path: 'lib/target.ts', offset: 1, limit: 3 } }]);
+    expect(prior).toHaveLength(1);
+    expect(prior[0]).toMatchObject({ leg: 'first-touch', bare: true, citedPaths: ['lib/target.ts'],
+      subject: priorWorkSubject('WI-mine', 'lib/target.ts', ['alpha']) });
+    const line = text.split('\n').find(l => l.startsWith('Prior work on `alpha`:'))!;
+    expect([...line.matchAll(/(WI-\d+) \(/g)].map(m => m[1])).toEqual(['WI-9', 'WI-1', 'WI-2']); // bug first, then recency
+    expect(line).toContain('. 5 total; more: graph:query');
+    expect(read).toHaveBeenCalledWith(expect.objectContaining({ names: ['alpha'], excludeWorkItem: 'WI-mine' }));
+  });
+  it('an Edit triggers the note for the function it changed, and an unlocatable edit gives an unknown note', async () => {
+    const edit = await push([{ tool: 'Edit', toolInput: { file_path: 'lib/target.ts', old_string: 'return 0;', new_string: 'return 2;' } }]);
+    // One item, nothing omitted: the bare line, no total or pointer tail.
+    expect(edit.prior.map(fact => fact.text)).toEqual(['Prior work on `beta`: WI-5 (Item 5, done, 5h).']);
+    const lost = await push([{ tool: 'Edit', toolInput: { file_path: 'lib/target.ts', old_string: 'x', new_string: '' } }]);
+    expect(lost.prior[0]?.text).toMatch(/^Prior work on `lib\/target\.ts`: unknown \(touched symbol not resolved\)/);
+  });
+  it('a second touch of the same symbol in the same session and work item yields no second note', async () => {
+    const read = { tool: 'Read', toolInput: { file_path: 'lib/target.ts', offset: 2, limit: 1 } };
+    const shown = async () => [priorWorkSubject('WI-mine', 'lib/target.ts', ['alpha'])];
+    expect((await push([read], { noted: shown })).prior).toEqual([]);
+    expect((await push([read], { noted: shown, claim: async () => 'WI-other' })).prior).toHaveLength(1);
+    expect((await push([{ tool: 'Read', toolInput: { file_path: 'lib/target.ts', offset: 4, limit: 3 } }], { noted: shown })).prior)
+      .toHaveLength(1); // beta was not shown yet
+  });
+});
 
 describe('first-touch source-link diagnostics', () => {
   it.each([

@@ -227,6 +227,38 @@ const coChangeText = (c: FamilyCoChange) => c.status === 'measured'
   ? `co-change ${c.score.toFixed(2)} (changed together in ${c.shared} of ${c.union} commits touching them)`
   : `co-change unknown (${c.reason})`;
 
+/** Terminal authority recorded when a clean re-scan resolves a filed cleanup area. */
+export const CLONE_SWEEP_CLOSE_ACTOR = 'system:clone-sweep';
+
+/**
+ * Close every open cleanup clone-area item in this harness whose area the re-scan
+ * no longer reports. An area with a stored member under an unscanned path stays
+ * open: an unparsed file is not evidence the finding is gone. Uses the system
+ * state write (terminal authority + reason naming the fire), not the agent
+ * completion tool, so no change-kind proof is demanded of a system close.
+ */
+export async function closeResolvedCloneAreas(scope: { workspaceId: string; harness: string; fireId: string },
+  reportedAreas: ReadonlySet<string>, unscanned: readonly string[] = []): Promise<string[]> {
+  const [{ getOrgPg }, { setWorkItemState }, { ANY_FAMILY_TERMINAL_STATES }] = await Promise.all([
+    import('@papercusp/db-org'), import('../work-items'), import('../work-item-dispatch-states')]);
+  const open = await getOrgPg().sql<{ feature_id: string; clone_area: { area?: string; families?: { members?: { path?: string }[] }[] } | null }[]>`
+    SELECT feature_id, payload -> 'cloneArea' AS clone_area FROM harness_shared.work_items
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harness}
+       AND COALESCE(item_kind, kind) = 'cleanup' AND payload ? 'cloneArea'
+       AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+     ORDER BY feature_id`;
+  const skip = new Set(unscanned), closed: string[] = [];
+  for (const row of open) {
+    const area = row.clone_area?.area;
+    if (!area || reportedAreas.has(area)) continue;
+    if ((row.clone_area?.families ?? []).some(f => (f.members ?? []).some(m => m.path && skip.has(m.path)))) continue;
+    await setWorkItemState(row.feature_id, 'done', { harness: scope.harness, by: CLONE_SWEEP_CLOSE_ACTOR,
+      completionRef: `clone sweep fire ${scope.fireId}: re-scan reports none of this area's findings` });
+    closed.push(row.feature_id);
+  }
+  return closed;
+}
+
 type FiledRow = { familyId: string; itemId: string | null; area?: string;
   disposition: 'accepted' | 'created' | 'reused' | 'unverified' | 'deferred' };
 
@@ -236,7 +268,7 @@ type FiledRow = { familyId: string; itemId: string | null; area?: string;
  * so a restart never creates a second item for the same area. */
 export async function fileCloneSweep(families: readonly RankedCloneFamily[], scope: {
   workspaceId: string; harness: string; fireId: string; root?: string;
-}, options: { cap?: number; signals?: CloneFilingSignals } = {}) {
+}, options: { cap?: number; signals?: CloneFilingSignals; closeResolved?: { unscanned?: readonly string[] } } = {}) {
   if (!scope.workspaceId.trim() || !scope.harness.trim() || !scope.fireId.trim()) throw new Error('Clone sweep scope required');
   // Issue-family creates use the established ambient workspace. The standalone
   // managed runner pins it; refuse a misbound caller before minting any row.
@@ -288,7 +320,7 @@ export async function fileCloneSweep(families: readonly RankedCloneFamily[], sco
       }
       const incumbent = await adoptConditionIncumbent(key, { title, summary, workspaceId: scope.workspaceId, includeTerminal: true });
       if (incumbent) return { id: incumbent, created: false };
-      return upsertConditionWorkItem(key, { kind: 'change', title, summary, harness: scope.harness,
+      return upsertConditionWorkItem(key, { kind: 'cleanup', title, summary, harness: scope.harness,
         workspaceId: scope.workspaceId, createdBy: 'system:clone-family-sweep', payload });
     });
     if ('unverified' in result) {
@@ -301,8 +333,14 @@ export async function fileCloneSweep(families: readonly RankedCloneFamily[], sco
     if (!result.id) throw new Error(`Clone area filing returned no identity: ${area}`);
     for (const row of group) rows.push({ familyId: row.family.id, itemId: result.id, area, disposition: result.created ? 'created' : 'reused' });
   }
+  // R-3: a re-scan that no longer reports an area resolves its cleanup item. Every
+  // non-accepted family counts as reported, so deferred and unverified areas stay open.
+  const resolved = options.closeResolved
+    ? await closeResolvedCloneAreas(scope, new Set(families.filter(row => !row.accepted)
+      .map(row => cloneFamilyArea(row.family.members))), options.closeResolved.unscanned ?? [])
+    : [];
   const items = new Set(rows.filter(row => row.disposition === 'created').map(row => row.itemId));
-  return { families: families.length, created: items.size,
+  return { families: families.length, created: items.size, resolved,
     filedAreas: Math.min(cap, ranked.length), deferredAreas: Math.max(0, ranked.length - cap),
     accepted: rows.filter(row => row.disposition === 'accepted').length, rows };
 }

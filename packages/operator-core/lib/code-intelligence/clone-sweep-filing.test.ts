@@ -14,8 +14,10 @@ vi.mock('../coord/condition-upsert', () => ({
     Object.assign(row, update);
     return row.id;
   },
-  upsertConditionWorkItem: async (key: string, input: { title: string; summary: string; payload: any }) => {
+  upsertConditionWorkItem: async (key: string, input: { kind: string; title: string; summary: string; payload: any }) => {
     const id = `WI-${++store.seq}`;
+    // R-3 (code-cleanup-campaigns-2026-10-26): the sweep files every finding as kind 'cleanup'.
+    if (input.kind !== 'cleanup') throw new Error(`clone sweep filed kind ${input.kind}, expected cleanup`);
     store.items.set(key, { id, title: input.title, summary: input.summary, payload: input.payload });
     return { id, created: true };
   },
