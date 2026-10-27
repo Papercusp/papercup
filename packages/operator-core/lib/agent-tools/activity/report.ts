@@ -410,11 +410,31 @@ export default defineTool({
             const reanchor = args.adv_session_id != null
               ? reanchorAdvSessionNativeId(args.adv_session_id, args.session_id.trim())
               : reanchorAdvSessionNativeIdByOwner(owner, args.session_id.trim());
-            await reanchor.catch((e) => {
+            const receipt = await reanchor.catch((e) => {
               console.warn(
                 `[activity:report] SessionStart reanchor for ${owner} failed: ${e instanceof Error ? e.message : e}`,
               );
+              return null;
             });
+            // Codex/OMP learn their native id only after bootstrap. If enrollment's
+            // one-shot task binder ran before this SessionStart, the adv row now has
+            // the missing id but task_ledger would stay unbound forever. Reconcile
+            // live tasks only after the exact adv row confirms this owner; the store
+            // scopes the update by workspace + coord owner and never reopens tasks.
+            if (args.adv_session_id != null && receipt?.owner === owner) {
+              try {
+                const { bindLiveAgentSessionTasksToNativeSession } = await import('../../task-manager/store');
+                await bindLiveAgentSessionTasksToNativeSession({
+                  workspaceId,
+                  coordOwnerId: owner,
+                  sessionId: args.session_id.trim(),
+                });
+              } catch (e) {
+                console.warn(
+                  `[activity:report] SessionStart task/session bind for ${owner} failed: ${e instanceof Error ? e.message : e}`,
+                );
+              }
+            }
           }
         }
       } catch (e) {

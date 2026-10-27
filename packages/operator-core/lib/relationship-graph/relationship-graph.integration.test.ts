@@ -31,7 +31,7 @@ import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../
 import { runConnectorSync } from '../providers/connector-runtime';
 import { dataSourceRecordId } from '../data-sources/datatype-destination-sink';
 import { listProvenanceKey } from './merge';
-import { getPeople, mergePeople, searchPeople } from './people';
+import { getPeople, mergePeople, searchPeople, readPersonQualificationEvidence } from './people';
 import {
   acceptEntityField,
   mergeEntities,
@@ -212,6 +212,27 @@ beforeEach(async () => {
 });
 
 describe('platform relationship graph (P-002, R-1)', () => {
+  it('reads cited signup fit inputs from canonical membership, without promoting attribution or consent (P-019)', async () => {
+    const source = await connect(SIGNUPS, { person: ['record'] });
+    await sync(source, signupFetch);
+    const [person] = live(await graphRows('PER-', 'person'));
+    const recordId = dataSourceRecordId(WS, source, 'person', signupKey);
+    const result = await readPersonQualificationEvidence(sql, WS, person!.feature_id);
+    expect(result).toMatchObject({ status: 'available', person: { id: person!.feature_id }, sources: [{
+      recordId, evidenceRef: `work-item:${recordId}`, provider: SIGNUPS, dataSourceId: source,
+      selfReportedUseCase: signupCapture.what,
+    }] });
+    expect(JSON.stringify(result)).not.toMatch(/PER-forged|communicationConsent|emailVerified|distinct_id|productIdentityBinding/);
+    expect(await readPersonQualificationEvidence(sql, 'foreign-workspace', person!.feature_id))
+      .toEqual({ status: 'unknown', reason: 'person_unavailable' });
+    expect(await readPersonQualificationEvidence(sql, WS, recordId))
+      .toEqual({ status: 'unknown', reason: 'person_unavailable' });
+    // A concurrent source retirement must not become a partial assessment.
+    await sql`UPDATE harness_shared.work_items SET payload = payload || '{"retiredAt":"2026-10-27T00:00:00Z"}'::jsonb
+      WHERE workspace_id = ${WS} AND feature_id = ${recordId}`;
+    expect(await readPersonQualificationEvidence(sql, WS, person!.feature_id))
+      .toEqual({ status: 'unknown', reason: 'source_records_unavailable' });
+  });
   it('ingests a packaged signup as a cited person record and converges on replay (P-019)', async () => {
     const source = await connect(SIGNUPS, { person: ['record'] });
     await sync(source, signupFetch);
