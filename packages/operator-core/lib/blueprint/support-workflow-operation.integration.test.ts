@@ -26,6 +26,7 @@ import { readActiveOperationWorkerClaimBinding } from './operation-worker-bindin
 import { prepareSupportOperationNativeLaunch } from './support-workflow-native-launch';
 import { createInferenceGateway } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
+import { summarizeProviderOutcomeCounts } from '../inference-gateway/gateway-request-outcome-store';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../inference-gateway/codex-cli-bridge';
 import type { RunningGatewayService } from '../inference-gateway/launch';
 import { hermeticEnv } from '../../../../apps/operator/vitest-shims/psu-pty-temp-dir';
@@ -335,7 +336,8 @@ describe('support native launch with applied PostgreSQL authority and funding', 
           requestOutcomeStore: { record: async () => {}, report: async () => ({ rows: [], total: 0,
             byOutcome: { ok: 0, 'client-error': 0, 'upstream-429': 0, 'upstream-error': 0, shed: 0,
               cancelled: 0, 'gateway-error': 0, unclassified: 0 }, firstRequestTimestampMs: null,
-            lastFinalizedAtMs: null, truncated: false, retentionMs: 0 }) },
+            lastFinalizedAtMs: null, truncated: false, retentionMs: 0 }),
+          providerSummary: async q => summarizeProviderOutcomeCounts(q.provider, { fromMs: q.fromMs, toMs: q.toMs ?? q.fromMs }, []) },
           requestAbsorbMs: 0, selfHeal: { enabled: false } });
         return { port: await gateway.listen(0), stop: () => gateway!.close() } as RunningGatewayService;
       });
