@@ -120,25 +120,24 @@ describe('REUSE-P-018-01 native interface peer impact, migrated PG', () => {
     const deps = { snapshot: async () => snapshot, enabled: async () => true,
       legs: () => new Map([['interface' as const, snapshotInterfaceLeg]]),
       interfaceContext: read, commit };
-    expect(await codeIntelPushText(input, 0, deps)).toContain('su-work-peer');
+    expect(await codeIntelPushText(input, deps)).toContain('su-work-peer');
     expect(commit).toHaveBeenCalledOnce();
     const failed = await readInterfacePeerContext(input, snapshot, { sql: db.adminSql, locks: async () => { throw Error('unavailable'); } });
     expect(failed.byPath['target.ts']).toMatchObject({ status: 'unknown', peers: [] });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const timed = await codeIntelPushText(input, 0, { ...deps,
+      const timed = await codeIntelPushText(input, { ...deps,
         interfaceContext: () => new Promise(() => {}) });
       expect(timed).toContain('Live caller peers: unknown');
       expect(timed).not.toContain('su-work-peer');
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('code-intel-interface-peers exceeded 100ms'));
     } finally { warn.mockRestore(); }
-    expect(await codeIntelPushText(input, 1500, deps)).toBe('');
   });
 
   it('records one issued interface row with peer citations in the real bounded ledger and deduplicates the epoch', async () => {
     const deps = { snapshot: async () => snapshot, enabled: async () => true,
       legs: () => new Map([['interface' as const, snapshotInterfaceLeg]]), interfaceContext: read, commit: commitPushFacts };
-    const text = await codeIntelPushText(input, 0, deps);
+    const text = await codeIntelPushText(input, deps);
     expect(text).toContain('su-work-peer caller.ts (working-set)');
     expect(text.length).toBeLessThanOrEqual(1500);
     const rows = await db.adminSql`SELECT leg, cited_paths, chars FROM harness_shared.code_intel_pushes
@@ -146,7 +145,7 @@ describe('REUSE-P-018-01 native interface peer impact, migrated PG', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].leg).toBe('interface');
     expect(rows[0].cited_paths).toContain('caller.ts');
-    expect(rows[0].chars).toBe(text.length + 2);
-    expect(await codeIntelPushText(input, 0, deps)).toBe('');
+    expect(rows[0].chars).toBe(text.length);
+    expect(await codeIntelPushText(input, deps)).toBe('');
   });
 });

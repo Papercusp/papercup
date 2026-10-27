@@ -4,13 +4,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_COMMIT_RESERVE_MS, CODE_INTEL_PUSH_TURN_CHARS, CODE_INTEL_PUSH_WALL_MS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, readPushSourceLinks, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_COMMIT_RESERVE_MS, CODE_INTEL_PUSH_MAX_CHARS, CODE_INTEL_PUSH_TURN_CHARS, CODE_INTEL_PUSH_WALL_MS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, readPushSourceLinks, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { readPushIncidentAttribution, readPushPriorWork, priorWorkSubject, pushLegRank, type PushInput, type PushLegId, type ReadPriorWorkContextDeps } from './push-channel';
 import { priorWorkReport, type PriorWorkLedgerRow } from './change-history';
 import { classifyShellLookup } from './native-adoption';
+import { cachedLegFollowThrough, formatPushFact, LEG_FOLLOW_THROUGH_REFRESH_MS, rankPushFacts, resetLegFollowThroughCache, type LegFollowThrough } from './push-channel';
 
 const now = Date.now();
 const raw = () => ({ schema: 'graph-dependency-snapshot-v1', index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
@@ -46,7 +47,7 @@ describe('P-008 prior work on first touch', () => {
       context: async (pushInput, paths) => ({ docs: null, specs: null, locks: null,
         priorWork: await readPushPriorWork(pushInput, paths, priorDeps) }) };
     try {
-      const text = await codeIntelPushText({ ...input, root, calls }, 0, d);
+      const text = await codeIntelPushText({ ...input, root, calls }, d);
       const facts = vi.mocked(d.commit).mock.calls[0]?.[2] ?? [];
       return { text, read, prior: facts.filter(fact => fact.subject.startsWith('prior-work:')) };
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -101,14 +102,14 @@ describe('first-touch source-link diagnostics', () => {
 });
 
 describe('shared snapshot-backed push channel', () => {
-  it('captures research before no-snapshot, disabled-leg and text-budget early returns', async () => {
+  it('captures research before no-snapshot and disabled-leg early returns', async () => {
     const d = deps();
     d.research = vi.fn(async () => {});
     d.snapshot = vi.fn(async () => null);
-    expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS, d)).toBe('');
+    expect(await codeIntelPushText(input, d)).toBe('');
     expect(d.research).toHaveBeenCalledWith(input);
     d.legs = () => new Map();
-    await codeIntelPushText(input, 0, d);
+    await codeIntelPushText(input, d);
     expect(d.research).toHaveBeenCalledTimes(2);
   });
   it('corroborates scoped recent symbol observations and rejects stale or changed source', async () => {
@@ -141,7 +142,7 @@ describe('shared snapshot-backed push channel', () => {
     d.incidentContext = vi.fn(async (_input: PushInput, _paths: string[]) => ({ status: 'measured' as const, changedSymbols: ['target:lib/target.ts:7'],
       workItems: [{ id: 'WI-42', state: 'open', paths: ['lib/target.ts'], relation: 'file-edit-ledger' as const }] }));
     const delivered = await codeIntelPushText({ ...input, calls: [{ tool: 'testing:run', toolResponse: 'truncated recall',
-      incidentResult: { byFile: { 'lib/target.test.ts': { failed: 1, runId: 42 } } } }] }, 0, d);
+      incidentResult: { byFile: { 'lib/target.test.ts': { failed: 1, runId: 42 } } } }] }, d);
     expect(delivered).toContain('target:lib/target.ts:7');
     expect(delivered).toContain('WI-42 [open] (file-edit-ledger)');
     expect(delivered).toContain('"testRunIds":[42]');
@@ -166,7 +167,7 @@ describe('shared snapshot-backed push channel', () => {
     const d = deps();
     d.snapshot = async () => snap;
     d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg], ['interface', snapshotInterfaceLeg]]);
-    const delivered = await codeIntelPushText(changed, 0, d);
+    const delivered = await codeIntelPushText(changed, d);
     expect(delivered).toContain('signature target');
     expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal), [], []);
   });
@@ -370,7 +371,7 @@ describe('shared snapshot-backed push channel', () => {
         return new Promise<FirstTouchContext>(() => {});
       });
       d.context = context;
-      expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
+      expect(await codeIntelPushText(input, d)).toContain('Static consumer');
       expect(d.commit).toHaveBeenCalledOnce();
       const warningLine = warning.mock.calls.map(([line]) => String(line))
         .find(line => line.startsWith('[code-intel-first-touch-context]'));
@@ -389,7 +390,7 @@ describe('shared snapshot-backed push channel', () => {
       expect(diagnostic.readId).toBe(context.mock.calls[0]?.[2]?.readId);
       vi.mocked(d.enabled).mockResolvedValue(false);
       context.mockClear();
-      expect(await codeIntelPushText(input, 0, d)).toBe('');
+      expect(await codeIntelPushText(input, d)).toBe('');
       expect(d.context).not.toHaveBeenCalled();
     } finally { warning.mockRestore(); }
   });
@@ -398,28 +399,25 @@ describe('shared snapshot-backed push channel', () => {
     const d = deps();
     d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg]]);
     const changed = { ...input, root: '/now-changed', calls: [{ tool: 'Edit', toolInput: { file_path: 'lib/target.ts' } }] };
-    const text = await codeIntelPushText(changed, 0, d);
+    const text = await codeIntelPushText(changed, d);
     expect(text).toContain('Snapshot lower bounds only');
     expect(text).toContain('current source hashes');
     expect(d.commit).toHaveBeenCalledOnce();
   });
 
-  it('delivers immediately from an available snapshot and gives memory its budget first', async () => {
+  it('P-005: delivers immediately from its own turn budget, never what memory left over', async () => {
     const d = deps();
-    expect(await codeIntelPushText(input, 350, d)).toContain('Static consumer');
+    expect(await codeIntelPushText(input, d)).toContain('Static consumer');
     expect(d.commit).toHaveBeenCalledWith(input, expect.objectContaining({ commit: 'a'.repeat(40) }), [fact],
-      CODE_INTEL_PUSH_TURN_CHARS - 350, expect.any(AbortSignal), [], []);
-    vi.mocked(d.commit).mockClear();
-    expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS, d)).toBe('');
-    expect(d.commit).not.toHaveBeenCalled();
+      CODE_INTEL_PUSH_TURN_CHARS, expect.any(AbortSignal), [], []);
   });
 
   it('a cold/missing snapshot or an OFF leg never starts a compiler or writes telemetry', async () => {
     const d = deps();
     vi.mocked(d.snapshot).mockResolvedValueOnce(null);
-    expect(await codeIntelPushText(input, 0, d)).toBe('');
+    expect(await codeIntelPushText(input, d)).toBe('');
     vi.mocked(d.enabled).mockResolvedValue(false);
-    expect(await codeIntelPushText(input, 0, d)).toBe('');
+    expect(await codeIntelPushText(input, d)).toBe('');
     expect(d.commit).not.toHaveBeenCalled();
   });
 
@@ -427,7 +425,7 @@ describe('shared snapshot-backed push channel', () => {
     const d = deps();
     const oversized = { ...fact, text: 'x'.repeat(CODE_INTEL_PUSH_TURN_CHARS) };
     d.legs = () => new Map([['first-touch', () => [oversized, { ...fact, citedPaths: ['/private/file'] }]]]);
-    expect(await codeIntelPushText(input, 0, d)).toBe('');
+    expect(await codeIntelPushText(input, d)).toBe('');
     // WI-6554700010018440: the oversized fact is delivered nowhere but handed to the commit
     // to record as a budget drop; the unsafe-path fact is rejected, not a budget loss.
     expect(d.commit).toHaveBeenCalledOnce();
@@ -436,13 +434,15 @@ describe('shared snapshot-backed push channel', () => {
     expect(dropped).toEqual([oversized]);
   });
 
-  it('hands a fact that does not fit the memory-reduced share to the commit as a drop', async () => {
+  it('P-005: a fact whose push cannot fit the per-push cap even as whole lines is a drop', async () => {
     const d = deps();
-    expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS - 40, d)).toBe('');
+    const wide = { ...fact, text: 'y'.repeat(CODE_INTEL_PUSH_MAX_CHARS) };
+    d.legs = () => new Map([['first-touch', () => [wide, fact]]]);
+    expect(await codeIntelPushText(input, d)).toContain('Static consumer');
     const [, , delivered, budget, , dropped] = vi.mocked(d.commit).mock.calls[0];
-    expect(delivered).toEqual([]);
-    expect(budget).toBe(40);
-    expect(dropped).toEqual([fact]);
+    expect(delivered).toEqual([fact]);
+    expect(budget).toBe(CODE_INTEL_PUSH_TURN_CHARS);
+    expect(dropped).toEqual([wide]);
   });
 
   it('accepts serialized native Read/Edit inputs without guessing malformed or oversized digests', () => {
@@ -547,7 +547,7 @@ describe('shared snapshot-backed push channel', () => {
       await codeIntelPushText({ ...input, calls: [
         { tool: 'mcp__papercusp-su__tools_invoke', toolInput: { name: 'testing:run', args: { files: ['lib/target.test.ts'] } }, toolResponse: 'r' },
         { tool: 'Read', toolInput: { file_path: 'lib/target.ts' } },
-      ] }, 0, d);
+      ] }, d);
       expect(seen).toEqual(['testing:run', 'Read']);
     });
 
@@ -631,7 +631,7 @@ describe('shared snapshot-backed push channel', () => {
         await writeFile(join(root, source.path), '// changed');
         const d = deps();
         d.legs = () => new Map([['first-touch', () => [{ ...fact, sourceHashes: sources }]]]);
-        expect(await codeIntelPushText({ ...input, root }, 0, d)).toBe('');
+        expect(await codeIntelPushText({ ...input, root }, d)).toBe('');
         expect(d.commit).not.toHaveBeenCalled();
         await writeFile(join(root, source.path), text);
       }
@@ -662,7 +662,7 @@ describe('shared snapshot-backed push channel', () => {
       expect(sources.map(source => source.path)).toContain('pkg/package.json');
       const push = () => { const d = deps();
         d.legs = () => new Map([['first-touch', () => [{ ...fact, sourceHashes: sources }]]]);
-        return codeIntelPushText({ ...input, root }, 0, d); };
+        return codeIntelPushText({ ...input, root }, d); };
       expect(await push()).toContain('Static consumer');
       await write('pkg/package.json', JSON.stringify({ name: '@fx/pkg', version: '2.0.0', scripts: { test: 'vitest run' } }, null, 2));
       expect(await corroboratePushSources(root, sources, signal)).toBe(true);
@@ -683,11 +683,11 @@ describe('shared snapshot-backed push channel', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const d = deps();
     vi.mocked(d.snapshot).mockImplementation(() => new Promise(() => {}));
-    expect(await codeIntelPushText(input, 0, d)).toBe('');
+    expect(await codeIntelPushText(input, d)).toBe('');
     expect(d.commit).not.toHaveBeenCalled();
     vi.mocked(d.snapshot).mockResolvedValue(snapshot());
     vi.mocked(d.commit).mockRejectedValue(new Error('store unavailable'));
-    expect(await codeIntelPushText(input, 0, d)).toBe('');
+    expect(await codeIntelPushText(input, d)).toBe('');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('code-intel-push exceeded'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('store unavailable'));
     warn.mockRestore();
@@ -698,14 +698,17 @@ describe('shared snapshot-backed push channel', () => {
 // push. Its attribution read seq-scanned every open work-item (~300 ms against a 75 ms
 // statement timeout) and it ran after the legs that wait, so the 250 ms wall fired first.
 describe('P-002 incident leg reaches commit', () => {
-  it('runs interface, then incident, then the remaining legs in registration order', async () => {
+  it('runs interface, then incident, then snapshot-only legs, then the legs that wait on a read', async () => {
     const ran: PushLegId[] = [];
     const d = deps();
     d.legs = () => new Map((['first-touch', 'grep', 'incident', 'interface', 'clone'] as PushLegId[])
       .map(id => [id, () => { ran.push(id); return []; }]));
-    await codeIntelPushText(input, 0, d);
-    expect(ran).toEqual(['interface', 'incident', 'first-touch', 'grep', 'clone']);
-    expect([pushLegRank('interface'), pushLegRank('incident'), pushLegRank('resume')]).toEqual([0, 1, 2]);
+    await codeIntelPushText(input, d);
+    // WI-6554700010030085: registered last, grep used to run after the waiting legs and
+    // the gather deadline cut it on every turn.
+    expect(ran).toEqual(['interface', 'incident', 'grep', 'clone', 'first-touch']);
+    expect([pushLegRank('interface'), pushLegRank('incident'), pushLegRank('grep'), pushLegRank('resume'),
+      pushLegRank('notes'), pushLegRank('first-touch')]).toEqual([0, 1, 2, 3, 3, 3]);
   });
 
   it('reads open-on-path items through the partial GIN index predicates (migration 1595)', async () => {
@@ -737,28 +740,38 @@ describe('WI-6554700010030085 push wall keeps a commit reserve', () => {
   it('commits the facts gathered before the deadline and names the enabled legs it stopped', async () => {
     const d = deps();
     d.legs = () => new Map([
-      ['first-touch', () => { spin(gatherMs + 10); return [fact]; }],
-      ['grep', () => [grepFact]],
+      ['first-touch', () => [fact]],
+      ['grep', () => { spin(gatherMs + 10); return [grepFact]; }],
     ]);
-    expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
+    expect(await codeIntelPushText(input, d)).toContain('Grep answer.');
     expect(d.commit).toHaveBeenCalledOnce();
     const [, , delivered, , , dropped, notRun] = vi.mocked(d.commit).mock.calls[0];
-    expect(delivered).toEqual([fact]);
+    expect(delivered).toEqual([grepFact]);
     expect(dropped).toEqual([]);
-    expect(notRun).toEqual(['grep']);
+    expect(notRun).toEqual(['first-touch']);
   });
 
-  it('a gather the snapshot alone exhausts still records every enabled leg, and only those', async () => {
+  it('a gather the snapshot alone exhausts records every enabled leg that had work, and only those', async () => {
     const d = deps();
     d.snapshot = slowSnapshot(gatherMs + 20);
     vi.mocked(d.enabled).mockImplementation(async flag => flag !== PUSH_LEG_FLAGS.grep);
     d.legs = () => new Map([['first-touch', () => [fact]], ['grep', () => [grepFact]], ['clone', () => []]]);
-    expect(await codeIntelPushText(input, 0, d)).toBe('');
+    expect(await codeIntelPushText(input, d)).toBe('');
     expect(d.commit).toHaveBeenCalledOnce();
     const [, , delivered, , , dropped, notRun] = vi.mocked(d.commit).mock.calls[0];
     expect(delivered).toEqual([]);
     expect(dropped).toEqual([]);
-    expect(notRun).toEqual(['first-touch', 'clone']);
+    // clone had no candidate for this batch, so the wall cost it nothing.
+    expect(notRun).toEqual(['first-touch']);
+  });
+
+  it('never records a leg with no work as stopped: no read to wait on, no candidate', async () => {
+    const d = deps();
+    d.snapshot = slowSnapshot(gatherMs + 20);
+    // No resume/notes read was started (no deps), and the snapshot leg has no candidate.
+    d.legs = () => new Map([['resume', () => [fact]], ['notes', () => [fact]], ['grep', () => []]]);
+    expect(await codeIntelPushText(input, d)).toBe('');
+    expect(d.commit).not.toHaveBeenCalled();
   });
 
   it('caps a context read that starts late at the time the gather has left', async () => {
@@ -767,7 +780,7 @@ describe('WI-6554700010030085 push wall keeps a commit reserve', () => {
       const d = deps();
       d.snapshot = slowSnapshot(gatherMs - 30);
       d.context = () => new Promise<FirstTouchContext>(() => {});
-      expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
+      expect(await codeIntelPushText(input, d)).toContain('Static consumer');
       const line = warn.mock.calls.map(([l]) => String(l)).find(l => l.startsWith('[code-intel-first-touch-context]'));
       expect(line).toBeDefined();
       const diagnostic = JSON.parse(line!.slice(line!.indexOf(']') + 2));
@@ -782,9 +795,72 @@ describe('WI-6554700010030085 push wall keeps a commit reserve', () => {
     try {
       const d = deps();
       vi.mocked(d.commit).mockImplementation(() => new Promise(() => {}));
-      expect(await codeIntelPushText(input, 0, d)).toBe('');
+      expect(await codeIntelPushText(input, d)).toBe('');
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(
         /^\[code-intel-push\] wall fired during commit after \d+ms with 1 fact\(s\) gathered$/));
     } finally { warn.mockRestore(); }
+  });
+});
+
+// P-005 (WI-6554700010029479): 94% of 7-day skips were pushes of ~1,100-1,200 chars against
+// a 1,500-char turn, so each push is now capped at 500 whole-line chars and the turn's
+// budget goes to the legs agents act on most.
+describe('P-005 compact pushes ranked by follow-through', () => {
+  const pointer = 'Run code:pack lib/target.ts for the full brief.';
+  const detail = Array.from({ length: 30 }, (_, i) => `detail ${i} ${'z'.repeat(30)}`);
+  const long: PushFact = { ...fact, suggestedCall: 'code:pack lib/target.ts', text: ['Head line.', ...detail, pointer].join('\n') };
+
+  it('renders at most the per-push cap from whole lines, keeps head and pointer, and counts what it left out', () => {
+    const lines = formatPushFact(long, snapshot()).split('\n');
+    expect(lines.join('\n').length).toBeLessThanOrEqual(CODE_INTEL_PUSH_MAX_CHARS);
+    expect(lines.slice(0, 2)).toEqual(['## Code intelligence (first-touch) @aaaaaaaaaaaa', 'Head line.']);
+    expect(lines.at(-2)).toBe(pointer);
+    const omitted = Number(/^\(\+(\d+) lines omitted; /.exec(lines.at(-1)!)?.[1]);
+    const kept = lines.slice(2, -2);
+    // Never a cut line: every kept detail is a whole source line, in source order.
+    expect(kept).toEqual(detail.slice(0, kept.length));
+    expect(kept.length + omitted).toBe(detail.length);
+    expect(kept.length).toBeGreaterThan(0);
+  });
+
+  it('a fact that fits is rendered whole under its header, with no omitted marker', () => {
+    expect(formatPushFact(fact, snapshot())).toBe(`## Code intelligence (first-touch) @aaaaaaaaaaaa\n${fact.text}`);
+  });
+
+  it('ranks by trusted follow-through, gives thinly measured legs the trusted mean, and keeps ties stable', () => {
+    const f = (leg: PushLegId, subject: string): PushFact => ({ ...fact, leg, subject });
+    const facts = [f('first-touch', 'a'), f('resume', 'b'), f('grep', 'c'), f('interface', 'd')];
+    expect(rankPushFacts(facts, null)).toEqual(facts);
+    const rates = new Map<string, LegFollowThrough>([['first-touch', { rate: 0.1, measured: 50 }],
+      ['resume', { rate: 0.4, measured: 50 }], ['grep', { rate: 0.9, measured: 3 }]]);
+    // Prior = mean(0.1, 0.4) = 0.25 for grep (3 measurements) and interface (none).
+    expect(rankPushFacts(facts, rates).map(x => x.subject)).toEqual(['b', 'c', 'd', 'a']);
+    expect(rankPushFacts(facts, new Map([['grep', { rate: 1, measured: 1 }]]))).toEqual(facts);
+  });
+
+  it('commits facts in follow-through order, not gather order', async () => {
+    const d = deps();
+    const grepFact: PushFact = { leg: 'grep', subject: 'grep:target', text: 'Grep answer.', citedPaths: ['app/use.ts'] };
+    d.legs = () => new Map([['first-touch', () => [fact]], ['grep', () => [grepFact]]]);
+    d.legFollowThrough = () => new Map([['first-touch', { rate: 0.5, measured: 40 }], ['grep', { rate: 0.1, measured: 40 }]]);
+    await codeIntelPushText(input, d);
+    // grep is gathered first (snapshot-only leg) but agents act on first-touch more.
+    expect(vi.mocked(d.commit).mock.calls[0][2].map(x => x.leg)).toEqual(['first-touch', 'grep']);
+  });
+
+  it('reads follow-through in the background at most hourly and never makes a push wait for it', async () => {
+    resetLegFollowThroughCache();
+    let resolve!: (rates: ReadonlyMap<string, LegFollowThrough>) => void;
+    const measure = vi.fn(() => new Promise<ReadonlyMap<string, LegFollowThrough>>(r => { resolve = r; }));
+    try {
+      expect(cachedLegFollowThrough('ws-ft', measure, 1_000)).toBeNull();
+      expect(cachedLegFollowThrough('ws-ft', measure, 2_000)).toBeNull();
+      await vi.waitFor(() => expect(measure).toHaveBeenCalledOnce());
+      resolve(new Map([['grep', { rate: 0.5, measured: 30 }]]));
+      await vi.waitFor(() => expect(cachedLegFollowThrough('ws-ft', measure, 3_000)?.get('grep')?.rate).toBe(0.5));
+      expect(measure).toHaveBeenCalledOnce();
+      cachedLegFollowThrough('ws-ft', measure, 1_000 + LEG_FOLLOW_THROUGH_REFRESH_MS);
+      await vi.waitFor(() => expect(measure).toHaveBeenCalledTimes(2));
+    } finally { resetLegFollowThroughCache(); }
   });
 });

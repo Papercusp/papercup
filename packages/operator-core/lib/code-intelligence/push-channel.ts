@@ -29,7 +29,12 @@ import {
   type EpochRow, type ForeignWorkingSet, type WorkingSetQuery, type WorkingSetReason, type WorkingSetSignals,
 } from './working-set';
 
+/** Code intelligence's own per-turn budget (code-intel-delivery-and-outcomes-2026-10-26 P-005,
+ * R-5). Reserved: memory recall and the other mid-turn blocks never draw on it. */
 export const CODE_INTEL_PUSH_TURN_CHARS = 1_500;
+/** P-005 / R-5 D-003: one rendered push, header and pointer included. A push still over it
+ * after formatPushFact keeps only whole lines is dropped whole (skip site `push-cap`). */
+export const CODE_INTEL_PUSH_MAX_CHARS = 500;
 export const CODE_INTEL_PUSH_WALL_MS = 250;
 /** WI-6554700010030085: the end of the wall held back for the commit. Gathering stops at
  * CODE_INTEL_PUSH_WALL_MS minus this, so the facts already gathered reach the ledger. */
@@ -87,13 +92,15 @@ export interface PushFact {
  * binding limit; `turn-budget` = the turn's own code-intel spend was (including a tie,
  * where memory took nothing and code intelligence filled the turn itself).
  * WI-6554700010030085: `wall` = an enabled leg the push wall stopped before it ran
- * (subject `leg-not-run:<leg>`, chars 0), so "produced nothing" and "never ran" differ. */
+ * (subject `leg-not-run:<leg>`, chars 0), so "produced nothing" and "never ran" differ.
+ * WI-6554700010029479: `push-cap` = the rendered push exceeded CODE_INTEL_PUSH_MAX_CHARS.
+ * Memory recall no longer shares the budget, so new rows are never `request-budget`. */
 interface PushSkip {
   leg: PushLegId;
   subject: string;
   chars: number;
   budgetLeft: number;
-  site: 'request-budget' | 'turn-budget' | 'wall';
+  site: 'request-budget' | 'turn-budget' | 'wall' | 'push-cap';
 }
 /** Measured attribution supplied by the incident caller. Static reach alone is
  * never upgraded to a change or work-item claim; callers must provide these
@@ -1109,7 +1116,10 @@ export interface PushChannelDeps {
   resumeContext?(input: PushInput, diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
   interfaceContext?(input: PushInput, snapshot: PushSnapshot): Promise<InterfacePeerContext>;
-  /** `dropped`: facts the request already found too big for `requestBudget`; the commit
+  /** P-005: measured acted-on rate per leg, read synchronously from a cache that refreshes
+   * off the push wall; null while nothing has been measured (arrival order then stands). */
+  legFollowThrough?(workspace: string): ReadonlyMap<string, LegFollowThrough> | null;
+  /** `dropped`: facts the request already found over CODE_INTEL_PUSH_MAX_CHARS; the commit
    * classifies and records them with its own budget drops (WI-6554700010018440).
    * `notRun`: enabled legs the wall stopped before they ran, recorded as site `wall`
    * (WI-6554700010030085). */
@@ -1117,8 +1127,6 @@ export interface PushChannelDeps {
     dropped: readonly PushFact[], notRun: readonly PushLegId[]): Promise<string>;
 }
 
-const skipSite = (requestLeft: number, turnLeft: number): PushSkip['site'] =>
-  requestLeft < turnLeft ? 'request-budget' : 'turn-budget';
 
 /** WI-6554700010018440: budget drops, written beside the deliveries. Telemetry only: the
  * savepoint keeps a failed write from rolling back the facts this request delivered. A fact
@@ -1161,20 +1169,26 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
     let requestLeft = requestBudget;
     let turnLeft = CODE_INTEL_PUSH_TURN_CHARS - Number(spent[0]?.chars ?? 0);
     const budgetLeft = Math.max(0, Math.min(requestLeft, turnLeft));
+    // P-005: a fact costs its rendered length; the '\n\n' join is not charged, so three
+    // CODE_INTEL_PUSH_MAX_CHARS pushes fill exactly CODE_INTEL_PUSH_TURN_CHARS (R-5 D-009).
     const skips: PushSkip[] = [
-      ...dropped.map(fact => ({ leg: fact.leg, subject: fact.subject, chars: formatPushFact(fact, snapshot).length + 2,
-        budgetLeft, site: skipSite(requestLeft, turnLeft) })),
+      ...dropped.map(fact => ({ leg: fact.leg, subject: fact.subject, chars: formatPushFact(fact, snapshot).length,
+        budgetLeft, site: 'push-cap' as const })),
       ...notRun.map(leg => ({ leg, subject: `leg-not-run:${leg}`, chars: 0, budgetLeft, site: 'wall' as const })),
     ];
     const text: string[] = [];
     for (const fact of facts) {
       const block = formatPushFact(fact, snapshot);
-      const chars = block.length + 2;
+      const chars = block.length;
       const left = Math.min(requestLeft, turnLeft);
       if (signal.aborted) throw new Error('code-intel push cancelled');
-      if (chars > left) { // Never cut a qualifier or citation off a fact.
+      // Never cut a qualifier or citation off a fact: an over-cap or over-budget push
+      // is dropped whole and recorded.
+      if (chars > CODE_INTEL_PUSH_MAX_CHARS || chars > left) {
+        // The production caller's request share is the whole turn, so a request-budget
+        // skip comes only from a caller that passes a smaller share.
         skips.push({ leg: fact.leg, subject: fact.subject, chars, budgetLeft: Math.max(0, left),
-          site: skipSite(requestLeft, turnLeft) });
+          site: chars > CODE_INTEL_PUSH_MAX_CHARS ? 'push-cap' : chars > turnLeft ? 'turn-budget' : 'request-budget' });
         continue;
       }
       const inserted = await tx<{ id: number }[]>`INSERT INTO harness_shared.code_intel_pushes
@@ -1228,9 +1242,104 @@ export async function recordIntentTaskBrief(input: { workspace: string; owner: s
   }
 }
 
+/** P-005: the qualifier an omitted-lines marker keeps, so a shortened push is never read
+ * as complete or as runtime truth. */
+export const PUSH_OMITTED_QUALIFIER = 'static snapshot lower bounds; runtime unknown';
+
+/**
+ * One push, at most CODE_INTEL_PUSH_MAX_CHARS where its first line allows (R-5 D-003/D-014).
+ * A leg's text is newline-separated whole statements. The render keeps the first line, then
+ * the line carrying the fact's `suggestedCall` (its pointer; appended as `Next: …` when no
+ * line carries it), then the remaining lines in order while they fit, and names how many it
+ * left out. A line is never cut. A push whose first line and pointer alone exceed the cap is
+ * returned whole and dropped by the caller (site push-cap). Bare one-line notes render as is.
+ * The snapshot commit stays in the header; its generation time is in the ledger row.
+ */
 export function formatPushFact(fact: PushFact, snapshot: PushSnapshot): string {
   if (fact.leg === 'antipattern' || fact.leg === 'clone' || fact.bare) return fact.text;
-  return `## Code intelligence (${fact.leg})\nSnapshot ${snapshot.commit.slice(0, 12)} · ${snapshot.generatedAt}\n${fact.text}`;
+  const header = `## Code intelligence (${fact.leg}) @${snapshot.commit.slice(0, 12)}`;
+  const [head = '', ...rest] = fact.text.split('\n');
+  const pointerAt = fact.suggestedCall ? rest.findIndex(line => line.includes(fact.suggestedCall!)) : -1;
+  const pointer = pointerAt >= 0 ? rest[pointerAt] : fact.suggestedCall ? `Next: ${fact.suggestedCall}` : '';
+  const others = rest.filter((_, index) => index !== pointerAt);
+  const marker = (count: number) => `(+${count} line${count === 1 ? '' : 's'} omitted; ${PUSH_OMITTED_QUALIFIER})`;
+  const lines = [header, head];
+  let used = header.length + 1 + head.length + (pointer ? pointer.length + 1 : 0);
+  let omitted = 0;
+  for (const [index, line] of others.entries()) {
+    const later = others.length - index - 1;
+    // Room for this line, plus the marker if anything after it could still be left out.
+    const reserve = later ? marker(later + omitted).length + 1 : omitted ? marker(omitted).length + 1 : 0;
+    if (!omitted && used + line.length + 1 + reserve <= CODE_INTEL_PUSH_MAX_CHARS) {
+      lines.push(line);
+      used += line.length + 1;
+    } else omitted += 1;
+  }
+  if (pointer) lines.push(pointer);
+  if (omitted) lines.push(marker(omitted));
+  return lines.join('\n');
+}
+
+/** P-005: one leg's measured follow-through (native-adoption.ts actedOn over closed windows). */
+export interface LegFollowThrough { rate: number; measured: number }
+/** Below this many closed measurements a leg's rate is not trusted; it takes the measured mean. */
+export const LEG_FOLLOW_THROUGH_MIN_MEASURED = 20;
+export const LEG_FOLLOW_THROUGH_WINDOW_MS = 7 * 86_400_000;
+export const LEG_FOLLOW_THROUGH_REFRESH_MS = 60 * 60_000;
+const LEG_FOLLOW_THROUGH_READ_TIMEOUT_MS = 30_000;
+
+/**
+ * Commit order for a request's facts (P-005): highest measured acted-on rate first, so the
+ * reserved budget goes to what agents use. A leg with fewer than
+ * LEG_FOLLOW_THROUGH_MIN_MEASURED closed measurements takes the mean of the trusted legs,
+ * so a rare leg (interface) is neither buried nor promoted on noise. Ties, and every fact
+ * when nothing is measured, keep arrival order (a stable sort).
+ */
+export function rankPushFacts(facts: readonly PushFact[], rates: ReadonlyMap<string, LegFollowThrough> | null): PushFact[] {
+  if (!rates?.size) return [...facts];
+  const trusted = [...rates.values()].filter(entry => entry.measured >= LEG_FOLLOW_THROUGH_MIN_MEASURED);
+  if (!trusted.length) return [...facts];
+  const prior = trusted.reduce((sum, entry) => sum + entry.rate, 0) / trusted.length;
+  const score = (leg: string) => {
+    const entry = rates.get(leg);
+    return entry && entry.measured >= LEG_FOLLOW_THROUGH_MIN_MEASURED ? entry.rate : prior;
+  };
+  return facts.map((fact, index) => ({ fact, index, score: score(fact.leg) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index).map(entry => entry.fact);
+}
+
+/** Per-workspace follow-through, refreshed in the background at most hourly. Derived and
+ * recomputable from code_intel_pushes + agent_activity, so nothing durable lives here. */
+const followThrough = pinModuleState('@papercusp/operator-core.code-intel-leg-follow-through',
+  () => ({ byWorkspace: new Map<string, { rates: ReadonlyMap<string, LegFollowThrough> | null; at: number; inFlight: boolean }>() }));
+
+/** Never awaited on the push path: returns what is cached and starts a refresh when stale. */
+export function cachedLegFollowThrough(workspace: string,
+  measure: (workspace: string) => Promise<ReadonlyMap<string, LegFollowThrough>> = measureLegFollowThrough,
+  now = Date.now()): ReadonlyMap<string, LegFollowThrough> | null {
+  // Never measured: the first read starts whatever the clock says.
+  const entry = followThrough.byWorkspace.get(workspace) ?? { rates: null, at: -Infinity, inFlight: false };
+  if (!entry.inFlight && now - entry.at >= LEG_FOLLOW_THROUGH_REFRESH_MS) {
+    entry.inFlight = true;
+    entry.at = now;
+    followThrough.byWorkspace.set(workspace, entry);
+    void withBoundedTimeout(() => measure(workspace), {
+      timeoutMs: LEG_FOLLOW_THROUGH_READ_TIMEOUT_MS, fallback: undefined, label: 'code-intel-leg-follow-through',
+    }).then(result => { if (result.value) entry.rates = result.value; })
+      .catch(() => undefined).finally(() => { entry.inFlight = false; });
+  }
+  return entry.rates;
+}
+
+export function resetLegFollowThroughCache(): void { followThrough.byWorkspace.clear(); }
+
+async function measureLegFollowThrough(workspace: string): Promise<ReadonlyMap<string, LegFollowThrough>> {
+  const { measureNativePushOutcomesWindow } = await import('./native-adoption');
+  const end = Date.now();
+  const metrics = await measureNativePushOutcomesWindow({ workspaceId: workspace,
+    windowStart: new Date(end - LEG_FOLLOW_THROUGH_WINDOW_MS).toISOString(), windowEnd: new Date(end).toISOString() });
+  return new Map(Object.entries(metrics.byLeg).flatMap(([leg, stats]) => stats.actedOn.rate === null ? []
+    : [[leg, { rate: stats.actedOn.rate, measured: stats.actedOn.measured }] as const]));
 }
 
 const defaults: PushChannelDeps = {
@@ -1248,6 +1357,7 @@ const defaults: PushChannelDeps = {
   },
   enabled: flag => getFlag(flag, 'system'),
   legs: () => state.legs,
+  legFollowThrough: workspace => cachedLegFollowThrough(workspace),
   context: async (input, paths, diagnostics) => {
     const [links, locks, priorWork] = await Promise.allSettled([
       timeResumeReadPhase(diagnostics, 'context.sourceLinks', () => readPushSourceLinks(input, paths, undefined, diagnostics)),
@@ -1301,13 +1411,24 @@ async function readResumeWithLinks(input: PushInput, deps: PushChannelDeps,
 
 /** Leg run order inside the push wall; unlisted legs keep registration order (stable sort). */
 const PUSH_LEG_PRIORITY: readonly PushLegId[] = ['interface', 'incident'];
+/** WI-6554700010030085: legs that wait on a context read run after the snapshot-only legs.
+ * Registered before grep, they used the whole gather deadline on every turn and grep never
+ * ran: 12/12 turns on :3170 d6bfe13a4d (2026-10-27 09:50-09:54Z) recorded `leg-not-run:grep`
+ * while :3070, without the deadline, still delivered grep pushes. Delivery order is
+ * rankPushFacts's job, so gathering the cheap legs first costs the waiting legs nothing. */
+const PUSH_LEGS_THAT_WAIT: readonly PushLegId[] = ['first-touch', 'resume', 'notes'];
 export function pushLegRank(id: PushLegId): number {
   const rank = PUSH_LEG_PRIORITY.indexOf(id);
-  return rank === -1 ? PUSH_LEG_PRIORITY.length : rank;
+  if (rank !== -1) return rank;
+  return PUSH_LEG_PRIORITY.length + (PUSH_LEGS_THAT_WAIT.includes(id) ? 1 : 0);
 }
 
-/** A failed optional push never drops memory, worn rules, or the failure hint. */
-export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps: PushChannelDeps = defaults): Promise<string> {
+/** A failed optional push never drops memory, worn rules, or the failure hint.
+ * P-005 (WI-6554700010029479): code intelligence spends its own reserved
+ * CODE_INTEL_PUSH_TURN_CHARS per turn. It used to get 1,500 minus the memory block, so a
+ * full memory recall starved it (650 request-budget skips in 7 days); the dominant cause,
+ * pushes of ~1,100-1,200 chars (10,143 turn-budget skips), is CODE_INTEL_PUSH_MAX_CHARS. */
+export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps = defaults): Promise<string> {
   // Capture is independent of push flags, snapshot warmth and available text budget.
   if (input.owner && input.workspace && input.calls.length && deps.research) {
     await withBoundedTimeout(() => deps.research!(input), {
@@ -1317,8 +1438,7 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
   if (!input.owner || !input.workspace || !input.calls.length || !deps.legs().size) return '';
   // WI-6554700010018441: every leg classifies the call a `tools:invoke` wrapper dispatched.
   input = { ...input, calls: input.calls.map(normalizePushCall) };
-  const requestBudget = Math.max(0, CODE_INTEL_PUSH_TURN_CHARS - Math.max(0, memoryChars));
-  if (!requestBudget) return '';
+  const requestBudget = CODE_INTEL_PUSH_TURN_CHARS;
   // WI-6554700010030085: the legs and the commit share one wall, so gathering stops at
   // a deadline that leaves the commit CODE_INTEL_PUSH_COMMIT_RESERVE_MS. Before, a slow
   // gather made the wall fire first and every fact already gathered was lost, with no
@@ -1356,6 +1476,15 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     const facts: PushFact[] = [];
     const dropped: PushFact[] = [];
     const notRun: PushLegId[] = [];
+    // A leg the deadline stopped is a loss only if it had work: a leg whose read never
+    // started, or a snapshot leg with no candidate for this batch, would have pushed
+    // nothing anyway. Recording those made `notes` a wall skip on 12/12 turns.
+    const hadWork = (id: PushLegId, leg: PushLeg): boolean => {
+      if (id === 'notes') return notesContext !== null;
+      if (id === 'resume') return resumeContext !== null;
+      if (id === 'first-touch') return touchedPaths.length > 0;
+      try { return leg(input, snapshot).length > 0; } catch { return false; }
+    };
     // Consequences take precedence over a first-touch brief for the same edit. An
     // observed test failure (incident, P-038) goes next: it is rare, authoritative and
     // cheap, and its attribution read then overlaps the resume/notes reads already in
@@ -1364,7 +1493,7 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     for (const [index, [id, leg]] of legs.entries()) {
       if (signal.aborted || !on.get(id)) continue;
       if (Date.now() >= gatherDeadline) {
-        notRun.push(...legs.slice(index).map(([rest]) => rest).filter(rest => on.get(rest)));
+        notRun.push(...legs.slice(index).filter(([rest, restLeg]) => on.get(rest) && hadWork(rest, restLeg)).map(([rest]) => rest));
         break;
       }
       try {
@@ -1427,11 +1556,10 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
           if (id === 'first-touch' && facts.some(f => f.leg === 'interface' && f.citedPaths[0] === fact.subject)) continue;
           if (fact.leg !== id || fact.subject.length > 1000 || !fact.subject.trim() || !fact.text.trim()
             || !fact.citedPaths.every(safeSnapshotPath)) continue;
-          const chars = formatPushFact(fact, snapshot).length + 2;
-          // WI-6554700010018440: too big for this request's share, so dropped whole and
-          // recorded. Not source-corroborated first: that check costs wall time for a
-          // fact that cannot be delivered either way.
-          if (chars > requestBudget) {
+          // P-005: over the per-push cap even after formatPushFact kept only whole lines,
+          // so dropped whole and recorded (site push-cap). Not source-corroborated first:
+          // that check costs wall time for a fact that cannot be delivered either way.
+          if (formatPushFact(fact, snapshot).length > CODE_INTEL_PUSH_MAX_CHARS) {
             if (dropped.length < 12) dropped.push(fact);
             continue;
           }
@@ -1446,8 +1574,10 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     phase = 'commit';
     // A request whose only candidates were dropped, or whose legs the wall stopped,
     // still commits, to record the skips.
-    return (facts.length || dropped.length || notRun.length) && !signal.aborted
-      ? deps.commit(input, snapshot, facts, requestBudget, signal, dropped, notRun) : '';
+    // P-005: the budget goes to the legs agents act on most, not to whichever leg ran first.
+    const ranked = rankPushFacts(facts, deps.legFollowThrough?.(input.workspace) ?? null);
+    return (ranked.length || dropped.length || notRun.length) && !signal.aborted
+      ? deps.commit(input, snapshot, ranked, requestBudget, signal, dropped, notRun) : '';
   }, { timeoutMs: CODE_INTEL_PUSH_WALL_MS, fallback: '', label: 'code-intel-push' });
   // Names the phase the wall cut, so a remaining loss is attributable: 'snapshot' or
   // 'commit' now, since the gather itself ends by its deadline.

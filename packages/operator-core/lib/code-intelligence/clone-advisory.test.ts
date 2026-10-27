@@ -27,7 +27,7 @@ describe('P006 native clone advisory', () => {
           const request = JSON.parse(init.body as string);
           return { ok: true, json: async () => ({ text: await codeIntelPushText({
             ...input(request.toolCalls), root,
-          }, 0, { snapshot: async () => snapshot, enabled: async () => true,
+          }, { snapshot: async () => snapshot, enabled: async () => true,
             legs: () => new Map([['clone', snapshotCloneLeg]]), commit }) }) };
         }) as typeof fetch,
       });
@@ -46,7 +46,7 @@ describe('P006 native clone advisory', () => {
     await collectCloneEdits(body, digest);
     expect(digest).toHaveBeenCalledTimes(1);
     const commit = vi.fn(async (_input: PushInput, snap: PushSnapshot, facts: PushFact[]) => facts.map(fact => formatPushFact(fact, snap)).join('\n'));
-    const result = await codeIntelPushText(input(body.toolCalls), 0, {
+    const result = await codeIntelPushText(input(body.toolCalls), {
       snapshot: async () => snapshot, enabled: async () => true,
       legs: () => new Map([['clone', snapshotCloneLeg]]), commit,
     });

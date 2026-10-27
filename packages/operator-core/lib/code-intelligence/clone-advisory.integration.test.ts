@@ -37,7 +37,7 @@ describe('P006 native hook to issued PG ledger', () => {
         env: { PAPERCUSP_MID_TURN_CONTEXT: 'on' },
         fetchImpl: (async (_url: unknown, init: RequestInit) => {
           const request = JSON.parse(init.body as string);
-          const text = await codeIntelPushText({ owner, workspace: fx.workspaceId, root, calls: request.toolCalls }, 0, {
+          const text = await codeIntelPushText({ owner, workspace: fx.workspaceId, root, calls: request.toolCalls }, {
             snapshot: async () => prepared.snapshot, enabled: async () => true,
             legs: () => new Map([['clone', snapshotCloneLeg]]), commit: commitPushFacts,
           });
@@ -56,14 +56,14 @@ describe('P006 native hook to issued PG ledger', () => {
     const expected = cloneAdvisoryLookup(input([{ tool, cloneEdits: [{ path: 'b.ts', sha256: digest }] }]), prepared.snapshot).facts[0]!;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ leg: 'clone', subject: expected.subject, cited_paths: expected.citedPaths,
-      chars: delivered!.text.length + 2 });
+      chars: delivered!.text.length });
   });
 
   it('suppresses a prepared note when its referenced source has changed', async () => {
     await writeFile(join(root, 'a.ts'), '// changed after indexing');
     const digest = prepared.files.find(file => file.path === 'b.ts')!.sha256;
     const calls = [{ tool: 'Edit', cloneEdits: [{ path: 'b.ts', sha256: digest }] }];
-    expect(await codeIntelPushText({ owner: 'clone-stale', workspace: fx.workspaceId, root, calls }, 0, {
+    expect(await codeIntelPushText({ owner: 'clone-stale', workspace: fx.workspaceId, root, calls }, {
       snapshot: async () => prepared.snapshot, enabled: async () => true,
       legs: () => new Map([['clone', snapshotCloneLeg]]), commit: commitPushFacts,
     })).toBe('');

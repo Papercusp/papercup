@@ -107,9 +107,9 @@ describe('R8 bounded advisory delivery', () => {
     const deps = { snapshot: async () => snapshot(), enabled: async () => true,
       legs: () => new Map([['antipattern' as const, snapshotAntipatternLeg]]), commit };
     // Source corroboration deliberately fails for a missing root, withholding stale evidence.
-    expect(await codeIntelPushText(input(), 0, deps)).toBe('');
+    expect(await codeIntelPushText(input(), deps)).toBe('');
     expect(commit).not.toHaveBeenCalled();
-    expect(await codeIntelPushText({ ...input(), calls: [{ tool: 'Edit', antipatternEdits: [] }] }, 0, deps)).toBe('');
+    expect(await codeIntelPushText({ ...input(), calls: [{ tool: 'Edit', antipatternEdits: [] }] }, deps)).toBe('');
     expect(commit).not.toHaveBeenCalled();
   });
   it('corroborates a prepared blob and passes one bounded advisory to the issued ledger writer', async () => {
@@ -121,12 +121,12 @@ describe('R8 bounded advisory delivery', () => {
       legs: () => new Map([['antipattern' as const, snapshotAntipatternLeg]]), commit };
     const measured = { ...input(), root, calls: [{ tool: 'Edit', antipatternEdits: [{ ...edit, sha256: antipatternHash(source) }] }] };
     try {
-      const text = await codeIntelPushText(measured, 0, deps);
+      const text = await codeIntelPushText(measured, deps);
       expect(text.split('\n')).toHaveLength(3);
       expect(commit).toHaveBeenCalledTimes(1);
       expect(commit.mock.calls[0][2][0].leg).toBe('antipattern');
       await writeFile(join(root, 'file.ts'), 'changed by another edit');
-      expect(await codeIntelPushText(measured, 0, deps)).toBe('');
+      expect(await codeIntelPushText(measured, deps)).toBe('');
       expect(commit).toHaveBeenCalledTimes(1);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
