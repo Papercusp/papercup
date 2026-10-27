@@ -450,7 +450,9 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
   });
 
   it('confirms fingerprint, author, rubric and lease on the same supplied transaction', async () => {
-    const tx = vi.fn((_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]));
+    // The reservation read interpolates the issue-family kind list through tx.unsafe (297f8966cc).
+    const tx = Object.assign(vi.fn((_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([])),
+      { unsafe: (fragment: string) => fragment });
     const current = await confirmPendingGradingAuditReservation('EI-renew', 'grading-audit:EI-renew', {
       workspaceId: 'ws-test', reservedAt: 'renewed-at', tx: tx as unknown as OrgSql,
       expectedCard: card('EI-renew', { createdBy: 'su-author', evidenceFingerprint: 'exact-fingerprint' }),
@@ -3375,6 +3377,63 @@ describe('dispatchPendingGradingAudits', () => {
         expect(d.release).toHaveBeenCalledOnce();
       } finally { warning.mockRestore(); }
     });
+
+    // WI-6554700010030191: the Codex leg of the same zero-process class. The
+    // exit-78 text is psu-launcher.mjs's walled-pool refusal, as observed live
+    // on 2026-10-27 11:52Z for EI-27130401906495305's recovery leg.
+    const codexPreflightRefusal = () => ({
+      isError: true,
+      content: [{ text: 'capability:launch-agent: 0 of 1 member(s) opened' }],
+      data: { launch: { opened: 0, failed: 1, partial: false, tasks: [], failures: [{
+        memberIndex: 0, code: 502,
+        reason: "headless psu died at boot (exit 78) within 1200ms — log tail: psu: REFUSING TO LAUNCH — no Codex " +
+          "account will serve model 'gpt-5.6-sol': the gateway can route to 1 Codex account(s), but every one of them " +
+          "currently refuses 'gpt-5.6-sol'. Re-route instead: --agent claude, or a Codex model those accounts accept.",
+      }] } },
+    } as LaunchResult);
+
+    it('re-routes a zero-process Codex walled-pool boot refusal to Claude once, without a new paid retry', async () => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([card('EI-codex-preflight')]);
+      d.launch.mockResolvedValueOnce(refusal())
+        .mockResolvedValueOnce(codexPreflightRefusal())
+        .mockResolvedValueOnce(launchResult({ launch: { opened: 1, tasks: [{ taskId: 'claude-audit' }] } }));
+      const providerCanServe = vi.fn(async () => true);
+      const result = await dispatchPendingGradingAudits(
+        { targetIds: ['EI-codex-preflight'], ctx, harness: 'papercusp' }, { ...d, providerCanServe },
+      );
+      expect(d.launch).toHaveBeenCalledTimes(3);
+      expect(d.launch.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ agent: 'codex' }));
+      const reroute = d.launch.mock.calls[2]?.[0] as Record<string, unknown>;
+      expect(reroute).not.toHaveProperty('agent');
+      expect(reroute.members).toEqual([{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], account: 'auto' }]);
+      expect(reroute.idempotencyKey).toEqual(expect.stringContaining(':recovery:'));
+      expect(reroute.idempotencyKey).not.toBe((d.launch.mock.calls[1]?.[0] as Record<string, unknown>).idempotencyKey);
+      expect(providerCanServe).toHaveBeenCalledWith('claude');
+      expect(result.receipts[0]?.state).toBe('launched');
+      expect(d.release).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: 'claude unserviceable', secondRefusal: false, claudeAvailable: false },
+      { name: 'reroute is bounded to one', secondRefusal: true, claudeAvailable: true },
+    ])('does not loop or misroute a Codex boot refusal: $name', async (fixture) => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([card('EI-codex-preflight-bounded')]);
+      d.launch.mockResolvedValueOnce(refusal())
+        .mockResolvedValueOnce(codexPreflightRefusal())
+        .mockResolvedValue(fixture.secondRefusal ? refusal() : codexPreflightRefusal());
+      const providerCanServe = vi.fn(async (backend: string) => backend === 'codex' || fixture.claudeAvailable);
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await dispatchPendingGradingAudits(
+          { targetIds: ['EI-codex-preflight-bounded'], ctx, harness: 'papercusp' }, { ...d, providerCanServe },
+        );
+        expect(d.launch).toHaveBeenCalledTimes(fixture.claudeAvailable ? 3 : 2);
+        expect(result.receipts[0]?.state).toBe('failed');
+        expect(d.release).toHaveBeenCalledOnce();
+      } finally { warning.mockRestore(); }
+    });
   });
 
   it('selects a bounded oldest-first backlog when no explicit targets are supplied', async () => {
@@ -3944,8 +4003,14 @@ describe('dispatchPendingGradingAudits', () => {
         });
         expect(killTask).toHaveBeenCalledExactlyOnceWith(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
         expect(result.receipts[0]).toMatchObject({ state: 'launched', terminalRecovery: {
-          retiredTaskIds: [task.taskId], codes: ['inference_gateway_error'],
+          retiredTaskIds: [task.taskId], codes: ['inference_gateway_error'], routedTo: 'claude',
         } });
+        // WI-6554700010030191: the retained auditor that failed was Codex, so the
+        // bounded retry goes to Claude, never back onto the provider that failed.
+        expect(d.launch).toHaveBeenCalledOnce();
+        const retry = d.launch.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(retry).not.toHaveProperty('agent');
+        expect(retry.members).toEqual([{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], account: 'auto' }]);
       } else {
         expect(killTask).not.toHaveBeenCalled();
         expect(d.launch).not.toHaveBeenCalled();
@@ -4570,8 +4635,12 @@ describe('dispatchPendingGradingAudits', () => {
     });
     expect(killTask).toHaveBeenCalledWith('task-codex-capacity', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(result.receipts[0]).toMatchObject({ terminalRecovery: {
-      retiredTaskIds: ['task-codex-capacity'], codes: ['inference_gateway_error'],
+      retiredTaskIds: ['task-codex-capacity'], codes: ['inference_gateway_error'], routedTo: 'claude',
     } });
+    // WI-6554700010030191: a fresh auditor the gateway resolved to Codex failed,
+    // so the retry is routed to Claude rather than to the same Codex pool.
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(d.launch.mock.calls[1]?.[0]).not.toHaveProperty('agent');
   });
 
   it('keeps a judge whose native kickoff marker arrived late but whose turn was observed', async () => {

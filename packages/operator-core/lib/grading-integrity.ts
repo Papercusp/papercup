@@ -490,6 +490,15 @@ export const GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
  */
 export const GRADING_AUDIT_ACCOUNT = 'auto' as const;
 const GRADING_AUDIT_MAX_TERMINAL_FALLBACKS = 1;
+/**
+ * WI-6554700010030191: re-routes after a launch the Codex walled-pool preflight
+ * refused before opening any process. Unpaid, so separate from the terminal
+ * retry ceiling, but still bounded so a flapping pool cannot loop a dispatch.
+ */
+const GRADING_AUDIT_MAX_PREFLIGHT_REROUTES = 1;
+/** psu-launcher.mjs boot refusals that name Claude as the route (exit 78). */
+const CODEX_PREFLIGHT_REFUSAL =
+  /REFUSING TO LAUNCH — (?:no Codex account will serve model|Codex auto-route (?:has no serviceable accounts|pool is fully walled)|Codex upstream has not responded)/;
 const GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS = 250;
 const GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS = 4;
 const GRADING_AUDIT_FALLBACK = {
@@ -2360,12 +2369,29 @@ export async function dispatchPendingGradingAudits(
    * Resolved once per dispatched target and memoised, so the two terminal paths
    * below cannot disagree with each other or double-read the account ledger.
    */
-  let fallbackServiceable: Promise<boolean> | null = null;
-  const canServeFallback = (): Promise<boolean> => {
-    fallbackServiceable ??= (deps.providerCanServe ?? gradingAuditProviderCanServe)(
-      GRADING_AUDIT_FALLBACK.agent,
-    ).catch(() => true);
-    return fallbackServiceable;
+  const backendServiceable = new Map<'claude' | 'codex', Promise<boolean>>();
+  const canServeBackend = (backend: 'claude' | 'codex'): Promise<boolean> => {
+    let reading = backendServiceable.get(backend);
+    if (!reading) {
+      reading = (deps.providerCanServe ?? gradingAuditProviderCanServe)(backend).catch(() => true);
+      backendServiceable.set(backend, reading);
+    }
+    return reading;
+  };
+  /**
+   * WI-6554700010030191: the bounded terminal retry goes to the backend that did
+   * NOT just fail. The fallback was a fixed Codex target, so a Codex auditor that
+   * died on its 429 retry budget was "recovered" onto Codex again, which the
+   * launcher's walled-pool preflight then refused. A pinned routine profile keeps
+   * its own backend (the profile wrapper overrides the route regardless).
+   */
+  const terminalRetryBackend = async (
+    failedBackend: 'claude' | 'codex',
+    current: 'claude' | 'codex',
+  ): Promise<'claude' | 'codex'> => {
+    if (profile) return (await canServeBackend(GRADING_AUDIT_FALLBACK.agent)) ? GRADING_AUDIT_FALLBACK.agent : current;
+    const other = failedBackend === GRADING_AUDIT_FALLBACK.agent ? 'claude' : GRADING_AUDIT_FALLBACK.agent;
+    return (await canServeBackend(other)) ? other : current;
   };
 
   const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
@@ -2592,6 +2618,7 @@ export async function dispatchPendingGradingAudits(
     const terminalCodes: GradingAuditRecoveryCode[] = [];
     let currentIdempotencyKey = idempotencyKey;
     let terminalFallbacks = 0;
+    let preflightReroutes = 0;
     let attempts = 0;
     let reservationHeld = false;
     let reservationReservedAt = 'reservation-unknown';
@@ -3072,9 +3099,12 @@ export async function dispatchPendingGradingAudits(
           // measurably serve. Otherwise stay on the primary, whose auto-routed
           // gateway pool may still have headroom.
           terminalFallbacks += 1;
-          if (await canServeFallback()) {
-            launchBackend = GRADING_AUDIT_FALLBACK.agent;
-          }
+          // The retained task's own native-session binding names the backend that
+          // failed; without it the configured primary is the best reading.
+          const failedBackend = nativeSession?.agent === 'codex' || nativeSession?.agent === 'claude'
+            ? nativeSession.agent
+            : launchBackend;
+          launchBackend = await terminalRetryBackend(failedBackend, launchBackend);
           currentIdempotencyKey = recoveryKeyFor(task.taskId, terminalFailure.code);
         }
       }
@@ -3232,7 +3262,7 @@ export async function dispatchPendingGradingAudits(
       }
       routingFallback = routed.reason;
 
-      for (let attempt = 0; attempt <= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS; attempt += 1) {
+      for (let attempt = 0; attempt <= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS + preflightReroutes; attempt += 1) {
         attempts = attempt + 1;
         // Routing can itself create a durable consult and take long enough for
         // another auditor to settle the target. Re-check directly before each
@@ -3463,9 +3493,7 @@ export async function dispatchPendingGradingAudits(
           // consumed regardless, but it is only ROUTED to the fallback provider
           // when that provider can measurably serve.
           terminalFallbacks += 1;
-          if (await canServeFallback()) {
-            launchBackend = GRADING_AUDIT_FALLBACK.agent;
-          }
+          launchBackend = await terminalRetryBackend(nativeProof?.nativeBackend ?? launchBackend, launchBackend);
           currentIdempotencyKey = recoveryKeyFor(taskId, terminalFailure.code);
           continue;
         }
@@ -3479,18 +3507,35 @@ export async function dispatchPendingGradingAudits(
           // explicitly proves zero opened processes and no durable tasks.
           const failedLaunch = result.data?.launch as {
             opened?: number; failed?: number; tasks?: unknown[]; partial?: boolean;
+            failures?: Array<{ reason?: unknown }>;
           } | undefined;
+          const zeroProcessRefusal =
+            failedLaunch?.opened === 0 && (failedLaunch.failed ?? 0) > 0 &&
+            failedLaunch.partial === false && Array.isArray(failedLaunch.tasks) &&
+            failedLaunch.tasks.length === 0;
           const noPrimaryAccount =
             /no allowed claude account is available in the pool/i.test(reason);
-          if (noPrimaryAccount && launchBackend === 'claude' &&
-              failedLaunch?.opened === 0 && (failedLaunch.failed ?? 0) > 0 &&
-              failedLaunch.partial === false && Array.isArray(failedLaunch.tasks) &&
-              failedLaunch.tasks.length === 0 &&
+          if (noPrimaryAccount && launchBackend === 'claude' && zeroProcessRefusal &&
               terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS &&
-              await canServeFallback()) {
+              await canServeBackend(GRADING_AUDIT_FALLBACK.agent)) {
             terminalFallbacks += 1;
             launchBackend = GRADING_AUDIT_FALLBACK.agent;
             currentIdempotencyKey = recoveryKeyFor('confirmed-zero-process-pool-refusal', 'task_receipt_not_live');
+            continue;
+          }
+          // WI-6554700010030191: the symmetric case. psu's Codex walled-pool
+          // preflight refuses at boot (exit 78) before any model call, naming
+          // Claude as the route. Nothing was paid, so this re-route does not spend
+          // the one terminal retry; it is bounded separately to one per dispatch.
+          const refusalText = [reason, ...(failedLaunch?.failures ?? [])
+            .map((failure) => (typeof failure?.reason === 'string' ? failure.reason : ''))].join('\n');
+          if (!profile && launchBackend === 'codex' && zeroProcessRefusal &&
+              CODEX_PREFLIGHT_REFUSAL.test(refusalText) &&
+              preflightReroutes < GRADING_AUDIT_MAX_PREFLIGHT_REROUTES &&
+              await canServeBackend('claude')) {
+            preflightReroutes += 1;
+            launchBackend = 'claude';
+            currentIdempotencyKey = recoveryKeyFor('confirmed-zero-process-codex-preflight-refusal', 'task_receipt_not_live');
             continue;
           }
           await releaseReservation(
