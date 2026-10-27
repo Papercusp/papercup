@@ -82,6 +82,8 @@ import {
   describeUnrealized,
   deriveNonCodeExemptionProofs,
   judgeRequirementRealization,
+  partitionPendingDeliveryUnrealized,
+  pendingDeliveryOwnedItemIds,
   type DroppedTarget,
   type ExemptMapping,
   type NonCodeItemProof,
@@ -793,6 +795,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const forcedChecks: PlanAcceptanceGateWaivedCheck[] = [];
   let deferredBarShipRefusal: PlanAcceptanceGateVerdictWithoutBuildProvenance | undefined;
   let pendingDeliveryReview: AcceptanceBarLifecycleVerdict | undefined;
+  // WI-6554700010030192: the snapshot the accepted review judged, so requirement
+  // realization can defer exactly the items that own only the selected bars.
+  let pendingDeliveryBarSnapshot: AcceptanceBarContractSnapshot | undefined;
   // WI-10004135: whether the acceptance-BAR contract governs this plan's ship. Only
   // then do deployed/live BARs block on their own codes; outside that contract an
   // author's 'accept-pending-delivery' verdict is the ONLY record that delivery is
@@ -1018,6 +1023,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         } else {
           if (opts.gradingRecruitment && preGrading.pendingDeliverySpecClauses?.length) {
             pendingDeliveryReview = preGrading;
+            pendingDeliveryBarSnapshot = await barSnapshot;
           }
           requireCurrentBarGrading = gradingStale;
           if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
@@ -1379,13 +1385,24 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         // P-016 / D-040: likewise captured before the refusal branch — a dropped target is
         // reported, never a violation, so it must survive a SATISFIED verdict.
         requirementDroppedTargets = realization.droppedTargets;
-        if (!realization.ok) {
-            const lines = realization.unrealized.map(describeUnrealized);
+        // WI-6554700010030192: an accepted review-only pending-delivery request defers a
+        // requirement whose target owns ONLY the selected bars — their proof cannot exist
+        // before delivery, and refusing here blocked grader recruitment for good. The final
+        // ship carries no pendingDeliveryBarKeys, so it still refuses every one of these.
+        const unrealized = pendingDeliveryReview && pendingDeliveryBarSnapshot
+          ? partitionPendingDeliveryUnrealized(realization.unrealized, pendingDeliveryOwnedItemIds({
+              snapshot: pendingDeliveryBarSnapshot,
+              pendingBarKeys: pendingDeliveryReview.pendingDeliveryBarKeys ?? opts.pendingDeliveryBarKeys ?? [],
+              doneNonCodeItemIds: new Set(nonCodeItems.map((item) => item.itemId)),
+            })).blocking
+          : realization.unrealized;
+        if (unrealized.length > 0) {
+            const lines = unrealized.map(describeUnrealized);
             if (refuse({
               satisfied: false,
               code: 'requirement_unrealized',
               message:
-                `plan '${planSlug}' cannot be marked shipped: ${realization.unrealized.length} requirement(s) ` +
+                `plan '${planSlug}' cannot be marked shipped: ${unrealized.length} requirement(s) ` +
                 `the activation audit dispositioned covered/repaired never reached a VERIFIED plan item — ` +
                 `${lines.slice(0, 5).join('; ')}${lines.length > 5 ? ` (+${lines.length - 5} more)` : ''}. ` +
                 `Each names a requirement the plan claims it absorbed. Code verification requires code/test ` +

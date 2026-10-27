@@ -170,6 +170,11 @@ const h = vi.hoisted(() => {
       content: Array<Record<string, unknown>>;
       _meta?: Record<string, unknown>;
       structuredContent?: unknown;
+      replaySource?: {
+        content: Array<Record<string, unknown>>;
+        _meta?: Record<string, unknown>;
+        structuredContent?: unknown;
+      };
     } | null,
     /**
      * WI-6792: every telemetry row the handler/dispatcher recorded. A replayed
@@ -337,9 +342,17 @@ vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
         : h.storedReplay;
       return stored ? { ...stored, _meta: { ...(stored._meta ?? {}), replayed: true } } : null;
     },
-    storeMcpResult: async (a: { ownerKey: string; idempotencyKey: string; result: unknown }): Promise<void> => {
+    storeMcpResult: async (a: {
+      ownerKey: string;
+      idempotencyKey: string;
+      result: unknown;
+      replaySource?: unknown;
+    }): Promise<void> => {
       h.txEvents.push('store');
-      h.replayStores.push({ ownerKey: a.ownerKey, idempotencyKey: a.idempotencyKey, result: a.result });
+      const result = a.replaySource && a.result && typeof a.result === 'object'
+        ? { ...(a.result as Record<string, unknown>), replaySource: a.replaySource }
+        : a.result;
+      h.replayStores.push({ ownerKey: a.ownerKey, idempotencyKey: a.idempotencyKey, result });
       await h.afterReplayStore?.();
     },
   };
@@ -2258,6 +2271,9 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         const modelContent = jsonOf(stored) as { schemaVersion?: unknown; state?: unknown };
         expect(modelContent.schemaVersion).toBe('papercusp.output-envelope/v1');
         expect(modelContent.state).toBe('incomplete');
+        const replaySource = (stored as CallResult & { replaySource?: CallResult }).replaySource;
+        expect(replaySource).toBeDefined();
+        expect(jsonOf(replaySource as CallResult)).toEqual(expected);
       } else {
         expect(jsonOf(stored)).toEqual(expected);
       }
@@ -2274,20 +2290,12 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
           _meta: { idempotencyKey, format: 'json', structured: true, outputGroupId },
         });
         if (large) {
-          // A stored envelope is not tool data. The handler should return it as
-          // an explicit MCP tool error so the SDK's outputSchema validator does
-          // not replace its recoverable reference with -32600.
+          // The first receipt's content is an incomplete result-door envelope,
+          // but its retained pre-door source must satisfy this structured retry.
           const replayed = await replay as CallResult;
-          expect(replayed.isError).toBe(true);
-          expect(replayed.structuredContent).toBeUndefined();
-          expect(replayed._meta).toMatchObject({
-            replayed: true,
-            structuredUnavailable: { reason: 'result-door-envelope-is-not-tool-data' },
-          });
-          expect(jsonOf(replayed)).toMatchObject({
-            schemaVersion: 'papercusp.output-envelope/v1',
-            state: 'incomplete',
-          });
+          expect(replayed.isError).not.toBe(true);
+          expect(replayed.structuredContent).toEqual(expected);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
         } else {
           const replayed = await replay as CallResult;
           expect(replayed.structuredContent).toEqual(expected);
