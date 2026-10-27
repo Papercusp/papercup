@@ -6309,6 +6309,9 @@ export const SUBMIT_RECOVERY_MAX_AGE_MS: number;
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */
 export const SESSION_COMPACTED_EMIT_ENTRY: string;
+/** Outcomes where a re-anchor was attempted and did not land; everything else that is
+ *  not ok is a benign skip (unsupported-agent, no-carry-marker, superseded-child). */
+export const REANCHOR_FAILURE_REASONS: Set<string>;
 /**
  * A plain launch's marker proves submission. A native task-start or assistant
  * row AFTER that exact marker proves model activity, including a short turn

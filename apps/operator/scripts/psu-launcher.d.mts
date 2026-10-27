@@ -3332,8 +3332,9 @@ export function describeResumeClaimRefusal(outcome: {
  * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
  * rejects — a respawn must never wait on it. Exported with injectables for tests.
  */
-export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
+export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
     coordOwnerId?: null | undefined;
+    childLaunchSessionId?: null | undefined;
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
@@ -3350,8 +3351,9 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
  * notifies a carry announcer when a background retry succeeds; returning the first
  * failure alone loses that wake. A newer respawn supersedes reports and callbacks.
  */
-export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
+export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
     coordOwnerId?: null | undefined;
+    childLaunchSessionId?: null | undefined;
     reportImpl?: typeof reportSessionRespawned | undefined;
     retryDelaysMs?: number[] | undefined;
     sleepImpl?: ((ms: any) => Promise<any>) | undefined;
