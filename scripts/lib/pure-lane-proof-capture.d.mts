@@ -73,6 +73,17 @@ export function decideNextSlice({ nowMs, startedAtMs, budgetMs, estimateMs, next
     go: boolean;
     reason: "budget" | "next-fire" | null;
 };
+/**
+ * WI-6554700010030061: split a slice that timed out into at most `parts` contiguous sub-slices.
+ * Vitest reports a slice's results only when the run ends, so a single hung file used to discard
+ * every completed proof in its slice and end capture for the rest of the lane (measured on the
+ * frozen lineage: 249 of 250 files passed, 0 proofs written, remaining=4001). Re-running the
+ * sub-slices keeps the good files' proofs and narrows the hang to one file in a few rounds.
+ * @param {string[]} slice
+ * @param {number} [parts]
+ * @returns {string[][]}
+ */
+export function splitTimedOutSlice(slice: string[], parts?: number): string[][];
 /** The vitest argv for one slice: an explicit file list, and an empty match is an ERROR. */
 export function buildCaptureVitestArgs(wsRelFiles: any): any[];
 /**
@@ -167,9 +178,6 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceM
     isolatedFail: number;
     remaining: number;
     stoppedBy: string | null;
-    timedOutSlices: number;
-    /** repo-relative files that timed out ALONE (WI-6554700010030061) */
-    hung: string[];
     evidence: {
         version: 1;
         runGroupId: string;
@@ -194,8 +202,6 @@ export const PURE_PROOF_CAPTURE_SLICE_TIMEOUT_FACTOR: 4;
 export const PURE_PROOF_CAPTURE_SLICE_TIMEOUT_MIN_MS: number;
 /** WI-6554700010030061: a timed-out slice is re-queued as this many sub-slices. */
 export const PURE_PROOF_CAPTURE_TIMEOUT_SPLIT: 8;
-/** WI-6554700010030061: split a timed-out slice into at most `parts` contiguous sub-slices. */
-export function splitTimedOutSlice(slice: string[], parts?: number): string[][];
 /** Proofs are only consumed from the gate's own run context (D-004 rule 1). */
 export const PURE_PROOF_CAPTURE_RUN_CONTEXT: "green-checkpoint";
 /** The only workspace with a pure lane (packages/operator-core `test:lane-pure`). */

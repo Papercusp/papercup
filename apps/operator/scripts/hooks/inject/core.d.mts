@@ -166,6 +166,20 @@ export function buildDigest(calls: Array<{
     editedPaths?: string[];
     editedPath?: string;
 }>;
+/**
+ * The inner call of a `tools:invoke { name, args }` dispatch, one level only.
+ * Returns the original `{ tool, toolInput }` for any other call, or when the
+ * wrapper's input carries no usable name. About half of all `testing:run` calls
+ * arrive wrapped (measured 2026-10-27: 392 of 772 in 36h), and the incident leg
+ * matches on the inner tool name.
+ * @param {unknown} tool
+ * @param {unknown} input
+ * @returns {{ tool: unknown, toolInput: unknown }}
+ */
+export function unwrapInvokedCall(tool: unknown, input: unknown): {
+    tool: unknown;
+    toolInput: unknown;
+};
 /** Preserve observed failing-file identities outside the lossy recall prefix.
  * Requested files, refusals and passing rows are never failure evidence. */
 export function incidentResultFor(tool: any, response: any, depth?: number): any;
