@@ -167,6 +167,9 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceM
     isolatedFail: number;
     remaining: number;
     stoppedBy: string | null;
+    timedOutSlices: number;
+    /** repo-relative files that timed out ALONE (WI-6554700010030061) */
+    hung: string[];
     evidence: {
         version: 1;
         runGroupId: string;
@@ -189,6 +192,10 @@ export const PURE_PROOF_CAPTURE_EST_MS_PER_FILE: 250;
 /** A slice running this many times its estimate (and at least the floor) is killed. */
 export const PURE_PROOF_CAPTURE_SLICE_TIMEOUT_FACTOR: 4;
 export const PURE_PROOF_CAPTURE_SLICE_TIMEOUT_MIN_MS: number;
+/** WI-6554700010030061: a timed-out slice is re-queued as this many sub-slices. */
+export const PURE_PROOF_CAPTURE_TIMEOUT_SPLIT: 8;
+/** WI-6554700010030061: split a timed-out slice into at most `parts` contiguous sub-slices. */
+export function splitTimedOutSlice(slice: string[], parts?: number): string[][];
 /** Proofs are only consumed from the gate's own run context (D-004 rule 1). */
 export const PURE_PROOF_CAPTURE_RUN_CONTEXT: "green-checkpoint";
 /** The only workspace with a pure lane (packages/operator-core `test:lane-pure`). */
