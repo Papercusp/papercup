@@ -111,11 +111,48 @@ describe('committed reporter database route', () => {
       HARNESS_ADMIN_DATABASE_URL: 'postgres://temporary.invalid',
     }, null, receiptFile)).toThrow(/PAPERCUSP_TEST_RUNS_DB_URL/);
 
+    const preparedRootReceiptFile = join(tmpdir(), 'committed-prepared-root.json');
     const child = mod.lintAsCommittedChildEnv({
       PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://ledger.invalid',
-    }, null, receiptFile);
+    }, null, receiptFile, preparedRootReceiptFile);
     expect(child.PAPERCUSP_TEST_RUNS_DB_URL).toBe('postgres://ledger.invalid');
     expect(child.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(receiptFile);
+    expect(child.PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT).toBe(preparedRootReceiptFile);
+    expect(mod.lintAsCommittedChildEnv({
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://ledger.invalid',
+      PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT: '/inherited/stale-receipt.json',
+    }, null, receiptFile).PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT).toBeUndefined();
+  });
+
+  it('writes a private prepared-root receipt bound to HEAD and its owner marker', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'committed-prepared-root-'));
+    const root = join(parent, 'source');
+    try {
+      mkdirSync(root, { recursive: true });
+      execFileSync('git', ['init', '--quiet', root]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--allow-empty', '--quiet', '-m', 'prepared source'], { cwd: root });
+      const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+      const markerPath = join(root, '.git', 'lint-as-committed-owner.json');
+      const marker = JSON.stringify({ pid: process.pid, keep: false, createdAtMs: Date.now(), sha: sourceCommit });
+      writeFileSync(markerPath, marker);
+      const receiptPath = join(parent, 'prepared-root.json');
+
+      expect(mod.writePreparedWorkRootReceipt(root, sourceCommit, receiptPath)).toBe(receiptPath);
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      expect(receipt).toEqual({
+        schemaVersion: 'lint-as-committed-prepared-root-v1',
+        root,
+        sourceCommit,
+        ownerMarkerSha256: createHash('sha256').update(marker).digest('hex'),
+      });
+      expect(lstatSync(receiptPath).mode & 0o777).toBe(0o600);
+      expect(() => mod.writePreparedWorkRootReceipt(root, sourceCommit, join(root, 'prepared-root.json')))
+        .toThrow('prepared work-root receipt must be outside the committed source root');
+      const original = readFileSync(receiptPath, 'utf8');
+      expect(() => mod.writePreparedWorkRootReceipt(root, sourceCommit, receiptPath)).toThrow();
+      expect(readFileSync(receiptPath, 'utf8')).toBe(original);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 
   // WI-6554700010012470: a kept clone reused WITHOUT lintAsCommittedChildEnv (mutation-probe's
