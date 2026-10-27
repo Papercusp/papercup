@@ -2,18 +2,13 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { zstdDecompressSync } from 'node:zlib';
 import { getBuildInfo } from './build-info';
-import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
-import diagnosticPreregistration from './llm-testing/fixtures/tool-delivery-diagnostic-candidate-20261023.json';
-import fidelityPreregistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
-import cleanRuntimePreregistration from './llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
-import cleanSourceV2Preregistration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
-import cleanSourceV3Preregistration from './llm-testing/fixtures/tool-delivery-clean-source-v3-20261024.json';
 import { buildOracleSchemaIndex, r6PrimaryVerdict, type OracleToolCall } from './llm-testing/r6-malformed-call-oracle';
 import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanCensus, validateToolDeliveryBlockLedgerIdentity,
   type ToolDeliveryCleanBlock, type ToolDeliveryCleanPin } from './tool-delivery-clean-runtime';
@@ -70,30 +65,80 @@ interface Preregistration {
     addedSubmodules?: Record<string, string>;
   };
 }
-const preregistrations: Readonly<Record<string, Preregistration>> = {
-  [candidatePreregistration.experiment.id]: candidatePreregistration as unknown as Preregistration,
-  [diagnosticPreregistration.experiment.id]: diagnosticPreregistration as unknown as Preregistration,
-  [fidelityPreregistration.experiment.id]: fidelityPreregistration as unknown as Preregistration,
-  [cleanRuntimePreregistration.experiment.id]: cleanRuntimePreregistration as unknown as Preregistration,
-  [cleanSourceV2Preregistration.experiment.id]: cleanSourceV2Preregistration as unknown as Preregistration,
-  [cleanSourceV3Preregistration.experiment.id]: cleanSourceV3Preregistration as unknown as Preregistration,
-};
+/**
+ * Preregistration fixtures, in registration order (the first is the default candidate custody).
+ * Add a distinct candidate only AFTER transport proof and plan preregistration.
+ *
+ * They are READ FROM DISK on first use, never imported: a static JSON import is inlined by
+ * esbuild into every host bundle that reaches this module (through scorecards.ts and
+ * rubric-instrument-registry.ts), which put ~5 MB of fixtures in the resident host bundle and
+ * pushed lint:host-bundle-builds over budget (WI-6554700010030028). The instrument already needs
+ * a source checkout (it reads committed source via `git rev-parse --show-toplevel`).
+ */
+export const TOOL_DELIVERY_PREREGISTRATION_FIXTURES = [
+  'tool-delivery-full-after-use-20261021.json',
+  'tool-delivery-diagnostic-candidate-20261023.json',
+  'tool-delivery-fidelity-candidate-20261023.json',
+  'tool-delivery-clean-runtime-candidate-20261023.json',
+  'tool-delivery-clean-source-v2-20261023.json',
+  'tool-delivery-clean-source-v3-20261024.json',
+] as const;
+
+/** Where the fixtures live: beside this module in a source run, else in the source checkout a bundled host runs from. */
+export function toolDeliveryPreregistrationFixtureDir(): string {
+  const candidates: string[] = [];
+  try { candidates.push(fileURLToPath(new URL('./llm-testing/fixtures/', import.meta.url))); } catch { /* not a file: URL */ }
+  const relative = 'packages/operator-core/lib/llm-testing/fixtures';
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 }).trim();
+    if (root) candidates.push(resolve(root, relative));
+  } catch { /* not inside a checkout */ }
+  candidates.push(resolve(process.cwd(), relative));
+  const found = candidates.find(dir => existsSync(resolve(dir, TOOL_DELIVERY_PREREGISTRATION_FIXTURES[0])));
+  if (!found) throw new Error(`tool-delivery preregistration fixtures not found; looked in: ${candidates.join(', ')}`);
+  return found;
+}
+
+interface LoadedPreregistrations {
+  byId: Readonly<Record<string, Preregistration>>;
+  candidateId: string;
+  experiments: Readonly<Record<string, ToolDeliveryExperiment>>;
+}
+let loadedPreregistrations: LoadedPreregistrations | null = null;
+function preregistrations(): LoadedPreregistrations {
+  if (loadedPreregistrations) return loadedPreregistrations;
+  const dir = toolDeliveryPreregistrationFixtureDir();
+  const ordered = TOOL_DELIVERY_PREREGISTRATION_FIXTURES.map(file =>
+    JSON.parse(readFileSync(resolve(dir, file), 'utf8')) as Preregistration);
+  const byId = Object.fromEntries(ordered.map(registration => [registration.experiment.id, registration]));
+  const experiments: Record<string, ToolDeliveryExperiment> = {
+    [HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id]: HISTORICAL_TOOL_DELIVERY_EXPERIMENT,
+    ...Object.fromEntries(ordered.map(registration => [registration.experiment.id, {
+      ...registration.experiment,
+      executionContract: { registeredAt: registration.createdAt, ...registration.configuration },
+    }])),
+  };
+  loadedPreregistrations = { byId, candidateId: ordered[0].experiment.id, experiments };
+  return loadedPreregistrations;
+}
+
 export function toolDeliveryPreregistration(id: string): Preregistration {
-  const registration = preregistrations[id];
+  const registration = preregistrations().byId[id];
   if (!registration) throw new Error(`Unregistered tool-delivery custody: ${id}`);
   return registration;
 }
-/** Add a distinct candidate only AFTER transport proof and plan preregistration. */
-export const TOOL_DELIVERY_EXPERIMENTS: Readonly<Record<string, ToolDeliveryExperiment>> = {
-  [HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id]: HISTORICAL_TOOL_DELIVERY_EXPERIMENT,
-  ...Object.fromEntries(Object.values(preregistrations).map(registration => [registration.experiment.id, {
-    ...registration.experiment,
-    executionContract: { registeredAt: registration.createdAt, ...registration.configuration },
-  }])),
-};
+/** The default candidate custody (the first preregistration). */
+function candidatePreregistration(): Preregistration {
+  return toolDeliveryPreregistration(preregistrations().candidateId);
+}
+/** Every registered experiment, keyed by id: the historical one plus one per preregistration. */
+export function toolDeliveryExperiments(): Readonly<Record<string, ToolDeliveryExperiment>> {
+  return preregistrations().experiments;
+}
 
 export function toolDeliveryExperiment(id = HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id): ToolDeliveryExperiment {
-  const experiment = TOOL_DELIVERY_EXPERIMENTS[id];
+  const experiment = id === HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id
+    ? HISTORICAL_TOOL_DELIVERY_EXPERIMENT : toolDeliveryExperiments()[id];
   if (!experiment) throw new Error(`Unregistered tool-delivery experiment: ${id}`);
   return experiment;
 }
@@ -241,7 +286,7 @@ export function verifyToolDeliverySourceCustody(input: {
   readSource: (path: string, ref?: string) => Buffer;
   buildSha: string | null;
 }): NonNullable<ToolDeliveryMeasurement['custody']> {
-  const registration = input.registration ?? toolDeliveryPreregistration(candidatePreregistration.experiment.id);
+  const registration = input.registration ?? candidatePreregistration();
   const sha = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
   const privateOriginalSha256 = sha(input.privateCapture);
   const sourceFiles: string[] = [];
@@ -323,7 +368,7 @@ export function toolDeliveryCommittedSubmodules(registration: Preregistration): 
 
 /** The once-only runner's durable marker and complete receipt bind this population to its first execution. */
 export function validateToolDeliveryBatchReceipt(rows: readonly ToolDeliveryRun[], started: unknown, receipt: unknown,
-  registration: Preregistration = toolDeliveryPreregistration(candidatePreregistration.experiment.id)): string | undefined {
+  registration: Preregistration = candidatePreregistration()): string | undefined {
   const marker = object(started), amendment = registration.measurementAmendment;
   const markerAt = typeof marker.at === 'string' ? Date.parse(marker.at) : NaN;
   if (!amendment || !Number.isFinite(markerAt) || markerAt < Date.parse(amendment.registeredAt) ||

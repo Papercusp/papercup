@@ -10795,6 +10795,10 @@ export function claudeNativeIdFromTranscriptRef(nativeRef) {
   return CLAUDE_TRANSCRIPT_NATIVE_ID.exec(basename(nativeRef))?.[1] ?? null;
 }
 
+/** Outcomes where a re-anchor was attempted and did not land; everything else that is
+ *  not ok is a benign skip (unsupported-agent, no-carry-marker, superseded-child). */
+export const REANCHOR_FAILURE_REASONS = new Set(['native-ref-not-found', 'native-id-unparseable', 'report-threw']);
+
 /** EI-26957152622357153 / EI-27033376159376450: an in-place RESET-CONTEXT `/clear`
  *  rotates Claude's native session id inside the SAME child process, so none of the
  *  respawn paths (recycle / carry-respawn / host adoption) ever re-anchors
@@ -10823,7 +10827,11 @@ export async function reanchorAfterContextReset({
 }) {
   const finish = (result) => {
     try {
-      appendEvent(result.ok ? 'reset-reanchor-reported' : 'reset-reanchor-skipped', result);
+      // A benign skip (nothing to re-anchor, or another path owns the report) and a
+      // failed re-anchor (the session stays bound to its pre-reset id) are different
+      // health signals, so they are different kinds (WI-6554700010030030).
+      appendEvent(result.ok ? 'reset-reanchor-reported'
+        : REANCHOR_FAILURE_REASONS.has(result.reason) ? 'reset-reanchor-failed' : 'reset-reanchor-skipped', result);
     } catch {
       /* a diagnostic write must never change the re-anchor verdict */
     }
@@ -14019,13 +14027,18 @@ export function hostThroughPty(o) {
   // EI-26957152622357153: a verified in-place reset rotated Claude's native id
   // without a respawn. Re-anchor it off the delivery path (never delays the ACK).
   const scheduleResetReanchor = (marker, submittedAtMs, target) => {
+    // WI-6554700010030031: the SAME child keeps presenting the id it was launched
+    // with (MCP header + inherited PAPERCUSP_NATIVE_SESSION_ID, immutable in a
+    // running process). Capture it now, from the argv that child was spawned with,
+    // so the operator keeps it as an accepted alias of the rotated id.
+    const childLaunchSessionId = nativeSessionIdFromLaunchArgs(liveChildArgs ?? []);
     void reanchorAfterContextReset({
       agent: env.PAPERCUSP_AGENT,
       marker,
       findNativeRef: () => findNativeTranscriptMarker({
         agent: env.PAPERCUSP_AGENT, env, marker, sinceMs: submittedAtMs,
       }),
-      onRespawn: (nativeId) => onRespawn(nativeId),
+      onRespawn: (nativeId) => onRespawn(nativeId, childLaunchSessionId ? { childLaunchSessionId } : undefined),
       isCurrent: () => child === target,
       timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_RESET_REANCHOR_TIMEOUT_MS, 60_000),
       appendEvent: (kind, payload) => appendHostEvent(ownerId, kind, { childGeneration, ...payload }),

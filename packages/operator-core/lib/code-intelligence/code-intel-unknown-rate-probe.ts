@@ -31,13 +31,14 @@ import {
   type UnknownRateDecision,
 } from './code-intel-result-status.ts';
 import { NATIVE_CODE_INTEL_TOOLS } from './native-adoption.ts';
+import { CODE_INTEL_CANARY_OWNER, type CanaryJudgement } from './code-intel-canary.ts';
+
+export { CODE_INTEL_CANARY_OWNER };
 
 export const CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY = 'code-intel:unknown-rate-probe';
 export const UNKNOWN_RATE_PROBE_WINDOW_MS = 24 * 60 * 60_000;
 /** The live half grades only with at least this many distinct non-canary owners (D-014). */
 export const UNKNOWN_RATE_MIN_OWNERS = 3;
-/** Owner id the canary run uses; its rows never enter the unknown share. */
-export const CODE_INTEL_CANARY_OWNER = 'system:code-intel-canary';
 export const UNKNOWN_RATE_PROBE_ACTOR = 'system:code-intel-unknown-rate-probe';
 export const UNKNOWN_RATE_PROBE_ACTION = 'code-intel.unknown-rate.probe';
 
@@ -205,6 +206,8 @@ export interface UnknownRateProbeDeps {
   record(observation: UnknownRateProbeObservation): Promise<void>;
   readonly runningBuildSha: string | null;
   now?(): number;
+  /** Live canary (code-intel-canary.ts): forced exit classes through the real dispatcher. */
+  runCanary?(): Promise<CanaryJudgement>;
 }
 
 export interface ProbeHalf {
@@ -222,6 +225,9 @@ export interface UnknownRateProbeObservation {
   readonly observedAt: string;
   readonly live: ProbeHalf;
   readonly fixture: ProbeHalf;
+  /** The canary half; null when the run had no canary dep. */
+  readonly canary: CanaryJudgement | null;
+  readonly canaryError: string | null;
 }
 
 export interface UnknownRateProbeResult {
@@ -248,6 +254,11 @@ export async function runCodeIntelUnknownRateProbe(
   scope: { workspaceId: string; windowStart: string; windowEnd: string },
   deps: UnknownRateProbeDeps,
 ): Promise<UnknownRateProbeResult> {
+  // The canary runs first so its rows (excluded from the share) show up as canaryCalls.
+  let canary: CanaryJudgement | null = null, canaryError: string | null = null;
+  if (deps.runCanary) {
+    try { canary = await deps.runCanary(); } catch (e) { canaryError = e instanceof Error ? e.message : String(e); }
+  }
   const liveKey = unknownRateConditionKey(scope.workspaceId);
   const liveRows = await deps.readRows(scope);
   const liveRecon = reconcileCodeIntelWindow(liveRows, { runningBuildSha: deps.runningBuildSha });
@@ -270,6 +281,8 @@ export async function runCodeIntelUnknownRateProbe(
     observedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
     live: { reconciliation: liveRecon, decision: liveDecision, alarmRaised: liveRaised, alarmCleared: liveCleared },
     fixture: { reconciliation: fixtureRecon, decision: fixtureDecision, alarmRaised: fixtureRaised, alarmCleared: false },
+    canary,
+    canaryError,
   };
   await deps.record(observation);
 
@@ -279,6 +292,11 @@ export async function runCodeIntelUnknownRateProbe(
   if (!deps.runningBuildSha) return { ...base, verdict: 'unknown', detail: `Running build identity unavailable; reconciliation cannot be scoped. ${counts}.` };
   if (!fixtureDecision.alarm || !fixtureRaised) {
     return { ...base, verdict: 'fail', detail: `Injected above-threshold window did not produce an alarm (decision ${fixtureDecision.alarm}, recorded ${fixtureRaised}). ${counts}.` };
+  }
+  if (canaryError) return { ...base, verdict: 'fail', detail: `Canary could not run: ${canaryError}. ${counts}` };
+  if (canary && !canary.ok) {
+    const bad = canary.cases.filter(c => !c.ok).slice(0, 4).map(c => `${c.toolName}/${c.forced}: ${c.why ?? 'failed'}`).join('; ');
+    return { ...base, verdict: 'fail', detail: `Canary: ${canary.failed}/${canary.cases.length} forced exit(s) not recorded as forced (${bad}). ${counts}` };
   }
   if (liveDecision.alarm && !liveRaised) {
     return { ...base, verdict: 'fail', detail: `Live window requires an alarm (${liveDecision.reasons.join(' + ')}) but none was delivered. ${counts}.` };
@@ -328,6 +346,10 @@ export function codeIntelUnknownRateRescore() {
         },
         record: observation => insertProbeAudit(sql, window.workspaceId, UNKNOWN_RATE_PROBE_ACTION, CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY, observation),
         runningBuildSha: getBuildInfo().sha ?? null,
+        runCanary: async () => {
+          const { realCanaryDeps, runCodeIntelCanary } = await import('./code-intel-canary.ts');
+          return runCodeIntelCanary(await realCanaryDeps(window.workspaceId));
+        },
       });
       return { verdict: result.verdict, detail: result.detail, ...(result.value === undefined ? {} : { value: result.value }) };
     },

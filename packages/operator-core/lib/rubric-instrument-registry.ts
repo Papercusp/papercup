@@ -4,6 +4,7 @@ import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY, codeIntelUnknownRateRescore } from './code-intelligence/code-intel-unknown-rate-probe';
+import { CLEANUP_OUTCOME_INSTRUMENT_KEYS, cleanupOutcomeRescore, metricForCleanupInstrument } from './code-cleanup/outcome';
 import { lunaCapacityInstruments } from './fleet/capacity-recovery-evidence';
 import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-filing-instrument';
 import { liveForkserverInstrument } from './fleet/forkserver/live-instrument';
@@ -810,6 +811,8 @@ export function platformComputedInstrumentKeys(): string[] {
     SILENT_HALT_STRANDED_INSTRUMENT_KEY,
     // code-intel-delivery-and-outcomes-2026-10-26 P-004 (R-9): the unknown-rate probe.
     CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
+    // code-cleanup-campaigns-2026-10-26 P-008: the campaign outcome rubric's three metrics.
+    ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
   ];
 }
 
@@ -832,12 +835,14 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
     const reuseMetric = (Object.keys(REUSE_MEASUREMENT_INSTRUMENT_KEYS) as ReuseMetric[])
       .find(metric => REUSE_MEASUREMENT_INSTRUMENT_KEYS[metric] === key);
     const coldEvidence = key === COLD_MOUNTS_INSTRUMENT_KEY || key === COLD_MOVES_INSTRUMENT_KEY || key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY;
+    const cleanupMetric = metricForCleanupInstrument(key);
     registry.set(key, {
       key,
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() } : reuseMetric ? { rescore: {
+      ...(key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() }
+        : cleanupMetric ? { rescore: cleanupOutcomeRescore(cleanupMetric) } : reuseMetric ? { rescore: {
         windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' || reuseMetric === 'providerOutcomes' ? 'count' as const : '%' as const,
         scope: 'harness' as const,
         resolve: async window => {

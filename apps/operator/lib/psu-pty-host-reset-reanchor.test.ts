@@ -86,6 +86,9 @@ describe('reanchorAfterContextReset', () => {
     const result = await reanchorAfterContextReset({ ...opts, timeoutMs: 20, findNativeRef: () => null });
     expect(result).toMatchObject({ ok: false, reason: 'native-ref-not-found' });
     expect(opts.onRespawn).not.toHaveBeenCalled();
+    // A re-anchor that did not land is a failure signal, never a benign skip (WI-6554700010030030).
+    expect(opts.appendEvent).toHaveBeenCalledWith('reset-reanchor-failed', expect.objectContaining({ reason: 'native-ref-not-found' }));
+    expect(opts.appendEvent).not.toHaveBeenCalledWith('reset-reanchor-skipped', expect.anything());
   });
 
   it('refuses a marker hit whose file name is not a session id', async () => {
@@ -93,6 +96,7 @@ describe('reanchorAfterContextReset', () => {
     const result = await reanchorAfterContextReset({ ...opts, findNativeRef: () => '/cfg/projects/-repo/notes.jsonl' });
     expect(result).toMatchObject({ ok: false, reason: 'native-id-unparseable' });
     expect(opts.onRespawn).not.toHaveBeenCalled();
+    expect(opts.appendEvent).toHaveBeenCalledWith('reset-reanchor-failed', expect.objectContaining({ reason: 'native-id-unparseable' }));
   });
 
   it('stops for a superseded child, so a recycle owns its own report', async () => {

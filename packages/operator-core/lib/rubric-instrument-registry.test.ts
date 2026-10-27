@@ -15,6 +15,7 @@ import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY } from './code-intelligence/code-intel-unknown-rate-probe';
+import { CLEANUP_OUTCOME_INSTRUMENT_KEYS } from './code-cleanup/outcome';
 import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-instrument';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
@@ -268,6 +269,7 @@ describe('the registry seed set', () => {
       POSTGRES_RETENTION_INSTRUMENT_KEY,
       SILENT_HALT_STRANDED_INSTRUMENT_KEY,
       CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
+      ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
@@ -317,6 +319,12 @@ describe('the registry seed set', () => {
             expect(instrument.rescore?.unit).toBe('%');
             expect(instrument.rescore?.scope).toBe('workspace');
             expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
+          } else if (Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS).some(k => k === key)) {
+            // code-cleanup-campaigns P-008: 7-day campaign outcome window, harness scoped.
+            expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('harness');
+            expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown', detail: 'Exact workspace and harness required.' });
           } else expect(instrument.rescore).toBeUndefined();
           continue;
         }

@@ -11963,6 +11963,9 @@ export async function reportSessionRespawned(
   sessionId,
   {
     coordOwnerId = null,
+    // WI-6554700010030031: set ONLY by an in-place context reset — the launch id
+    // of the same child, which its env-pinned MCP header keeps presenting.
+    childLaunchSessionId = null,
     fetchImpl = fetch,
     operatorUrl = launcherOperatorTarget().url,
     token = null,
@@ -12008,6 +12011,7 @@ export async function reportSessionRespawned(
         body: JSON.stringify({
           ...(advSessionId ? { advSessionId: Number(advSessionId) } : {}),
           ...(coordOwnerId ? { coordOwnerId: String(coordOwnerId) } : {}),
+          ...(childLaunchSessionId ? { childLaunchSessionId: String(childLaunchSessionId) } : {}),
           sessionId: String(sessionId),
         }),
       },
@@ -12052,6 +12056,7 @@ export function reportSessionRespawnedDurably(
   sessionId,
   {
     coordOwnerId = null,
+    childLaunchSessionId = null,
     reportImpl = reportSessionRespawned,
     retryDelaysMs = RESPAWN_REPORT_RETRY_DELAYS_MS,
     sleepImpl = sleepUnref,
@@ -12063,7 +12068,10 @@ export function reportSessionRespawnedDurably(
   const attempt = () =>
     Promise.resolve()
       .then(() => generation === respawnReportGeneration
-        ? reportImpl(advSessionId, sessionId, { coordOwnerId }) : false)
+        ? reportImpl(advSessionId, sessionId, {
+          coordOwnerId,
+          ...(childLaunchSessionId ? { childLaunchSessionId } : {}),
+        }) : false)
       .then((ok) => {
         if (ok !== true || generation !== respawnReportGeneration) return false;
         try {
@@ -13693,7 +13701,7 @@ export function runWrapper(options) {
         resolveRespawnNativeId: env.PAPERCUSP_AGENT === "codex" && process.platform === "linux"
           ? (pid) => codexNativeIdForPty(env.CODEX_HOME, pid, { env })
           : null,
-        onRespawn: (freshId, { onConfirmed } = {}) => {
+        onRespawn: (freshId, { onConfirmed, childLaunchSessionId = null } = {}) => {
           recordSessionOwner(freshId, ownerId, {
             advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
           });
@@ -13710,6 +13718,8 @@ export function runWrapper(options) {
             {
               coordOwnerId: ownerId,
               onConfirmed,
+              // WI-6554700010030031: only the in-place reset path supplies this.
+              ...(childLaunchSessionId ? { childLaunchSessionId } : {}),
             },
           );
         },
