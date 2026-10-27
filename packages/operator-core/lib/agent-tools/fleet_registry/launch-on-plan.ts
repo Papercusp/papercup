@@ -191,6 +191,7 @@ import {
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 /**
  * Apply one already-resolved GOAL launch profile to command defaults.
  *
@@ -2221,13 +2222,13 @@ export default defineTool({
         "WI-4272 (demo/recording): open EVERY member terminal on this X display (e.g. ':110' — a computer:provision_desktop sandbox stage being recorded) instead of the owner's desktop seat. Linux only; requires a DISPLAY-honoring emulator (xterm/alacritty/kitty/wezterm) and the display's X socket to be alive (loud-fail otherwise). Ignored for `headless: true` (headless members have no window). Omit for normal visible-desktop use.",
       ),
     claimKinds: z
-      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
+      .array(z.enum(['feature', 'chunk', ...ISSUE_FAMILY_ROUTE_KINDS]))
       .min(1)
       .max(5)
       .optional()
       .describe(
         "EI-7671: restrict every member's scheduler:get_next self-pull to these work-item kinds — e.g. " +
-          '["bug","change","task"] for a bugs-only backlog-drain fleet. Sets a FLEET-level claim spec ' +
+          '["bug","change"] for a bugs-only backlog-drain fleet. Sets a FLEET-level claim spec ' +
           'BEFORE any member terminal opens, closing the boot-race where members start pulling under the ' +
           'empty-filter DEFAULT_CLAIM_SPEC (which admits every kind, including feature/chunk) before the ' +
           "leader gets around to calling scheduler:set_claim_spec by hand. A member's own later per-bee " +

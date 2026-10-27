@@ -1830,13 +1830,7 @@ export {
   type TerminalOwnerOriginHealReason,
 } from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
-import {
-  ISSUE_FAMILY_ROUTE_KINDS,
-  agentWorkCategoryWhereSql,
-  audienceWhereSql,
-  issueFamilyRouteSql,
-  type WorkAudienceFilter,
-} from './work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS, agentWorkCategoryWhereSql, audienceWhereSql, issueFamilyRouteSql, type WorkAudienceFilter } from './work-nature/agent-work-predicate';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare
@@ -2270,7 +2264,7 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
   const ws = issuesScopeWorkspace();
   const scoped = (sql: OrgSql) => sql`
           workspace_id = ${ws}
-      AND item_kind IN ('bug', 'change', 'task')
+      AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
       AND ${f.harness ? issueHarnessClause(sql, f.harness) : sql`TRUE`}
       AND ${f.includeObservations ? sql`TRUE` : sql`lane IS DISTINCT FROM 'observation'`}
@@ -2526,7 +2520,7 @@ const WORK_ITEM_SEARCH_COVERAGE_SOURCE = 'work_items:search';
  * selects from `harness_shared.harness_features_consolidated`, which is a VIEW
  * (`pg_class.relkind='v'`) defined as
  *   `SELECT …, embedding, embedding_mode, … FROM harness_shared.work_items
- *      WHERE item_kind <> ALL (ARRAY['bug','change','task'])`
+ *      WHERE item_kind <> ALL (ARRAY[...ISSUE_FAMILY_ROUTE_KINDS])`
  * — the SAME physical table and the SAME `embedding` column the issue-family
  * source reads. So one surface honestly covers both legs.
  *
@@ -2651,7 +2645,7 @@ export async function searchWorkItems(
      * generic kind) was previously inexpressible: you got one exact kind, or
      * both families. `family: 'feature'` is exactly the predicate the
      * `harness_features_consolidated` compat view applies
-     * (`item_kind <> ALL('bug','change','task')`, i.e. {@link familyOf}), which
+     * (`item_kind <> ALL(...ISSUE_FAMILY_ROUTE_KINDS)`, i.e. {@link familyOf}), which
      * is what lets a caller searching that view delegate here without changing
      * which rows it can see.
      *
@@ -7624,7 +7618,7 @@ export async function reconcileEventExternalBlockers(
       workspaceId: row.workspace_id,
       featureId: row.feature_id,
       harnessSlug: row.harness_slug ?? null,
-      family: ['bug', 'change', 'task'].includes(String(row.item_kind)) ? 'issue' : 'feature',
+      family: (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(String(row.item_kind)) ? 'issue' : 'feature',
       status: outcome.restored ? 'open' : row.status,
       holder: normalizeTakenBy(row.taken_by),
       restored: outcome.restored,
@@ -7730,7 +7724,7 @@ export async function clearExternalBlockersOnLockedRow(
   const activeRemaining = blockers.filter((blocker) => blocker.status === 'active').length;
   if (cleared.length === 0) return { changed: false, restored: false, cleared, activeRemaining };
 
-  const issueFamily = ['bug', 'change', 'task'].includes(String(row.item_kind));
+  const issueFamily = (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(String(row.item_kind));
   const autoBlockedIssue =
     issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
   const restoreIssue = autoBlockedIssue && activeRemaining === 0;
@@ -7976,7 +7970,7 @@ export async function readHeldUnresolvedDepBlockers(args: {
         ON d.workspace_id = 'default'
        AND d.dep_type = 'blocks'
        AND d.blocked_ref = CASE
-             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             WHEN wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) THEN wi.feature_id
              ELSE wi.harness_slug || '#' || wi.feature_id
            END
      WHERE wi.workspace_id = ${args.workspaceId}
@@ -8026,7 +8020,7 @@ export async function readHeldDependencyEscapeContext(args: {
     WITH refused AS (
       SELECT feature_id, item_kind, harness_slug,
              CASE
-               WHEN item_kind IN ('bug', 'change', 'task') THEN feature_id
+               WHEN item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) THEN feature_id
                ELSE harness_slug || '#' || feature_id
              END AS dependency_ref
         FROM harness_shared.work_items
@@ -8047,7 +8041,7 @@ export async function readHeldDependencyEscapeContext(args: {
       JOIN harness_shared.work_items wi
         ON wi.workspace_id = ${activeWorkspaceId()}
        AND d.blocked_ref = CASE
-             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             WHEN wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) THEN wi.feature_id
              ELSE wi.harness_slug || '#' || wi.feature_id
            END
      WHERE wi.taken_by = ANY(${memberRefs}::text[])
@@ -8846,7 +8840,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
     const issuePoolRows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.work_items wi
-       WHERE wi.item_kind IN ('bug', 'change', 'task')
+       WHERE wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
@@ -8881,7 +8875,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
     const issueReadyRows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.work_items wi
-       WHERE wi.item_kind IN ('bug', 'change', 'task')
+       WHERE wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
@@ -9291,7 +9285,7 @@ export async function explainIssueClaimFloors(
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
        AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
-       AND wi.item_kind IN ('bug', 'change', 'task')
+       AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
        AND wi.feature_id = ANY(${[...ids]}::text[])`;
 
   const byId = new Map(rows.map((r) => [r.id, r]));
@@ -10470,7 +10464,7 @@ export async function setWorkItemSwarmAffinity(
       UPDATE harness_shared.work_items
          SET swarm_affinity = ${swarm}, updated_ts = ${Date.now()}
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task')
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       RETURNING swarm_affinity`;
     if (!rows[0]) return null;
     return { id, harness: wi.harness, swarmAffinity: rows[0].swarm_affinity };
@@ -10500,7 +10494,7 @@ export async function getWorkItemSwarmAffinity(
     const rows = await sql<{ swarm_affinity: string | null }[]>`
       SELECT swarm_affinity FROM harness_shared.work_items
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task') LIMIT 1`;
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) LIMIT 1`;
     return { id, harness: wi.harness, swarmAffinity: rows[0]?.swarm_affinity ?? null };
   }
   const { sql } = getOrgPg();
@@ -10572,7 +10566,7 @@ export async function setWorkItemPriority(
       UPDATE harness_shared.work_items
          SET feature_order = ${ordIssue}, updated_ts = ${Date.now()}
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task')
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       RETURNING feature_order`;
     if (!rows[0]) return null;
     return { id, harness: wi.harness, priority: rows[0].feature_order, applicable: true };
@@ -10662,7 +10656,7 @@ export async function bumpWorkItemPriority(
       SELECT MIN(feature_order) AS min_ord, MAX(feature_order) AS max_ord
         FROM harness_shared.work_items
        WHERE workspace_id = ${issueWs}
-         AND item_kind IN ('bug', 'change', 'task')
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND feature_id <> ${id}`;
     const minI = extI[0]?.min_ord ?? null;
     const maxI = extI[0]?.max_ord ?? null;
@@ -10700,7 +10694,7 @@ export async function getWorkItemPriority(
     const rows = await sql<{ feature_order: number | null }[]>`
       SELECT feature_order FROM harness_shared.work_items
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task') LIMIT 1`;
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) LIMIT 1`;
     return { id, harness: wi.harness, priority: rows[0]?.feature_order ?? null, applicable: true };
   }
   const { sql } = getOrgPg();

@@ -1305,6 +1305,20 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(emitGitSyncCommittedEventMock).not.toHaveBeenCalled();
   });
 
+  it('EI-270796: emits at the root callback and does not emit the aggregate proof again', async () => {
+    const commit = { sha: 'b'.repeat(40), committedAtMs: 1_000 };
+    runGitSyncMock.mockImplementationOnce(async (_slug, options) => {
+      const notify = options.onRootCommit as (proof: typeof commit) => void;
+      notify(commit);
+      expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+        commit.sha, { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } }, commit.committedAtMs,
+      );
+      return { ...syncedOutcome, localCommitSha: commit.sha, localCommitAtMs: 4_000, localCommits: [commit] };
+    });
+    await action(ctx);
+    expect(emitGitSyncCommittedEventMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each([1_000, undefined])('EI-255886: carries producer time %s without retimestamping on action replay', async (localCommitAtMs) => {
     runGitSyncMock.mockResolvedValue({ ...syncedOutcome, localCommitAtMs } as GitSyncOutcome);
     const now = vi.spyOn(Date, 'now').mockReturnValue(4_000);

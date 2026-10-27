@@ -44,6 +44,7 @@ import { analyzeClaudeResumeTranscriptFile } from '../claude-resume-tool-referen
 import { isTerminalState, type TaskState } from '../task-manager/types';
 import { defaultStopFailedLaunch } from './consult-dispatch';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../work-nature/agent-work-predicate';
 /** One candidate's verdict from the check-approver screen. */
 export type AmendmentReviewerScreen = (
   ownerId: string,
@@ -545,7 +546,7 @@ async function resolvePreviewPostWorkItem(args: {
        AND (
          (t.parent_kind = 'feature' AND w.item_kind IN ('feature', 'chunk')
            AND t.parent_ref = w.harness_slug || '#' || w.feature_id)
-         OR (t.parent_kind = 'issue' AND w.item_kind IN ('bug', 'change', 'task')
+         OR (t.parent_kind = 'issue' AND w.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND t.parent_ref = w.feature_id)
        )
      WHERE p.workspace_id = ${args.workspaceId}

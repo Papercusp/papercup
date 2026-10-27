@@ -92,6 +92,7 @@ import {
   VALID_PLAN_SLUG,
 } from './source';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 /** System author of the EI-14579 resurrection marker revision. */
 export const TEMPLATE_DATA_LOSS_GUARD_AUTHOR = 'with-plan-lock:template-data-loss-guard';
 /** System author of a revision recorded for a plan write whose caller wired no revision
@@ -124,7 +125,7 @@ async function promotedDependencyMutations(
   const endpoints = new Map<string, { kind: string; ref: string }>();
   for (const row of rows) {
     if (endpoints.has(row.item_id)) continue;
-    endpoints.set(row.item_id, ['bug', 'change', 'task'].includes(row.item_kind)
+    endpoints.set(row.item_id, (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(row.item_kind)
       ? { kind: 'issue', ref: row.feature_id }
       : { kind: 'feature', ref: `${scope.harnessSlug}#${row.feature_id}` });
   }

@@ -4,10 +4,13 @@ import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commitAttributedGroups, dirtyFiles, guardStagedIndexBeforeCommit, preserveVanishedStagedSources, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
+import { attributionTrailers, commitAttributedGroups, dirtyFiles, guardStagedIndexBeforeCommit, preserveVanishedStagedSources, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
 import type { FileAttribution } from './git-sync-attribution';
 
 type GitResult = { code: number; stdout: string; stderr: string };
+
+/** Every message line of a recorded commit-tree argv: the trailers travel as ONE `-m` paragraph. */
+const messageLines = (commit: string[]): string[] => commit.flatMap((a) => a.split('\n'));
 
 /**
  * A scripted git for the attributed-commit plumbing (WI-10006705: private index,
@@ -380,12 +383,12 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     // first body paragraph, + a Co-Authored-By trailer, parented on the CAS base
     const commits = calls.filter((c) => c.includes('commit-tree'));
     expect(commits).toHaveLength(2);
-    expect(commits[0]!.some((a) => a.startsWith('Co-Authored-By:'))).toBe(false); // the residual is anonymous
+    expect(messageLines(commits[0]!).some((a) => a.startsWith('Co-Authored-By:'))).toBe(false); // the residual is anonymous
     const commit = commits[1]!;
     expect(commit).toEqual(expect.arrayContaining(['commit-tree', 'tree-new', '-p', 'base-commit']));
     expect(commit).toContain('sync(root): a.ts, b.ts (2 files, +15/-3) [skip ci]');
     expect(commit).toContain('fix a'); // demoted to the body, not lost
-    expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
+    expect(messageLines(commit)).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
     // WI-10006850: the shared index is refreshed for the committed paths (literally, on the
     // SHARED index) BEFORE the commit is published with a CAS on the base
     const casIdx = calls.findIndex((c) => c[0] === 'update-ref');
@@ -397,7 +400,7 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(resetIdx).toBeGreaterThan(-1);
     expect(resetIdx).toBeLessThan(casIdx);
     // exactly ONE attributed commit (the other is c.ts's anonymous residual)
-    expect(commits.filter((c) => c.includes('Co-Authored-By: ag1 <ag1@agents.papercusp>'))).toHaveLength(1);
+    expect(commits.filter((c) => messageLines(c).includes('Co-Authored-By: ag1 <ag1@agents.papercusp>'))).toHaveLength(1);
     // no `git commit` of the shared index at all
     expect(calls.some((c) => c.includes('commit'))).toBe(false);
   });
@@ -514,15 +517,20 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     ]);
     await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
     const commit = calls.find((c) => c.includes('commit-tree'))!;
-    expect(commit).toContain('Papercusp-Agent: ag1');
-    expect(commit).toContain('Papercusp-Work-Item: WI-1, WI-2');
-    expect(commit).toContain('Papercusp-Session: sess-9');
-    expect(commit).toContain('Papercusp-Plan: plan-x');
-    // still carries a subject (diff-derived; empty numstat → no ±counts), the intent
-    // body, + Co-Authored-By
+    // WI-6554700010029864: ONE final paragraph, so git's trailer parser (last paragraph only) sees all of them.
+    expect(commit[commit.length - 1]).toBe(
+      [
+        'Co-Authored-By: ag1 <ag1@agents.papercusp>',
+        'Papercusp-Agent: ag1',
+        'Papercusp-Work-Item: WI-1, WI-2',
+        'Papercusp-Session: sess-9',
+        'Papercusp-Plan: plan-x',
+      ].join('\n'),
+    );
+    expect(commit[commit.length - 2]).toBe('-m');
+    // still carries a subject (diff-derived; empty numstat → no ±counts) and the intent body
     expect(commit).toContain('sync(root): a.ts (1 file) [skip ci]');
     expect(commit).toContain('fix a');
-    expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
   });
 
   it('emits Papercusp-Agent but NO Work-Item/Session/Plan trailers when the attribution lacks them', async () => {
@@ -530,10 +538,36 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'x' }]]);
     await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
     const commit = calls.find((c) => c.includes('commit-tree'))!;
-    expect(commit).toContain('Papercusp-Agent: ag1');
-    expect(commit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
-    expect(commit.some((a) => a.startsWith('Papercusp-Session:'))).toBe(false);
-    expect(commit.some((a) => a.startsWith('Papercusp-Plan:'))).toBe(false);
+    const lines = messageLines(commit);
+    expect(lines).toContain('Papercusp-Agent: ag1');
+    expect(lines.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
+    expect(lines.some((a) => a.startsWith('Papercusp-Session:'))).toBe(false);
+    expect(lines.some((a) => a.startsWith('Papercusp-Plan:'))).toBe(false);
+  });
+
+  it('names every author of a multi-author group and the absorbed unattributed files (D-001)', () => {
+    const absorbed = Array.from({ length: 22 }, (_, i) => `gen/f${String(i).padStart(2, '0')}.d.mts`);
+    expect(
+      attributionTrailers({
+        agent: 'ag1',
+        agents: ['ag1', 'ag2'],
+        coAuthor: 'ag1 <ag1@agents.papercusp>',
+        coAuthors: ['ag1 <ag1@agents.papercusp>', 'Cup Two <ag2@agents.papercusp>'],
+        files: ['a.ts', 'b.ts', ...absorbed],
+        subject: 's',
+        workItems: ['WI-1', 'WI-2'],
+        absorbedUnattributed: absorbed,
+      }),
+    ).toEqual([
+      'Co-Authored-By: ag1 <ag1@agents.papercusp>',
+      'Co-Authored-By: Cup Two <ag2@agents.papercusp>',
+      'Papercusp-Agent: ag1',
+      'Papercusp-Agent: ag2',
+      'Papercusp-Work-Item: WI-1, WI-2',
+      `Papercusp-Unattributed-Files: ${absorbed.slice(0, 20).join(', ')} (+2 more)`,
+    ]);
+    // The anonymous residual carries no trailers at all.
+    expect(attributionTrailers({ agent: null, files: ['x'], subject: 's', coAuthor: null })).toEqual([]);
   });
 
   it('creates separate commits when one agent edited files under different work-items', async () => {
@@ -549,8 +583,8 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(commits).toHaveLength(2);
     const oldCommit = commits.find((c) => c.includes('old lane'))!;
     const newCommit = commits.find((c) => c.includes('new lane'))!;
-    expect(oldCommit).toContain('Papercusp-Work-Item: WI-40700');
-    expect(newCommit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
+    expect(messageLines(oldCommit)).toContain('Papercusp-Work-Item: WI-40700');
+    expect(messageLines(newCommit).some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
   });
 });
 
@@ -612,6 +646,25 @@ describe('commitAttributedGroups private index (WI-10006705)', () => {
     // Both are clean in the shared index.
     expect(await git(repo, 'diff', '--cached', '--name-only')).toBe('');
     expect(await git(repo, 'status', '--porcelain', '--', 'a.ts')).toBe('');
+  });
+
+  it('writes trailers git itself parses when Work-Item/Session/Plan follow the agent (real git, WI-6554700010029864)', async () => {
+    // Until 2026-10-27 each trailer was its own paragraph and git reads only the last one, so
+    // 323 of the last 400 attributed commits read `%(trailers:key=Papercusp-Agent)` as empty.
+    const repo = await seededRepo('gs-attr-trailers-');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const attribution = new Map<string, FileAttribution>([
+      ['a.ts', { agent: 'ag1', intent: 'add a', workItems: ['WI-1', 'WI-2'], sessionId: 'sess-9', planSlug: 'plan-x' }],
+    ]);
+
+    await commitAttributedGroups(realRunGit, repo, attribution, [], MSG);
+
+    const trailer = (key: string) => git(repo, 'log', '-1', `--format=%(trailers:key=${key},valueonly)`);
+    expect(await trailer('Papercusp-Agent')).toBe('ag1');
+    expect(await trailer('Papercusp-Work-Item')).toBe('WI-1, WI-2');
+    expect(await trailer('Papercusp-Session')).toBe('sess-9');
+    expect(await trailer('Papercusp-Plan')).toBe('plan-x');
+    expect(await trailer('Co-Authored-By')).toBe('ag1 <ag1@agents.papercusp>');
   });
 
   it('refuses to publish when HEAD moves between the guard and the commit (update-ref CAS, real git)', async () => {

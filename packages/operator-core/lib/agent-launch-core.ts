@@ -38,6 +38,7 @@ import { resolveCodexModel, resolveCodexModelSelection } from './model-context-b
 import { isSuAgent, SU_AGENTS } from './su-agents';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
+import { ISSUE_FAMILY_ROUTE_KINDS, type IssueFamilyRouteKind } from './work-nature/agent-work-predicate';
 export type CodexModelSource = 'explicit' | 'inherited' | 'configured-default';
 
 /** Match `psu` as a command token — start of line, or after whitespace / a
@@ -927,7 +928,7 @@ export interface MemberSpec {
   /** Inline brief TEXT for this member — composed to a launch-context file by the tool when set. */
   brief?: string;
   /** Per-member claim-lane restriction — seeds this member's claim spec (bee-level, overrides the fleet spec). */
-  claimKinds?: Array<'feature' | 'chunk' | 'bug' | 'change' | 'task'>;
+  claimKinds?: Array<'feature' | 'chunk' | IssueFamilyRouteKind>;
   headless?: boolean;
   addDir?: string[];
   allowSubagents?: boolean;
@@ -991,7 +992,7 @@ export const memberSpecSchema = z
         "Inline brief TEXT for this member — becomes its own first turn / composed launch context. Use instead of `launchContext` when you have the text, not a file. Takes precedence over this member's `perMemberLaunchContext` entry.",
       ),
     claimKinds: z
-      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
+      .array(z.enum(['feature', 'chunk', ...ISSUE_FAMILY_ROUTE_KINDS]))
       .min(1)
       .max(5)
       .optional()
@@ -1014,7 +1015,7 @@ export const memberSpecSchema = z
  */
 export type FleetMemberDefaults = Omit<MemberLaunchOpts, 'fleetSlug' | 'harness' | 'plan'> & {
   carry?: 'warm' | 'cold';
-  claimKinds?: Array<'feature' | 'chunk' | 'bug' | 'change' | 'task'>;
+  claimKinds?: Array<'feature' | 'chunk' | IssueFamilyRouteKind>;
 };
 
 /**

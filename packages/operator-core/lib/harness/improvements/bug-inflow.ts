@@ -24,10 +24,11 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 const DAY_MS = 86_400_000;
-export const BUG_INFLOW_KINDS = ['bug', 'change', 'task'] as const;
+export const BUG_INFLOW_KINDS = ISSUE_FAMILY_ROUTE_KINDS;
 /** The writer recomputes this many UTC days per tick (today + yesterday). */
 export const BUG_INFLOW_REFRESH_DAYS = 2;
 export const BUG_INFLOW_DEFAULT_DAYS = 7;

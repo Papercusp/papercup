@@ -75,6 +75,7 @@ import {
   mergeImportLinkedGroups,
   attributionMapForRepo,
   diffDerivedSubject,
+  inheritCompanionDeclarationAttribution,
   parseNumstat,
   DEFAULT_GIT_SYNC_SUBJECT,
   type FileAttribution,
@@ -1993,7 +1994,15 @@ export function expandNpmManifestClosure(
  * only defers the superproject (see runGitSync). `status` is the worst outcome:
  * any conflict → 'conflict', else any error → 'error', else 'synced'/'nothing'.
  */
+export interface GitSyncRootCommit {
+  sha: string;
+  /** Observation immediately after successful root publication, never replay time. */
+  committedAtMs: number;
+}
+
 export type GitSyncOutcome = {
+  /** Per-publication proof retained by the commit checkpoint, including on replay. */
+  localCommits?: GitSyncRootCommit[];
   /**
    * Exact root commit created by this pass, captured before fetch/merge/push.
    * Unlike aggregate committedCount or a measured existing headSha, this proves
@@ -2122,12 +2131,13 @@ export class GitSyncYieldError extends Error {
   readonly localCommitAtMs?: number;
   /** Every root commit published before the yield, oldest first (WI-6554700010019053). */
   readonly localCommitShas?: readonly string[];
+  readonly localCommits?: readonly GitSyncRootCommit[];
   constructor(
     reason: string,
     boundary: GitSyncYieldBoundary,
     submodulesSynced: number,
     submodulesTotal: number,
-    landed?: { localCommitSha: string; localCommitAtMs: number; localCommitShas?: readonly string[] },
+    landed?: { localCommitSha: string; localCommitAtMs: number; localCommitShas?: readonly string[]; localCommits?: readonly GitSyncRootCommit[] },
   ) {
     super(`git-sync yielded at ${boundary} (${submodulesSynced}/${submodulesTotal} submodules synced): ${reason}`);
     this.name = 'GitSyncYieldError';
@@ -2138,6 +2148,7 @@ export class GitSyncYieldError extends Error {
     if (landed) {
       this.localCommitSha = landed.localCommitSha;
       this.localCommitAtMs = landed.localCommitAtMs;
+      this.localCommits = landed.localCommits;
       if (landed.localCommitShas && landed.localCommitShas.length > 0) this.localCommitShas = landed.localCommitShas;
     }
   }
@@ -2158,6 +2169,9 @@ export interface RunGitSyncOpts {
   beforePush?: (args: readonly string[], cwd: string) => Promise<void>;
   /** Called whenever the default git runner observes command progress. */
   onProgress?: () => void;
+  /** Best-effort notification at each successful ROOT publication, before later
+   * groups/push. Replayed commit checkpoints deliver the saved producer proof. */
+  onRootCommit?: (commit: GitSyncRootCommit) => void;
   /** Abort a default git child when the owning fire is declared stalled. */
   signal?: AbortSignal;
   /** WI-1416: run each pipeline phase as a checkpointed durable step (see
@@ -4955,18 +4969,38 @@ function attributedMessageArgs(
   const args = ['-m', `${subject}${suffix}`];
   if (intentBody) args.push('-m', intentBody);
   if (sweepMessageBody) args.push('-m', sweepMessageBody);
-  if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
-  // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
-  // trailers so the commit↔work-item link travels IN git history (and is read back
-  // post-sync into git_sync_commit_attribution). Deterministic — from the ledger-derived
-  // attribution, no LLM (D-004/D-006).
-  if (g.agent) args.push('-m', `Papercusp-Agent: ${g.agent}`);
-  if (g.workItems && g.workItems.length > 0) {
-    args.push('-m', `Papercusp-Work-Item: ${g.workItems.slice(0, 20).join(', ')}`);
-  }
-  if (g.sessionId) args.push('-m', `Papercusp-Session: ${g.sessionId}`);
-  if (g.planSlug) args.push('-m', `Papercusp-Plan: ${g.planSlug}`);
+  const trailers = attributionTrailers(g);
+  if (trailers.length > 0) args.push('-m', trailers.join('\n'));
   return args;
+}
+
+/**
+ * The provenance trailers of one attributed commit, as ONE final paragraph.
+ *
+ * P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance trailers so
+ * the commit↔work-item link travels IN git history (and is read back post-sync into
+ * git_sync_commit_attribution). Deterministic — from the ledger-derived attribution, no LLM.
+ *
+ * WI-6554700010029864: they must share one paragraph. git reads trailers only from a message's
+ * LAST paragraph, and until 2026-10-27 each trailer was its own `-m`, so
+ * `%(trailers:key=Papercusp-Agent)` returned nothing for every git-sync commit and the delta
+ * check's trailer routing and the drift sweep's attribution both read null.
+ */
+export function attributionTrailers(g: ReturnType<typeof groupFilesForAttribution>[number]): string[] {
+  const out: string[] = [];
+  for (const coAuthor of g.coAuthors ?? (g.coAuthor ? [g.coAuthor] : [])) out.push(`Co-Authored-By: ${coAuthor}`);
+  for (const agent of g.agents ?? (g.agent ? [g.agent] : [])) out.push(`Papercusp-Agent: ${agent}`);
+  if (g.workItems && g.workItems.length > 0) out.push(`Papercusp-Work-Item: ${g.workItems.slice(0, 20).join(', ')}`);
+  if (g.sessionId) out.push(`Papercusp-Session: ${g.sessionId}`);
+  if (g.planSlug) out.push(`Papercusp-Plan: ${g.planSlug}`);
+  // D-001 part 2: name the import-linked files no ledger row backs, so the agent trailer above
+  // is not read as having authored them.
+  const absorbed = g.absorbedUnattributed ?? [];
+  if (absorbed.length > 0) {
+    const more = absorbed.length > 20 ? ` (+${absorbed.length - 20} more)` : '';
+    out.push(`Papercusp-Unattributed-Files: ${absorbed.slice(0, 20).join(', ')}${more}`);
+  }
+  return out;
 }
 
 /** Where a git-sync commit builds private indexes (WI-10006705 / WI-10006725). */
@@ -5145,6 +5179,7 @@ async function publishPrivateIndexCommit(
     reflogMessage: string;
     messageArgs: () => Promise<string[]>;
     beforePublish?: (commit: string, tree: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+    onPublished?: (sha: string) => void;
   },
 ): Promise<
   | { status: 'nothing' }
@@ -5172,6 +5207,7 @@ async function publishPrivateIndexCommit(
   }
   const cas = await runGit(['update-ref', '-m', p.reflogMessage, 'HEAD', commit, p.base ?? ''], repoPath);
   if (cas.code !== 0) return { status: 'cas-refused', detail: gitFailureDetail(cas) };
+  p.onPublished?.(commit);
   return { status: 'committed', commit, tree };
 }
 
@@ -5188,6 +5224,7 @@ async function commitPriorityPaths(
   diffSubjects: boolean | undefined,
   beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>,
   log: (m: string) => void = () => {},
+  onPublished?: (sha: string) => void,
 ): Promise<
   | { status: 'nothing' }
   | { status: 'committed' }
@@ -5218,6 +5255,7 @@ async function commitPriorityPaths(
       baseTree: seeded.baseTree,
       label: 'priority path commit',
       reflogMessage: 'git-sync: priority submodule gitlinks',
+      onPublished,
       messageArgs: async () => {
         if (diffSubjects === false) return ['-m', message];
         const numstat = await privateGit(
@@ -5613,6 +5651,7 @@ async function commitAttributedGroupsPass(
      *  group's PRIVATE index and must guard through it. A failure skips that group only
      *  (WI-6554700010018197). */
     beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>;
+    onPublished?: (sha: string) => void;
     /** WI-6554700010019415: working-tree text for the import edges that merge linked groups.
      *  Defaults to reading `repoPath`. */
     readText?: (relPath: string) => Promise<string | null>;
@@ -5649,10 +5688,14 @@ async function commitAttributedGroupsPass(
   // files must not wait behind every per-agent group in a long local-sync pass.
   // The caller's final add -A remains the safety net for arrivals and failed groups.
   const forceCatchAll = new Set(opts.forceCatchAllPaths ?? []);
-  const groupAttribution =
+  // WI-6554700010029864: a declaration git-sync regenerated beside an attributed source joins that
+  // source's group instead of sitting in the residual and pulling the group in with it.
+  const groupAttribution = inheritCompanionDeclarationAttribution(
+    dirty.filter((path) => !forceCatchAll.has(path)),
     forceCatchAll.size === 0
       ? attribution
-      : new Map([...attribution].filter(([path]) => !forceCatchAll.has(path)));
+      : new Map([...attribution].filter(([path]) => !forceCatchAll.has(path))),
+  );
   // The durable edit ledger supplies native-edit ages. Sample working-tree mtimes only for
   // attributed paths without a ledger row, so presence-only/script edits still get an age without
   // adding a filesystem read for normally recorded native edits. These are scheduling hints only;
@@ -5745,6 +5788,7 @@ async function commitAttributedGroupsPass(
       opts.diffSubjects,
       opts.beforeCommit,
       log,
+      opts.onPublished,
     );
     if (priority.status === 'committed') {
       committedAny = true;
@@ -5901,6 +5945,7 @@ async function commitAttributedGroupsPass(
         baseTree,
         label: groupLabel,
         reflogMessage: g.agent ? `git-sync: attributed commit for ${g.agent}` : 'git-sync: residual catch-all',
+        onPublished: opts.onPublished,
         beforePublish: refreshSharedIndex,
         messageArgs: async () => {
           let subject = g.subject;
@@ -5960,6 +6005,7 @@ async function commitAttributedGroupsPass(
 
 /** The knobs the COMMIT half of one repo's sync needs (stage + content-guard + commit). */
 interface CommitRepoOpts {
+  onPublished?: (sha: string) => void;
   /** Public scope name used in skipped-path diagnostics. */
   scope: string;
   /** Harness identity for log labels; `scope` remains the repo-relative diagnostic coordinate. */
@@ -6933,6 +6979,7 @@ async function commitOneRepoWithScratch(
             );
           },
           beforeCommit: (privateRunGit) => postStageGuard(privateRunGit),
+          onPublished: o.onPublished,
           custodyPaths: custody.protectedPaths,
           readText: (rel) => o.readText(repoPath, rel),
           log: o.log,
@@ -7254,6 +7301,7 @@ async function commitOneRepoWithScratch(
         baseTree: privateBase.baseTree,
         label: 'catch-all commit',
         reflogMessage: 'git-sync: catch-all commit',
+        onPublished: o.onPublished,
         messageArgs: async () => messageArgs,
         beforePublish: refreshSharedIndex,
       });
@@ -7286,6 +7334,10 @@ async function commitOneRepoWithScratch(
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
+      if (o.onPublished) {
+        const sha = await headSha(runGit, repoPath);
+        if (sha) o.onPublished(sha);
+      }
     } else if (!nothingToCommit(c)) {
       // P-002: a real commit failure (index.lock race, corrupt index, a hook) is NOT
       // a merge conflict. If the still-dirty tree fell through to the merge phase it
@@ -8492,6 +8544,17 @@ async function runGitSyncPass(
   // commits (the residual and earlier per-agent groups publish before a later group's
   // probe). Pin the pre-phase root HEAD so such a yield carries its commit proof.
   const superprojectHeadBefore = await headSha(runGit, repo);
+  const localCommits: GitSyncRootCommit[] = [];
+  const notifiedRootCommits = new Set<string>();
+  const notifyRootCommit = (commit: GitSyncRootCommit): void => {
+    if (notifiedRootCommits.has(commit.sha)) return;
+    notifiedRootCommits.add(commit.sha);
+    try {
+      opts.onRootCommit?.(commit);
+    } catch (error) {
+      log(`[git-sync] ${slug}: root commit notification failed: ${String(error)}`);
+    }
+  };
   const yieldSuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
     const reason = await checkYield();
     if (!reason) return;
@@ -8500,8 +8563,9 @@ async function runGitSyncPass(
       headNow && headNow !== superprojectHeadBefore
         ? {
             localCommitSha: headNow,
-            localCommitAtMs: Date.now(),
+            localCommitAtMs: localCommits.at(-1)?.committedAtMs ?? Date.now(),
             localCommitShas: await commitsSince(runGit, repo, superprojectHeadBefore, headNow),
+            localCommits,
           }
         : undefined;
     throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length, landed);
@@ -8590,13 +8654,19 @@ async function runGitSyncPass(
       priorityPaths: superprojectGitlinkPaths,
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
       yieldIfRequested: yieldSuperproject,
+      onPublished: (sha) => {
+        const commit = { sha, committedAtMs: Date.now() };
+        localCommits.push(commit);
+        notifyRootCommit(commit);
+      },
     });
     // Persist the proof with the commit phase itself. On a durable replay the
     // current HEAD and wall clock may already belong to a different tick.
-    const localCommitAtMs = committed.committedLocal ? Date.now() : undefined;
+    const localCommitAtMs = localCommits.at(-1)?.committedAtMs ?? (committed.committedLocal ? Date.now() : undefined);
     const landedHead = committed.committedLocal ? await headSha(runGit, repo) : undefined;
     return {
       ...committed,
+      localCommits,
       localCommitSha: landedHead,
       localCommitAtMs,
       // Every root commit this phase created (one per attributed group), oldest first.
@@ -8608,6 +8678,10 @@ async function runGitSyncPass(
   const localCommitSha = 'localCommitSha' in commitRes ? commitRes.localCommitSha : undefined;
   const localCommitAtMs = 'localCommitAtMs' in commitRes ? commitRes.localCommitAtMs : undefined;
   const localCommitShas = 'localCommitShas' in commitRes ? commitRes.localCommitShas : undefined;
+  // Outside the durable step: a replay skips the body, but must recover the same
+  // per-commit notifications before any later phase, with their original times.
+  const savedLocalCommits = 'localCommits' in commitRes ? commitRes.localCommits : undefined;
+  for (const commit of savedLocalCommits ?? []) notifyRootCommit(commit);
   const commitMetrics = {
     dirtyPathCount: commitRes.dirtyPathCount,
     committedCount: commitRes.committedCount,
@@ -8779,6 +8853,7 @@ async function runGitSyncPass(
     ...(localCommitSha ? { localCommitSha } : {}),
     ...(localCommitSha && localCommitAtMs != null ? { localCommitAtMs } : {}),
     ...(localCommitSha && localCommitShas && localCommitShas.length > 0 ? { localCommitShas } : {}),
+    ...(savedLocalCommits ? { localCommits: savedLocalCommits } : {}),
   };
 
   if (conflicts.length > 0)

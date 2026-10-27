@@ -74,6 +74,7 @@ import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
 import { readProcessIdentity } from './process-identity';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from './runtime-vintage';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
 /** Announce the pending→admitted edge only after its write commits. The lifecycle
  * emitter applies the same state, claim-hold, observation and plan-lane floors as
  * every other return to the claimable pool. A reviewed unreviewed→admitted row was
@@ -899,7 +900,7 @@ export interface WorkItemReadinessProjection {
   scope: {
     workspaceId: string;
     harnessSlug: string | null;
-    itemKinds: readonly ['bug', 'change', 'task'];
+    itemKinds: typeof ISSUE_FAMILY_ROUTE_KINDS;
     population: 'root issue-family rows excluding observation-lane records';
   };
   headline: Record<WorkItemReadinessHeadline, number> & {
@@ -3212,7 +3213,7 @@ export async function readWorkItemReadinessProjection(opts: {
           FROM harness_shared.work_items wi
          WHERE wi.workspace_id = ${opts.workspaceId}
            AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})
-           AND wi.item_kind IN ('bug', 'change', 'task')
+           AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND (wi.parent_id IS NULL OR wi.parent_id = '')
            AND wi.lane IS DISTINCT FROM 'observation'
       ), scoped AS MATERIALIZED (
@@ -3470,7 +3471,7 @@ export async function readWorkItemReadinessProjection(opts: {
     scope: {
       workspaceId: opts.workspaceId,
       harnessSlug,
-      itemKinds: ['bug', 'change', 'task'],
+      itemKinds: ISSUE_FAMILY_ROUTE_KINDS,
       population: 'root issue-family rows excluding observation-lane records',
     },
     headline,

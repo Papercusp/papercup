@@ -18,7 +18,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import type { OrgSql } from '../../work-items';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 
 export const LEGACY_NEEDS_HUMAN_RECONCILE = 'legacy-needs-human-reconcile';
 export const DEFAULT_LEGACY_NEEDS_HUMAN_RECONCILE_CAP = 100;
@@ -143,7 +143,7 @@ export async function reconcileLegacyNeedsHumanRows(input: {
         SELECT workspace_id, harness_slug, feature_id, status, item_kind, taken_by, payload
           FROM harness_shared.work_items
          WHERE workspace_id = ANY(${workspaceIds}::text[])
-           AND item_kind = ANY(ARRAY['bug','change','task'])
+           AND item_kind = ANY(ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
            AND status <> ALL(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])
            AND status IS DISTINCT FROM 'needs-human'
            AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' = 'true'

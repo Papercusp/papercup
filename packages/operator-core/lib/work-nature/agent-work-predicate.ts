@@ -33,8 +33,10 @@ import type postgres from 'postgres';
  * list in triggers, views and partial indexes; migration 1590 extended every copy, and
  * cleanup-item-kind.test.ts fails when a hand-maintained copy omits a kind listed here.
  */
-export const ISSUE_FAMILY_ROUTE_KINDS = ['bug', 'change', 'task', 'cleanup'] as const;
-export type IssueFamilyRouteKind = (typeof ISSUE_FAMILY_ROUTE_KINDS)[number];
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '@papercusp/harness/work-item-kinds';
+
+export { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS };
+export type { IssueFamilyRouteKind } from '@papercusp/harness/work-item-kinds';
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 
@@ -51,8 +53,7 @@ function columnPrefix(alias: string | null): string {
  * predicate, and the planner can prove implication only from a literal list.
  */
 export function issueFamilyRouteSql(sql: postgres.Sql, alias: string | null = 'wi') {
-  const list = ISSUE_FAMILY_ROUTE_KINDS.map((k) => `'${k}'`).join(', ');
-  return sql.unsafe(`${columnPrefix(alias)}item_kind IN (${list})`);
+  return sql.unsafe(`${columnPrefix(alias)}item_kind IN (${ISSUE_FAMILY_KINDS_SQL_LIST})`);
 }
 
 /**

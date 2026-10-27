@@ -3766,7 +3766,9 @@ describe('runGitSync (real git, no submodule)', () => {
       // WI-5111: the bot-identity `-c` override precedes the subcommand, so match on
       // inclusion, not args[0]. WI-10006705: attributed commits are `commit-tree` on a
       // private index (published by an update-ref CAS), no longer `commit`.
-      const isAttributedCommit = args.includes('commit-tree') && args.some((a) => a.startsWith('Papercusp-Agent:'));
+      // WI-6554700010029864: the trailers travel as ONE `-m` paragraph, so match a line in it.
+      const isAttributedCommit =
+        args.includes('commit-tree') && args.some((a) => a.split('\n').some((line) => line.startsWith('Papercusp-Agent:')));
       if (isAttributedCommit && !attributedCommitFailed) {
         attributedCommitFailed = true;
         return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };

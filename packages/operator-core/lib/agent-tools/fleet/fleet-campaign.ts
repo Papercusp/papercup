@@ -18,6 +18,7 @@ import {
 import { mapWithConcurrency } from '../../gym/concurrency';
 import { readWorkItemClaimHistory } from './fleet-claim-history-reader';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../../work-nature/agent-work-predicate';
 export const FLEET_CAMPAIGN_RECENT_ROW_CAP = 12;
 export const FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY = 4;
 export const FLEET_CAMPAIGN_SLOW_AXIS_LOG_THRESHOLD_MS = 250;
@@ -634,7 +635,7 @@ export async function readFleetCampaign(
       SELECT count(*)::bigint AS stock
         FROM harness_shared.work_items
        WHERE workspace_id = ${input.workspaceId}
-         AND COALESCE(item_kind, kind) IN ('bug', 'change', 'task')
+         AND COALESCE(item_kind, kind) IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND NOT harness_shared.work_item_status_is_terminal(status)
          ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
     `;

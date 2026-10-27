@@ -4280,6 +4280,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       runGitSync(slug, {
         repoPath,
         config: cfg,
+        onRootCommit: ({ sha, committedAtMs }) => {
+          emitGitSyncCommittedEvent(sha, { scope: { installSlug: slug, workspaceId } }, committedAtMs);
+        },
         runGit: async (args, cwd, gitOptions) => {
           // WI-10006724: a fire that can no longer prove it holds its lease must
           // not start another Git command; another fire may own this index now.
@@ -4438,7 +4441,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // WI-6554700010018899: commits that published before the yield are real local
       // commits. The redo pass finds nothing left to commit, so without this emit every
       // `git-sync:committed` waiter sleeps to its timeout.
-      if (error.localCommitSha) {
+      if (error.localCommitSha && !error.localCommits) {
         emitGitSyncCommittedEvent(
           error.localCommitSha,
           { scope: { installSlug: slug, workspaceId } },
@@ -4679,7 +4682,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // root commit succeeded. Aggregate counts also include submodule commits,
     // so emit only from the root commit proof captured by the local producer.
     // Fire-and-forget, never gates the tick, benign to replay past the record step.
-    if (outcome.localCommitSha) {
+    if (outcome.localCommitSha && !outcome.localCommits) {
       emitGitSyncCommittedEvent(
         outcome.localCommitSha,
         { scope: { installSlug: slug, workspaceId } },

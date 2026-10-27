@@ -44,7 +44,7 @@ import {
 } from './work-items-replay-identity-indexes';
 import { isDistinctEntityCollision } from './distinct-entity-collision';
 import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
-import { ISSUE_FAMILY_ROUTE_KINDS } from '../../../work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../../../work-nature/agent-work-predicate';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -442,7 +442,7 @@ async function findKeylessTitleIdentityWinner(
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND feature_id <> ${incomingIssueId}
-       AND item_kind IN ('bug', 'change', 'task')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
        AND (status IS NULL OR status <> ALL (
          ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
        ))
@@ -565,7 +565,7 @@ async function findWatchdogIdentityWinner(
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND feature_id <> ${incomingIssueId}
-       AND item_kind IN ('bug', 'change', 'task')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
        AND (status IS NULL OR status <> ALL (
          ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
        ))
@@ -1292,7 +1292,7 @@ async function deleteFromPg(
         )
       )
       AND feature_id = ${issueId}
-      AND item_kind IN ('bug', 'change', 'task')
+      AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       -- Remote tombstones may delete only the row materialised from that same
       -- source log.  This makes every pre-829 bare-key replay fail closed instead
       -- of erasing a same-id local/sibling row (the migration-826 incident).

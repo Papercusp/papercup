@@ -69,6 +69,7 @@ import {
   type IssueOccurrenceKind,
 } from '../../issue-occurrence-ledger';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../../work-nature/agent-work-predicate';
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
  * must resolve to a hive (auto-resolve-then-require). Issue kinds (bug/change) are
@@ -617,7 +618,7 @@ async function repairPendingExactIdentityDuplicate(
                     )
          WHERE workspace_id = ${workspaceId}
            AND feature_id = ${exactIdentity.id}
-           AND item_kind IN ('bug', 'change', 'task')
+           AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND status = 'open'
            AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES}::text[]))
            AND admission = 'pending'
@@ -635,7 +636,7 @@ async function repairPendingExactIdentityDuplicate(
                updated_ts = (extract(epoch FROM now()) * 1000)::bigint
          WHERE workspace_id = ${workspaceId}
            AND feature_id = ${exactIdentity.id}
-           AND item_kind IN ('bug', 'change', 'task')
+           AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND status = 'open'
            AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES}::text[]))
            AND admission = 'pending'
