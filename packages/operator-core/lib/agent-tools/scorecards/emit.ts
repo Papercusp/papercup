@@ -724,7 +724,7 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe(
-        "Producing/grader hive; defaults to caller. Cross-hive grading sets targetHive to the subject plan hive.",
+        "Producing/grader hive; defaults to caller. For cross-hive grading put the subject plan's hive in targetHive.",
       ),
     targetHive: z
       .string()
@@ -732,7 +732,7 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe(
-        "Subject plan/repository hive for deterministic checks; independent of sourceHive.",
+        "Subject plan/repository hive for deterministic checks. Independent of sourceHive.",
       ),
     harness: z
       .string()
