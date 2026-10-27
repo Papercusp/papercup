@@ -2144,7 +2144,7 @@ describe('bootstrap-su', () => {
     const { turnProvenanceDir } = await import('../../turn-provenance/turn-provenance');
     expect(recordSuLaunchSpec).toHaveBeenCalledWith(
       expect.anything(), result.envelopeEnv.PAPERCUSP_SID,
-      expect.objectContaining({ turnProvenanceDir: turnProvenanceDir(), workspaceId: result.workspaceId }),
+      expect.objectContaining({ turnProvenanceDir: turnProvenanceDir(result.envelopeEnv), workspaceId: result.workspaceId }),
     );
   });
 
