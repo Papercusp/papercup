@@ -5,6 +5,7 @@ import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 import { createCanonicalRuntimeCustodyStore } from './blind-review-runtime-authority';
 import { blindReviewerConfinement } from './blind-reviewer-mint';
+import { BLIND_REVIEWER_BACKENDS } from './blind-reviewer-backends';
 import { assertMigrationPassesPreApplyLints } from './migration-preapply-lint';
 import { brokerSourceFixture } from './blind-review-source.fixture';
 import { buildRuntimeGeneratedInputs } from './blind-review-generated-inputs';
@@ -284,8 +285,27 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
     expect((await f.store.revoke(f.identity, lease.id, 'native-ended')).state).toBe('releasing');
   });
 
+  it('admits a reviewer launched on every backend-ladder rung under canonical authority', async () => {
+    // EI-27127088253419654: canonical authority pinned `agent === 'codex'` after the launch
+    // ladder went Opus-first, so an Opus reviewer would launch and then be refused custody.
+    for (const backend of BLIND_REVIEWER_BACKENDS) {
+      const f = await canonicalFixture();
+      await fx.admin`UPDATE harness_shared.adv_sessions SET agent = ${backend.agent},
+        launch_spec = launch_spec || ${JSON.stringify(backend.model ? { model: backend.model } : {})}::jsonb
+        WHERE coord_owner_id = ${f.identity.reviewerOwnerId}`;
+      await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET model_spec = ${backend.model ?? null}
+        WHERE id = ${f.identity.bindingId}`;
+      const lease = await f.store.reserve(f.identity, 'ladder-' + backend.agent, 'e'.repeat(64));
+      expect(lease.id, backend.agent).toBeTruthy();
+    }
+  });
+
   it('refuses terminal, stale, foreign, widened, expired and missing canonical authority before reservation', async () => {
     const edits = [
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
+        // An agent off the backend ladder never holds reviewer authority.
+        await fx.admin`UPDATE harness_shared.adv_sessions SET agent = 'omp' WHERE coord_owner_id = ${f.identity.reviewerOwnerId}`;
+      },
       async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
         await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET status = 'closed' WHERE id = ${f.identity.bindingId}`;
       },

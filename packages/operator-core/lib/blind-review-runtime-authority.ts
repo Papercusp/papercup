@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 import { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
 import { blindReviewerConfinement } from './blind-reviewer-mint';
+import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
 import { createRuntimeCustodyStore, runtimeCustodyFingerprint, type RuntimeAuthorityCheck } from './blind-review-runtime-custody';
 import { validProductReadBoundary, validScratchPlanBoundary,
   type SessionToolConfinement } from './capability-envelope/session-confinement';
@@ -60,7 +61,7 @@ export const checkRuntimeReviewerAuthority: RuntimeAuthorityCheck = async (tx, i
     ended_at: unknown; launch_spec: { account?: string; model?: string; headless?: boolean; launchedBy?: string } | null;
   }>>`SELECT coord_owner_id, session_id, agent, ended_at, launch_spec FROM harness_shared.adv_sessions
     WHERE workspace_id = ${identity.workspaceId} AND id = ${binding.adv_session_id} FOR SHARE`;
-  if (!native || native.ended_at !== null || native.agent !== 'codex' ||
+  if (!native || native.ended_at !== null || !isBlindReviewerBackendAgent(native.agent) ||
       native.coord_owner_id !== identity.reviewerOwnerId || native.session_id !== identity.nativeSessionId ||
       native.launch_spec?.launchedBy !== BLIND_GAP_REVIEW_ACTOR || native.launch_spec.headless !== true ||
       native.launch_spec.account !== binding.account_route || (native.launch_spec.model ?? null) !== binding.model_spec) return false;

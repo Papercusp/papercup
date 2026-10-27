@@ -48,26 +48,11 @@ export { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
  */
 export const BLIND_GAP_REVIEW_ACCOUNT = 'auto' as const;
 
-/** One backend the reviewer may launch on. `model`/`effort` resolve through launch-agent. */
-export interface BlindReviewerBackend {
-  readonly agent: 'claude' | 'codex';
-  readonly model?: string;
-  readonly effort?: string;
-}
-
-/**
- * The backends the reviewer launches on, in preference order (owner directive #2503,
- * 2026-10-27). The mint and the replacement path try each in turn; a launch whose receipt
- * PROVES nothing started (`launchProvablyNotStarted` — e.g. every account of that provider
- * is walled) falls through to the next. A single pinned backend made one provider's
- * capacity a hard wall for every blind review: the earlier `agent: 'codex'` pin (a
- * mitigation for EI-25752839878478687) left reviews unmintable whenever all Codex accounts
- * were walled (EI-27127088253419654).
- */
-export const BLIND_REVIEWER_BACKENDS: readonly BlindReviewerBackend[] = Object.freeze([
-  Object.freeze({ agent: 'claude', model: 'opus', effort: 'xhigh' } as const),
-  Object.freeze({ agent: 'codex' } as const),
-]);
+// The backend ladder lives in a dependency-free leaf so the session binding and runtime
+// custody (which this module's own imports reach) can check membership without a cycle.
+import { BLIND_REVIEWER_BACKENDS } from './blind-reviewer-backends';
+export { BLIND_REVIEWER_BACKENDS };
+export type { BlindReviewerBackend } from './blind-reviewer-backends';
 
 function receiptRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;

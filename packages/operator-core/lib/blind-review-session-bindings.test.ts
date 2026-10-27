@@ -206,6 +206,21 @@ describe('typed blind-review session bindings', () => {
     expect(await createBlindReviewSessionBinding(input)).toMatchObject({ ok: false, code: 'confinement_mismatch' });
   });
 
+  it('binds a reviewer launched on every backend-ladder rung and refuses an agent off the ladder', async () => {
+    // EI-27127088253419654: the launch ladder widened to Opus-first while this check still
+    // pinned `agent === 'codex'`, so every Opus reviewer launched and was then refused here.
+    for (const backend of BLIND_REVIEWER_BACKENDS) {
+      state.binding = null;
+      state.adv = { ...state.adv, agent: backend.agent,
+        launch_spec: { launchedBy: BLIND_GAP_REVIEW_ACTOR, model: backend.model ?? null } };
+      expect(await createBlindReviewSessionBinding(input), backend.agent).toMatchObject({ ok: true,
+        binding: { modelSpec: backend.model ?? null } });
+    }
+    state.binding = null;
+    state.adv = { ...state.adv, agent: 'omp', launch_spec: { launchedBy: BLIND_GAP_REVIEW_ACTOR, model: null } };
+    expect(await createBlindReviewSessionBinding(input)).toMatchObject({ ok: false, code: 'launch_profile_mismatch' });
+  });
+
   it('returns the same binding for an idempotent insert and verifies the current ADV/profile snapshot', async () => {
     const first = await createBlindReviewSessionBinding(input);
     if (!first.ok) throw new Error(first.message);

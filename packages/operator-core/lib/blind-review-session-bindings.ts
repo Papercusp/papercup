@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { readSessionConfinement } from './capability-envelope/session-confinement-store';
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
+import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
 
 export const BLIND_GAP_REVIEW_ACTOR = 'system:blind-gap-review';
 export const INTERNAL_BLIND_REVIEW_RESUME = Symbol('internal-blind-review-resume');
@@ -127,7 +128,7 @@ function inspectAdv(row: AdvRow | null, b: Pick<BlindReviewSessionBinding,
   const accountRoute = typeof spec?.account === 'string' ? spec.account : flag(argv, '--account');
   const modelSpec = typeof spec?.model === 'string' ? spec.model : flag(argv, '--model');
   const headless = spec?.headless === true || argv.includes('--headless');
-  if (row.agent !== 'codex' || !headless || spec?.launchedBy !== b.launchParentOwner ||
+  if (!isBlindReviewerBackendAgent(row.agent) || !headless || spec?.launchedBy !== b.launchParentOwner ||
       b.launchParentOwner !== BLIND_GAP_REVIEW_ACTOR || accountRoute !== 'auto') {
     return { ok: false, code: 'launch_profile_mismatch', message: 'The ADV row does not retain the blind-review recruiter and gateway launch profile.' };
   }
