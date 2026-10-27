@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createRetentionHolderScanner, DISK_RECLAIM_CRONTAB, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 import { createWorkspaceHostCutRetentionDelegate } from './disk-reclaim';
 import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
@@ -28,6 +29,14 @@ const policy: RetentionClass[] = [
 ];
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
+
+describe('hourly standing reclaim registration', () => {
+  it('keeps the shared hourly cadence wired to the DBOS workflow', () => {
+    expect(DISK_RECLAIM_CRONTAB).toBe('0 12 * * * *');
+    const workflows = readFileSync(new URL('../dbos/periodic-workflows.ts', import.meta.url), 'utf8');
+    expect(workflows).toMatch(/DBOS\.registerScheduled\(\s*diskRetentionReclaimWorkflow,\s*\{\s*name:\s*['"]diskRetentionReclaim['"],\s*crontab:\s*DISK_RECLAIM_CRONTAB\s*\}\s*\)/);
+  });
+});
 
 describe('workspace-host native owner scheduling', () => {
   it('passes the current admission snapshot and deadline to the existing native owner', async () => {
