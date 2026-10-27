@@ -4,12 +4,14 @@
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 
@@ -74,6 +76,7 @@ const sourcePaths = [
 const receipts: unknown[] = [];
 const completed = new Set<string>();
 let db: FreshPgDb;
+let ormSql: Sql;
 let home: string;
 let superuserToken: string;
 let pins: Array<{ path: string; sha256: string }>;
@@ -132,7 +135,7 @@ async function app(capabilities = ['memory:search:read']) {
   const minted = mintAppKey();
   await db.sql`INSERT INTO harness_shared.connected_apps (id,user_email,workspace_id,kind,label,scopes,token_hash)
     VALUES (${minted.id},'fixture@example.invalid',${WS},'app','P001 fixture',
-      ${JSON.stringify({ capabilities, tools: ['memory:search'] })}::jsonb,${minted.tokenHash})`;
+      ${db.sql.json({ capabilities, tools: ['memory:search'] })},${minted.tokenHash})`;
   return minted;
 }
 async function signed() {
@@ -142,11 +145,31 @@ async function signed() {
   return params;
 }
 
+async function rotateFromIndependentProcess(keyName: string) {
+  const result = await promisify(execFile)(process.execPath, ['--input-type=module', '--eval',
+    "import postgres from 'postgres'; import {randomBytes} from 'node:crypto'; " +
+    "const sql=postgres(process.env.P001_KEY_DB_URL,{max:1,prepare:false}); " +
+    "try { const rows=await sql`UPDATE harness_shared.operator_secrets " +
+    "SET value_b64=${randomBytes(32).toString('base64')}, rotated_at=rotated_at+interval '1 second' " +
+    "WHERE name=${process.env.P001_KEY_NAME} RETURNING name`; " +
+    "if(rows.length!==1) throw new Error('expected one key'); console.log(JSON.stringify({committed:true,name:rows[0].name,pid:process.pid})); " +
+    "} finally {await sql.end();}"],
+  { env: { ...process.env, P001_KEY_DB_URL: db.url, P001_KEY_NAME: keyName }, timeout: 30_000 });
+  expect(result.stderr).toBe('');
+  const witness = JSON.parse(result.stdout.trim());
+  expect(witness).toMatchObject({ committed: true, name: keyName });
+  expect(witness.pid).not.toBe(process.pid);
+  receipts.push({ phase: 'independent-key-rotation', ...witness, readerPid: process.pid });
+}
+
 beforeAll(async () => {
   pins = sourcePaths.map(path => ({ path, sha256: sha(readFileSync(new URL('../../../../../' + path, import.meta.url))) }));
   db = await createFreshPgDb('p001-host-authority'); // Setup failure fails; no passing early returns.
   seams.sql = db.sql;
-  seams.orm = drizzle(db.sql);
+  // Drizzle installs identity serializers. Keep raw SQL/telemetry's JSON and
+  // timestamp serializers intact by using a distinct client for ORM calls.
+  ormSql = postgres(db.url, { max: 4, prepare: false, onnotice: () => {} });
+  seams.orm = drizzle(ormSql);
   home = mkdtempSync(join(tmpdir(), 'p001-host-authority-'));
   superuserToken = randomBytes(32).toString('hex');
   writeFileSync(join(home, 'superuser-token'), superuserToken, { mode: 0o600 });
@@ -165,6 +188,13 @@ beforeAll(async () => {
       revoked_at timestamptz,last_seen timestamptz,last_ip text,spend_cap_cents bigint,spend_cap_window_sec integer,
       rotated_at timestamptz,previous_token_valid_until timestamptz,client_auth text,token_hash text,previous_token_hash text);
     CREATE TABLE harness_shared.connected_app_access_settings (workspace_id text PRIMARY KEY,enabled boolean);
+    CREATE TABLE harness_shared.connected_app_auth_failures (app_id text,workspace_id text,hour timestamptz,
+      failures integer,last_reason text,last_at timestamptz,PRIMARY KEY(app_id,hour));
+    CREATE TABLE harness_shared.system_principals (workspace_id text,name text,capabilities jsonb,
+      PRIMARY KEY(workspace_id,name));
+    CREATE TABLE harness_shared.spawn_sig_verification_failures (id bigserial PRIMARY KEY,ts timestamptz DEFAULT now(),
+      reason text,claimed_role text,claimed_harness text,claimed_workspace text,claimed_spawn text,
+      exp_claim bigint,remote_addr text,user_agent text,classification text);
     CREATE TABLE harness_shared.memory_recall_stats (id bigserial PRIMARY KEY,surface text,hit_count integer,
       top_score double precision,scores jsonb,fragment_count integer,pools jsonb,workspace_id text,pot_slug text,
       score_scale text,query_chars integer,query_sha256 text,query_origin text,session_id text,legs jsonb,admission jsonb,
@@ -175,10 +205,19 @@ beforeEach(async () => {
   _resetPowerUserTokenKeyCache(); _resetSpawnSigningKeyCache(); _resetVerifiedSpawns();
   seams.scopes.length = 0;
   await db.sql.unsafe(`TRUNCATE harness_shared.operator_secrets,harness_shared.users,harness_shared.harness_registry,
-    harness_shared.connected_apps,harness_shared.connected_app_access_settings,harness_shared.memory_recall_stats`);
+    harness_shared.connected_apps,harness_shared.connected_app_access_settings,
+    harness_shared.connected_app_auth_failures,harness_shared.system_principals,
+    harness_shared.spawn_sig_verification_failures,harness_shared.memory_recall_stats`);
   await db.sql`INSERT INTO harness_shared.users (id,username,display_name,is_active)
     VALUES ('p001-authority-default','default','Default',true)`;
-  await db.sql`INSERT INTO harness_shared.harness_registry VALUES (${WS},${JSON.stringify({ projects: [] })}::jsonb)`;
+  await db.sql`INSERT INTO harness_shared.harness_registry VALUES (${WS},${db.sql.json({ projects: [] })})`;
+  await db.sql`INSERT INTO harness_shared.system_principals VALUES
+    (${WS},'operator',${db.sql.json(['memory:search:read'])})`;
+  // A preflight guard for the mixed raw/ORM fixture's serializer boundary.
+  const [roundTrip] = await db.sql`SELECT ${db.sql.json({ fixture: true })}::jsonb AS payload,
+    ${new Date('2026-01-01T00:00:00Z')}::timestamptz AS at`;
+  expect(roundTrip.payload).toEqual({ fixture: true });
+  expect(new Date(roundTrip.at).toISOString()).toBe('2026-01-01T00:00:00.000Z');
 });
 
 describe('P001 actual additional host authority branches', () => {
@@ -217,37 +256,41 @@ describe('P001 actual additional host authority branches', () => {
   });
 
   it('verifies a real signed spawn and refuses a changed authority field before recall', async () => {
+    const incident = vi.spyOn(console, 'error').mockImplementation(() => {});
     const params = await signed();
     permitted(await call('?' + params));
     expect(receipts).toContainEqual(expect.objectContaining({ phase: 'authority', workspace: WS, signed: true }));
     params.set('workspace', 'foreign');
     refused(await call('?' + params), 'spawn_sig_invalid_signature');
+    expect(incident).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('[spawn-signing][INCIDENT] rotation_strand'));
+    incident.mockRestore();
     expect(seams.scopes).toEqual([['p001-authority-default']]);
     completed.add('signed-spawn');
   });
 
-  it('re-reads a changed persisted power signing epoch without resetting its process cache', async () => {
+  it('re-reads an independently committed power signing epoch without resetting its warm process cache', async () => {
     const claims = { workspaceId: WS, userId: 'p001-authority-default', authSessionId: 'p001-power-epoch' };
     const { token } = await mintAccessToken(claims);
     permitted(await call('?power_user=1', token));
-    await db.sql`UPDATE harness_shared.operator_secrets SET value_b64=${randomBytes(32).toString('base64')},
-      rotated_at=rotated_at + interval '1 second' WHERE name='power-user-token-key'`;
+    await rotateFromIndependentProcess('power-user-token-key');
     refused(await call('?power_user=1', token), 'power_user_invalid_token');
     permitted(await call('?power_user=1', (await mintAccessToken(claims)).token));
     expect(seams.scopes).toEqual([['p001-authority-default'], ['p001-authority-default']]);
     completed.add('power-key-epoch');
-  });
+  }, 40_000);
 
-  it('re-reads a changed persisted spawn signing epoch without resetting its process cache', async () => {
+  it('re-reads an independently committed spawn signing epoch without resetting its warm process cache', async () => {
+    const incident = vi.spyOn(console, 'error').mockImplementation(() => {});
     const params = await signed();
     permitted(await call('?' + params));
-    await db.sql`UPDATE harness_shared.operator_secrets SET value_b64=${randomBytes(32).toString('base64')},
-      rotated_at=rotated_at + interval '1 second' WHERE name='spawn-signing-key'`;
+    await rotateFromIndependentProcess('spawn-signing-key');
     refused(await call('?' + params), 'spawn_sig_invalid_signature');
     permitted(await call('?' + await signed()));
+    expect(incident).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('[spawn-signing][INCIDENT] rotation_strand'));
+    incident.mockRestore();
     expect(seams.scopes).toEqual([['p001-authority-default'], ['p001-authority-default']]);
     completed.add('spawn-key-epoch');
-  });
+  }, 40_000);
 });
 
 afterAll(async () => {
@@ -264,6 +307,7 @@ afterAll(async () => {
       _resetPowerUserTokenKeyCache(); _resetSpawnSigningKeyCache(); _resetVerifiedSpawns();
       vi.unstubAllEnvs();
       if (home) rmSync(home, { recursive: true, force: true });
+      await ormSql?.end({ timeout: 5 });
       await db?.cleanup(); cleanup = 'dropped';
     } finally {
       if (process.env.PAPERCUSP_P001_HOST_AUTHORITY_CAPTURE_OUT) writeFileSync(process.env.PAPERCUSP_P001_HOST_AUTHORITY_CAPTURE_OUT,
@@ -272,7 +316,7 @@ afterAll(async () => {
             'Private admin PG and projected schema; no production middleware or RLS proof.',
             'Fixture SDK callback calls real host auth/context/dispatch; not registerMcpHost or browser HTTP.',
             'Controlled backend, flags and ranking; operator kernel/quota/telemetry and app alerts omitted.',
-            'Persisted key epoch changes in one process; no independent-process, TTL or NOTIFY proof.',
+            'Independent writer commits key epochs to warm host reader; no TTL or NOTIFY proof.',
             'SU fixture has no coordinated SID/native-session binding; those controls remain unqualified.',
             'No field/provider/index/quality/budget/runtime qualification or spec-binding upgrade.',
           ] }, null, 2));
