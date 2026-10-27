@@ -435,20 +435,51 @@ export function buildDigest(calls) {
   const spec = PORTS['mid-turn'];
   if (!Array.isArray(calls)) return [];
   const digest = [];
-  for (const call of calls.slice(0, spec.maxCalls)) {
-    if (!call || typeof call !== 'object') continue;
+  for (const rawCall of calls.slice(0, spec.maxCalls)) {
+    if (!rawCall || typeof rawCall !== 'object') continue;
+    // Classify the call a `tools:invoke` wrapper dispatched, not the wrapper. The
+    // server normalizes too, but only the client holds the unclamped input and
+    // response, so incidentResult/editedPaths must be derived from the inner call here.
+    const call = { ...rawCall, ...unwrapInvokedCall(rawCall.tool, rawCall.toolInput) };
+    const incidentResult = incidentResultFor(call.tool, call.toolResponse);
+    const editedPaths = editedPathsFor(call.tool, call.toolInput);
     digest.push({
       tool: typeof call.tool === 'string' ? call.tool : '',
       toolInput: clampField(call.toolInput, spec.fieldClamp),
       toolResponse: clampField(call.toolResponse, spec.fieldClamp),
-      ...(incidentResultFor(call.tool, call.toolResponse) ? { incidentResult: incidentResultFor(call.tool, call.toolResponse) } : {}),
+      ...(incidentResult ? { incidentResult } : {}),
       // Preserve the path independently of the 400-char recall digest. Edits often
       // exceed it, and a truncated JSON input cannot safely recover this field.
-      ...(editedPathsFor(call.tool, call.toolInput).length
-        ? { editedPaths: editedPathsFor(call.tool, call.toolInput), editedPath: editedPathsFor(call.tool, call.toolInput)[0] } : {}),
+      ...(editedPaths.length ? { editedPaths, editedPath: editedPaths[0] } : {}),
     });
   }
   return digest;
+}
+
+/** `tools:invoke` and its MCP-mangled form (`mcp__…_tools_invoke`); the same
+ * pattern as the server's TOOLS_INVOKE_RE (push-channel.ts). */
+const TOOLS_INVOKE_RE = /(?:^|_|:)tools[_:]invoke$/;
+
+/**
+ * The inner call of a `tools:invoke { name, args }` dispatch, one level only.
+ * Returns the original `{ tool, toolInput }` for any other call, or when the
+ * wrapper's input carries no usable name. About half of all `testing:run` calls
+ * arrive wrapped (measured 2026-10-27: 392 of 772 in 36h), and the incident leg
+ * matches on the inner tool name.
+ * @param {unknown} tool
+ * @param {unknown} input
+ * @returns {{ tool: unknown, toolInput: unknown }}
+ */
+export function unwrapInvokedCall(tool, input) {
+  if (typeof tool !== 'string' || !TOOLS_INVOKE_RE.test(tool)) return { tool, toolInput: input };
+  let outer = input;
+  if (typeof outer === 'string') {
+    if (outer.length > 2_000_000) return { tool, toolInput: input };
+    try { outer = JSON.parse(outer); } catch { return { tool, toolInput: input }; }
+  }
+  const name = outer && typeof outer === 'object' && !Array.isArray(outer) ? outer.name : undefined;
+  if (typeof name !== 'string' || !name) return { tool, toolInput: input };
+  return { tool: name, toolInput: outer.args };
 }
 
 /** Preserve observed failing-file identities outside the lossy recall prefix.
@@ -461,7 +492,10 @@ export function incidentResultFor(tool, response, depth = 0) {
   }
   if (!response || typeof response !== 'object') return null;
   if (response.structuredContent) return incidentResultFor(tool, response.structuredContent, depth + 1);
-  for (const block of (Array.isArray(response.content) ? response.content.slice(0, 8) : [])) {
+  // A client may hand the hook the MCP content-block array itself rather than
+  // `{ content: [...] }`; read both shapes the same way.
+  const blocks = Array.isArray(response) ? response : response.content;
+  for (const block of (Array.isArray(blocks) ? blocks.slice(0, 8) : [])) {
     if (block?.type !== 'text') continue;
     const found = incidentResultFor(tool, block.text, depth + 1);
     if (found) return found;
