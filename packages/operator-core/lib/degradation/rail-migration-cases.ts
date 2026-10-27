@@ -1502,8 +1502,11 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
     const sql = (async (parts: TemplateStringsArray) => {
       const query = parts.join('');
+      // The roster read (coord_presence ... compaction_limit IS NOT NULL) now LATERAL-joins
+      // adv_sessions for turn evidence, so it must be matched BEFORE the adv_sessions probe.
+      if (query.includes('compaction_limit IS NOT NULL')) return omitted ? [] : [row];
       if (query.includes('FROM harness_shared.adv_sessions')) return [{ owner_id: row.owner_id }];
-      return query.includes('compaction_limit IS NOT NULL') && !omitted ? [row] : [];
+      return [];
     }) as unknown as import('postgres').Sql;
     const warnings: string[] = [];
     const flags = { CONTEXT_GAUGE: 'gauge', GATEWAY_MAINTENANCE_CARRY: 'carry', COMPACTION_WATCHDOG_FORCE_COMPACT: 'force' };
@@ -3538,6 +3541,9 @@ RAIL_MIGRATION_CASES.push({
     }) as unknown as import('postgres').Sql;
     const read = vi.spyOn(actions, 'readFrozenCandidateRepairQueueState').mockResolvedValue({ status: 'value', queue } as never);
     const mocks = [read, vi.spyOn(actions, 'dispatchReleaseFixer').mockResolvedValue(null),
+      // The fixer rung reserves the queue on the org pool; an unavailable reservation is the
+      // same ladder outcome (move on to the owner rungs) without a live-PostgreSQL escape.
+      vi.spyOn(actions, 'reserveFrozenCandidateRepairFixer').mockResolvedValue(null as never),
       vi.spyOn(ownership, 'readGateOwnership').mockResolvedValue(null as never),
       vi.spyOn(deploy, 'integrationRoot').mockReturnValue('/coverage-isolated'),
       vi.spyOn(checkpoint, 'isCheckpointRunLockHeldCheap').mockReturnValue({ held: false, elapsedSec: null }),
