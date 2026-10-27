@@ -2095,10 +2095,17 @@ function parseAdmissionRadius(value: unknown, files: readonly unknown[]): Admiss
   const row = value as Record<string, unknown>;
   if (typeof row.status !== 'string' || !ADMISSION_RADIUS_STATUSES.has(row.status) || !nonBlank(row.reason)) return null;
   if (row.detail !== undefined && typeof row.detail !== 'string') return null;
-  const list = (raw: unknown): string[] | null =>
-    Array.isArray(raw) && raw.every((file) => nonBlank(file) && files.includes(file)) ? [...(raw as string[])] : null;
-  const guarded = list(row.guarded);
-  const reportOnly = list(row.reportOnly);
+  const list = (raw: unknown, mustBeExecuted: boolean): string[] | null =>
+    Array.isArray(raw) && raw.every((file) => nonBlank(file) && (!mustBeExecuted || files.includes(file)))
+      ? [...(raw as string[])]
+      : null;
+  // Guarded radius files are executed, so each must be one of the operation's `files`.
+  // Report-only files are NOT executed (WI-6554700010029981, gate-systems-as-designed-2026-10-27#D-003):
+  // `precheckPopulation` leaves them out of `files` and keeps them only here. Requiring them in
+  // `files` made every operation with a non-empty report-only partition parse as ABSENT, so the
+  // worker read no running pre-check and silently dropped the admission (EI-27120593727206825).
+  const guarded = list(row.guarded, true);
+  const reportOnly = list(row.reportOnly, false);
   if (!guarded || !reportOnly || guarded.some((file) => reportOnly.includes(file))) return null;
   if (row.status !== 'measured' && guarded.length + reportOnly.length > 0) return null;
   if (!row.legs || typeof row.legs !== 'object' || Array.isArray(row.legs)) return null;

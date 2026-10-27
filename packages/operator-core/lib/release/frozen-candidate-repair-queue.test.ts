@@ -43,6 +43,7 @@ import {
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 import type { RepairLimbExecutor } from './repair-limb-executor';
+import { precheckPopulation } from './admission-fix-precheck';
 
 const C = '1111111111111111111111111111111111111111';
 const C1 = '2222222222222222222222222222222222222222';
@@ -176,6 +177,63 @@ describe('frozen-candidate repair queue', () => {
       blobs: { 'lib/a.test.ts': C1 },
     });
     expect(admitted.admissionPrecheck).toBeUndefined();
+  });
+
+  // EI-27120593727206825: precheckPopulation deliberately leaves report-only radius files out of
+  // `files` (WI-6554700010029981). The persisted operation built from it must still parse, or the
+  // worker reads no running pre-check and the admission is silently dropped.
+  it('keeps a running pre-check whose report-only radius files are not executed (producer→parser contract)', () => {
+    const population = precheckPopulation({
+      signature: [{ kind: 'test-file', id: 'lib/a.test.ts' }],
+      admittedPaths: ['lib/fix.ts', 'lib/fix.test.ts'],
+      radius: {
+        status: 'measured',
+        reason: 'ok',
+        guarded: ['lib/near.test.ts'],
+        reportOnly: ['lib/red-leg-1.test.ts', 'lib/red-leg-2.test.ts'],
+        legs: { 'lib/near.test.ts': '@t/a', 'lib/red-leg-1.test.ts': '@t/b', 'lib/red-leg-2.test.ts': '@t/b' },
+      },
+    });
+    // The producer's own contract: report-only files are recorded but not executed.
+    expect(population.files).not.toContain('lib/red-leg-1.test.ts');
+    expect(population.radius?.reportOnly).toEqual(['lib/red-leg-1.test.ts', 'lib/red-leg-2.test.ts']);
+    const running: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      admissionPrecheck: {
+        schemaVersion: 1,
+        operationId: 'repair-precheck-report-only',
+        status: 'running',
+        candidate: C,
+        repairHead: C,
+        builtCommit: C1,
+        builtTree: C2,
+        testEnvironment: 'pinned-private-pg-v1',
+        files: [...population.files],
+        actor: 'su-test',
+        runnerPid: 123,
+        runnerTaskId: '0mvqgdmmm1s7nlna6hu',
+        startedAtMs: T0 + 1,
+        updatedAtMs: T0 + 1,
+        expiresAtMs: T0 + 60_000,
+        currentFile: population.files[0] as string,
+        completedCount: 0,
+        totalCount: population.files.length,
+        heartbeatAtMs: T0 + 1,
+        ...(population.radius ? { radius: population.radius } : {}),
+      },
+    };
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(running)));
+    expect(parsed?.admissionPrecheck?.operationId).toBe('repair-precheck-report-only');
+    expect(parsed?.admissionPrecheck?.radius?.reportOnly).toEqual(['lib/red-leg-1.test.ts', 'lib/red-leg-2.test.ts']);
+    // Guarded files are executed, so they must still be among the operation's files.
+    const guardedMissing = {
+      ...running,
+      admissionPrecheck: {
+        ...running.admissionPrecheck!,
+        radius: { ...population.radius!, guarded: ['lib/not-executed.test.ts'] },
+      },
+    };
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(guardedMissing)))?.admissionPrecheck).toBeUndefined();
   });
 
   it.each([
