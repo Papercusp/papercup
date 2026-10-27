@@ -910,7 +910,18 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   }
 
   async cancel(idempotencyKey: string, reason?: string): Promise<AdmissionCancellation> {
-    const result = await this.store.cancel(this.namespace, idempotencyKey, reason, this.now());
+    const cancelledAtMs = this.now();
+    // Cancellation is a terminal row-lock transition like releaseClaim. A transient pg
+    // 55P03/57014 used to escape the shared contention retry, so post-run cleanup could
+    // turn a passing child result into a wrapper failure. The store transition is
+    // idempotent: after a committed first attempt, a retry observes the cancelled row.
+    const result = await acquireWithContentionRetry(
+      () => this.store.cancel(this.namespace, idempotencyKey, reason, cancelledAtMs),
+      {
+        ...(this.admissionRetryBackoffsMs ? { backoffsMs: this.admissionRetryBackoffsMs } : {}),
+        ...(this.sleep ? { sleep: this.sleep } : {}),
+      },
+    );
     if (!result) return { idempotencyKey, cancelled: false, state: 'unknown' };
     return { idempotencyKey, cancelled: result.changed, state: result.record.state };
   }

@@ -692,6 +692,37 @@ describe('WorkItemAdmissionQueueDriver', () => {
     await expect(api.status('release-rides-out')).resolves.toMatchObject({ state: 'completed' });
   });
 
+  // EI-26688238708045893: a passing child result was being replaced by a pg 57014 from
+  // the driver's post-run cancellation transaction. Cancellation needs the same bounded,
+  // idempotent contention retry as the other terminal queue transitions.
+  it('rides out a transient pg statement timeout during receipt cancellation', async () => {
+    const store = new MemoryQueueStore();
+    const cancel = store.cancel.bind(store);
+    const statementTimeout = () => Object.assign(new Error('canceling statement due to statement timeout'), {
+      code: '57014',
+    });
+    let cancelAttempts = 0;
+    vi.spyOn(store, 'cancel').mockImplementation(async (...args) => {
+      cancelAttempts += 1;
+      if (cancelAttempts <= 2) throw statementTimeout();
+      return cancel(...args);
+    });
+    const { governor: api } = governor(store, () => 1_000, noSleep);
+    await api.admit({ idempotencyKey: 'cancel-rides-out', admissionClass: 'process' });
+
+    await expect(api.cancel('cancel-rides-out', 'operator stopped it')).resolves.toMatchObject({
+      idempotencyKey: 'cancel-rides-out',
+      cancelled: true,
+      state: 'cancelled',
+    });
+    expect(cancelAttempts).toBe(3); // two 57014s + the successful cancellation
+    await expect(api.cancel('cancel-rides-out')).resolves.toMatchObject({
+      cancelled: false,
+      state: 'cancelled',
+    });
+    expect(cancelAttempts).toBe(4); // a settled receipt is read idempotently
+  });
+
   it('uses the claimed receipt identity without a pre-settlement identity lookup', async () => {
     const store = new MemoryQueueStore();
     const { governor: api, driver } = governor(store, () => 1_000, { sleep: async () => {} });
