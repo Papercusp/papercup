@@ -22,6 +22,7 @@
  */
 import { CODE_INTEL_UNKNOWN_REASONS, type CodeIntelResultStatus, type CodeIntelUnknownReason } from './code-intel-result-status';
 import { NATIVE_CODE_INTEL_TOOLS } from './native-adoption';
+import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 /** Owner id the canary dispatches as; its rows never enter the unknown share. */
 export const CODE_INTEL_CANARY_OWNER = 'system:code-intel-canary';
@@ -110,7 +111,7 @@ function parseStatus(raw: unknown): CodeIntelResultStatus | null {
 
 /** Judge each dispatched case against the rows recorded for its call id. */
 export function judgeCanary(
-  dispatched: ReadonlyArray<{ readonly spec: CanaryCaseSpec; readonly callId: string | null }>,
+  dispatched: ReadonlyArray<{ readonly spec: CanaryCaseSpec; readonly callId: string | null; readonly error?: string }>,
   rows: readonly CanaryRow[],
 ): CanaryJudgement {
   const byCall = new Map<string, CanaryRow[]>();
@@ -121,24 +122,34 @@ export function judgeCanary(
     if (typeof id !== 'string') continue;
     byCall.set(id, [...(byCall.get(id) ?? []), row]);
   }
-  const cases = dispatched.map(({ spec, callId }): CanaryCaseResult => {
+  const cases = dispatched.map(({ spec, callId, error }): CanaryCaseResult => {
     const base = { toolName: spec.toolName, forced: spec.forced, callId };
-    if (!callId) return { ...base, statusRows: 0, recorded: null, ok: false, why: 'dispatch never started (no call id)' };
+    // A dispatch that THREW is named with its error: "never started" alone hid a dispatch-stack
+    // TypeError behind 12/12 failed cases whose rows had in fact been recorded (2026-10-27).
+    const threw = error ? `; dispatch threw: ${error}` : '';
+    if (!callId) {
+      return { ...base, statusRows: 0, recorded: null, ok: false, why: error ? `dispatch threw before start: ${error}` : 'dispatch never started (no call id)' };
+    }
     const mine = (byCall.get(callId) ?? []).filter(r => r.toolName === spec.toolName);
     const recorded = mine.length === 1 ? parseStatus(mine[0]!.status) : null;
-    if (mine.length !== 1) return { ...base, statusRows: mine.length, recorded, ok: false, why: `expected exactly 1 status row, found ${mine.length}` };
-    if (!recorded) return { ...base, statusRows: 1, recorded, ok: false, why: 'status row is unparseable or carries a reason outside the set' };
-    if (spec.forced === 'return') return { ...base, statusRows: 1, recorded, ok: true };
-    const ok = recorded.status === 'unknown' && recorded.reason === spec.forced;
+    if (mine.length !== 1) return { ...base, statusRows: mine.length, recorded, ok: false, why: `expected exactly 1 status row, found ${mine.length}${threw}` };
+    if (!recorded) return { ...base, statusRows: 1, recorded, ok: false, why: `status row is unparseable or carries a reason outside the set${threw}` };
     const got = recorded.status === 'unknown' ? `unknown/${recorded.reason}` : 'measured';
-    return { ...base, statusRows: 1, recorded, ok, ...(ok ? {} : { why: `expected unknown/${spec.forced}, recorded ${got}` }) };
+    // A plain-return case must actually answer: a recorded `exception` is the canary failing, not passing.
+    if (spec.forced === 'return') {
+      const ok = recorded.status === 'measured';
+      return { ...base, statusRows: 1, recorded, ok, ...(ok ? {} : { why: `expected measured, recorded ${got}${threw}` }) };
+    }
+    const ok = recorded.status === 'unknown' && recorded.reason === spec.forced;
+    return { ...base, statusRows: 1, recorded, ok, ...(ok ? {} : { why: `expected unknown/${spec.forced}, recorded ${got}${threw}` }) };
   });
   const failed = cases.filter(c => !c.ok).length;
   return { ok: cases.length > 0 && failed === 0, cases, failed, unforced: CANARY_UNFORCED };
 }
 
 export interface CanaryDeps {
-  dispatch(spec: CanaryCaseSpec): Promise<{ callId: string | null }>;
+  /** Never loses the call id: a dispatch that throws after start still reports it, with `error`. */
+  dispatch(spec: CanaryCaseSpec): Promise<{ callId: string | null; error?: string }>;
   /** Wait for queued invocation records to land. */
   flush(): Promise<void>;
   readRows(since: string): Promise<CanaryRow[]>;
@@ -149,16 +160,50 @@ export interface CanaryDeps {
 export async function runCodeIntelCanary(deps: CanaryDeps, cases: readonly CanaryCaseSpec[] = canaryCases()): Promise<CanaryJudgement> {
   // Back off one second so a row stamped at the same instant is never missed.
   const since = new Date((deps.now?.() ?? Date.now()) - 1_000).toISOString();
-  const dispatched: Array<{ spec: CanaryCaseSpec; callId: string | null }> = [];
+  const dispatched: Array<{ spec: CanaryCaseSpec; callId: string | null; error?: string }> = [];
   for (const spec of cases) {
     try {
-      dispatched.push({ spec, callId: (await deps.dispatch(spec)).callId });
-    } catch {
-      dispatched.push({ spec, callId: null });
+      const { callId, error } = await deps.dispatch(spec);
+      dispatched.push({ spec, callId, ...(error ? { error } : {}) });
+    } catch (err) {
+      dispatched.push({ spec, callId: null, error: errorText(err) });
     }
   }
   await deps.flush();
   return judgeCanary(dispatched, await deps.readRows(since));
+}
+
+function errorText(err: unknown): string {
+  return (err instanceof Error ? `${err.name}: ${err.message}` : String(err)).slice(0, 300);
+}
+
+/**
+ * The in-process context the canary dispatches with, TYPED as the dispatcher's own context so a
+ * missing required field is a compile error. The 2026-10-27 canary built this inline and passed it
+ * `as never`; its principal had no `capabilities` set, the dispatch stack's capability check threw a
+ * TypeError on every call, and every live probe run reported 12/12 canary cases "never started".
+ * The principal is granted exactly the dispatched tool's declared capabilities, nothing wider.
+ */
+export function canaryDispatchContext(input: {
+  readonly workspaceId: string;
+  readonly harnessSlug: string;
+  readonly capabilities: readonly string[];
+  readonly signal: AbortSignal;
+}): UnifiedToolContext {
+  return {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    role: 'operator',
+    uiClientId: null,
+    isSuperuser: false,
+    isPowerUser: false,
+    principal: { slug: CODE_INTEL_CANARY_OWNER, workspaceId: input.workspaceId, capabilities: new Set(input.capabilities) },
+    transport: 'in_process',
+    signal: input.signal,
+    log: () => {},
+    progress: () => {},
+    emit: () => {},
+  };
 }
 
 /**
@@ -176,31 +221,22 @@ export async function realCanaryDeps(workspaceId: string, harnessSlug: string = 
       if (!tool) throw new Error(`native tool ${spec.toolName} is not registered`);
       const effective = spec.timeoutSec === undefined ? tool : { ...tool, timeoutSec: spec.timeoutSec };
       const controller = new AbortController();
-      const ctx = {
-        workspaceId,
-        harnessSlug,
-        role: 'operator',
-        uiClientId: null,
-        isSuperuser: false,
-        isPowerUser: false,
-        userId: null,
-        principal: { kind: 'system', slug: CODE_INTEL_CANARY_OWNER, workspaceId },
-        transport: 'in_process',
-        signal: controller.signal,
-        log: () => {},
-      };
+      const ctx = canaryDispatchContext({ workspaceId, harnessSlug, capabilities: tool.capabilities, signal: controller.signal });
       let callId: string | null = null;
       const timer = spec.abortAfterMs === undefined
         ? null
         : setTimeout(() => controller.abort(new Error('code-intel canary forced cancellation')), spec.abortAfterMs);
       try {
-        await dispatchProjectedTool(effective, spec.toolName, { ...spec.args }, ctx as never, {
+        await dispatchProjectedTool(effective, spec.toolName, { ...spec.args }, ctx, {
           ...PROJECTED_DEPS,
           onDispatchStart: event => {
             callId = event.callId ?? null;
             PROJECTED_DEPS.onDispatchStart?.(event);
           },
         });
+      } catch (err) {
+        // Keep the call id the start event already carried: its row is still judged.
+        return { callId, error: errorText(err) };
       } finally {
         if (timer) clearTimeout(timer);
       }

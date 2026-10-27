@@ -11,12 +11,14 @@ import {
   CANARY_VALID_ARGS,
   CODE_INTEL_CANARY_OWNER,
   canaryCases,
+  canaryDispatchContext,
   judgeCanary,
   runCodeIntelCanary,
   type CanaryCaseSpec,
   type CanaryDeps,
   type CanaryRow,
 } from './code-intel-canary';
+import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/tooldef';
 import { CODE_INTEL_UNKNOWN_REASONS } from './code-intel-result-status';
 import { NATIVE_CODE_INTEL_TOOLS } from './native-adoption';
 
@@ -107,6 +109,31 @@ describe('judgeCanary', () => {
   it('an empty case list is not a pass', () => {
     expect(judgeCanary([], []).ok).toBe(false);
   });
+
+  it('names the error of a dispatch that threw, before or after it started', () => {
+    const [first, second] = dispatched;
+    const rows = dispatched.slice(1).map(d => rowFor(d.spec, d.callId));
+    const j = judgeCanary(
+      [{ ...first!, callId: null, error: 'TypeError: boom' }, { ...second!, error: 'TypeError: late' }, ...dispatched.slice(2)],
+      rows,
+    );
+    expect(j.cases[0]).toMatchObject({ ok: false, why: 'dispatch threw before start: TypeError: boom' });
+    // A row recorded for a call that threw after start is still judged on its row.
+    expect(j.cases[1]).toMatchObject({ callId: 'call-1', statusRows: 1 });
+  });
+
+  it('fails a plain-return case recorded as unknown/exception, naming the dispatch error', () => {
+    const ret = dispatched.find(d => d.spec.forced === 'return')!;
+    const rows = dispatched.map(d => d === ret
+      ? { toolName: d.spec.toolName, ownerId: CODE_INTEL_CANARY_OWNER, status: { status: 'unknown', reason: 'exception', invocationId: d.callId } }
+      : rowFor(d.spec, d.callId));
+    const j = judgeCanary(dispatched.map(d => d === ret ? { ...d, error: 'TypeError: x' } : d), rows);
+    expect(j.ok).toBe(false);
+    expect(j.failed).toBe(1);
+    expect(j.cases.find(c => !c.ok)).toMatchObject({
+      toolName: ret.spec.toolName, forced: 'return', why: 'expected measured, recorded unknown/exception; dispatch threw: TypeError: x',
+    });
+  });
 });
 
 describe('runCodeIntelCanary', () => {
@@ -140,5 +167,63 @@ describe('runCodeIntelCanary', () => {
     const j = await runCodeIntelCanary(deps);
     expect(j.failed).toBe(1);
     expect(j.cases.find(c => !c.ok)).toMatchObject({ toolName: 'code:pack', forced: 'return', callId: null });
+    expect(j.cases.find(c => !c.ok)?.why).toBe('dispatch threw before start: Error: boom');
+  });
+
+  it('keeps the call id and error a dispatch reports after start', async () => {
+    let n = 0;
+    const sent: Array<{ spec: CanaryCaseSpec; id: string }> = [];
+    const deps: CanaryDeps = {
+      dispatch: async spec => {
+        const id = `c${n++}`; sent.push({ spec, id });
+        return spec.toolName === 'graph:query' && spec.forced === 'return' ? { callId: id, error: 'TypeError: late' } : { callId: id };
+      },
+      flush: async () => {},
+      readRows: async () => sent.map(s => s.spec.toolName === 'graph:query' && s.spec.forced === 'return'
+        ? { toolName: s.spec.toolName, ownerId: CODE_INTEL_CANARY_OWNER, status: { status: 'unknown', reason: 'exception', invocationId: s.id } }
+        : rowFor(s.spec, s.id)),
+    };
+    const j = await runCodeIntelCanary(deps);
+    expect(j.failed).toBe(1);
+    const bad = j.cases.find(c => !c.ok)!;
+    expect(bad.callId).not.toBeNull();
+    expect(bad.why).toBe('expected measured, recorded unknown/exception; dispatch threw: TypeError: late');
+  });
+});
+
+describe('canaryDispatchContext', () => {
+  // A tool that declares a capability, so the dispatch stack's capability check actually runs.
+  const tool = (fn: ProjectedTool['fn']): ProjectedTool => ({
+    pluginName: 'fixture',
+    description: 'fixture',
+    inputSchema: { type: 'object' },
+    capabilities: ['code:read'],
+    expose: { mcp: { name: 'graph:query' } },
+    fn,
+  });
+  const ctxFor = (capabilities: readonly string[]) => canaryDispatchContext({
+    workspaceId: 'w', harnessSlug: 'papercusp', capabilities, signal: new AbortController().signal,
+  });
+
+  // 2026-10-27: the canary's inline context had no principal.capabilities set, the real capability
+  // check threw a TypeError, and every live probe run reported 12/12 canary cases "never started".
+  it('passes the real dispatch stack capability check and runs the handler', async () => {
+    const fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+    const t = tool(fn);
+    const r = await dispatchProjectedTool(t, 'graph:query', {}, ctxFor(t.capabilities), { readQuotaState: undefined, recordInvocation: undefined });
+    expect(r.error).toBeUndefined();
+    expect(r.ok).toBe(true);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('grants exactly the capabilities it is given, nothing wider', async () => {
+    const fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+    const r = await dispatchProjectedTool(tool(fn), 'graph:query', {}, ctxFor([]), { readQuotaState: undefined, recordInvocation: undefined });
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('missing_capability');
+    expect(fn).not.toHaveBeenCalled();
+    const principal = ctxFor(['code:read']).principal!;
+    expect([...principal.capabilities]).toEqual(['code:read']);
+    expect(principal.slug).toBe(CODE_INTEL_CANARY_OWNER);
   });
 });
