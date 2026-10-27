@@ -1921,14 +1921,25 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   const cutoffs = [admission.childCutoffEpochMs, cutoffEpochMs,
     maxMs === undefined ? null : now() + maxMs].filter(value => value != null);
   const preparationCutoff = cutoffs.length ? Math.min(...cutoffs) : null;
-  // A retry can retain staging and completed dependency trees. Only this
-  // pre-copy check permits staging; the locked helper must adopt it, and
-  // subsequent source checks still reject unfinished copies.
-  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
-    { runtimeArtifacts: true, dependencyStaging: true }));
   env = { ...env, NODE_OPTIONS: '', NODE_PATH: '' };
   const run = (command, args) => runVerifierDependencyCommand(command, args,
     { cwd: dest, env, signal, maxMs, cutoffEpochMs: preparationCutoff, now });
+  // A retry can retain staging and completed dependency trees. Only this
+  // pre-copy check permits staging; the locked helper must adopt it, and
+  // subsequent source checks still reject unfinished copies. Runtime assets
+  // are seeded only after the committed source itself has been verified.
+  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
+    { runtimeArtifacts: false, dependencyStaging: true }));
+  const runtimeSetup = join(dest, 'apps/operator/scripts/setup-porcupine-runtime.sh');
+  if (existsSync(runtimeSetup)) {
+    const modelDonor = join(donor, 'apps/operator/public/porcupine/porcupine_params.pv');
+    // The model is gitignored. Copy it through the selected source's own
+    // checksum-pinned helper; never link the mutable work-root cache into the
+    // immutable verifier snapshot.
+    await runPhase('deps.runtime-assets', () => run('bash', [runtimeSetup, '--source', modelDonor]));
+  }
+  await runPhase('deps.source.after-runtime-assets', () => verifyVerifierSource(dest, receipt,
+    { runtimeArtifacts: true, dependencyStaging: true }));
   const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
   // Reuse a full immutable generation on the destination filesystem instead
   // of repeatedly copying the mutable donor across devices before tests start.
