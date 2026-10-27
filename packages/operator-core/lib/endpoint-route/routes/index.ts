@@ -36,6 +36,7 @@ import workScopeRoutes from './work-scope/set';
 import governancePolicyRoutes from './governance-policy/policy';
 import governanceSiemExportRoutes from './governance-policy/siem-export';
 import governanceLegalHoldRoutes from './governance-policy/legal-holds';
+import codeCleanupResetThrottleRoutes from './code-cleanup/reset-throttle';
 import customerDataSupportRoutes from './admin/customer-data';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
@@ -658,6 +659,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(governancePolicyRoutes as AnyRoute[]),
   ...flatten(governanceSiemExportRoutes as AnyRoute[]),
   ...flatten(governanceLegalHoldRoutes as AnyRoute[]),
+  ...flatten(codeCleanupResetThrottleRoutes as AnyRoute[]),
   ...flatten(customerDataSupportRoutes as AnyRoute[]),
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),

@@ -17,7 +17,8 @@ import type { CampaignRoundDeps, CampaignThrottleStore } from './campaign-runner
 import { fileDivergedCopyBugs } from './divergence';
 import { nativeExecutorDeps } from './executor';
 import { parseCleanupBatchRecord, readLandedCleanupBatches, type LandedBatchRow } from './outcome';
-import { initialThrottleState, type CampaignThrottleState, type GateRed, type LandedBatch } from './throttle';
+import { initialThrottleState, resetRegressionThrottle, type CampaignThrottleState, type GateRed, type LandedBatch,
+  type ThrottleResetResult } from './throttle';
 import { nativeDivergenceBugLookup } from './triage';
 import type { TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
 
@@ -127,6 +128,20 @@ export function workItemThrottleStore(scope: ThrottleStoreScope, deps: { rows?: 
       if (n !== 1) throw new Error(`Campaign throttle save updated ${n} rows on ${scope.runnerItemId}`);
     },
   };
+}
+
+/**
+ * The owner's reset of a throttled campaign (P-008 R-9, D-013): load the stored state, apply
+ * `resetRegressionThrottle` (which refuses any principal that is not `admin:*`/`user:*`, and a
+ * campaign that is not throttled), and save only a successful reset. The caller supplies the
+ * principal from its authenticated human surface; an agent's MCP identity never qualifies.
+ */
+export async function resetCampaignThrottle(input: {
+  store: CampaignThrottleStore; campaignId: string; principal: string; now: Date;
+}): Promise<ThrottleResetResult> {
+  const result = resetRegressionThrottle(await input.store.load(input.campaignId), input.principal, input.now);
+  if (result.ok) await input.store.save(input.campaignId, result.state);
+  return result;
 }
 
 /** Read a file relative to `root`; a path outside it, or an unreadable file, reads as null. */
