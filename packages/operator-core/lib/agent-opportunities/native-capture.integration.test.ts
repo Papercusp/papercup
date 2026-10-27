@@ -42,6 +42,11 @@ async function installed() {
   await f.db.adminSql`UPDATE harness_shared.sql_intent_progress SET native_capture_from=${options().since}::timestamptz
     WHERE workspace_id=${workspaceId} AND scope_id LIKE 'native:%'`;
 }
+async function finishRuntimeBatches(opts = options()) {
+  let status: 'complete' | 'gap' | 'unknown' = 'unknown';
+  for (let attempt = 0; attempt < 40 && status === 'unknown'; attempt++) status = await reconcileNativeCapture(opts);
+  return status;
+}
 async function seed(provider: NativeProvider = 'codex', includeBrowser = false) {
   const owner = `su-${randomUUID()}`, current = randomUUID(), predecessor = randomUUID();
   const [adv] = await f.db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.adv_sessions
@@ -233,6 +238,86 @@ it('R13-NATIVE pages a roster above 500 and resumes prospective enrollment witho
   expect(await reconcileNativeCapture(options())).toBe('unknown');
 }, 120_000);
 
+it('R13-NATIVE resumes bounded postbaseline scans across all providers and keeps partial coverage unknown', async () => {
+  for (let i = 0; i < 33; i++) await seed((['codex', 'claude', 'omp'] as const)[i % 3]!, true);
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  await installed();
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const partial = await receipt();
+  expect(partial).toMatchObject({ reconciling: true });
+  expect(Object.keys(partial.scans).length).toBeGreaterThan(0);
+  expect(Object.keys(partial.scans).length).toBeLessThanOrEqual(32);
+  expect(JSON.stringify(partial)).not.toMatch(/private-source|session-|su-|jsonl|exec_command|#save/);
+  expect(await reconcileNativeCapture({ ...options(), authorize: async () => false })).toBe('unknown');
+  expect(await receipt()).toEqual(partial);
+  expect(await finishRuntimeBatches()).toBe('complete');
+  expect(await receipt()).toMatchObject({ runtimes: 33, sources: 66, calls: 132 });
+  const rows = await f.db.adminSql`SELECT agent,count(*)::int AS calls FROM harness_shared.agent_activity GROUP BY agent`;
+  expect(rows).toHaveLength(3);
+  expect(rows.every(row => row.calls === 44)).toBe(true);
+}, 120_000);
+
+it.each(['rewrite', 'predecessor-loss'] as const)(
+  'R13-NATIVE revalidates earlier runtime batches after %s', async change => {
+    const first = await seed();
+    for (let i = 1; i < 33; i++) await seed();
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+    await installed();
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+    const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+      FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
+    expect(Object.keys((await receipt()).scans).length).toBeGreaterThan(0);
+    expect(Object.keys((await receipt()).scans).length).toBeLessThanOrEqual(32);
+    if (change === 'predecessor-loss') await rm(first.paths[0]!);
+    if (change === 'rewrite') await writeFile(first.paths[0]!,
+      (await readFile(first.paths[0]!, 'utf8')).replace('private-source', 'changed-source'));
+    const opts = options();
+    expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    expect(await receipt()).toMatchObject({ reconciling: true });
+    if (change === 'predecessor-loss') {
+      expect(await reconcileNativeCapture(opts)).toBe('unknown');
+    } else {
+      expect(await finishRuntimeBatches(opts)).toBe('complete');
+      expect(await receipt()).toMatchObject({ runtimes: 33, sources: 66, calls: 66 });
+    }
+  }, 120_000);
+
+it('R13-NATIVE reuses source scans across advancing windows and new runtimes without retaining transcript content', async () => {
+  const first = await seed();
+  for (let i = 1; i < 33; i++) await seed();
+  // This call is outside the first census window but must become eligible when
+  // until advances, without reparsing an already completed source batch.
+  const later = new Date(f.now + 50).toISOString();
+  await writeFile(first.paths[0]!, (await readFile(first.paths[0]!, 'utf8')) + JSON.stringify({
+    type: 'response_item', timestamp: later, payload: { type: 'function_call', name: 'exec_command',
+      call_id: 'later-window-call', arguments: '{"cmd":"rg private-future src"}' },
+  }) + '\n');
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  await installed();
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
+  const partial = await receipt();
+  expect(Object.keys(partial.scans).length).toBeGreaterThan(0);
+  expect(Object.keys(partial.scans).length).toBeLessThanOrEqual(32);
+  await seed();
+  const rolling = { ...options(), since: new Date(f.now - 50).toISOString(), until: new Date(f.now + 100).toISOString() };
+  // A reset would need to parse 34 runtimes and could not complete in one batch.
+  expect(await reconcileNativeCapture(rolling)).toBe('complete');
+  expect(await receipt()).toMatchObject({ runtimes: 34, sources: 68, calls: 1 });
+  for (const [key, scan] of Object.entries(partial.scans)) expect((await receipt()).scans[key]).toEqual(scan);
+  // A completed receipt retains the same evidence for both wider and narrower
+  // windows. Index rows outside the original window were validated at parse time.
+  expect(await reconcileNativeCapture({ ...rolling, since: options().since })).toBe('complete');
+  expect(await receipt()).toMatchObject({ calls: 69 });
+  expect(await reconcileNativeCapture({ ...rolling, since: new Date(f.now + 75).toISOString() })).toBe('complete');
+  expect(await receipt()).toMatchObject({ calls: 0 });
+  expect(JSON.stringify(await receipt())).not.toMatch(/private-source|private-future|session-|su-|jsonl|exec_command/);
+  expect(await reconcileNativeCapture({ ...rolling, authorize: async () => false })).toBe('unknown');
+}, 120_000);
+
 it('R13-NATIVE prepares known roots without treating unattributed runtimes as outside the harness', async () => {
   await seed();
   const [runtime] = await f.db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.adv_sessions
@@ -258,7 +343,7 @@ it.each(['codex', 'claude', 'omp'] as const)(
     const padding = JSON.stringify({ type: 'metadata', note: 'multibyte-✓-🦉'.repeat(50) });
     await writeFile(path, [records[0], records[1], ...Array<string>(4500).fill(padding), records[2]].join('\n') + '\n');
     await installed();
-    expect(await reconcileNativeCapture(options())).toBe('complete');
+    expect(await finishRuntimeBatches()).toBe('complete');
     const rows = await f.db.adminSql`SELECT id::text,session_id,tool_use_id FROM harness_shared.agent_activity`;
     expect(rows).toHaveLength(2);
     const row = rows.find(r => r.session_id === s.predecessor)!;
@@ -272,6 +357,57 @@ it.each(['codex', 'claude', 'omp'] as const)(
     await writeFile(path, (await readFile(path)).subarray(0, (await readFile(path)).length - 1));
     expect(await reconcileNativeCapture(options())).toBe('unknown');
   });
+
+it.each(['codex', 'claude', 'omp'] as const)(
+  'R13-NATIVE resumes %s source chunks across rolling windows using only opaque checkpoints', async provider => {
+    const s = await seed(provider, true);
+    const records = (await readFile(s.paths[0]!, 'utf8')).trimEnd().split('\n');
+    const padding = JSON.stringify({ type: 'metadata', note: 'private-metadata-✓-🦉'.repeat(1800) });
+    await writeFile(s.paths[0]!, [records[0], records[1], ...Array<string>(300).fill(padding), ...records.slice(2)].join('\n') + '\n');
+    await installed();
+    const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+      FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+    const partial = await receipt();
+    const offset = (r: typeof partial): number => Math.max(...Object.values(r.pendingSources as Record<string,
+      { continuation: { files: Record<string, { offset: number }> } }>).flatMap(s => Object.values(s.continuation.files).map(f => f.offset)));
+    const firstOffset = offset(partial);
+    expect(firstOffset).toBeGreaterThan(0);
+    expect(firstOffset).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(JSON.stringify(partial)).not.toMatch(/private-source|private-metadata|session-|su-|jsonl|exec_command|#save/);
+    expect(await reconcileNativeCapture({ ...options(), authorize: async () => false })).toBe('unknown');
+    expect(await receipt()).toEqual(partial);
+    const rolling = { ...options(), until: new Date(f.now + 100).toISOString() };
+    expect(await reconcileNativeCapture(rolling)).toBe('unknown');
+    expect(offset(await receipt())).toBeGreaterThan(firstOffset);
+    // Rewriting the same source invalidates offsets and already parsed call
+    // digests, even if only metadata changes and the census window advances.
+    await writeFile(s.paths[0]!, (await readFile(s.paths[0]!, 'utf8')).replace('private-metadata', 'changed-metadata'));
+    expect(await reconcileNativeCapture(rolling)).toBe('unknown');
+    expect(offset(await receipt())).toBeLessThanOrEqual(firstOffset);
+    expect(await finishRuntimeBatches(rolling)).toBe('complete');
+    expect(await receipt()).toMatchObject({ sources: 2, runtimes: 1, calls: 4 });
+    const rows = await f.db.adminSql`SELECT tool_use_id FROM harness_shared.agent_activity WHERE workspace_id=${workspaceId}`;
+    expect(rows).toHaveLength(4);
+    expect(JSON.stringify(await receipt())).not.toMatch(/private-source|private-metadata|changed-metadata|session-|su-|jsonl|exec_command|#save/);
+  }, 120_000);
+
+it('R13-NATIVE refuses a conflicting call split across durable source chunks', async () => {
+  const s = await seed();
+  const records = (await readFile(s.paths[0]!, 'utf8')).trimEnd().split('\n');
+  const conflicting = JSON.parse(records[1]!);
+  conflicting.payload.arguments = '{"cmd":"rg changed-copy src"}';
+  const padding = JSON.stringify({ type: 'metadata', note: 'a'.repeat(32 * 1024) });
+  await writeFile(s.paths[0]!, [records[0], records[1], ...Array<string>(200).fill(padding),
+    JSON.stringify(conflicting), records[2]].join('\n') + '\n');
+  await installed();
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  for (let attempt = 0; attempt < 3; attempt++) expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  expect(row!.receipt).toMatchObject({ reconciling: true });
+  expect(row!.receipt.until).toBeUndefined();
+}, 120_000);
 
 it('R13-NATIVE enrolls large source identities prospectively and streams metadata without a whole-file allocation', async () => {
   const s = await seed();

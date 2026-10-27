@@ -13,9 +13,17 @@ import type { SearchSource } from './search-reformulation';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 type Binding = { id: string; owner: string; provider: NativeProvider; harness: string | null };
+type CallEvidence = Record<string, { fingerprint: string; at: string }>;
+type SourceContinuation = { snapshot: string; files: Record<string, {
+  offset: number; lines: number; identity: boolean; retainedBytes: number; calls: number; fingerprint: string; done: boolean;
+}> };
 type CaptureReceipt = { manifest?: Record<string, string[]>; enrolling?: boolean;
-  population?: string; cursor?: string };
+  population?: string; cursor?: string; scanWindow?: string;
+  pendingSources?: Record<string, { continuation: SourceContinuation; calls: CallEvidence }>;
+  scans?: Record<string, { snapshot: string; fingerprint: string;
+    calls: CallEvidence }> };
 const ENROLLMENT_BATCH = 32;
+const SOURCE_CHUNK_BYTES = 4 * 1024 * 1024;
 export interface NativeCaptureOptions {
   workspaceId: string; harnessSlug: string; sourceBoundary: string; since: string; until: string;
   client?: Client; authorize: () => Promise<boolean>;
@@ -58,7 +66,8 @@ async function canonicalNativeRuntimeManifest(binding: Binding, deadline: number
   await walk(root, 0);
   if (!files.length || files.length > 1000 || new Set(files.map(f => f.sessionId)).size !== files.length)
     throw new Error('native_capture_population');
-  return { files, identities: files.map(file => digest([binding.id, binding.owner, binding.provider, file.sessionId])) };
+  return { files, snapshot: digest(files.map(file => [file.sessionId, file.stamp])),
+    identities: files.map(file => digest([binding.id, binding.owner, binding.provider, file.sessionId])) };
 }
 
 /** Internal source reader shared with hydration. Paths come only from the
@@ -66,13 +75,20 @@ async function canonicalNativeRuntimeManifest(binding: Binding, deadline: number
  * provider parser state and line identities survive buffer boundaries. */
 export async function canonicalNativeRuntimeSources(binding: Binding, context: {
   workspaceId: string; harnessSlug: string; sourceBoundary: string;
-}, deadline = Date.now() + 1000, sessionId?: string) {
-  const { files, identities } = await canonicalNativeRuntimeManifest(binding, deadline);
+}, deadline = Date.now() + 1000, sessionId?: string, continuation?: SourceContinuation | null) {
+  const { files, identities, snapshot } = await canonicalNativeRuntimeManifest(binding, deadline);
   const selected = sessionId ? files.filter(file => file.sessionId === sessionId) : files;
   if (!selected.length) throw new Error('native_capture_identity');
   const sources: SearchSource[] = [], stamps: string[] = [];
-  let retainedBytes = 0;
+  // Only the reconciliation path opts into durable chunks. Hydration still
+  // reads/pairs the entire selected source with the maintained stateful parser.
+  const chunked = continuation !== undefined;
+  const cursor: SourceContinuation = { snapshot, files: continuation?.snapshot === snapshot ? { ...continuation.files } : {} };
+  let retainedBytes = 0, stepBytes = 0;
   for (const file of selected) {
+    const key = digest([binding.id, binding.owner, binding.provider, file.sessionId]);
+    const saved = cursor.files[key];
+    if (chunked && saved?.done) continue;
     const handle = await open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const before = await handle.stat({ bigint: true });
@@ -82,12 +98,20 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
         actor: binding.owner, verifiedAgent: true, origin: 'agent', provider: binding.provider,
         sessionId: file.sessionId, complete: true });
       const hash = createHash('sha256'), buffer = Buffer.alloc(64 * 1024);
-      let length = 0, pending = Buffer.alloc(0), lineIndex = 0, identity = false, expected = 0;
+      let length = chunked ? saved?.offset ?? 0 : 0, pending = Buffer.alloc(0),
+        lineIndex = chunked ? saved?.lines ?? 0 : 0, identity = chunked ? saved?.identity ?? false : false, expected = 0;
+      let eof = false;
       for (;;) {
+        // Resume only at a complete record boundary, so no transcript bytes or
+        // provider payload have to be stored in the checkpoint. An unfinished
+        // record is reread next time (bounded by the existing record limit).
+        if (chunked && length - pending.length > (saved?.offset ?? 0)
+          && (Date.now() >= deadline - 50 || stepBytes >= SOURCE_CHUNK_BYTES)) break;
         if (Date.now() >= deadline) throw new Error('native_capture_bound');
         const read = await handle.read(buffer, 0, buffer.length, length);
-        if (!read.bytesRead) break;
+        if (!read.bytesRead) { eof = true; break; }
         length += read.bytesRead;
+        stepBytes += read.bytesRead;
         const bytes = buffer.subarray(0, read.bytesRead);
         hash.update(bytes);
         // A multibyte UTF-8 code point may straddle an IO buffer. Decode only
@@ -127,21 +151,33 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
       }
       const after = await handle.stat({ bigint: true });
       if (stamp !== [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':')
-        || BigInt(length) !== before.size || pending.length) throw new Error('native_capture_changed');
-      if (!identity) throw new Error('native_capture_identity');
+        || eof && (BigInt(length) !== before.size || pending.length)) throw new Error('native_capture_changed');
+      if (eof && !identity) throw new Error('native_capture_identity');
       const parsed = parser.sources();
+      if (parsed.length && !identity) throw new Error('native_capture_identity');
       retainedBytes += parser.retainedBytes();
       if (retainedBytes > 32 * 1024 * 1024 || sources.length + parsed.length > 2000)
         throw new Error('native_capture_bound');
       if (expected !== parsed.length) throw new Error('native_capture_parser_gap');
       sources.push(...parsed);
-      stamps.push(digest([file.sessionId, stamp, hash.digest('hex')]));
+      const fingerprint = digest([file.sessionId, stamp, chunked ? saved?.fingerprint ?? null : null, hash.digest('hex')]);
+      stamps.push(fingerprint);
+      if (chunked) {
+        cursor.files[key] = { offset: length - pending.length, lines: lineIndex, identity,
+          retainedBytes: (saved?.retainedBytes ?? 0) + parser.retainedBytes(),
+          calls: (saved?.calls ?? 0) + parsed.length, fingerprint, done: eof };
+        if (Object.values(cursor.files).reduce((n, f) => n + f.retainedBytes, 0) > 32 * 1024 * 1024
+          || Object.values(cursor.files).reduce((n, f) => n + f.calls, 0) > 2000) throw new Error('native_capture_bound');
+        if (!eof || stepBytes >= SOURCE_CHUNK_BYTES || Date.now() >= deadline - 50) break;
+      }
     } finally { await handle.close(); }
   }
   // Re-census detects a deleted/added predecessor and any source rewrite during IO.
   const current = await canonicalNativeRuntimeManifest(binding, deadline);
   if (JSON.stringify(current.files) !== JSON.stringify(files)) throw new Error('native_capture_changed');
-  return { sources, fingerprint: digest(stamps), identities };
+  const complete = !chunked || identities.every(key => cursor.files[key]?.done);
+  return { sources, fingerprint: digest(chunked ? identities.map(key => cursor.files[key]?.fingerprint) : stamps),
+    identities, snapshot, complete, continuation: chunked ? cursor : null };
 }
 
 /** A fresh canonical-source reconciliation, not a cached callback attestation.
@@ -248,64 +284,130 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     }
     // Null attribution is not evidence that a session is outside this harness.
     if (roster.some(r => !r.harness)) return 'unknown';
-    const sources: SearchSource[] = [], fingerprints: string[] = [], identities: string[] = [];
-    const manifest: Record<string, string[]> = {};
-    for (const binding of bindings) {
-      const read = await canonicalNativeRuntimeSources(binding, opts, deadline);
-      sources.push(...read.sources); fingerprints.push(read.fingerprint); identities.push(...read.identities);
+    // Parsing evidence belongs to a source revision, not a census window. Index
+    // every parsed call so advancing either endpoint can reuse it. Only opaque
+    // identities/conflict digests and event times survive; no bodies or paths.
+    // A changed roster still requires fresh authority and all-root validation.
+    const populationHash = digest(roster);
+    const scanWindow = digest(['native-source-scans-v2', progress.revision]);
+    const runtimes = new Set(bindings.map(b => digest([b.id, b.owner, b.provider])));
+    const scans: NonNullable<CaptureReceipt['scans']> = progress.receipt.scanWindow === scanWindow
+      ? Object.fromEntries(Object.entries(progress.receipt.scans ?? {}).filter(([key]) => runtimes.has(key))) : {};
+    const pendingSources: NonNullable<CaptureReceipt['pendingSources']> = progress.receipt.scanWindow === scanWindow
+      ? Object.fromEntries(Object.entries(progress.receipt.pendingSources ?? {}).filter(([key]) => runtimes.has(key))) : {};
+    const manifest = { ...progress.receipt.manifest };
+    const inWindow = (at: string) => micros(at) >= micros(progress.since) && micros(at) < micros(opts.until);
+    const savePartial = async () => {
+      if (Date.now() >= deadline || !await opts.authorize()
+        || JSON.stringify(await population()) !== JSON.stringify(roster)) return;
+      await sql`UPDATE harness_shared.sql_intent_progress SET native_capture_receipt=${sql.json({
+        version: 1, reconciling: true, manifest, population: populationHash, scanWindow, scans, pendingSources,
+        revision: progress.revision })}
+        WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}
+          AND native_capture_revision=${progress.revision}::bigint
+          AND native_capture_receipt IS NOT DISTINCT FROM ${sql.json(progress.receipt)}::jsonb`;
+    };
+    const remaining = bindings.filter(b => !scans[digest([b.id, b.owner, b.provider])]);
+    for (const binding of remaining.slice(0, ENROLLMENT_BATCH)) {
+      if (Date.now() >= deadline - 100) { await savePartial(); return 'unknown'; }
       const runtime = digest([binding.id, binding.owner, binding.provider]);
-      manifest[runtime] = read.identities;
+      const pendingSource = pendingSources[runtime];
+      let read: Awaited<ReturnType<typeof canonicalNativeRuntimeSources>>;
+      try { read = await canonicalNativeRuntimeSources(binding, opts, deadline - 100, undefined,
+        pendingSource?.continuation ?? null); }
+      catch { await savePartial(); return 'unknown'; }
       if (progress.receipt?.manifest?.[runtime]?.some(identity => !read.identities.includes(identity))) return 'unknown';
+      if (read.sources.some(s => !s.callId || !Number.isFinite(Date.parse(s.at)))) return 'unknown';
+      // Call IDs identify requests; same-ID conflicting copies cannot be repaired.
+      const unique = new Map<string, SearchSource>();
+      for (const source of read.sources) {
+        const key = JSON.stringify([source.actor, source.provider, source.namespace, source.callId]);
+        const prior = unique.get(key);
+        if (prior && digest([prior.tool, prior.args, prior.at]) !== digest([source.tool, source.args, source.at])) return 'unknown';
+        unique.set(key, source);
+      }
+      const callDigests: CallEvidence = pendingSource?.continuation.snapshot === read.snapshot ? { ...pendingSource.calls } : {};
+      for (const [key, s] of unique) {
+        const id = digest(key), value = { fingerprint: digest([s.tool, s.args, s.at]), at: s.at };
+        if (callDigests[id] && callDigests[id]!.fingerprint !== value.fingerprint) return 'unknown';
+        callDigests[id] = value;
+        if (Object.keys(callDigests).length > 2000) return 'unknown';
+      }
+      const aggregate = new Map<string, string>();
+      for (const entries of [...Object.values(scans).map(scan => scan.calls), callDigests]) {
+        for (const [key, value] of Object.entries(entries)) {
+          if (!inWindow(value.at)) continue;
+          if (aggregate.has(key) && aggregate.get(key) !== value.fingerprint) return 'unknown';
+          aggregate.set(key, value.fingerprint);
+          if (aggregate.size > 2000) return 'unknown';
+        }
+      }
+      // Use the existing canonical index. Retain no command, arguments, result
+      // body or path in the receipt. Hydration rereads canonical sources.
+      if (Date.now() >= deadline || !await opts.authorize()) return 'unknown';
+      const expected = [...unique.values()].map(s => ({ actor: s.actor, provider: s.provider,
+        session: s.namespace, call: s.callId, tool: s.tool, at: s.at }));
+      if (expected.length) {
+        // Two set operations, not two round trips per call. The bounded census
+        // must remain practical for a real native window containing many calls.
+        await sql`INSERT INTO harness_shared.agent_activity
+          (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
+          SELECT ${opts.workspaceId},${opts.harnessSlug},s.actor,s.provider,s.session,'tool',s.tool,'pre',
+            s.call,'Canonical native operation','{}'::jsonb,s.at::timestamptz
+          FROM jsonb_to_recordset(${sql.json(expected)}::jsonb)
+            AS s(actor text,provider text,session text,call text,tool text,at text)
+          WHERE NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
+            AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=s.actor AND a.agent=s.provider
+            AND a.session_id=s.session AND a.tool_use_id=s.call AND a.kind='tool')`;
+        // Compare again rather than inferring that successful INSERTs covered calls.
+        const [row] = await sql<{ complete: boolean }[]>`SELECT NOT EXISTS(
+          SELECT 1 FROM jsonb_to_recordset(${sql.json(expected)}::jsonb)
+            AS s(actor text,provider text,session text,call text,tool text,at text)
+          WHERE NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
+            AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=s.actor AND a.agent=s.provider
+            AND a.session_id=s.session AND a.tool_use_id=s.call AND a.tool_name=s.tool AND a.kind='tool'
+            AND a.created_at=s.at::timestamptz)) AS complete`;
+        if (!row?.complete) return 'unknown';
+      }
+      manifest[runtime] = read.identities;
+      if (!read.complete) {
+        pendingSources[runtime] = { continuation: read.continuation!, calls: callDigests };
+        await savePartial(); return 'unknown';
+      }
+      delete pendingSources[runtime];
+      scans[runtime] = { snapshot: read.snapshot, fingerprint: read.fingerprint, calls: callDigests };
     }
-    if (sources.some(s => !s.callId || !Number.isFinite(Date.parse(s.at)))) return 'unknown';
-    const calls = sources.filter(s => micros(s.at) >= micros(progress.since) && micros(s.at) < micros(opts.until));
-    if (calls.length > 2000 || JSON.stringify(await population()) !== JSON.stringify(roster) || !await opts.authorize()) return 'unknown';
-    // Call IDs identify requests; same-ID conflicting copies cannot be repaired.
-    const unique = new Map<string, SearchSource>();
-    for (const source of calls) {
-      const key = JSON.stringify([source.actor, source.provider, source.namespace, source.callId]);
-      const prior = unique.get(key);
-      if (prior && digest([prior.tool, prior.args, prior.at]) !== digest([source.tool, source.args, source.at])) return 'unknown';
-      unique.set(key, source);
-    }
-    if (micros(progress.since) >= micros(opts.until)) return 'gap';
-    // Use the existing canonical index. Retain no command, arguments, result body
-    // or path in the reconciliation write. Hydration rereads canonical sources.
-    if (Date.now() >= deadline || !await opts.authorize()) return 'unknown';
-    const expected = [...unique.values()].map(s => ({ actor: s.actor, provider: s.provider,
-      session: s.namespace, call: s.callId, tool: s.tool, at: s.at }));
-    if (expected.length) {
-      // Two set operations, not two round trips per call. The bounded census
-      // must remain practical for a real native window containing many calls.
-      await sql`INSERT INTO harness_shared.agent_activity
-        (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
-        SELECT ${opts.workspaceId},${opts.harnessSlug},s.actor,s.provider,s.session,'tool',s.tool,'pre',
-          s.call,'Canonical native operation','{}'::jsonb,s.at::timestamptz
-        FROM jsonb_to_recordset(${sql.json(expected)}::jsonb)
-          AS s(actor text,provider text,session text,call text,tool text,at text)
-        WHERE NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
-          AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=s.actor AND a.agent=s.provider
-          AND a.session_id=s.session AND a.tool_use_id=s.call AND a.kind='tool')`;
-      // Compare again rather than inferring that successful INSERTs covered calls.
-      const [row] = await sql<{ complete: boolean }[]>`SELECT NOT EXISTS(
-        SELECT 1 FROM jsonb_to_recordset(${sql.json(expected)}::jsonb)
-          AS s(actor text,provider text,session text,call text,tool text,at text)
-        WHERE NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity a WHERE a.workspace_id=${opts.workspaceId}
-          AND a.harness_slug=${opts.harnessSlug} AND a.owner_id=s.actor AND a.agent=s.provider
-          AND a.session_id=s.session AND a.tool_use_id=s.call AND a.tool_name=s.tool AND a.kind='tool'
-          AND a.created_at >= ${progress.since}::timestamptz AND a.created_at < ${opts.until}::timestamptz)) AS complete`;
-      if (!row?.complete) return 'unknown';
-    }
-    for (let i = 0; i < bindings.length; i++) {
-      const current = await canonicalNativeRuntimeSources(bindings[i]!, opts, deadline);
-      if (current.fingerprint !== fingerprints[i]) return 'unknown';
+    if (remaining.length > ENROLLMENT_BATCH) { await savePartial(); return 'unknown'; }
+    const calls = new Map<string, string>(), fingerprints: string[] = [];
+    let sourceCount = 0;
+    // Re-census every root before using earlier batches. A stat change forces a
+    // fresh parse; a missing predecessor can never vanish from the manifest.
+    // This final metadata pass retains the original deadline and fails closed.
+    for (const binding of bindings) {
+      const runtime = digest([binding.id, binding.owner, binding.provider]);
+      const scan = scans[runtime];
+      const current = await canonicalNativeRuntimeManifest(binding, deadline);
+      if (!scan || current.snapshot !== scan.snapshot) {
+        delete scans[runtime]; await savePartial(); return 'unknown';
+      }
+      sourceCount += current.identities.length;
+      fingerprints.push(scan.fingerprint);
+      for (const [key, value] of Object.entries(scan.calls)) {
+        if (!inWindow(value.at)) continue;
+        if (calls.has(key) && calls.get(key) !== value.fingerprint) return 'unknown';
+        calls.set(key, value.fingerprint);
+        if (calls.size > 2000) return 'unknown';
+      }
     }
     if (Date.now() >= deadline || !await opts.authorize() || JSON.stringify(await population()) !== JSON.stringify(roster)) return 'unknown';
-    const receipt = { version: 1, since: progress.since, until: opts.until, sources: identities.length, manifest,
+    if (micros(progress.since) >= micros(opts.until)) return 'gap';
+    const receipt = { version: 1, since: progress.since, until: opts.until, sources: sourceCount, manifest,
+      scanWindow, scans,
       runtimes: fingerprints.length,
-      calls: unique.size, population: digest(roster), canonical: digest(fingerprints), revision: progress.revision };
+      calls: calls.size, population: populationHash, canonical: digest(fingerprints), revision: progress.revision };
     const written = await sql`UPDATE harness_shared.sql_intent_progress SET native_capture_receipt=${sql.json(receipt)}
       WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope} AND native_capture_revision=${progress.revision}::bigint
+        AND native_capture_receipt IS NOT DISTINCT FROM ${sql.json(progress.receipt)}::jsonb
       RETURNING 1`;
     return written.length ? progress.historical ? 'gap' : 'complete' : 'unknown';
   } catch { return 'unknown'; }
