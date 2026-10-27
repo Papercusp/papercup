@@ -35,6 +35,19 @@ describe('P016 execution coverage freshness, retention and reuse advisory', () =
     expect(ask([snapshot()], hashes, ['pkg/a.test.ts', 'new.test.ts']).noTestExecutes).toBeNull();
     expect(ask([snapshot()], hashes, null).noTestExecutes).toBeNull();
   });
+  it('keeps positive evidence from an older still-bound capture; completeness stays with the newest', () => {
+    // test:file runs unit and integration configs as separate captures. The newer capture must not
+    // erase the older one's proof that its own (unchanged) test executes an (unchanged) line.
+    const older = snapshot({ testFile: 'pkg/b.test.ts', observedAt: new Date(Date.now() - 60_000).toISOString(),
+      population: [{ path: 'pkg/b.test.ts', sha256: hash }],
+      sources: [{ path: 'pkg/a.ts', sha256: hash, executable: [2, 3], covered: [3] }] });
+    const both = new Map([...hashes, ['pkg/b.test.ts', hash]]);
+    expect(ask([snapshot(), older], both)).toMatchObject({ basis: 'execution', tests: ['pkg/b.test.ts'],
+      noTestExecutes: false, uncoveredChangedLines: [], unknownChangedLines: [4] });
+    // A capture whose test file changed since is not bound and proves nothing.
+    expect(ask([snapshot(), older], new Map([...hashes, ['pkg/b.test.ts', coverageHash('edited test')]])))
+      .toMatchObject({ basis: 'execution', tests: [], noTestExecutes: true, uncoveredChangedLines: [3] });
+  });
   it('falls back to explicitly static reach for missing, stale, foreign or mismatched blobs', () => {
     for (const rows of [[], [snapshot({ root: '/sibling' })],
       [snapshot({ observedAt: new Date(Date.now() - 8 * 86_400_000).toISOString() })],

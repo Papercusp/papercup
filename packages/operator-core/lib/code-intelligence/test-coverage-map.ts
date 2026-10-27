@@ -52,8 +52,12 @@ export function queryTestCoverage(input: { root: string; question: CoverageQuest
     && batch.length === population.length && population.every(path => batch.some(s => s.testFile === path))
     && batch.every(s => s.populationComplete && JSON.stringify(s.population) === JSON.stringify(newest.population));
   const within = (line: number) => line >= (q.line1 ?? 1) && line <= (q.endLine1 ?? Infinity);
-  const tests = batch.filter(s => s.sources.find(source => source.path === q.path)!.covered.some(within)).map(s => s.testFile);
-  const covered = new Set(batch.flatMap(s => s.sources.find(source => source.path === q.path)!.covered));
+  // Completeness and absence come from the newest capture only (above). Positive evidence does not:
+  // every row here is still bound to the current test, source and population hashes, so an older
+  // capture remains proof that ITS test executes these lines. test:file runs unit and integration
+  // configs as separate captures; reading only the newest one discarded the other's evidence.
+  const tests = rows.filter(s => s.sources.find(source => source.path === q.path)!.covered.some(within)).map(s => s.testFile);
+  const covered = new Set(rows.flatMap(s => s.sources.find(source => source.path === q.path)!.covered));
   const executable = new Set(batch.flatMap(s => s.sources.find(source => source.path === q.path)!.executable));
   const changed = [...new Set(q.changedLines ?? [])].filter(n => Number.isSafeInteger(n) && n > 0);
   return { basis: 'execution', tests: [...new Set(tests)].sort(),
