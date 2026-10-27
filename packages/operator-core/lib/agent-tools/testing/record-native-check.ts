@@ -12,13 +12,14 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { executeConsultReceiptMatrix } from './native-check-consult-receipts';
+import { executeGateRepairPlaneReading, GATE_REPAIR_PLANE_READINGS } from './native-check-gate-repair-plane';
 
 export default defineTool({
   name: 'testing:record-native-check',
   description:
     'Execute a registered native operational check and record it in test_runs with before/after runtime witnesses, ' +
-    'so a live-plane binding can read environment-current. consultReceiptMatrix:{evidenceFile} re-verifies a committed ' +
-    'get-feedback receipt matrix against the operator database in one read-only snapshot.',
+    'so a live-plane binding can read environment-current. Pass exactly one arm. consultReceiptMatrix:{evidenceFile} re-verifies a committed ' +
+    'get-feedback receipt matrix against the operator database in one read-only snapshot; gateRepairPlane:{reading} takes a gate-repair-plane R-6/R-7 live reading.',
   guidance: {
     when: 'A live-plane acceptance bar needs a runtime-witnessed operational row and a registered native check covers it.',
     notWhen: 'Not for Vitest (testing:run) or importing an already-completed artifact (testing:record-run evidenceFile).',
@@ -32,11 +33,19 @@ export default defineTool({
     consultReceiptMatrix: z.object({
       evidenceFile: z.string().min(1).max(400)
         .describe('Repo-relative committed docs/evidence/*.json receipt-matrix artifact whose cells are re-verified.'),
-    }).strict(),
+    }).strict().optional(),
+    gateRepairPlane: z.object({
+      reading: z.enum(GATE_REPAIR_PLANE_READINGS).describe('r6-pass-marker (R-6) or r7-repair-queue-serving (R-7).'),
+    }).strict().optional(),
+  }).refine(a => (a.consultReceiptMatrix ? 1 : 0) + (a.gateRepairPlane ? 1 : 0) === 1, {
+    message: 'Pass exactly one native check arm: consultReceiptMatrix or gateRepairPlane.',
   }),
   async handler(args, ctx) {
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     if (!harnessSlug) return harnessRequiredResult('testing:record-native-check', ctx);
-    return { data: await executeConsultReceiptMatrix(args.consultReceiptMatrix.evidenceFile, { ...ctx, harnessSlug }) };
+    if (args.gateRepairPlane) {
+      return { data: await executeGateRepairPlaneReading(args.gateRepairPlane.reading, { ...ctx, harnessSlug }) };
+    }
+    return { data: await executeConsultReceiptMatrix(args.consultReceiptMatrix!.evidenceFile, { ...ctx, harnessSlug }) };
   },
 });
