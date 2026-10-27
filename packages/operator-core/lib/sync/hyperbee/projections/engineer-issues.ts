@@ -44,6 +44,7 @@ import {
 } from './work-items-replay-identity-indexes';
 import { isDistinctEntityCollision } from './distinct-entity-collision';
 import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../../work-nature/agent-work-predicate';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -863,7 +864,7 @@ async function distinctEntityCollisions(sql: postgres.Sql, harnessSlug: string, 
   return refused;
 }
 
-const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /**
  * scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #1): a work-item id names ONE row

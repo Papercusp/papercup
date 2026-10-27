@@ -12241,6 +12241,7 @@ export async function reportSessionPortDelivery(
     coordOwnerId = null,
     appendEventImpl = appendHostEvent,
     maxDeliveryAttempts = 3,
+    maxStatusReads = 5,
     retryDelayMs = 2_000,
     sleepImpl = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   } = {},
@@ -12248,6 +12249,7 @@ export async function reportSessionPortDelivery(
   if (!sessionPort?.portId || !sessionPort?.targetAdvSessionId) {
     throw new Error("session-port disposition is missing port/target identity");
   }
+  const statusReadBudget = Number.isSafeInteger(maxStatusReads) && maxStatusReads > 0 ? maxStatusReads : 1;
   const tok = token ?? readToken();
   const status = proof?.persisted === true ? "delivered" : "failed";
   const headers = {
@@ -12327,12 +12329,26 @@ export async function reportSessionPortDelivery(
     {
       const query = new URLSearchParams({ id: sessionPort.portId });
       if (sessionPort.workspace) query.set("workspace", sessionPort.workspace);
-      const { response, body } = await attempt("status",
-        `${operatorUrl}/api/adv/sessions/port/status?${query}`,
-        {
-          method: "GET",
-        },
-      );
+      // WI-6554700010029882: the status GET is the authority that decides
+      // whether a re-POST is safe, so a read that got NO answer (timeout /
+      // transport error, or a 429/5xx) must not end the acknowledgement as
+      // outcome_unknown on the first try — that left an answered native consult
+      // port pending until expiry. Re-reading is side-effect free; only the
+      // POST stays gated on a read that PROVES the disposition uncommitted.
+      let response = null;
+      let body = null;
+      for (let statusRead = 1; ; statusRead++) {
+        ({ response, body } = await attempt("status",
+          `${operatorUrl}/api/adv/sessions/port/status?${query}`,
+          {
+            method: "GET",
+          },
+        ));
+        const httpStatus = receipts[receipts.length - 1]?.httpStatus ?? null;
+        const unanswered = httpStatus === null || httpStatus === 429 || httpStatus >= 500;
+        if (!unanswered || statusRead >= statusReadBudget) break;
+        await sleepImpl(Math.max(0, retryDelayMs) * 2 ** (statusRead - 1));
+      }
       if (
         response?.ok &&
         body?.ok &&

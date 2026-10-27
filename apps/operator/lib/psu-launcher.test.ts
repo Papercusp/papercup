@@ -9093,6 +9093,52 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       expect(result.port.status).toBe("delivered");
       expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "POST", "GET"]);
     });
+
+    // WI-6554700010029882: observed live — the POST and the single status GET both
+    // timed out, the ack ended outcome_unknown, and an answered port stayed pending.
+    it("re-reads status after a timed-out POST AND a timed-out status read, then re-POSTs once a read proves pending", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn()
+        .mockRejectedValueOnce(timeout())
+        .mockRejectedValueOnce(timeout())
+        .mockResolvedValueOnce(json({ ok: true, port: { id: port.portId, status: "pending", targetAdvSessionId: 99 } }))
+        .mockResolvedValueOnce(json({ ok: true, status: "delivered" }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      });
+      expect(result).toMatchObject({ ok: true, status: "delivered" });
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "GET", "POST"]);
+      expect(fetchImpl.mock.calls[3][1].body).toBe(fetchImpl.mock.calls[0][1].body);
+      expect(sleepImpl.mock.calls).toEqual([[2_000], [2_000]]);
+    });
+
+    it("re-reads status after a 5xx/429 read and accepts a later read that proves delivered", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(json({ ok: false, error: "upstream reset" }, 502))
+        .mockResolvedValueOnce(json({ ok: false, error: "unavailable" }, 503))
+        .mockResolvedValueOnce(json({ ok: false, error: "slow down" }, 429))
+        .mockResolvedValueOnce(json({ ok: true, port: { status: "delivered", targetAdvSessionId: 99 } }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      });
+      expect(result.port.status).toBe("delivered");
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "GET", "GET"]);
+      expect(sleepImpl.mock.calls).toEqual([[2_000], [4_000]]);
+    });
+
+    it("stops after maxStatusReads unanswered reads as outcome_unknown and never re-POSTs without proof", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn().mockRejectedValue(timeout());
+      const failure = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl, maxStatusReads: 4,
+      }).catch((error) => error);
+      expect(failure.code).toBe("session_port_ack_outcome_unknown");
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "GET", "GET", "GET"]);
+      expect(failure.acknowledgement.receipts.map((r: { stage: string }) => r.stage))
+        .toEqual(["delivery", "status", "status", "status", "status"]);
+      expect(sleepImpl.mock.calls).toEqual([[2_000], [4_000], [8_000]]);
+    });
   });
 
   it("EI-259750: records an invalid JSON status body as unknown rather than swallowing the receipt", async () => {
