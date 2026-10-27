@@ -654,6 +654,7 @@ const namedQueryRequests: string[] = [];
 const namedQueryReplies: Array<{ name: string; status: number }> = [];
 const agentChatsListDiagnostics: Array<{
   slug: string;
+  database?: string;
   searchPath?: string[];
   relation?: string | null;
   error?: string;
@@ -2192,10 +2193,12 @@ beforeAll(async () => {
           // from a wrong caller slug.
           const { getHarnessPg } = await import('@papercusp/db-org');
           const [probe] = await getHarnessPg(slug).sql`
-            SELECT current_schemas(true) AS search_path,
+            SELECT current_database() AS database,
+                   current_schemas(true) AS search_path,
                    to_regclass('agent_chats')::text AS relation`;
           agentChatsListDiagnostics.push({
             slug,
+            database: probe?.database as string | undefined,
             searchPath: probe?.search_path as string[] | undefined,
             relation: probe?.relation as string | null | undefined,
           });
