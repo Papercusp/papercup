@@ -26,6 +26,23 @@ export function reuseRunnerIdentity(nodeIdentity: string | null | undefined, pro
  * @returns {string | null}
  */
 export function judgedTreeProofFormat(root: string, readFile?: (file: string) => string): string | null;
+/**
+ * WI-6554700010029685: the runner-identity SCHEME the judged tree's recorder writes, read from the same
+ * recorder source as judgedTreeProofFormat.
+ *
+ * The selector runs from the gate's code, but proofs on a frozen repair lineage were written by THAT
+ * lineage's recorder. Before the runtime fingerprint (scripts/lib/runtime-compatibility.mjs, d314d294ad)
+ * the recorder wrote `<format> <process.version> <process.platform> <process.arch>`, and its skip-list
+ * consumer accepts only that string. A selector measuring the runtime fingerprint loads none of those
+ * proofs: repair head 327e4d1d of frozen candidate 8c03b5dc logged `rows=0` (or `no-runner-identity`)
+ * on every targeted task, so each repair round re-ran ~5,900 files.
+ *
+ * @param {string} root the judged checkout
+ * @param {(file: string) => string} [readFile]
+ * @returns {"runtime-fingerprint" | "node-version" | null} null when the recorder is missing or its identity
+ *   cannot be classified; callers then keep the runtime-fingerprint measurement (the pre-fix behaviour).
+ */
+export function judgedTreeRunnerIdentityScheme(root: string, readFile?: (file: string) => string): "runtime-fingerprint" | "node-version" | null;
 /** @param {Record<string, string | undefined>} [env] */
 export function testReuseEnabled(env?: Record<string, string | undefined>): boolean;
 /** @param {Record<string, string | undefined>} [env] */

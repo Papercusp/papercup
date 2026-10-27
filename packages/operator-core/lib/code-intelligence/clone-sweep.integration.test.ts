@@ -23,7 +23,9 @@ vi.mock('../modes/goal-context', async orig => ({ ...(await orig<Record<string, 
 vi.mock('../blueprint/operation-worker-binding', async orig => ({ ...(await orig<Record<string, unknown>>()),
   readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) }));
 
-const { cloneFamilyConditionKey, cloneSweepInputSchema, fileCloneSweep, rankCloneSweep, rankSemanticSweep } = await import('./clone-sweep');
+const { cloneAreaConditionKey, cloneFamilyArea, cloneSweepInputSchema, fileCloneSweep, rankCloneSweep, rankSemanticSweep } = await import('./clone-sweep');
+// R-2 (code-cleanup-campaigns-2026-10-26): filing is keyed by extraction AREA, not family.
+const areaKey = (row: { family: { members: readonly { path: string }[] } }) => cloneAreaConditionKey(cloneFamilyArea(row.family.members));
 const { runCloneFamilySweepAction, CLONE_FAMILY_SWEEP_ACTION } = await import('../harness/routines/clone-family-sweep-action');
 const { getSystemActionEntry } = await import('../harness/routines/system-actions');
 let db: FreshPgDb;
@@ -92,21 +94,21 @@ describe('durable clone sweep', () => {
     expect(first.created).toBe(1);
     expect((await fileCloneSweep(ranked, { ...scope('semantic-replay'), root })).rows[0].itemId).toBe(first.rows[0].itemId);
     const [item] = await db.sql`SELECT payload FROM harness_shared.work_items WHERE feature_id=${first.rows[0].itemId}`;
-    expect(item.payload.cloneFamily.semantic.judgment).toEqual(judgment);
+    expect(item.payload.cloneArea.families[0].semantic.judgment).toEqual(judgment);
     expect(rankSemanticSweep(index, [{ pair, judgment: { ...judgment, status: 'abstain' } }], empty)).toEqual([]);
     expect(rankSemanticSweep(index, [{ pair, judgment: { ...judgment, execution: null } }], empty)).toEqual([]);
     const unverified = { ...ranked[0], semantic: { pair, judgment: { ...judgment, output: '{}' } } };
     expect((await fileCloneSweep([unverified], { ...scope('tampered'), root })).rows[0].disposition).toBe('unverified');
     writeFileSync(join(root, 'b.ts'), 'export function g() { return 1; }');
     expect((await fileCloneSweep(ranked, { ...scope('stale'), root })).rows[0].disposition).toBe('unverified');
-    expect(await countKey(cloneFamilyConditionKey(ranked[0].family))).toEqual([first.rows[0].itemId]);
+    expect(await countKey(areaKey(ranked[0]))).toEqual([first.rows[0].itemId]);
   }, 60000);
   it('REUSE-P-008-01 files once across simultaneous, repeated, restarted and terminal-history sweeps', async () => {
     const ranked = rankCloneSweep(indexFor('once'), empty);
     expect(ranked).toHaveLength(1);
     const runs = await Promise.all(Array.from({ length: 4 }, (_, n) => fileCloneSweep(ranked, scope(`fire-${n}`))));
     expect(runs.reduce((n, run) => n + run.created, 0)).toBe(1);
-    const ids = await countKey(cloneFamilyConditionKey(ranked[0].family));
+    const ids = await countKey(areaKey(ranked[0]));
     expect(ids).toHaveLength(1);
     const restarted = await fileCloneSweep(rankCloneSweep(indexFor('once'), empty), scope('restart'));
     expect(restarted.rows[0]).toMatchObject({ disposition: 'reused', itemId: ids[0] });
@@ -114,7 +116,7 @@ describe('durable clone sweep', () => {
     await db.sql`UPDATE harness_shared.work_items SET status = 'done', condition_key = NULL WHERE feature_id = ${ids[0]}`;
     const terminal = await fileCloneSweep(ranked, scope('after-terminal'));
     expect(terminal.rows[0]).toMatchObject({ disposition: 'reused', itemId: ids[0] });
-    expect(await countKey(cloneFamilyConditionKey(ranked[0].family))).toEqual(ids);
+    expect(await countKey(areaKey(ranked[0]))).toEqual(ids);
     const [item] = await db.sql`SELECT status FROM harness_shared.work_items WHERE feature_id = ${ids[0]}`;
     expect(item.status).toBe('done');
   }, 60000);
@@ -126,7 +128,7 @@ describe('durable clone sweep', () => {
     expect(ranked[0]).toMatchObject({ copies: 2, disposition: 'derive-and-sync', generic: false });
     const out = await fileCloneSweep(ranked, scope('vendor'));
     const [item] = await db.sql`SELECT payload, summary FROM harness_shared.work_items WHERE feature_id = ${out.rows[0].itemId}`;
-    expect(item.payload.cloneFamily.disposition).toBe('derive-and-sync');
+    expect(item.payload.cloneArea.families[0].disposition).toBe('derive-and-sync');
     expect(item.summary).toContain('templates/example/a.ts');
     expect(item.summary).not.toContain('c.test.ts');
     expect(ranked[0].redundantMass).toBe(ranked[0].family.members[0].mass);

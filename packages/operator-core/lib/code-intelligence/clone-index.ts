@@ -14,7 +14,14 @@ export interface CloneFunction {
   id: string; path: string; line: number; column: number; start: number; end: number;
   name: string; signature: string; mass: number; exact: string; renamed: string;
   blobSha: string; classification: CloneClassification;
+  /** For an anonymous function: the nearest named enclosing symbol (or the callee it
+   * is passed to), so a filed finding can name a member a reader can navigate to.
+   * Absent for named functions, whose own name is already that symbol. */
+  enclosing?: string;
 }
+/** The symbol a person navigates to for this member — never the bare `<anon>`. */
+export const cloneMemberSymbol = (fn: Pick<CloneFunction, 'name' | 'enclosing'>) =>
+  fn.name !== '<anon>' ? fn.name : fn.enclosing ?? 'anonymous function at module scope';
 export interface CloneFile {
   path: string; blobSha: string | null; sha256: string | null;
   status: 'indexed' | 'syntax-error' | 'excluded' | 'unavailable';
@@ -47,7 +54,9 @@ export const cloneBlobSha = (source: string) => createHash('sha1').update(`blob 
 export function classifyClonePath(path: string): CloneClassification {
   return {
     test: /(?:\.(?:test|spec)\.tsx?$)|(?:^|\/)(?:__tests__|__fixtures__|__mocks__)(?:\/|$)/.test(path),
-    vendored: /(?:^|\/)node_modules\/|^templates\/|\/template-kit\//.test(path),
+    // env-sidecars/ holds per-environment generated copies of shared sidecar code
+    // (code-cleanup-campaigns-2026-10-26 P-002 precision sample): derive-and-sync, not consolidate.
+    vendored: /(?:^|\/)node_modules\/|^templates\/|\/template-kit\/|(?:^|\/)env-sidecars\//.test(path),
     retired: /(?:^|\/)_retired\/|^apps\/operator\/app\//.test(path),
   };
 }
@@ -79,6 +88,41 @@ function hasCloneBody(node: ts.Node): node is ts.FunctionDeclaration | ts.Method
     && !!node.body && ts.isBlock(node.body);
 }
 
+const declaredName = (node: ts.Node): string | null => {
+  const named = node as ts.Node & { name?: ts.Node };
+  if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)
+    || ts.isClassDeclaration(node) || ts.isClassExpression(node) || ts.isVariableDeclaration(node)
+    || ts.isPropertyAssignment(node) || ts.isPropertyDeclaration(node) || ts.isGetAccessor(node)
+    || ts.isSetAccessor(node)) && named.name && (ts.isIdentifier(named.name) || ts.isStringLiteral(named.name)
+    || ts.isPrivateIdentifier(named.name))) return named.name.text;
+  if (ts.isConstructorDeclaration(node)) return 'constructor';
+  return null;
+};
+/** Nearest navigable name for an anonymous function: the closest named enclosing
+ * declaration, qualified by its own enclosing class/function (`Outer.method`), or the
+ * callee it is passed to when nothing encloses it (`describe(…) callback`). */
+function enclosingSymbol(fn: ts.Node): string | null {
+  // A constructor or `#private` method is named by its declaration even though the
+  // clone label keeps `<anon>`: qualify it by its class and stop.
+  const own = declaredName(fn);
+  const parts: string[] = [];
+  let callee: string | null = null;
+  for (let node = fn.parent; node && !ts.isSourceFile(node); node = node.parent) {
+    if (!own && !callee && !parts.length && ts.isCallExpression(node)
+      && node.arguments.some(arg => arg.pos <= fn.pos && fn.end <= arg.end)) {
+      const target = node.expression;
+      callee = ts.isIdentifier(target) ? target.text : ts.isPropertyAccessExpression(target) ? target.name.text : null;
+    }
+    const name = declaredName(node);
+    if (name) parts.unshift(name);
+    if (parts.length >= (own ? 1 : 2)) break;
+  }
+  const scope = parts.join('.');
+  if (own) return scope ? `${scope}.${own}` : own;
+  if (callee) return scope ? `${scope} › ${callee}(…) callback` : `${callee}(…) callback`;
+  return scope ? `${scope} › anonymous function` : null;
+}
+
 export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS, includeNear = true): CloneFile {
   const path = checkedPath(input.path), blobSha = cloneBlobSha(input.source);
   if (input.blobSha !== undefined && input.blobSha !== blobSha) throw new Error(`Clone blob identity mismatch: ${path}`);
@@ -104,6 +148,7 @@ export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS, i
           line: position.line + 1, column: position.character + 1, name: name || '<anon>',
           signature: input.source.slice(start, body.getStart(source)).replace(/\s+/g, ' ').trim().slice(0, 300),
           mass: fp.mass, exact: fp.exact, renamed: fp.normalized, blobSha, classification };
+        if (!name) { const enclosing = enclosingSymbol(node); if (enclosing) fn.enclosing = enclosing; }
         if (includeNear) Object.defineProperty(fn, nearFingerprint, { value: fingerprintCloneNear(body) });
         functions.push(fn);
       }

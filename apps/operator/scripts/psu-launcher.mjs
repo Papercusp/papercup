@@ -7632,6 +7632,39 @@ function isCodexAutoRoute(agent, model, account) {
   return provider === "codex";
 }
 
+/**
+ * The bare model id a launch spec asks the gateway for: `gpt-6.1-sol:high` and
+ * `gpt-6.1-sol[1m]` both mean `gpt-6.1-sol`. Lowercased, because the gateway keys
+ * refusals by the request body's model string. `null` for an empty spec.
+ *
+ * @param {string | null | undefined} model
+ * @returns {string | null}
+ */
+export function codexModelIdFromSpec(model) {
+  const raw = String(model ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  const id = raw.replace(/\[[^\]]*\]$/, "").replace(/:(?:minimal|low|medium|high|xhigh|max|none)$/, "");
+  return id || null;
+}
+
+/**
+ * The gateway's measured serviceable-account count for ONE model, or `null` when the
+ * snapshot does not carry a reading for it (older gateway, or no live refusal for the
+ * model — in which case the provider-wide count already describes it).
+ *
+ * @param {unknown} byModel `stats.codexServiceableByModel`
+ * @param {string} modelId  a {@link codexModelIdFromSpec} result
+ * @returns {number | null}
+ */
+export function codexServiceableForModel(byModel, modelId) {
+  if (!byModel || typeof byModel !== "object" || Array.isArray(byModel)) return null;
+  for (const [key, value] of Object.entries(byModel)) {
+    if (String(key).trim().toLowerCase() !== modelId) continue;
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+  return null;
+}
+
 /** Env escape hatch: launch anyway despite a provably-walled auto-route pool. */
 export const ALLOW_WALLED_LAUNCH_ENV = "PAPERCUSP_ALLOW_WALLED_LAUNCH";
 
@@ -7666,7 +7699,7 @@ export const WALLED_POOL_REFUSAL_EXIT = 78;
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null, codexServiceableByModel?: Record<string, number>, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -7683,6 +7716,30 @@ export function codexAutoPoolVerdict({
   if (!stats || typeof stats !== "object") return proceed;
   const healthy = stats.codexHealthyAccounts;
   const total = stats.codexTotalAccounts;
+  // WI-6554700010029748: the provider-wide count is MODEL-BLIND. Measured 2026-10-26
+  // 23:40Z: the only accounts the gateway called serviceable refused the requested
+  // model ("not supported when using Codex with a ChatGPT account"), so a
+  // gpt-6.1-sol / gpt-5.5 launch passed this gate with codexHealthyAccounts > 0, then
+  // every model call failed over across the pool and came back a 429 (one session
+  // took 426 sheds in 4h). The gateway now publishes `codexServiceableByModel` for
+  // every model with a live refusal: serviceable accounts that DO accept that model.
+  // A positive provider count with a measured ZERO for the requested model is the
+  // same certainty as the all-walled case below, so it refuses the same way. A
+  // missing map or a model absent from it stays fail-open.
+  const modelId = codexModelIdFromSpec(model);
+  const modelServiceable = modelId ? codexServiceableForModel(stats.codexServiceableByModel, modelId) : null;
+  if (Number.isInteger(healthy) && healthy > 0 && modelServiceable === 0) {
+    return {
+      kind: "refuse",
+      recoveryAt: null,
+      message:
+        `psu: REFUSING TO LAUNCH — no Codex account will serve model '${modelId}': the gateway can route to ${healthy} ` +
+        `Codex account(s), but every one of them currently refuses '${modelId}' (see gateway /stats codexModelRefusals). ` +
+        "Every model call would fail over across the pool and come back as a 429. " +
+        "Re-route instead: --agent claude, or a Codex model those accounts accept. " +
+        `Override with ${ALLOW_WALLED_LAUNCH_ENV}=1 if you know this snapshot is wrong.`,
+    };
+  }
   const hasRecovery = Object.prototype.hasOwnProperty.call(
     stats,
     "codexEarliestRecoveryAt",

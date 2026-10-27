@@ -10,6 +10,7 @@ import {
   defaultRunnerIdentity,
   isUnitVitestTaskScript,
   LANE_SCRIPTS,
+  nodeVersionRunnerIdentity,
   resolveWorkspacePackage,
   restoreCandidateCheckpointForReuse,
 } from '../../../../scripts/lib/targeted-task-reuse.mjs';
@@ -885,5 +886,87 @@ describe('armTargetedTaskReuse', () => {
       expect(ended).toBe(1);
       armed.finish();
     });
+  });
+});
+
+/**
+ * WI-6554700010029685: repair head 327e4d1d of frozen candidate 8c03b5dc pins a recorder (libs/test-config
+ * @ c389255bc0) that writes `<format> <process.version> <process.platform> <process.arch>`. The gate's
+ * selector measured the runtime fingerprint instead, so its proof read matched nothing (`rows=0`) or it
+ * gave up (`no-runner-identity`), and every repair round re-ran ~5,900 files. The identity must follow
+ * the JUDGED recorder's scheme, exactly as the proof format already does (WI-6554700010008589).
+ */
+describe('runner identity follows the judged recorder scheme (WI-6554700010029685)', () => {
+  /** Verbatim from libs/test-config @ c389255bc0 src/test-pass-reuse-skip.ts. */
+  const LEGACY_RECORDER = [
+    "export const REUSE_PROOF_FORMAT = 'proof-v3';",
+    '/** Proof format + node version + platform + arch of this process (D-004 rule 6, P-001). */',
+    'export function executedSourceRunnerIdentity(): string {',
+    '  return `${REUSE_PROOF_FORMAT} ${process.version} ${process.platform} ${process.arch}`;',
+    '}',
+    '',
+  ].join('\n');
+  const legacyRecorder = () => {
+    const file = join(root, 'libs/test-config/src/test-pass-reuse-skip.ts');
+    mkdirSync(join(file, '..'), { recursive: true });
+    writeFileSync(file, LEGACY_RECORDER);
+  };
+  /** A lane script shape the fingerprint capture refuses (env prefix + wrapper), as operator-core's are. */
+  const WRAPPED = 'PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests';
+
+  it('measures the PATH node exactly as a pre-fingerprint lineage does, and null when the probe fails', () => {
+    const calls: Array<{ file: string; args: string[]; cwd: unknown; env: unknown }> = [];
+    const env = { PATH: '/x' };
+    const exec = (file: string, args: string[], options: { cwd?: unknown; env?: unknown }) => {
+      calls.push({ file, args, cwd: options.cwd, env: options.env });
+      return 'v25.9.0 linux x64\n';
+    };
+    expect(nodeVersionRunnerIdentity('/judged', env, 'proof-v3', exec)).toBe('proof-v3 v25.9.0 linux x64');
+    expect(calls).toEqual([{ file: 'node', args: ['-p', "process.version + ' ' + process.platform + ' ' + process.arch"],
+      cwd: '/judged', env }]);
+    expect(nodeVersionRunnerIdentity('/judged', env, 'proof-v3', () => { throw new Error('ENOENT'); })).toBeNull();
+    expect(nodeVersionRunnerIdentity('/judged', env, 'proof-v3', () => '  \n')).toBeNull();
+  });
+
+  it('takes the node-version identity for a legacy judged tree, whatever the task script shape', () => {
+    fixture(WRAPPED);
+    legacyRecorder();
+    const task = { workspaceRoot: join(root, 'packages/lane-ws'), scriptText: WRAPPED };
+    const legacy = defaultRunnerIdentity(root, process.env, 'proof-v3', task);
+    expect(legacy).toMatch(/^proof-v3 v\d+\.\d+\.\d+ \S+ \S+$/);
+    expect(legacy).toBe(nodeVersionRunnerIdentity(root, process.env, 'proof-v3'));
+    // The pre-fix measurement of the same task: the fingerprint capture refuses the wrapper.
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', task, 'runtime-fingerprint')).toBeNull();
+    // An unclassifiable recorder keeps the fingerprint measurement (the pre-fix behaviour).
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', task, null)).toBeNull();
+  });
+
+  it('arms reuse on a legacy lineage from the default identity seam, and the judged consumer accepts the list', async () => {
+    fixture();
+    legacyRecorder();
+    const expected = nodeVersionRunnerIdentity(root, baseEnv(), 'proof-v3');
+    expect(expected).not.toBeNull();
+    const seen: unknown[] = [];
+    // The proof read keys on the identity, as the database read does: any other identity loads nothing.
+    const loadProofs = async ({ runnerIdentity }: { runnerIdentity: string }) => {
+      seen.push(runnerIdentity);
+      const rows = runnerIdentity === expected
+        ? [['packages/lane-ws/a.test.ts', { ...proof(HEAD, ['packages/lane-ws/a.test.ts', 'packages/lane-ws/src/a.ts']), runnerIdentity: expected }]] as const
+        : [];
+      return { proofs: new Map(rows), rows: rows.length };
+    };
+    const seams = deps({ loadProofs }) as Record<string, unknown>;
+    delete seams.runnerIdentity; // the default seam is the thing under test
+    delete seams.proofFormat;
+    const armed = await armTargetedTaskReuse({
+      root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(), scope: 'targeted-gate',
+      deps: seams as Deps,
+    });
+    expect(seen).toEqual([expected]);
+    expect(armed.reused).toBe(1);
+    const list = parseReuseSkipList(readFileSync(armed.env.PC_TEST_REUSE_SKIP_LIST!, 'utf8'));
+    expect(list.runnerIdentity).toBe(expected);
+    expect(decideReuseSkip(list, { runContext: CTX, runnerIdentity: expected! })).toMatchObject({ applied: true });
+    armed.finish();
   });
 });

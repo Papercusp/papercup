@@ -102,6 +102,34 @@ export function judgedTreeProofFormat(root, readFile = (f) => readFileSync(f, "u
 }
 
 /**
+ * WI-6554700010029685: the runner-identity SCHEME the judged tree's recorder writes, read from the same
+ * recorder source as judgedTreeProofFormat.
+ *
+ * The selector runs from the gate's code, but proofs on a frozen repair lineage were written by THAT
+ * lineage's recorder. Before the runtime fingerprint (scripts/lib/runtime-compatibility.mjs, d314d294ad)
+ * the recorder wrote `<format> <process.version> <process.platform> <process.arch>`, and its skip-list
+ * consumer accepts only that string. A selector measuring the runtime fingerprint loads none of those
+ * proofs: repair head 327e4d1d of frozen candidate 8c03b5dc logged `rows=0` (or `no-runner-identity`)
+ * on every targeted task, so each repair round re-ran ~5,900 files.
+ *
+ * @param {string} root the judged checkout
+ * @param {(file: string) => string} [readFile]
+ * @returns {"runtime-fingerprint" | "node-version" | null} null when the recorder is missing or its identity
+ *   cannot be classified; callers then keep the runtime-fingerprint measurement (the pre-fix behaviour).
+ */
+export function judgedTreeRunnerIdentityScheme(root, readFile = (f) => readFileSync(f, "utf8")) {
+  let body;
+  try {
+    body = String(readFile(path.join(root, RECORDER_PROOF_FORMAT_FILE)));
+  } catch {
+    return null;
+  }
+  if (/\bruntimeProofFingerprint\b/.test(body)) return "runtime-fingerprint";
+  if (/\$\{process\.version\}\s+\$\{process\.platform\}\s+\$\{process\.arch\}/.test(body)) return "node-version";
+  return null;
+}
+
+/**
  * A test file: a leaf no other test imports. An older-format (legacy) proof may omit modules its test
  * loaded dynamically (EI-25597096188717078), so it is only reusable when every drift path is one of these.
  */

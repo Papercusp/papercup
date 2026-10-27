@@ -452,6 +452,26 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
     },
   );
 
+  // WI-6554700010029716: the per-id explainer read a hand-written floor list that dropped
+  // ok_admission_recovery, so a queued/held recovery row read admissible:true while self-select
+  // skipped it. Attribution and self-select must agree row for row.
+  it.each([
+    ['queued', 'admission-recovery'],
+    ['held', 'admission-recovery'],
+    ['delivered', null],
+  ] as const)(
+    'WI-6554700010029716: a %s recovery is attributed %s by the explainer, matching self-select',
+    async (state, refusedBy) => {
+      const id = `WI-recovery-explain-${state}`;
+      await seedIssue(id, { createdTs: 100, payload: { _admissionRecovery: { state, target: 'recovery-target' } } });
+      const [floor] = await wi.explainIssueClaimFloors(H, [id], { assignee: 'bee-explain' });
+      expect(floor?.refusedBy).toBe(refusedBy);
+      expect(floor?.admissible).toBe(refusedBy === null);
+      const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-select' });
+      expect(got?.id ?? null).toBe(refusedBy === null ? id : null);
+    },
+  );
+
   it('serves the unheld item, never the held one, when both are otherwise ready', async () => {
     await seedIssue('WI-held', { createdTs: 100, payload: { _claimHold: true } });
     await seedIssue('WI-open', { createdTs: 200 });

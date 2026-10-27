@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { CloneIndex, classifyClonePath } from '../packages/operator-core/lib/code-intelligence/clone-index';
-import { cloneSweepInputSchema, fileCloneSweep, rankCloneSweep, rankSemanticSweep } from '../packages/operator-core/lib/code-intelligence/clone-sweep';
+import { cloneSweepInputSchema, fileCloneSweep, nativeCloneFilingSignals, rankCloneSweep, rankSemanticSweep } from '../packages/operator-core/lib/code-intelligence/clone-sweep';
 import { openSemanticCodeIndex, collectSemanticSweepCandidates } from '../packages/operator-core/lib/code-intelligence/semantic-code-runtime';
 import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
@@ -49,7 +49,7 @@ if (input.semantic) {
 const families = [...rankCloneSweep(index, input), ...rankSemanticSweep(index, semantic?.candidates ?? [], input)];
 const outcome = await fileCloneSweep(families, {
   workspaceId: request.workspaceId, harness: request.harness, fireId: request.fireId, root,
-});
+}, { signals: nativeCloneFilingSignals({ root, workspaceId: request.workspaceId, harness: request.harness }) });
 console.log(JSON.stringify({ schemaVersion: 1, fireId: request.fireId,
   sourceDigest: digest.digest('hex'), indexed: index.size, excluded, incomplete, semantic, ...outcome }));
 // The ordinary host retains its DB pool; this single-use CLI must release it.

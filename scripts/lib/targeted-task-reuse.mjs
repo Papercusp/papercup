@@ -57,6 +57,7 @@ import {
   TEST_REUSE_SKIP_LIST_ENV,
   formatTestReuseLine,
   judgedTreeProofFormat,
+  judgedTreeRunnerIdentityScheme,
   laneOfFromSplit,
   laneOfTaskScript,
   laneScopedCandidates,
@@ -154,13 +155,48 @@ function defaultGit(root, args) {
  * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
  * @param {{ workspaceRoot: string, scriptText: string, preScript?: string, postScript?: string }} [task]
  *   Required for npm tasks; without it this measures only a direct PATH-node launch.
+ * @param {"runtime-fingerprint" | "node-version" | null} [scheme] the identity the JUDGED tree's recorder
+ *   writes (judgedTreeRunnerIdentityScheme). `node-version` measures what a pre-fingerprint lineage
+ *   records and its skip consumer accepts (WI-6554700010029685); anything else keeps the fingerprint.
  * @returns {string | null}
  */
-export function defaultRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMAT, task) {
+export function defaultRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMAT, task, scheme = judgedTreeRunnerIdentityScheme(root)) {
+  if (scheme === "node-version") return nodeVersionRunnerIdentity(root, env, proofFormat);
   const identity = task
     ? captureNpmTaskRuntimeIdentity({ root, environment: env, ...task })
     : captureRuntimeProofIdentity({ root, environment: env });
   return reuseRunnerIdentity(runtimeProofFingerprint(identity), proofFormat);
+}
+
+/**
+ * WI-6554700010029685: the pre-fingerprint runner identity — `process.version process.platform
+ * process.arch` of the PATH node under the task env, prefixed with the proof format. This is exactly
+ * what a lineage older than d314d294ad measured in its own selector, what its recorder writes
+ * (`executedSourceRunnerIdentity`) and what its skip-list consumer compares against, so a gate judging
+ * such a lineage must measure it too. Matching it is never a widening: the judged consumer re-checks
+ * the skip list against its own worker's identity and refuses a mismatch (every file then runs).
+ *
+ * @param {string} root
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} [proofFormat]
+ * @param {(file: string, args: string[], options: object) => string} [exec]
+ * @returns {string | null} null when the node probe fails (reuse then switches off)
+ */
+export function nodeVersionRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMAT, exec = execFileSync) {
+  try {
+    return reuseRunnerIdentity(
+      String(exec("node", ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"], {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 30_000,
+      })),
+      proofFormat,
+    );
+  } catch {
+    return null;
+  }
 }
 
 const defaultDeps = {

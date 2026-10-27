@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { buildCloneIndex, classifyClonePath, CLONE_MIN_MASS, cloneBlobSha, CloneIndex, extractCloneFile, refreshCloneIndex } from './clone-index';
+import { buildCloneIndex, classifyClonePath, CLONE_MIN_MASS, cloneBlobSha, CloneIndex, cloneMemberSymbol, extractCloneFile, refreshCloneIndex } from './clone-index';
 
 const fixtureDir = fileURLToPath(new URL('./__fixtures__/clone-corpus-20261021/', import.meta.url));
 const root = resolve(fixtureDir, '../../../../../..');
@@ -196,6 +196,9 @@ function outer(input: number[]) { function inner(input: number[]) { ${body} } re
     expect(file.status).toBe('indexed');
     const names = file.functions.map(fn => fn.name);
     expect(names).toEqual(['<anon>', 'value', '<anon>', 'render', 'regular', 'outer', 'inner']);
+    // Anonymous members carry their enclosing symbol, so filing never names `<anon>`.
+    expect(file.functions.map(cloneMemberSymbol)).toEqual(['Example.constructor', 'value', 'Example.#method',
+      'render', 'regular', 'outer', 'inner']);
     expect(names).not.toContain('expression');
     expect(file.functions.find(fn => fn.name === 'render')!.line).toBe(6);
     expect(file.functions.every(fn => fn.column >= 1 && fn.end > fn.start)).toBe(true);
@@ -252,16 +255,23 @@ function historicalSources(): { path: string; source: string; blobSha: string }[
 }
 
 describe('D012 historical reconstruction through the new clone index', () => {
-  it('reproduces every327 raw family and164 filtered families/404 members without corpus retuning', { timeout: 120000 }, () => {
+  it('reproduces every327 raw family and the 164 filtered families/404 members minus the 3 env-sidecars families', { timeout: 120000 }, () => {
     const inputs = historicalSources();
     expect(inputs).toHaveLength(10339);
     const index = buildCloneIndex(inputs);
     const raw = index.families('renamed', { includeClassified: true, crossFile: false });
     expect(canonical(raw.map(family => family.members.map(label)))).toEqual(canonical(json('original-output.json').allType2));
     const filtered = index.families('renamed', { includeTests: true });
-    expect(canonical(filtered.map(family => family.members.map(label)))).toEqual(canonical(json('original-filtered-family-labels.json').families));
-    expect(filtered).toHaveLength(164);
-    expect(filtered.reduce((n, family) => n + family.members.length, 0)).toBe(404);
+    // code-cleanup-campaigns-2026-10-26 P-002 deliberately departs from the archived probe:
+    // papercusp-desktop/src-tauri/env-sidecars/** is a generated per-environment copy of
+    // libs/papercusp/packages/harness/paths.ts, so it is now classified vendored. Exactly the
+    // three paths.ts families (packageRoot, harnessRootCandidates, consider) lose a member.
+    const original: string[][] = json('original-filtered-family-labels.json').families;
+    const expected = original.map(f => f.filter(l => !/(?:^|\/)env-sidecars\//.test(l))).filter(f => f.length >= 2);
+    expect(original.length - expected.length).toBe(3);
+    expect(canonical(filtered.map(family => family.members.map(label)))).toEqual(canonical(expected));
+    expect(filtered).toHaveLength(161);
+    expect(filtered.reduce((n, family) => n + family.members.length, 0)).toBe(398);
     // D012 preserves this difference rather than claiming original-input identity.
     expect(index.getFiles().reduce((n, file) => n + file.functions.length, 0)).toBe(36183);
     expect(json('original-output.json').functionsAtOrAboveMinMass).toBe(36185);

@@ -117,6 +117,9 @@ export const HOLD_REGISTRY: readonly HoldRegistryEntry[] = [
   // EI-26988974367709614: the live promoter held a fail-open row; it lifts the hold when it
   // promotes or merges the row on a later tick (two ticks = one hour).
   entry('claim-floor', 'admission-hold', 'transient', routine('work-items admission promoter (promote/merge lifts the hold)'), HOUR),
+  // WI-6554700010029716: a queued/held original-item admission recovery (EI-266267) reserves the
+  // row for its requested target; the promoter screens it and push-assigns it to that target.
+  entry('claim-floor', 'admission-recovery', 'transient', routine('work-items admission promoter (delivers the recovery to its target)'), HOUR),
   entry('claim-floor', 'agent-review', 'transient', AGENT_REVIEW_LANE, HOUR),
   entry('claim-floor', 'watchdog-recovery-window', 'transient', routine('watchdog auto-close (six complete ran ticks)'), HOUR),
   entry('claim-floor', 'blocked-dep', 'transient', lane('the holder of the blocking work-item'), HOUR),

@@ -9035,6 +9035,39 @@ export interface ClaimFloorAttribution {
  * the claim path cannot silently reach consumers unclassified. Keep it the complete set —
  * a floor with no entry here also reports `detail: null` to every caller.
  */
+/**
+ * WI-6554700010029716: the per-id explainer's floor inventory, in the claim path's
+ * first-refusal order. Each label names the `ok_*` column of
+ * {@link issueClaimBarFloorColumnsSql} it reads, so attribution is DERIVED from one list
+ * instead of a hand-written check per floor. The hand-written list dropped
+ * `ok_admission_recovery`: self-select skipped queued/held recovery rows while this
+ * explainer called them admissible. `get-next-floor-registry.test.ts` pins that every
+ * column the claim bar enforces (`ISSUE_CLAIM_FLOORS`) has a label here.
+ */
+export const ISSUE_FLOOR_ATTRIBUTION = [
+  ['not-claimable-status', 'ok_status'],
+  ['already-taken', 'ok_untaken'],
+  ['origin', 'ok_origin'],
+  ['admission-pending', 'ok_admission'],
+  ['live-gate-ops', 'ok_live_gate_ops'],
+  ['observation-lane', 'ok_observation'],
+  ['needs-owner-action', 'ok_needs_owner_action'],
+  ['agent-review', 'ok_agent_review'],
+  ['external-blocker', 'ok_external_blocker'],
+  ['claim-hold', 'ok_claim_hold'],
+  ['admission-recovery', 'ok_admission_recovery'],
+  ['admission-hold', 'ok_admission_hold'],
+  ['plan-lane-reserved', 'ok_plan_lane'],
+  ['federation-detector', 'ok_federation'],
+  ['loop-noise', 'ok_loop_noise'],
+  ['already-completed', 'ok_completed'],
+  ['watchdog-recovery-window', 'ok_watchdog_recovery'],
+  ['cross-machine-rig', 'ok_rig'],
+  ['blocked-dep', 'ok_no_blocker'],
+  ['cooldown', 'ok_cooldown'],
+  ['stop-line', 'ok_stop_line'],
+] as const;
+
 export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'not-found': 'no such work-item in this harness/workspace',
   'not-claimable-status': 'status is terminal or otherwise not in the claimable set',
@@ -9049,6 +9082,10 @@ export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'agent-review':
     'payload.agentReview is pending/revision-requested, or payload.implementationReadiness is enrolled without a ready verdict — reserved to review/validation until approved',
   'external-blocker': 'payload.externalBlockers contains an active typed capability dependency',
+  'admission-recovery':
+    'payload._admissionRecovery.state is queued/held — an original-item admission recovery reserves this row for its ' +
+    'requested target while the admission promoter screens it; the promoter delivers it to that target ' +
+    '(EI-266267). Still claimable by id.',
   'admission-hold':
     'payload.admissionHold is set — the live admission promoter held this fail-open row (protected twin, claimed ' +
     'canonical, or recurrence guard) and resume forbids acting on it; the promoter lifts it on promote/merge ' +
@@ -9224,6 +9261,7 @@ export async function explainIssueClaimFloors(
       ok_agent_review: boolean;
       ok_external_blocker: boolean;
       ok_claim_hold: boolean;
+      ok_admission_recovery: boolean;
       ok_admission_hold: boolean;
       ok_plan_lane: boolean;
       ok_federation: boolean;
@@ -9268,28 +9306,14 @@ export async function explainIssueClaimFloors(
     const r = byId.get(id);
     // Preserve the claim path's first-refusal order while allowing reports to
     // see independent floors hidden behind it. One inventory drives both views.
-    const floorChecks: readonly (readonly [string, boolean])[] = r ? [
-      ['not-claimable-status', r.ok_status],
-      ['already-taken', r.ok_untaken || !!(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))],
-      ['origin', r.ok_origin],
-      ['admission-pending', r.ok_admission],
-      ['live-gate-ops', r.ok_live_gate_ops],
-      ['observation-lane', r.ok_observation],
-      ['needs-owner-action', r.ok_needs_owner_action],
-      ['agent-review', r.ok_agent_review],
-      ['external-blocker', r.ok_external_blocker],
-      ['claim-hold', r.ok_claim_hold],
-      ['admission-hold', r.ok_admission_hold],
-      ['plan-lane-reserved', r.ok_plan_lane],
-      ['federation-detector', r.ok_federation],
-      ['loop-noise', r.ok_loop_noise],
-      ['already-completed', r.ok_completed],
-      ['watchdog-recovery-window', r.ok_watchdog_recovery],
-      ['cross-machine-rig', r.ok_rig],
-      ['blocked-dep', r.ok_no_blocker],
-      ['cooldown', r.ok_cooldown],
-      ['stop-line', r.ok_stop_line],
-    ] : [['not-found', false]];
+    const floorChecks: readonly (readonly [string, boolean])[] = r
+      ? ISSUE_FLOOR_ATTRIBUTION.map(([label, column]) => [
+          label,
+          column === 'ok_untaken'
+            ? r.ok_untaken || !!(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))
+            : r[column],
+        ] as const)
+      : [['not-found', false]];
     const failedFloors = floorChecks.filter(([, passed]) => !passed).map(([label]) => label);
     const refusedBy = failedFloors[0] ?? null;
     const failOpenExclusion = asAdmissionFailOpenExclusion(r?.admission_fail_open_exclusion);

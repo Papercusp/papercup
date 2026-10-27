@@ -62,8 +62,12 @@ describe('hold registry: each domain is total over the code vocabulary it covers
     );
     expect(sorted(TRANSIENT_CLAIM_FLOORS)).toEqual(
       // EI-26988974367709614 added 'admission-hold' (TRANSIENT: the admission promoter clears it on
-      // its next tick, exactly like 'admission-pending').
-      sorted(['already-taken', 'admission-pending', 'admission-hold', 'agent-review', 'watchdog-recovery-window', 'blocked-dep', 'cooldown', 'stop-line']),
+      // its next tick, exactly like 'admission-pending'). WI-6554700010029716 added
+      // 'admission-recovery' (TRANSIENT: the promoter delivers the recovery to its target).
+      sorted([
+        'already-taken', 'admission-pending', 'admission-hold', 'admission-recovery', 'agent-review',
+        'watchdog-recovery-window', 'blocked-dep', 'cooldown', 'stop-line',
+      ]),
     );
     expect(sorted(claimFloorLabels('transient'))).not.toContain('verification_conflict');
   });

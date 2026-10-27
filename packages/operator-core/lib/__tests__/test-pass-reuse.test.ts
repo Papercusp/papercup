@@ -25,6 +25,7 @@ const {
   isGlobalRunnerInput,
   isRunnerAffectingScript,
   judgedTreeProofFormat,
+  judgedTreeRunnerIdentityScheme,
   LEGACY_PROOF_SAFE_DRIFT_RE,
   RECORDER_PROOF_FORMAT_FILE,
   laneOfFromSplit,
@@ -149,6 +150,42 @@ describe('judged-tree proof format (legacy proofs on a frozen lineage)', () => {
   it('reads THIS tree as the selector format (recorder and selector are pinned equal at one revision)', () => {
     const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
     expect(judgedTreeProofFormat(repoRoot)).toBe(REUSE_PROOF_FORMAT);
+  });
+
+  // WI-6554700010029685: the identity SCHEME follows the judged recorder too. Repair head 327e4d1d pins a
+  // recorder that writes `<format> <version> <platform> <arch>`; a selector measuring the runtime
+  // fingerprint against it loaded 0 proofs every round.
+  it('classifies the runner-identity scheme the judged tree records, and null when it cannot', () => {
+    const root = mkdtempSync(join(tmpdir(), 'judged-identity-scheme-'));
+    const write = (lines: string[]) => writeFileSync(join(root, RECORDER_PROOF_FORMAT_FILE), lines.join('\n'));
+    try {
+      expect(judgedTreeRunnerIdentityScheme(root)).toBeNull();
+      mkdirSync(join(root, 'libs/test-config/src'), { recursive: true });
+      // Verbatim from libs/test-config @ c389255bc0 (the recorder frozen candidate 8c03b5dc pins).
+      write([
+        "export const REUSE_PROOF_FORMAT = 'proof-v3';",
+        'export function executedSourceRunnerIdentity(): string {',
+        '  return `${REUSE_PROOF_FORMAT} ${process.version} ${process.platform} ${process.arch}`;',
+        '}',
+      ]);
+      expect(judgedTreeRunnerIdentityScheme(root)).toBe('node-version');
+      // A fingerprint recorder wins even if the old template survives in a comment.
+      write([
+        '// formerly `${REUSE_PROOF_FORMAT} ${process.version} ${process.platform} ${process.arch}`',
+        'const fingerprint = runtimeProof.runtimeProofFingerprint?.(null) ?? null;',
+      ]);
+      expect(judgedTreeRunnerIdentityScheme(root)).toBe('runtime-fingerprint');
+      write(['export const SOMETHING_ELSE = 1;']);
+      expect(judgedTreeRunnerIdentityScheme(root)).toBeNull();
+      expect(judgedTreeRunnerIdentityScheme(root, () => { throw new Error('EACCES'); })).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads THIS tree as the runtime-fingerprint scheme (the selector default is unchanged here)', () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    expect(judgedTreeRunnerIdentityScheme(repoRoot)).toBe('runtime-fingerprint');
   });
 
   it('reuses legacy proofs when every drift path is another test file', () => {

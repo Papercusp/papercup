@@ -5706,6 +5706,34 @@ export function resetWritesForAgent(decoded: any, agent: any, env?: EnvironmentM
     data: string;
     delayMs: any;
 }[];
+/** The native session id a Claude transcript path names, or null. Pure — exported for tests. */
+export function claudeNativeIdFromTranscriptRef(nativeRef: any): string | null;
+/** EI-26957152622357153 / EI-27033376159376450: an in-place RESET-CONTEXT `/clear`
+ *  rotates Claude's native session id inside the SAME child process, so none of the
+ *  respawn paths (recycle / carry-respawn / host adoption) ever re-anchors
+ *  adv_sessions to it. Every owner-by-native-session consumer — the PreToolUse lock
+ *  hook, mcp-call's foreign-session guard, the loop turn-start stamp's
+ *  indexedLoopLaunchBinding — then reads the session's own turns as foreign
+ *  (`superuser_foreign_native_session`, `lastLoopTurnAt: null`).
+ *
+ *  After a verified reset, find the transcript holding THIS reset's carry-turn
+ *  marker (the exact marker behind the submit-time fence — never "the newest
+ *  file"), take the rotated id from its file name, and hand it to the same
+ *  `onRespawn` report a recycle uses (the launcher's is durable: it resolves with
+ *  the first attempt's verdict and keeps retrying in the background). A bare clear
+ *  has no carry marker, so it is skipped and says so. Codex resets are routed
+ *  through recycle, which reports on its own. Every outcome is recorded via
+ *  `appendEvent`. Never throws. Exported with injectables for tests. */
+export function reanchorAfterContextReset({ agent, marker, findNativeRef, onRespawn, isCurrent, timeoutMs, pollMs, appendEvent, }: {
+    agent: any;
+    marker: any;
+    findNativeRef: any;
+    onRespawn: any;
+    isCurrent?: (() => boolean) | undefined;
+    timeoutMs?: number | undefined;
+    pollMs?: number | undefined;
+    appendEvent?: (() => void) | undefined;
+}): Promise<any>;
 /**
  * The OSC recolor bytes for a fleet-bound session, from the PAPERCUSP_FLEET_BG /
  * PAPERCUSP_FLEET_FG / PAPERCUSP_FLEET_CURSOR env vars bootstrap-su resolves from

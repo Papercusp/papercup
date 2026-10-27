@@ -1999,6 +1999,14 @@ export interface GatewayStats {
    *  model for that account. The accounts stay in the pool; each entry lapses or clears on a 2xx. */
   codexModelRefusals?: CodexModelRefusalEntry[];
   /**
+   * WI-6554700010029748: `codexHealthyAccounts` is MODEL-BLIND — an account that refuses a model
+   * still counts. For every model with at least one live refusal, the number of serviceable
+   * accounts that do NOT refuse it (the same `accountHealthKey` test as the provider-wide count).
+   * A model absent from the map has no live refusal, so `codexHealthyAccounts` describes it.
+   * psu's launch preflight refuses a launch whose model reads 0 here while the provider reads > 0.
+   */
+  codexServiceableByModel?: Record<string, number>;
+  /**
    * Pool-wide Codex recovery horizon: 0 while an account can serve now, an epoch-ms instant
    * when every account is out but one has a known return, or null when no return is known.
    */
@@ -4240,13 +4248,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     source: AccountPool | null | undefined,
     at: number,
     fallbackEntries: readonly ActiveAccount[] = [],
+    /** Count only accounts that do not hold a live refusal for this model (WI-6554700010029748). */
+    model?: string,
   ): number => {
     const entries = source?.entries?.() ?? fallbackEntries;
     if (entries.length === 0) return source?.healthyCount?.() ?? 0;
     const byId = new Map(entries.map((account) => [account.accountId, account]));
     const serviceable = (accountId: string): boolean => {
       const account = byId.get(accountId);
-      return !!account && accountHealthKey(account, at) < Infinity;
+      if (!account || (model && codexModelRefusals.isRefused(accountId, model))) return false;
+      return accountHealthKey(account, at) < Infinity;
     };
     return source?.healthyCount
       ? source.healthyCount(serviceable)
@@ -5131,6 +5142,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const codexHealthyAccounts =
       codexServiceableCount(deps.codexPool, now) +
       codexServiceableCount(codexCliPool, now, codexCliPool ? [] : codexCliHealthEntries());
+    // WI-6554700010029748: the per-model view of the same count, for every model with a live refusal.
+    let codexServiceableByModel: Record<string, number> | undefined;
+    for (const { model } of codexModelRefusals.snapshot()) {
+      if (!model || (codexServiceableByModel && model in codexServiceableByModel)) continue;
+      (codexServiceableByModel ??= {})[model] =
+        codexServiceableCount(deps.codexPool, now, [], model) +
+        codexServiceableCount(codexCliPool, now, codexCliPool ? [] : codexCliHealthEntries(), model);
+    }
     const codexRecoveryHorizons = [deps.codexPool, codexCliPool]
       .filter((candidate): candidate is AccountPool => !!candidate?.earliestAvailableAt)
       .map((candidate) =>
@@ -5297,6 +5316,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       /** WI-10003306: (account, model) pairs currently routed around because the backend refused
        *  the model for that account. In the pool, not parked; each lapses or clears on a 2xx. */
       codexModelRefusals: codexModelRefusals.snapshot(),
+      ...(codexServiceableByModel ? { codexServiceableByModel } : {}),
       codexEarliestRecoveryAt: Number.isFinite(codexEarliestRecoveryAt) ? codexEarliestRecoveryAt : null,
       codexUnserviceableCause,
       codexReachability: codexReach,

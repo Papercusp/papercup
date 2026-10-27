@@ -96,6 +96,8 @@ import {
   gatewayPinEnv,
   gatewayAutoEnv,
   codexAutoPoolVerdict,
+  codexModelIdFromSpec,
+  codexServiceableForModel,
   preflightCodexAutoPool,
   ALLOW_WALLED_LAUNCH_ENV,
   accountRoutingMode,
@@ -6230,6 +6232,40 @@ describe("psu-launcher arg parsing", () => {
       },
     ])
       expect(codexAutoPoolVerdict({ ...input, now }).kind).toBe("proceed");
+  });
+
+  // WI-6554700010029748: the provider-wide count is model-blind. A measured ZERO for the
+  // requested model (every serviceable account refuses it) refuses the launch; a missing or
+  // positive reading, another model, or a non-auto route all stay fail-open.
+  it("codexAutoPoolVerdict: REFUSES a model every serviceable Codex account refuses, even when the provider reads healthy", () => {
+    const now = Date.UTC(2026, 9, 26, 23, 50, 0);
+    const stats = {
+      codexHealthyAccounts: 2,
+      codexTotalAccounts: 8,
+      codexEarliestRecoveryAt: 0,
+      codexServiceableByModel: { "gpt-5.5": 0, "gpt-6.1-sol": 1 },
+    };
+    for (const model of ["gpt-5.5", "GPT-5.5:high", "gpt-5.5[1m]"]) {
+      const verdict = codexAutoPoolVerdict({ agent: "codex", model, account: "auto", stats, now });
+      expect(verdict.kind).toBe("refuse");
+      expect(verdict.recoveryAt).toBeNull();
+      expect(verdict.message).toContain("REFUSING TO LAUNCH");
+      expect(verdict.message).toContain("'gpt-5.5'");
+      expect(verdict.message).toContain("--agent claude");
+      expect(verdict.message).toContain(ALLOW_WALLED_LAUNCH_ENV);
+    }
+    for (const input of [
+      { agent: "codex", model: "gpt-6.1-sol", account: "auto", stats },
+      { agent: "codex", model: "gpt-6-luna", account: "auto", stats },
+      { agent: "codex", model: "gpt-5.5", account: "auto", stats: { ...stats, codexServiceableByModel: undefined } },
+      { agent: "codex", model: "gpt-5.5", account: "default", stats },
+      { agent: "codex", model: "gpt-5.5", account: "auto", stats: { ...stats, codexServiceableByModel: { "gpt-5.5": "0" } } },
+    ])
+      expect(codexAutoPoolVerdict({ ...input, now }).kind).toBe("proceed");
+    expect(codexModelIdFromSpec(" gpt-6.1-sol:xhigh ")).toBe("gpt-6.1-sol");
+    expect(codexModelIdFromSpec("")).toBeNull();
+    expect(codexServiceableForModel({ "GPT-5.5": 3 }, "gpt-5.5")).toBe(3);
+    expect(codexServiceableForModel(null, "gpt-5.5")).toBeNull();
   });
 
   it("codexAutoPoolVerdict: distinguishes a live upstream outage from an account usage wall", () => {

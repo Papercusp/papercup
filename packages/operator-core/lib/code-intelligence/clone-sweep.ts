@@ -5,7 +5,7 @@ import { adoptConditionIncumbent, upsertConditionWorkItem, withConditionReplayLo
 import { activeWorkspaceId } from '../workspace-registry';
 import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
-import { cloneBlobSha } from './clone-index';
+import { cloneBlobSha, cloneMemberSymbol } from './clone-index';
 import { extractSemanticFunctions } from './semantic-code';
 import { isVerifiedSemanticPair, semanticDigest, type SemanticJudgment, type SemanticPair } from './semantic-code-judge';
 
@@ -133,18 +133,118 @@ async function semanticSourcesCurrent(root: string | undefined, row: RankedClone
   return true;
 }
 
-/** Lookup + mint is serialized using the existing condition replay mutex. The
- * persisted filing marker outlives closure, so a restart or expired acceptance
- * never creates a second work-item for an already disposed family hash/version.
- */
+/** At most this many area items are filed (created or refreshed) per sweep run.
+ * The rest wait: an area's families resurface on a later run once higher-ranked
+ * areas are fixed or accept-listed (code-cleanup-campaigns-2026-10-26 R-2). */
+export const CLONE_SWEEP_AREA_CAP = 20;
+const AREA_MAX_SEGMENTS = 4;
+
+/** Where a shared extraction of this family would live: the deepest directory all
+ * members share (at most four segments). Members that share no package-level
+ * directory get the sorted set of their packages instead of a meaningless root. */
+export function cloneFamilyArea(members: readonly Pick<CloneFamily['members'][number], 'path'>[]): string {
+  const dirs = members.map(fn => fn.path.split('/').slice(0, -1));
+  let common = dirs[0] ?? [];
+  for (const dir of dirs.slice(1)) {
+    let n = 0;
+    while (n < common.length && n < dir.length && common[n] === dir[n]) n++;
+    common = common.slice(0, n);
+  }
+  const packageDepth = members[0] && members[0].path.startsWith('libs/generic/') ? 3 : 2;
+  if (common.length >= Math.min(packageDepth, Math.max(...dirs.map(d => d.length)))) {
+    return common.slice(0, AREA_MAX_SEGMENTS).join('/') || '.';
+  }
+  return [...new Set(members.map(fn => packageOf(fn.path)))].sort().join(' + ');
+}
+export const cloneAreaConditionKey = (area: string) => `clone-area:${area}`;
+
+export type MemberCoverage = { status: 'covered'; tests: number } | { status: 'uncovered' }
+  | { status: 'unknown'; reason: string };
+export type FamilyCoChange = { status: 'measured'; score: number; shared: number; union: number }
+  | { status: 'unknown'; reason: string };
+/** Evidence the filed item carries so a reader can judge safety (coverage) and
+ * whether the copies are one concept (co-change). Absent evidence is stated as
+ * `unknown` with a reason, never omitted. */
+export interface CloneFilingSignals {
+  coverage(members: readonly CloneFamily['members'][number][]): Promise<ReadonlyMap<string, MemberCoverage>>;
+  coChange(paths: readonly string[]): Promise<FamilyCoChange>;
+}
+/** Production signals for the nightly runner: the source-bound test-coverage map
+ * (P016) and 90-day first-parent co-change (P013). Every failure degrades to an
+ * `unknown` with its reason — a sweep never fails, or claims coverage, on missing data. */
+export function nativeCloneFilingSignals(input: { root: string; workspaceId: string; harness: string }): CloneFilingSignals {
+  return {
+    async coverage(members) {
+      const unknown = (reason: string) => new Map<string, MemberCoverage>(members.map(fn => [fn.id, { status: 'unknown', reason }]));
+      try {
+        const [{ getOrgPg }, { readTestCoverage }, { coverageHash }, { queryTestCoverage }] = await Promise.all([
+          import('@papercusp/db-org'), import('@papercusp/test-config/test-coverage-store'),
+          import('@papercusp/test-config/test-coverage-map'), import('./test-coverage-map')]);
+        const paths = [...new Set(members.map(fn => fn.path))];
+        const snapshots = await readTestCoverage(getOrgPg().sql, input.workspaceId, input.harness, input.root, paths);
+        if (!snapshots.length) return unknown('no coverage map recorded for these files');
+        const all = [...new Set([...paths, ...snapshots.flatMap(s => [s.testFile, ...s.sources.map(f => f.path),
+          ...s.population.map(f => f.path)])])];
+        if (all.length > 400) return unknown('coverage scope too large to verify');
+        const bytes = new Map<string, Buffer>();
+        for (const path of all) { try { bytes.set(path, await readFile(join(input.root, path))); } catch { /* deleted test: hash mismatch below */ } }
+        const hashes = new Map([...bytes].map(([path, data]) => [path, coverageHash(data)] as const));
+        return new Map(members.map(fn => {
+          const text = bytes.get(fn.path)?.toString('utf8');
+          const endLine1 = text ? text.slice(0, fn.end).split('\n').length : fn.line;
+          const answer = queryTestCoverage({ root: input.root, question: { path: fn.path, line1: fn.line, endLine1 },
+            snapshots, currentHashes: hashes, currentPopulation: null });
+          const verdict: MemberCoverage = answer.basis === 'execution' && answer.tests.length
+            ? { status: 'covered', tests: answer.tests.length }
+            : answer.noTestExecutes === true ? { status: 'uncovered' } : { status: 'unknown', reason: answer.reason };
+          return [fn.id, verdict] as const;
+        }));
+      } catch (error) { return unknown(error instanceof Error ? error.message : 'coverage unavailable'); }
+    },
+    async coChange(paths) {
+      if (paths.length < 2) return { status: 'unknown', reason: 'all copies are in one file' };
+      try {
+        const { readCoChange } = await import('./change-history');
+        const report = await readCoChange(input.root, paths.slice(0, 50));
+        if (report.status !== 'measured' || !report.complete) return { status: 'unknown', reason: report.error ?? 'history incomplete' };
+        const inFamily = new Set(paths);
+        const best = report.pairs.filter(p => inFamily.has(p.path) && inFamily.has(p.partner))
+          .sort((a, b) => b.score - a.score)[0];
+        return best ? { status: 'measured', score: best.score, shared: best.shared, union: best.union }
+          : { status: 'measured', score: 0, shared: 0, union: 0 };
+      } catch (error) { return { status: 'unknown', reason: error instanceof Error ? error.message : 'history unavailable' }; }
+    },
+  };
+}
+const unwiredSignals: CloneFilingSignals = {
+  coverage: async members => new Map(members.map(fn => [fn.id, { status: 'unknown', reason: 'coverage map not consulted' }])),
+  coChange: async () => ({ status: 'unknown', reason: 'change history not consulted' }),
+};
+const coverageText = (c: MemberCoverage | undefined) => !c ? 'coverage unknown (not measured)'
+  : c.status === 'covered' ? `covered by ${c.tests} test file${c.tests === 1 ? '' : 's'}`
+    : c.status === 'uncovered' ? 'no test executes it' : `coverage unknown (${c.reason})`;
+const coChangeText = (c: FamilyCoChange) => c.status === 'measured'
+  ? `co-change ${c.score.toFixed(2)} (changed together in ${c.shared} of ${c.union} commits touching them)`
+  : `co-change unknown (${c.reason})`;
+
+type FiledRow = { familyId: string; itemId: string | null; area?: string;
+  disposition: 'accepted' | 'created' | 'reused' | 'unverified' | 'deferred' };
+
+/** Families are grouped by extraction area; one work-item per area, keyed by the
+ * area so re-runs refresh rather than refile. Lookup + mint is serialized using
+ * the existing condition replay mutex, and the persisted marker outlives closure,
+ * so a restart never creates a second item for the same area. */
 export async function fileCloneSweep(families: readonly RankedCloneFamily[], scope: {
   workspaceId: string; harness: string; fireId: string; root?: string;
-}) {
+}, options: { cap?: number; signals?: CloneFilingSignals } = {}) {
   if (!scope.workspaceId.trim() || !scope.harness.trim() || !scope.fireId.trim()) throw new Error('Clone sweep scope required');
   // Issue-family creates use the established ambient workspace. The standalone
   // managed runner pins it; refuse a misbound caller before minting any row.
   if (activeWorkspaceId() !== scope.workspaceId) throw new Error('Clone sweep ambient workspace mismatch');
-  const rows: { familyId: string; itemId: string | null; disposition: 'accepted' | 'created' | 'reused' | 'unverified' }[] = [];
+  const cap = options.cap ?? CLONE_SWEEP_AREA_CAP, signals = options.signals ?? unwiredSignals;
+  if (!Number.isInteger(cap) || cap < 1) throw new Error('Clone sweep cap must be a positive integer');
+  const rows: FiledRow[] = [];
+  const areas = new Map<string, RankedCloneFamily[]>();
   for (const row of families) {
     if (row.family.kind === 'semantic') {
       let current = false;
@@ -152,32 +252,57 @@ export async function fileCloneSweep(families: readonly RankedCloneFamily[], sco
       if (!current) { rows.push({ familyId: row.family.id, itemId: null, disposition: 'unverified' }); continue; }
     }
     if (row.accepted) { rows.push({ familyId: row.family.id, itemId: null, disposition: 'accepted' }); continue; }
-    const key = cloneFamilyConditionKey(row.family);
-    const title = `Clone family: ${row.disposition} ${row.copies} copies (${row.redundantMass} redundant AST nodes)`;
-    const locations = row.family.members.map(fn => `- ${fn.path}:${fn.line} ${fn.name}`);
-    const summary = [`${row.disposition}; family ${row.family.id}`, `Membership ${row.membersDigest}`,
-      `Rank: redundant mass ${row.redundantMass}; copies ${row.copies}; package distance ${row.packageDistance}.`,
-      ...(row.generic ? ['Domain-free cross-package candidate: consolidate in libs/generic (review-bound evidence).'] : []),
-      ...locations].join('\n');
+    const area = cloneFamilyArea(row.family.members);
+    areas.set(area, [...(areas.get(area) ?? []), row]);
+  }
+  const mass = (group: readonly RankedCloneFamily[]) => group.reduce((n, row) => n + row.redundantMass, 0);
+  const ranked = [...areas].sort(([a, x], [b, y]) => mass(y) - mass(x) || y.length - x.length || a.localeCompare(b));
+  for (const [n, [area, group]] of ranked.entries()) {
+    if (n >= cap) { for (const row of group) rows.push({ familyId: row.family.id, itemId: null, area, disposition: 'deferred' }); continue; }
+    const key = cloneAreaConditionKey(area);
+    const detail = [];
+    for (const row of group) {
+      const coverage = await signals.coverage(row.family.members);
+      const coChange = await signals.coChange([...new Set(row.family.members.map(fn => fn.path))]);
+      detail.push({ row, coverage, coChange });
+    }
+    const total = mass(group);
+    const title = `Clone area: ${area} — ${group.length} famil${group.length === 1 ? 'y' : 'ies'}, ${total} redundant AST nodes`;
+    const summary = [`${group.length} clone famil${group.length === 1 ? 'y' : 'ies'} whose shared extraction would live in ${area}.`,
+      ...detail.flatMap(({ row, coverage, coChange }) => [
+        `\n${row.disposition} ${row.copies} copies (${row.redundantMass} redundant AST nodes; package distance ${row.packageDistance}); ${coChangeText(coChange)}`,
+        `family ${row.family.id}; membership ${row.membersDigest}`,
+        ...(row.generic ? ['Domain-free cross-package candidate: consolidate in libs/generic (review-bound evidence).'] : []),
+        ...row.family.members.map(fn => `- ${fn.path}:${fn.line} ${cloneMemberSymbol(fn)} — ${coverageText(coverage.get(fn.id))}`)])].join('\n');
+    const payload = { cloneArea: { area, fireId: scope.fireId, redundantMass: total,
+      families: detail.map(({ row, coverage, coChange }) => ({ id: row.family.id, membersDigest: row.membersDigest,
+        disposition: row.disposition, generic: row.generic, coChange,
+        rank: { redundantMass: row.redundantMass, copies: row.copies, packageDistance: row.packageDistance },
+        members: row.family.members.map(fn => ({ id: fn.id, path: fn.path, line: fn.line, symbol: cloneMemberSymbol(fn),
+          coverage: coverage.get(fn.id) ?? { status: 'unknown', reason: 'not measured' } })),
+        ...(row.semantic ? { semantic: row.semantic } : {}) })) },
+      tags: ['clone-area', ...new Set(group.map(row => row.disposition)), ...(group.some(row => row.generic) ? ['libs/generic'] : [])] };
     const result = await withConditionReplayLock(scope.workspaceId, key, async () => {
-      if (row.family.kind === 'semantic' && !await semanticSourcesCurrent(scope.root, row)) return { id: null, created: false, unverified: true };
+      for (const row of group) {
+        if (row.family.kind === 'semantic' && !await semanticSourcesCurrent(scope.root, row)) return { id: null, created: false, unverified: true };
+      }
       const incumbent = await adoptConditionIncumbent(key, { title, summary, workspaceId: scope.workspaceId, includeTerminal: true });
       if (incumbent) return { id: incumbent, created: false };
       return upsertConditionWorkItem(key, { kind: 'change', title, summary, harness: scope.harness,
-        workspaceId: scope.workspaceId, createdBy: 'system:clone-family-sweep',
-        payload: { cloneFamily: { id: row.family.id, membersDigest: row.membersDigest,
-          disposition: row.disposition, generic: row.generic, fireId: scope.fireId,
-          rank: { redundantMass: row.redundantMass, copies: row.copies, packageDistance: row.packageDistance },
-          ...(row.semantic ? { semantic: row.semantic } : {}) },
-          tags: ['clone-family', row.disposition, ...(row.generic ? ['libs/generic'] : [])] } });
+        workspaceId: scope.workspaceId, createdBy: 'system:clone-family-sweep', payload });
     });
-    if ('unverified' in result) { rows.push({ familyId: row.family.id, itemId: null, disposition: 'unverified' }); continue; }
-    if ('duplicateLeftOpen' in result && result.duplicateLeftOpen) {
-      throw new Error(`Clone family duplicate remains open: ${result.duplicateLeftOpen}`);
+    if ('unverified' in result) {
+      for (const row of group) rows.push({ familyId: row.family.id, itemId: null, area, disposition: 'unverified' });
+      continue;
     }
-    if (!result.id) throw new Error(`Clone family filing returned no identity: ${row.family.id}`);
-    rows.push({ familyId: row.family.id, itemId: result.id, disposition: result.created ? 'created' : 'reused' });
+    if ('duplicateLeftOpen' in result && result.duplicateLeftOpen) {
+      throw new Error(`Clone area duplicate remains open: ${result.duplicateLeftOpen}`);
+    }
+    if (!result.id) throw new Error(`Clone area filing returned no identity: ${area}`);
+    for (const row of group) rows.push({ familyId: row.family.id, itemId: result.id, area, disposition: result.created ? 'created' : 'reused' });
   }
-  return { families: families.length, created: rows.filter(row => row.disposition === 'created').length,
+  const items = new Set(rows.filter(row => row.disposition === 'created').map(row => row.itemId));
+  return { families: families.length, created: items.size,
+    filedAreas: Math.min(cap, ranked.length), deferredAreas: Math.max(0, ranked.length - cap),
     accepted: rows.filter(row => row.disposition === 'accepted').length, rows };
 }

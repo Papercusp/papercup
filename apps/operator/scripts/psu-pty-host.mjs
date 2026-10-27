@@ -10786,6 +10786,83 @@ export function resetWritesForAgent(decoded, agent, env = process.env, opts = {}
   return steps;
 }
 
+/** A Claude transcript is `<native-session-id>.jsonl`; anything else is not an id. */
+const CLAUDE_TRANSCRIPT_NATIVE_ID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+/** The native session id a Claude transcript path names, or null. Pure — exported for tests. */
+export function claudeNativeIdFromTranscriptRef(nativeRef) {
+  if (typeof nativeRef !== 'string' || !nativeRef) return null;
+  return CLAUDE_TRANSCRIPT_NATIVE_ID.exec(basename(nativeRef))?.[1] ?? null;
+}
+
+/** EI-26957152622357153 / EI-27033376159376450: an in-place RESET-CONTEXT `/clear`
+ *  rotates Claude's native session id inside the SAME child process, so none of the
+ *  respawn paths (recycle / carry-respawn / host adoption) ever re-anchors
+ *  adv_sessions to it. Every owner-by-native-session consumer — the PreToolUse lock
+ *  hook, mcp-call's foreign-session guard, the loop turn-start stamp's
+ *  indexedLoopLaunchBinding — then reads the session's own turns as foreign
+ *  (`superuser_foreign_native_session`, `lastLoopTurnAt: null`).
+ *
+ *  After a verified reset, find the transcript holding THIS reset's carry-turn
+ *  marker (the exact marker behind the submit-time fence — never "the newest
+ *  file"), take the rotated id from its file name, and hand it to the same
+ *  `onRespawn` report a recycle uses (the launcher's is durable: it resolves with
+ *  the first attempt's verdict and keeps retrying in the background). A bare clear
+ *  has no carry marker, so it is skipped and says so. Codex resets are routed
+ *  through recycle, which reports on its own. Every outcome is recorded via
+ *  `appendEvent`. Never throws. Exported with injectables for tests. */
+export async function reanchorAfterContextReset({
+  agent,
+  marker,
+  findNativeRef,
+  onRespawn,
+  isCurrent = () => true,
+  timeoutMs = 60_000,
+  pollMs = 500,
+  appendEvent = () => {},
+}) {
+  const finish = (result) => {
+    try {
+      appendEvent(result.ok ? 'reset-reanchor-reported' : 'reset-reanchor-skipped', result);
+    } catch {
+      /* a diagnostic write must never change the re-anchor verdict */
+    }
+    return result;
+  };
+  if (String(agent || '').trim().toLowerCase() !== 'claude') {
+    return finish({ ok: false, nativeId: null, reason: 'unsupported-agent' });
+  }
+  if (!marker) return finish({ ok: false, nativeId: null, reason: 'no-carry-marker' });
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let nativeRef = null;
+  while (isCurrent()) {
+    try {
+      nativeRef = findNativeRef();
+    } catch {
+      nativeRef = null;
+    }
+    if (nativeRef || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  }
+  if (!isCurrent()) return finish({ ok: false, nativeId: null, reason: 'superseded-child' });
+  const nativeId = claudeNativeIdFromTranscriptRef(nativeRef);
+  if (!nativeId) {
+    return finish({ ok: false, nativeId: null, reason: nativeRef ? 'native-id-unparseable' : 'native-ref-not-found' });
+  }
+  let firstAttemptConfirmed = false;
+  try {
+    firstAttemptConfirmed = (await onRespawn(nativeId)) === true;
+  } catch (error) {
+    return finish({
+      ok: false, nativeId, reason: 'report-threw', detail: String(error?.message ?? error).slice(0, 200),
+    });
+  }
+  return finish({
+    ok: true, nativeId, firstAttemptConfirmed,
+    reason: firstAttemptConfirmed ? 'reanchor-confirmed' : 'reanchor-retrying',
+  });
+}
+
 /**
  * The OSC recolor bytes for a fleet-bound session, from the PAPERCUSP_FLEET_BG /
  * PAPERCUSP_FLEET_FG / PAPERCUSP_FLEET_CURSOR env vars bootstrap-su resolves from
@@ -13939,6 +14016,21 @@ export function hostThroughPty(o) {
       transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor, includeTerminalFailure: true })
       : { available: false, started: false };
   };
+  // EI-26957152622357153: a verified in-place reset rotated Claude's native id
+  // without a respawn. Re-anchor it off the delivery path (never delays the ACK).
+  const scheduleResetReanchor = (marker, submittedAtMs, target) => {
+    void reanchorAfterContextReset({
+      agent: env.PAPERCUSP_AGENT,
+      marker,
+      findNativeRef: () => findNativeTranscriptMarker({
+        agent: env.PAPERCUSP_AGENT, env, marker, sinceMs: submittedAtMs,
+      }),
+      onRespawn: (nativeId) => onRespawn(nativeId),
+      isCurrent: () => child === target,
+      timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_RESET_REANCHOR_TIMEOUT_MS, 60_000),
+      appendEvent: (kind, payload) => appendHostEvent(ownerId, kind, { childGeneration, ...payload }),
+    }).catch(() => {});
+  };
   const reconcileNativeStartPending = ({ supersededOnly = false } = {}) => {
     for (const [id, pending] of nativeStartPending) {
       if (pending.child !== child) {
@@ -16196,6 +16288,7 @@ export function hostThroughPty(o) {
             });
             if (!proof.started) return { ok: false, reason: 'native-turn-start-unverified' };
             nativeStartPending.delete(deliver.deliveryId);
+            if (msg.mode === 'reset') scheduleResetReanchor(marker, turnWriteStartedAt, target);
             return { ok: true, reason: 'delivered' };
           }
           // The socket already ACKed acceptance before this detached pipeline.
@@ -16220,6 +16313,7 @@ export function hostThroughPty(o) {
             return { ok: false, reason: nativeProofAvailable ? 'native-turn-start-unverified' : failure };
           }
           for (const id of coalescedDeliveryIds) nativeStartPending.delete(id);
+          if (msg.mode === 'reset') scheduleResetReanchor(marker, turnWriteStartedAt, child);
         }
         return { ok: true, reason: 'delivered' };
       } catch (err) {

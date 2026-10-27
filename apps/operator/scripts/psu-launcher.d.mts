@@ -2038,6 +2038,25 @@ export function defaultAccountEnv(): {
  */
 export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
 /**
+ * The bare model id a launch spec asks the gateway for: `gpt-6.1-sol:high` and
+ * `gpt-6.1-sol[1m]` both mean `gpt-6.1-sol`. Lowercased, because the gateway keys
+ * refusals by the request body's model string. `null` for an empty spec.
+ *
+ * @param {string | null | undefined} model
+ * @returns {string | null}
+ */
+export function codexModelIdFromSpec(model: string | null | undefined): string | null;
+/**
+ * The gateway's measured serviceable-account count for ONE model, or `null` when the
+ * snapshot does not carry a reading for it (older gateway, or no live refusal for the
+ * model — in which case the provider-wide count already describes it).
+ *
+ * @param {unknown} byModel `stats.codexServiceableByModel`
+ * @param {string} modelId  a {@link codexModelIdFromSpec} result
+ * @returns {number | null}
+ */
+export function codexServiceableForModel(byModel: unknown, modelId: string): number | null;
+/**
  * Verdict for a Codex auto-route launch, from a live gateway `/stats` snapshot.
  *
  * THREE outcomes, deliberately not two:
@@ -2061,7 +2080,7 @@ export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null, codexServiceableByModel?: Record<string, number>, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -2078,6 +2097,7 @@ export function codexAutoPoolVerdict({ agent, model, account, stats, now, }?: {
         codexTotalAccounts?: number;
         codexEarliestRecoveryAt?: number | null;
         codexUnserviceableCause?: "upstream-unreachable" | "temporary-cooldown" | "accounts-unserviceable" | null;
+        codexServiceableByModel?: Record<string, number>;
         codexReachability?: {
             lastTransportFailureKind?: "dns" | "connect" | "timeout" | "other" | null;
         };
