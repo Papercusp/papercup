@@ -42,6 +42,8 @@ import {
   queueForRoutine,
   shouldFireUnderPoolShed,
   admitUnderPoolShed,
+  admitStarvedZeroCreditStart,
+  createStarvedZeroCreditBudget,
   POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
@@ -1279,6 +1281,10 @@ async function routinesTickImpl(): Promise<void> {
   // sustained shed can delay a non-critical routine but never starve it indefinitely.
   const shedNowMs = Date.now();
   const shedAdmitted = poolCritical ? admitUnderPoolShed(dueByAge, shedNowMs) : null;
+  // WI-6554700010030059: the starvation bound must also reach the zero-credit hold below. Under
+  // a critical probe every non-critical queue has zero credit, so without this the routine the
+  // shed just admitted was HELD and never fired; under ok/elevated a full window starved it alike.
+  const starvedZeroCredit = createStarvedZeroCreditBudget();
   for (const r of dueByAge) {
     if (shedAdmitted && !shedAdmitted.has(r)) continue;
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) {
@@ -1293,7 +1299,14 @@ async function routinesTickImpl(): Promise<void> {
     // previous-cohort feedback and actual durable occupancy. A withheld row has
     // not advanced next_fire_at, so it remains due for the next feedback epoch.
     const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0;
-    if (remainingStarts <= 0) {
+    if (remainingStarts <= 0 && admitStarvedZeroCreditStart(r, shedNowMs, starvedZeroCredit)) {
+      const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
+      console.warn(
+        `[routines-tick] starvation bound: starting ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
+          `on ${queueName} despite zero queue credit — overdue ${overdueMin}min, pool=${dispatchEpoch.pressure} ` +
+          `(WI-6554700010030059)`,
+      );
+    } else if (remainingStarts <= 0) {
       const admission = queueAdmission.get(queueName);
       if (!loggedWithheldQueues.has(queueName)) {
         loggedWithheldQueues.add(queueName);

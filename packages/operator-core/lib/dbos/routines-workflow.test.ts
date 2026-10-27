@@ -154,6 +154,8 @@ vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
+import { claimDueRoutine } from '../harness/routines/claim';
+import { listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
 import { reconcileLoopRoutines } from '../harness/routines/reconcile-loop-routines';
 import { poolPressure } from './pool-pressure';
 import { DBOS } from '@dbos-inc/dbos-sdk';
@@ -818,6 +820,83 @@ describe('routinesTickImpl — probe evidence', () => {
       });
       expect(detail.shedCount).toBeGreaterThan(0);
       expect(state.recordPoolShedEvent).toHaveBeenCalledWith(expect.any(String), detail.shedCount);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * WI-6554700010030059: the EI-27084758447422793 starvation bound admitted a starved routine
+ * through the pool shed, but the dispatch epoch gives every non-critical queue zero credit under
+ * a critical probe, so the routine was HELD and never started. Measured 2026-10-27:
+ * precompute-derived-reads was logged "firing STARVED" on consecutive ticks while it stayed 50+
+ * min overdue. These run the real registered dispatch tick with an epoch that grants no credit.
+ */
+describe('routinesTickImpl — the starvation bound reaches the zero-credit hold (WI-6554700010030059)', () => {
+  const row = (id: string, targetRole: string, overdueMin: number): RoutineRow => ({
+    id,
+    name: id,
+    workspaceId: 'routine-probe-fixture',
+    installSlug: 'papercusp',
+    triggerKind: 'cron',
+    triggerConfig: { cron: '0 * * * * *' },
+    targetRole,
+    payloadTemplate: null,
+    concurrency: 'queue',
+    catchup: 'skip-old',
+    tier: 'durable',
+    active: true,
+    lastFiredAt: null,
+    nextFireAt: new Date(Date.now() - overdueMin * 60_000),
+    rescheduleIntervalSec: null,
+    targetOwnerId: null,
+  });
+  const startedIds = () =>
+    state.startWorkflow.mock.calls.map(([, options]) => {
+      const opts = options as { queueName: string; enqueueOptions: { deduplicationID: string } };
+      return `${opts.queueName}:${opts.enqueueOptions.deduplicationID}`;
+    });
+
+  it.each([
+    { pressure: 'critical' as const, label: 'critical probe (shed)' },
+    { pressure: 'ok' as const, label: 'healthy probe, window exhausted' },
+  ])('under a $label, starts exactly the oldest starved routine despite zero queue credit', async ({ pressure }) => {
+    state.poolShedFixture = true; // the epoch grants no queue credit at all
+    vi.mocked(poolPressure).mockResolvedValueOnce(pressure);
+    const starved = row('rt_starved', 'system:precompute-derived-reads', 51);
+    const alsoStarved = row('rt_also_starved', 'system:gate-watcher-tick', 42);
+    const fresh = row('rt_fresh', 'system:gate-watcher-tick', 2);
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([fresh, alsoStarved, starved]);
+    vi.mocked(claimDueRoutine).mockResolvedValueOnce(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      // Positive control: the tick reached the credit check for these routines.
+      expect(state.stepNames).toContain('routine-dispatch-feedback-epoch');
+      expect(startedIds()).toEqual([`${ROUTINES_QUEUE}:routine:rt_starved`]);
+      expect(vi.mocked(claimDueRoutine)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(claimDueRoutine).mock.calls[0]?.[1]).toMatchObject({ id: 'rt_starved' });
+      const lines = warn.mock.calls.map(([line]) => String(line));
+      expect(lines.some((line) => line.includes('starvation bound: starting rt_starved'))).toBe(true);
+      // The second starved routine and the fresh one do not start: the leak is one start per tick.
+      // Under a critical shed they are dropped by the shed filter before the credit check; under a
+      // healthy probe they reach it and are HELD for lack of credit.
+      expect(lines.some((line) => line.includes(`HELD ${ROUTINES_QUEUE} dispatch`))).toBe(pressure === 'ok');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('starts nothing past zero credit when no routine has been overdue for the bound', async () => {
+    state.poolShedFixture = true;
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([row('rt_fresh', 'system:gate-watcher-tick', 5)]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      expect(state.stepNames).toContain('routine-dispatch-feedback-epoch');
+      expect(state.startWorkflow).not.toHaveBeenCalled();
+      expect(vi.mocked(claimDueRoutine)).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }

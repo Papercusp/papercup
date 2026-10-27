@@ -20,6 +20,9 @@ import {
   queueForRoutine,
   shouldFireUnderPoolShed,
   admitUnderPoolShed,
+  admitStarvedZeroCreditStart,
+  createStarvedZeroCreditBudget,
+  isStarvedPastBound,
   POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -338,6 +341,68 @@ describe('admitUnderPoolShed — the starvation bound (EI-27084758447422793)', (
     const short = { id: 'short', targetRole: 'system:green-checkpoint', nextFireAt: new Date(now - POOL_SHED_STARVATION_BOUND_MS + 1) };
     expect(admitUnderPoolShed([atBound], now).has(atBound)).toBe(true);
     expect(admitUnderPoolShed([short], now).has(short)).toBe(false);
+  });
+});
+
+/**
+ * WI-6554700010030059: the starvation bound must also reach the queue's zero-credit hold. The shed
+ * filter above admitted a starved routine, but the dispatch epoch then gave its queue zero starts,
+ * so it was HELD and never fired (precompute-derived-reads stayed 50+ min overdue, 2026-10-27).
+ */
+describe('admitStarvedZeroCreditStart — the bound reaches the zero-credit hold (WI-6554700010030059)', () => {
+  const now = Date.parse('2026-10-27T06:50:00Z');
+  const ago = (min: number) => new Date(now - min * 60_000);
+  const starved = { id: 'pdr', targetRole: 'system:precompute-derived-reads', nextFireAt: ago(51) };
+  const alsoStarved = { id: 'gw', targetRole: 'system:gate-watcher-tick', nextFireAt: ago(42) };
+  const fresh = { id: 'fresh', targetRole: 'system:gate-watcher-tick', nextFireAt: ago(3) };
+  const gitSync = { id: 'git-sync', targetRole: 'system:git-sync', nextFireAt: ago(90) };
+
+  it('isStarvedPastBound: overdue past the bound counts; inside it, undated, or critical-floor never do', () => {
+    expect(isStarvedPastBound(starved, now)).toBe(true);
+    expect(isStarvedPastBound(fresh, now)).toBe(false);
+    expect(isStarvedPastBound({ ...starved, nextFireAt: null }, now)).toBe(false);
+    expect(isStarvedPastBound({ ...starved, nextFireAt: new Date(Number.NaN) }, now)).toBe(false);
+    // The critical floor has its own lane; it is never spent from the starvation budget.
+    expect(isStarvedPastBound(gitSync, now)).toBe(false);
+    const atBound = { ...starved, nextFireAt: new Date(now - POOL_SHED_STARVATION_BOUND_MS) };
+    const short = { ...starved, nextFireAt: new Date(now - POOL_SHED_STARVATION_BOUND_MS + 1) };
+    expect(isStarvedPastBound(atBound, now)).toBe(true);
+    expect(isStarvedPastBound(short, now)).toBe(false);
+  });
+
+  it('starts a starved routine despite zero credit, spending the per-tick budget exactly once', () => {
+    const budget = createStarvedZeroCreditBudget();
+    expect(budget.left).toBe(1);
+    expect(admitStarvedZeroCreditStart(starved, now, budget)).toBe(true);
+    expect(budget.left).toBe(0);
+    // A second starved routine in the same tick is held: the leak stays bounded.
+    expect(admitStarvedZeroCreditStart(alsoStarved, now, budget)).toBe(false);
+  });
+
+  it('never spends the budget on a routine that is not starved', () => {
+    const budget = createStarvedZeroCreditBudget(1);
+    expect(admitStarvedZeroCreditStart(fresh, now, budget)).toBe(false);
+    expect(admitStarvedZeroCreditStart(gitSync, now, budget)).toBe(false);
+    expect(budget.left).toBe(1);
+    expect(admitStarvedZeroCreditStart(alsoStarved, now, budget)).toBe(true);
+  });
+
+  it('a zero budget admits nothing, and a non-integer budget is floored', () => {
+    expect(admitStarvedZeroCreditStart(starved, now, createStarvedZeroCreditBudget(0))).toBe(false);
+    expect(createStarvedZeroCreditBudget(2.9).left).toBe(2);
+    expect(createStarvedZeroCreditBudget(-3).left).toBe(0);
+  });
+
+  it('composes with the shed: the routine admitUnderPoolShed admits is the one the zero-credit budget starts', () => {
+    const dueByAge = [gitSync, starved, alsoStarved, fresh];
+    const admitted = admitUnderPoolShed(dueByAge, now);
+    const budget = createStarvedZeroCreditBudget();
+    // Under a critical probe every non-critical queue has zero credit, so each admitted
+    // non-critical routine must clear the zero-credit hold or it never fires.
+    const started = dueByAge.filter(
+      (r) => admitted.has(r) && !shouldFireUnderPoolShed(r.targetRole) && admitStarvedZeroCreditStart(r, now, budget),
+    );
+    expect(started.map((r) => r.id)).toEqual(['pdr']);
   });
 });
 
