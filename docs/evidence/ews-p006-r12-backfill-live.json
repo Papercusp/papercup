@@ -8,8 +8,8 @@
     "docs/evidence/ews-p006-r12-backfill-live/run.mjs"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-27T05:40:49.554Z",
-  "finishedAt": "2026-10-27T05:40:56.336Z",
+  "startedAt": "2026-10-27T07:19:17.437Z",
+  "finishedAt": "2026-10-27T07:19:27.495Z",
   "plan": "event-wait-settlement-2026-10-20",
   "planItem": "P-006",
   "workItemId": "WI-6554700010018158",
@@ -62,7 +62,7 @@
     {
       "id": "control-cleared-counts:fails-on-none-cleared-by-backfill",
       "passed": true,
-      "evidence": "every cleared row attributed to the backfill: the cleared-row count must be able to fail; row 447|390|49|8|0|0|338|3211|0; oracle passed=false; failing assertions: none-cleared-by-backfill"
+      "evidence": "every cleared row attributed to the backfill: the cleared-row count must be able to fail; row 447|390|49|8|0|0|338|3212|0; oracle passed=false; failing assertions: none-cleared-by-backfill"
     },
     {
       "id": "control-unattributed:fails-on-no-unattributed-clear",

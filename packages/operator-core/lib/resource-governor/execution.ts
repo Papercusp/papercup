@@ -13,6 +13,8 @@ import { PgAdmissionCutoverQueueStore } from './admission-cutover-store';
 import { WorkItemAdmissionQueueDriver, type AdmissionQueueLeaseClaim, type SqlClient } from './queue';
 
 export const GOVERNED_EXECUTION_LEASE_TTL_MS = 24 * 60 * 60_000;
+const GOVERNED_PROCESS_POOL_PURPOSE = 'governed-process';
+const GOVERNED_PROCESS_ACQUIRE_POOL = `org-admin-${GOVERNED_PROCESS_POOL_PURPOSE}`;
 
 /**
  * WI-10004631: every governed execution leases its receipt, and each lease used to
@@ -524,7 +526,7 @@ export function governedProcessClientOptions(
 }
 
 function buildDefaultGovernedProcessClient(): GovernedProcessClient {
-  const { sql } = createDedicatedOrgPg('governed-process', governedProcessClientOptions());
+  const { sql } = createDedicatedOrgPg(GOVERNED_PROCESS_POOL_PURPOSE, governedProcessClientOptions());
   return {
     sql,
     async end() {
@@ -557,6 +559,7 @@ function governedProcessRuntime(workspaceId: string, namespace: string): Governe
       new PgAdmissionCutoverQueueStore({
         workspaceId,
         sql: processClient.sql,
+        acquirePool: GOVERNED_PROCESS_ACQUIRE_POOL,
         endedLeaseOwnerReuseMs: GOVERNED_EXECUTION_ENDED_OWNER_REUSE_MS,
       }),
       { namespace, leaseIdFactory: () => randomUUID() },

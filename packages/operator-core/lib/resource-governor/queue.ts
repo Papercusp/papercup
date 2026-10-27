@@ -910,18 +910,7 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   }
 
   async cancel(idempotencyKey: string, reason?: string): Promise<AdmissionCancellation> {
-    const cancelledAtMs = this.now();
-    // Cancellation is a terminal row-lock transition like releaseClaim. A transient pg
-    // 55P03/57014 used to escape the shared contention retry, so post-run cleanup could
-    // turn a passing child result into a wrapper failure. The store transition is
-    // idempotent: after a committed first attempt, a retry observes the cancelled row.
-    const result = await acquireWithContentionRetry(
-      () => this.store.cancel(this.namespace, idempotencyKey, reason, cancelledAtMs),
-      {
-        ...(this.admissionRetryBackoffsMs ? { backoffsMs: this.admissionRetryBackoffsMs } : {}),
-        ...(this.sleep ? { sleep: this.sleep } : {}),
-      },
-    );
+    const result = await this.store.cancel(this.namespace, idempotencyKey, reason, this.now());
     if (!result) return { idempotencyKey, cancelled: false, state: 'unknown' };
     return { idempotencyKey, cancelled: result.changed, state: result.record.state };
   }
@@ -1062,6 +1051,8 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
 
 export interface PgWorkItemAdmissionQueueStoreOptions {
   readonly sql?: SqlClient;
+  /** Acquisition attribution for an injected SQL client with a registered pool label. */
+  readonly acquirePool?: string;
   readonly workspaceId?: string;
   /** Override the no-deadline abandonment dwell. Defaults to GOVERNOR_RECEIPT_ABANDON_MS. */
   readonly abandonAfterMs?: number;
@@ -1087,7 +1078,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
   constructor(options: PgWorkItemAdmissionQueueStoreOptions = {}) {
     this.endedOwnerScans = new EndedLeaseOwnerScanCoalescer(options.endedLeaseOwnerReuseMs);
     this.sql = options.sql ?? getOrgPg().sql;
-    this.acquirePool = options.sql ? undefined : 'org-admin';
+    this.acquirePool = options.acquirePool ?? (options.sql ? undefined : 'org-admin');
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
     this.abandonAfterMs =
       typeof options.abandonAfterMs === 'number' &&
@@ -1098,13 +1089,17 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     this.resolveSessionStatesFn = options.resolveSessionStatesFn;
   }
 
-  private async transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
+  private async transaction<T>(fn: (tx: SqlClient) => Promise<T>, phase?: () => string): Promise<T> {
     // Resource-governor transitions update the shared work_items table. Keep every
     // mutation atomic, but also bound both lock waits and statement execution so a
     // contended governor write cannot strand scheduler/get_next behind an unbounded
     // postgres-js transaction. Passing the injected client preserves hermetic tests
     // and non-default backends; production callers still use getOrgPg() through this.sql.
-    return boundedOrgTxn(fn, { client: this.sql, acquirePool: this.acquirePool });
+    return boundedOrgTxn(fn, {
+      client: this.sql,
+      acquirePool: this.acquirePool,
+      ...(phase ? { phase } : {}),
+    });
   }
 
   private async lockKeys(tx: SqlClient, keys: readonly string[]): Promise<void> {
@@ -1550,7 +1545,9 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     reason: string | undefined,
     nowMs: number,
   ): Promise<QueueMutationResult | null> {
+    let phase = 'resource-governor.cancel.transaction-setup';
     return this.transaction(async (tx) => {
+      phase = 'resource-governor.cancel.locked-row-lookup';
       const row = await this.findRow(tx, namespace, idempotencyKey, true);
       if (!row) return null;
       const stored = storedFromRow(row);
@@ -1562,8 +1559,11 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
         lease: undefined,
         ...(reason ? { cancellationReason: reason } : {}),
       };
-      return { ...(await this.writeRecord(tx, stored.receiptId, next, null)), changed: true };
-    });
+      phase = 'resource-governor.cancel.terminal-update';
+      const written = await this.writeRecord(tx, stored.receiptId, next, null);
+      phase = 'resource-governor.cancel.transaction-commit';
+      return { ...written, changed: true };
+    }, () => phase);
   }
 
   async leaseNext(

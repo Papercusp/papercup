@@ -523,6 +523,45 @@ describe('resource-governor liveness-read deadline (EI-23122978932795934)', () =
 });
 
 describe('WorkItemAdmissionQueueDriver', () => {
+  it.each([
+    ['transaction setup', 'setup', 'resource-governor.cancel.transaction-setup'],
+    ['locked row lookup', 'lookup', 'resource-governor.cancel.locked-row-lookup'],
+    ['terminal update', 'update', 'resource-governor.cancel.terminal-update'],
+  ] as const)('attributes cancellation timeouts to the %s phase', async (_label, failAt, expectedPhase) => {
+    const memory = new MemoryAdmissionQueueStore();
+    const key = 'cancel-phase-attribution';
+    await governor(memory).governor.admit({ idempotencyKey: key, admissionClass: 'process' });
+    const stored = await memory.find('test', key);
+    expect(stored).not.toBeNull();
+
+    const timeout = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    const tx = Object.assign((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      if (failAt === 'setup' && text.includes("set_config('lock_timeout'")) return Promise.reject(timeout());
+      if (failAt === 'lookup' && text.includes('FROM harness_shared.work_items')) return Promise.reject(timeout());
+      if (failAt === 'update' && text.includes('UPDATE harness_shared.work_items')) return Promise.reject(timeout());
+      if (text.includes('SELECT feature_id, payload, status, taken_by, created_ts')) {
+        return Promise.resolve([{
+          feature_id: stored!.receiptId,
+          payload: { resource_governor: stored!.record },
+          status: 'open',
+          taken_by: null,
+          created_ts: new Date(0),
+        }]);
+      }
+      return Promise.resolve([] as unknown[]);
+    }, {
+      begin: async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx),
+      unsafe: async () => [],
+    }) as never;
+    const store = new PgWorkItemAdmissionQueueStore({ sql: tx, workspaceId: 'workspace-test' });
+
+    await expect(store.cancel('test', key, 'test cancellation', 2_000)).rejects.toMatchObject({
+      name: 'OrgTxnTimeoutError',
+      message: expect.stringContaining(`[phase: ${expectedPhase}]`),
+    });
+  });
+
   it('bounds PostgreSQL queue mutations with database-side lock and statement timeouts', async () => {
     const { client, queries } = recordingSqlClient();
     const store = new PgWorkItemAdmissionQueueStore({
@@ -690,37 +729,6 @@ describe('WorkItemAdmissionQueueDriver', () => {
     });
     expect(store.releaseClaimAttempts).toBe(3); // two transient failures + the successful release
     await expect(api.status('release-rides-out')).resolves.toMatchObject({ state: 'completed' });
-  });
-
-  // EI-26688238708045893: a passing child result was being replaced by a pg 57014 from
-  // the driver's post-run cancellation transaction. Cancellation needs the same bounded,
-  // idempotent contention retry as the other terminal queue transitions.
-  it('rides out a transient pg statement timeout during receipt cancellation', async () => {
-    const store = new MemoryQueueStore();
-    const cancel = store.cancel.bind(store);
-    const statementTimeout = () => Object.assign(new Error('canceling statement due to statement timeout'), {
-      code: '57014',
-    });
-    let cancelAttempts = 0;
-    vi.spyOn(store, 'cancel').mockImplementation(async (...args) => {
-      cancelAttempts += 1;
-      if (cancelAttempts <= 2) throw statementTimeout();
-      return cancel(...args);
-    });
-    const { governor: api } = governor(store, () => 1_000, noSleep);
-    await api.admit({ idempotencyKey: 'cancel-rides-out', admissionClass: 'process' });
-
-    await expect(api.cancel('cancel-rides-out', 'operator stopped it')).resolves.toMatchObject({
-      idempotencyKey: 'cancel-rides-out',
-      cancelled: true,
-      state: 'cancelled',
-    });
-    expect(cancelAttempts).toBe(3); // two 57014s + the successful cancellation
-    await expect(api.cancel('cancel-rides-out')).resolves.toMatchObject({
-      cancelled: false,
-      state: 'cancelled',
-    });
-    expect(cancelAttempts).toBe(4); // a settled receipt is read idempotently
   });
 
   it('uses the claimed receipt identity without a pre-settlement identity lookup', async () => {

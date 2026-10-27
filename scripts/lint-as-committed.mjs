@@ -125,12 +125,14 @@ export function requireDurableTestRunSink(environment = process.env) {
 }
 
 /** Child environment for commands executing against the isolated committed clone. */
-export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null, testRunReceiptFile = null) {
+export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null, testRunReceiptFile = null,
+  preparedRootReceiptFile = null) {
   const child = {
     ...environment,
     npm_config_workspaces: undefined,
     PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
   };
+  delete child.PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT;
   // The committed clone intentionally omits ignored operator configuration.
   // Carry the original operator's database route into its reporters; otherwise
   // a frozen resolver may discover a desktop PG and publish proof elsewhere.
@@ -141,6 +143,11 @@ export function lintAsCommittedChildEnv(environment = process.env, repoRoot = nu
       throw new Error('test-run receipt file must be an explicit path');
     requireDurableTestRunSink(environment);
     child.PAPERCUSP_TEST_RUN_RECEIPT_FILE = testRunReceiptFile;
+  }
+  if (preparedRootReceiptFile !== null) {
+    if (typeof preparedRootReceiptFile !== 'string' || !preparedRootReceiptFile.trim() || !isAbsolute(preparedRootReceiptFile))
+      throw new Error('prepared work-root receipt file must be an absolute path');
+    child.PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT = preparedRootReceiptFile;
   }
   // Each immutable clone has a fresh tmp path. Keep resumable verdict storage
   // scoped to its source repository instead, separately from ordinary/gate
@@ -290,6 +297,29 @@ export function verifyCommittedWorkRoot(workRoot, expectedSha, requiredPaths = [
     }
   }
   return { root, sha: expectedSha };
+}
+
+/** Write a short-lived witness that this fresh, prepared clone is at the checked-out commit. */
+export function writePreparedWorkRootReceipt(workRoot, expectedSha, receiptPath) {
+  const verified = verifyCommittedWorkRoot(workRoot, expectedSha);
+  if (typeof receiptPath !== 'string' || !isAbsolute(receiptPath))
+    throw new Error('prepared work-root receipt file must be an absolute path');
+  const receiptParent = realpathSync(dirname(resolve(receiptPath)));
+  const resolvedReceiptPath = join(receiptParent, basename(receiptPath));
+  if (resolvedReceiptPath === verified.root || resolvedReceiptPath.startsWith(verified.root + sep))
+    throw new Error('prepared work-root receipt must be outside the committed source root');
+  const markerBytes = readFileSync(join(verified.root, OWNER_MARKER));
+  const marker = JSON.parse(markerBytes.toString('utf8'));
+  if (marker.sha !== expectedSha)
+    throw new Error('prepared work-root owner marker does not match the committed source');
+  const receipt = {
+    schemaVersion: 'lint-as-committed-prepared-root-v1',
+    root: verified.root,
+    sourceCommit: expectedSha,
+    ownerMarkerSha256: createHash('sha256').update(markerBytes).digest('hex'),
+  };
+  writeFileSync(resolvedReceiptPath, JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
+  return resolvedReceiptPath;
 }
 
 /** A shadow install is a source reader, not a physical dependency donor. */
@@ -1541,7 +1571,15 @@ async function main() {
           testReceiptDir = mkdtempSync(join(tmpdir(), 'papercusp-lint-as-committed-receipts-'));
           const receiptFile = join(testReceiptDir, 'receipts.jsonl');
           writeFileSync(receiptFile, '', { flag: 'wx', mode: 0o600 });
-          scriptEnvironment = lintAsCommittedChildEnv(childEnvironment, null, receiptFile);
+          const preparedRootReceiptFile = join(testReceiptDir, 'prepared-root.json');
+          let preparedRootReceipt = null;
+          try {
+            preparedRootReceipt = writePreparedWorkRootReceipt(workRoot, sha, preparedRootReceiptFile);
+          } catch (err) {
+            console.warn('lint-as-committed: prepared-root receipt unavailable; reporter will use Git status: ' +
+              (err instanceof Error ? err.message : String(err)));
+          }
+          scriptEnvironment = lintAsCommittedChildEnv(childEnvironment, null, receiptFile, preparedRootReceipt);
         } catch (err) {
           if (testReceiptDir) rmSync(testReceiptDir, { recursive: true, force: true });
           const note = err instanceof Error ? err.message : String(err);
