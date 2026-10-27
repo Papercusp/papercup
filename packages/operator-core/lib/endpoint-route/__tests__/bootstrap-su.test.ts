@@ -16,6 +16,12 @@ import type { RouteContext } from '../define-route';
 import { renderSessionPortSeed } from '../../session-port/render';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../session-port/types';
 
+// This suite invokes route handlers directly; keep route-shaped definitions but
+// skip @papercusp/agent-mcp's package-entry bootstrap of the full tool catalog.
+vi.mock('@papercusp/agent-mcp', () => ({
+  defineTool: (definition: any) => definition,
+}));
+
 const nativeFork = vi.hoisted(() => ({ complete: vi.fn(), resolveSource: vi.fn() }));
 vi.mock('../../su-session-tracked-codex-fork', () => ({
   completeTrackedCodexFork: nativeFork.complete,
@@ -578,10 +584,13 @@ vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
 type FakeOrgSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
 // EI-21365235532676472: pin pty discovery hermetically — no fake owner has a real
 // host on this machine, and the live-evidence leg must be deterministic.
-vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
-  ...((await orig()) as Record<string, unknown>),
-  findLiveHost: () => null,
-  findLiveHostAsync: async () => null,
+// bootstrap-su only needs the async lookup, and agent-launch-core's launch
+// functions are mocked below. Avoid importing the production discovery graph
+// while routesOf() is still loading the route module.
+vi.mock('../../events/await/psu-pty-discovery', () => ({
+  findLiveHost: vi.fn(() => null),
+  findLiveHostAsync: vi.fn(async () => null),
+  injectIntoHost: vi.fn(async () => false),
 }));
 // EI-21365235532676472: hermetic PG for the pre-pinned guard's two reads. Only
 // queries the guard itself issues are answered; everything else stays empty.
