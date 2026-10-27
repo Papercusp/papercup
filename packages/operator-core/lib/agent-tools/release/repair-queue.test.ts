@@ -1438,11 +1438,16 @@ describe('release:repair-queue', () => {
       mocks.population.mockImplementation(input => ({ ok: true, population: precheckPopulation({ ...input, radius: fixture.radius }) }));
     };
 
-    it.each(['partial', 'new-red', 'unmeasured'] as const)('refuses a stored passing marker with %s aggregate evidence', async (kind) => {
+    it.each(['partial', 'new-red', 'unmeasured', 'duplicate', 'foreign'] as const)('refuses a stored passing marker with %s aggregate evidence', async (kind) => {
       const fixture = wideFixture();
       wideDoor(fixture);
       const results = fixture.measurement.results.map(result => ({ ...result, status: result.status as 'pass' | 'fail' | 'unmeasured' }));
       if (kind === 'partial') results.pop();
+      // The door's own per-file validation is the only refusal for these two: the evaluator keys
+      // results by path (last reading wins), so a conflicting duplicate would launder a red into a
+      // pass, and a row outside the measured population would be silently ignored.
+      else if (kind === 'duplicate') { results[1]!.status = 'fail'; results.push({ ...results[1]!, status: 'pass' }); }
+      else if (kind === 'foreign') results.push({ path: 'lib/not-in-population.test.ts', status: 'pass' });
       else results[1]!.status = kind === 'new-red' ? 'fail' : 'unmeasured';
       mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
         admissionPrecheck: { ...fixture.operation, measurement: { ...fixture.measurement, results } } } });
