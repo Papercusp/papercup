@@ -4,6 +4,22 @@
   "workItemId": "WI-6554700010022135",
   "kind": "focused-clause-evidence-reconciliation",
   "acceptance": "incomplete",
+  "papercuspSourceDriftFollowup": {
+    "comparison": "SHA256 of exactly the 27 Papercusp files in inventory-20261023-v2 sourceSnapshots; not a new adapter census",
+    "checked": 27,
+    "changed": 6,
+    "unchanged": 21,
+    "changedPaths": [
+      "packages/operator-core/lib/memory/corpus-recall-io.ts",
+      "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts",
+      "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts",
+      "packages/operator-core/lib/agent-tools/social/search.ts",
+      "packages/operator-core/lib/agent-tools/documents/search.ts",
+      "packages/operator-core/lib/capability-verbs/social-read.ts"
+    ],
+    "interpretation": "Historical evidence retains its original source pins. Changed bytes require semantic reconciliation before reuse; this comparison does not declare a defect or upgrade currentness.",
+    "remaining": "Inspect the six diffs against retained source bytes, then reconcile Restart and discover adapters beyond the frozen file population."
+  },
   "authority": {
     "clausesRead": {
       "SEARCH-SURFACE-INVENTORY": 2,
