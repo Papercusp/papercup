@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, readPushSourceLinks, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_COMMIT_RESERVE_MS, CODE_INTEL_PUSH_TURN_CHARS, CODE_INTEL_PUSH_WALL_MS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, readPushSourceLinks, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
@@ -168,7 +168,7 @@ describe('shared snapshot-backed push channel', () => {
     d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg], ['interface', snapshotInterfaceLeg]]);
     const delivered = await codeIntelPushText(changed, 0, d);
     expect(delivered).toContain('signature target');
-    expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal), []);
+    expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal), [], []);
   });
 
   it('pushes an observed failing-test incident with static hypotheses and explicit unknowns', () => {
@@ -408,7 +408,7 @@ describe('shared snapshot-backed push channel', () => {
     const d = deps();
     expect(await codeIntelPushText(input, 350, d)).toContain('Static consumer');
     expect(d.commit).toHaveBeenCalledWith(input, expect.objectContaining({ commit: 'a'.repeat(40) }), [fact],
-      CODE_INTEL_PUSH_TURN_CHARS - 350, expect.any(AbortSignal), []);
+      CODE_INTEL_PUSH_TURN_CHARS - 350, expect.any(AbortSignal), [], []);
     vi.mocked(d.commit).mockClear();
     expect(await codeIntelPushText(input, CODE_INTEL_PUSH_TURN_CHARS, d)).toBe('');
     expect(d.commit).not.toHaveBeenCalled();
@@ -719,5 +719,72 @@ describe('P-002 incident leg reaches commit', () => {
     // planner may use the partial index), the second is the indexable operator.
     expect(attribution).toContain("jsonb_typeof(w.payload->'paths') = 'array'");
     expect(attribution).toMatch(/\(w\.payload->'paths'\) \?\| \$::text\[\]/);
+  });
+});
+
+// WI-6554700010030085: the legs and the commit shared the 250 ms wall, so a slow gather made
+// the wall fire before the commit and every fact already gathered was lost, with no row in
+// either ledger. Gathering now ends at a deadline that leaves the commit its reserve.
+describe('WI-6554700010030085 push wall keeps a commit reserve', () => {
+  const gatherMs = CODE_INTEL_PUSH_WALL_MS - CODE_INTEL_PUSH_COMMIT_RESERVE_MS;
+  // Elapsed time comes from a synchronous spin, never a timer: under load a timer fires
+  // late (it once landed past the deadline and cut the leg under test), and the wall's
+  // own timer cannot preempt a spin.
+  const spin = (ms: number) => { const end = Date.now() + ms; while (Date.now() < end) { /* busy */ } };
+  const slowSnapshot = (ms: number) => async () => { spin(ms); return snapshot(); };
+  const grepFact: PushFact = { leg: 'grep', subject: 'grep:target', text: 'Grep answer.', citedPaths: ['app/use.ts'] };
+
+  it('commits the facts gathered before the deadline and names the enabled legs it stopped', async () => {
+    const d = deps();
+    d.legs = () => new Map([
+      ['first-touch', () => { spin(gatherMs + 10); return [fact]; }],
+      ['grep', () => [grepFact]],
+    ]);
+    expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
+    expect(d.commit).toHaveBeenCalledOnce();
+    const [, , delivered, , , dropped, notRun] = vi.mocked(d.commit).mock.calls[0];
+    expect(delivered).toEqual([fact]);
+    expect(dropped).toEqual([]);
+    expect(notRun).toEqual(['grep']);
+  });
+
+  it('a gather the snapshot alone exhausts still records every enabled leg, and only those', async () => {
+    const d = deps();
+    d.snapshot = slowSnapshot(gatherMs + 20);
+    vi.mocked(d.enabled).mockImplementation(async flag => flag !== PUSH_LEG_FLAGS.grep);
+    d.legs = () => new Map([['first-touch', () => [fact]], ['grep', () => [grepFact]], ['clone', () => []]]);
+    expect(await codeIntelPushText(input, 0, d)).toBe('');
+    expect(d.commit).toHaveBeenCalledOnce();
+    const [, , delivered, , , dropped, notRun] = vi.mocked(d.commit).mock.calls[0];
+    expect(delivered).toEqual([]);
+    expect(dropped).toEqual([]);
+    expect(notRun).toEqual(['first-touch', 'clone']);
+  });
+
+  it('caps a context read that starts late at the time the gather has left', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = deps();
+      d.snapshot = slowSnapshot(gatherMs - 30);
+      d.context = () => new Promise<FirstTouchContext>(() => {});
+      expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
+      const line = warn.mock.calls.map(([l]) => String(l)).find(l => l.startsWith('[code-intel-first-touch-context]'));
+      expect(line).toBeDefined();
+      const diagnostic = JSON.parse(line!.slice(line!.indexOf(']') + 2));
+      expect(diagnostic.event).toBe('wait-timeout');
+      expect(diagnostic.timeoutMs).toBeGreaterThan(0);
+      expect(diagnostic.timeoutMs).toBeLessThanOrEqual(30);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('names the phase when a commit overruns its reserve, and the wall still ends the request', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = deps();
+      vi.mocked(d.commit).mockImplementation(() => new Promise(() => {}));
+      expect(await codeIntelPushText(input, 0, d)).toBe('');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+        /^\[code-intel-push\] wall fired during commit after \d+ms with 1 fact\(s\) gathered$/));
+    } finally { warn.mockRestore(); }
   });
 });

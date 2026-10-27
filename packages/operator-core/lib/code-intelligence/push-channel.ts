@@ -31,6 +31,9 @@ import {
 
 export const CODE_INTEL_PUSH_TURN_CHARS = 1_500;
 export const CODE_INTEL_PUSH_WALL_MS = 250;
+/** WI-6554700010030085: the end of the wall held back for the commit. Gathering stops at
+ * CODE_INTEL_PUSH_WALL_MS minus this, so the facts already gathered reach the ledger. */
+export const CODE_INTEL_PUSH_COMMIT_RESERVE_MS = 90;
 export const PUSH_LEG_FLAGS = {
   grep: FLAGS.CODE_INTEL_PUSH_GREP, 'first-touch': FLAGS.CODE_INTEL_PUSH_FIRST_TOUCH,
   interface: FLAGS.CODE_INTEL_PUSH_INTERFACE, incident: FLAGS.CODE_INTEL_PUSH_INCIDENT,
@@ -82,12 +85,15 @@ export interface PushFact {
 /** WI-6554700010018440: a fact dropped whole for budget, recorded in code_intel_push_skips.
  * `request-budget` = the request's share (1,500 minus the memory block) was strictly the
  * binding limit; `turn-budget` = the turn's own code-intel spend was (including a tie,
- * where memory took nothing and code intelligence filled the turn itself). */
+ * where memory took nothing and code intelligence filled the turn itself).
+ * WI-6554700010030085: `wall` = an enabled leg the push wall stopped before it ran
+ * (subject `leg-not-run:<leg>`, chars 0), so "produced nothing" and "never ran" differ. */
 interface PushSkip {
-  fact: PushFact;
+  leg: PushLegId;
+  subject: string;
   chars: number;
   budgetLeft: number;
-  site: 'request-budget' | 'turn-budget';
+  site: 'request-budget' | 'turn-budget' | 'wall';
 }
 /** Measured attribution supplied by the incident caller. Static reach alone is
  * never upgraded to a change or work-item claim; callers must provide these
@@ -1104,9 +1110,11 @@ export interface PushChannelDeps {
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
   interfaceContext?(input: PushInput, snapshot: PushSnapshot): Promise<InterfacePeerContext>;
   /** `dropped`: facts the request already found too big for `requestBudget`; the commit
-   * classifies and records them with its own budget drops (WI-6554700010018440). */
+   * classifies and records them with its own budget drops (WI-6554700010018440).
+   * `notRun`: enabled legs the wall stopped before they ran, recorded as site `wall`
+   * (WI-6554700010030085). */
   commit(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[], requestBudget: number, signal: AbortSignal,
-    dropped: readonly PushFact[]): Promise<string>;
+    dropped: readonly PushFact[], notRun: readonly PushLegId[]): Promise<string>;
 }
 
 const skipSite = (requestLeft: number, turnLeft: number): PushSkip['site'] =>
@@ -1122,7 +1130,7 @@ async function recordPushSkips(tx: Sql, input: PushInput, epoch: number, turn: s
     await (tx as unknown as TransactionSql).savepoint(sp => sp`INSERT INTO harness_shared.code_intel_push_skips
       (workspace_id, owner_id, epoch, turn_id, leg, subject, chars, budget_left, site, client)
       SELECT ${input.workspace}, ${input.owner}, ${epoch}, ${turn}, s.leg, s.subject, s.chars, s.budget_left, s.site, ${input.client ?? null}
-      FROM unnest(${skips.map(s => s.fact.leg)}::text[], ${skips.map(s => s.fact.subject)}::text[],
+      FROM unnest(${skips.map(s => s.leg)}::text[], ${skips.map(s => s.subject)}::text[],
         ${skips.map(s => s.chars)}::int[], ${skips.map(s => s.budgetLeft)}::int[], ${skips.map(s => s.site)}::text[])
         AS s(leg, subject, chars, budget_left, site)
       WHERE NOT EXISTS (SELECT 1 FROM harness_shared.code_intel_pushes p
@@ -1134,7 +1142,8 @@ async function recordPushSkips(tx: Sql, input: PushInput, epoch: number, turn: s
 
 /** One transaction serializes both the turn ceiling and session dedupe across cluster workers. */
 export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[],
-  requestBudget: number, signal: AbortSignal, dropped: readonly PushFact[] = []): Promise<string> {
+  requestBudget: number, signal: AbortSignal, dropped: readonly PushFact[] = [],
+  notRun: readonly PushLegId[] = []): Promise<string> {
   return withWorkspace(input.workspace, async tx => {
     // The hook must not leave a slow query behind after its response deadline.
     await tx`SELECT set_config('lock_timeout', '100ms', true), set_config('statement_timeout', '150ms', true)`;
@@ -1151,8 +1160,12 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
       WHERE workspace_id = ${input.workspace} AND owner_id = ${input.owner} AND turn_id = ${turn} AND leg <> 'intent'`;
     let requestLeft = requestBudget;
     let turnLeft = CODE_INTEL_PUSH_TURN_CHARS - Number(spent[0]?.chars ?? 0);
-    const skips: PushSkip[] = dropped.map(fact => ({ fact, chars: formatPushFact(fact, snapshot).length + 2,
-      budgetLeft: Math.max(0, Math.min(requestLeft, turnLeft)), site: skipSite(requestLeft, turnLeft) }));
+    const budgetLeft = Math.max(0, Math.min(requestLeft, turnLeft));
+    const skips: PushSkip[] = [
+      ...dropped.map(fact => ({ leg: fact.leg, subject: fact.subject, chars: formatPushFact(fact, snapshot).length + 2,
+        budgetLeft, site: skipSite(requestLeft, turnLeft) })),
+      ...notRun.map(leg => ({ leg, subject: `leg-not-run:${leg}`, chars: 0, budgetLeft, site: 'wall' as const })),
+    ];
     const text: string[] = [];
     for (const fact of facts) {
       const block = formatPushFact(fact, snapshot);
@@ -1160,7 +1173,8 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
       const left = Math.min(requestLeft, turnLeft);
       if (signal.aborted) throw new Error('code-intel push cancelled');
       if (chars > left) { // Never cut a qualifier or citation off a fact.
-        skips.push({ fact, chars, budgetLeft: Math.max(0, left), site: skipSite(requestLeft, turnLeft) });
+        skips.push({ leg: fact.leg, subject: fact.subject, chars, budgetLeft: Math.max(0, left),
+          site: skipSite(requestLeft, turnLeft) });
         continue;
       }
       const inserted = await tx<{ id: number }[]>`INSERT INTO harness_shared.code_intel_pushes
@@ -1305,35 +1319,58 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
   input = { ...input, calls: input.calls.map(normalizePushCall) };
   const requestBudget = Math.max(0, CODE_INTEL_PUSH_TURN_CHARS - Math.max(0, memoryChars));
   if (!requestBudget) return '';
+  // WI-6554700010030085: the legs and the commit share one wall, so gathering stops at
+  // a deadline that leaves the commit CODE_INTEL_PUSH_COMMIT_RESERVE_MS. Before, a slow
+  // gather made the wall fire first and every fact already gathered was lost, with no
+  // row in code_intel_pushes or code_intel_push_skips (3/3 incident replays on :3170).
+  let phase: 'snapshot' | 'gather' | 'commit' = 'snapshot';
+  let gathered = 0;
   const result = await withBoundedTimeout(async signal => {
+    const gatherDeadline = Date.now() + CODE_INTEL_PUSH_WALL_MS - CODE_INTEL_PUSH_COMMIT_RESERVE_MS;
+    const gatherLeft = () => Math.max(1, gatherDeadline - Date.now());
+    const gatherSignal = AbortSignal.any([signal, AbortSignal.timeout(gatherLeft())]);
+    // Every wait inside the gather ends by the deadline; a read still running then
+    // degrades exactly as it would on its own timeout.
+    const byGatherDeadline = <T>(work: Promise<T>, fallback: T) =>
+      withBoundedTimeout(work, { timeoutMs: gatherLeft(), fallback, warn: false }).then(settled => settled.value);
     const snapshot = await deps.snapshot(input);
     if (!snapshot || signal.aborted) return '';
+    phase = 'gather';
+    const legs = [...deps.legs()].sort(([a], [b]) => pushLegRank(a) - pushLegRank(b));
+    // Read every leg's flag at once: one wait instead of one per leg, and the commit
+    // needs to know which legs were ON to record the ones the wall stopped.
+    const on = new Map(await Promise.all(legs.map(async ([id]) => [id, await deps.enabled(PUSH_LEG_FLAGS[id])] as const)));
     // The resume read does not depend on any other leg, so it overlaps with them
     // instead of adding its own wait to the 250ms wall (P-003).
-    const resumeContext = deps.resumeContext && deps.legs().has('resume') && await deps.enabled(PUSH_LEG_FLAGS.resume)
+    const resumeContext = deps.resumeContext && on.get('resume')
       ? boundedResumeContext(input, (i, diagnostics) => readResumeWithLinks(i, deps, diagnostics))
         .then(value => ({ value }), () => ({ value: undefined }))
       : null;
     // P-005: same overlap for the code-note read (a fact fold plus a re-hash of the
     // notes' file anchors), started only when this batch first-touched a file.
     const touchedPaths = firstTouchPaths(input);
-    const notesContext = deps.notesContext && touchedPaths.length && deps.legs().has('notes') && await deps.enabled(PUSH_LEG_FLAGS.notes)
+    const notesContext = deps.notesContext && touchedPaths.length && on.get('notes')
       ? withBoundedTimeout(() => deps.notesContext!(input, touchedPaths), { timeoutMs: 120, fallback: undefined, label: 'code-intel-notes-context' })
         .catch(() => ({ value: undefined }))
       : null;
     const facts: PushFact[] = [];
     const dropped: PushFact[] = [];
+    const notRun: PushLegId[] = [];
     // Consequences take precedence over a first-touch brief for the same edit. An
     // observed test failure (incident, P-038) goes next: it is rare, authoritative and
     // cheap, and its attribution read then overlaps the resume/notes reads already in
     // flight. Queued after them it started past the 250ms wall and never committed
     // (measured on :3170 2026-10-27, code-intel-delivery-and-outcomes-2026-10-26#P-002).
-    for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => pushLegRank(a) - pushLegRank(b))) {
-      if (signal.aborted || !await deps.enabled(PUSH_LEG_FLAGS[id])) continue;
+    for (const [index, [id, leg]] of legs.entries()) {
+      if (signal.aborted || !on.get(id)) continue;
+      if (Date.now() >= gatherDeadline) {
+        notRun.push(...legs.slice(index).map(([rest]) => rest).filter(rest => on.get(rest)));
+        break;
+      }
       try {
         if (id === 'interface' && deps.interfaceContext && interfaceSignatureEdits(input).length) {
           const context = await withBoundedTimeout(() => deps.interfaceContext!(input, snapshot),
-            { timeoutMs: 100, fallback: undefined, label: 'code-intel-interface-peers' });
+            { timeoutMs: Math.min(100, gatherLeft()), fallback: undefined, label: 'code-intel-interface-peers' });
           input.interfacePeerContext = context.value;
         }
         if (id === 'first-touch' && deps.context && touchedPaths.length) {
@@ -1341,8 +1378,9 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
             readId: randomUUID(), startedAtMs: Date.now(), phaseMs: {},
             phaseOutcomes: { outerContext: 'running' }, label: FIRST_TOUCH_CONTEXT_LABEL,
           };
+          const contextTimeoutMs = Math.min(FIRST_TOUCH_CONTEXT_TIMEOUT_MS, gatherLeft());
           const context = await withBoundedTimeout(() => deps.context!(input, touchedPaths, diagnostics),
-            { timeoutMs: FIRST_TOUCH_CONTEXT_TIMEOUT_MS, fallback: undefined, label: FIRST_TOUCH_CONTEXT_LABEL, warn: false });
+            { timeoutMs: contextTimeoutMs, fallback: undefined, label: FIRST_TOUCH_CONTEXT_LABEL, warn: false });
           diagnostics.phaseOutcomes.outerContext = context.reason ?? 'completed';
           diagnostics.phaseMs.outerContext = context.elapsedMs;
           if (context.reason === 'timeout') diagnostics.phaseOutcomes.underlyingCancellation = 'not-supported';
@@ -1352,25 +1390,25 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
             const event = context.reason === 'timeout' ? 'wait-timeout'
               : context.reason === 'error' ? 'read-error' : 'read-aborted';
             logResumeContextDiagnostic('warn', event, diagnostics, context.elapsedMs,
-              FIRST_TOUCH_CONTEXT_TIMEOUT_MS, context.errorMessage);
+              contextTimeoutMs, context.errorMessage);
           } else {
             const settledReads = resumeParking.firstTouchSettledReads = (resumeParking.firstTouchSettledReads ?? 0) + 1;
             if (context.elapsedMs >= FIRST_TOUCH_CONTEXT_DIAGNOSTIC_SLOW_MS || hasPhaseError ||
               settledReads % RESUME_CONTEXT_DIAGNOSTIC_SAMPLE_EVERY === 0) {
               logResumeContextDiagnostic(hasPhaseError ? 'warn' : 'info',
                 hasPhaseError ? 'read-settled-with-error' : 'read-settled', diagnostics, context.elapsedMs,
-                FIRST_TOUCH_CONTEXT_TIMEOUT_MS);
+                contextTimeoutMs);
             }
           }
         }
         if (id === 'notes') {
           if (!notesContext) continue;
           // A timed-out read delivers nothing rather than an unverified note.
-          input.notesContext = (await notesContext).value ?? { fresh: [], withheld: [] };
+          input.notesContext = (await byGatherDeadline(notesContext, { value: undefined })).value ?? { fresh: [], withheld: [] };
         }
         if (id === 'resume') {
           if (!resumeContext) continue;
-          input.resumeContext = (await resumeContext).value ?? { entries: [] };
+          input.resumeContext = (await byGatherDeadline(resumeContext, { value: undefined })).value ?? { entries: [] };
           // A resume carries the same source links a first touch would; they were read
           // with the context. Merge per path so this batch's first-touch links survive.
           const links = input.resumeContext.links;
@@ -1381,7 +1419,7 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
         let candidates = leg(input, snapshot);
         if (id === 'incident' && candidates.length && deps.incidentContext) {
           const measured = await withBoundedTimeout(() => deps.incidentContext!(input, [...candidates[0].citedPaths]),
-            { timeoutMs: 100, fallback: undefined, label: 'code-intel-incident-context' });
+            { timeoutMs: Math.min(100, gatherLeft()), fallback: undefined, label: 'code-intel-incident-context' });
           input.incidentAttribution = measured.value ?? { status: 'unknown' };
           candidates = leg(input, snapshot);
         }
@@ -1397,15 +1435,24 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
             if (dropped.length < 12) dropped.push(fact);
             continue;
           }
-          if (!fact.sourceHashes || await corroboratePushSources(input.root, fact.sourceHashes, signal)) facts.push(fact);
+          // Past the deadline the check reports false, so an unverified fact is never pushed.
+          if (!fact.sourceHashes || await corroboratePushSources(input.root, fact.sourceHashes, gatherSignal)) facts.push(fact);
           if (facts.length >= 12) break;
         }
       } catch (error) { console.warn(`[code-intel-push] ${id} failed:`, String(error).slice(0, 200)); }
+      gathered = facts.length;
       if (facts.length >= 12) break;
     }
-    // A request whose only candidates were dropped still commits, to record the skips.
-    return (facts.length || dropped.length) && !signal.aborted
-      ? deps.commit(input, snapshot, facts, requestBudget, signal, dropped) : '';
+    phase = 'commit';
+    // A request whose only candidates were dropped, or whose legs the wall stopped,
+    // still commits, to record the skips.
+    return (facts.length || dropped.length || notRun.length) && !signal.aborted
+      ? deps.commit(input, snapshot, facts, requestBudget, signal, dropped, notRun) : '';
   }, { timeoutMs: CODE_INTEL_PUSH_WALL_MS, fallback: '', label: 'code-intel-push' });
+  // Names the phase the wall cut, so a remaining loss is attributable: 'snapshot' or
+  // 'commit' now, since the gather itself ends by its deadline.
+  if (result.reason === 'timeout') {
+    console.warn(`[code-intel-push] wall fired during ${phase} after ${result.elapsedMs}ms with ${gathered} fact(s) gathered`);
+  }
   return result.value;
 }

@@ -270,6 +270,26 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     expect(await deliver([fact('s-3')], workspace)).toContain('x'.repeat(550));
   });
 
+  it('WI-6554700010030085: legs the push wall stopped land as wall skips beside the facts it gathered', async () => {
+    const workspace = 'push-integration-wall';
+    // One fact gathered before the gather deadline, two enabled legs the wall never ran.
+    const text = await commitPushFacts({ ...input, workspace }, snapshot(), [fact('w-1')], CODE_INTEL_PUSH_TURN_CHARS,
+      new AbortController().signal, [], ['incident', 'grep']);
+    expect(text).toContain('x'.repeat(550));
+    // The same leg cut twice in one turn is still one row.
+    await commitPushFacts({ ...input, workspace }, snapshot(), [], CODE_INTEL_PUSH_TURN_CHARS,
+      new AbortController().signal, [], ['grep']);
+    const skips = await db.adminSql<{ leg: string; subject: string; site: string; chars: number; budget_left: number }[]>`
+      SELECT leg, subject, site, chars, budget_left FROM harness_shared.code_intel_push_skips
+      WHERE workspace_id = ${workspace} ORDER BY leg`;
+    const pushed = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace}`;
+    expect(pushed.map(p => p.subject)).toEqual(['w-1']);
+    expect(skips.map(s => [s.leg, s.subject, s.site, s.chars])).toEqual([
+      ['grep', 'leg-not-run:grep', 'wall', 0], ['incident', 'leg-not-run:incident', 'wall', 0]]);
+    expect(skips.every(s => s.budget_left === CODE_INTEL_PUSH_TURN_CHARS)).toBe(true);
+  });
+
   it('WI-6554700010018439: a delivered intent-time brief is one intent row that never spends the hook budget', async () => {
     const workspace = 'push-integration-intent';
     const brief = {
