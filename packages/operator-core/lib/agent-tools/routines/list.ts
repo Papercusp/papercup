@@ -1387,6 +1387,10 @@ function boundTrimmedHealth(value: unknown): unknown {
     }
 
     const entries = Object.entries(current as Record<string, unknown>);
+    // This writer-backed whole-fire marker answers whether local-sync is still in flight;
+    // keep it ahead of verbose diagnostics so the bounded view does not hide active work.
+    const activityIndex = entries.findIndex(([key]) => key === 'git_sync_activity');
+    if (activityIndex > 0) entries.unshift(entries.splice(activityIndex, 1)[0]!);
     const out: Record<string, unknown> = {};
     remaining -= 2; // braces
     let index = 0;

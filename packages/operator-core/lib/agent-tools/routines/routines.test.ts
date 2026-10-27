@@ -2244,6 +2244,45 @@ describe('routines:list', () => {
     expect(routines[0]!.health.git_sync_freshness.execution.holds_exclusive_locks).toBe(heldLocks);
   });
 
+  it('preserves git_sync_activity when earlier health diagnostics exhaust the nested budget', () => {
+    const activity = {
+      active: true,
+      phase: 'local-sync',
+      started_at: 1_798_267_200_000,
+    };
+    const row = {
+      installSlug: 'papercusp',
+      name: 'git-sync',
+      cron: '0 */2 * * * *',
+      active: true,
+      nextFireAt: null,
+      group: 'release',
+      paused: null,
+      lastFiredAt: null,
+      lastFire: null,
+      health: {
+        last_error: 'earlier diagnostic '.repeat(1_500),
+        diagnostic_details: 'additional detail '.repeat(1_500),
+        git_sync_activity: activity,
+      },
+    };
+
+    const trimmed = listTool.shape!.trimmed!({ count: 1, routines: [row] }, { args: {} } as never) as {
+      count: number;
+      routines: Array<Record<string, unknown>>;
+    };
+    const health = trimmed.routines[0]!.health as Record<string, unknown>;
+    const assertActivityPreserved = (projected: Record<string, unknown>) =>
+      expect(projected.git_sync_activity).toEqual(activity);
+    // Control for the observed pre-fix all-or-nothing fallback: the guard must reject
+    // a health-json-budget marker that replaces the complete oversized health object.
+    const preFixHealth = { __papercusp_truncated__: true, reason: 'health-json-budget' };
+
+    expect(() => assertActivityPreserved(preFixHealth)).toThrow();
+    assertActivityPreserved(health);
+    expect(JSON.stringify(trimmed).length).toBeLessThanOrEqual(4_800);
+  });
+
   it('CONTROL: the PRE-FIX allowlist is caught — proving the guard above can fail', async () => {
     // A guard that has never failed is a guard nobody has tested. Rather than mutate
     // production code in this shared tree to prove it (the sweep-race the repo
