@@ -1896,6 +1896,41 @@ describe('background job deadlines (WI-6677)', () => {
     expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
   });
 
+  it('applies the finite test budget to an explicitly RTK-wrapped test command', () => {
+    const originalCommand = 'rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
+    expect(isBackgroundTestCommand(originalCommand)).toBe(true);
+    expect(isBackgroundTestCommand('env REF=committed rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts')).toBe(true);
+    expect(isBackgroundTestCommand('rtk test -- printf "npm run test:e2e:isolated"')).toBe(false);
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({
+        command: 'printf explicit-rtk-budget',
+        originalCommand,
+        cwd: STATE,
+        stateDir: STATE,
+      }, 10_000);
+      try {
+        expect(begin).toHaveBeenLastCalledWith({
+          class: 'bash-job',
+          runtimeMaxSec: 10,
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES,
+          tasksMax: BASH_TEST_TASKS_MAX,
+        });
+        expect(complete.mock.lastCall?.[1]).toMatchObject({
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES,
+          tasksMax: BASH_TEST_TASKS_MAX,
+          detail: { workloadClass: 'test-run', budgetPolicy: 'capability-bash-test-v1' },
+        });
+      } finally {
+        killJob(job);
+      }
+    } finally {
+      begin.mockRestore();
+      complete.mockRestore();
+    }
+  });
+
   it.each([
     ['env-wrapped isolated e2e', 'env REF=committed npm run test:e2e:isolated -- e2e/chat-streaming.spec.ts', true],
     ['env-wrapped direct runner', 'env READY=1 npx vitest run', true],
