@@ -454,13 +454,27 @@ export function voidPreparedSelectionForMovedCandidate(
   transaction: CheckpointQualificationTransaction,
 ): CheckpointQualificationTransaction {
   const selection = transaction.preparedSelection;
-  const candidate = transaction.candidate?.trim();
-  if (!selection || !candidate || selection.candidate === candidate) return transaction;
+  if (!selection || preparedSelectionNamesAttemptCandidate(transaction, selection)) return transaction;
   const { preparedSelection: _voided, ...rest } = transaction;
   return {
     ...rest,
     evidenceRefs: uniqueStrings([...transaction.evidenceRefs, `prepared-selection-voided:${selection.candidate}`]),
   };
+}
+
+/**
+ * WI-6554700010029754: the one invariant behind every prepared-selection guard. A selection is
+ * usable only while it names the attempt's pinned `candidate` (an unpinned attempt accepts any).
+ * The CLI attaches its runner on that candidate BEFORE the preflight selects, and the
+ * post-preflight reservation refresh refuses any other candidate for an attached runner, so a
+ * selection naming a different candidate can only end in that refusal.
+ */
+export function preparedSelectionNamesAttemptCandidate(
+  transaction: Pick<CheckpointQualificationTransaction, 'candidate'>,
+  selection: Pick<PreparedCheckpointSelectionRecord, 'candidate'>,
+): boolean {
+  const candidate = transaction.candidate?.trim();
+  return !candidate || selection.candidate === candidate;
 }
 
 /** Read the existing qualification authority; absence is distinct from unreadability. */
@@ -477,6 +491,10 @@ export async function readPreparedCheckpointSelection(
   if (!isPreparedCheckpointSelectionRecord(record) || record.attemptId !== input.attemptId ||
       record.integrationRoot !== input.integrationRoot || record.checkpointRoot !== input.checkpointRoot)
     throw new Error('malformed or mismatched prepared selection authority');
+  // A stored selection for a different candidate is void, not recoverable: handing it to the
+  // writer would only reproduce the attached-runner refusal. Plan afresh instead; the commit
+  // below replaces the void record.
+  if (!preparedSelectionNamesAttemptCandidate(current, record)) return null;
   return record;
 }
 
@@ -504,11 +522,23 @@ export async function commitPreparedCheckpointSelection(
     if ((queueRaw !== null && !queue) || (pendingRaw !== null && !pending))
       throw new Error('unreadable prepared selection queue/carry authority');
     if (!isDeepStrictEqual(queue, expected.queue) || !isDeepStrictEqual(pending, expected.pendingCarry)) return false;
-    if (current.preparedSelection) return isDeepStrictEqual(current.preparedSelection, record);
+    // WI-6554700010029754: fail fast instead of returning false. The caller would replan, the
+    // selector would pick the same candidate until the run budget expired, and the attached
+    // runner's post-preflight refresh refuses it anyway. Publishing it would also hand this
+    // record to every later fire of the attempt. Without an attached runner the refresh re-pins
+    // the attempt to the selection, so that case may still commit.
+    if (current.currentPhysicalRunner && !preparedSelectionNamesAttemptCandidate(current, record)) {
+      throw new Error(`prepared selection candidate-mismatch: selected ${record.candidate} but attempt ` +
+        `${current.attemptId} is pinned to ${current.candidate} by an attached runner (WI-6554700010029754)`);
+    }
+    const voided = current.preparedSelection &&
+      !preparedSelectionNamesAttemptCandidate(current, current.preparedSelection) ? current.preparedSelection : null;
+    if (current.preparedSelection && !voided) return isDeepStrictEqual(current.preparedSelection, record);
     if (record.carry && (!pending || record.carry.fromCandidate !== pending.fromCandidate ||
         record.carry.fromRepairHead !== pending.fromRepairHead)) return false;
     const nextMetadata: Record<string, unknown> = { ...metadata, [CHECKPOINT_QUALIFICATION_METADATA_KEY]: {
       ...current, preparedSelection: record, updatedAtMs: Date.now(),
+      ...(voided ? { evidenceRefs: uniqueStrings([...current.evidenceRefs, `prepared-selection-voided:${voided.candidate}`]) } : {}),
     } };
     if (record.carry) {
       delete nextMetadata[FROZEN_REPAIR_CARRY_METADATA_KEY];

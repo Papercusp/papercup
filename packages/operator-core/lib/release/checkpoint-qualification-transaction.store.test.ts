@@ -28,6 +28,8 @@ import {
   settleQualificationTransaction,
   waitQualificationTransaction,
   waitStoredQualification,
+  commitPreparedCheckpointSelection,
+  preparedSelectionNamesAttemptCandidate,
   type PreparedCheckpointSelectionRecord,
 } from './checkpoint-qualification-transaction';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
@@ -1118,5 +1120,75 @@ describe('a stored settlement that moves the attempt candidate voids the old pre
       candidate: 'repair-head-1', repairHead: 'repair-head-1', runId: 'run-1', nowMs: 300 }))
       .toMatchObject({ status: 'updated' });
     expect(writtenTransaction(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+  });
+});
+
+describe('committing a prepared selection honours the attempt candidate (WI-6554700010029754)', () => {
+  const selectionFor = (candidate: string): PreparedCheckpointSelectionRecord => ({
+    schemaVersion: 1, attemptId: 'attempt-1', integrationRoot: '/integration', checkpointRoot: '/checkpoint',
+    candidate, tip: 'tip-1', base: 'base-1', candidateSource: 'frozen-repair-queue', quietCutApplied: false,
+    freezeCut: null, carry: null, queue: null,
+    generation: { candidate, identity: 'generation-1', token: 'v3:token',
+      inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
+  });
+  // The CLI attaches its runner on the attempt's candidate before the preflight selects.
+  const attachedOn = (candidate: string) => reserveQualificationRunner(beginQualificationTransaction(null, {
+    attemptId: 'attempt-1', candidate, nowMs: 100,
+  }).transaction, { attemptId: 'attempt-1', candidate, runnerId: 'runner-1', runId: 'run-1', pid: 42,
+    pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 }).transaction;
+  const expected = { queue: null, pendingCarry: null };
+  const updates = <T extends { text: string }>(statements: T[]) =>
+    statements.filter(value => value.text.includes('UPDATE harness_shared.routines'));
+  const written = (statements: Array<{ text: string; values: unknown[] }>) => {
+    const json = updates(statements)[0]!.values
+      .find((value): value is string => typeof value === 'string' && value.includes('"attemptId"'))!;
+    return (JSON.parse(json) as { qualificationTransaction: Record<string, unknown> & { evidenceRefs: string[] } })
+      .qualificationTransaction;
+  };
+
+  it('refuses, without publishing, a selection the attached runner would refuse at its refresh', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1') });
+    await expect(commitPreparedCheckpointSelection(target, selectionFor('repair-head-1'), expected))
+      .rejects.toThrow(/candidate-mismatch: selected repair-head-1 but attempt attempt-1 is pinned to frozen-candidate-1/);
+    expect(updates(statements)).toHaveLength(0);
+  });
+
+  it('publishes a selection that names the attempt candidate', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1') });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(true);
+    expect(written(statements).preparedSelection).toEqual(selectionFor('frozen-candidate-1'));
+  });
+
+  it('replaces a stored selection for another candidate instead of refusing every later commit', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: {
+      ...attachedOn('frozen-candidate-1'), preparedSelection: selectionFor('repair-head-1'),
+    } });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(true);
+    const transaction = written(statements);
+    expect(transaction.preparedSelection).toEqual(selectionFor('frozen-candidate-1'));
+    expect(transaction.evidenceRefs).toContain('prepared-selection-voided:repair-head-1');
+  });
+
+  it('still compares a stored selection that names the attempt candidate (write-once)', async () => {
+    const stored = { ...selectionFor('frozen-candidate-1'), tip: 'tip-0' };
+    const { statements } = transactionHarness({ qualificationTransaction: {
+      ...attachedOn('frozen-candidate-1'), preparedSelection: stored,
+    } });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(false);
+    expect(updates(statements)).toHaveLength(0);
+  });
+
+  it('lets an attempt with no attached runner commit, because the refresh re-pins it', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'frozen-candidate-1', nowMs: 100,
+    }).transaction });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('repair-head-1'), expected)).toBe(true);
+    expect(written(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+  });
+
+  it('treats an unpinned attempt as accepting any selection', () => {
+    expect(preparedSelectionNamesAttemptCandidate({ candidate: null }, { candidate: 'x' })).toBe(true);
+    expect(preparedSelectionNamesAttemptCandidate({ candidate: ' x ' }, { candidate: 'x' })).toBe(true);
+    expect(preparedSelectionNamesAttemptCandidate({ candidate: 'y' }, { candidate: 'x' })).toBe(false);
   });
 });
