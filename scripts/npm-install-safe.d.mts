@@ -342,6 +342,13 @@ export function npmChildEnv({ env, offlineSafe, }?: {
  * @param {string} repoRoot @param {string[]} npmArgs
  */
 export function developmentInstallArgs(repoRoot: string, npmArgs: string[]): string[];
+/** The dev-dependency selection flags of an npm command, verbatim and in order
+ * (`--include=dev`, `--omit dev`, `--production`, ...), so a follow-up reify can
+ * apply exactly the selection the original install used.
+ * @param {string[]} npmArgs
+ * @returns {string[]}
+ */
+export function dependencySelectionArgs(npmArgs: string[]): string[];
 /**
  * Publish the verified install as an immutable dependency generation under a
  * shared reader marker for the repo-keyed install mutex. The generation builder
