@@ -1467,6 +1467,29 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true, false]);
     });
 
+    it('adopts a passed measured aggregate read back with Postgres jsonb key order (EI-27114233692780034)', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      // routines.metadata is jsonb: object keys come back ordered by length, then bytes.
+      const jsonbKeyOrder = (value: unknown): unknown => {
+        if (Array.isArray(value)) return value.map(jsonbKeyOrder);
+        if (value === null || typeof value !== 'object') return value;
+        const keys = Object.keys(value).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+        return Object.fromEntries(keys.map(key => [key, jsonbKeyOrder((value as Record<string, unknown>)[key])]));
+      };
+      const stored = jsonbKeyOrder(JSON.parse(JSON.stringify({ ...fixture.operation,
+        measurement: fixture.measurement }))) as FrozenCandidateRepairQueue['admissionPrecheck'] & { radius: unknown };
+      // Non-vacuous: the read-back really is a different serialization of the same radius.
+      expect(JSON.stringify(stored.radius)).not.toBe(JSON.stringify(fixture.radius));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: stored } });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead,
+        expectedUpdatedAtMs: queue.updatedAtMs } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: true, precheck: { ran: true } });
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true, false]);
+    });
+
     it('resumes a dead managed task on the same immutable operation and retains a completed red', async () => {
       const fixture = wideFixture();
       wideDoor(fixture);

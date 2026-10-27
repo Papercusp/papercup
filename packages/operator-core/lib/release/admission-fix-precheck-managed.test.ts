@@ -78,6 +78,26 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(admissionPrecheckMeasurementIdentity(current, [])).not.toBe(admissionPrecheckMeasurementIdentity(legacy, []));
   });
 
+  it('keeps the identity across a Postgres jsonb key-order round trip (EI-27114233692780034)', () => {
+    const radius = { status: 'measured', reason: 'ok', guarded: ['lib/guard-0.test.ts'], reportOnly: [],
+      legs: { 'lib/red.test.ts': '@t/core', 'lib/guard-0.test.ts': '@t/core' } };
+    const current = operation({ files: ['lib/red.test.ts', 'lib/guard-0.test.ts'],
+      sourceCommit: 'e'.repeat(40), radius } as Partial<FrozenRepairAdmissionPrecheck>);
+    // jsonb stores object keys ordered by length, then bytes.
+    const jsonbKeyOrder = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(jsonbKeyOrder);
+      if (value === null || typeof value !== 'object') return value;
+      const keys = Object.keys(value).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+      return Object.fromEntries(keys.map(key => [key, jsonbKeyOrder((value as Record<string, unknown>)[key])]));
+    };
+    const readBack = jsonbKeyOrder(JSON.parse(JSON.stringify(current))) as FrozenRepairAdmissionPrecheck;
+    expect(JSON.stringify(readBack)).not.toBe(JSON.stringify(current));
+    expect(admissionPrecheckMeasurementIdentity(readBack, [])).toBe(admissionPrecheckMeasurementIdentity(current, []));
+    // A real radius change still changes the identity.
+    const widened = { ...current, radius: { ...radius, guarded: [...radius.guarded, 'lib/guard-1.test.ts'] } } as FrozenRepairAdmissionPrecheck;
+    expect(admissionPrecheckMeasurementIdentity(widened, [])).not.toBe(admissionPrecheckMeasurementIdentity(current, []));
+  });
+
   describe('EI-27092183951452642: identity follows the judged classification, not verdict detail', () => {
     type Signature = FrozenCandidateRepairQueue['signature'];
     const entry = (fields: Record<string, unknown>) =>

@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { getTask } from '../task-manager/store';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { managedSpawn, type ManagedSpawnResult } from '../task-manager/managed-spawn';
@@ -233,6 +234,12 @@ const defaultWorkerDeps: AdmissionPrecheckWorkerDeps = {
  * what the pre-check measures or how it classifies a result, so none of it may abort an
  * in-flight pre-check or orphan its saved measurement. A changed test-file id set or a new
  * non-test kind DOES change the classification, and still changes the identity.
+ *
+ * EI-27114233692780034: the operation is persisted in `routines.metadata` jsonb, which
+ * re-orders object keys (by length, then bytes). The identity is computed once over the
+ * in-memory operation and re-verified later over the jsonb read-back, so it MUST be a
+ * canonical (sorted-key) serialization — `JSON.stringify` key order made every measured
+ * pre-check fail its own identity check on confirm and silently relaunch.
  */
 export function admissionPrecheckMeasurementIdentity(operation: FrozenRepairAdmissionPrecheck, signature: readonly RepairSignatureEntry[]): string {
   const population = precheckPopulation({ signature, admittedPaths: operation.files });
@@ -240,7 +247,7 @@ export function admissionPrecheckMeasurementIdentity(operation: FrozenRepairAdmi
     signatureTestFiles: [...population.signatureTestFiles].sort(),
     nonTestKinds: [...population.nonTestKinds].sort(),
   };
-  return createHash('sha256').update(JSON.stringify({ operationId: operation.operationId, candidate: operation.candidate,
+  return createHash('sha256').update(canonicalJson({ operationId: operation.operationId, candidate: operation.candidate,
     repairHead: operation.repairHead, builtCommit: operation.builtCommit, builtTree: operation.builtTree,
     sourceCommit: operation.sourceCommit, files: operation.files, radius: operation.radius, classification,
     testEnvironment: operation.testEnvironment })).digest('hex');

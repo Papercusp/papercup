@@ -79,6 +79,7 @@ import {
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
 import { ratchetAllowsPublication } from '../../release/admission-ratchet';
+import { canonicalJson } from '@papercusp/hash-chain';
 import {
   admissionPrecheckMeasurementIdentity,
   ADMISSION_TEST_ENVIRONMENT,
@@ -927,7 +928,8 @@ function sameAdmissionPrecheck(
   // have a new message/time but must prove the same tree and source provenance.
   if (state.measurement && (
     state.sourceCommit !== input.sourceCommit ||
-    JSON.stringify(state.radius) !== JSON.stringify(input.radius) ||
+    // EI-27114233692780034: state.radius is a jsonb read-back (keys re-ordered), so compare canonically.
+    canonicalJson(state.radius) !== canonicalJson(input.radius) ||
     state.measurement.identity !== admissionPrecheckMeasurementIdentity(state, input.signature)
   )) return false;
   const measuredTree = (() => {
