@@ -89,6 +89,7 @@ import {
   findUnextractedDepsWithRetry,
   findUnsatisfiedDeclaredDepRangesWithRetry,
   findUnusableRuntimeDepsWithRetry,
+  packageNameFromSpecifier,
   formatIncompleteWorkspacePackages,
   formatInvalidWorkspacePackageVersions,
   formatMissing,
@@ -466,29 +467,36 @@ function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
   return targets;
 }
 
-/** Re-extract only the locked package containing a measured missing import file.
- * Keep lockfile intent intact. Generic import errors, workspace links, external
- * paths and symlinked parents are not evidence of a damaged installed package.
+/** Re-extract only a locked package with measured missing content or a failed
+ * native exercise. Keep lockfile intent intact. Generic import errors, workspace
+ * links, external paths and symlinked parents are not evidence of a damaged
+ * installed package.
  */
 function runtimeContentRepairFindings({ repoRoot, failures }) {
-  const missingFiles = failures.filter((failure) =>
-    failure.code === 'ERR_MODULE_NOT_FOUND' && isAbsolute(failure.missingPath ?? ''));
-  if (missingFiles.length === 0) return [];
+  const repairableFailures = failures.filter((failure) =>
+    (failure.code === 'ERR_MODULE_NOT_FOUND' && isAbsolute(failure.missingPath ?? '')) ||
+    (failure.nativeExercise === 'sqlite-memory-query' && isAbsolute(failure.resolvedPath ?? '')));
+  if (repairableFailures.length === 0) return [];
   const root = realpathSync(repoRoot);
   const lockPath = existsSync(join(root, 'npm-shrinkwrap.json'))
     ? join(root, 'npm-shrinkwrap.json') : join(root, 'package-lock.json');
   if (!existsSync(lockPath)) return [];
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
   const findings = [];
-  for (const failure of missingFiles) {
-    const missing = resolve(failure.missingPath);
-    if (!isStrictlyWithin(root, missing) || existsSync(missing)) continue;
-    const parts = relative(root, missing).split(sep);
+  for (const failure of repairableFailures) {
+    const nativeFailure = failure.nativeExercise === 'sqlite-memory-query';
+    const measuredPath = resolve(nativeFailure ? failure.resolvedPath : failure.missingPath);
+    if (!isStrictlyWithin(root, measuredPath) || (!nativeFailure && existsSync(measuredPath))) continue;
+    const parts = relative(root, measuredPath).split(sep);
     const index = parts.lastIndexOf('node_modules');
     if (index < 0 || !parts[index + 1]) continue;
-    const packageLength = parts[index + 1].startsWith('@') ? 2 : 1;
+    const packageName = nativeFailure
+      ? packageNameFromSpecifier(failure.specifier)
+      : parts[index + 1].startsWith('@') ? parts.slice(index + 1, index + 3).join('/') : parts[index + 1];
+    const packageParts = packageName.split('/');
+    if (parts.slice(index + 1, index + 1 + packageParts.length).join('/') !== packageName) continue;
+    const packageLength = packageParts.length;
     if (parts.length <= index + 1 + packageLength) continue;
-    const packageName = parts.slice(index + 1, index + 1 + packageLength).join('/');
     const key = parts.slice(0, index + 1 + packageLength).join('/');
     const entry = lock.packages?.[key];
     if (!entry?.version || entry.link) continue;
