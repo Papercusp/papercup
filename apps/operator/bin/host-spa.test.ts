@@ -329,6 +329,8 @@ describe('SPA shell pre-hydration globals', () => {
     const previous = process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
     process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = '1';
     const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const cssTraceCalls = () =>
+      trace.mock.calls.filter(([line]) => String(line).startsWith('[spa-css-response] '));
     try {
       const routes = createSpaRoutes();
       const first = await routes.request(
@@ -338,9 +340,9 @@ describe('SPA shell pre-hydration globals', () => {
       expect(first.status).toBe(200);
       expect(first.headers.get('content-length')).toBe(String('.modal{}'.length));
       expect(await first.text()).toBe('.modal{}');
-      expect(trace).toHaveBeenCalledTimes(1);
+      expect(cssTraceCalls()).toHaveLength(1);
 
-      const logLine = String(trace.mock.calls[0]?.[0]);
+      const logLine = String(cssTraceCalls()[0]?.[0]);
       const record = JSON.parse(logLine.replace(/^\[spa-css-response\] /, ''));
       expect(record).toMatchObject({
         event: 'spa_css_response',
@@ -357,23 +359,23 @@ describe('SPA shell pre-hydration globals', () => {
         { headers: { host: 'localhost:33701' } },
       );
       await second.text();
-      expect(trace).toHaveBeenCalledTimes(1);
+      expect(cssTraceCalls()).toHaveLength(1);
 
       const loopbackAlias = await routes.request(
         'http://127.0.0.1:33701/assets/SessionChatModal-fixture.css',
         { headers: { host: '127.0.0.1:33701' } },
       );
       await loopbackAlias.text();
-      expect(trace).toHaveBeenCalledTimes(2);
+      expect(cssTraceCalls()).toHaveLength(2);
 
       const repeatedHost = await routes.request(
         'http://localhost:33701/assets/SessionChatModal-fixture.css',
         { headers: { host: 'localhost:33701' } },
       );
       await repeatedHost.text();
-      expect(trace).toHaveBeenCalledTimes(2);
+      expect(cssTraceCalls()).toHaveLength(2);
 
-      const secondLogLine = String(trace.mock.calls[1]?.[0]);
+      const secondLogLine = String(cssTraceCalls()[1]?.[0]);
       const secondRecord = JSON.parse(secondLogLine.replace(/^\[spa-css-response\] /, ''));
       expect(secondRecord).toMatchObject({
         event: 'spa_css_response',
