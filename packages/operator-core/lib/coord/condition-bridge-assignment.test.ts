@@ -24,6 +24,8 @@ const h = vi.hoisted(() => ({
   linkWorkItemToCondition: vi.fn(),
   resolveWorkItemPot: vi.fn(),
   holderRows: [] as { feature_id: string }[],
+  incumbentRows: [] as { taken_by: string | null }[],
+  claimWorkItem: vi.fn(),
   claimWins: true,
 }));
 
@@ -32,6 +34,7 @@ vi.mock('@papercusp/db-org', () => ({
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       if (/SET condition_key = NULL/.test(text)) return Promise.resolve([]);
+      if (/SELECT taken_by/.test(text)) return Promise.resolve(h.incumbentRows);
       if (/SELECT feature_id/.test(text)) return Promise.resolve(h.holderRows);
       if (/SET condition_key =/.test(text)) {
         return Promise.resolve(h.claimWins ? [{ feature_id: String(values[1]) }] : []);
@@ -41,6 +44,7 @@ vi.mock('@papercusp/db-org', () => ({
   }),
 }));
 vi.mock('../work-items', () => ({
+  claimWorkItem: h.claimWorkItem,
   createWorkItem: h.createWorkItem,
   setWorkItemState: h.setWorkItemState,
 }));
@@ -171,6 +175,16 @@ describe('catalog assignment policy', () => {
     }
   });
 
+  it('no gate-family catalog entry can ship without an assignment policy (falsifier for a new prefix)', () => {
+    const gateFamily = /^(green-|gate-|main-behind-)/;
+    const missing = ACTIONABLE_CONDITIONS.filter(
+      (c) =>
+        (gateFamily.test(c.prefix) || c.prefix === FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX) &&
+        c.assignTo !== 'live-gate-owner',
+    ).map((c) => c.prefix);
+    expect(missing).toEqual([]);
+  });
+
   it('frozen-repair LEGS stay claimable by anyone (D-028/D-029 of green-main-cycle-time-2026-10-08)', () => {
     expect(policyOf(FROZEN_REPAIR_LEG_CONDITION_PREFIX)).toBeUndefined();
   });
@@ -258,13 +272,95 @@ describe('acquireConditionOwner assigns the mint at creation (P-004)', () => {
     expect(input.summary).toBe('Three consecutive red verdicts.');
   });
 
-  it('adopting an existing owner reads no ownership and writes nothing', async () => {
+  it('adopting an ASSIGNED incumbent reads no ownership and writes nothing', async () => {
     h.holderRows = [{ feature_id: 'WI-INCUMBENT' }];
+    h.incumbentRows = [{ taken_by: 'su-already-on-it' }];
     const readGateOwner = vi.fn(async () => live());
     const r = await acquireConditionOwner('gate-red-streak:papercusp', spec, { readGateOwner });
 
     expect(r).toMatchObject({ workItem: 'WI-INCUMBENT', created: false });
+    expect(r.assignedTo).toBeUndefined();
     expect(readGateOwner).not.toHaveBeenCalled();
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
     expect(h.createWorkItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('acquireConditionOwner re-offers an unassigned incumbent on re-fire (plan D-007)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.holderRows = [{ feature_id: 'WI-INCUMBENT' }];
+    h.incumbentRows = [{ taken_by: null }];
+    h.claimWins = true;
+    h.resolveWorkItemPot.mockImplementation(async ({ rawSlug }: { rawSlug: string }) => rawSlug);
+    h.findConditionObject.mockResolvedValue({ workItem: null });
+    h.claimWorkItem.mockImplementation(async (id: string) => ({ id }));
+  });
+
+  const spec = { title: 'green stall on papercusp', harness: 'papercusp', workspaceId: 'papercusp-workspace' };
+
+  it('fired unowned, owner claimed the gate since: the re-fire hands the incumbent to that owner', async () => {
+    const readGateOwner = vi.fn(async () => live());
+    const r = await acquireConditionOwner('green-stall:papercusp', spec, { readGateOwner });
+
+    expect(r).toMatchObject({ workItem: 'WI-INCUMBENT', created: false, assignedTo: 'su-gate-owner' });
+    expect(readGateOwner).toHaveBeenCalledWith('papercusp');
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-INCUMBENT', 'su-gate-owner', {
+      harness: 'papercusp',
+      assignedBy: CONDITION_BRIDGE_ACTOR,
+    });
+    expect(h.createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('an empty-string holder counts as unheld, like the claim CAS does', async () => {
+    h.incumbentRows = [{ taken_by: '' }];
+    const r = await acquireConditionOwner('gate-red-streak:papercusp', spec, { readGateOwner: async () => live() });
+    expect(r.assignedTo).toBe('su-gate-owner');
+  });
+
+  it('still unowned at re-fire: nothing is claimed and the incumbent is returned unchanged', async () => {
+    const readGateOwner = vi.fn(async () => notLive({ claimState: 'no-object', assessment: 'unowned', takenBy: null, holderSessionState: null }));
+    const r = await acquireConditionOwner('green-stall:papercusp', spec, { readGateOwner });
+
+    expect(r).toMatchObject({ workItem: 'WI-INCUMBENT', created: false });
+    expect(r.assignedTo).toBeUndefined();
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('a stale holder at re-fire is not handed the item', async () => {
+    const readGateOwner = vi.fn(async () => notLive({ assessment: 'held-by-ended-session', holderSessionState: 'ended', takenBy: 'su-dead' }));
+    const r = await acquireConditionOwner('gate-red-streak:papercusp', spec, { readGateOwner });
+    expect(r.assignedTo).toBeUndefined();
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('a peer claimed it between the read and the write: the CAS refuses and no assignee is reported', async () => {
+    h.claimWorkItem.mockResolvedValue(null);
+    const r = await acquireConditionOwner('green-stall:papercusp', spec, { readGateOwner: async () => live() });
+    expect(r).toMatchObject({ workItem: 'WI-INCUMBENT', created: false });
+    expect(r.assignedTo).toBeUndefined();
+  });
+
+  it('a failed claim never breaks adoption', async () => {
+    h.claimWorkItem.mockRejectedValue(new Error('pg down'));
+    const r = await acquireConditionOwner('green-stall:papercusp', spec, { readGateOwner: async () => live() });
+    expect(r).toMatchObject({ workItem: 'WI-INCUMBENT', created: false });
+    expect(r.assignedTo).toBeUndefined();
+  });
+
+  it('a link-only incumbent (no key on the row) gets the same re-offer', async () => {
+    h.holderRows = [];
+    h.findConditionObject.mockResolvedValue({ workItem: 'WI-LINKED' });
+    const r = await acquireConditionOwner('green-stall:papercusp', spec, { readGateOwner: async () => live() });
+    expect(r).toMatchObject({ workItem: 'WI-LINKED', created: false, assignedTo: 'su-gate-owner' });
+  });
+
+  it('a condition with no policy never reads the incumbent row or gate ownership', async () => {
+    const readGateOwner = vi.fn(async () => live());
+    h.incumbentRows = [];
+    const r = await acquireConditionOwner('frozen-repair-leg:papercusp:lint:tsc', spec, { readGateOwner });
+    expect(r).toMatchObject({ workItem: 'WI-INCUMBENT', created: false });
+    expect(readGateOwner).not.toHaveBeenCalled();
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
   });
 });

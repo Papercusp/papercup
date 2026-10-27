@@ -37,7 +37,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { createWorkItem, setWorkItemState } from '../work-items';
+import { claimWorkItem, createWorkItem, setWorkItemState } from '../work-items';
 import { resolveWorkItemPot } from '../pot-membership';
 import { findConditionObject, linkWorkItemToCondition, type ConditionObject } from './condition-object';
 // TYPE-ONLY on purpose: a runtime import of './gate-ownership' closes a cycle back into
@@ -137,8 +137,9 @@ export interface AcquireResult {
   /** Why the stand-down settle of {@link duplicateLeftOpen} failed (the refusal's message). */
   duplicateLeftOpenError?: string;
   /**
-   * Set only when THIS call minted the item under an assignment policy
-   * ({@link ActionableCondition.assignTo}): the agent it was assigned to at creation.
+   * Set only when THIS call assigned the item under an assignment policy
+   * ({@link ActionableCondition.assignTo}): the agent it was assigned to at creation,
+   * or — on adoption — the live gate owner an unassigned incumbent was handed to.
    */
   assignedTo?: string;
   /**
@@ -487,6 +488,55 @@ export interface AcquireConditionOwnerDeps {
 }
 
 /**
+ * Offer an ADOPTED, still-unassigned condition owner to the live gate owner.
+ *
+ * The mint assigns at creation, but a mint made while the gate was unowned lands
+ * unassigned, and every later fire of the same condition ADOPTS that row. Without this
+ * step the common sequence (alarm fires unowned, an owner claims the gate minutes later,
+ * the alarm re-fires) leaves the item unassigned for its whole life.
+ *
+ * Reads gate ownership only when it can matter: the entry declares a policy AND the
+ * incumbent has no holder. The claim is a compare-and-set on an UNHELD row
+ * (`claimWorkItem`), so a peer who claimed the item in between is never displaced.
+ * Fail-soft like the mint: any failure leaves the incumbent as it was and adoption
+ * still returns it, because adoption is the load-bearing half of the caller.
+ *
+ * Returns the assignee written, or null when nothing was assigned.
+ */
+async function assignAdoptedConditionOwner(
+  conditionKey: string,
+  incumbentId: string,
+  harness: string,
+  workspaceId: string | undefined,
+  deps: AcquireConditionOwnerDeps,
+): Promise<string | null> {
+  const policy = actionableConditionFor(conditionKey)?.assignTo;
+  if (!policy) return null;
+  try {
+    const sql = getOrgPg().sql;
+    const rows = await sql<{ taken_by: string | null }[]>`
+      SELECT taken_by
+        FROM harness_shared.work_items
+       WHERE feature_id = ${incumbentId}
+         AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
+       LIMIT 1`;
+    if (!rows[0] || (rows[0].taken_by ?? '') !== '') return null;
+    const assignment = decideConditionAssignment(
+      policy,
+      await (deps.readGateOwner ?? readLiveGateOwnerForAssignment)(harness),
+    );
+    if (!assignment?.assignee) return null;
+    const claimed = await claimWorkItem(incumbentId, assignment.assignee, {
+      harness,
+      assignedBy: CONDITION_BRIDGE_ACTOR,
+    });
+    return claimed ? assignment.assignee : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Ensure an actionable condition has exactly one owning work-item.
  *
  * Idempotent: calling it repeatedly while the condition stays open adopts the
@@ -548,10 +598,17 @@ export async function acquireConditionOwner(
   //    will nonetheless refuse us, which is precisely the state that produces an
   //    unownable condition. The link read remains as the second opinion for a
   //    row that carries the association but (somehow) not the key.
+  //
+  //    Adoption is also the RE-FIRE path, so it is where an unowned mint gets its second
+  //    chance (b50c critique, plan D-007): an alarm that fired while nobody owned the
+  //    gate minted unassigned; when it fires again after an owner claimed the gate, the
+  //    incumbent is offered to that owner instead of staying unassigned forever.
   const holder = await findConditionKeyHolder(key, { harnessSlug: harness, workspaceId: spec.workspaceId });
-  if (holder) return { conditionKey: key, workItem: holder, created: false };
-  const existing = await findConditionObject(key, { harnessSlug: harness });
-  if (existing.workItem) return { conditionKey: key, workItem: existing.workItem, created: false };
+  const adopted = holder ?? (await findConditionObject(key, { harnessSlug: harness })).workItem;
+  if (adopted) {
+    const assignedTo = await assignAdoptedConditionOwner(key, adopted, harness, spec.workspaceId, deps);
+    return { conditionKey: key, workItem: adopted, created: false, ...(assignedTo ? { assignedTo } : {}) };
+  }
 
   // 3. Mint, then try to take the key. Deliberately optimistic — see the header.
   //
