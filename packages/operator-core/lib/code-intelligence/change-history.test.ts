@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { realpathSync } from 'node:fs';
 import { boundChangeHistoryProviders, changeHistoryProviders, coChangeFromCommits, coChangeOverlap,
+  FULL_WINDOW_HISTORY_BOUNDS, IN_PROCESS_HISTORY_BOUNDS, parseHistoryLog, readHistoryCommits,
   fileSymbolNames, formatPriorWorkLine, ledgerSymbolProvenance, priorWorkReport, rankPriorWork, readCoChange, readPriorWork,
   registerChangeHistoryProviders, symbolProvenance,
   type HistoryCommit, type PriorWorkLedgerRow, type ProvenanceEdit, type LedgerProvenanceEdit } from './change-history';
@@ -257,6 +258,86 @@ describe('P013 actual commit reader', () => {
       await expect(bad[0]!.read({ surface: 'claim', workspaceId: 'w', owner: 'o', invocation: 'i', paths: ['a.ts'],
         sourceVersion: 'stale', commit: result.commit }, new AbortController().signal)).rejects.toThrow('fingerprint');
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('reports a window past the cap as incomplete, and a managed child can read the full window', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'history-bounds-'));
+    const git = async (...args: string[]) => (await promisify(execFile)('git', ['-C', root, ...args])).stdout.trim();
+    try {
+      await git('init', '-q'); await git('config', 'user.email', 'fixture@example.invalid'); await git('config', 'user.name', 'fixture');
+      for (let n = 0; n < 3; n++) {
+        await writeFile(join(root, 'a.ts'), `export const a=${n};`); await git('add', 'a.ts'); await git('commit', '-qm', `bounds-${n}`);
+      }
+      const end = new Date(Date.now() + 2000).toISOString();
+      const capped = await readHistoryCommits(root, end, undefined, { ...IN_PROCESS_HISTORY_BOUNDS, cap: 2 });
+      expect(capped).toMatchObject({ complete: false }); expect(capped.commits).toHaveLength(2);
+      const exact = await readHistoryCommits(root, end, undefined, { ...IN_PROCESS_HISTORY_BOUNDS, cap: 3 });
+      expect(exact).toMatchObject({ complete: true }); expect(exact.commits).toHaveLength(3);
+      expect(await readHistoryCommits(root, end)).toMatchObject({ complete: true });
+      expect((await readHistoryCommits(root, end, undefined, FULL_WINDOW_HISTORY_BOUNDS)).commits).toHaveLength(3);
+      expect(IN_PROCESS_HISTORY_BOUNDS.cap).toBe(1000);
+      expect(FULL_WINDOW_HISTORY_BOUNDS.cap).toBeGreaterThan(36_851);
+      for (const cap of [0, 1.5, Number.NaN]) {
+        await expect(readHistoryCommits(root, end, undefined, { ...IN_PROCESS_HISTORY_BOUNDS, cap })).rejects.toThrow('bounds');
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('reads names git would C-quote raw, and one unusual name never voids the window', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'history-quoted-'));
+    const git = async (...args: string[]) => (await promisify(execFile)('git', ['-C', root, ...args])).stdout.trim();
+    // The Papercusp tree holds a junk file literally named "$LOG"; quoted, it voided 36,620 commits.
+    const odd = ['"$LOG"', 'back\\slash.ts', 'sp ace.ts', 'tab\tin.ts', 'new\nline.ts'];
+    try {
+      await git('init', '-q'); await git('config', 'user.email', 'fixture@example.invalid'); await git('config', 'user.name', 'fixture');
+      for (let n = 0; n < 3; n++) {
+        await writeFile(join(root, 'a.ts'), `export const a=${n};`); await writeFile(join(root, 'b.ts'), `export const b=${n};`);
+        await git('add', 'a.ts', 'b.ts'); await git('commit', '-qm', `pair-${n}`);
+      }
+      for (const name of odd) await writeFile(join(root, name), name);
+      await git('add', '-A'); await git('commit', '-qm', 'odd names');
+      await git('mv', 'sp ace.ts', 'moved "name".ts'); await git('commit', '-qm', 'rename odd');
+      await git('commit', '-q', '--allow-empty', '-m', 'empty');
+      const end = new Date(Date.now() + 2000).toISOString();
+      const read = await readHistoryCommits(root, end);
+      expect(read.complete).toBe(true);
+      expect(read.commits).toHaveLength(6);
+      expect(read.commits[0]!.files).toEqual([]);
+      expect(read.commits[1]!.files).toEqual([{ status: 'R100', from: 'sp ace.ts', path: 'moved "name".ts' }]);
+      expect(read.commits[2]!.files.map(f => f.path).sort()).toEqual([...odd].sort());
+      const report = await readCoChange(root, ['a.ts'], end);
+      expect(report).toMatchObject({ status: 'measured', complete: true });
+      expect(report.pairs[0]).toMatchObject({ partner: 'b.ts', shared: 3, union: 3 });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('parseHistoryLog (git log -z --name-status)', () => {
+  const sha = (c: string) => c.repeat(40);
+  const header = (s: string, parents: string, at = '2026-10-20T00:00:00Z') => `\x1e${s}\t${parents}\t${at}\0`;
+  it('reads statuses and paths by position, so a path may hold any byte but NUL', () => {
+    const log = header(sha('a'), sha('b')) + '\nM\0x.ts\0R087\0old\\name.ts\0\x1estarts-with-separator.ts\0A\0line\nbreak.ts\0'
+      + header(sha('b'), '');
+    const { commits, malformed } = parseHistoryLog(log);
+    expect(malformed).toBe(false);
+    expect(commits).toEqual([
+      { sha: sha('a'), parents: [sha('b')], at: '2026-10-20T00:00:00Z', files: [
+        { status: 'M', path: 'x.ts' },
+        { status: 'R087', from: 'old\\name.ts', path: '\x1estarts-with-separator.ts' },
+        { status: 'A', path: 'line\nbreak.ts' }] },
+      { sha: sha('b'), parents: [], at: '2026-10-20T00:00:00Z', files: [] }]);
+  });
+  it('reports a broken record structure as malformed, never a partial measurement', () => {
+    expect(parseHistoryLog('').malformed).toBe(false);
+    expect(parseHistoryLog(`${header(sha('a'), '')}\nQ\0x.ts\0`).malformed).toBe(true);
+    expect(parseHistoryLog(`${header(sha('a'), '')}\nR100\0only-one.ts\0`).malformed).toBe(true);
+    expect(parseHistoryLog(`${header(sha('a'), '')}\nM\0\0`).malformed).toBe(true);
+    expect(parseHistoryLog(`\x1e${sha('a')}\t${sha('b')}\0`).malformed).toBe(true);
+    expect(parseHistoryLog('\nM\0orphan.ts\0').malformed).toBe(true);
+  });
+  it('keeps an unsafe rename endpoint out of co-change identity', () => {
+    const renamed: HistoryCommit = { ...commit(4, []), files: [{ status: 'R090', from: 'a.ts', path: 'back\\slash.ts' }] };
+    const report = history([commit(1), commit(2), commit(3), renamed]);
+    expect(report.unknownPaths).toEqual(expect.arrayContaining(['a.ts', 'back\\slash.ts']));
+    expect(report.pairs).toEqual([]);
   });
 });
 

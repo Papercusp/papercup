@@ -52,7 +52,7 @@ export function coChangeFromCommits(input: {
   for (const c of commits) for (const f of c.files) {
     if (f.status.startsWith('C')) { unknown.add(f.path); if (f.from) unknown.add(f.from); }
     if (!f.status.startsWith('R')) continue;
-    if (!f.from || !safe(f.from) || !/^R\d{1,3}$/.test(f.status) || Number(f.status.slice(1)) < 50 || Number(f.status.slice(1)) > 100
+    if (!f.from || !safe(f.from) || !safe(f.path) || !/^R\d{1,3}$/.test(f.status) || Number(f.status.slice(1)) < 50 || Number(f.status.slice(1)) > 100
       || (renames.has(f.from) && renames.get(f.from) !== f.path)
       || [...renames].some(([from, to]) => to === f.path && from !== f.from)) {
       unknown.add(f.path); if (f.from) unknown.add(f.from);
@@ -104,31 +104,74 @@ export function coChangeFromCommits(input: {
       ...(unknown.size ? ['Conflicting rename/copy/reused-path identity remains unknown.'] : [])], error: null };
 }
 
+/** How much of the window a read may take: commit cap, git timeout and output buffer. */
+export interface HistoryReadBounds { cap: number; timeoutMs: number; maxBufferBytes: number }
+/** In-process reads (reuse briefs, graph:query) must stay cheap. On a repository that commits
+ * every few minutes the window outgrows the cap, and such a read honestly reports incomplete. */
+export const IN_PROCESS_HISTORY_BOUNDS: HistoryReadBounds = { cap: COMMIT_CAP, timeoutMs: 3000, maxBufferBytes: 4 * 1024 * 1024 };
+/** For a managed child with its own heap and budget (the cleanup-campaign round), never the
+ * operator host. Sized from the Papercusp tree on 2026-10-27: 36,851 first-parent commits in the
+ * 90-day window, a 26.7 MB name-status log, read in 41 s. */
+export const FULL_WINDOW_HISTORY_BOUNDS: HistoryReadBounds = { cap: 250_000, timeoutMs: 300_000, maxBufferBytes: 512 * 1024 * 1024 };
+
+const NAME_STATUS = /^[ACDMRTUXB]\d{0,3}$/;
+
+/** Parse `git log -z --name-status --format=%x1e%H%x09%P%x09%cI`. Each field ends in NUL and a
+ * path is printed raw (no C-quoting), so a path may hold any byte but NUL. A token is therefore
+ * read as a header, a status or a path by its POSITION, never by its content: the first status
+ * of a commit carries a leading newline, a rename or copy is followed by two paths, every other
+ * status by one. `malformed` means the record structure itself did not parse. */
+export function parseHistoryLog(log: string): { commits: HistoryCommit[]; malformed: boolean } {
+  const tokens = log.split('\0');
+  const commits: HistoryCommit[] = [];
+  let current: HistoryCommit | null = null;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token.startsWith('\x1e')) {
+      const fields = token.slice(1).split('\t');
+      if (fields.length !== 3) return { commits, malformed: true };
+      const [sha, parents, at] = fields as [string, string, string];
+      current = { sha, parents: parents ? parents.split(' ') : [], at, files: [] };
+      commits.push(current);
+      continue;
+    }
+    if (!token && i === tokens.length - 1) break;
+    const status = current?.files.length ? token : token.replace(/^\n/, '');
+    if (!current || !NAME_STATUS.test(status)) return { commits, malformed: true };
+    const arity = /^[RC]/.test(status) ? 2 : 1;
+    const paths = tokens.slice(i + 1, i + 1 + arity);
+    if (paths.length < arity || paths.some(path => !path)) return { commits, malformed: true };
+    i += arity;
+    current.files.push(arity === 2 ? { status, from: paths[0]!, path: paths[1]! } : { status, path: paths[0]! });
+  }
+  return { commits, malformed: false };
+}
+
 /** The 90-day first-parent window ending at `end`, as full commit file lists — never a
  * pathspec-pruned log, which would hide co-change partners. `complete` is false when the
- * window was truncated at the commit cap, a record was malformed, or the clone is shallow. */
-export async function readHistoryCommits(root: string, end = new Date().toISOString(), signal?: AbortSignal): Promise<{
+ * window was truncated at the commit cap, a record was malformed, or the clone is shallow.
+ * Paths are raw (`-z`). A path that is not a safe history path (a backslash, a newline) is
+ * kept as recorded and is ineligible downstream; it never voids the window. Before `-z`, git
+ * C-quoted such a name and one junk file voided all 36,620 commits of the Papercusp window. */
+export async function readHistoryCommits(root: string, end = new Date().toISOString(), signal?: AbortSignal,
+  bounds: HistoryReadBounds = IN_PROCESS_HISTORY_BOUNDS): Promise<{
   commits: HistoryCommit[]; commit: string; complete: boolean;
 }> {
+  if (!Number.isInteger(bounds.cap) || bounds.cap < 1 || !(bounds.timeoutMs > 0) || !(bounds.maxBufferBytes > 0)) {
+    throw new Error('History read bounds need a positive integer cap, timeout and buffer');
+  }
   const start = new Date(Date.parse(end) - 90 * DAY).toISOString();
-  const git = async (args: string[]) => (await run('git', ['-C', root, ...args],
-    { encoding: 'utf8', timeout: 3000, maxBuffer: 4 * 1024 * 1024, signal })).stdout;
+  const git = async (args: string[], limits = IN_PROCESS_HISTORY_BOUNDS) => (await run('git', ['-C', root, ...args],
+    { encoding: 'utf8', timeout: limits.timeoutMs, maxBuffer: limits.maxBufferBytes, signal })).stdout;
   const commit = (await git(['rev-parse', 'HEAD'])).trim();
   const shallow = (await git(['rev-parse', '--is-shallow-repository'])).trim() !== 'false';
-  const log = await git(['-c', 'core.quotepath=false', 'log', commit, '--first-parent', '--no-merges',
-    '--name-status', '-M50%', '--format=%x1e%H%x09%P%x09%cI', `--since=${start}`, `--until=${end}`, `-n${COMMIT_CAP + 1}`]);
-  const commits = log.split('\x1e').filter(Boolean).map(block => {
-    const [header, ...lines] = block.trim().split('\n');
-    const [sha, parents, at] = header!.split('\t');
-    const files = lines.filter(Boolean).map(line => {
-      const [status, a, b] = line.split('\t');
-      return { status: status!, path: b ?? a!, ...(b ? { from: a } : {}) };
-    });
-    return { sha: sha!, parents: parents ? parents.split(' ') : [], at: at!, files };
-  });
-  const malformed = commits.some(c => !/^[a-f0-9]{40,64}$/.test(c.sha) || !Number.isFinite(Date.parse(c.at))
-    || c.files.some(f => !safe(f.path) || f.from !== undefined && !safe(f.from)));
-  return { commits: commits.slice(0, COMMIT_CAP), commit, complete: commits.length <= COMMIT_CAP && !malformed && !shallow };
+  const log = await git(['log', commit, '--first-parent', '--no-merges', '-z',
+    '--name-status', '-M50%', '--format=%x1e%H%x09%P%x09%cI', `--since=${start}`, `--until=${end}`, `-n${bounds.cap + 1}`], bounds);
+  const parsed = parseHistoryLog(log);
+  const commits = parsed.commits;
+  const malformed = parsed.malformed
+    || commits.some(c => !/^[a-f0-9]{40,64}$/.test(c.sha) || !Number.isFinite(Date.parse(c.at)));
+  return { commits: commits.slice(0, bounds.cap), commit, complete: commits.length <= bounds.cap && !malformed && !shallow };
 }
 
 /** Full commit file lists, never a pathspec-pruned log (which would hide partners). */

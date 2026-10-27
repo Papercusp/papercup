@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CAMPAIGN_ID_PAYLOAD_KEY, CAMPAIGN_THROTTLE_PAYLOAD_KEY, editPathAcquire, gateRedsFromRows, landedBatchesFromRows,
-  nativeCampaignRoundDeps, parseThrottleState, repoFileReader, serializeThrottleState, workItemThrottleStore,
+  nativeCampaignRoundDeps, parseThrottleState, repoFileReader, resetCampaignThrottle, serializeThrottleState, workItemThrottleStore,
   type RunnerItemRows,
 } from './campaign-native';
 import { initialThrottleState, type CampaignThrottleState } from './throttle';
@@ -75,6 +75,39 @@ describe('workItemThrottleStore', () => {
     const rows = memoryRows({});
     rows.merge = async () => 0;
     await expect(workItemThrottleStore(scope, { rows }).save('c', TRIPPED)).rejects.toThrow(/updated 0 rows/);
+  });
+});
+
+describe('resetCampaignThrottle', () => {
+  const tripped = () => ({ [CAMPAIGN_ID_PAYLOAD_KEY]: 'papercusp-1',
+    [CAMPAIGN_THROTTLE_PAYLOAD_KEY]: serializeThrottleState(TRIPPED) } as Record<string, unknown>);
+  const NOW = new Date('2026-10-27T10:00:00.000Z');
+
+  it('refuses an agent principal and writes nothing', async () => {
+    const rows = memoryRows(tripped());
+    const out = await resetCampaignThrottle({ store: workItemThrottleStore(scope, { rows }), campaignId: 'papercusp-1',
+      principal: 'su-4dec493b', now: NOW });
+    expect(out).toMatchObject({ ok: false, code: 'not-owner' });
+    expect(rows.writes).toEqual([]);
+  });
+
+  it('refuses a campaign that is not throttled and writes nothing', async () => {
+    const rows = memoryRows({ [CAMPAIGN_ID_PAYLOAD_KEY]: 'papercusp-1' });
+    const out = await resetCampaignThrottle({ store: workItemThrottleStore(scope, { rows }), campaignId: 'papercusp-1',
+      principal: 'admin:avi', now: NOW });
+    expect(out).toMatchObject({ ok: false, code: 'not-throttled' });
+    expect(rows.writes).toEqual([]);
+  });
+
+  it('lets an owner reset, restores the pre-trip review, and saves who reset it and when', async () => {
+    const rows = memoryRows(tripped());
+    const store = workItemThrottleStore(scope, { rows });
+    const out = await resetCampaignThrottle({ store, campaignId: 'papercusp-1', principal: 'admin:avi', now: NOW });
+    const expected: CampaignThrottleState = { throttled: false, review: 'off', reviewBeforeTrip: null,
+      trippedAt: null, resetAt: NOW, resetBy: 'admin:avi' };
+    expect(out).toEqual({ ok: true, state: expected });
+    expect(rows.writes).toEqual([['WI-RUN', CAMPAIGN_THROTTLE_PAYLOAD_KEY, serializeThrottleState(expected)]]);
+    expect(await store.load('papercusp-1')).toEqual(expected);
   });
 });
 
