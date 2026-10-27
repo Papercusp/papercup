@@ -581,6 +581,8 @@ export interface SharedAdmissionOptions {
   onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number; queueChargeMs?: number }) => void;
   /** Opt in to shared task-sized worker/memory leases. Equal keys exclude each other; '*' excludes every task. */
   taskAdmissionKey?: (task: any) => string;
+  /** Defer before queueing when a release-gate holder's measured age reaches this waiter's remaining queue budget. */
+  deferWhenHolderOlderThanBudget?: boolean;
   /**
    * EI-21917992245424964 — a self-description published into the admission mutex's owner
    * record, so a BLOCKED peer can judge whether waiting is worth it without a coord
@@ -667,6 +669,9 @@ export function admissionMutexName(env?: Record<string, string | undefined>): st
  * misclassifies it exits with no verdict, which the green-checkpoint records as a lost run.
  */
 export function isSharedAdmissionTimeout(error: unknown): boolean;
+
+/** True when a release-gate waiter deferred before spending its budget behind an aged holder. */
+export function isSharedAdmissionDeferral(error: unknown): boolean;
 
 export function runBudgetedTasks<Task, Value>(
   tasks: Task[],

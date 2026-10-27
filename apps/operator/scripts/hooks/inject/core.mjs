@@ -187,15 +187,16 @@ export function baseRequest({ port, client, owner, cwd, env = process.env }) {
  *
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
- * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
  */
 export async function postInjection(port, body, opts = {}) {
-  const { env = process.env, fetchImpl = globalThis.fetch } = opts;
+  const { env = process.env, fetchImpl = globalThis.fetch, now = Date.now } = opts;
   const spec = specFor(port);
   if (!spec) return null;
+  const startedAt = now();
 
   const { off, mode } = killSwitchState(port, env);
   if (off && mode === 'suppress') return null;
@@ -212,14 +213,19 @@ export async function postInjection(port, body, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
   try {
-    // wallMs: this hook's own wall, so the operator spends only what is left of
-    // it (the Jev memory filter's wait, WI-10004485). Derived from the spec, never
-    // a second copy of the number on the server.
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
     if (port === 'mid-turn') await Promise.all([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body), collectCloneEdits(body)]);
     if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
-    const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
+    // wallMs: what is LEFT of this hook's own wall when the request leaves, so the
+    // operator spends only that (the Jev memory filter's wait, WI-10004485). The
+    // wall timer above started before local collection, which measured 0.75-0.8 s
+    // cold on the mid-turn port (code-intel-delivery-and-outcomes-2026-10-26#P-002).
+    // Sending the full spec value told the server it had time the hook had already
+    // spent, so a slow server answer was aborted here and nothing was injected.
+    // Derived from the spec, never a second copy of the number on the server.
+    const wallMs = Math.max(1, spec.timeoutMs - Math.max(0, now() - startedAt));
+    const payloadBody = JSON.stringify({ ...body, wallMs });
     let res = null;
     // WI-10005007: the next base is tried ONLY when the previous one could not be
     // reached at all (the fetch rejected before the wall fired — refused, reset,

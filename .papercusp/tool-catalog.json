@@ -4093,7 +4093,7 @@
           "POST"
         ]
       },
-      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result (spill) for lines holding every term; view_lines reads around a hit. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.",
+      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result or readable file for lines holding every term; view_lines reads around a hit. Opaque papercusp://scratch-spool and papercusp://scratch-memory references support exact byte pages only, not query, view_lines, content_indexes, or evidence_class. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or an opaque scratch reference URI.",
       "capabilities": [
         "capability:fs-read"
       ],
@@ -4155,9 +4155,9 @@
         "judge"
       ],
       "guidance": {
-        "when": "Read a file before editing it, or inspect content. A plain read of PNG/JPEG/GIF/WebP returns original image media (up to 5 MiB). Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.",
+        "when": "Read a file before editing it, or inspect content. A plain read of PNG/JPEG/GIF/WebP returns original image media (up to 5 MiB). Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result saved as a readable spill file, search it with query, then read around a hit with view_lines. Opaque `papercusp://scratch-spool/...` and `papercusp://scratch-memory/...` references support exact byte pages only (`byte_offset` + `byte_limit`); they do not support query, view_lines, content_indexes, or evidence_class.",
         "notWhen": "To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.",
-        "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around)."
+        "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite). Readable spill file: query → view_lines (follow read_around). Opaque scratch-spool and scratch-memory refs: byte_offset + byte_limit pages only."
       }
     },
     {

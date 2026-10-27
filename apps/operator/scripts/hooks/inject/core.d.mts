@@ -98,7 +98,7 @@ export function baseRequest({ port, client, owner, cwd, env }: {
  *
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
- * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
@@ -106,6 +106,7 @@ export function baseRequest({ port, client, owner, cwd, env }: {
 export function postInjection(port: InjectionPort, body: InjectionRequest, opts?: {
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
+    now?: () => number;
 }): Promise<{
     text: string;
     deliveryToken: string | null;

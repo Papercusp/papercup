@@ -13,6 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TAURI_VERIFIER_INPUTS } from '../../../../scripts/source-preview.mjs';
+import { parseJobLogEndMarker } from '../../../../packages/operator-core/lib/task-manager/job-log-terminal';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
 const RUNNER = join(REPO_ROOT, 'scripts/run-operator-e2e-isolated.sh');
@@ -622,10 +623,11 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(phases.find(phase => phase.phase === 'isolated-suite')?.status).toBe('failed');
   });
 
-  it('exits with the playwright exit code when a spec fails', () => {
+  it('emits a task-manager-compatible failed terminal marker when a spec fails', () => {
     const r = run(fixture(1), []);
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain('OPERATOR_E2E_ISOLATED exit=1');
+    expect(parseJobLogEndMarker(r.out)).toEqual({ status: 'failed', exitCode: 1 });
     expect(r.out).toContain('HARNESS_RESULT');
     expect(r.out).toContain('verdict=fail');
   });
@@ -633,6 +635,7 @@ describe('run-operator-e2e-isolated.sh', () => {
   it('exits 0 when the suite passes', () => {
     const r = run(fixture(0), []);
     expect(r.status, r.out).toBe(0);
+    expect(parseJobLogEndMarker(r.out)).toEqual({ status: 'completed', exitCode: 0 });
     expect(r.out).toContain('HARNESS_RESULT');
     expect(r.out).toContain('verdict=pass');
   });
