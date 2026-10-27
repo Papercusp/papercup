@@ -41,6 +41,8 @@ import {
   ROUTINES_TRIGGERS_QUEUE,
   queueForRoutine,
   shouldFireUnderPoolShed,
+  admitUnderPoolShed,
+  POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
@@ -1260,10 +1262,21 @@ async function routinesTickImpl(): Promise<void> {
   const remainingStartsByQueue = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item.availableStarts]));
   const loggedWithheldQueues = new Set<string>();
   const dueByAge = orderDueRoutinesByAge(due);
+  // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY protected
+  // critical-queue routines (git-sync and bounded admission fail-open); everything else sheds,
+  // EXCEPT the oldest routine overdue past the starvation bound (EI-27084758447422793), so a
+  // sustained shed can delay a non-critical routine but never starve it indefinitely.
+  const shedNowMs = Date.now();
+  const shedAdmitted = poolCritical ? admitUnderPoolShed(dueByAge, shedNowMs) : null;
   for (const r of dueByAge) {
-    // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY protected
-    // critical-queue routines (git-sync and bounded admission fail-open); everything else sheds.
-    if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
+    if (shedAdmitted && !shedAdmitted.has(r)) continue;
+    if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) {
+      const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
+      console.warn(
+        `[routines-tick] pool shed: firing STARVED routine ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
+          `overdue ${overdueMin}min past the ${POOL_SHED_STARVATION_BOUND_MS / 60_000}min starvation bound (EI-27084758447422793)`,
+      );
+    }
     const queueName = queueForRoutine(r.targetRole, r.installSlug);
     // EI-224330 stage 2: admission is checked BEFORE claim, from the epoch's
     // previous-cohort feedback and actual durable occupancy. A withheld row has

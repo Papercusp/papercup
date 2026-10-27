@@ -218,3 +218,48 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
 export function shouldFireUnderPoolShed(targetRole: string): boolean {
   return queueForRoutine(targetRole) === ROUTINES_CRITICAL_QUEUE;
 }
+
+/**
+ * EI-27084758447422793: the STARVATION BOUND on the pool-shed floor. The floor above skips every
+ * non-critical routine for as long as the pool probe stays critical, with no limit. Measured
+ * 2026-10-26: the probe classified critical on ~20 ticks per 15 min from 21:15Z to 22:45Z, and the
+ * pr-drill green-checkpoint (cron :37 hourly) went unclaimed from its 21:37Z slot until 23:18Z, so
+ * a frozen repair queue sat untested for ~100 min. Under a shed, a non-critical routine that has
+ * been overdue for at least `boundMs` may still fire, oldest first, at most `starvedPerTick` per tick.
+ * The shed stays real (one extra enqueue per tick at most) but no routine can be starved forever.
+ */
+export const POOL_SHED_STARVATION_BOUND_MS = 30 * 60_000;
+export const POOL_SHED_STARVED_FIRES_PER_TICK = 1;
+
+export interface PoolShedCandidate {
+  readonly targetRole: string;
+  readonly nextFireAt: Date | null;
+}
+
+/**
+ * Which due routines may fire this tick under a critical pool shed: every critical-floor routine,
+ * plus up to `starvedPerTick` non-critical routines overdue by at least `boundMs`. `dueByAge` must be
+ * ordered oldest-due first, so the budget goes to the longest-starved routine. A NULL or non-finite
+ * `nextFireAt` has no measurable overdue age and never counts as starved. Pure ⇒ unit-testable.
+ */
+export function admitUnderPoolShed<T extends PoolShedCandidate>(
+  dueByAge: readonly T[],
+  nowMs: number,
+  opts: { boundMs?: number; starvedPerTick?: number } = {},
+): Set<T> {
+  const boundMs = opts.boundMs ?? POOL_SHED_STARVATION_BOUND_MS;
+  let starvedLeft = opts.starvedPerTick ?? POOL_SHED_STARVED_FIRES_PER_TICK;
+  const admitted = new Set<T>();
+  for (const routine of dueByAge) {
+    if (shouldFireUnderPoolShed(routine.targetRole)) {
+      admitted.add(routine);
+      continue;
+    }
+    if (starvedLeft <= 0) continue;
+    const dueAtMs = routine.nextFireAt?.getTime();
+    if (dueAtMs === undefined || !Number.isFinite(dueAtMs) || nowMs - dueAtMs < boundMs) continue;
+    admitted.add(routine);
+    starvedLeft -= 1;
+  }
+  return admitted;
+}

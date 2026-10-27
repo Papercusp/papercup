@@ -19,6 +19,8 @@ import {
   SYNC_GUARD_ACTIONS,
   queueForRoutine,
   shouldFireUnderPoolShed,
+  admitUnderPoolShed,
+  POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
@@ -295,6 +297,47 @@ describe('queueForRoutine — sync-batch lint-guard lane (P-028)', () => {
     expect(queueForRoutine('system:sync-batch-lint-guards-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:pre-sync-batch-lint-guards')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('sync-batch-lint-guards')).toBe(ROUTINES_QUEUE);
+  });
+});
+
+/**
+ * EI-27084758447422793: the starvation bound on the pool-shed floor. A sustained critical probe
+ * (measured 21:15Z–22:45Z on 2026-10-26) shed the pr-drill green-checkpoint for ~100 min because
+ * the floor admitted nothing non-critical, ever. Each case below fails against a floor that only
+ * consults shouldFireUnderPoolShed.
+ */
+describe('admitUnderPoolShed — the starvation bound (EI-27084758447422793)', () => {
+  const now = Date.parse('2026-10-26T23:00:00Z');
+  const ago = (min: number) => new Date(now - min * 60_000);
+  const gitSync = { id: 'git-sync', targetRole: 'system:git-sync', nextFireAt: ago(1) };
+  const gate = { id: 'gate', targetRole: 'system:green-checkpoint', nextFireAt: ago(83) };
+  const scout = { id: 'scout', targetRole: 'system:gym-cycle', nextFireAt: ago(45) };
+  const fresh = { id: 'fresh', targetRole: 'system:blueprint-run', nextFireAt: ago(5) };
+
+  it('admits the longest-starved non-critical routine beside the critical floor', () => {
+    const admitted = admitUnderPoolShed([gate, scout, gitSync, fresh], now);
+    expect([...admitted].map((r) => r.id).sort()).toEqual(['gate', 'git-sync']);
+  });
+
+  it('spends at most starvedPerTick on non-critical routines; the critical floor is never budgeted', () => {
+    const two = admitUnderPoolShed([gate, scout, gitSync], now, { starvedPerTick: 2 });
+    expect([...two].map((r) => r.id).sort()).toEqual(['gate', 'git-sync', 'scout']);
+    const none = admitUnderPoolShed([gate, scout, gitSync], now, { starvedPerTick: 0 });
+    expect([...none].map((r) => r.id)).toEqual(['git-sync']);
+  });
+
+  it('sheds a non-critical routine still inside the bound, and any routine without a measurable due time', () => {
+    const undated = { id: 'undated', targetRole: 'system:green-checkpoint', nextFireAt: null };
+    const parked = { id: 'parked', targetRole: 'system:green-checkpoint', nextFireAt: new Date(Number.NaN) };
+    const admitted = admitUnderPoolShed([undated, parked, fresh], now);
+    expect(admitted.size).toBe(0);
+  });
+
+  it('starves for exactly the bound: due at the bound fires, one ms short does not', () => {
+    const atBound = { id: 'at', targetRole: 'system:green-checkpoint', nextFireAt: new Date(now - POOL_SHED_STARVATION_BOUND_MS) };
+    const short = { id: 'short', targetRole: 'system:green-checkpoint', nextFireAt: new Date(now - POOL_SHED_STARVATION_BOUND_MS + 1) };
+    expect(admitUnderPoolShed([atBound], now).has(atBound)).toBe(true);
+    expect(admitUnderPoolShed([short], now).has(short)).toBe(false);
   });
 });
 
