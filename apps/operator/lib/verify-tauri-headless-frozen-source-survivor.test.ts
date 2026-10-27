@@ -105,6 +105,32 @@ function generateStopScript(root: string, sourceRoot: string, sourceWork: string
 }
 
 describe("verify-tauri-headless frozen-source survivor reaper", () => {
+  it("accepts a process that exits between the initial liveness and ownership reads", () => {
+    const script = [
+      'set -u',
+      reaperFunctions,
+      'sleep 60 &',
+      'child=$!',
+      'trap \'builtin kill -KILL "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true\' EXIT',
+      'ticks="$(frozen_source_process_start_ticks "$child")"',
+      'frozen_source_process_owned() {',
+      '  frozen_source_process_gone "$1" "$ticks" && return 92',
+      '  builtin kill -KILL "$1" 2>/dev/null || return 93',
+      '  wait "$1" 2>/dev/null || true',
+      '  echo EXIT_DURING_OWNERSHIP >&2',
+      '  return 1',
+      '}',
+      'stop_verify_process "$child" "$ticks" this-run',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8', timeout: 12_000,
+      env: { ...process.env, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
+    });
+    expect(result.stderr).toContain('EXIT_DURING_OWNERSHIP');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('VERIFY_PROCESS_UNVERIFIED');
+  });
+
   it("accepts an already exited process without signalling its unreaped zombie", () => {
     const fixture = makeFixture("verify-process-zombie");
     const ready = resolve(fixture.root, "zombie-pid");

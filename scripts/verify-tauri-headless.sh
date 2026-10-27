@@ -1544,19 +1544,31 @@ frozen_source_process_gone() {
     [ "${fields[0]}" = Z ] || [ "${fields[0]}" = X ]
 }
 
+# Unlike the post-signal drain check, this must not accept a reused PID as
+# evidence that an unverified live process is safe to ignore.
+frozen_source_process_exited() {
+  local pid="$1" expected_ticks="$2" stat rest
+  local -a fields=()
+  [ -d "/proc/$pid" ] || return 0
+  if ! IFS= read -r stat 2>/dev/null <"/proc/$pid/stat"; then
+    [ ! -d "/proc/$pid" ]
+    return
+  fi
+  rest="${stat##*) }"
+  read -r -a fields <<<"$rest"
+  [ "${#fields[@]}" -ge 20 ] && [ -n "$expected_ticks" ] || return 1
+  [ "${fields[19]}" = "$expected_ticks" ] &&
+    { [ "${fields[0]}" = Z ] || [ "${fields[0]}" = X ]; }
+}
+
 stop_verify_process() {
   local pid="$1" ticks="$2" provenance="$3" attempt
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 0
-  [ -d "/proc/$pid" ] || return 0
-  # An exited child may remain in its group until its parent waits. Its
-  # environment is then empty, so check same-incarnation exit before ownership.
-  # A stale start time still cannot authorize a live process or a signal.
-  if [ -n "$ticks" ] &&
-     [ "$(frozen_source_process_start_ticks "$pid" 2>/dev/null)" = "$ticks" ] &&
-     frozen_source_process_gone "$pid" "$ticks"; then
-    return 0
-  fi
+  frozen_source_process_exited "$pid" "$ticks" && return 0
   if ! frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then
+    # A group member can exit during the ownership read. Reconcile that
+    # transition before reporting an unverified survivor; never signal it.
+    frozen_source_process_exited "$pid" "$ticks" && return 0
     echo "VERIFY_PROCESS_UNVERIFIED pid=$pid; preserving teardown evidence" >&2
     return 1
   fi
@@ -1686,6 +1698,7 @@ write_frozen_source_reaper_script() {
     declare -f frozen_source_process_identity_matches
     declare -f frozen_source_process_matches
     declare -f frozen_source_process_gone
+    declare -f frozen_source_process_exited
     declare -f stop_verify_process
     declare -f stop_verify_process_group
     declare -f reap_frozen_source_survivors
