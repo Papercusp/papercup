@@ -277,6 +277,8 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
 
   it.each(['fail', 'unmeasured'] as const)('retains a completed %s across interruption and a replacement task', async status => {
     let persisted = wide();
+    // WI-6554700010030199: the interrupted worker must release the gate's dispatch reservation itself.
+    persisted = { ...persisted, dispatchReservation: { token: input.operationId, claimedAtMs: 1, expiresAtMs: 10_000_000 } } as unknown as FrozenCandidateRepairQueue;
     const originalFiles = [...persisted.admissionPrecheck!.files];
     let calls = 0;
     const interrupted: FixPrecheckRunner = async run => {
@@ -288,11 +290,18 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     const deps = { getTask: async () => ({ state: 'running' as const, confined: true }),
       readQueue: async () => ({ status: 'value' as const, queue: persisted }),
       transition: async (_target: unknown, update: (q: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue) => { persisted = update(persisted); }, now: () => 30 };
-    expect(await runAdmissionPrecheckWorker(input, { ...deps, createRunner: () => interrupted })).toMatchObject({ status: 'interrupted' });
-    expect(persisted.admissionPrecheck).toMatchObject({ status: 'running', completedCount: 40 });
+    // The interruption settles at once (runner-failed, fail-closed) instead of leaving a 'running'
+    // operation whose reservation fences the gate until an unrelated status read notices it.
+    expect(await runAdmissionPrecheckWorker(input, { ...deps, createRunner: () => interrupted })).toMatchObject({
+      status: 'settled', verdict: { ok: false, ran: false, reason: 'runner-failed', detail: expect.stringContaining('simulated worker death') } });
+    expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', completedCount: 40 });
+    expect(persisted.admissionPrecheck!.measurement!.results).toHaveLength(40);
+    expect(persisted.dispatchReservation).toBeUndefined();
+    // retryPrecheck:true resumes the SAME operation: running again, verdict cleared, new task id
+    // (the shape repair-queue.ts builds from a runner-failed precheck).
     const saved = JSON.parse(JSON.stringify(persisted));
     persisted = saved;
-    persisted.admissionPrecheck!.runnerTaskId = 'replacement-task';
+    persisted.admissionPrecheck = { ...persisted.admissionPrecheck!, status: 'running', verdict: undefined, runnerTaskId: 'replacement-task' };
     const resumed: string[] = [];
     const baseline: string[] = [];
     const outcome = await runAdmissionPrecheckWorker({ ...input, taskId: 'replacement-task' }, { ...deps, createRunner: options => async run => {

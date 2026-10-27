@@ -395,6 +395,20 @@ async function runBoundedAdmissionPrecheck(
     });
     return { status: 'settled', verdict };
   };
+  // WI-6554700010030199: an interrupted run (runner threw, or the runner could not run, e.g. the
+  // checkpoint tree was busy) settles AT ONCE exactly as inspectQueue later would: runner-failed,
+  // per-file measurement kept, dispatch reservation released. Returning 'interrupted' with the
+  // operation still 'running' left the reservation fencing the gate (wait-for-dispatch-reservation)
+  // until some unrelated status read noticed the dead task. retryPrecheck:true resumes the kept
+  // rows. Only when settlement itself is refused (a concurrent identity change: the operation is no
+  // longer ours, or the queue write failed) does the worker report 'interrupted' and write nothing.
+  const interrupted = async (reason: string): Promise<AdmissionPrecheckWorkerOutcome> => {
+    try {
+      return await unavailable(`pre-check interrupted before a verdict (${reason}); durable per-file progress is kept`);
+    } catch (error) {
+      return { status: 'interrupted', reason: `${reason}; settlement refused: ${String(error)}` };
+    }
+  };
   if (!operation.builtTree || new Set(operation.files).size !== operation.files.length)
     return unavailable('wide pre-check requires a built-tree identity and unique immutable population');
   const saved = operation.measurement;
@@ -441,11 +455,11 @@ async function runBoundedAdmissionPrecheck(
             });
           } });
       } catch (error) {
-        // A replacement task resumes this SAME operation from its durable per-file rows.
+        // retryPrecheck:true resumes this SAME operation from its durable per-file rows.
         // No failed or unmeasured completed file is ever rerun into a pass.
-        return { status: 'interrupted', reason: String(error) };
+        return interrupted(String(error));
       }
-      if (!run.ran) return { status: 'interrupted', reason: run.detail };
+      if (!run.ran) return interrupted(run.detail);
       if (run.commit !== operation.builtCommit) return unavailable('execution-group commit mismatch');
       try { validateAdmissionPrecheckResults(files, run.results, true); }
       catch (error) { return unavailable(String(error)); }
@@ -517,7 +531,7 @@ async function runBoundedAdmissionPrecheck(
       return admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, now());
     });
     return { status: 'settled', verdict };
-  } catch (error) { return { status: 'interrupted', reason: String(error) }; }
+  } catch (error) { return interrupted(String(error)); }
 }
 
 export async function runAdmissionPrecheckWorker(
