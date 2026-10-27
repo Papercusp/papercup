@@ -283,6 +283,7 @@ import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
 import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
 import { evaluateChangeKindGate, type ChangeKindGateResult } from '../../change-kind-proof';
+import type { RefactorFactsQuery } from '../../change-kind-refactor-proof';
 import { readChangeKinds, type ChangeKindsView } from '../../work-item-change-kinds';
 import {
   attachChangeKindDeclarations,
@@ -5336,6 +5337,18 @@ async function completeOneTracked(
         },
         repoRoot: uiRepoRoots[0] ?? null,
         harnessSlug: existing.harness ?? null,
+        // P-004 / R-4: lazily loaded, because the clone re-scan pulls in the TypeScript compiler.
+        // Without a harness or repository root the resolver is omitted and a 'refactor' close is
+        // refused (fail closed).
+        resolveRefactorFacts: ((root, harness) =>
+          root && harness
+            ? async (query: RefactorFactsQuery) =>
+                (await import('../../change-kind-refactor-facts')).nativeRefactorFactsResolver({
+                  root,
+                  workspaceId: declarationWorkspace,
+                  harness,
+                })(query)
+            : undefined)(uiRepoRoots[0] ?? completionRoot(), existing.harness ?? null),
       },
     );
   }

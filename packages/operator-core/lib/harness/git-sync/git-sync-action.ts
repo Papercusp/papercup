@@ -246,6 +246,7 @@ import {
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
   effectivePublishRefusal,
+  nextAttributionShareDropTicks,
   nextZeroAttributionTicks,
   oversizedKey,
   selectContentNoticeRecipients,
@@ -1837,6 +1838,9 @@ async function readEscalationCounters(
   /** WI-6554700010018198: consecutive ticks on which agents had dirty work in some repo
    *  and none of it got an attributed commit. */
   zeroAttributionTicks: number;
+  /** P-003 (gate-systems-as-designed-2026-10-27): consecutive measured ticks whose
+   *  attributed-file share fell below the floor. */
+  attributionShareDropTicks: number;
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
   prevPublishBlockedAtCommit: string | null;
   /** WI-6554700010009238: `last_yield.at` and `last_synced_at` (epoch ms) from earlier fires. */
@@ -1853,6 +1857,7 @@ async function readEscalationCounters(
       cs: string | null;
       cpt: number;
       zat: number;
+      asd: number;
       pubrefused: string | null;
       pubblocked: string | null;
       pubat: string | number | null;
@@ -1871,6 +1876,7 @@ async function readEscalationCounters(
            metadata->>'last_content_error_signature' AS cs,
            coalesce((metadata->>'consecutive_cumulative_peel_ticks')::int, 0) AS cpt,
            coalesce((metadata->>'consecutive_zero_attribution_ticks')::int, 0) AS zat,
+           coalesce((metadata->>'consecutive_attribution_share_drop_ticks')::int, 0) AS asd,
            metadata->'own_head_publish'->>'refused' AS pubrefused,
            metadata->'own_head_publish'->>'blockedAtCommit' AS pubblocked,
            metadata->'own_head_publish'->>'at' AS pubat,
@@ -1895,6 +1901,7 @@ async function readEscalationCounters(
     contentSignature: rows[0]?.cs ?? null,
     cumulativePeelTicks: rows[0]?.cpt ?? 0,
     zeroAttributionTicks: rows[0]?.zat ?? 0,
+    attributionShareDropTicks: rows[0]?.asd ?? 0,
     publishRefusal: effectivePublishRefusal(
       refused
         ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null, atMs: epochMsOrNull(rows[0]?.pubat) }
@@ -2675,6 +2682,8 @@ async function recordOutcome(
   consecutiveCumulativePeelTicks: number,
   /** WI-6554700010018198: see nextZeroAttributionTicks. */
   consecutiveZeroAttributionTicks: number,
+  /** P-003 (gate-systems-as-designed-2026-10-27): see nextAttributionShareDropTicks. */
+  consecutiveAttributionShareDropTicks = 0,
 ): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
@@ -2770,6 +2779,9 @@ async function recordOutcome(
       // WI-6554700010018198: durable per-repo attribution evidence, kept to the last
       // MEASURED tick (journald rotated the only record of the 85h outage in <12h).
       consecutive_zero_attribution_ticks: consecutiveZeroAttributionTicks,
+      // P-003: each repo's tally in last_attribution carries attributableFileCount /
+      // attributedFileCount, this sweep's attributed-file share.
+      consecutive_attribution_share_drop_ticks: consecutiveAttributionShareDropTicks,
       ...(outcome.attribution ? { last_attribution: { at: localSyncRecordedAt, repos: outcome.attribution } } : {}),
       last_publish_blocked_at: publishBlockedAtCommit,
       // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
@@ -4564,6 +4576,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // WI-6554700010018198: the 85h zero-attribution outage was invisible because no tick
   // counted it. Held (not reset) on ticks that measured nothing — see the helper.
   const zeroAttributionTicks = nextZeroAttributionTicks(prev.zeroAttributionTicks, outcome.attribution);
+  // P-003 (gate-systems-as-designed-2026-10-27): attributed-file share, held on ticks that
+  // committed too few attributable files to judge.
+  const attributionShareDropTicks = nextAttributionShareDropTicks(prev.attributionShareDropTicks, outcome.attribution);
 
   // EI-22154166487566939: the local-sync guard above is stopped in its own finally
   // (~2773-2777) before this point, so the record step + all 7 post-legs legs below
@@ -4640,6 +4655,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           prevOversizedKeys: prev.oversizedKeys,
           cumulativePeelTicks,
           zeroAttributionTicks,
+          attributionShareDropTicks,
           // EI-21230011589307899: surface a frozen own-head publish. Read from the
           // previous tick's publish leg — see readEscalationCounters.
           publishRefusal: prev.publishRefusal,
@@ -8255,6 +8271,9 @@ async function recordAndEscalateTick(a: {
   cumulativePeelTicks: number;
   /** WI-6554700010018198: consecutive zero-attribution ticks including this one. */
   zeroAttributionTicks: number;
+  /** P-003: consecutive low attributed-file-share ticks including this one. Optional so a
+   *  step input checkpointed before this field existed still replays. */
+  attributionShareDropTicks?: number;
   /** EI-21230011589307899: the previous tick's own-head-publish refusal (or null when
    *  publishing cleanly), and the freeze point seen one tick before that. */
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
@@ -8285,6 +8304,7 @@ async function recordAndEscalateTick(a: {
     a.publishRefusal?.blockedAtCommit ?? null,
     a.cumulativePeelTicks,
     a.zeroAttributionTicks,
+    a.attributionShareDropTicks ?? 0,
   );
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
@@ -8504,6 +8524,7 @@ async function recordAndEscalateTick(a: {
     prevOversizedKeys: a.prevOversizedKeys,
     chronicCumulativeTicks: a.cumulativePeelTicks,
     zeroAttributionTicks: a.zeroAttributionTicks,
+    attributionShareDropTicks: a.attributionShareDropTicks ?? 0,
     attribution: a.outcome.attribution,
     publishRefusal: a.publishRefusal,
     prevPublishBlockedAtCommit: a.prevPublishBlockedAtCommit,

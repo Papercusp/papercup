@@ -1811,6 +1811,13 @@ export function isSharedAdmissionTimeout(error) {
   );
 }
 
+/** A release-gate waiter deferred before spending its queue budget behind an aged holder. */
+export function isSharedAdmissionDeferral(error) {
+  const message = String(error?.message ?? error ?? "");
+  return error?.code === "EADMISSIONDEFERRED" &&
+    message.includes(SHARED_TEST_PROCESS_ADMISSION_MUTEX);
+}
+
 // WI-1639265: the caller's WALL CLOCK, published by the launcher as absolute epoch ms.
 //
 // Everything above this line is an INTERNAL budget: the queue budget is a fixed constant,
@@ -3248,6 +3255,7 @@ export async function runBudgetedTasks(tasks, options) {
       timeoutMs: remainingQueueMs,
       staleMs: SHARED_TEST_PROCESS_ADMISSION_STALE_MS,
       retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
+      deferAfterHolderAgeMs: options?.deferWhenHolderOlderThanBudget ? remainingQueueMs : undefined,
       waitingNoticeIntervalMs: SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS,
       // EI-21917992245424964: what this run IS, carried in the owner record so a blocked
       // peer can judge it without waking anyone. The caller owns scope/purpose;

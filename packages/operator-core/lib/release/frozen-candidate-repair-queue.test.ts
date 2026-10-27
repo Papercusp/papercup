@@ -42,6 +42,7 @@ import {
   frozenRepairAdmissionHandoffBlock,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
+import type { RepairLimbExecutor } from './repair-limb-executor';
 
 const C = '1111111111111111111111111111111111111111';
 const C1 = '2222222222222222222222222222222222222222';
@@ -2746,5 +2747,65 @@ describe('WI-6554700010019177 — frozenRepairAdmissionHandoffBlock mirrors the 
       transactionAttemptId: null,
       detail: expect.stringContaining('no qualification transaction is stored'),
     });
+  });
+});
+
+describe('repair-limb executor attribution (gate-repair-plane-on-current-build-2026-10-15 R-1/R-2)', () => {
+  const executor: RepairLimbExecutor = {
+    hostId: 'port-3271',
+    processId: 'pid-4242',
+    executingBuild: { sha: 'a1b2c3d4e5f6', source: 'baked' },
+  };
+  const reservation = { token: 'tok-1', claimedAtMs: T0, expiresAtMs: T0 + 60_000 };
+  const receipt = { ...executor, spawnId: 'spawn-1', runId: 'run-1', dispatchedAtMs: T0 + 5 };
+
+  it('round-trips the lease holder and the launch receipt through persist and parse', () => {
+    const queue: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      dispatchReservation: { ...reservation, executor },
+      fixerDispatchReceipt: receipt,
+    };
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.dispatchReservation).toEqual({ ...reservation, executor });
+    expect(parsed?.fixerDispatchReceipt).toEqual(receipt);
+    const status = diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 });
+    expect(status?.dispatchReservation).toMatchObject({ executor, active: true });
+    expect(status?.fixerDispatchReceipt).toEqual(receipt);
+  });
+
+  it('drops a malformed stamp as evidence without invalidating the lease or the queue', () => {
+    const badStamps = [
+      { ...executor, hostId: ' ' },
+      { ...executor, executingBuild: { sha: null, source: 'baked' } },
+      { ...executor, executingBuild: { sha: 'abc', source: 'unresolved' } },
+      { ...executor, executingBuild: { sha: 'abc', source: 'guessed' } },
+      'port-3271',
+    ];
+    for (const bad of badStamps) {
+      const parsed = parseFrozenCandidateRepairQueue({
+        ...JSON.parse(JSON.stringify(fresh())),
+        dispatchReservation: { ...reservation, executor: bad },
+        fixerDispatchReceipt: typeof bad === 'object' ? { ...receipt, ...bad } : bad,
+      });
+      expect(parsed, JSON.stringify(bad)).not.toBeNull();
+      expect(parsed?.dispatchReservation, JSON.stringify(bad)).toEqual(reservation);
+      expect(parsed?.fixerDispatchReceipt, JSON.stringify(bad)).toBeUndefined();
+    }
+    // A receipt with a valid executor but no spawn binding is not a receipt.
+    const unbound = parseFrozenCandidateRepairQueue({
+      ...JSON.parse(JSON.stringify(fresh())),
+      fixerDispatchReceipt: { ...receipt, spawnId: '' },
+    });
+    expect(unbound?.fixerDispatchReceipt).toBeUndefined();
+  });
+
+  it('keeps an unstamped legacy row free of attribution keys', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...JSON.parse(JSON.stringify(fresh())),
+      dispatchReservation: reservation,
+    });
+    expect(parsed?.dispatchReservation).toEqual(reservation);
+    expect(parsed).not.toHaveProperty('fixerDispatchReceipt');
+    expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 })).not.toHaveProperty('fixerDispatchReceipt');
   });
 });

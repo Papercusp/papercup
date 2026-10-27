@@ -318,7 +318,10 @@ export async function fileCloneSweep(families: readonly RankedCloneFamily[], sco
       for (const row of group) {
         if (row.family.kind === 'semantic' && !await semanticSourcesCurrent(scope.root, row)) return { id: null, created: false, unverified: true };
       }
-      const incumbent = await adoptConditionIncumbent(key, { title, summary, workspaceId: scope.workspaceId, includeTerminal: true });
+      // A row this sweep auto-closed on a clean re-scan is not a disposition: when the
+      // area is reported again it is re-filed rather than left closed (R-3).
+      const incumbent = await adoptConditionIncumbent(key, { title, summary, workspaceId: scope.workspaceId,
+        includeTerminal: true, skipTerminalOwners: [CLONE_SWEEP_CLOSE_ACTOR] });
       if (incumbent) return { id: incumbent, created: false };
       return upsertConditionWorkItem(key, { kind: 'cleanup', title, summary, harness: scope.harness,
         workspaceId: scope.workspaceId, createdBy: 'system:clone-family-sweep', payload });

@@ -276,6 +276,7 @@ import {
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   isSharedAdmissionTimeout,
+  isSharedAdmissionDeferral,
   isTaskDeadlineRefusal,
   runBudgetedTaskShards,
   runBudgetedTasks,
@@ -8553,9 +8554,12 @@ try {
   initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   ...SCHEDULER_CONFIG,
   readMemAvailableMb,
-  // Keep the release owner's existing lane unchanged. Ordinary invocations
-  // share one accounted envelope at task/config granularity.
-  ...(process.env.PC_HEAVY_RELEASE_GATE === '1' ? {} : { taskAdmissionKey }),
+  // Keep release-gate tasks on the single global lane. A waiter defers once the
+  // current holder's measured age reaches its remaining queue budget; ordinary
+  // invocations share one accounted envelope at task/config granularity.
+  ...(process.env.PC_HEAVY_RELEASE_GATE === '1'
+    ? { deferWhenHolderOlderThanBudget: true }
+    : { taskAdmissionKey }),
   // EI-20801764054303492 route (a): the startup budget is sized ONCE, from a reading taken before
   // any child exists. A long run's real memory picture drifts underneath it, so admission
   // re-measures and may only ever admit fewer workers than the ceiling already allows.
@@ -8622,17 +8626,23 @@ try {
     errSync(`Full run log: ${RUN_LOG_PATH}`);
     process.exit(78);
   }
-  if (!isSharedAdmissionTimeout(error)) throw error;
-  errSync(`AFFECTED_TESTS_REFUSAL kind=admission-starved detail=${String(error?.message ?? error)}`);
+  const admissionDeferral = isSharedAdmissionDeferral(error);
+  if (!admissionDeferral && !isSharedAdmissionTimeout(error)) throw error;
+  const admissionReason = admissionDeferral ? "admission-deferred" : "admission-starved";
+  errSync(`AFFECTED_TESTS_REFUSAL kind=${admissionReason} detail=${String(error?.message ?? error)}`);
   errSync(
-    `AFFECTED_TESTS_RESULT status=refused reason=admission-starved ` +
+    `AFFECTED_TESTS_RESULT status=refused reason=${admissionReason} ` +
       formatRefusalCounterFields(readTerminalCounters()) + ` ${formatCoverageFields(coverage)}`,
   );
   errSync(
-    "NOT MEASURED — the full task plan could not finish within its shared-admission " +
-      "queue budget. Settled shards retain their coverage and observed exit counters " +
-      "above; this is not a full test verdict. The holder is named in the " +
-      "AFFECTED_TESTS_ADMISSION_QUEUED lines above.",
+    admissionDeferral
+      ? "NOT MEASURED — the release-gate holder had already consumed this run's remaining " +
+          "shared-admission queue budget, so the run deferred without a test verdict. Settled " +
+          "shards retain their coverage and observed exit counters above."
+      : "NOT MEASURED — the full task plan could not finish within its shared-admission " +
+          "queue budget. Settled shards retain their coverage and observed exit counters " +
+          "above; this is not a full test verdict. The holder is named in the " +
+          "AFFECTED_TESTS_ADMISSION_QUEUED lines above.",
   );
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);

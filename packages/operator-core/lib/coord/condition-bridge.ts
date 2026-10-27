@@ -40,6 +40,12 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { createWorkItem, setWorkItemState } from '../work-items';
 import { resolveWorkItemPot } from '../pot-membership';
 import { findConditionObject, linkWorkItemToCondition, type ConditionObject } from './condition-object';
+// TYPE-ONLY on purpose: a runtime import of './gate-ownership' closes a cycle back into
+// this module (gate-ownership → presence-wakeability → inbox-wake → events/await/engine →
+// progress-lease → condition-upsert → condition-bridge). The runtime reader is loaded
+// lazily in {@link readLiveGateOwnerForAssignment}.
+import type { CellOwnership } from './gate-ownership';
+import type { ActionableCondition } from './actionable-conditions';
 
 // The condition-key opt-in CATALOG lives in the zero-import leaf './actionable-conditions'
 // (P-013/D-012 of gate-verdict-liveness-and-repair-reliability-2026-08-31): the
@@ -130,6 +136,16 @@ export interface AcquireResult {
   duplicateLeftOpen?: string;
   /** Why the stand-down settle of {@link duplicateLeftOpen} failed (the refusal's message). */
   duplicateLeftOpenError?: string;
+  /**
+   * Set only when THIS call minted the item under an assignment policy
+   * ({@link ActionableCondition.assignTo}): the agent it was assigned to at creation.
+   */
+  assignedTo?: string;
+  /**
+   * Set only when THIS call minted the item under an assignment policy and left it
+   * unassigned: why (the same sentence is written into the item's summary).
+   */
+  unassignedReason?: string;
   /**
    * Set when nothing was written, and WHY:
    *   • `not-actionable`      — the key is not opted in.
@@ -386,6 +402,91 @@ export async function claimConditionKey(
 }
 
 /**
+ * What the assignment policy observed about the live gate owner.
+ *
+ * `ok: false` = the read itself failed. That is reported as its own reason rather
+ * than folded into "no owner", because "nobody owns the gate" and "we could not tell
+ * who owns the gate" call for different responses from whoever reads the item.
+ */
+export type GateOwnerObservation =
+  | { ok: true; ownership: CellOwnership; heldByLiveHolder: boolean }
+  | { ok: false; error: string };
+
+/** The decision for one mint: an assignee, or the stated reason there is none. */
+export type ConditionAssignment = { assignee: string; reason: null } | { assignee: null; reason: string };
+
+/**
+ * PURE. Who a freshly minted condition item is assigned to
+ * (gate-repair-plane-on-current-build-2026-10-15 P-004, BAR R-4).
+ *
+ * Returns `null` when the catalog entry declares no policy — the item lands
+ * unassigned with nothing to explain, which is the default for every condition
+ * that is not the gate's (see {@link ActionableCondition.assignTo}).
+ *
+ * Assigns ONLY on a positive liveness verdict (`heldByLiveHolder`, computed by the
+ * caller with `ownershipHeldByLiveHolder`). Every other outcome leaves the item
+ * unassigned with a reason naming which case it was: a stale or stalled holder is
+ * named, so a reader can see who the gate was last held by and that they are gone.
+ */
+export function decideConditionAssignment(
+  policy: ActionableCondition['assignTo'],
+  observed: GateOwnerObservation | null,
+): ConditionAssignment | null {
+  if (policy !== 'live-gate-owner') return null;
+  if (!observed) {
+    return { assignee: null, reason: 'Left unassigned: the live gate owner was not read for this mint.' };
+  }
+  if (!observed.ok) {
+    return {
+      assignee: null,
+      reason: `Left unassigned: the gate ownership could not be read (${observed.error}).`,
+    };
+  }
+  const own = observed.ownership;
+  const holder = own.takenBy?.trim() || null;
+  if (observed.heldByLiveHolder && holder) return { assignee: holder, reason: null };
+  if (own.claimState === null) {
+    const detail = own.unknown
+      ? [own.unknown.code, own.unknown.detail].filter(Boolean).join(': ')
+      : 'no detail recorded';
+    return { assignee: null, reason: `Left unassigned: the gate ownership is unmeasured (${detail}).` };
+  }
+  if (holder) {
+    return {
+      assignee: null,
+      reason:
+        `Left unassigned: the recorded gate owner ${holder} is not a live owner ` +
+        `(claim ${own.claimState}, assessment ${own.assessment ?? 'unknown'}, ` +
+        `session ${own.holderSessionState ?? 'unknown'}).`,
+    };
+  }
+  return {
+    assignee: null,
+    reason: `Left unassigned: the gate has no live owner (${own.eventKey} is ${own.claimState}).`,
+  };
+}
+
+/**
+ * The production gate-owner read: `readGateOwnership` for the condition's STORED
+ * harness, judged with the same positive-liveness rule every stand-down path uses.
+ * Loaded lazily (see the type-only import at the top for the cycle it avoids).
+ */
+export async function readLiveGateOwnerForAssignment(harness: string): Promise<GateOwnerObservation> {
+  try {
+    const { readGateOwnership, ownershipHeldByLiveHolder } = await import('./gate-ownership');
+    const ownership = await readGateOwnership({ harness });
+    return { ok: true, ownership, heldByLiveHolder: ownershipHeldByLiveHolder(ownership) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Injection seam for {@link acquireConditionOwner}; production uses the defaults. */
+export interface AcquireConditionOwnerDeps {
+  readGateOwner?: (harness: string) => Promise<GateOwnerObservation>;
+}
+
+/**
  * Ensure an actionable condition has exactly one owning work-item.
  *
  * Idempotent: calling it repeatedly while the condition stays open adopts the
@@ -394,6 +495,7 @@ export async function claimConditionKey(
 export async function acquireConditionOwner(
   conditionKey: string,
   spec: ConditionOwnerSpec,
+  deps: AcquireConditionOwnerDeps = {},
 ): Promise<AcquireResult> {
   const key = conditionKey.trim();
   if (!isActionableConditionKey(key)) {
@@ -452,10 +554,25 @@ export async function acquireConditionOwner(
   if (existing.workItem) return { conditionKey: key, workItem: existing.workItem, created: false };
 
   // 3. Mint, then try to take the key. Deliberately optimistic — see the header.
+  //
+  //    Assigned AT CREATION (P-004) when the entry declares a policy: createWorkItem's
+  //    `assignee` claims in the same INSERT, so there is no window in which the alarm
+  //    item sits unassigned while the live gate owner never hears of it. The ownership
+  //    read is fail-soft — a failed read leaves the item unassigned with that reason;
+  //    it never stops the mint, which is the load-bearing half of this function.
+  const policy = actionableConditionFor(key)?.assignTo;
+  const assignment = policy
+    ? decideConditionAssignment(policy, await (deps.readGateOwner ?? readLiveGateOwnerForAssignment)(harness))
+    : null;
+  const summary =
+    assignment?.reason != null
+      ? [spec.summary?.trim(), `Assignment: ${assignment.reason}`].filter(Boolean).join('\n\n')
+      : spec.summary;
   const item = await createWorkItem({
     kind: 'bug',
     title: spec.title,
-    summary: spec.summary,
+    summary,
+    ...(assignment?.assignee ? { assignee: assignment.assignee, assignedBy: CONDITION_BRIDGE_ACTOR } : {}),
     harness,
     severity: spec.severity ?? 'major',
     workspaceId: spec.workspaceId,
@@ -504,7 +621,13 @@ export async function acquireConditionOwner(
   //    successful claim (the claim is the load-bearing half).
   await linkWorkItemToCondition(item.id, key, { harness }).catch(() => undefined);
 
-  return { conditionKey: key, workItem: item.id, created: true };
+  return {
+    conditionKey: key,
+    workItem: item.id,
+    created: true,
+    ...(assignment?.assignee ? { assignedTo: assignment.assignee } : {}),
+    ...(assignment?.reason != null ? { unassignedReason: assignment.reason } : {}),
+  };
 }
 
 /**

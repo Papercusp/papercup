@@ -35,6 +35,7 @@ import {
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import type { ChangeKindsView } from './work-item-change-kinds';
 import { renderStackProofGuidance } from './change-kind-stack';
+import { missingRefactorProof, type RefactorFactsResolver } from './change-kind-refactor-proof';
 
 /**
  * D-003: claims that began before this instant and carry no declaration close with a warning
@@ -73,6 +74,11 @@ export interface ChangeKindProofDeps {
   harnessSlug?: string | null;
   /** Optional maintained current-build test class that overrides the manifest default. */
   testClass?: string | null;
+  /**
+   * P-004 / R-4: resolves a 'refactor' close's facts (test_runs rows, git diff, coverage map,
+   * detector re-scan). Omitted ⇒ a 'refactor' close is refused (fail closed), never waved through.
+   */
+  resolveRefactorFacts?: RefactorFactsResolver;
 }
 
 export interface ChangeKindMissingProof {
@@ -321,6 +327,11 @@ export async function missingProofForKind(
     case 'logic':
     case 'test-only':
       missing = citesPassingTestRun(e);
+      break;
+    case 'refactor':
+      // D-006: refused on missing proof whatever the claim's start time — the cutover warn path
+      // only covers closes with NO declaration, and a declared 'refactor' never reaches it.
+      missing = await missingRefactorProof(entry ?? {}, deps.resolveRefactorFacts);
       break;
     case 'config':
       missing = checkReadBack(e, 'the effective value read back from the program that consumes it');

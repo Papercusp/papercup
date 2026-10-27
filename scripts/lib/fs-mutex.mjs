@@ -790,7 +790,7 @@ async function waitForReaders(
  * Continuous readers can exhaust the same timeout without blocking newcomers.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -886,6 +886,11 @@ export async function withFsMutex(name, fn, opts = {}) {
     Number(opts.waitingNoticeIntervalMs) > 0
       ? Number(opts.waitingNoticeIntervalMs)
       : 0;
+  const deferAfterHolderAgeMs = Number(opts.deferAfterHolderAgeMs) > 0
+    ? Number(opts.deferAfterHolderAgeMs)
+    : null;
+  const holderAgeCheckIntervalMs = Math.max(1_000, waitingNoticeIntervalMs || 1_000);
+  let lastHolderAgeCheckMs = -Infinity;
   let lastObservedOwner = "(not observed)";
   let lastObservedQueueHead;
   let timeoutReported = false;
@@ -948,6 +953,38 @@ export async function withFsMutex(name, fn, opts = {}) {
     lastObservedOwner = await readOwner(lockDir, io);
     opts.onWaiting({ owner: lastObservedOwner, elapsedMs });
   };
+  const deferForAgedHolder = async () => {
+    if (deferAfterHolderAgeMs == null) return;
+    const now = Date.now();
+    if (now - lastHolderAgeCheckMs < holderAgeCheckIntervalMs) return;
+    lastHolderAgeCheckMs = now;
+    let rawOwner;
+    try {
+      rawOwner = await readOwner(lockDir, io);
+    } catch {
+      return; // A lock that disappeared or has no readable owner cannot establish holder age.
+    }
+    lastObservedOwner = rawOwner;
+    let owner;
+    try {
+      owner = JSON.parse(rawOwner);
+    } catch {
+      return;
+    }
+    const acquiredAtMs = Date.parse(owner?.acquiredAt ?? "");
+    const holderAgeMs = now - acquiredAtMs;
+    if (!Number.isFinite(acquiredAtMs) || holderAgeMs < deferAfterHolderAgeMs) return;
+    const error = new Error(
+      `Admission deferred: unreclaimed fs-mutex "${name}" holder age ${Math.floor(holderAgeMs)}ms ` +
+        `has reached this waiter's remaining queue budget ${deferAfterHolderAgeMs}ms; holder: ` +
+        `${JSON.stringify({ pid: owner.pid, host: owner.host, ownerId: owner.ownerId, intent: owner.intent })}`,
+    );
+    error.code = "EADMISSIONDEFERRED";
+    error.holderAgeMs = holderAgeMs;
+    error.deferAfterHolderAgeMs = deferAfterHolderAgeMs;
+    error.mutexName = name;
+    throw error;
+  };
   try {
     for (;;) {
       if (ticketRegistered) {
@@ -997,9 +1034,6 @@ export async function withFsMutex(name, fn, opts = {}) {
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
 
-        const elapsed = Date.now() - startedAt;
-        await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
-        throwIfAdmissionTimedOut();
         const reclaimed = await measureAdmissionSubphase(
           "abandoned-lock-reclaim",
           () => reclaimAbandonedLock(lockDir, staleMs, io, measureAdmissionSubphase, (rawOwner) => {
@@ -1013,6 +1047,12 @@ export async function withFsMutex(name, fn, opts = {}) {
         // cannot start another unbounded reclaim cycle.
         throwIfAdmissionTimedOut();
         if (reclaimed) continue;
+
+        const elapsed = Date.now() - startedAt;
+        await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
+        throwIfAdmissionTimedOut();
+        await measureAdmissionSubphase("aged-holder-preflight", deferForAgedHolder);
+        throwIfAdmissionTimedOut();
         await sleepWithinAdmissionBudget();
       }
     }

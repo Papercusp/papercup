@@ -83,6 +83,7 @@ import {
   forceRefusalHint,
   notifyForceTransition,
   recordForceTransitionAudit,
+  verifyOwnerForceDirective,
   type ForceReleaseBasis,
 } from './release-force-guard';
 import {
@@ -576,13 +577,29 @@ async function claimOne(
       itemLastProgressAt: preClaimItem?.lastProgressAt ?? null,
       releaseRequest,
     });
-    if (!verdict.allowed) {
+    // WI-6554700010029971: an open, hook-captured owner directive addressed to THIS
+    // session authorizes the takeover even when the holder reads live — the owner's
+    // word outranks the liveness heuristic. Checked only after the ordinary bases
+    // refuse, so the audit basis stays the most specific one that applies.
+    let ownerDirectiveForce: { directiveId: number; excerpt: string } | null = null;
+    let ownerDirectiveRefusal: string | null = null;
+    if (!verdict.allowed && it.directiveRef != null) {
+      const ownerVerdict = await verifyOwnerForceDirective({
+        directiveId: it.directiveRef,
+        callerOwnerId: identity.ownerId,
+        workspaceId: identity.workspaceId ?? '',
+      });
+      if (ownerVerdict.ok) ownerDirectiveForce = ownerVerdict;
+      else ownerDirectiveRefusal = ownerVerdict.reason;
+    }
+    if (!verdict.allowed && !ownerDirectiveForce) {
       return {
         ok: false,
         id: it.id,
         error: 'force_unauthorized',
         holder: currentHolder,
         holderLiveness: verdict.holderLiveness,
+        ...(ownerDirectiveRefusal ? { ownerDirectiveRefusal } : {}),
         hint: forceRefusalHint(currentHolder),
       };
     }
@@ -590,8 +607,10 @@ async function claimOne(
       // The CAS leg must match `taken_by` byte-for-byte: the RAW stored holder, not its
       // canonical expansion (EI-23701433507513915).
       holder: storedHolder,
-      basis: verdict.basis as ForceReleaseBasis,
-      reason,
+      basis: ownerDirectiveForce ? 'owner-directive' : (verdict.basis as ForceReleaseBasis),
+      reason: ownerDirectiveForce
+        ? `${reason} [owner directive #${ownerDirectiveForce.directiveId}: "${ownerDirectiveForce.excerpt}"]`
+        : reason,
       ...(verdict.basis === 'announced-release-request-expired' && releaseRequest ? { releaseRequest } : {}),
     };
   }
@@ -1156,7 +1175,7 @@ async function claimOne(
       workItem: current,
       ...(claimFloor ? { claimFloor } : {}),
       hint:
-        `The force takeover was AUTHORIZED (${forced.basis}: ${forced.holder} is not live) but the claim write still refused it. ` +
+        `The force takeover was AUTHORIZED (${forced.basis}${forced.basis === 'owner-directive' ? '' : `: ${forced.holder} is not live`}) but the claim write still refused it. ` +
         `${forced.holder} still holds it UNCHANGED — this is NOT a live peer conflict, so do not retry the takeover blind or coordinate ` +
         `with ${forced.holder} (they are the dead holder you were reclaiming from). ` +
         (claimFloor

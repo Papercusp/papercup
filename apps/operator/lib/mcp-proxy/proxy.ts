@@ -1142,6 +1142,21 @@ function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
 }
 
 /**
+ * gate-repair-plane-on-current-build-2026-10-15 P-003: whether this proxy can serve a
+ * staging-routed call at all. The current-build default (build-routing.ts
+ * CURRENT_BUILD_DEFAULT_TOOLS) engages only when it can; a proxy without a staging target
+ * (the bg-host proxy fronts a current build already) keeps today's routing instead of
+ * refusing `staging_unavailable` for a call that named no build.
+ */
+export function proxyHasStagingTarget(opts: McpProxyOptions, stagingPort: number): boolean {
+  try {
+    return selectTargetsForBuild(resolveTargetCandidates(opts), "staging", stagingPort).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Pure retry decision (unit-tested): keep retrying ONLY while BOTH hold —
  *  (a) the upstream connection has NOT yet been established this attempt
  *      (`connected === false` ⇒ the request never reached :3070 ⇒ safe to replay), and
@@ -5766,9 +5781,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // that serves it (`arguments.build` or `_meta["papercusp/build"]`). Strip the
           // argument, stamp `_meta`, and route ONLY to that build's targets below — a
           // build-routed call never falls back to the other build.
+          // gate-repair-plane-on-current-build-2026-10-15 P-003 (D-004): tools listed in
+          // CURRENT_BUILD_DEFAULT_TOOLS (release:repair-queue) default to staging when they
+          // name no build — but only where this proxy HAS a staging target.
           const buildRouting =
             req.method === "POST"
-              ? applyMcpBuildSelector(rawBody)
+              ? applyMcpBuildSelector(rawBody, {
+                  defaultToCurrentBuild: proxyHasStagingTarget(opts, stagingPort),
+                })
               : ({ kind: "none" } as const);
           if (buildRouting.kind === "conflict") {
             res.writeHead(400, { "content-type": "application/json" });
@@ -5784,6 +5804,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }
           const requestedBuild: McpBuild | null =
             buildRouting.kind === "routed" ? buildRouting.build : null;
+          const defaultedBuildTools: string[] | null =
+            buildRouting.kind === "routed" ? (buildRouting.defaultedTools ?? null) : null;
           const buildBody =
             buildRouting.kind === "routed" ? buildRouting.body : rawBody;
           const workerRouting = applyMcpWorkerSelector(buildBody);
@@ -5836,6 +5858,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             traceId,
             ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
             ...(requestedBuild ? { build: requestedBuild } : {}),
+            ...(defaultedBuildTools ? { buildDefaultedFor: defaultedBuildTools } : {}),
           };
           const isInitialize = fwd.rpcMethods.includes("initialize");
           const isToolsList = fwd.rpcMethods.includes("tools/list");
@@ -6443,6 +6466,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   detail: last?.err
                     ? String(last.err.message ?? last.err)
                     : undefined,
+                  defaultedTools: defaultedBuildTools ?? undefined,
                 }),
               ),
             );

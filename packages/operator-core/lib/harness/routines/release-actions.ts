@@ -3033,7 +3033,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     result: {
       status: string;
       transaction?: Parameters<typeof projectCheckpointQualificationState>[0];
-      repairQueueReconciliation?: { status: string; reason: string };
+      repairQueueReconciliation?: { status: string; reason: string; fence?: string };
     },
     requestedAttemptId: string,
     requestedRunnerId?: string,
@@ -3046,8 +3046,15 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       // WI-10007398: a begin-stage `conflict` is usually a frozen-queue reconciliation refusal,
       // and without its reason the event could not say WHICH guard fired — a 12h stall had to be
       // re-derived from source. Null when the conflict did not come from reconciliation.
+      // WI-6554700010015312: `fence` names WHICH safety fence refused a lineage-linked queue
+      // (live fixer, live reservation, judged head, ...). The 2026-10-23..25 papercusp refusals
+      // recorded only `queue-not-safe-unstarted`, so their queue shape was unrecoverable.
       repairQueueReconciliation: result.repairQueueReconciliation
-        ? { status: result.repairQueueReconciliation.status, reason: result.repairQueueReconciliation.reason }
+        ? {
+          status: result.repairQueueReconciliation.status,
+          reason: result.repairQueueReconciliation.reason,
+          ...(result.repairQueueReconciliation.fence ? { fence: result.repairQueueReconciliation.fence } : {}),
+        }
         : null,
       stage,
       requestedAttemptId,
@@ -7144,6 +7151,8 @@ export interface FrozenRepairDispatchReservationOptions {
   /** A first red may create the queue and reserve it in one CAS write. */
   allowCreateIfAbsent?: boolean;
   nowMs?: number;
+  /** Test seam: the stamp defaults to this process's own host + getBuildInfo(). */
+  executor?: import('../../release/repair-limb-executor').RepairLimbExecutor;
 }
 
 function queueWithoutDispatchReservation(queue: FrozenCandidateRepairQueue): FrozenCandidateRepairQueue {
@@ -7170,10 +7179,13 @@ export async function reserveFrozenCandidateRepairFixer(
   if (queue.dispatchReservation && queue.dispatchReservation.expiresAtMs > nowMs) return null;
 
   const expectedQueue = queueWithoutDispatchReservation(queue);
+  const { currentRepairLimbExecutor } = await import('../../release/repair-limb-executor');
   const reservation = {
     token: randomUUID(),
     claimedAtMs: nowMs,
     expiresAtMs: nowMs + FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
+    // gate-repair-plane-on-current-build-2026-10-15 R-2: the lease names its holder.
+    executor: options.executor ?? currentRepairLimbExecutor(),
   };
   const reservedQueue: FrozenCandidateRepairQueue = {
     ...expectedQueue,
@@ -7301,14 +7313,26 @@ export async function finalizeFrozenCandidateRepairFixer(
   queue: FrozenCandidateRepairQueue,
   fired: FrozenRepairFixerDispatchResult | null | undefined,
   nowMs = Date.now(),
+  executor?: import('../../release/repair-limb-executor').RepairLimbExecutor,
 ): Promise<FrozenCandidateRepairQueue | null> {
   if (!queue.dispatchReservation || queue.phase !== 'awaiting-fixer') return null;
   let finalizedQueue: FrozenCandidateRepairQueue;
   if (fired?.spawnId) {
     const withoutReservation = queueWithoutDispatchReservation(queue);
-    finalizedQueue = queueWithoutDispatchReservation(
-      markFrozenRepairFixerDispatched(withoutReservation, { spawnId: fired.spawnId, nowMs }),
-    );
+    const { currentRepairLimbExecutor } = await import('../../release/repair-limb-executor');
+    finalizedQueue = {
+      ...queueWithoutDispatchReservation(
+        markFrozenRepairFixerDispatched(withoutReservation, { spawnId: fired.spawnId, nowMs }),
+      ),
+      // gate-repair-plane-on-current-build-2026-10-15 R-1: the receipt names the launching
+      // process's host and build (its own getBuildInfo(), never a checkout read).
+      fixerDispatchReceipt: {
+        ...(executor ?? currentRepairLimbExecutor()),
+        spawnId: fired.spawnId,
+        runId: fired.runId ?? null,
+        dispatchedAtMs: nowMs,
+      },
+    };
   } else {
     finalizedQueue = {
       ...queueWithoutDispatchReservation(queue),

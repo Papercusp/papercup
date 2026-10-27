@@ -79,6 +79,7 @@ import {
   runGitBounded,
   censusStrandedSubmodules,
   DEPENDENCY_GENERATION_ROOT_RECORD,
+  measureAttributedFileShare,
   type RunGit,
   type GitSyncStepRunner,
 } from './run-git-sync';
@@ -4687,6 +4688,60 @@ describe('runGitSync (real git, no submodule)', () => {
   });
 });
 
+describe('measureAttributedFileShare (P-003, gate-systems-as-designed-2026-10-27)', () => {
+  let repo: string;
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'gitsync-share-'));
+    git(repo, 'init', '-b', 'main');
+    configUser(repo);
+    writeFileSync(join(repo, 'seed.txt'), 'seed\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed');
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  const commit = (files: string[], message: string): string => {
+    for (const f of files) writeFileSync(join(repo, f), `${f} ${message.length}\n`);
+    git(repo, 'add', '--', ...files);
+    git(repo, 'commit', '--no-verify', '-m', message);
+    return git(repo, 'rev-parse', 'HEAD');
+  };
+
+  it('counts ledger-attributed files by whether the commit that carried them names an agent', async () => {
+    const named = commit(['a.ts'], 'feat: a\n\nPapercusp-Agent: su-1\nPapercusp-Work-Item: WI-1');
+    // An anonymous sweep that took an attributed file, a regenerated declaration that is
+    // anonymous on purpose (forceCatchAllPaths), and a script-written file with no owner.
+    const anonymous = commit(['b.ts', 'gen.d.mts', 'script.json'], 'chore(git-sync): auto-commit');
+    const attribution = new Map([['a.ts', {}], ['b.ts', {}], ['gen.d.mts', {}]]);
+    expect(await measureAttributedFileShare(directRunGit, repo, [named, anonymous], attribution, ['gen.d.mts'])).toEqual({
+      attributableFileCount: 2,
+      attributedFileCount: 1,
+    });
+  });
+
+  it('reads one-trailer-per-paragraph and multi-author messages, and counts a sha once', async () => {
+    const legacy = commit(['a.ts'], 'feat: a\n\nPapercusp-Agent: su-1\n\nPapercusp-Work-Item: WI-1');
+    const multi = commit(['b.ts', 'c.ts'], 'feat: b\n\nPapercusp-Agent: su-1\nPapercusp-Agent: su-2');
+    const attribution = new Map([['a.ts', {}], ['b.ts', {}], ['c.ts', {}]]);
+    expect(await measureAttributedFileShare(directRunGit, repo, [legacy, multi, multi], attribution)).toEqual({
+      attributableFileCount: 3,
+      attributedFileCount: 3,
+    });
+  });
+
+  it('skips a commit git cannot read, and measures nothing without attribution', async () => {
+    const sha = commit(['a.ts'], 'chore(git-sync): auto-commit');
+    expect(await measureAttributedFileShare(directRunGit, repo, ['0'.repeat(40), sha], new Map([['a.ts', {}]]))).toEqual({
+      attributableFileCount: 1,
+      attributedFileCount: 0,
+    });
+    expect(await measureAttributedFileShare(directRunGit, repo, [sha], new Map())).toEqual({
+      attributableFileCount: 0,
+      attributedFileCount: 0,
+    });
+  });
+});
+
 describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first', () => {
   let root: string;
   let superOrigin: string; // bare superproject origin
@@ -4766,10 +4821,41 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       ],
     });
     expect(out.attribution).toEqual([
-      { scope: 'libs/sub', agentGroupCount: 1, agentCommitCount: 1, failedGroups: 0, error: null },
+      {
+        scope: 'libs/sub',
+        agentGroupCount: 1,
+        agentCommitCount: 1,
+        failedGroups: 0,
+        error: null,
+        attributableFileCount: 1,
+        attributedFileCount: 1,
+      },
     ]);
     // The same label the commit-attribution recorder writes for this repo's commits.
     expect(out.attribution?.[0]?.scope).toBe(await resolveAttributionRepo(sub, runGitLocal));
+  });
+
+  // P-003 (gate-systems-as-designed-2026-10-27): every sweep records its attributed-file share.
+  it('records the sweep share: ledger-attributed files under an agent trailer, unowned files left out', async () => {
+    const sub = join(repo, 'libs/sub');
+    git(sub, 'checkout', 'main');
+    writeFileSync(join(sub, 'a.txt'), 'a\n');
+    writeFileSync(join(sub, 'b.txt'), 'b\n');
+    writeFileSync(join(sub, 'generated.json'), '{}\n');
+    const logs: string[] = [];
+    const out = await runGitSync('test/libs/sub', {
+      repoPath: sub,
+      log: (m) => logs.push(m),
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: [join(sub, 'a.txt'), join(sub, 'b.txt')] },
+      ],
+    });
+    expect(out.attribution).toEqual([
+      expect.objectContaining({ scope: 'libs/sub', agentCommitCount: 1, attributableFileCount: 2, attributedFileCount: 2 }),
+    ]);
+    expect(logs.some((m) => m.includes('attributed-file share 2/2 ledger-attributed file(s)'))).toBe(true);
+    // generated.json had no owner, so it is committed anonymously without counting against the share.
+    expect(git(sub, 'status', '--porcelain')).toBe('');
   });
 
   it('pushes the submodule branch to origin FIRST, then bumps+pushes the superproject pointer', () => {

@@ -162,8 +162,12 @@ export async function verifyOwnerStopDirective(opts: {
   const { getOwnerDirective } = await import('../../owner-directives');
   const row = await getOwnerDirective(opts.id);
   if (!row || row.workspaceId !== opts.workspaceId) return { ok: false, reason: `directive #${opts.id} not found` };
-  if (row.ownerId !== opts.ownerId) {
-    return { ok: false, reason: `directive #${opts.id} belongs to ${row.ownerId}, not ${opts.ownerId}` };
+  // The session a directive belongs to is `recorded_by` (the session the hook captured the
+  // owner's turn in). `owner_id` is the HUMAN owner and is the literal 'owner' on every
+  // single-owner row, so comparing it to a session id refused every real directive
+  // (found 2026-10-27 alongside WI-6554700010029971).
+  if (row.recordedBy !== opts.ownerId) {
+    return { ok: false, reason: `directive #${opts.id} belongs to ${row.recordedBy}, not ${opts.ownerId}` };
   }
   if (row.capturedByHook !== true) {
     return { ok: false, reason: `directive #${opts.id} was agent-recorded, not captured from an owner-typed turn` };

@@ -36,6 +36,15 @@ export interface MonitoredFireSnapshot {
   harnessSlug: string; targetRole: string; configHash: string; active: boolean;
   expression: string | null; timezone: string;
 }
+/** Match computeNextFire: RRULE wins; cron-parser uses the process zone and
+ * ignores RRULE's tzid option. A snapshot must describe the scheduler it saw. */
+export function monitoredScheduleDescriptor(cfg: Record<string, unknown>) {
+  const rrule = typeof cfg.rrule === 'string' ? cfg.rrule : null;
+  return { expression: rrule ?? (typeof cfg.cron === 'string' ? cfg.cron : null),
+    timezone: rrule || cfg.kind === 'rrule'
+      ? typeof cfg.tzid === 'string' && cfg.tzid.trim() ? cfg.tzid.trim() : 'UTC'
+      : Intl.DateTimeFormat().resolvedOptions().timeZone };
+}
 /** Read the canonical definition at each workflow boundary; never reconstruct an old schedule
  * from its current next_fire_at (which the successful claim has already advanced). */
 export async function readMonitoredFireSnapshot(sql: Sql, workspaceId: string,
@@ -51,6 +60,5 @@ export async function readMonitoredFireSnapshot(sql: Sql, workspaceId: string,
   return { sha: getBuildInfo().sha, runtime: monitoredRuntimeId, observedAt: new Date().toISOString(),
     routineId: row.id, workspaceId: row.workspace_id, harnessSlug: row.install_slug, targetRole: row.target_role,
     configHash: routineDefinitionHash(definition), active: row.active === true,
-    expression: typeof cfg.cron === 'string' ? cfg.cron : typeof cfg.rrule === 'string' ? cfg.rrule : null,
-    timezone: typeof cfg.tzid === 'string' && cfg.tzid.trim() ? cfg.tzid.trim() : 'UTC' };
+    ...monitoredScheduleDescriptor(cfg) };
 }

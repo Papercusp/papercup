@@ -26,6 +26,7 @@ import {
   formatCgroupMemoryObservedMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
+  isSharedAdmissionDeferral,
   isSharedAdmissionTimeout,
   mergeDurationHistory,
   pidsEventRefusalDelta,
@@ -4438,6 +4439,41 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(second.budgetMs).toBeCloseTo(8_000 - first.waitedMs, -2);
   }, 20_000);
 
+  it('defers a release-gate waiter once the unreclaimed holder has consumed its remaining queue budget', async () => {
+    const previousReleaseGate = process.env.PC_HEAVY_RELEASE_GATE;
+    process.env.PC_HEAVY_RELEASE_GATE = '1';
+    const release = deferred<void>(), started = deferred<void>();
+    const holder = withFsMutex(admissionMutexName(), async () => {
+      started.resolve();
+      await release.promise;
+    });
+    const runTask = vi.fn(async () => 'must-not-run');
+    let thrown: unknown;
+    try {
+      await started.promise;
+      // The caller below receives a 1.5s queue budget. Make the holder's recorded
+      // lease age exceed that same budget before the caller enters admission.
+      await new Promise<void>((resolveNext) => setTimeout(resolveNext, 1_600));
+      thrown = await runBudgetedTasks(['waiting-gate'], {
+        ...config,
+        admissionTimeoutMs: 1_500,
+        deferWhenHolderOlderThanBudget: true,
+        onAdmissionNotice: () => {},
+        runTask,
+      }).then(() => null, (error: unknown) => error);
+    } finally {
+      release.resolve();
+      await holder;
+      if (previousReleaseGate === undefined) delete process.env.PC_HEAVY_RELEASE_GATE;
+      else process.env.PC_HEAVY_RELEASE_GATE = previousReleaseGate;
+    }
+
+    expect(thrown).toMatchObject({ code: 'EADMISSIONDEFERRED' });
+    expect(isSharedAdmissionDeferral(thrown)).toBe(true);
+    expect(isSharedAdmissionTimeout(thrown)).toBe(false);
+    expect(runTask).not.toHaveBeenCalled();
+  }, 20_000);
+
   it('records the GRANT instant, so a holder\'s hold duration is measurable rather than inferred from attempt-start', async () => {
     // `startedAt` is stamped when a caller begins TRYING, so it silently includes that
     // caller's own queue wait. Reading it as "held since" overstates the hold by exactly the
@@ -4540,9 +4576,11 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     // shape the gate records as a lost run — so bounding the wait is only safe if the throw
     // is caught and reported. Pinned structurally: the catch must re-throw anything that is
     // NOT admission starvation, so this can never become a blanket swallow.
-    expect(AFFECTED_TESTS_SRC).toContain('AFFECTED_TESTS_REFUSAL kind=admission-starved');
-    expect(AFFECTED_TESTS_SRC).toContain('status=refused reason=admission-starved');
-    expect(AFFECTED_TESTS_SRC).toMatch(/if\s*\(!isSharedAdmissionTimeout\(error\)\)\s*throw error;/);
+    expect(AFFECTED_TESTS_SRC).toContain('AFFECTED_TESTS_REFUSAL kind=${admissionReason}');
+    expect(AFFECTED_TESTS_SRC).toContain('status=refused reason=${admissionReason}');
+    expect(AFFECTED_TESTS_SRC).toContain('admissionDeferral ? "admission-deferred" : "admission-starved"');
+    expect(AFFECTED_TESTS_SRC).toContain('deferWhenHolderOlderThanBudget: true');
+    expect(AFFECTED_TESTS_SRC).toMatch(/if\s*\(!admissionDeferral && !isSharedAdmissionTimeout\(error\)\)\s*throw error;/);
     // And the queue notices must be routed to `errSync` (stderr AND the run log), not left on
     // the scheduler's `console.error` default, which never reaches RUN_LOG_PATH.
     expect(AFFECTED_TESTS_SRC).toMatch(/onAdmissionNotice:\s*\(line\)\s*=>\s*errSync\(line\)/);
@@ -4551,6 +4589,8 @@ describe('shared test-process admission queue (WI-1490656)', () => {
   it.each([
     { reason: 'admission-starved', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
     { reason: 'admission-starved', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
+    { reason: 'admission-deferred', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
+    { reason: 'admission-deferred', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
     { reason: 'deadline-insufficient', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
     { reason: 'deadline-insufficient', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
   ])('retains settled shard evidence on $reason: $completedTasks completed', (sample) => {
@@ -4566,11 +4606,18 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(endAt).toBeGreaterThan(bodyAt);
     const output: string[] = [];
     const exit = new Error('captured process exit');
+    const admissionError = sample.reason === 'admission-deferred'
+      ? Object.assign(
+          new Error(`Admission deferred for fs-mutex "${admissionMutexName()}"`),
+          { code: 'EADMISSIONDEFERRED' },
+        )
+      : new Error(`Timed out after 60ms waiting for fs-mutex "${admissionMutexName()}" (/tmp/private-test-lock)`);
     const context = {
       ...terminalCounters,
-      error: new Error(`Timed out after 60ms waiting for fs-mutex "${admissionMutexName()}" (/tmp/private-test-lock)`),
+      error: admissionError,
       isTaskDeadlineRefusal: () => sample.reason === 'deadline-insufficient',
       isSharedAdmissionTimeout,
+      isSharedAdmissionDeferral: (error: unknown) => isSharedAdmissionDeferral(error),
       tasks: Array.from({ length: 5 }),
       readTerminalCounters: () => ({
         tasks: 5, failed: 0, quarantinedFailed: 0, timedOutTasks: 0,

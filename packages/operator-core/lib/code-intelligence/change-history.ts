@@ -104,34 +104,42 @@ export function coChangeFromCommits(input: {
       ...(unknown.size ? ['Conflicting rename/copy/reused-path identity remains unknown.'] : [])], error: null };
 }
 
+/** The 90-day first-parent window ending at `end`, as full commit file lists — never a
+ * pathspec-pruned log, which would hide co-change partners. `complete` is false when the
+ * window was truncated at the commit cap, a record was malformed, or the clone is shallow. */
+export async function readHistoryCommits(root: string, end = new Date().toISOString(), signal?: AbortSignal): Promise<{
+  commits: HistoryCommit[]; commit: string; complete: boolean;
+}> {
+  const start = new Date(Date.parse(end) - 90 * DAY).toISOString();
+  const git = async (args: string[]) => (await run('git', ['-C', root, ...args],
+    { encoding: 'utf8', timeout: 3000, maxBuffer: 4 * 1024 * 1024, signal })).stdout;
+  const commit = (await git(['rev-parse', 'HEAD'])).trim();
+  const shallow = (await git(['rev-parse', '--is-shallow-repository'])).trim() !== 'false';
+  const log = await git(['-c', 'core.quotepath=false', 'log', commit, '--first-parent', '--no-merges',
+    '--name-status', '-M50%', '--format=%x1e%H%x09%P%x09%cI', `--since=${start}`, `--until=${end}`, `-n${COMMIT_CAP + 1}`]);
+  const commits = log.split('\x1e').filter(Boolean).map(block => {
+    const [header, ...lines] = block.trim().split('\n');
+    const [sha, parents, at] = header!.split('\t');
+    const files = lines.filter(Boolean).map(line => {
+      const [status, a, b] = line.split('\t');
+      return { status: status!, path: b ?? a!, ...(b ? { from: a } : {}) };
+    });
+    return { sha: sha!, parents: parents ? parents.split(' ') : [], at: at!, files };
+  });
+  const malformed = commits.some(c => !/^[a-f0-9]{40,64}$/.test(c.sha) || !Number.isFinite(Date.parse(c.at))
+    || c.files.some(f => !safe(f.path) || f.from !== undefined && !safe(f.from)));
+  return { commits: commits.slice(0, COMMIT_CAP), commit, complete: commits.length <= COMMIT_CAP && !malformed && !shallow };
+}
+
 /** Full commit file lists, never a pathspec-pruned log (which would hide partners). */
 export async function readCoChange(root: string, paths: readonly string[], end = new Date().toISOString(), signal?: AbortSignal): Promise<CoChangeReport> {
   const empty = () => coChangeFromCommits({ commits: [], paths, end, commit: null, complete: false });
   try {
     if (!paths.length || paths.length > 50 || !paths.every(safe)) throw new Error('History requires 1–50 exact repo-relative paths');
-    const start = new Date(Date.parse(end) - 90 * DAY).toISOString();
-    const git = async (args: string[]) => (await run('git', ['-C', root, ...args],
-      { encoding: 'utf8', timeout: 3000, maxBuffer: 4 * 1024 * 1024, signal })).stdout;
-    const commit = (await git(['rev-parse', 'HEAD'])).trim();
-    const shallow = (await git(['rev-parse', '--is-shallow-repository'])).trim() !== 'false';
-    const log = await git(['-c', 'core.quotepath=false', 'log', commit, '--first-parent', '--no-merges',
-      '--name-status', '-M50%', '--format=%x1e%H%x09%P%x09%cI', `--since=${start}`, `--until=${end}`, `-n${COMMIT_CAP + 1}`]);
-    const commits = log.split('\x1e').filter(Boolean).map(block => {
-      const [header, ...lines] = block.trim().split('\n');
-      const [sha, parents, at] = header!.split('\t');
-      const files = lines.filter(Boolean).map(line => {
-        const [status, a, b] = line.split('\t');
-        return { status: status!, path: b ?? a!, ...(b ? { from: a } : {}) };
-      });
-      return { sha: sha!, parents: parents ? parents.split(' ') : [], at: at!, files };
-    });
-    const malformed = commits.some(c => !/^[a-f0-9]{40,64}$/.test(c.sha) || !Number.isFinite(Date.parse(c.at))
-      || c.files.some(f => !safe(f.path) || f.from !== undefined && !safe(f.from)));
-    return coChangeFromCommits({ commits: commits.slice(0, COMMIT_CAP), paths, end, commit,
-      complete: commits.length <= COMMIT_CAP && !malformed && !shallow });
+    const { commits, commit, complete } = await readHistoryCommits(root, end, signal);
+    return coChangeFromCommits({ commits, paths, end, commit, complete });
   } catch (error) { return { ...empty(), error: error instanceof Error ? error.message : 'Commit history unavailable' }; }
 }
-
 export interface ProvenanceAssignment { workItem: string; owner: string; start: string; end: string | null; complete: boolean }
 export interface ProvenanceEdit {
   invocation: string; at: string; owner: string | null; session: string | null;
@@ -148,6 +156,8 @@ export interface SymbolProvenance {
 export interface LedgerProvenanceEdit {
   id: string; at: string; owner: string; session: string | null;
   workItem: string | null; symbols: string[] | null;
+  /** Session context recorded for an edit with no work item. Never a work-item attribution. */
+  fallback?: { intent: string | null; planSlug: string | null };
 }
 export interface RecordedSymbolHistory {
   symbol: string; status: 'measured' | 'unknown'; workItems: string[];
@@ -229,6 +239,7 @@ export function ledgerSymbolProvenance(input: { path: string; source: string; na
     limitations: ['Work items and symbol labels were recorded at edit time, independently of current claims.',
       'Labels do not prove current identity across rename, move, overload, nesting or later edits.',
       'NULL symbol capture is unknown file-level evidence; [] means measured top-level only.',
+      'An edit with no work item stays unattributed; its fallback intent/plan is session context only.',
       ...(truncated ? ['Provenance is truncated at 50 edit rows; history is incomplete.'] : []),
       ...(health.status !== 'measured' ? health.limitations : [])] };
 }
@@ -246,17 +257,24 @@ export async function readSymbolProvenance(input: { workspaceId: string; harness
     const rows = await sql.begin(async tx => {
       await tx`SELECT set_config('statement_timeout', '500ms', true)`;
       return tx<{ id: string; ts: string; agent_id: string; session_id: string | null;
-        work_item_id: string | null; symbols: string[] | null }[]>`
-        SELECT id::text, ts, agent_id, session_id, work_item_id, symbols
+        work_item_id: string | null; symbols: string[] | null; intent: string | null; plan_slug: string | null }[]>`
+        SELECT id::text, ts, agent_id, session_id, work_item_id, symbols, intent, plan_slug
         FROM harness_shared.edit_attribution_ledger
-        WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harness}
+        -- harness_slug is stamped only when the writer resolves a work item, so an
+        -- unattributed edit carries NULL; repo_root + file already scope the row.
+        WHERE workspace_id = ${input.workspaceId}
+          AND (harness_slug = ${input.harness} OR harness_slug IS NULL)
           AND repo_root = ${root} AND file = ${input.path} AND ts >= ${since}::timestamptz
           AND (${input.name ?? null}::text IS NULL OR symbols IS NULL OR symbols @> ${input.name ? [input.name] : []}::text[])
         ORDER BY ts DESC, id DESC LIMIT ${PROVENANCE_EDIT_CAP + 1}`;
     });
     return ledgerSymbolProvenance({ path: input.path, source, name: input.name,
       rows: rows.map(row => ({ id: row.id, at: new Date(row.ts).toISOString(), owner: row.agent_id,
-        session: row.session_id, workItem: row.work_item_id, symbols: row.symbols })),
+        session: row.session_id, workItem: row.work_item_id, symbols: row.symbols,
+        // SPEC-P-010-B: an unattributed edit shows the session's recorded intent/plan as
+        // context beside workItem: null; it never enters workItems or the measured status.
+        ...(!row.work_item_id && (row.intent || row.plan_slug)
+          ? { fallback: { intent: row.intent, planSlug: row.plan_slug } } : {}) })),
       complete: source === await readFile(file, 'utf8') });
   } catch (error) { return { status: 'unknown', symbols: [], history: [], fileEdits: [], truncated: false, symbolStatus: 'unknown', limitations: [
     error instanceof Error ? error.message : 'Provenance ledger unavailable'] }; }

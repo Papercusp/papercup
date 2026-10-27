@@ -77,6 +77,8 @@ import {
   diffDerivedSubject,
   inheritCompanionDeclarationAttribution,
   parseNumstat,
+  readCommitAgents,
+  COMMIT_MESSAGE_FORMAT,
   DEFAULT_GIT_SYNC_SUBJECT,
   type FileAttribution,
   type AttributionRosterEntry,
@@ -5589,6 +5591,56 @@ export interface AttributionTally {
   agentCommitCount: number;
   failedGroups: number;
   error: string | null;
+  /** P-003 (gate-systems-as-designed-2026-10-27): files this pass committed that the
+   *  edit ledger attributes to an agent. Absent when the share could not be measured. */
+  attributableFileCount?: number;
+  /** Of `attributableFileCount`, the files that landed in a commit naming an agent. */
+  attributedFileCount?: number;
+}
+
+/**
+ * P-003 (gate-systems-as-designed-2026-10-27): of the files a commit pass published that
+ * the edit ledger attributes to an agent, how many landed in a commit that names one.
+ *
+ * Group counts could not see the failure P-001 measured: one sweep merged 8 groups into 2
+ * and sent 36 files to the anonymous catch-all while `agentCommitCount` stayed non-zero,
+ * so the zero-attribution alarm never fired. This counts files, read back from the
+ * commits that actually published, so every route an attributable file takes into an
+ * anonymous commit counts against the share (residual absorption, a failed or
+ * CAS-refused group swept by the catch-all), and a file held out of every commit does
+ * not. `forceCatchAllPaths` are anonymous on purpose (a regenerated declaration pair) and
+ * are left out. A commit git cannot read is skipped; this never throws.
+ */
+export async function measureAttributedFileShare(
+  runGit: RunGit,
+  repoPath: string,
+  publishedShas: readonly string[],
+  attribution: ReadonlyMap<string, unknown> | undefined,
+  forceCatchAllPaths: readonly string[] = [],
+): Promise<{ attributableFileCount: number; attributedFileCount: number }> {
+  let attributableFileCount = 0;
+  let attributedFileCount = 0;
+  if (!attribution || attribution.size === 0) return { attributableFileCount, attributedFileCount };
+  const forced = new Set(forceCatchAllPaths);
+  for (const sha of new Set(publishedShas)) {
+    try {
+      const message = await runGit(['log', '-1', `--format=${COMMIT_MESSAGE_FORMAT}`, sha], repoPath);
+      const changed = await runGit(
+        ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', '--no-renames', '--root', sha],
+        repoPath,
+      );
+      if (message.code !== 0 || changed.code !== 0) continue;
+      const named = readCommitAgents(message.stdout).agents.length > 0;
+      for (const file of changed.stdout.split('\0')) {
+        if (!file || forced.has(file) || !attribution.has(file)) continue;
+        attributableFileCount += 1;
+        if (named) attributedFileCount += 1;
+      }
+    } catch {
+      // An unreadable commit drops out of both counts.
+    }
+  }
+  return { attributableFileCount, attributedFileCount };
 }
 
 /** What one attributed phase did (WI-6554700010018197, WI-6554700010018198). */
@@ -6335,12 +6387,49 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // WI-10006725: scratch files the catch-all creates (its private index, the shared-index
     // refresh pathspec) are removed on EVERY exit path, a thrown runner included.
     const scratch: string[] = [];
+    // P-003 (gate-systems-as-designed-2026-10-27): the attributed phase reports its tally
+    // before the catch-all runs, but the attributed-file share depends on what the catch-all
+    // sweeps too. Hold the tally until the pass ends (on every exit path) and add the share
+    // measured from the commits this pass published.
+    const published: string[] = [];
+    const held: { tally: AttributionTally | null } = { tally: null };
+    const passOpts: CommitRepoOpts = {
+      ...o,
+      onPublished: (sha) => {
+        published.push(sha);
+        o.onPublished?.(sha);
+      },
+      ...(o.onAttribution
+        ? {
+            onAttribution: (t: AttributionTally) => {
+              held.tally = t;
+            },
+          }
+        : {}),
+    };
     try {
-      return await commitOneRepoWithScratch(runGit, repoPath, o, scratch);
+      return await commitOneRepoWithScratch(runGit, repoPath, passOpts, scratch);
     } finally {
       for (const file of scratch) {
         await rm(file, { force: true }).catch(() => {});
         await rm(`${file}.lock`, { force: true }).catch(() => {});
+      }
+      if (held.tally && o.onAttribution) {
+        const share = await measureAttributedFileShare(
+          runGit,
+          repoPath,
+          published,
+          o.attribution,
+          o.forceCatchAllPaths,
+        ).catch(() => null);
+        if (share && share.attributableFileCount > 0) {
+          o.log(
+            `[git-sync] ${o.harnessSlug}/${o.scope}: attributed-file share ` +
+              `${share.attributedFileCount}/${share.attributableFileCount} ledger-attributed file(s) ` +
+              'committed under an agent trailer',
+          );
+        }
+        o.onAttribution({ ...held.tally, ...(share ?? {}) });
       }
     }
   };

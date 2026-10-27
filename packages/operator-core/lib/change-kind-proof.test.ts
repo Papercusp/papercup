@@ -22,6 +22,20 @@ import {
   type ChangeKindGateResult,
 } from './change-kind-proof';
 import type { ChangeKindsView } from './work-item-change-kinds';
+import type { ChangeKindProofDeps } from './change-kind-proof';
+
+/** Facts under which FULL_PROOF.refactor holds (the full refactor matrix is change-kind-refactor-proof.test.ts). */
+const PASSING_REFACTOR_DEPS: ChangeKindProofDeps = {
+  resolveRefactorFacts: async () => ({
+    landingCommit: 'b'.repeat(40),
+    landingParent: 'a'.repeat(40),
+    beforeRuns: [{ id: 11, filePath: 'x/a.test.ts', commitSha: 'a'.repeat(40), status: 'pass', worktreeDirty: false }],
+    afterRuns: [{ id: 21, filePath: 'x/a.test.ts', commitSha: 'b'.repeat(40), status: 'pass', worktreeDirty: false }],
+    changedFiles: ['x/a.ts'],
+    touchedMembers: [{ member: 'x/a.ts#f', coveringFiles: ['x/a.test.ts'] }],
+    findingStillReported: false,
+  }),
+};
 
 const AFTER_CUTOVER = new Date(Date.parse(CHANGE_KIND_GATE_CUTOVER) + 3_600_000).toISOString();
 const BEFORE_CUTOVER = new Date(Date.parse(CHANGE_KIND_GATE_CUTOVER) - 3_600_000).toISOString();
@@ -83,6 +97,16 @@ const FULL_PROOF: Record<ChangeKind, ChangeKindEvidence> = {
     kind: 'logic',
     testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
     testResult: '41 passed',
+  },
+  // P-004 (code-cleanup-campaigns-2026-10-26): its facts come from PASSING_REFACTOR_DEPS below.
+  refactor: {
+    kind: 'refactor',
+    landingCommit: 'b'.repeat(40),
+    beforeRuns: [11],
+    afterRuns: [21],
+    finding: 'clone-family:abc123',
+    typecheck: 'LINT_TSC_RESULT status=clean',
+    behaviouralStrands: 'exit 0, no strands',
   },
   config: { kind: 'config', readBack: 'config:get change-kind.cutover returned 2026-10-18T04:00:00.000Z' },
   'test-only': {
@@ -465,11 +489,25 @@ describe('D-003 — claims taken before the cutover close with a warning', () =>
     );
     expect(missingFor(r, 'logic')).toContain('`testsRun`');
   });
+
+  // D-006 (code-cleanup-campaigns-2026-10-26): a declared 'refactor' close is refused on missing
+  // proof whatever the claim's start time. With no facts resolver wired the proof cannot be
+  // established, so the gate must fail closed, even for a claim that predates the cutover and
+  // even when the entry itself names every field.
+  it('refuses a pre-cutover declared refactor close when its proof cannot be resolved (D-006)', async () => {
+    const r = expectRefused(
+      await evaluateChangeKindGate(
+        input({ kinds: ['refactor'], kindEvidence: [FULL_PROOF.refactor], claimStartedAt: BEFORE_CUTOVER }),
+      ),
+    );
+    expect(missingFor(r, 'refactor').length).toBeGreaterThan(0);
+  });
 });
 
 describe('R-6 — a close that owes no reason and carries every catalog proof for each declared kind lands', () => {
   it.each(CHANGE_KINDS.map((k) => [k] as const))('a single-kind %s close with its full proof passes', async (kind) => {
-    const r = await evaluateChangeKindGate(input({ kinds: [kind], kindEvidence: [FULL_PROOF[kind]] }));
+    const deps = kind === 'refactor' ? PASSING_REFACTOR_DEPS : {};
+    const r = await evaluateChangeKindGate(input({ kinds: [kind], kindEvidence: [FULL_PROOF[kind]] }), deps);
     expect(r).toEqual({ applicable: true, outcome: 'pass', kinds: [kind] });
   });
 

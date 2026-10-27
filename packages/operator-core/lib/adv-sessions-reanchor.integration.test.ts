@@ -1558,6 +1558,30 @@ describe('setAdvSessionPid workspace override (WI-10002854, real PG)', () => {
 });
 
 describe('resume finalization records the current headless posture (real PG)', () => {
+  it('D019 retains the original native routing before repeated resumes and persona refreshes', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    const originalArgv = ['psu', '--agent=codex', '--account=default', '--model=gpt-6:high', '--carry=warm'];
+    const launchSpec = { v: 1, agent: 'codex', workspaceId: WS, harnessSlug: 'papercusp',
+      fleet: { slug: 'routing-test', role: 'member' }, model: 'gpt-6:high' };
+    const firstKey = randomUUID();
+    await admin`UPDATE harness_shared.adv_sessions SET agent = 'codex',
+      launch_spec = ${JSON.stringify(launchSpec)}::text::jsonb,
+      launch_argv = ${JSON.stringify(originalArgv)}::text::jsonb,
+      resume_claim_key = ${firstKey}, resume_claimed_at = now() WHERE id = ${id}`;
+    await expect(finalizeAdvSessionResume(id, firstKey, ['psu', `--resume=${DEAD_ID}`, '--account=auto', '--headless', '--carry=cold'])).resolves.toBe(true);
+    const read = async () => (await admin<{ launch_spec: Record<string, unknown> }[]>`
+      SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${id}`)[0].launch_spec.originalMemberLaunch;
+    const original = await read();
+    expect(original).toMatchObject({ v: 1, advSessionId: id, ownerId: OWNER, sessionId: DEAD_ID,
+      workspaceId: WS, agent: 'codex', launchArgv: originalArgv, launchSpec });
+    const secondKey = randomUUID();
+    await admin`UPDATE harness_shared.adv_sessions SET resume_claim_key = ${secondKey}, resume_claimed_at = now() WHERE id = ${id}`;
+    await expect(finalizeAdvSessionResume(id, secondKey, ['psu', `--resume=${DEAD_ID}`, '--account=auto'])).resolves.toBe(true);
+    expect(await read()).toEqual(original);
+    await expect(recordSuLaunchSpec(id, OWNER, { ...launchSpec, model: 'changed', originalMemberLaunch: { forged: true } })).resolves.toBe(true);
+    expect(await read()).toEqual(original);
+  });
+
   it('persists a visible resume posture and repairs it on an idempotent finalize replay', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
     const claimKey = randomUUID();

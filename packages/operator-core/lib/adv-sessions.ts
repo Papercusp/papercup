@@ -1459,7 +1459,18 @@ async function recordResumedLaunchPostureInTransaction(
        SET launch_argv = ${serializedLaunchArgv}::text::jsonb,
            launch_spec = CASE
          WHEN jsonb_typeof(launch_spec) = 'object'
-         THEN jsonb_set(launch_spec, '{headless}', to_jsonb(${headless}), true)
+         THEN jsonb_set(
+           CASE WHEN launch_spec ? 'originalMemberLaunch' THEN launch_spec
+             WHEN jsonb_typeof(launch_argv) = 'array'
+               AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(launch_argv) AS arg(value)
+                 WHERE value = '--resume' OR value LIKE '--resume=%' OR value = '--fork')
+             THEN jsonb_set(launch_spec, '{originalMemberLaunch}', jsonb_build_object(
+               'v', 1, 'advSessionId', id, 'ownerId', coord_owner_id, 'sessionId', session_id,
+               'workspaceId', workspace_id, 'agent', agent, 'launchArgv', launch_argv,
+               'launchSpec', launch_spec - 'identityHistory' - 'specificationArtifact'
+             ), true)
+             ELSE launch_spec END,
+           '{headless}', to_jsonb(${headless}), true)
          ELSE launch_spec
        END
      WHERE id = ${id}
@@ -2328,7 +2339,16 @@ async function recordSuLaunchSpecInTransaction(
         ],
       }
     : row.launch_spec;
-  const retained = retainSuLaunchIdentityHistory(previous, launchSpec ?? row.launch_spec, row.applied);
+  // Only the lifecycle writer above may originate this receipt. A persona
+  // refresh must neither discard nor replace it with caller-supplied history.
+  const next = launchSpec !== null && typeof launchSpec === 'object' && !Array.isArray(launchSpec)
+    ? { ...launchSpec as Record<string, unknown> } : launchSpec;
+  if (next && typeof next === 'object' && !Array.isArray(next)) {
+    delete (next as Record<string, unknown>).originalMemberLaunch;
+    if (currentRecord?.originalMemberLaunch !== undefined)
+      (next as Record<string, unknown>).originalMemberLaunch = currentRecord.originalMemberLaunch;
+  }
+  const retained = retainSuLaunchIdentityHistory(previous, next ?? row.launch_spec, row.applied);
   if (launchSpec === undefined && JSON.stringify(retained) === JSON.stringify(row.launch_spec)) return true;
   const payload = JSON.stringify(retained);
   const updated = await tx<{ id: number }[]>`
@@ -2407,6 +2427,7 @@ export interface AdvSessionLaunchRecord {
 export async function readAdvSessionLaunchRecordByOwner(
   coordOwnerId: string,
   workspaceId?: string | null,
+  exact?: { advSessionId: number; sessionId: string },
 ): Promise<AdvSessionLaunchRecord | null> {
   if (!coordOwnerId) return null;
   const scope = workspaceId?.trim() || null;
@@ -2430,6 +2451,7 @@ export async function readAdvSessionLaunchRecordByOwner(
         FROM harness_shared.adv_sessions a
        WHERE coord_owner_id = ${coordOwnerId}
          AND ${workspacePredicate}
+         AND ${exact ? sql`id = ${exact.advSessionId} AND session_id = ${exact.sessionId}` : true}
        ORDER BY started_at DESC
        LIMIT 1
     `;

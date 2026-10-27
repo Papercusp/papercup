@@ -2192,11 +2192,36 @@ export type RepairQueueReconciliation = {
     | 'awaiting-unassigned-fixer'
     | 'awaiting-dead-fixer'
     | 'exact-safe-unstarted'
+    | 'blocked-hold-handoff'
     | 'cas-miss';
+  /**
+   * WI-6554700010015312: which safety fence refused a known-lineage queue. Present only on a
+   * `queue-not-safe-unstarted` refusal so the refusal names the concrete competing owner or
+   * missing proof instead of reading as "this shape is not on the list".
+   */
+  fence?: RepairQueueFence;
   predecessorAttemptId: string;
   successorAttemptId: string;
   candidate?: string;
 };
+
+/**
+ * The only reasons a queue whose provenance links to the terminal lineage is withheld from the
+ * successor. Each names a concrete hazard; none is "unrecognized shape".
+ */
+export type RepairQueueFence =
+  /** An unexpired dispatch reservation: a fixer launch is in flight right now. */
+  | 'dispatch-reserved'
+  /** A fixer is assigned and its death is not proven (live, or liveness unmeasured). */
+  | 'fixer-not-proven-dead'
+  /** ready-to-verify whose head owes no verification pass: a run would decline to judge it. */
+  | 'head-already-judged'
+  /** ready-to-promote without green proof at this head (a red or non-terminal predecessor). */
+  | 'promotion-unproven'
+  /** ready-to-test whose moved repairHead is not explained by an exact pending admission. */
+  | 'admission-unproven'
+  /** A field combination no transition produces (e.g. ready-to-test with attempts > 0). */
+  | 'queue-integrity';
 
 export type StoredQualificationMutation =
   | (QualificationTransition & { repairQueueReconciliation?: RepairQueueReconciliation })
@@ -2210,6 +2235,24 @@ export type StoredQualificationCancellation =
  * A successor inherits the predecessor's exact frozen queue. An idle unstarted
  * queue is still the selected candidate, never disposable runner bookkeeping.
  * Unrelated, malformed or concurrently owned queues remain blocked fail-closed.
+ *
+ * WI-6554700010015312 — GENERAL HANDOFF, not a shape allowlist. Before this, the function
+ * preserved only an enumerated list of queue shapes and refused every other one with
+ * `queue-not-safe-unstarted`. Each legitimate lifecycle state that was missing from the list
+ * deadlocked the gate: the refused successor is the ONLY run that can act on the queue, so
+ * the refusal repeated every tick (EI-24610407938327281 ready-to-promote, WI-10000288
+ * ready-to-verify, WI-10007398 unassigned awaiting-fixer, WI-10007408 dead awaiting-fixer,
+ * WI-6554700010018169 unmeasured retest; papercusp measured 42 verdictless skips on
+ * 2026-10-23..25 alone). `decideFrozenCandidateRepairQueue` already chooses the correct
+ * action for every phase, so the successor is handed the queue UNLESS:
+ *   1. provenance does not link it to this lineage (`queue-origin-mismatch` /
+ *      `queue-origin-unknown`), or
+ *   2. a named fence holds (`queue-not-safe-unstarted` + `fence`): a competing owner is live
+ *      (dispatch reservation, an assigned fixer not proven dead) or the proof the next run's
+ *      decision depends on is missing (head already judged, promotion unproven, admission
+ *      unproven, impossible field combination).
+ * The phase switch is exhaustive, so adding a phase is a compile error here rather than a
+ * silent new refusal.
  */
 export function assessTerminalRepairQueueReconciliation(
   current: CheckpointQualificationTransaction,
@@ -2234,183 +2277,126 @@ export function assessTerminalRepairQueueReconciliation(
   // A logical qualification can inherit the queue selected by its immediate predecessor.
   // If that inherited run then terminates inconclusively, the queue still names the earlier
   // attempt while `previousAttemptId` is the durable link from the terminal transaction back
-  // to it. This link is accepted only for the narrow untested repair-head state below.
+  // to it. It is the same single lineage one hop back, so it carries provenance in every phase.
   const originMatchesImmediatePredecessor =
     current.previousAttemptId !== null && queue.qualificationAttemptId === current.previousAttemptId;
-  // `fixerSpawnId` is historical provenance once the queue reaches ready-to-verify:
-  // markFrozenRepairFixerFinished intentionally keeps the completed spawn id so the
-  // repair lineage can explain who produced the head.  The phase is the ownership
-  // boundary; an active fixer is only allowed to hold an awaiting-fixer row, and an
-  // active launch is separately fenced by dispatchReservation.  Requiring a NULL
-  // fixerSpawnId here therefore strands every completed fixer admission behind a
-  // terminal qualification predecessor (the live failure this reconciliation exists
-  // to recover from).
-  // WI-6554700010018169: "owes" rather than "awaits" — a same-head unmeasured retest
-  // (WI-10003213) is a pending verification too; refusing it here blocked every successor.
-  const safeUntestedRepairHead =
-    queue.phase === 'ready-to-verify' &&
-    queue.dispatchReservation == null &&
-    frozenRepairHeadOwesVerification(queue);
   // A legacy/null-origin queue can still be handed forward safely when the caller independently
   // pins the exact never-judged repairHead. The required-ancestor equality supplies the missing
   // provenance link without weakening takeover safety: absent/mismatched pins remain blocked.
   const unknownOriginPinnedToRepairHead = originUnknown && successor.requiredAncestorSha?.trim() === queue.repairHead;
-  if (!originUnknown && !originMatchesTerminal && !(originMatchesImmediatePredecessor && safeUntestedRepairHead)) {
-    return {
-      status: 'blocked',
-      reason: 'queue-origin-mismatch',
-      candidate: queue.candidate,
-      ...base,
-    };
+  const knownLineage = originMatchesTerminal || originMatchesImmediatePredecessor;
+  const lineage = knownLineage || unknownOriginPinnedToRepairHead;
+  if (!originUnknown && !knownLineage) {
+    return { status: 'blocked', reason: 'queue-origin-mismatch', candidate: queue.candidate, ...base };
   }
-  // EI-24610407938327281: main ALREADY advanced to this queue's repairHead, but the P-008
-  // post-promotion staging bridge (green-checkpoint.ts `absorbPromotedLineageIntoStaging`)
-  // did not complete — measured 2026-09-29: git-sync held `git-sync:papercusp` at the
-  // instant the promoting run tried it — so the row stays at `ready-to-promote` as the
-  // documented idempotent retry marker for "the next tick". Only a gate RUN can retry that
-  // bridge, and a scheduled run needs a successor qualification first. Falling through to
-  // `queue-not-safe-unstarted` refused every successor (`skipped-qualification-conflict`
-  // at 16:23Z and 17:24Z), so the bridge could never be retried, staging never absorbed the
-  // promoted lineage, and no fresh cut could fast-forward main: a silent pipeline deadlock.
-  // Deliberately narrow: the terminal predecessor owns the queue, no dispatch reservation is
-  // live, and EITHER it proved THIS head green OR it was itself a bridge retry that ended
-  // with no verdict. The second arm closes the recurrence measured 2026-09-30 (queue
-  // 9a4319b70a): the 14:23Z retry lost the lock again and settled `code-inconclusive`, its
-  // attempt now owned the queue, and every later tick refused `skipped-qualification-conflict`
-  // — the same deadlock one retry later. An inconclusive attempt records no verdict, so it
-  // cannot have invalidated the green proof that `ready-to-promote` carries; a RED terminal
-  // still fails closed.
-  if (
-    originMatchesTerminal &&
-    current.phase === 'terminal' &&
-    queue.phase === 'ready-to-promote' &&
-    queue.dispatchReservation == null &&
-    ((current.outcome.kind === 'green' && queue.repairHead === current.candidate) ||
-      current.outcome.kind === 'code-inconclusive')
-  ) {
-    return {
-      status: 'preserved',
-      reason: 'promoted-awaiting-staging-bridge',
-      candidate: queue.candidate,
-      ...base,
-    };
-  }
-  // WI-10000288: a red terminal attempt may own a queue that has since converged onto a
-  // DIFFERENT, never-judged repairHead. That row is not predecessor residue to retire and it
-  // is not an in-flight repair to block behind: `ready-to-verify` is the queue's explicit
-  // suite-producing state. Preserve the exact queue while installing the successor logical
-  // qualification, which will select the same repairHead through the ordinary frozen-queue /
-  // required-ancestor preflight below. Keep this deliberately narrow: provenance must name the
-  // terminal attempt or its explicitly recorded immediate predecessor, no fixer or dispatch
-  // reservation may still own the row, and the head must be absent from the convergence rounds.
-  // Unknown, unrelated, or deeper ancestry stays fail-closed, as does a repairHead that has
-  // already consumed a verification run.
-  if (
-    (originMatchesTerminal || originMatchesImmediatePredecessor || unknownOriginPinnedToRepairHead) &&
-    safeUntestedRepairHead
-  ) {
-    return {
-      status: 'preserved',
-      reason: 'matching-untested-repair-head',
-      candidate: queue.candidate,
-      ...base,
-    };
-  }
-  // WI-10007398: an `awaiting-fixer` queue that NO fixer owns can only leave that phase through
-  // the gate run's own `decideFrozenCandidateRepairQueue` -> `dispatch-fixer` branch (or an
-  // agent admission). The run that measured the red moves the queue to awaiting-fixer and exits;
-  // dispatch is left to the NEXT scheduled run. Blocking that successor here therefore closed the
-  // only automatic path: measured 2026-10-07 16:00Z -> 2026-10-08 04:23Z, every hourly tick on
-  // papercusp refused `skipped-qualification-conflict` at stage begin (queue-not-safe-unstarted)
-  // with attempts=0 and fixerSpawnId=null, so the fixer the queue was waiting on was never
-  // launched. Third instance of the class after EI-24610407938327281 (ready-to-promote) and
-  // WI-10000288 (ready-to-verify).
-  // Preserving is a HANDOFF (the queue is retained and re-stamped to the successor), never a
-  // retire, so the red signature survives. It stays deliberately narrow: provenance must name
-  // the terminal attempt or its immediate predecessor, unless a legacy/null-origin row is pinned
-  // to its exact repairHead. No fixer may be assigned (a live fixer advances the queue itself by
-  // admission, and a dead one needs liveness this pure check does not have), and no unexpired
-  // dispatch reservation may be held (a launch is in flight). An
-  // expired reservation is abandoned: `decideFrozenCandidateRepairQueue` already treats it as
-  // dispatchable, so refusing on it here would recreate the same deadlock one field over.
-  // Fail closed without a clock: an unmeasurable expiry counts as a live reservation.
+  const originUnknownRefusal: RepairQueueReconciliation = {
+    status: 'blocked',
+    reason: 'queue-origin-unknown',
+    candidate: queue.candidate,
+    ...base,
+  };
+  // An unpinned null-origin queue is handed forward only in its one self-evidently idle state:
+  // a never-judged candidate nobody has touched. Every other state needs a provenance link.
+  const idleUnstartedCandidate =
+    queue.phase === 'ready-to-test' &&
+    queue.repairHead === queue.candidate &&
+    queue.attempts === 0 &&
+    queue.fixerSpawnId === null &&
+    queue.dispatchReservation == null;
+  if (!lineage && !idleUnstartedCandidate) return originUnknownRefusal;
+
+  const fenced = (fence: RepairQueueFence): RepairQueueReconciliation => ({
+    status: 'blocked',
+    reason: 'queue-not-safe-unstarted',
+    fence,
+    candidate: queue.candidate,
+    ...base,
+  });
+  const preserved = (reason: RepairQueueReconciliation['reason']): RepairQueueReconciliation => ({
+    status: 'preserved',
+    reason,
+    candidate: queue.candidate,
+    ...base,
+  });
+
+  // An unexpired dispatch reservation means a launch is in flight in EVERY phase. An expired one
+  // is abandoned: `decideFrozenCandidateRepairQueue` already treats it as dispatchable, so
+  // refusing on it would recreate the deadlock one field over. Fail closed without a clock: an
+  // unmeasurable expiry counts as live.
   const reservationLive =
     queue.dispatchReservation != null &&
     !(typeof successor.nowMs === 'number' && queue.dispatchReservation.expiresAtMs <= successor.nowMs);
-  if (
-    (originMatchesTerminal || originMatchesImmediatePredecessor || unknownOriginPinnedToRepairHead) &&
-    queue.phase === 'awaiting-fixer' &&
-    queue.fixerSpawnId === null &&
-    !reservationLive
-  ) {
-    return {
-      status: 'preserved',
-      reason: 'awaiting-unassigned-fixer',
-      candidate: queue.candidate,
-      ...base,
-    };
-  }
-  // WI-10007408: the same deadlock with a fixer ASSIGNED but dead. Only the gate run's own
-  // `decideFrozenCandidateRepairQueue` -> `recover-dead-fixer` branch clears a dead fixer from
-  // an awaiting-fixer row, and that run needs a successor qualification to start, so blocking
-  // here again closes the only automatic exit. Observed 2026-10-08: papercusp fixer
-  // durable-spawn:...:1791455553983 reached spawned_agents status 'done' at 10:43Z with no
-  // admission, and the queue stayed awaiting-fixer naming it. Fourth instance of the class.
-  // Narrow on purpose: the caller's probe must name THIS row's fixerSpawnId and must have
-  // CONFIRMED it gone ('dead' = releaseFixerSpawnAlive === false, the exact predicate the
-  // recovery branch acts on). Live and unknown liveness stay blocked: a live fixer advances the
-  // queue itself by admission, and an unmeasurable one must not be raced.
+  if (reservationLive) return fenced('dispatch-reserved');
+
+  // `fixerSpawnId` is historical provenance once the queue reaches ready-to-verify or
+  // ready-to-promote: markFrozenRepairFixerFinished keeps the completed spawn id so the lineage
+  // can explain who produced the head. In the other phases an assigned fixer may still be
+  // working, so only CONFIRMED death ('dead' = releaseFixerSpawnAlive === false, the exact
+  // predicate `recover-dead-fixer` acts on) releases it. Live and unknown liveness stay fenced:
+  // a live fixer advances the queue itself by admission, and an unmeasurable one must not be raced.
   const assignedFixerProvablyDead =
     queue.fixerSpawnId !== null &&
     successor.assignedFixerLiveness?.spawnId === queue.fixerSpawnId &&
     successor.assignedFixerLiveness.liveness === 'dead';
-  if (
-    (originMatchesTerminal || originMatchesImmediatePredecessor) &&
-    queue.phase === 'awaiting-fixer' &&
-    assignedFixerProvablyDead &&
-    !reservationLive
-  ) {
-    return {
-      status: 'preserved',
-      reason: 'awaiting-dead-fixer',
-      candidate: queue.candidate,
-      ...base,
-    };
+
+  switch (queue.phase) {
+    case 'ready-to-test': {
+      // No transition assigns a fixer or counts an attempt before the candidate is judged.
+      if (queue.attempts !== 0 || queue.fixerSpawnId !== null) return fenced('queue-integrity');
+      if (queue.repairHead === queue.candidate) return preserved('exact-safe-unstarted');
+      // Admission deliberately retains ready-to-test until the immutable candidate is judged.
+      // Preserve both heads only with exact same-lineage admission and pending-retest proof;
+      // the ordinary queue policy still tests the candidate first.
+      if (!knownLineage) return originUnknownRefusal;
+      const latestAdmission = queue.admissions?.at(-1);
+      const admittedRepairPending =
+        latestAdmission?.toRepairHead === queue.repairHead &&
+        queue.retestRequested?.candidate === queue.candidate &&
+        queue.retestRequested.repairHead === queue.repairHead &&
+        queue.retestRequested.requestedAtMs === latestAdmission.atMs;
+      return admittedRepairPending ? preserved('exact-safe-unstarted') : fenced('admission-unproven');
+    }
+    case 'ready-to-verify':
+      // WI-6554700010018169: "owes" rather than "awaits" — a same-head unmeasured retest
+      // (WI-10003213) is a pending verification too. A head that owes nothing would be declined
+      // by the run's own unchanged-since-verdict short-circuit, so handing it forward trades one
+      // verdictless outcome for another; refuse with the fence that names that state instead.
+      return frozenRepairHeadOwesVerification(queue)
+        ? preserved('matching-untested-repair-head')
+        : fenced('head-already-judged');
+    case 'awaiting-fixer':
+      // WI-10007398 / WI-10007408: only the successor's `dispatch-fixer` / `recover-dead-fixer`
+      // decision moves this row, so a refusal here closes the only automatic exit.
+      if (queue.fixerSpawnId === null) return preserved('awaiting-unassigned-fixer');
+      return assignedFixerProvablyDead ? preserved('awaiting-dead-fixer') : fenced('fixer-not-proven-dead');
+    case 'ready-to-promote':
+      // EI-24610407938327281: main already advanced to repairHead but the post-promotion staging
+      // bridge did not complete; only a gate RUN retries it. The green proof the phase carries
+      // must survive the predecessor: a green at THIS head, or an inconclusive attempt that
+      // recorded no verdict and so cannot have invalidated it. A RED terminal fails closed, and
+      // a null-origin row has no lineage to carry that proof.
+      if (!knownLineage) return originUnknownRefusal;
+      return current.phase === 'terminal' &&
+        ((current.outcome.kind === 'green' && queue.repairHead === current.candidate) ||
+          current.outcome.kind === 'code-inconclusive')
+        ? preserved('promoted-awaiting-staging-bridge')
+        : fenced('promotion-unproven');
+    case 'blocked':
+      // D-005: a blocked queue re-decides to the same `hold-exhausted` every tick and only an
+      // admission (or an owner retire) moves it. Handing it forward lets the successor run hold
+      // and age-escalate visibly; refusing it turned the hold into a silent
+      // skipped-qualification-conflict on every tick. (A NULL-origin blocked row, as on
+      // email/portal/sidestage 2026-10-01..27, still stops above at queue-origin-unknown: its
+      // remedy is a requiredAncestorSha pin or an owner retire, not this branch.)
+      // markFrozenRepairExhausted clears the fixer, so an assigned one here is anomalous.
+      if (queue.fixerSpawnId !== null && !assignedFixerProvablyDead) return fenced('fixer-not-proven-dead');
+      return preserved('blocked-hold-handoff');
+    default: {
+      const unhandled: never = queue.phase;
+      void unhandled;
+      return fenced('queue-integrity');
+    }
   }
-  // Admission deliberately retains ready-to-test until the immutable candidate is judged.
-  // A terminal runner must not strand that candidate merely because a repair was admitted
-  // before its suite finished. Preserve both heads only with exact same-origin admission
-  // and pending-retest proof; the ordinary queue policy still tests the candidate first.
-  const latestAdmission = queue.admissions?.at(-1);
-  const unstartedAdmittedRepair =
-    originMatchesTerminal &&
-    latestAdmission?.toRepairHead === queue.repairHead &&
-    queue.retestRequested?.candidate === queue.candidate &&
-    queue.retestRequested.repairHead === queue.repairHead &&
-    queue.retestRequested.requestedAtMs === latestAdmission.atMs;
-  if (
-    queue.phase !== 'ready-to-test' ||
-    (queue.repairHead !== queue.candidate && !unstartedAdmittedRepair) ||
-    queue.attempts !== 0 ||
-    queue.fixerSpawnId !== null ||
-    queue.dispatchReservation != null
-  ) {
-    return {
-      status: 'blocked',
-      // Origin-unknown-and-unsafe gets its own reason so the refusal is diagnosable as "we
-      // don't know whose queue this is, and it also isn't verifiably idle" rather than reading
-      // like a takeover race against a known owner.
-      reason: originUnknown ? 'queue-origin-unknown' : 'queue-not-safe-unstarted',
-      candidate: queue.candidate,
-      ...base,
-    };
-  }
-  return {
-    status: 'preserved',
-    reason: 'exact-safe-unstarted',
-    candidate: queue.candidate,
-    ...base,
-  };
 }
 
 /** What the locked routine row held beside the transaction when a mutation was decided. */

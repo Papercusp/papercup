@@ -18,6 +18,7 @@ import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
 import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from '../../release/checkpoint-log-tags';
 import { pipelineName } from '../../release/pipeline-name';
+import { currentRepairLimbExecutor } from '../../release/repair-limb-executor';
 import { evaluateGateReuseAuditWindow } from '../../release/gate-fire-ledger';
 import { buildTestPassReuseHealth } from '../../release/test-pass-reuse-report';
 import { captureGateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
@@ -2788,14 +2789,16 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         repairHead: 'incumbent-repair', runId: 'incumbent-run',
         currentPhysicalRunner: { id: 'incumbent-runner', leaseExpiresAtMs: 1234, heartbeatAtMs: 1200 },
       },
-      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'fixer-not-proven-dead' },
     });
     await getSystemAction('green-checkpoint')!(ctx);
     const event = appendPipelineEvent.mock.calls.map((c) => c[0] as { status: string; detail: unknown })
       .find((e) => e.status === 'skipped-qualification-conflict');
     expect(event?.detail).toMatchObject({
       reason: 'conflict', stage: 'begin',
-      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
+      // WI-6554700010015312: the fence that refused the queue survives into the event, so a
+      // refusal is diagnosable from the ledger instead of being re-derived from source.
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'fixer-not-proven-dead' },
       requestedAttemptId: beginStoredQualification.mock.calls[0][1].attemptId,
       observedAttemptId: 'incumbent-attempt', observedRunnerId: 'incumbent-runner',
       candidate: 'incumbent-candidate', repairHead: 'incumbent-repair', runId: 'incumbent-run',
@@ -4863,6 +4866,8 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       dispatchReservation: {
         claimedAtMs: 100,
         expiresAtMs: 300_100,
+        // gate-repair-plane-on-current-build-2026-10-15 R-2: the lease names this process.
+        executor: currentRepairLimbExecutor(),
       },
     });
     const [statement, params] = fakeSql.unsafe.mock.calls.at(-1)!;
@@ -4988,6 +4993,40 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       String(reservedQueue.updatedAtMs),
       'owner-token',
     ]);
+    // A failed launch writes no receipt: nothing was launched, so there is no launcher to name.
+    expect('fixerDispatchReceipt' in serialized).toBe(false);
+  });
+
+  it('finalize after a successful launch writes a receipt naming the launching host and build (R-1)', async () => {
+    const reservedQueue: FrozenCandidateRepairQueue = {
+      ...queue,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      phase: 'awaiting-fixer',
+      repairHead: queue.candidate,
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: { token: 'owner-token', claimedAtMs: 100, expiresAtMs: 300_100 },
+    };
+    fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
+      const finalized = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
+      return sqlRows([{ repair_queue: finalized }]);
+    });
+    const launcher = {
+      hostId: 'port-3271',
+      processId: 'boot-a:4242',
+      executingBuild: { sha: 'a1b2c3d4e5f6', source: 'baked' as const },
+    };
+
+    const finalized = await finalizeFrozenCandidateRepairFixer(
+      target, reservedQueue, { spawnId: 'spawn-9', runId: 'run-9' }, 250_000, launcher,
+    );
+
+    expect(finalized).toMatchObject({ fixerSpawnId: 'spawn-9', attempts: 1 });
+    expect(finalized?.fixerDispatchReceipt).toEqual({
+      ...launcher, spawnId: 'spawn-9', runId: 'run-9', dispatchedAtMs: 250_000,
+    });
+    const serialized = JSON.parse((fakeSql.unsafe.mock.calls.at(-1)![1] as unknown[])[2] as string);
+    expect(serialized.fixerDispatchReceipt).toEqual(finalized?.fixerDispatchReceipt);
   });
 });
 

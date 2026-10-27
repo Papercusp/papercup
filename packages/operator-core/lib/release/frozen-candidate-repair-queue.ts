@@ -26,6 +26,7 @@ import {
   type RepairManifestSummary,
 } from './repair-manifest';
 import { createHash } from 'node:crypto';
+import { parseRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import { casesForFile, newRepairSignatureKeys } from './case-level-signature';
 import type { AdmissionRadius, FixPrecheckFileResult, FixPrecheckVerdict } from './admission-fix-precheck';
 import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
@@ -463,6 +464,22 @@ export interface FrozenRepairDispatchReservation {
   token: string;
   claimedAtMs: number;
   expiresAtMs: number;
+  /**
+   * gate-repair-plane-on-current-build-2026-10-15 R-2: the process that holds the launch lease
+   * (host id, process id, executing build). Absent on reservations written by older builds.
+   */
+  executor?: RepairLimbExecutor;
+}
+
+/**
+ * R-1: the durable receipt of the last successful fixer launch, naming the executor (host and
+ * build, from the launching process's getBuildInfo()) that launched it. Bound to `spawnId`, so a
+ * later spawn's receipt replaces it.
+ */
+export interface FrozenRepairFixerDispatchReceipt extends RepairLimbExecutor {
+  spawnId: string;
+  runId: string | null;
+  dispatchedAtMs: number;
 }
 
 /**
@@ -598,6 +615,8 @@ export interface FrozenCandidateRepairQueue {
   ageEscalatedRung?: number;
   /** Short-lived CAS lease held only while one process launches this queue's fixer. */
   dispatchReservation?: FrozenRepairDispatchReservation;
+  /** R-1: who launched the current/last fixer, and on which build. */
+  fixerDispatchReceipt?: FrozenRepairFixerDispatchReceipt;
   /** Observable, bounded R6 admission pre-check; publication requires a later confirmed call. */
   admissionPrecheck?: FrozenRepairAdmissionPrecheck;
   /**
@@ -1787,7 +1806,11 @@ export interface FrozenRepairQueueDiagnostic {
     claimedAtMs: number;
     expiresAtMs: number;
     active: boolean;
+    /** R-2: the process holding (or last holding) the launch lease, when the writer stamped it. */
+    executor?: RepairLimbExecutor;
   } | null;
+  /** R-1: who launched the current fixer, from the receipt written at spawn; absent when unstamped. */
+  fixerDispatchReceipt?: FrozenRepairFixerDispatchReceipt;
   /** Durable R6 work visible to `release:repair-queue { op:'get' }`; null means no decision is in flight. */
   admissionPrecheck?: FrozenRepairAdmissionPrecheck | null;
   decision: FrozenRepairQueueDecision['kind'];
@@ -2037,10 +2060,26 @@ function parseDispatchReservation(value: unknown): FrozenRepairDispatchReservati
   const row = value as Record<string, unknown>;
   if (!nonBlank(row.token) || !validTimestamp(row.claimedAtMs) || !validTimestamp(row.expiresAtMs)) return null;
   if ((row.expiresAtMs as number) < (row.claimedAtMs as number)) return null;
+  // Attribution is evidence, not lease state: a malformed stamp drops, the lease stays valid.
+  const executor = parseRepairLimbExecutor(row.executor);
   return {
     token: row.token,
     claimedAtMs: row.claimedAtMs as number,
     expiresAtMs: row.expiresAtMs as number,
+    ...(executor ? { executor } : {}),
+  };
+}
+
+function parseFixerDispatchReceipt(value: unknown): FrozenRepairFixerDispatchReceipt | undefined {
+  const executor = parseRepairLimbExecutor(value);
+  if (!executor) return undefined;
+  const row = value as Record<string, unknown>;
+  if (!nonBlank(row.spawnId) || !validTimestamp(row.dispatchedAtMs)) return undefined;
+  return {
+    ...executor,
+    spawnId: row.spawnId,
+    runId: typeof row.runId === 'string' && row.runId ? row.runId : null,
+    dispatchedAtMs: row.dispatchedAtMs as number,
   };
 }
 
@@ -2431,6 +2470,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (row.fixerSpawnId !== null && !nonBlank(row.fixerSpawnId)) return null;
   const dispatchReservation = parseDispatchReservation(row.dispatchReservation);
   if (dispatchReservation === null) return null;
+  const fixerDispatchReceipt = parseFixerDispatchReceipt(row.fixerDispatchReceipt);
   const admissionPrecheck = parseAdmissionPrecheck(row.admissionPrecheck);
   if (!Array.isArray(row.failingTests) || !row.failingTests.every((v) => typeof v === 'string')) {
     return null;
@@ -2529,6 +2569,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(blockedReason ? { blockedReason } : {}),
     ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
     ...(dispatchReservation ? { dispatchReservation } : {}),
+    ...(fixerDispatchReceipt ? { fixerDispatchReceipt } : {}),
     ...(admissionPrecheck ? { admissionPrecheck } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
@@ -3063,6 +3104,8 @@ export function diagnoseFrozenCandidateRepairQueue(
     fixerAlive,
     repairLatency: frozenRepairLatency(queue, observation.nowMs),
     dispatchReservation: reservation,
+    // Present only when a stamped launch exists, so readers of older rows see no new key.
+    ...(queue.fixerDispatchReceipt ? { fixerDispatchReceipt: queue.fixerDispatchReceipt } : {}),
     admissionPrecheck: queue.admissionPrecheck ?? null,
     decision: decision.kind,
     retireAllowed,

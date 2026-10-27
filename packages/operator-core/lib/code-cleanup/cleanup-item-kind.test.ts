@@ -14,6 +14,8 @@ import { describe, expect, it } from 'vitest';
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 import { ISSUE_FAMILY_KINDS } from '../work-items';
 import { BUG_INFLOW_KINDS } from '../harness/improvements/bug-inflow';
+import { ISSUE_KINDS } from '../issues-engineer';
+import issuesList from '../agent-tools/issues/list';
 import {
   CLEANUP_IS_ISSUE_FAMILY,
   CLEANUP_ITEM_KIND,
@@ -84,5 +86,20 @@ describe('cleanup item kind', () => {
       .filter((f) => /^\d+-.*\.sql$/.test(f) && Number.parseInt(f, 10) > 1590)
       .filter((f) => countBareIssueFamilyTriples(readFileSync(join(SQL_DIR, f), 'utf8')) > 0);
     expect(later).toEqual([]);
+  });
+});
+
+// R-3 "excluded from bug/change backlog rollups and listed by a cleanup backlog read":
+// every issue read in issues-engineer defaults its kind set to ISSUE_KINDS when the caller
+// passes no kinds, and the cleanup backlog read is issues:list { kinds: ['cleanup'] }.
+describe('cleanup backlog read', () => {
+  it('the default issue rollup kind set is bug+change only', () => {
+    expect([...ISSUE_KINDS].sort()).toEqual(['bug', 'change']);
+    expect(ISSUE_KINDS).not.toContain(CLEANUP_ITEM_KIND);
+  });
+
+  it("issues:list accepts kinds:['cleanup'] as its backlog read and still rejects an unknown kind", () => {
+    expect(issuesList.args.safeParse({ kinds: [CLEANUP_ITEM_KIND] }).success).toBe(true);
+    expect(issuesList.args.safeParse({ kinds: ['not-a-kind'] }).success).toBe(false);
   });
 });

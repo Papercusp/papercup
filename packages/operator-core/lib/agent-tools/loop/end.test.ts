@@ -720,7 +720,10 @@ describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
   });
 
   it('honors a verified owner stop directive without demanding the acknowledgement', async () => {
-    getOwnerDirectiveMock.mockResolvedValue({ id: 77, workspaceId: 'ws-1', ownerId: ME, capturedByHook: true });
+    // Production rows carry owner_id='owner' (the human); the session is recorded_by.
+    getOwnerDirectiveMock.mockResolvedValue({
+      id: 77, workspaceId: 'ws-1', ownerId: 'owner', recordedBy: ME, capturedByHook: true,
+    });
 
     const got = await run({ ownerStopDirectiveId: 77 });
 
@@ -729,8 +732,8 @@ describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
   });
 
   it.each([
-    ['another session', { id: 77, workspaceId: 'ws-1', ownerId: 'su-someone-else', capturedByHook: true }, /belongs to/],
-    ['an agent-recorded row', { id: 77, workspaceId: 'ws-1', ownerId: ME, capturedByHook: false }, /agent-recorded/],
+    ['another session', { id: 77, workspaceId: 'ws-1', ownerId: 'owner', recordedBy: 'su-someone-else', capturedByHook: true }, /belongs to/],
+    ['an agent-recorded row', { id: 77, workspaceId: 'ws-1', ownerId: 'owner', recordedBy: ME, capturedByHook: false }, /agent-recorded/],
     ['a missing row', null, /not found/],
   ])('rejects an owner stop directive from %s', async (_label, row, why) => {
     getOwnerDirectiveMock.mockResolvedValue(row);

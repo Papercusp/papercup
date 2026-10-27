@@ -87,6 +87,19 @@ describe('R-3 cleanup item kind — clone sweep filing and clean re-scan close',
     expect(closed.terminal_completion_ref).toContain('fire-3');
   });
 
+  it('re-files an area the sweep auto-closed when a later scan reports it again', async () => {
+    const first = await fileCloneSweep(ranked(), scope('fire-1'), { closeResolved: {} });
+    const id = first.rows.find(r => r.disposition === 'created')?.itemId;
+    expect((await fileCloneSweep([], scope('fire-2'), { closeResolved: {} })).resolved).toEqual([id]);
+
+    const back = await fileCloneSweep(ranked(), scope('fire-3'), { closeResolved: {} });
+    const again = back.rows.find(r => r.disposition === 'created')?.itemId;
+    expect(again).toBeTruthy();
+    expect(again).not.toBe(id);
+    expect((await row(again!)).status).not.toBe('done');
+    expect((await row(id!)).status).toBe('done');
+  });
+
   it('leaves the item open when a re-scan could not parse one of its member files', async () => {
     const first = await fileCloneSweep(ranked(), scope('fire-1'), { closeResolved: {} });
     const id = first.rows.find(r => r.disposition === 'created')?.itemId;

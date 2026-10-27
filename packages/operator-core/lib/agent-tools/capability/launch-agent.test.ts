@@ -2060,6 +2060,69 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
   });
 
+  describe('D019 original member restoration', () => {
+    const uuid = '0123abcd-1234-5678-9abc-def012345678';
+    const source = { ...dead, agent: 'codex', sessionId: uuid, account: 'auto',
+      model: 'gpt-6:high', headless: true, binding: { ...dead.binding, sessionId: uuid } };
+    const pin = { ownerId: source.ownerId, advSessionId: source.advSessionId, sessionId: uuid };
+    const original = { v: 1, ...pin, workspaceId: 'ws-test', agent: 'codex',
+      launchSpec: { v: 1, agent: 'codex', workspaceId: 'ws-test', harnessSlug: 'papercusp',
+        model: 'gpt-6:high', fleet: { slug: 'target-fleet', role: 'member' } },
+      launchArgv: ['psu', '--agent=codex', '--harness=papercusp', '--fleet=target-fleet',
+        '--account=default', '--model=gpt-6:high', '--carry=warm', '--profile=engineer'] };
+    const record = { workspaceId: 'ws-test', agent: 'codex', launchArgv: ['psu', '--account=auto'],
+      launchSpec: { originalMemberLaunch: original } };
+    const request = { resume: { sessionId: uuid }, restoreOriginalMember: pin, brief: 'continue original work' };
+    beforeEach(() => {
+      resolveResumeTargetMock.mockResolvedValue(source);
+      findLiveHostMock.mockReturnValue(null);
+      latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+      readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue(record);
+      getFleetHeadcountTargetMock.mockResolvedValue({ workspaceId: 'ws-test', fleetSlug: 'target-fleet',
+        target: 10, config: { harness: 'papercusp', agent: 'codex', account: 'auto', model: 'gpt-6',
+          effort: 'xhigh', headless: true, carry: 'cold' } });
+    });
+
+    it('restores original default/model/effort/placement/carry instead of fleet auto without invoking gateway-only repair', async () => {
+      const result = await launchAgent.handler(request as never, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      const command = spawnedCommand();
+      expect(command).toContain(`--resume=${uuid}`);
+      expect(command).toContain('--account=default');
+      expect(command).toContain('--model=gpt-6:high');
+      expect(command).toContain('--carry=warm');
+      expect(command).toContain('--profile=engineer');
+      expect(command).not.toContain('--headless');
+      expect(command).not.toContain('--fork');
+      expect(originalRoutingGuardMock).not.toHaveBeenCalled();
+      expect(spawnedEnv()).not.toHaveProperty('PAPERCUSP_ORIGINAL_CODEX_ROUTING');
+      expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith(source.ownerId, 'ws-test',
+        { advSessionId: source.advSessionId, sessionId: uuid });
+    });
+
+    it('refuses missing original provenance rather than substituting the current auto record', async () => {
+      readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({ ...record, launchSpec: {} });
+      const result = await launchAgent.handler(request as never, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['live', 'unterminated', 'writer', 'changed-binding', 'changed-profile'])('refuses %s custody', async (failure) => {
+      if (failure === 'live') resolveResumeTargetMock.mockResolvedValue({ ...source, live: true });
+      if (failure === 'unterminated') resolveResumeTargetMock.mockResolvedValue({ ...source, endedAt: null, endedBy: null });
+      if (failure === 'writer') codexThreadWriterHolderMock.mockReturnValue({ held: true, reason: 'held' } as never);
+      if (failure === 'changed-binding') resolveResumeTargetMock.mockResolvedValueOnce(source).mockResolvedValue({
+        ...source, binding: { ...source.binding, startedAt: 'changed' } });
+      if (failure === 'changed-profile') readAdvSessionLaunchRecordByOwnerMock.mockResolvedValueOnce(record)
+        .mockResolvedValue({ ...record, launchArgv: ['changed'] });
+      const result = await launchAgent.handler(request as never, ctx);
+      expect(isError(result), textOf(result)).toBe(true);
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('originalRouting custody contract', () => {
     const uuid = '0123abcd-1234-5678-9abc-def012345678';
     const source = { ...dead, agent: 'codex', sessionId: uuid, account: 'auto',

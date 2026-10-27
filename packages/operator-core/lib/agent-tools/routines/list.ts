@@ -325,6 +325,9 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     // showing agentGroupCount>0 and agentCommitCount=0 means agents' edits are landing
     // only in the anonymous catch-all.
     'consecutive_zero_attribution_ticks',
+    // P-003 (gate-systems-as-designed-2026-10-27): attributed-file share. last_attribution's
+    // per-repo attributableFileCount / attributedFileCount is the sweep's share.
+    'consecutive_attribution_share_drop_ticks',
     'last_attribution',
     // EI-20105965677293021: recordOutcome persists the exact content-lint paths and
     // detector keys plus their stable signature. Without this reader, `quarantined`
