@@ -20,7 +20,8 @@ describe.runIf(process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true')('P019 configu
       analytics: { enabled: true, since: new Date(end - 2 * 60 * 60_000).toISOString() } };
     const result = await readCloudProductUsage({ context: { principal, environment: 'staging' },
       windowStart: new Date(end - 60 * 60_000).toISOString(), windowEnd: new Date(end).toISOString(),
-      readConsent: async () => consent });
+      readConsent: async () => consent,
+      onUnavailable: failure => console.info('CLOUD_PRODUCT_USAGE_UNAVAILABLE', JSON.stringify(failure)) });
     expect(result).toEqual({ status: 'unknown', reason: 'no_observations' });
   }, 60_000);
 });

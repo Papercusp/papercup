@@ -30,6 +30,45 @@ afterEach(() => {
 });
 
 describe('P019 hosted product observations reuse capture identity, consent and project', () => {
+  it.each([
+    ['configuration', 'project-selection'],
+    ['authentication', 'project-selection'],
+    ['timeout', 'usage-query'],
+    ['transport', 'usage-query'],
+    ['response', 'usage-query'],
+    ['unavailable', 'consent-recheck'],
+  ] as const)('retains only safe %s diagnostics at %s', async (category, stage) => {
+    const fetcher = transport();
+    if (category === 'configuration') config.value = null;
+    if (category === 'authentication') fetcher.mockImplementation(async () => response({ secret: 'private-vendor-body' }, 403));
+    if (stage === 'usage-query') {
+      const original = fetcher.getMockImplementation()!;
+      fetcher.mockImplementation(async (url, init) => {
+        if (new URL(String(url)).pathname.endsWith('/query/')) {
+          if (category === 'timeout') throw new DOMException('admin-key private-query', 'TimeoutError');
+          if (category === 'transport') throw new TypeError('admin-key private-query');
+          return new Response('private-vendor-body', { status: 502 });
+        }
+        return original(url, init);
+      });
+    }
+    const readConsent = vi.fn().mockResolvedValueOnce(consent);
+    if (stage === 'consent-recheck') readConsent.mockRejectedValueOnce(new Error('private-customer-data'));
+    else readConsent.mockResolvedValue(consent);
+    const failures: unknown[] = [];
+    expect(await readCloudProductUsage({ context, ...window, readConsent, onUnavailable: failure => failures.push(failure) }))
+      .toEqual({ status: 'unknown', reason: 'usage_query_unavailable' });
+    expect(failures).toEqual([{ stage, category }]);
+    expect(JSON.stringify(failures)).not.toMatch(/admin-key|private|user-a|tenant-a/);
+  });
+
+  it('preserves unknown when the trusted diagnostic observer fails', async () => {
+    config.value = null;
+    expect(await readCloudProductUsage({ context, ...window, readConsent: async () => consent,
+      onUnavailable: () => { throw new Error('logging unavailable'); } }))
+      .toEqual({ status: 'unknown', reason: 'usage_query_unavailable' });
+  });
+
   it('queries the capture project with exact opaque identity and effective consent window, without dashboard writes', async () => {
     const fetcher = transport();
     const readConsent = vi.fn(async () => consent);

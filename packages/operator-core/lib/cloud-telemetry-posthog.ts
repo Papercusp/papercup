@@ -105,6 +105,25 @@ export type CloudProductUsageObservation = { status: 'unknown'; reason: string }
   observations: number; portalSessionObservations: number; readyProvisioningObservations: number; featureAdoptionObservations: number;
 };
 
+export interface CloudProductUsageFailure {
+  stage: 'project-selection' | 'usage-query' | 'consent-recheck';
+  category: 'configuration' | 'authentication' | 'timeout' | 'transport' | 'response' | 'unavailable';
+}
+
+/** Never retain arbitrary exception text: a vendor response or fetch error can
+ * contain credentials, query selectors or customer data. */
+function usageFailureCategory(error: unknown): CloudProductUsageFailure['category'] {
+  if (error instanceof Error) {
+    if (error.message === 'posthog_dashboard_credentials_unavailable') return 'configuration';
+    if (/^posthog_dashboard_api_status_(401|403)$/.test(error.message)) return 'authentication';
+    if (/^posthog_dashboard_(api_status_\d{3}|catalog_unavailable|catalog_incomplete|project_unverified|foreign_origin)$/.test(error.message) ||
+        error instanceof SyntaxError) return 'response';
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') return 'timeout';
+    if (error instanceof TypeError) return 'transport';
+  }
+  return 'unavailable';
+}
+
 /** Read original consented portal metadata, never customer-runtime diagnostics.
  * This observes metadata for one verified hosted identity; PostHog source flags
  * alone do not attest canonical provisioning outcomes. It does not bind a CRM
@@ -114,6 +133,9 @@ export async function readCloudProductUsage(input: {
   context: Pick<CloudTelemetryContext, 'principal' | 'environment'>;
   windowStart: string; windowEnd: string;
   readConsent: () => Promise<unknown>;
+  /** Trusted host diagnostics only. Fixed vocabulary; no exception messages,
+   * URLs, query text, credentials or customer identifiers are passed. */
+  onUnavailable?: (failure: CloudProductUsageFailure) => void;
 }): Promise<CloudProductUsageObservation> {
   let identity: ReturnType<typeof cloudTelemetryIdentity>;
   try { identity = cloudTelemetryIdentity(input.context); }
@@ -140,8 +162,10 @@ export async function readCloudProductUsage(input: {
     `AND properties.source IN ('portal', 'control-plane') AND properties.operation_id IS NOT NULL AND properties.operation_id != '' ` +
     `AND (event IN ('cloud_portal_session', 'cloud_feature_adoption') OR (event = 'cloud_workspace_provisioning' AND properties.phase = 'ready' AND properties.source = 'control-plane')) ` +
     `AND timestamp >= toDateTime('${windowStart}') AND timestamp < toDateTime('${windowEnd}')`;
+  let stage: CloudProductUsageFailure['stage'] = 'project-selection';
   try {
     const { projectId, root, request } = await configuredPosthogProject();
+    stage = 'usage-query';
     const result = await request(`${root}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query } });
     const columns = ['observations', 'portalSessionObservations', 'readyProvisioningObservations', 'featureAdoptionObservations'];
     if (JSON.stringify(result.columns) !== JSON.stringify(columns) || !Array.isArray(result.results) || result.results.length !== 1 ||
@@ -152,12 +176,18 @@ export async function readCloudProductUsage(input: {
     const [observations, portalSessionObservations, readyProvisioningObservations, featureAdoptionObservations] = result.results[0] as [number, number, number, number];
     if (observations !== portalSessionObservations + readyProvisioningObservations + featureAdoptionObservations) return { status: 'unknown', reason: 'usage_response_invalid' };
     // Recheck revocation/epoch after the network read, before returning data.
+    stage = 'consent-recheck';
     const current = cloudTelemetryConsentSchema.parse(await input.readConsent());
     if (!current.analytics.enabled || current.analytics.since !== consent.analytics.since) return { status: 'unknown', reason: 'consent_changed' };
     if (observations === 0) return { status: 'unknown', reason: 'no_observations' };
     return { status: 'observed', windowStart, windowEnd, observations, portalSessionObservations, readyProvisioningObservations, featureAdoptionObservations,
       evidenceRef: `posthog:${projectId}:hogql:${createHash('sha256').update(query).digest('hex')}` };
-  } catch { return { status: 'unknown', reason: 'usage_query_unavailable' }; }
+  } catch (error) {
+    // An observer cannot turn an unavailable measurement into a thrown task or
+    // an invented reading, even if its own logging transport is unavailable.
+    try { input.onUnavailable?.({ stage, category: usageFailureCategory(error) }); } catch {}
+    return { status: 'unknown', reason: 'usage_query_unavailable' };
+  }
 }
 
 export async function ensureCloudMonitoringDashboard(environment: CloudTelemetryContext['environment']) {
