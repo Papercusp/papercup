@@ -18,6 +18,7 @@ const BRIEF: BlindReviewBrief = {
   planSlug: SLUG,
   activationAuditSeq: 7,
   ownerTurns: [{ ref: 'claude:s1:3', text: SECRET_TURN }],
+  unverifiedTurns: [],
   excludedRefs: [],
   text: `Owner turn claude:s1:3:\n${SECRET_TURN}`,
 };

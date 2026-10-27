@@ -31,3 +31,36 @@ describe('recruiter replacement eligibility interleaving', () => {
     }
   });
 });
+
+// EI-27120731037609627: a reviewer that registered and died while nobody watched its
+// exit has no adv_sessions.ended_at. Positive terminal evidence closes it; anything
+// weaker keeps the review protected.
+describe('unobserved reviewer end', () => {
+  const fixture = () => replacementFixture(resolve(__dirname, '../../..'),
+    'packages/operator-core/lib/blind-review-replacement-protected.test.ts');
+
+  it('unobserved-end-reconciled: closes a dead reviewer on terminal task evidence and replaces it', async () => {
+    const f = fixture();
+    f.state.ended = false;
+    f.state.tasks = [{ state: 'ended_unobserved', session_id: 'native-original' }];
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'ready' } });
+    expect(f.state.reconciledEnd).toBe(true);
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['running-task', { tasks: [{ state: 'ended_unobserved', session_id: 'native-original' }, { state: 'running', session_id: 'native-original' }] }],
+    ['live-host', { tasks: [{ state: 'ended_unobserved', session_id: 'native-original' }], liveHost: { pid: 4242 } }],
+    ['other-session', { tasks: [{ state: 'exited', session_id: 'native-other' }] }],
+    ['no-task', { tasks: [] }],
+    ['unaccounted-task', { tasks: [{ state: 'unaccounted', session_id: 'native-original' }] }],
+  ])('unobserved-end-protected-%s: refuses without positive terminal evidence', async (_kind, patch) => {
+    const f = fixture();
+    f.state.ended = false;
+    Object.assign(f.state, patch);
+    expect(await f.run()).toMatchObject({ ok: false, error: 'review_protected' });
+    expect(f.state.reconciledEnd).toBe(false);
+    expect(f.state.attempts).toEqual([]);
+    expect(f.launch).not.toHaveBeenCalled();
+  });
+});

@@ -59,7 +59,7 @@ async function seed() {
   const input: BlindReviewReplacementInput = { workspaceId: WS, harness, slug, activationAuditSeq: 5,
     sourceReviewId: Number(review!.id), requestKey: 'corrected-manifest', productReads: { testFiles: ['product.test.ts'] },
     ctx: { workspaceId: WS, uiClientId: AUTHOR, isSuperuser: true } };
-  const brief = { planSlug: slug, activationAuditSeq: 5, ownerTurns: [{ ref: 'owner:1', text: 'Exercise the product.' }], excludedRefs: [], text: 'Exercise the product.' };
+  const brief = { planSlug: slug, activationAuditSeq: 5, ownerTurns: [{ ref: 'owner:1', text: 'Exercise the product.' }], unverifiedTurns: [], excludedRefs: [], text: 'Exercise the product.' };
   const deps: BlindReviewReplacementDeps = { sql: fx.admin as never, repoRoot: async () => root, loadBrief: async () => brief };
   return { input, deps, bindingId: Number(binding!.id), nativeId: Number(native!.id), reviewer, brief };
 }

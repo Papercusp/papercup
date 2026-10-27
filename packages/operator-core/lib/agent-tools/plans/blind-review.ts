@@ -144,6 +144,7 @@ export default defineTool({
         slug: args.slug,
         activationAuditSeq: brief.activationAuditSeq,
         ownerTurnCount: brief.ownerTurns.length,
+        unverifiedTurnCount: brief.unverifiedTurns.length,
         excludedRefs: brief.excludedRefs,
         brief: brief.text,
       });

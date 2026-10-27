@@ -27,7 +27,7 @@ import {
 } from './capability-envelope/session-confinement';
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
 import { BLIND_REVIEW_TOOL, loadBlindReviewBrief } from './blind-review-gate';
-import type { BlindReviewBrief } from './blind-review-brief';
+import { briefTurnCount, type BlindReviewBrief } from './blind-review-brief';
 import {
   acquireBlindReviewSessionResume,
   createBlindReviewSessionBinding,
@@ -160,7 +160,7 @@ export interface MintBlindGapReviewerDeps {
 
 export type MintBlindGapReviewerResult =
   | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null; binding: BlindReviewSessionBinding | null }
-  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_owner_turns' | 'invalid_product_reads' | 'session_binding_failed'; message: string };
+  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_source_turns' | 'invalid_product_reads' | 'session_binding_failed'; message: string };
 
 async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementKey: symbol }> {
   const mod = await import('./agent-tools/capability/launch-agent');
@@ -185,9 +185,11 @@ export async function mintBlindGapReviewer(
     return { ok: false, code: 'no_activation_audit',
       message: `${input.slug} has no activation audit, so there are no owner turns to brief a reviewer with.` };
   }
-  if (brief.ownerTurns.length === 0) {
-    return { ok: false, code: 'no_owner_turns',
-      message: `${input.slug}'s activation audit resolves no authenticated owner turns. Repair source-origin enrollment and audit mappings before minting a blind reviewer.` };
+  // Owner directive #2499: an unverified-origin user turn is briefed (labelled), not refused.
+  // Only an audit citing no user turn at all leaves the reviewer nothing to judge against.
+  if (briefTurnCount(brief) === 0) {
+    return { ok: false, code: 'no_source_turns',
+      message: `${input.slug}'s activation audit cites no readable user turns (only assistant or machine-injected turns, or refs that do not resolve). Re-audit its mappings against the owner's own words before minting a blind reviewer.` };
   }
   const productReads = input.productReads ? { harness: input.harness,
     docsHarness: input.productReads.docsHarness ?? input.harness,
@@ -290,8 +292,8 @@ export async function resumeBlindGapReviewer(
     workspaceId, planSlug: input.slug, harnessSlug: input.harness,
   });
   if (!brief) return { ok: false, code: 'no_activation_audit', message: 'The plan has no current activation audit to resume.' };
-  if (brief.ownerTurns.length === 0) {
-    return { ok: false, code: 'no_owner_turns', message: 'The current activation audit has no authenticated owner turns.' };
+  if (briefTurnCount(brief) === 0) {
+    return { ok: false, code: 'no_source_turns', message: 'The current activation audit cites no readable user turns.' };
   }
   const acquired = await (deps.acquireSessionResume ?? acquireBlindReviewSessionResume)({
     workspaceId, planSlug: input.slug, activationAuditSeq: brief.activationAuditSeq,

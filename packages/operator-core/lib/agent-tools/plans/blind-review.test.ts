@@ -253,7 +253,7 @@ describe('plans:blind-review op mint', () => {
   });
 
   it('a brief call never reaches the mint adapter', async () => {
-    loadBlindReviewBrief.mockResolvedValue({ activationAuditSeq: 3, ownerTurns: [], excludedRefs: [], text: '' });
+    loadBlindReviewBrief.mockResolvedValue({ activationAuditSeq: 3, ownerTurns: [], unverifiedTurns: [], excludedRefs: [], text: '' });
 
     const { body } = await call({ slug: SLUG, op: 'brief' });
 

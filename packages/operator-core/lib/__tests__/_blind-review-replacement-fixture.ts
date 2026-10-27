@@ -12,6 +12,10 @@ export function replacementFixture(repoRoot: string, testFile: string) {
     attempts: [] as Array<Record<string, unknown>>,
     ledger: null as Record<string, unknown> | null,
     delayedNative: null as { id: number; workspace_id: string; coord_owner_id: string; session_id: string | null } | null,
+    // EI-27120731037609627: the source reviewer's agent-session tasks and psu host.
+    tasks: [{ state: 'running', session_id: 'native-original' }] as Array<{ state: string; session_id: string | null }>,
+    liveHost: null as unknown,
+    reconciledEnd: false,
   };
   const queryMock = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -29,7 +33,17 @@ export function replacementFixture(repoRoot: string, testFile: string) {
       return native && native.workspace_id === values[0] && native.id === values[1] && native.coord_owner_id === values[2]
         ? [{ session_id: native.session_id }] : [];
     }
-    if (query.includes('from harness_shared.adv_sessions')) return [{ ended_at: state.ended ? '2026-10-23' : null, resume_claim_key: state.resumeClaim }];
+    if (query.startsWith('select state, session_id from harness_shared.task_ledger')) {
+      return values[1] === 'su-original' ? copy(state.tasks) : [];
+    }
+    if (query.startsWith("update harness_shared.adv_sessions set ended_at = now(), ended_by = 'reconciler'")) {
+      if (state.ended || state.resumeClaim || values[1] !== 20 || values[2] !== 'su-original') return [];
+      state.ended = true; state.reconciledEnd = true;
+      return [{ id: 20 }];
+    }
+    if (query.includes('from harness_shared.adv_sessions')) {
+      return [{ ended_at: state.ended ? '2026-10-23' : null, resume_claim_key: state.resumeClaim, session_id: 'native-original' }];
+    }
     if (query.startsWith('select * from harness_shared.plan_blind_review_sessions')) return copy(state.attempts);
     if (query.startsWith('insert into harness_shared.plan_blind_review_sessions')) {
       const [ws, harness, slug, activation, parent, confinement, source, seq, key, hash, caller, snapshot, launchKey] = values;
@@ -72,9 +86,9 @@ export function replacementFixture(repoRoot: string, testFile: string) {
   });
   const key = Symbol('test-confinement');
   const deps: BlindReviewReplacementDeps = { sql: sql as never,
-    loadBrief: async () => ({ planSlug: input.slug, activationAuditSeq: 5, ownerTurns: [{ ref: 'owner:1', text: 'Use product' }], excludedRefs: [], text: 'Use product' }),
+    loadBrief: async () => ({ planSlug: input.slug, activationAuditSeq: 5, ownerTurns: [{ ref: 'owner:1', text: 'Use product' }], unverifiedTurns: [], excludedRefs: [], text: 'Use product' }),
     repoRoot: async () => repoRoot, resolveImplementers: async () => ['su-author'], authorIdentity: async (_author, caller) => caller === 'su-author',
-    lineageRelated: async () => false, bind,
+    lineageRelated: async () => false, bind, liveHost: async () => state.liveHost,
     launcher: async () => ({ handler: launch, confinementKey: key }) };
   const run = (patch: Partial<BlindReviewReplacementInput> = {}) => replaceBlindGapReviewer({ ...input, ...patch }, deps);
   return { input, deps, state, run, launch, bind, launchSummary, key, sql, actor: BLIND_GAP_REVIEW_ACTOR };

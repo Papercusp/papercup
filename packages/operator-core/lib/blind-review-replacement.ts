@@ -7,10 +7,12 @@ import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { loadHarnessRegistry } from './harness-registry';
 import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { blindReviewCompletion, loadBlindReviewBrief } from './blind-review-gate';
+import { briefTurnCount } from './blind-review-brief';
 import { validProductReadBoundary, type ProductReadBoundary, type SessionToolConfinement } from './capability-envelope/session-confinement';
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
 import { blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, type BlindReviewerProductReads } from './blind-reviewer-mint';
 import { BLIND_GAP_REVIEW_ACTOR, createBlindReviewSessionBinding, recordBlindReviewSessionPost } from './blind-review-session-bindings';
+import { TERMINAL_TASK_STATES } from './task-manager/types';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 type Attempt = {
@@ -37,7 +39,47 @@ export type BlindReviewReplacementDeps = {
   repoRoot?: (workspaceId: string, harness: string) => Promise<string>;
   launcher?: () => Promise<{ handler: (args: Record<string, unknown>, ctx: never) => Promise<unknown>; confinementKey: symbol }>;
   bind?: typeof createBlindReviewSessionBinding;
+  /** Live psu host for an owner, or null. Injected in tests (EI-27120731037609627). */
+  liveHost?: (ownerId: string, workspaceId: string) => Promise<unknown>;
 };
+
+async function defaultLiveHost(ownerId: string, workspaceId: string): Promise<unknown> {
+  const { findLiveHostAsync } = await import('./events/await/psu-pty-discovery');
+  return findLiveHostAsync(ownerId, undefined, { workspaceId });
+}
+
+/**
+ * A reviewer that registered and then died while no parent watched its exit (for
+ * example across an operator restart) never gets adv_sessions.ended_at: nothing but
+ * markAdvSessionEnded writes it, and the dead-launch reconciler only covers sessions
+ * that never registered. Without this step its inconclusive review could never be
+ * replaced (EI-27120731037609627). Close the row only on positive terminal evidence,
+ * under the row lock the caller already holds: every agent-session task for the
+ * owner is terminal in the task ledger, one of them is bound to this native session,
+ * and no live psu host answers for the owner. Anything less stays protected.
+ */
+async function reconcileUnobservedReviewerEnd(
+  tx: Sql,
+  target: { workspaceId: string; advSessionId: string; ownerId: string; sessionId: string | null },
+  liveHost: (ownerId: string, workspaceId: string) => Promise<unknown>,
+): Promise<boolean> {
+  if (!target.sessionId) return false;
+  const tasks = await tx<Array<{ state: string; session_id: string | null }>>`
+    SELECT state, session_id FROM harness_shared.task_ledger
+     WHERE workspace_id = ${target.workspaceId} AND class = 'agent-session'
+       AND detail ->> 'coordOwnerId' = ${target.ownerId}`;
+  const terminal = new Set<string>(TERMINAL_TASK_STATES);
+  if (tasks.length === 0 || !tasks.every(task => terminal.has(task.state))) return false;
+  if (!tasks.some(task => task.session_id === target.sessionId)) return false;
+  if (await liveHost(target.ownerId, target.workspaceId)) return false;
+  const closed = await tx<Array<{ id: unknown }>>`
+    UPDATE harness_shared.adv_sessions SET ended_at = now(), ended_by = 'reconciler'
+     WHERE workspace_id = ${target.workspaceId} AND id = ${target.advSessionId}
+       AND coord_owner_id = ${target.ownerId} AND ended_at IS NULL AND resume_claim_key IS NULL
+    RETURNING id`;
+  return closed.length === 1;
+}
+
 class Refusal extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
@@ -126,8 +168,8 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
     const caller = identity.ownerId;
     const brief = await (deps.loadBrief ?? loadBlindReviewBrief)({ workspaceId: input.workspaceId,
       harnessSlug: input.harness, planSlug: input.slug });
-    if (!brief || brief.activationAuditSeq !== input.activationAuditSeq || !brief.ownerTurns.length) {
-      refuse('activation_audit_mismatch', 'Use the exact current activation with authenticated owner turns.');
+    if (!brief || brief.activationAuditSeq !== input.activationAuditSeq || briefTurnCount(brief) === 0) {
+      refuse('activation_audit_mismatch', 'Use the exact current activation, citing at least one readable user turn.');
     }
     const reads = { harness: input.harness, docsHarness: input.productReads.docsHarness ?? input.harness,
       docsSlugs: [...(input.productReads.docsSlugs ?? [])], testFiles: [...(input.productReads.testFiles ?? [])] };
@@ -175,11 +217,16 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
       if (source.status !== 'posted' || !material || blindReviewCompletion(material) !== 'inconclusive') {
         refuse('review_protected', 'Only a posted, explicitly incomplete review can be replaced.');
       }
-      const [native] = await tx<Array<{ ended_at: unknown; resume_claim_key: string | null }>>`
-        SELECT ended_at, resume_claim_key FROM harness_shared.adv_sessions
+      const [native] = await tx<Array<{ ended_at: unknown; resume_claim_key: string | null; session_id?: string | null }>>`
+        SELECT ended_at, resume_claim_key, session_id FROM harness_shared.adv_sessions
          WHERE workspace_id = ${input.workspaceId} AND id = ${source.adv_session_id}
            AND coord_owner_id = ${source.reviewer_owner_id} FOR UPDATE`;
-      if (!native?.ended_at || native.resume_claim_key) refuse('review_protected', 'The source reviewer is live, reserved for resume, or its end is unverified.');
+      const protectedMessage = 'The source reviewer is live, reserved for resume, or its end is unverified.';
+      if (!native || native.resume_claim_key) refuse('review_protected', protectedMessage);
+      if (!native.ended_at && !await reconcileUnobservedReviewerEnd(tx, {
+        workspaceId: input.workspaceId, advSessionId: source.adv_session_id,
+        ownerId: source.reviewer_owner_id, sessionId: native.session_id ?? null,
+      }, deps.liveHost ?? defaultLiveHost)) refuse('review_protected', protectedMessage);
       const history = await tx<Attempt[]>`
         SELECT * FROM harness_shared.plan_blind_review_sessions WHERE replacement_of = ${source.id} ORDER BY attempt_seq FOR UPDATE`;
       const same = history.find(row => row.request_key === input.requestKey);

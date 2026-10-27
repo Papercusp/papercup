@@ -169,6 +169,7 @@ const BRIEF: BlindReviewBrief = {
   planSlug: SLUG,
   activationAuditSeq: 7,
   ownerTurns: [{ ref: 'claude:s1:3', text: 'Make the export button produce a CSV.' }],
+  unverifiedTurns: [],
   excludedRefs: [],
   text: 'Owner turn claude:s1:3:\nMake the export button produce a CSV.',
 };
@@ -618,18 +619,32 @@ describe('mintBlindGapReviewer', () => {
     expect(d.handler).not.toHaveBeenCalled();
   });
 
-  it.each(['no mapped sources', 'only excluded sources'] as const)('refuses an empty owner brief with %s before loading the launcher', async sourceCase => {
+  it.each(['no mapped sources', 'only excluded sources'] as const)('refuses a brief with no user turns (%s) before loading the launcher', async sourceCase => {
     const d = deps({
       ...BRIEF,
       ownerTurns: [],
+      unverifiedTurns: [],
       excludedRefs: sourceCase === 'only excluded sources'
-        ? [{ ref: 'codex:unenrolled:1', reason: 'not-owner' }]
+        ? [{ ref: 'codex:assistant:1', reason: 'not-owner' }]
         : [],
     });
     const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
-    expect(result).toMatchObject({ ok: false, code: 'no_owner_turns' });
+    expect(result).toMatchObject({ ok: false, code: 'no_source_turns' });
     expect(d.loadBrief).toHaveBeenCalledTimes(1);
     expect(d.launcher).not.toHaveBeenCalled();
     expect(d.handler).not.toHaveBeenCalled();
+  });
+
+  // Owner directive #2499 (2026-10-27): the mint no longer demands an authenticated owner
+  // turn. A brief carrying only unverified-origin user turns launches a reviewer.
+  it('mints from a brief whose only turns are unverified-origin user turns', async () => {
+    const d = deps({
+      ...BRIEF,
+      ownerTurns: [],
+      unverifiedTurns: [{ ref: 'codex:pre-stamp:1', text: 'Make the export button produce a CSV.' }],
+    });
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    expect(d.handler).toHaveBeenCalledTimes(1);
   });
 });
