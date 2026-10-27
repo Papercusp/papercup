@@ -2657,9 +2657,10 @@ export function prepareSuLaunch(boot, {
     // its default marker contradicted the authored auto provider and notice.
     // The generated config is the executable route decision.
     // Repair only this measured legacy shape, and only when both managed marker
-    // blocks prove that bootstrap authored the auto gateway configuration. A
-    // missing/malformed home, a default config, or a pin still fails closed.
-    if (boot.agent === "codex" && mode === "auto"
+    // blocks prove the exact requested gateway route. Pins additionally require
+    // the same account in the config and any existing envelope account field.
+    // A missing/malformed home, a default config or a conflicting route fails closed.
+    if (boot.agent === "codex" && (mode === "auto" || mode === "pin")
       && (!env.PAPERCUSP_ACCOUNT_ROUTING_MODE || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === "default")) {
       const childHome = typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
       try {
@@ -2676,13 +2677,21 @@ export function prepareSuLaunch(boot, {
         ].every(([begin, end]) => {
           const start = text.indexOf(begin);
           const finish = text.indexOf(end);
-          return start >= 0 && finish > start && text.indexOf(begin, start + begin.length) === -1;
+          return start >= 0 && finish > start
+            && text.indexOf(begin, start + begin.length) === -1
+            && text.indexOf(end, finish + end.length) === -1;
         });
         const config = nativeMcpRequire("@iarna/toml").parse(text);
         const provider = config.model_providers?.["papercusp-codex-gateway"];
-        const headers = provider?.http_headers && typeof provider.http_headers === "object"
-          ? Object.fromEntries(Object.entries(provider.http_headers).map(([key, value]) => [key.toLowerCase(), value]))
-          : {};
+        const headerEntries = provider?.http_headers && typeof provider.http_headers === "object"
+          ? Object.entries(provider.http_headers).map(([key, value]) => [key.toLowerCase(), value])
+          : [];
+        const headers = Object.fromEntries(headerEntries);
+        const unambiguousHeaders = new Set(headerEntries.map(([key]) => key)).size === headerEntries.length;
+        const matchingAccount = mode === "auto"
+          ? !Object.prototype.hasOwnProperty.call(headers, "x-papercusp-account") && !env.PAPERCUSP_ACCOUNT_ID
+          : headers["x-papercusp-account"] === raw
+            && (!env.PAPERCUSP_ACCOUNT_ID || env.PAPERCUSP_ACCOUNT_ID === raw);
         let gatewayUrl = null;
         try {
           gatewayUrl = new URL(provider?.base_url);
@@ -2699,16 +2708,16 @@ export function prepareSuLaunch(boot, {
         // the same socket. URL normalizes a configured default port (80), so the
         // comparison stays correct without weakening endpoint identity.
         const localGateway = gatewayUrl?.href === expectedGatewayUrl.href;
-        if (completeManagedBlocks
+        if (completeManagedBlocks && unambiguousHeaders
           && config.model_provider === "papercusp-codex-gateway"
           && provider?.wire_api === "responses"
           && localGateway
           && typeof provider?.experimental_bearer_token === "string"
           && provider.experimental_bearer_token.length > 0
-          && headers?.["x-papercusp-owner"] === env.PAPERCUSP_SID
-          && !Object.prototype.hasOwnProperty.call(headers, "x-papercusp-account")
-          && !env.PAPERCUSP_ACCOUNT_ID) {
-          env.PAPERCUSP_ACCOUNT_ROUTING_MODE = "auto";
+          && headers["x-papercusp-owner"] === env.PAPERCUSP_SID
+          && matchingAccount) {
+          env.PAPERCUSP_ACCOUNT_ROUTING_MODE = mode;
+          if (mode === "pin") env.PAPERCUSP_ACCOUNT_ID = raw;
         }
       } catch {
         // The mismatch check below owns the fail-closed diagnostic.

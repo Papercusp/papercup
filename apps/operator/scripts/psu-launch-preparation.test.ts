@@ -259,7 +259,73 @@ describe('effective SU launch preparation', () => {
     }
   });
 
-  it.each([undefined, 'default'])('passes a repaired legacy Codex auto route with marker %s into the spawned child environment', async routeMarker => {
+  it.each([undefined, 'default'])('repairs a legacy Codex pin with marker %s only from the exact managed account and owner', routeMarker => {
+    const home = mkdtempSync(join(tmpdir(), 'su-codex-pin-route-'));
+    const config = [
+      '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+      'model_provider = "papercusp-codex-gateway"',
+      '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
+      '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      '[model_providers.papercusp-codex-gateway]',
+      'base_url = "http://127.0.0.1:8788/v1"',
+      'wire_api = "responses"',
+      'experimental_bearer_token = "test-token"',
+      'http_headers = { "x-papercusp-owner" = "chosen-owner", "x-papercusp-account" = "chosen-account" }',
+      '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+    ].join('\n');
+    const legacy = bootstrap('codex');
+    delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE;
+    if (routeMarker) legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE = routeMarker;
+    delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
+    legacy.envelopeEnv.CODEX_HOME = home;
+    try {
+      writeFileSync(join(home, 'config.toml'), config);
+      for (const envelopeAccount of [undefined, 'chosen-account']) {
+        if (envelopeAccount) legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID = envelopeAccount;
+        else delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
+        const launch = prepareSuLaunch(legacy, { accountRoute: 'chosen-account', inheritedEnv: {} });
+        expect(launch.env).toMatchObject({
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin', PAPERCUSP_ACCOUNT_ID: 'chosen-account',
+          PAPERCUSP_SID: 'chosen-owner', CODEX_HOME: home,
+        });
+        expect(launch.model).toBe(legacy.model);
+        expect(legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe(routeMarker);
+        expect(legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe(envelopeAccount);
+        expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(config);
+      }
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
+      for (const rejected of [
+        config.replace(', "x-papercusp-account" = "chosen-account"', ''),
+        config.replace('"x-papercusp-account" = "chosen-account"', '"x-papercusp-account" = "another-account"'),
+        config.replace('"x-papercusp-owner" = "chosen-owner"', '"x-papercusp-owner" = "another-owner"'),
+        config.replace('experimental_bearer_token = "test-token"', 'experimental_bearer_token = ""'),
+        config.replace('http://127.0.0.1:8788/v1', 'http://127.0.0.1:8788/v1?account=chosen-account'),
+        config.replace('# END PAPERCUSP_CODEX_GATEWAY_PROVIDER', ''),
+        config + '\n# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+        config.replace('"x-papercusp-account" = "chosen-account"',
+          '"X-Papercusp-Account" = "another-account", "x-papercusp-account" = "chosen-account"'),
+      ]) {
+        writeFileSync(join(home, 'config.toml'), rejected);
+        expect(() => prepareSuLaunch(legacy, { accountRoute: 'chosen-account', inheritedEnv: {} }))
+          .toThrow(expect.objectContaining({ code: 'account_route_mismatch' }));
+      }
+      writeFileSync(join(home, 'config.toml'), config);
+      legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID = 'another-account';
+      expect(() => prepareSuLaunch(legacy, { accountRoute: 'chosen-account', inheritedEnv: {} }))
+        .toThrow(expect.objectContaining({ code: 'account_route_mismatch' }));
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
+      legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE = 'auto';
+      expect(() => prepareSuLaunch(legacy, { accountRoute: 'chosen-account', inheritedEnv: {} }))
+        .toThrow(expect.objectContaining({ code: 'account_route_mismatch' }));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([undefined, 'default'].flatMap(routeMarker => [
+    { routeMarker, accountRoute: 'auto', resolvedMode: 'auto', accountId: undefined },
+    { routeMarker, accountRoute: 'chosen-account', resolvedMode: 'pin', accountId: 'chosen-account' },
+  ]))('passes a repaired legacy Codex $resolvedMode route with marker $routeMarker into the spawned child environment', async ({ routeMarker, accountRoute, resolvedMode, accountId }) => {
     const home = mkdtempSync(join(tmpdir(), 'su-codex-auto-child-'));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -272,7 +338,7 @@ describe('effective SU launch preparation', () => {
         'base_url = "http://127.0.0.1:8788/v1"',
         'wire_api = "responses"',
         'experimental_bearer_token = "test-token"',
-        'http_headers = { "x-papercusp-owner" = "chosen-owner" }',
+        `http_headers = { "x-papercusp-owner" = "chosen-owner"${accountId ? ', "x-papercusp-account" = "chosen-account"' : ''} }`,
         '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
       ].join('\n'));
       const legacy = bootstrap('codex');
@@ -282,12 +348,13 @@ describe('effective SU launch preparation', () => {
       legacy.envelopeEnv.CODEX_HOME = home;
       const launch = vi.fn<(...args: any[]) => void>();
       await launchFreshSu({ agent: 'codex', workspace: 'chosen-workspace' }, {
-        model: legacy.model, account: 'auto', picker: false, noKickoff: true,
+        model: legacy.model, account: accountRoute, picker: false, noKickoff: true,
       }, { apiImpl: async () => ({ ...legacy, codexHome: home }),
         preflightCodexAutoPoolImpl: async () => true,
         runLaunchPreflightImpl: vi.fn(), runWrapperImpl: launch });
       expect(launch).toHaveBeenCalledOnce();
-      expect(launch.mock.calls[0][0].envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+      expect(launch.mock.calls[0][0].envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe(resolvedMode);
+      expect(launch.mock.calls[0][0].envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe(accountId);
     } finally {
       log.mockRestore();
       rmSync(home, { recursive: true, force: true });
