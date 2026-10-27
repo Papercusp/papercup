@@ -111,7 +111,13 @@ import {
 } from './completion-freshness';
 export { completionSettlementManifest, completionTreeStamp, completionTreeStampForEvidence };
 import { pgMechanicsLedger, readWorkItemMechanics } from './_mechanics';
-import { prefillCompletionFromMechanics, type CompletionPrefill } from './completion-prefill';
+import {
+  completionSuppliesField,
+  prefillCompletionFromMechanics,
+  prefillOptionsForDeclaredKinds,
+  type CompletionPrefill,
+  type CompletionPrefillOptions,
+} from './completion-prefill';
 export type { CompletionTreeStampProbe, CompletionTreeStampForEvidenceProbe } from './completion-freshness';
 import { claimsRemediation, evaluateCloseTerminalCriteria } from './terminal-criteria';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
@@ -3941,7 +3947,25 @@ async function completeOneTracked(
       { id: it.id, harness: it.harness ?? existing.harness ?? null, assignee: existing.assignee, takenAt: existing.takenAt },
       pgMechanicsLedger(ctx.workspaceId ?? ctx.principal?.workspaceId ?? null),
     )).catch(() => null);
-    const filled = prefillCompletionFromMechanics(it.completion, mechanics);
+    // EI-27112155694647220: a `no-code-change` close proves itself with an EMPTY filesChanged,
+    // and the claim-window ledger attributes every file the holder edited (for ANY item it
+    // holds) to this one. Filling it would turn the declared kind's own proof into a refusal,
+    // so the fill is skipped (and disclosed) when the effective declaration includes that kind.
+    // Effective kinds resolve as the change-kind gate does: declared at close, else stored.
+    // The stored read runs only when the fill could happen; a read error keeps the old fill.
+    const prefillKindIds = [...new Set([existing.id, it.id].filter((id): id is string => Boolean(id)))];
+    const prefillOptions: CompletionPrefillOptions =
+      mechanics && mechanics.filesWritten.paths.length > 0 && !completionSuppliesField(it.completion, 'filesChanged')
+        ? await prefillOptionsForDeclaredKinds({
+            declaredAtClose: it.changeKinds,
+            readStored: async () => {
+              const kindsWorkspace = (ident as { workspaceId?: string | null }).workspaceId ?? ctx.workspaceId ?? 'default';
+              const views = await track('prefill-change-kinds', () => readChangeKinds(kindsWorkspace, prefillKindIds));
+              return prefillKindIds.map((id) => views.get(id)?.current).find((k) => k && k.length > 0) ?? null;
+            },
+          })
+        : {};
+    const filled = prefillCompletionFromMechanics(it.completion, mechanics, prefillOptions);
     if (filled.prefill) {
       it.completion = filled.completion;
       completionPrefill = filled.prefill;
