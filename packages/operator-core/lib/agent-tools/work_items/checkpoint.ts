@@ -1182,16 +1182,12 @@ const itemSpec = z.object({
     .optional()
     .describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
-      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with `---`) instead of replacing it; ' +
-      'supplied `checks` are UNIONED onto the carried set (EI-19944669306930709; `rowsMode:\'replace\'` replaces check rows only). ' +
-      'No `checkpoint` + `checks` = additive body-preserving patch; otherwise a non-blank `checkpoint` is required ' +
-      '(append + clear is rejected). Bounded to the 32000-char cap (superseded prior tail is trimmed first). ' +
-      `Checks beyond the ${CARRY_NOTE_MAX_CHECKS}-row cap are reported; checks-only overflow refuses without deleting carried rows.`,
+    'EI-9036: append `checkpoint` to the stored note with `---`; supplied checks union unless `rowsMode:"replace"` (rows only). ' +
+      'Omit checkpoint with checks for a body-preserving patch; otherwise a non-blank checkpoint is required (append + clear is rejected). ' +
+      'At 32000 chars, prior-prose loss refuses unless `confirmShrink:true`; carried checks remain, and row overflow reports omissions or refuses checks-only writes.',
   ),
   confirmShrink: looseBoolean().describe(
-    'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
-      'more than half is auto-preserved BENEATH your note (newest-first — your text stays the visible head). ' +
-      'Pass true to confirm a destructive replacement.',
+    'Confirm intentional loss of prior content: replaces may shrink substantial notes; appends may evict prior prose at the cap.',
   ),
   rowsMode: rowsModeSpec(),
   confirmRetire: looseBoolean().describe(
@@ -1275,7 +1271,7 @@ export default defineTool({
       'and every refusal carries `errorCode` + recovery args. ' +
       'A non-clear write to a terminal item is refused with `errorCode:"terminal_item"`; reopen it explicitly with ' +
       '`work_items:set_state { id, state:"open", force:true }`, then claim it before resuming work. ' +
-      'A cap-overflow append that would lose the prior narrative is refused with `append_prior_body_overflow`; shorten the new append to preserve all prior text, or pass `confirmShrink:true` only when that loss is intentional. ' +
+      'An append that evicts prior narrative returns `append_prior_body_overflow`; shorten it or intentionally pass `confirmShrink:true`. ' +
       'A blocked write carries `errorCode` plus structured `recovery` args: ' +
       '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
       'or `append:false, rowsMode:"replace", confirmShrink:true, retireIds:[...]` for an intentional full body+rows replacement. ' +
