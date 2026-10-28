@@ -1,5 +1,55 @@
 {
   "updatedAt": "2026-10-28T19:54:15.581Z",
+  "currentContinuation20261028T2023Z": {
+    "authority": "This section supersedes the historical scanner/qualification/next state below; AUTO/self approved A and P-003 remain unchanged.",
+    "measurement": {
+      "singleCensusSeconds": 1.547,
+      "generatedStopSeconds": 11.139,
+      "censusSeconds": [1.291, 1.303, 1.085, 1.143, 1.230, 1.106],
+      "sumCensusSeconds": 7.158,
+      "observation": "Three roots caused six complete host censuses. The measured stop passed; the earlier clean f7bc run remains a real three-case 25s counterexample. No resource-pressure cause inferred."
+    },
+    "cleanupRepair": {
+      "item": "WI-6554700010029944",
+      "files": [
+        "scripts/verify-tauri-headless.sh",
+        "apps/operator/lib/verify-tauri-headless-frozen-source-survivor.test.ts",
+        "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts"
+      ],
+      "behavior": "Reaper accepts multiple exact roots, runs one before/after host census pair, and preserves current nonce/startticks/root rechecks before each signal. Generated boot-only stop guards operator-source/spa/verifier-spa together before removing any. Foreign survivors preserve snapshots. Early empty-SPA return remains safe before reaper definitions load.",
+      "recurrenceGuard": "The persisted real census is instrumented by the maintained fixture; four generated-stop run/foreign SPA cases assert exactly two scans, each containing three roots, under the unchanged25s deadline.",
+      "survivorProof": {
+        "task": "0mvsjzt0fnvkim61rze",
+        "log": ".papercusp/scratch/bash-f3420f60-c7d.log",
+        "passed": 18,
+        "companionResult": "107 snapshot checks initially had3failures: empty-root early hook called not-yet-defined reaper and an old static guard-layout assertion. Both corrected; no timeout failure in survivor18."
+      },
+      "snapshotProof": {
+        "task": "0mvsk4ice3c4v1n9z3v",
+        "log": ".papercusp/scratch/bash-107418ff-0c1.log",
+        "state": "completed",
+        "exitCode": 0,
+        "passed": 107
+      },
+      "checks": "bash -n and scoped git diff --check passed. Need final exact clean-source125 qualification; no successful close yet."
+    },
+    "boundedRoute": {
+      "item": "EI-27070891256151472 remains open; route proof is not a durable infrastructure fix",
+      "verified": "Direct MCP capability:bash rejected require_task_confinement with historical serving buildd740fc3802; identical ptool payload accepted with final connection route3170. Use explicit --url=http://127.0.0.1:3170 for future tests.",
+      "memoryProof": "processes:list memoryMaxMb is mb(r.memoryMaxBytes). Historical success0mvsdhlyyv68behc202=16384; peer failures0mvsha63y195up4n10s and0mvsj464wj93wkvtxe2=null; fresh CLI0mvsjzt0fnvkim61rze=16384, actual memory.max17179869184.",
+      "peerReply": "d88e2 exact task reply10b4e7ea answered via7f1e25bb; d88e2+d6cc9 bounded route proof delivered via5e258e0f. Keep verifier finite-memory guard enabled."
+    },
+    "publication": {
+      "mechanism": "Background git-sync owns commit/push. Direct request-only host refused mutation; ptool git-sync:run --url=http://127.0.0.1:3271 reached correct worker.",
+      "lastRead": "Worker fire skipped held_exclusive; system git-sync holder86ae3aaf-b35b-4b06-8085-2b42dc9d5504 is progressing (HEAD changed0b6a44a to5d8aa156 while held). Do not steal/release its lock or manuallycommit.",
+      "fileLocks": "Three cleanup source paths had active_locks[]/waiting[] at20:23; own explicit holds released with native edit proof.",
+      "await": 385318,
+      "event": "resource:released:git-sync:papercusp",
+      "deadline": "2026-10-28T20:33:02.307Z",
+      "onTimeout": "One bounded progress diagnosis on the owning publication operation, not another blind fire/poll loop. No other gate lane authorized."
+    },
+    "next": "After exact publication event (or bounded timeout diagnosis), verify all3cleanup paths and final native fixture match committed HEAD. Materialize using npm run lint:as-committed -- --materialize-only --ref=<finalpin>; retain exact returned root. Run maintained125 safety checks there with ptool staging3170/require_task_confinement:true and PAPERCUSP_TEST_RUN_HARNESS=papercusp. Only if clean qualification passes launch ONE final native using template below, replacing pin/cwd/group. Read exact task memory cap first. Fill v9 actual task/pin/group, review/apply, rebind evidence and finalize P003 independently. No new native is running now."
+  },
   "owner": "su-58f6ce8c-a42b-4feb-ac5c-79a11355ec0f",
   "scope": {
     "plan": "quick-access-search-launcher-2026-10-26",
@@ -181,7 +231,7 @@
     "mode": "manual",
     "reason": "Post-edit automatic release failed again; latest explicit file locks released. Current successor/request write hold must be released after this write. Fresh coord:orient required to restore automatic."
   },
-  "next": "FIRST resume reopened WI-6554700010029944 + P-003/WI-6554700010029574. Read current claim/checkpoints, reclaim if carry SessionEnd released them. New current-pin safety run has 118pass/3fail; generated stop.sh owned spa/verifier-spa and persisted-reaper cases hit spawnSync25s with statusnull. Root cause NOT MEASURED. Heavy-admission freeze instrumentation measured zero, so do not blame that freezer or generic resources. Inspect/timestamp census, ownership/signal wait and generated-stop root calls to distinguish repeated-scan cost from another fixture/cleanup mechanism. Keep provenance/start-time safety and foreign-survivor preservation, existing25s deadline and registered suite; no quarantine or blind full-matrix rerun. Fix/qualify durably before one final native, then fill v9 task/pin/group and review/apply. Historical49ef nativepass remains valid only for that older fixture.",
+  "next": "Read currentContinuation20261028T2023Z above; it supersedes the historical failed qualification and unmeasured cleanup state. Repair is implemented and separate survivor18/snapshot107 proofs passed; exact clean125 and final native remain open. Publication await385318 is armed with bounded20:33Z timeout; no polling, manualcommit, LIVE_GATE_OPS or realHOMEshortcut changes.",
   "recovery": {
     "status": "clean stopping point; no active code edit",
     "scope": "AUTO/self plan10 P003 and reopened cleanup WI",
