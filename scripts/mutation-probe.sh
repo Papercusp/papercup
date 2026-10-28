@@ -1318,21 +1318,76 @@ fi
 # deliberately conservative — a false positive costs one flag; a false negative
 # already cost ~370GB.
 # ---------------------------------------------------------------------------
+prepare_destructive_scan() {
+  local path="$1"
+  local extension="${path##*.}"
+  DESTRUCTIVE_SCAN_FILE="$path"
+
+  # For JS/TS source, blank lexical comments before the word scan. Keep every
+  # other byte (including strings that may hold shell commands) visible, and
+  # preserve newlines so refusal sites still point at the original line.
+  # If the repo-local TypeScript scanner is unavailable, retain the old raw
+  # scan: conservative refusal is safer than silently skipping this gate.
+  case "$extension" in
+    js|jsx|mjs|cjs|ts|tsx|mts|cts)
+      local script_dir scanner_module masked
+      script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
+      scanner_module="$script_dir/../node_modules/typescript"
+      if [ ! -f "$scanner_module/package.json" ] || ! command -v node >/dev/null 2>&1; then
+        return 0
+      fi
+
+      masked="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-scan.XXXXXX")" || return 1
+      if ! node - "$path" "$masked" "$scanner_module" <<'NODE'
+const fs = require('node:fs');
+const ts = require(process.argv[4]);
+const sourcePath = process.argv[2];
+const outputPath = process.argv[3];
+const bytes = fs.readFileSync(sourcePath);
+const source = bytes.toString('utf8');
+if (!Buffer.from(source, 'utf8').equals(bytes)) {
+  throw new Error('source is not valid UTF-8');
+}
+const jsx = /\.(?:jsx|tsx)$/i.test(sourcePath);
+const scanner = ts.createScanner(
+  ts.ScriptTarget.Latest,
+  false,
+  jsx ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard,
+  source,
+);
+const chars = source.split('');
+for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+  if (token !== ts.SyntaxKind.SingleLineCommentTrivia && token !== ts.SyntaxKind.MultiLineCommentTrivia) continue;
+  for (let i = scanner.getTokenPos(); i < scanner.getTextPos(); i += 1) {
+    if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+  }
+}
+fs.writeFileSync(outputPath, chars.join(''));
+NODE
+      then
+        rm -f -- "$masked"
+        return 1
+      fi
+      DESTRUCTIVE_SCAN_FILE="$masked"
+      ;;
+  esac
+  return 0
+}
+
 DESTRUCTIVE_ERE='\b(rm|rmdir|unlink|shred|truncate)\b|\bmkfs(\.[[:alnum:]]+)?\b|\bdd\b[^|;&()]*\bof=|\bfind\b[^|;&()]*-delete'
-SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+prepare_destructive_scan "$FILE" || die "could not prepare a safe destructive-subject scan"
+SUBJ_SCAN_FILE="$DESTRUCTIVE_SCAN_FILE"
+SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" -- "$SUBJ_SCAN_FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+SUBJ_SITES="$(grep -nE "$DESTRUCTIVE_ERE" -- "$SUBJ_SCAN_FILE" 2>/dev/null | head -4 | cut -c1-160 || true)"
+[ "$SUBJ_SCAN_FILE" = "$FILE" ] || rm -f -- "$SUBJ_SCAN_FILE"
 HIST_SUBJ_HITS=""
 if [ "$HISTORICAL_MODE" -eq 1 ]; then
-  HIST_SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$HISTORICAL_SNAPSHOT" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+  prepare_destructive_scan "$HISTORICAL_SNAPSHOT" || die "could not prepare a safe historical destructive-subject scan"
+  HIST_SCAN_FILE="$DESTRUCTIVE_SCAN_FILE"
+  HIST_SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" -- "$HIST_SCAN_FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+  [ "$HIST_SCAN_FILE" = "$HISTORICAL_SNAPSHOT" ] || rm -f -- "$HIST_SCAN_FILE"
 fi
 CMD_HITS="$(printf '%s\n%s' "$TEST_CMD" "$CALIBRATION_CMD" | grep -Eo "$DESTRUCTIVE_ERE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
-# EI-22197950741786296: show WHERE it matched, not just WHICH token. The scan is a
-# deliberately blunt word match, so `truncate` in a comment refuses the file just as
-# hard as a real `rm -rf` call — and a bare token list gives the operator no way to
-# tell those apart, which is what makes a false positive feel arbitrary. The gate is
-# NOT narrowed (it exists because of a ~370GB loss, EI-20566003853444873, and the item's
-# own filer agreed narrowing it without a positive control would disarm it); instead the
-# refusal now quotes the site so a comment-only match is recognisable on sight.
-SUBJ_SITES="$(grep -nE "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | head -4 | cut -c1-160 || true)"
 HISTORICAL_DESTRUCTIVE_HITS="$SUBJ_HITS$HIST_SUBJ_HITS$CMD_HITS"
 if [ -n "$HISTORICAL_DESTRUCTIVE_HITS" ] && [ "$HISTORICAL_MODE" -eq 1 ]; then
   log "historical mode: destructive primitives detected (current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}); no mutant is produced, so allowing the unmutated historical source comparison. Use --fake-destructive or --i-know-this-deletes --sandbox-root if the guard itself executes deletion logic."
