@@ -528,8 +528,8 @@ export async function readShadowWindowInput(
     return edgeKey && judgeOwnerId && typeof r.details.relevant === 'boolean'
       ? [{ ts: Number(r.ts), edgeKey, judgeOwnerId, relevant: r.details.relevant }] : [];
   });
-  // No cross-agent breakage ledger exists yet (gate/lint red per held file joined to
-  // the import graph, D-014): recall stays reader-unavailable, so enabling is refused.
+  // Breakages come from a separate reader (cross-agent-breakages.ts, D-037), joined in
+  // codeIntelCouplingShadowRescore; this read alone leaves recall reader-unavailable.
   return { now, epochs, windowRows, unstampedRows, offPlaneRows, judgments, breakages: null };
 }
 
@@ -570,8 +570,8 @@ export function codeIntelCouplingShadowRescore() {
     scope: 'workspace' as const,
     resolve: async (window: { workspaceId: string; windowStart: string; windowEnd: string }) => {
       if (!window.workspaceId.trim()) return { verdict: 'unknown' as const, detail: 'Exact workspace required.' };
-      const [{ getOrgPg }, identity] = await Promise.all([
-        import('@papercusp/db-org'), import('../acceptance-author-identity'),
+      const [{ getOrgPg }, identity, { readCrossAgentBreakages }] = await Promise.all([
+        import('@papercusp/db-org'), import('../acceptance-author-identity'), import('./cross-agent-breakages'),
       ]);
       const sql = getOrgPg().sql as unknown as Sql;
       const now = Date.now();
@@ -580,6 +580,9 @@ export function codeIntelCouplingShadowRescore() {
       const latest = read.epochs[read.epochs.length - 1];
       // A failed read is unmeasured (null interfaceLeg), which keeps any close at unknown.
       const ifaceRows = latest ? await readInterfaceEligibility(sql, window.workspaceId, latest.firstTs, now).catch(() => null) : null;
+      // Recall input (D-037). The reader never throws; any error or truncating cap is
+      // breakages: null, which keeps recall reader-unavailable and refuses enable.
+      const breakageRead = latest ? await readCrossAgentBreakages(sql, window.workspaceId, latest.firstTs, now) : null;
       const endpoints = new Set<string>(implementers);
       for (const r of read.windowRows) for (const id of [r.a, r.b, r.editorOwnerId]) if (id) endpoints.add(id);
       for (const j of read.judgments) endpoints.add(j.judgeOwnerId);
@@ -588,7 +591,9 @@ export function codeIntelCouplingShadowRescore() {
       const implementerOwners = new Set(implementers);
       const implementerLineages = new Set(implementers.map(id => lineageOf.get(id) ?? id));
       const interfaceLeg = ifaceRows ? summarizeInterfaceEligibility(ifaceRows, lineageOf, implementerOwners, implementerLineages) : null;
-      const score = scoreShadowWindow({ ...read, interfaceLeg, lineageOf, implementerOwners, implementerLineages });
+      const score = scoreShadowWindow({ ...read, breakages: breakageRead?.breakages ?? null,
+        interfaceLeg, lineageOf, implementerOwners, implementerLineages });
+      if (breakageRead) score.reasons.push(`breakage reader: ${breakageRead.reason}`);
       return recordAndReport(score, () => recordWindow(sql, window.workspaceId, now, score));
     },
   };
