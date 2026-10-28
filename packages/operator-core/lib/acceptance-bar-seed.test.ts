@@ -73,10 +73,14 @@ describe('activation named-case preflight (EI-26971745324820138)', () => {
 
   it('activation registers an explicitly planned case extension without relaxing unmarked maintained citations', () => {
     const future = { file, testName: 'future activation contract', plannedReason: 'The plan adds this case to this maintained suite.' };
-    expect(acceptanceBarTestCitationProblems([{ key: 'R-5', check: { kind: 'tests', files: [file], cases: [future] } }])).toEqual([]);
+    const criteria = [{ key: 'R-5', check: { kind: 'tests' as const, files: [file], cases: [future] } }];
+    expect(acceptanceBarTestCitationProblems(criteria, undefined, { allowPlannedPaths: true })).toEqual([]);
+    expect(acceptanceBarTestCitationProblems(criteria)).toEqual([
+      expect.objectContaining({ code: 'bar_contract_check_invalid' }),
+    ]);
     expect(acceptanceBarTestCitationProblems([{ key: 'R-5', check: { kind: 'tests', files: [file], cases: [
       future, { file, testName: 'R5-CONTRACT' },
-    ] } }])).toEqual([
+    ] } }], undefined, { allowPlannedPaths: true })).toEqual([
       expect.objectContaining({ code: 'bar_contract_check_invalid', barKey: 'R-5', detail: expect.stringContaining("test case 'R5-CONTRACT'") }),
     ]);
   });

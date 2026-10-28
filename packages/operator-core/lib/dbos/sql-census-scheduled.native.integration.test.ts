@@ -44,15 +44,16 @@ const journey = String.raw`
   await mkdir(corpus);
   await saveHarnessRegistry({ projects: [{ slug: workspaceId, path: corpus, harness_kind: 'hive' }] }, workspaceId);
 
-  // Keep unrelated registered timers outside this worker's lifetime. Invoke
-  // the real dispatch tick explicitly; never replace the SQL census action.
+  const progress = stage => console.log('P013_SCHEDULED_PROGRESS ' + JSON.stringify({ stage, at: Date.now() }));
+  // Run the real registered dispatch timer in this disposable database. Keep
+  // its unrelated sweep timer outside this worker's lifetime; no private export.
   const deferred = new Date(Date.now() + 2 * 86400_000);
   const cron = [0, deferred.getMinutes(), deferred.getHours(), deferred.getDate(), deferred.getMonth() + 1, '*'].join(' ');
-  process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB = cron;
+  process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB = '* * * * * *';
   process.env.PAPERCUSP_DBOS_ROUTINES_SWEEP_CRONTAB = cron;
   DBOS.setConfig({ name: 'private-scheduled-census', systemDatabaseUrl: process.env.HARNESS_ADMIN_DATABASE_URL,
     systemDatabaseSchemaName: 'dbos', applicationVersion: 'private-scheduled-census-v1', runAdminServer: false });
-  const { routinesTickWorkflow } = await import('./packages/operator-core/lib/dbos/routines-workflow.ts');
+  await import('./packages/operator-core/lib/dbos/routines-workflow.ts');
   const routine = await upsertRoutine(sql, { workspaceId, installSlug: workspaceId,
     name: 'private-sql-read-census', triggerKind: 'cron', targetRole: 'system:sql-read-census',
     triggerConfig: { cron: '0 2 * * *', window_days: 7 }, concurrency: 'skip',
@@ -63,13 +64,13 @@ const journey = String.raw`
   const runId = monitoredCensusRunId(workspaceId, workflowId);
   const group = monitoredTestRunGroup(runId, monitoredRuntimeId);
   const selectedAt = Date.now();
-  assert.deepEqual(await sql.unsafe('SELECT run_id FROM harness_shared.sql_intent_runs WHERE workspace_id=$1',
-    [workspaceId]), [], 'selection must precede the native action');
+  assert.equal((await sql.unsafe('SELECT run_id FROM harness_shared.sql_intent_runs WHERE workspace_id=$1',
+    [workspaceId])).length, 0, 'selection must precede the native action');
 
   try {
+    progress('launch-start');
     await DBOS.launch();
-    const tick = await DBOS.startWorkflow(routinesTickWorkflow, { workflowID: 'private-census-dispatch' })();
-    await tick.getResult();
+    progress('launch-complete-await-scheduled-child');
     const deadline = Date.now() + 120_000;
     let status;
     while (Date.now() < deadline) {
@@ -78,6 +79,7 @@ const journey = String.raw`
       await delay(100);
     }
     assert.equal(status?.status, 'SUCCESS', 'the selected scheduler child must settle');
+    progress('scheduled-child-settled');
     const steps = await DBOS.listWorkflowSteps(workflowId, { limit: 129 });
     const start = steps.find(step => step.name === 'routine-fire-start')?.output;
     const finish = steps.find(step => step.name === 'routine-fire-finish')?.output;
@@ -101,15 +103,17 @@ const journey = String.raw`
     assert.ok(run.finished_at);
     assert.equal(monitoredTestRunGroup(run.run_id, run.runtime_id), group);
     const families = await sql.unsafe('SELECT family, coverage FROM harness_shared.sql_intent_family_runs WHERE workspace_id=$1 AND run_id=$2::uuid ORDER BY family', [workspaceId, runId]);
-    assert.deepEqual(families.map(row => row.family).sort(), [...MONITORED_FAMILIES].sort());
-    const second = await DBOS.startWorkflow(routinesTickWorkflow, { workflowID: 'private-census-second-tick' })();
-    await second.getResult();
+    assert.deepEqual([...families].map(row => row.family).sort(), [...MONITORED_FAMILIES].sort());
+    assert.equal((await listDueCronRoutines(sql)).some(row => row.id === due.id), false,
+      'the real scheduler must advance the claimed due slot');
+    await delay(1200); // Observe the next real private timer tick.
     assert.equal((await sql.unsafe('SELECT run_id FROM harness_shared.sql_intent_runs WHERE workspace_id=$1', [workspaceId])).length, 1,
       'the advanced due slot must not mine a second census');
     console.log('P013_SCHEDULED_NATIVE ' + JSON.stringify({ workspaceId, database, workflowId, runId,
       runtime: monitoredRuntimeId, group, selectedAt, families, steps: steps.map(step => step.name),
       productionAcceptance: false }));
   } finally {
+    progress('shutdown-start');
     try { await DBOS.shutdown(); }
     finally {
       try { await _stopInvalidationListenerForTests(); }

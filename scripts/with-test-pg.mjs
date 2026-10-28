@@ -255,7 +255,8 @@ const { SHARED_TEST_PG_DURABILITY_OFF } = await import('../libs/test-config/src/
 const { browserCachePath } = await import('./lib/playwright-cache-path.mjs');
 const { defaultEvidenceRoot } = await import('../libs/generic/verification-harness/src/evidence-root.ts');
 const { processGroupLifetime } = await import('../packages/operator-core/lib/fleet/process-group-lifetime.ts');
-const { cleanupOwnedTestState, unhookRegisteredExitSignals } = await import('./lib/with-test-pg-cleanup.mjs');
+const { cleanupOwnedTestState, createPrivateTestPgReleaseHandler, createSingleFlightStop,
+  PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, unhookRegisteredExitSignals } = await import('./lib/with-test-pg-cleanup.mjs');
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
 function freePort() {
@@ -485,7 +486,7 @@ if (isolatedRuntime) sqlDir = snapshotMigrationSource(sqlDir, join(runtimeRoot, 
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
 
-pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir,
+const pgHandle = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir,
   // Every fixture client uses its explicit TCP URL. Avoid an unused socket
   // lock on /tmp, which may be full even when the private data volume is ready.
   // This cluster is always discarded after the child exits. Reuse the
@@ -514,6 +515,9 @@ pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir,
     }
     if (cleanupStartedAt !== null) queueCleanupStage('pg-log', { message });
 } });
+// Preserve the PG owner's stop across an acknowledged post-child release and
+// the wrapper's final teardown. A failed early stop is retried by final cleanup.
+pg = { ...pgHandle, stop: createSingleFlightStop(() => pgHandle.stop()) };
 assertNotTerminating();
 console.log(`[with-test-pg] ready — ${pg.urls.admin.replace(/:[^:@]*@/, ':***@')}`);
 
@@ -893,6 +897,14 @@ if (operatorApi) {
 }
 assertNotTerminating();
 const observedRuntime = isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send;
+// Only a direct Node child can return the release acknowledgement to this owner.
+// Isolated runtimes retain their full proof-observed cleanup ordering.
+const invokesTestFilesRouter = cmd.slice(1).some(argument => {
+  const normalized = argument.replaceAll('\\', '/');
+  return normalized === 'scripts/test-files.mjs' || normalized.endsWith('/scripts/test-files.mjs');
+});
+const privatePgReleaseToken = !isolatedRuntime && !process.connected && cmd[0] === process.execPath &&
+  invokesTestFilesRouter ? randomUUID() : null;
 const startToken = observedRuntime ? randomUUID() : null;
 if (observedRuntime && resolve(cmd[0]) !== process.execPath) {
   throw new Error('original lifetime proof requires the maintained Node worker route');
@@ -912,7 +924,7 @@ if (managedTasks) managedTaskCleanupEnv = { ...childEnv, ...runtimeEnv,
   PAPERCUSP_PG_PORT: String(port), PAPERCUSP_SKIP_PG_DISCOVERY: '1' };
 child = spawn(cmd[0], childArgs, {
   cwd: ROOT,
-  stdio: observedRuntime ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',
+  stdio: observedRuntime || privatePgReleaseToken ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',
   env: {
     ...childEnv,
     // PAPERCUSP_PG_PORT is the repo's OWN isolation lever for "this process owns a
@@ -933,6 +945,7 @@ child = spawn(cmd[0], childArgs, {
     ...runtimeEnv,
     PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString(),
     ...(observedRuntime ? { PC_ISOLATED_RUNTIME_START_TOKEN: startToken } : {}),
+    ...(privatePgReleaseToken ? { [PRIVATE_TEST_PG_RELEASE_TOKEN_ENV]: privatePgReleaseToken } : {}),
   },
   detached: isolatedRuntime,
 });
@@ -940,8 +953,24 @@ if (isolatedRuntime && child.pid) {
   childLifetime = processGroupLifetime(child, message => console.error('[with-test-pg] ' + message));
 }
 
+if (privatePgReleaseToken) {
+  const handlePrivatePgRelease = createPrivateTestPgReleaseHandler({
+    token: privatePgReleaseToken,
+    stop: () => pg?.stop(),
+    respond: message => new Promise((resolve, reject) => {
+      if (!child.connected) return reject(new Error('private test-PG child IPC channel disconnected'));
+      child.send(message, error => error ? reject(error) : resolve());
+    }),
+  });
+  child.on('message', message => {
+    void handlePrivatePgRelease(message).catch(error => {
+      console.error('[with-test-pg] private test-PG release response failed: ' + (error?.message ?? error));
+    });
+  });
+}
+
 // The test parent measures these PIDs during their actual lifetime. Ordinary
-// runs have no IPC observer and pay no receipt cost.
+// runs with no safe release route pay no IPC observer or receipt cost.
 if (observedRuntime) {
   let announced = false;
   const acknowledge = message => {
