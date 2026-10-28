@@ -894,6 +894,7 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     });
 
     const res = await run({ slug: 'live-plan-2026-06-02' });
+    console.log('PROBE_BAR', JSON.stringify({ ok: res.data.results[0]?.ok, error: res.data.results[0]?.error, adm: res.data.results[0]?.admission, msg: String(res.data.results[0]?.message ?? '').slice(0, 300) }));
 
     expect(res.data.results[0]).toMatchObject({
       ok: true,

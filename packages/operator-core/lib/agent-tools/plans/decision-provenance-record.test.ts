@@ -67,9 +67,11 @@ describe('resolveDecisionProvenance', () => {
     const r = await resolveDecisionProvenance(undefined, 'a body', ME, deps(null));
     expect(r).toEqual({ ok: true, provenance: { kind: 'agent', agentId: 'su-test-recorder' } });
   });
-  it('rule 1 negative: an unattributable caller records no row instead of inventing an agent', async () => {
-    const r = await resolveDecisionProvenance({ kind: 'agent' }, 'a body', {}, deps(null));
-    expect(r).toMatchObject({ ok: true, provenance: null });
+  it('rule 1 negative (SPEC-P-018): an unattributable caller is refused, never landed without provenance', async () => {
+    for (const arg of [undefined, { kind: 'agent' as const }]) {
+      const r = await resolveDecisionProvenance(arg, 'a body', {}, deps(null));
+      expect(r).toMatchObject({ ok: false, error: 'provenance_unattributable', field: 'provenance' });
+    }
   });
 
   it('rule 2: owner kind with a turn that verifies as the owner is recorded with its verdict', async () => {

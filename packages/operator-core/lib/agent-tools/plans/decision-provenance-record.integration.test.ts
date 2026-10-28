@@ -27,8 +27,10 @@ const {
   upsertDecisionProvenance,
   recordDecisionProvenance,
   loadDecisionProvenance,
+  resolveDecisionProvenance,
   withDecisionProvenance,
 } = await import('./decision-provenance-record');
+type ProvenanceArg = Parameters<typeof resolveDecisionProvenance>[0];
 
 const WS = 'ws-1603-a';
 const WS2 = 'ws-1603-b';
@@ -130,6 +132,40 @@ describe('plan_decision_provenance (migration 1603)', () => {
       ['D-041', 'unrecorded'],
     ]);
     expect(joined[0]).toMatchObject({ title: 'owner-ruled', provenance: { ownerTurnVerdict: 'owner-turn' } });
+  });
+
+  // The write path as plans:add-decision composes it: resolve with the REAL identity resolver
+  // and turn verifier, record only on ok. A refusal must leave no row behind.
+  async function writeDecision(decisionId: string, arg: ProvenanceArg, ctx: Record<string, unknown>) {
+    const resolution = await resolveDecisionProvenance(arg, 'A ruling.', ctx);
+    if (resolution.ok) await recordDecisionProvenance({ ...SCOPE, decisionId }, resolution.provenance);
+    const rows = await db.adminSql<Array<{ kind: string; agent_id: string }>>`
+      SELECT kind, agent_id FROM harness_shared.plan_decision_provenance
+       WHERE workspace_id = ${WS} AND plan_slug = ${SCOPE.planSlug} AND decision_id = ${decisionId}`;
+    return { resolution, rows };
+  }
+  const ATTRIBUTED = { workspaceId: WS, isSuperuser: true, uiClientId: 'su-int-recorder' };
+
+  it('SPEC-P-018: a decision with provenance lands its row; one with no resolvable provenance is refused with no row', async () => {
+    const withProvenance = await writeDecision('D-050', undefined, ATTRIBUTED);
+    expect(withProvenance.resolution).toEqual({ ok: true, provenance: { kind: 'agent', agentId: 'su-int-recorder' } });
+    expect(withProvenance.rows).toEqual([{ kind: 'agent', agent_id: 'su-int-recorder' }]);
+
+    for (const [id, arg] of [['D-051', undefined], ['D-052', { kind: 'agent' }]] as const) {
+      const without = await writeDecision(id, arg, { workspaceId: WS });
+      expect(without.resolution).toMatchObject({ ok: false, error: 'provenance_unattributable', field: 'provenance' });
+      expect(without.rows).toEqual([]);
+    }
+  });
+
+  it('AUTO-BAR-R-9: an owner turn ref that does not resolve is refused with no row', async () => {
+    const unresolved = await writeDecision(
+      'D-060',
+      { kind: 'owner', turnRef: '[turn:deadbeef@2026-10-28T11:00:00.000Z]' },
+      ATTRIBUTED,
+    );
+    expect(unresolved.resolution).toMatchObject({ ok: false, error: 'provenance_owner_turn_unverified', field: 'provenance.turnRef' });
+    expect(unresolved.rows).toEqual([]);
   });
 
   it('a failed read marks every decision unavailable, never unrecorded', async () => {

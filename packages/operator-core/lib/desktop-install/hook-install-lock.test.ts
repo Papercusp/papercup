@@ -67,15 +67,15 @@ beforeEach(() => {
     heldBefore: heldPaths.length,
   }));
   lockMocks.inWorkspaceTxn.mockImplementation(
-    (async (_domain: string, _owner: string, callback: (tx: unknown) => Promise<unknown>) =>
-      callback({})) as never,
+    async (_domain: string, _owner: string, callback: (tx: unknown) => Promise<unknown>) =>
+      callback({}),
   );
   lockMocks.routeFileLockOp.mockImplementation(
-    (async (_domain: string, operation: { local: () => Promise<unknown> }) => ({
+    async (_domain: string, operation: { local: () => Promise<unknown> }) => ({
       value: await operation.local(),
       via: 'local-authority',
       scope: 'papercusp',
-    })) as never,
+    }),
   );
 });
 

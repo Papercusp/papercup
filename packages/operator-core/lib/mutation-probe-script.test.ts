@@ -417,6 +417,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   it('records effective automatic export when the caller leaves it unset', () => {
     const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"],
       { ...process.env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: undefined,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0',
         // This control measures automatic export with an unavailable reader;
         // an explicit URL otherwise requires a bindable descriptor by default.
         PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
@@ -446,6 +447,7 @@ process.stderr.write('bounded reader diagnostic fixture');
 process.exit(${exit});
 `, { mode: 0o755 });
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' };
     if (readerRequired === null) delete env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED;
@@ -455,7 +457,7 @@ process.exit(${exit});
     ], env, dir);
     expect(code, out).toBe(2);
     const diagnostic = JSON.parse(out.match(/^MUTATION_PROBE_READER_HTTP_JSON=(.+)$/m)![1]!);
-    expect(diagnostic).toEqual({ curlExit: exit, httpStatus: status, elapsedSeconds: '0.125', reason,
+    expect(diagnostic).toEqual({ curlExit: exit, httpStatus: status, elapsedSeconds: '0.125', attempts: 1, reason,
       sha: reason === null ? 'abcdef0123' : null });
     expect(out).toContain(reason === null ? 'has no resolvable libs/test-config gitlink' : 'build sha is unreadable');
     expect(out).not.toContain('running baseline guard');
@@ -475,6 +477,7 @@ process.exit(28);
       '--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}",
     ], { ...process.env, PATH: `${bin}:${process.env.PATH}`,
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0', PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' }, dir);
     expect(code, out).toBe(0);
     expect(out).toContain('mutation descriptor withheld');
