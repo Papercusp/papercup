@@ -2137,9 +2137,11 @@ describe('fleet:leader-brief full-tier member details', () => {
   });
 
   it('continues to byte-bound default and shaped requests', () => {
-    const bounded = boundLeaderBriefMembers(members);
-    expect(bounded.kept).toEqual([members[0]]);
-    expect(bounded.truncated).toBe(true);
+    for (const tier of [undefined, 'trimmed', 'standard'] as const) {
+      const bounded = boundLeaderBriefMembers(members, tier);
+      expect(bounded.kept).toEqual([members[0]]);
+      expect(bounded.truncated).toBe(true);
+    }
   });
 });
 
