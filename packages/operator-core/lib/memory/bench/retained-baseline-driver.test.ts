@@ -3,6 +3,46 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 describe('retained search baseline edition custody',()=>{
+  it('binds actual adapter captures to exact requests and refuses drift, missing attempts and fabricated success',()=>{
+    const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
+    const result=execFileSync('python3',['-B','-c',[
+      'import importlib.util,json,tempfile,pathlib,sys',
+      'spec=importlib.util.spec_from_file_location("baseline",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)',
+      'with tempfile.TemporaryDirectory() as root:',
+      ' p=pathlib.Path(root);program=p/"capture.mjs";program.write_text("// pinned fixture")',
+      ' requests=p/"requests.json";population=[{"id":"a","adapter":"search:fulltext","args":{"query":"test","scope":["work_item"],"limit":2}}];requests.write_text(json.dumps(population))',
+      ' plan={"adapterCapture":{"program":m.fingerprint(program),"requests":m.fingerprint(requests)}}',
+      ' cases=[]',
+      ' for mode in ["pass","request-drift","missing","failed","nan","input-drift","outside-source"]:',
+      '  destination=p/mode;destination.mkdir();calls=[]',
+      '  def command(label,args,env):',
+      '   calls.append(label);assert env=={"PRIVATE_DB":"fixture"}',
+      '   assert args[:4]==["node","--import","tsx",str(program)]',
+      '   assert args[4:6]==["--requests",str(requests)]',
+      '   row={"schemaVersion":1,"attemptId":"a","adapter":"search:fulltext","request":population[0]["args"],"exitCode":0,"stdout":json.dumps({"results":[]}),"deliveryWallMs":2}',
+      '   if mode=="request-drift":row["request"]={"query":"changed"}',
+      '   if mode=="failed":row["exitCode"]=1',
+      '   if mode=="nan":row["deliveryWallMs"]=float("nan")',
+      '   if mode=="input-drift":program.write_text("// changed while running")',
+      '   pathlib.Path(args[-1]).write_text(json.dumps([] if mode=="missing" else [row]))',
+      '  try:',
+      '   r=m.capture_adapters(plan,p/"different" if mode=="outside-source" else p,destination,command,{"PRIVATE_DB":"fixture"})',
+      '   assert r["attempted"]==1 and not r["baselineAccepted"] and not r["adapterBehaviorAuthenticated"]',
+      '   assert r["output"]==m.fingerprint(destination/"adapter-captures.json");cases.append([mode,"pass",calls])',
+      '  except ValueError:cases.append([mode,"rejected",calls])',
+      '  program.write_text("// pinned fixture")',
+      ' requests.write_text("[]")',
+      ' try:m.capture_adapters(plan,p,p,command,{})',
+      ' except ValueError:cases.append(["preflight-pin-drift","rejected",[]])',
+      ' print(json.dumps(cases))',
+    ].join('\n'),driver],{encoding:'utf8'});
+    expect(JSON.parse(result)).toEqual([
+      ['pass','pass',['actual-adapters']],
+      ...['request-drift','missing','failed','nan','input-drift'].map(mode=>[mode,'rejected',['actual-adapters']]),
+      ['outside-source','rejected',[]],['preflight-pin-drift','rejected',[]],
+    ]);
+  });
+
   it('requires every pin, safe table counts, fresh output and immutable execution source',()=>{
     const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
     const result=execFileSync('python3',['-B','-c',[
@@ -102,6 +142,11 @@ describe('retained search baseline edition custody',()=>{
       '   return types.SimpleNamespace(returncode=0,stdout=value,stderr="")',
       '  if "--output" in args:',
       '   pathlib.Path(args[args.index("--output")+1]+".report.json").write_text(json.dumps({"qualifiedComponentsOnly":True,"searchAdapterExercised":True}))',
+      '  elif "--requests" in args:',
+      '   assert kwargs["env"]["HARNESS_DATABASE_URL"]==kwargs["env"]["PAPERCUSP_TEST_PG_ADMIN_URL"]',
+      '   assert "/search_baseline_" in kwargs["env"]["HARNESS_DATABASE_URL"]',
+      '   request=json.loads(pathlib.Path(args[args.index("--requests")+1]).read_text())[0]',
+      '   pathlib.Path(args[-1]).write_text(json.dumps([{"schemaVersion":1,"attemptId":request["id"],"adapter":request["adapter"],"request":request["args"],"exitCode":0,"stdout":"{}","deliveryWallMs":1}]))',
       '  elif "--out" in args:',
       '   pathlib.Path(args[args.index("--out")+1]).write_text(json.dumps({"sourceQualification":{"verdict":"pass"},"verdict":"pass","latencyVerdict":"pass"}))',
       '  return types.SimpleNamespace(returncode=0)',
@@ -113,6 +158,17 @@ describe('retained search baseline edition custody',()=>{
       ' pins=receipt["artifacts"];assert any(pathlib.Path(x["path"]).name=="phases.jsonl" for x in pins)',
       ' for recorded in pins:',
       '  assert m.fingerprint(recorded["path"])==recorded, "completed artifact pin differs: "+recorded["path"]',
+      ' program=p/"adapter.mjs";program.write_text("// fixture dispatch boundary")',
+      ' plan["adapterCapture"]={"program":m.fingerprint(program),"requests":pin("requests.json",[{"id":"a","adapter":"search:fulltext","args":{"query":"fixture"}}])}',
+      ' plan["outputDirectory"]=str(p/"adapter-output");file.write_text(json.dumps(plan))',
+      ' with contextlib.redirect_stdout(io.StringIO()):adapter_code=m.run(str(file))',
+      ' adapter=json.loads((p/"adapter-output/receipt.json").read_text())',
+      ' assert adapter_code==0 and "failure" not in adapter',
+      ' assert adapter["phases"][-1]["phase"]=="captured-contributing-adapters"',
+      ' assert [c["phase"] for c in adapter["commands"]]==["schema-preflight","restore-data-0","actual-adapters"]',
+      ' assert adapter["adapterCapture"]["attempted"]==1 and not adapter["baselineAccepted"]',
+      ' assert "measurement" not in adapter',
+      ' for recorded in adapter["artifacts"]:assert m.fingerprint(recorded["path"])==recorded',
       ' print(json.dumps({"exitCode":code,"terminalPhase":receipt["phases"][-1]["phase"],"everyArtifactMatches":True}))',
     ].join('\n'),driver],{encoding:'utf8'});
     expect(JSON.parse(result)).toEqual({exitCode:0,terminalPhase:'measured-contributing-baseline',everyArtifactMatches:true});

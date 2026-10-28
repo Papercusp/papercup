@@ -114,7 +114,7 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
   } catch { return unknown('The emitted browser artifact is missing or malformed.'); }
 }
 
-if (isCliEntry(import.meta.url)) {
+async function main() {
   const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), '..'));
   const plane = process.argv[3] ?? 'final-release';
   const inputsPath = process.env.PAPERCUSP_ENGINEERING_JOURNEY_INPUTS
@@ -141,4 +141,13 @@ if (isCliEntry(import.meta.url)) {
     },
   });
   if (thrown) throw thrown;
+}
+
+// This entry also belongs to the host bundle graph. Keep the harness awaits
+// inside a function so esbuild never gives its importers an async module init.
+if (isCliEntry(import.meta.url)) {
+  main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

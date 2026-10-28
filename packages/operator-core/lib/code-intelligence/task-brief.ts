@@ -556,6 +556,7 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
     // engineering or compacting afterwards could replace base evidence and
     // remove hints after their issuance was recorded.
     const mandatory = compactTaskBrief(base, ref.maxChars ?? TASK_BRIEF_MAX_CHARS);
+    // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getClaimTimeTaskBrief:fa78d302a2e17cd5d2de:1","classification":"durable","reason":"Re-keyed from getClaimTimeTaskBrief:19e65e51 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return { taskBrief: await enrichTaskBriefWithReuse(mandatory, ref, deps, deadline) };
   } finally { clearTimeout(timer); }
 }
@@ -592,6 +593,7 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
   };
   const history = harness ? boundChangeHistoryProviders({ harness,
     root: () => deps.root(context.workspaceId, harness), priorWork: deps.reuse?.priorWork }) : [];
+  // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/enrichTaskBriefWithReuse:3eca8252554396366205:1","classification":"durable","reason":"Re-keyed from enrichTaskBriefWithReuse:7467be5e and /plannedAt:586f92c5 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const result = await composeReuseBrief({ base, context, deadline: deadline - 150,
     maxChars: ref.maxChars ?? TASK_BRIEF_MAX_CHARS,
     providers: deps.reuse?.providers ?? (() => {
@@ -639,6 +641,7 @@ export async function getIntentTimeTaskBrief(ref: { owner: string; workspaceId: 
     const claimed = new Set(await deps.claimedPaths(ref.workspaceId, ref.owner));
     const paths = ref.paths.filter(path => !claimed.has(normalizeScopePath(path)));
     if (!paths.length) return null;
+    // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getIntentTimeTaskBrief:3a5020e17447d3339ad1:1","classification":"durable","reason":"Re-keyed from getIntentTimeTaskBrief:8f185819 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return await getClaimTimeTaskBrief({ ...ref, paths }, deps);
   } catch { return null; }
 }

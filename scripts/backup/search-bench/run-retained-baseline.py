@@ -81,6 +81,66 @@ def validate_plan(plan):
         pin = fixture.get(key, {})
         if pin.get('path') != artifact + suffix or len(pin.get('sha256', '')) != 64:
             raise ValueError('missing or mismatched journal fixture pin: ' + key)
+    if 'adapterCapture' in plan:
+        for key in ['program', 'requests']:
+            pin = plan['adapterCapture'].get(key, {})
+            if not Path(pin.get('path', '')).is_absolute() or len(pin.get('sha256', '')) != 64:
+                raise ValueError('missing actual adapter capture pin: ' + key)
+
+
+def adapter_inputs(plan, repo):
+    """Validate capture inputs before expensive restoration and again at dispatch."""
+    capture = plan['adapterCapture']
+    program = Path(capture['program']['path']).resolve(strict=True)
+    if not program.is_relative_to(repo.resolve()) or program.suffix not in ('.ts', '.mjs', '.js'):
+        raise ValueError('adapter program must be inside immutable source tree')
+    pins = []
+    for key in ['program', 'requests']:
+        actual = fingerprint(capture[key]['path'])
+        if actual['sha256'] != capture[key]['sha256']:
+            raise ValueError('adapter capture pin differs: ' + key)
+        pins.append(actual)
+    requests = json.loads(Path(capture['requests']['path']).read_bytes())
+    if not isinstance(requests, list) or not requests:
+        raise ValueError('missing actual adapter request population')
+    ids = set()
+    for row in requests:
+        if not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id'] \
+                or row['id'] in ids or not isinstance(row.get('adapter'), str) \
+                or not row['adapter'] or not isinstance(row.get('args'), dict):
+            raise ValueError('invalid or duplicate adapter request')
+        ids.add(row['id'])
+    return program, pins, requests
+
+
+def capture_adapters(plan, repo, destination, command, env):
+    """Invocation custody only; the pinned program owns actual adapter dispatch.
+
+    These checks cannot authenticate its behavior or establish study acceptance.
+    """
+    program, pins, requests = adapter_inputs(plan, repo)
+    capture = plan['adapterCapture']
+    output = destination / 'adapter-captures.json'
+    command('actual-adapters', ['node', '--import', 'tsx', str(program), '--requests',
+            capture['requests']['path'], '--out', str(output)], env)
+    rows = json.loads(output.read_bytes())
+    if not isinstance(rows, list) or len(rows) != len(requests):
+        raise ValueError('adapter capture population differs')
+    for expected, row in zip(requests, rows):
+        if not isinstance(row, dict) or row.get('schemaVersion') != 1 \
+                or row.get('attemptId') != expected['id'] or row.get('adapter') != expected['adapter'] \
+                or row.get('request') != expected['args'] \
+                or type(row.get('exitCode')) is not int or row['exitCode'] != 0 \
+                or not isinstance(row.get('stdout'), str) or not row['stdout'].strip() \
+                or type(row.get('deliveryWallMs')) not in (int, float) \
+                or not 0 <= row['deliveryWallMs'] < float('inf'):
+            raise ValueError('adapter capture request or terminal evidence differs')
+        json.loads(row['stdout'])
+    for pin in pins:
+        if fingerprint(pin['path']) != pin:
+            raise ValueError('adapter input moved during capture')
+    return {'inputs': pins, 'output': fingerprint(output), 'attempted': len(requests),
+            'adapterBehaviorAuthenticated': False, 'baselineAccepted': False}
 
 
 def runtime_preflight(plan, destination, assets_path, command, env):
@@ -178,6 +238,8 @@ def run(plan_path, preflight_only=False):
         schema = pinned(plan['schema'])
         queries = pinned(plan['queries'])
         pinned(plan['configuration'])
+        if 'adapterCapture' in plan:
+            adapter_inputs(plan, repo)
         if queries['configuration']['queryEmbeddingProfile'] != {'mode': 'gemma', 'profileId': 'gemma-embeddinggemma-300m-768@v1'}:
             raise ValueError('exact Gemma query profile required')
         if set(plan['expectedCounts']) != {t for a in schema['archives'] for t in a['tables']}:
@@ -248,6 +310,14 @@ def run(plan_path, preflight_only=False):
             raise ValueError('restored index readiness differs')
         receipt['indexes'] = actual
         sql('ANALYZE;', database)
+        if 'adapterCapture' in plan:
+            receipt['adapterCapture'] = capture_adapters(plan, repo, destination, command, env)
+            for pin in receipt['retainedInputs'] + assets:
+                if fingerprint(pin['path']) != pin:
+                    raise ValueError('input moved during run: ' + pin['path'])
+            phase('captured-contributing-adapters')
+            receipt['artifacts'] = [fingerprint(p) for p in sorted(destination.iterdir()) if p.is_file()]
+            return 0
         common = ['--inputs-from', plan['queries']['path'], '--pairs', str(queries['pairsPerSource']),
                   '--sources', ','.join(queries['sources']), '--seed', queries['seed']]
         command('runtime', ['node', '--import', 'tsx', 'packages/operator-core/lib/memory/bench/runtime-qualification-cli.ts',

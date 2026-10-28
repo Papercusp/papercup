@@ -221,6 +221,7 @@ if (process.send) {
       void watchRefs().catch(() => undefined);
       requestRefresh();
     } else if (request?.kind === 'warm-cochange-query') {
+      // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts#<module>/<callback>:4e477bb2fb6dcc24dc73:1","classification":"safe-to-lose","reason":"IPC reply from the resident co-change worker to its host. A lost reply hits the host's pending-query timeout, so the brief section reads unknown; no person is notified."}
       process.send?.(answer(request));
     }
   });
