@@ -74,7 +74,7 @@ const RUN_SUBJECT_AFTER_IN_FLIGHT_RE =
  * A concrete execution log or tool run identifier. Arbitrary /tmp files
  * (source diffs, read captures, and similar artifacts) are not run references.
  */
-const RUN_REF_RE = /(?:\S+?\.(?:log|out|err|stdout|stderr)\b|\b(?:bash_id|run_in_background|bash_output)\b)/gi;
+const RUN_REF_RE = /(?:\S+?\.(?:log|out|err|stdout|stderr)\b|\b(?:bash_id|task_id|taskId)\s*[:=]?\s*["'`]?[_a-z0-9][\w.-]{2,})/gi;
 
 /** Cap on how many matched fragments are echoed back, so the note stays one line. */
 const MAX_SIGNALS = 3;
@@ -111,6 +111,60 @@ function withoutHistoricalQuotations(text: string): string {
       ? ' '.repeat(quote.length)
       : quote;
   });
+}
+
+/**
+ * JSON manifests are structured metadata, not prose references to a run output.
+ * Blank valid inline JSON values before the lexical matcher sees filenames or
+ * task handles embedded in their `files`/`jobs` fields. Preserve newlines and
+ * offsets so the surrounding sentence matching remains unchanged.
+ */
+function withoutJsonValues(text: string): string {
+  const chars = text.split('');
+  for (let start = 0; start < text.length; start++) {
+    const opener = text[start];
+    if (opener !== '{' && opener !== '[') continue;
+
+    const stack: string[] = [opener];
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start + 1; index < text.length; index++) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{' || char === '[') {
+        stack.push(char);
+        continue;
+      }
+      if (char !== '}' && char !== ']') continue;
+      const expected = char === '}' ? '{' : '[';
+      if (stack.pop() !== expected) break;
+      if (stack.length === 0) {
+        end = index;
+        break;
+      }
+    }
+    if (end < 0) continue;
+    try {
+      JSON.parse(text.slice(start, end + 1));
+    } catch {
+      continue;
+    }
+    for (let index = start; index <= end; index++) {
+      if (chars[index] !== '\n' && chars[index] !== '\r') chars[index] = ' ';
+    }
+    start = end;
+  }
+  return chars.join('');
 }
 
 export interface UnreadRunSignals {
@@ -260,7 +314,7 @@ export function describeUnreadRun(
   const text = (body ?? '').trim();
   if (!text) return null;
 
-  const inFlightText = withoutHistoricalQuotations(text);
+  const inFlightText = withoutJsonValues(withoutHistoricalQuotations(text));
   const scopedMatches = [...inFlightText.matchAll(new RegExp(IN_FLIGHT_RE.source, IN_FLIGHT_RE.flags))]
     .filter((match) => {
       const index = match.index ?? 0;

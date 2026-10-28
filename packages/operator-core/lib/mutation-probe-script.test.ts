@@ -3288,6 +3288,39 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(read()).toBe(commentOnlySubject);
   });
 
+  it('ignores TypeScript documentation comments but still refuses a destructive call', () => {
+    const typedSubject = join(dir, 'subject.ts');
+    const commentOnly = [
+      '/** Documentation: truncate the marker after writing it. */',
+      'export const marker = "beta";',
+      '',
+    ].join('\n');
+    const args = [
+      '--file', typedSubject,
+      '--mutate', 's/beta/BETA/',
+      '--test', 'grep -q beta {}',
+    ];
+
+    writeFileSync(typedSubject, commentOnly);
+    const safe = runProbeIO(args);
+    expect(safe.code, safe.out).toBe(0);
+    expect(safe.out).toMatch(/MUTATION_PROBE_RESULT verdict=caught/);
+    expect(readFileSync(typedSubject, 'utf8')).toBe(commentOnly);
+
+    const destructiveCall = [
+      '/* a real call remains guarded */',
+      'export function clean(path: string) { truncate(path); }',
+      'export const marker = "beta";',
+      '',
+    ].join('\n');
+    writeFileSync(typedSubject, destructiveCall);
+    const refused = runProbeIO(args);
+    expect(refused.code).toBe(2);
+    expect(refused.out).toMatch(/current subject:.*truncate/);
+    expect(refused.out).toMatch(/2:\s*export function clean/);
+    expect(readFileSync(typedSubject, 'utf8')).toBe(destructiveCall);
+  });
+
   it('warns but allows an unmutated historical source containing rm', () => {
     const repo = join(dir, 'historical-destructive-repo');
     mkdirSync(repo);
