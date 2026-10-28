@@ -717,13 +717,11 @@ async function reconcileGitSyncActivityOwner(
   const owner = typeof marker.owner === 'string' ? marker.owner : null;
   const ownerPid = typeof marker.owner_pid === 'number' ? marker.owner_pid : null;
   const validOwnerIdentity =
-    owner === null ||
-    ownerPid === null ||
-    !Number.isSafeInteger(ownerPid) ||
-    ownerPid <= 0 ||
-    !owner.startsWith(`system:git-sync:${ownerPid}:`)
-      ? false
-      : true;
+    owner !== null &&
+    ownerPid !== null &&
+    Number.isSafeInteger(ownerPid) &&
+    ownerPid > 0 &&
+    owner.startsWith(`system:git-sync:${ownerPid}:`);
 
   if (marker.active !== true) {
     // Activity metadata is last-writer-wins across overlapping fires. An older
@@ -764,7 +762,13 @@ async function reconcileGitSyncActivityOwner(
     }
   }
 
-  if (!validOwnerIdentity) {
+  if (
+    owner === null ||
+    ownerPid === null ||
+    !Number.isSafeInteger(ownerPid) ||
+    ownerPid <= 0 ||
+    !owner.startsWith(`system:git-sync:${ownerPid}:`)
+  ) {
     return {
       status: 'unverified',
       owner_pid: ownerPid,
