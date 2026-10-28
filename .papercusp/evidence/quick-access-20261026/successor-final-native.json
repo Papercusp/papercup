@@ -1,11 +1,56 @@
 {
   "updatedAt": "2026-10-28T19:54:15.581Z",
+  "currentContinuation20261028T2035Z": {
+    "authority": "Supersedes publication and qualification state in currentContinuation20261028T2023Z; AUTO/self P-003 remains unchanged.",
+    "identityVerified": "coord:whoami returned su-58f6ce8c-a42b-4feb-ac5c-79a11355ec0f; complete matching post-compaction recovery preserved, lane declared without re-orient.",
+    "pin": "cbae4d72846546a2523d119ac5257d11fcaf7c9c",
+    "sourceVerification": "All three cleanup repair paths and apps/operator/e2e/quick-access.native.spec.mts match their committed HEAD blobs. Both cleanup and acceptance work-items are assigned to self. Historical51dc failed cleanup remains invalid for final acceptance.",
+    "publication": "Source committed locally. Await385318 cancelled because exact blobs are published; no manual git mutation or LIVE_GATE_OPS taken.",
+    "materialization": {
+      "task": "0mvsklti41gp0uss18o",
+      "status": "completed",
+      "exitCode": 0,
+      "root": "/tmp/pcv/papercusp-lint-as-committed-cbae4d7284-tINuIj"
+    },
+    "qualification": {
+      "task": "0mvskop8d1lblqaopug",
+      "log": ".papercusp/scratch/bash-6800e563-a54.log",
+      "state": "completed",
+      "memoryMaxMb": 16384,
+      "confined": true,
+      "procedure": "Both maintained survivor/snapshot files via npm run test:file in the exact materialized clean root, PAPERCUSP_TEST_RUN_HARNESS=papercusp. At20:35 payload child-start observed after admission. No terminal verdict yet.",
+      "exitCode": 0,
+      "passed": 125,
+      "skipped": 0,
+      "testProvenance": "head=cbae4d7284 uncommitted=0 unknown=0; both named maintained files clean; generated-stop SPA cases completed6.9-7.9s under unchanged25s deadline"
+    },
+    "next": "Read this exact native task; no second native. Fill/run v9 amendment requestReview while native progresses, follow canonical outside-review chain. Only terminal exit0 plus clean local Playwright ledger row in this exact group proves final native acceptance.",
+    "native": {
+      "task": "0mvsksrsl1wjuer11hq",
+      "bash": "e0360d56-b1c",
+      "log": ".papercusp/scratch/bash-e0360d56-b1c.log",
+      "group": "operator-e2e-isolated-20261028T203725Z-qa-final",
+      "state": "running",
+      "memoryMaxMb": 16384,
+      "confined": true,
+      "deadline": "2026-10-28T22:37:30.242Z",
+      "sourcePin": "cbae4d72846546a2523d119ac5257d11fcaf7c9c",
+      "cwd": "/tmp/pcv/papercusp-lint-as-committed-cbae4d7284-tINuIj/apps/operator"
+    }
+  },
   "currentContinuation20261028T2023Z": {
     "authority": "This section supersedes the historical scanner/qualification/next state below; AUTO/self approved A and P-003 remain unchanged.",
     "measurement": {
       "singleCensusSeconds": 1.547,
       "generatedStopSeconds": 11.139,
-      "censusSeconds": [1.291, 1.303, 1.085, 1.143, 1.230, 1.106],
+      "censusSeconds": [
+        1.291,
+        1.303,
+        1.085,
+        1.143,
+        1.23,
+        1.106
+      ],
       "sumCensusSeconds": 7.158,
       "observation": "Three roots caused six complete host censuses. The measured stop passed; the earlier clean f7bc run remains a real three-case 25s counterexample. No resource-pressure cause inferred."
     },
