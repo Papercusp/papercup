@@ -231,7 +231,9 @@ describe('P039 completion pre-review briefs', () => {
       const started = Date.now();
       const brief = await getCompletionTimeBrief(home(), { root: rootResolver, snapshot, runs: async () => [], effects });
       expect(Date.now() - started).toBeLessThan(TASK_BRIEF_BUDGET_MS);
-      expect(snapshot).toHaveBeenCalledWith(expect.objectContaining({ op: 'callers', name: 'target' }));
+      // Per-file proof: the changed declaration file cannot match a snapshot taken before the edit.
+      expect(snapshot).toHaveBeenCalledWith(expect.objectContaining({ op: 'callers', name: 'target',
+        callerProof: 'per-file', declaredIn: 'target.ts' }));
       expect(brief).toMatchObject({ status: 'measured', changes: [expect.objectContaining({ file: 'target.ts', symbol: 'target' })] });
       expect(firstPartyCallersOffthread).not.toHaveBeenCalled();
     });
@@ -263,7 +265,7 @@ describe('P039 completion pre-review briefs', () => {
       expect(answer.evidence?.graphScope.limitations).toContainEqual(expect.stringContaining('Direct callers from the first-party snapshot'));
       const miss = await snapshotCallersAnswer({ symbol: 'target', file: 'target.ts' }, root, async () => null, () => null);
       expect(miss).toMatchObject({ sites: [],
-        error: expect.stringContaining('snapshot-miss: no unique, source-verified caller record for target') });
+        error: expect.stringContaining('snapshot-miss: no caller of target declared in target.ts could be verified against current disk') });
       expect(miss.evidence).toBeUndefined();
     });
   });

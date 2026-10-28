@@ -692,15 +692,18 @@ function completionChangedLines(patch: string): number[] | null {
 /** WI-6554700010042518: the completion graph leg on the operator-home harness. Answers
  * DIRECT callers from the maintained push snapshot, a file read by both :3070 and :3170,
  * so no per-process cache and no cold worker on the request path. The snapshot matches by
- * name, so an answer counts only when its one declaration is the changed file. A miss is
- * an unmeasured answer with a named reason, never an empty consumer set. */
+ * name, so an answer counts only when its one declaration is the changed file. The changed
+ * file was edited after the snapshot by definition, so the proof is per caller file: callers
+ * in unchanged files count and the rest are named as dropped. A miss is an unmeasured answer
+ * with a named reason, never an empty consumer set. */
 export async function snapshotCallersAnswer(request: ChangeReportRequest, root: string,
   query: typeof queryPushSnapshot = queryPushSnapshot,
-  missReason: typeof pushSnapshotMissReason = pushSnapshotMissReason): Promise<CodeIntelAnswer> {
+  missReason: typeof pushSnapshotMissReason = pushSnapshotMissReason, budgetMs = 2_000): Promise<CodeIntelAnswer> {
   const started = Date.now();
-  const answer = await query({ op: 'callers', root, name: request.symbol, paths: [...(request.paths ?? ['.'])],
-    limit: request.limit ?? 20 });
   const file = isAbsolute(request.file) ? relative(root, request.file) : request.file;
+  const answer = await query({ op: 'callers', root, name: request.symbol, paths: [...(request.paths ?? ['.'])],
+    limit: request.limit ?? 20, callerProof: 'per-file', declaredIn: file,
+    timeoutMs: Math.min(2_000, Math.max(1, budgetMs)) });
   const declaredAt = [...new Set((answer?.evidence?.relationships ?? [])
     .flatMap(edge => edge.target ? [edge.target.site.path] : []))];
   if (answer && declaredAt.length === 1 && declaredAt[0] === file) {
@@ -717,7 +720,7 @@ export async function snapshotCallersAnswer(request: ChangeReportRequest, root: 
     latencyMs: Date.now() - started,
     error: answer ? `snapshot-miss: the snapshot's ${request.symbol} is declared in ${declaredAt.join(', ') || 'no recorded file'}, not ${file}; callers were not measured.`
       : reason ? `index-not-ready: the caller snapshot is ${reason}; callers were not measured.`
-        : `snapshot-miss: no unique, source-verified caller record for ${request.symbol}; callers were not measured.`,
+        : `snapshot-miss: no caller of ${request.symbol} declared in ${file} could be verified against current disk (absent from the snapshot, no recorded caller, a changed forwarding module, or every caller file changed since the snapshot); callers were not measured.`,
   };
 }
 
@@ -738,7 +741,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
   // the completion deadline, so callers come from the maintained push snapshot. Other
   // harnesses have no snapshot and keep the worker inside what remains of the deadline.
   const graphSource: NonNullable<CompletionBriefDeps['graph']> = deps.graph ?? (ref.harness === operatorHomeHarnessSlug()
-    ? (request, root) => snapshotCallersAnswer(request, root, deps.snapshot, deps.snapshotMissReason)
+    ? (request, root, budgetMs) => snapshotCallersAnswer(request, root, deps.snapshot, deps.snapshotMissReason, budgetMs)
     : (request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
       op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
       direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs }));
