@@ -181,6 +181,21 @@ describe('trusted observed native call lookup', () => {
     expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
   });
 
+  it('retains exact argument identity and withdraws on a conflicting re-observation', async () => {
+    const f = nativeFixture(); await f.hooks.bindNativeTurn('native-turn');
+    const args = { nested: { original: true }, harness: 'selected' };
+    await f.hooks.observeToolCall!({ ...f.observation, arguments: args });
+    args.nested.original = false;
+    await expect(f.hooks.observeToolCall!({ ...f.observation,
+      arguments: { harness: 'selected', nested: { original: true } } })).resolves.toBeUndefined();
+    await expect(f.hooks.observeToolCall!({ ...f.observation, arguments: args }))
+      .rejects.toThrow('changed its arguments');
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled();
+    await f.hooks.withdraw();
+  });
+
   it('tools:invoke observation grants one indirect funded target and cannot be reused', async () => {
     const f = nativeFixture(); await f.observe({ tool: 'tools_invoke' });
     const target = tool();

@@ -24,7 +24,7 @@ import { makeCodingAssistantCodexHome } from './role-codex-home';
 import type { ClaudeEngineIdentity } from './su-session-claude-engine';
 import { persistSuSessionDescriptor } from './su-session-persistence';
 import { listCodexModels, ompModelOptions } from './su-session-engine-models';
-import { codexAppServerTokenUsage, codexPlan, ompMessageUsage, type SuCodexTurnAdmission, type SuCodexTurnLifecycle } from './su-session-usage';
+import { codexAppServerTokenUsage, codexPlan, nativeToolArguments, ompMessageUsage, type SuCodexTurnAdmission, type SuCodexTurnLifecycle } from './su-session-usage';
 export type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from './su-session-usage';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
@@ -634,10 +634,11 @@ export function startSuRpcEngine(
         thread !== nativeId() || !boundedId(turn) || !boundedId(callId) ||
         !boundedId(server) || !boundedId(tool) || observedNativeToolCalls.has(callId)) return;
     observedNativeToolCalls.add(callId);
+    const args = nativeToolArguments(item.arguments);
     nativeToolObservationTail = nativeToolObservationTail.then(async () => {
       await bindingReady;
       if (closed || nativeBindingFailed || owner !== ownerTurnId || admission !== turnAdmission || turn !== nativeTurnId) return;
-      await admission.observeToolCall!({ nativeTurnId: turn, callId, server, tool });
+      await admission.observeToolCall!({ nativeTurnId: turn, callId, server, tool, arguments: args });
     }).catch(async (error) => {
       // An observation failure cannot release a funded hold or open another
       // inference turn. Use the existing durable binding-recovery contract.

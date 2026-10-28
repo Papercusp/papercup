@@ -541,6 +541,23 @@ describe('dependency source checkout boundaries', () => {
     // Install artifacts the commits can never carry.
     writeFileSync(join(vendor, 'kit/package-lock.json'), '{"name":"kit","lockfileVersion":3,"packages":{}}\n');
     writeFileSync(join(integration, 'tools/package-lock.json'), '{"name":"tools","lockfileVersion":3,"packages":{}}\n');
+    for (const dir of ['libs/vendor/kit', 'tools']) {
+      mkdirSync(join(integration, dir, 'node_modules/unbound'), { recursive: true });
+      writeFileSync(join(integration, dir, 'node_modules/unbound/package.json'), '{"name":"unbound","version":"1.0.0"}\n');
+    }
+    const trees = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a libs/vendor/kit tools)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    expect(trees.status, trees.stderr).toBe(0);
+    expect(trees.stdout.match(/packages\/a\/node_modules/g)).toHaveLength(2);
+    expect(trees.stdout).not.toContain('libs/vendor/kit/node_modules');
+    expect(trees.stdout).not.toContain('tools/node_modules');
+    expect(existsSync(join(vendor, 'kit/node_modules/unbound/package.json'))).toBe(true);
     const live = () => spawnSync('bash', ['-c', [
       'set -euo pipefail',
       'source "$SCRIPT"',
@@ -4046,6 +4063,28 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     const result = copyScenario('sleep 3.5');
     expect(result.stdout, result.stderr).toContain('RC=0');
     expect(result.stderr).not.toContain('copy progress');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('treats a process disappearing during /proc stat read as unmeasured without stderr noise', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-copy-proc-stat-race-'));
+    roots.push(root);
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      // Inject the procfs read failure that occurs when the monitored child exits
+      // after the caller checked it but before Bash finishes reading /proc/PID/stat.
+      'read() { if [ "$1" = -r ] && [ "$2" = stat_line ]; then printf "read: read error: 0: No such process\\n" >&2; return 1; fi; builtin read "$@"; }',
+      'cp() { command sleep 0.1; }',
+      'dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest"',
+      'printf "COPY_DONE\\n"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('COPY_DONE');
+    expect(result.stderr).not.toContain('read: read error: 0: No such process');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('reports checksum reads while an independent resume verifies retained bytes without writing', () => {

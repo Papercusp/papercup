@@ -725,8 +725,34 @@ describe('P-017 awaited Codex host lifecycle', () => {
     nativeTool(f); nativeTool(f); nativeTool(f, {}, 'item/completed');
     await vi.waitFor(() => expect(l.lease.observeToolCall).toHaveBeenCalledOnce());
     expect(l.lease.observeToolCall).toHaveBeenCalledWith({ nativeTurnId: 'native-turn', callId: 'native-call',
-      server: 'papercusp-su', tool: 'paid.run' });
+      server: 'papercusp-su', tool: 'paid.run', arguments: null });
   });
+
+  it('snapshots exact arguments before waiting for immutable binding', async () => {
+    const l = lifecycle(), barrier = gate();
+    const args = { harness: 'selected', nested: { value: ['original'] } };
+    l.lease.bindNativeTurn.mockImplementation(async () => { await barrier.promise; });
+    const f = fixture('codex', { turnLifecycle: l, request: async frame => {
+      if (frame.method === 'turn/start') { nativeTool(f, { arguments: args }); args.nested.value[0] = 'changed'; }
+      return undefined;
+    } }); await f.engine.ready;
+    const dispatch = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
+    await vi.waitFor(() => expect(l.lease.bindNativeTurn).toHaveBeenCalledOnce());
+    barrier.release(); await dispatch.terminal;
+    await vi.waitFor(() => expect(l.lease.observeToolCall).toHaveBeenCalledOnce());
+    const observed = l.lease.observeToolCall.mock.calls[0]![0] as { arguments: typeof args };
+    expect(observed.arguments).toEqual({ harness: 'selected', nested: { value: ['original'] } });
+    expect(Object.isFrozen(observed.arguments.nested.value)).toBe(true);
+  });
+
+  it.each([null, [], 'not an object', { input: 'x'.repeat(256_001) }])(
+    'retains unknown argument evidence instead of inventing an exact call', async args => {
+      const l = lifecycle(), f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+      await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+      nativeTool(f, { arguments: args });
+      await vi.waitFor(() => expect(l.lease.observeToolCall).toHaveBeenCalledOnce());
+      expect(l.lease.observeToolCall.mock.calls[0]![0]).toMatchObject({ arguments: null });
+    });
 
   it('waits for immutable binding before observing an early native MCP call', async () => {
     const l = lifecycle(), barrier = gate();

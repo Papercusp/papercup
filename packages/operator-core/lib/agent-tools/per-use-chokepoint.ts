@@ -13,6 +13,7 @@ import type { FundedToolTurnHost } from '../cupboard/funded-turn-host';
 import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/funded-tool-turn-store';
 import type { InstalledPluginProvenance } from '../cupboard/types';
 import type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from '../su-session-usage';
+import { nativeToolArguments } from '../su-session-usage';
 import { declareMeter, LocalMeteredTurnRefusedError, type LocalMeteredTurn } from '../p2p/metered-invocation';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -358,7 +359,7 @@ export class NativeInstalledPerUseTurns {
     const key = this.key(context.workspaceId, context.advSessionId, fingerprint(context.nativeSessionId));
     if (this.turns.has(key)) throw new Error('The native execution already has a host admission');
     const entry = { context, admissions, freeAdmissions, nativeTurnId: null as string | null, withdrawn: false,
-      observations: new Map<string, { toolName: string; consumed: boolean }>() };
+      observations: new Map<string, { toolName: string; arguments: Readonly<Record<string, unknown>> | null; consumed: boolean }>() };
     this.turns.set(key, entry);
     return {
       bindNativeTurn: async nativeTurnId => {
@@ -367,19 +368,24 @@ export class NativeInstalledPerUseTurns {
         }
         entry.nativeTurnId = nativeTurnId;
       },
-      observeToolCall: async ({ nativeTurnId, callId, server, tool }) => {
+      observeToolCall: async ({ nativeTurnId, callId, server, tool, arguments: rawArguments }) => {
         if (entry.withdrawn || entry.nativeTurnId === null || entry.nativeTurnId !== nativeTurnId || !boundedId(callId)) {
           throw new Error('Native call observation requires its original active bound turn');
         }
         if (server !== context.mcpServer || !Object.hasOwn(context.nativeTools, tool)) return;
         const toolName = context.nativeTools[tool]!;
+        const args = nativeToolArguments(rawArguments);
         const callKey = fingerprint(callId), prior = entry.observations.get(callKey);
         if (prior) {
           if (prior.toolName !== toolName) throw new Error('Native call observation changed its target');
+          if (canonicalJson(prior.arguments) !== canonicalJson(args)) {
+            entry.withdrawn = true;
+            throw new Error('Native call observation changed its arguments');
+          }
           return;
         }
         if (entry.observations.size >= 1000) throw new Error('Native turn call population exceeds the admission bound');
-        entry.observations.set(callKey, { toolName, consumed: false });
+        entry.observations.set(callKey, { toolName, arguments: args, consumed: false });
       },
       withdraw: () => this.withdrawEntry(key, entry),
     };
@@ -454,7 +460,7 @@ interface NativeInstalledTurnEntry {
   withdrawn: boolean;
   admissions: readonly FundedInstalledAdmission[];
   freeAdmissions: readonly VerifiedFreeToolAdmission[];
-  observations: Map<string, { toolName: string; consumed: boolean }>;
+  observations: Map<string, { toolName: string; arguments: Readonly<Record<string, unknown>> | null; consumed: boolean }>;
 }
 
 interface NativeInstalledTurnContext {
