@@ -1354,7 +1354,7 @@ export function assertionOutcomesFromReport(reportPath, cwd) {
   }
   if (!report || typeof report !== 'object' || !Array.isArray(report.testResults)) return null;
   const executed = [];
-  const executedFiles = [];
+  const executedFiles = new Set();
   const skipped = [];
   for (const fileResult of report.testResults) {
     const file = typeof fileResult?.name === 'string' ? fileResult.name : '';
@@ -1369,11 +1369,11 @@ export function assertionOutcomesFromReport(reportPath, cwd) {
       if (NOT_EXECUTED_STATUSES.has(assertion?.status)) skipped.push({ name, file });
       else {
         executed.push(name);
-        executedFiles.push(file);
+        if (file) executedFiles.add(file);
       }
     }
   }
-  return { executed, executedFiles, skipped };
+  return { executed, executedFiles: [...executedFiles], skipped };
 }
 
 const MAX_FAILED_ASSERTION_DIAGNOSTICS = 20;
@@ -1652,7 +1652,7 @@ export function requireRanVerdict(pattern, outcomes) {
  * "unreadable" into "nothing executed" is the exact mistake this file already learned twice
  * (EI-19380376466745152, and the `??`-not-`||` note at the testsExecuted push site).
  *
- * @returns {{ vacuous: boolean, reason: string }}
+ * @returns {{ vacuous: boolean, reason: string, files?: string[] }}
  */
 export function allSkippedVerdict(summary) {
   const executedNames = summary?.executedNames ?? [];

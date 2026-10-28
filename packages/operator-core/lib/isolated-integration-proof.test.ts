@@ -3,7 +3,7 @@ import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
@@ -605,6 +605,10 @@ it('preserves failure progress and verifies a real reaped signal without certify
 
 // Only the parent's telemetry database is substituted. The proof writer,
 // worker IPC, kernel process identities, receipt retention and pruning are real.
+// Source collection must stay inert even when the binding handler graph cannot load.
+vi.mock('./agent-tools/plans/bind-from-test-run', () => {
+  throw new Error('Proof source collection must not import the binding tool graph');
+});
 vi.mock('../test/_org-test-db', () => ({ createOrgTestDb: async () => ({
   dbName: 'isolated-proof-telemetry', adminDsn: 'unused', adminSql: {}, cleanup: async () => {},
 }) }));
@@ -659,8 +663,15 @@ it.each([
   let stage = 'setup';
   // Capture the awaited boundary before Vitest's existing deadline can erase
   // attribution. This observation neither renews nor replaces that deadline.
-  const stallDiagnostic = setTimeout(() => process.stderr.write('ISOLATED_PROOF_FIXTURE_PENDING ' +
-    JSON.stringify({ stage, fixture, fails, ended, valid }) + '\n'), 10_000);
+  const stallDiagnostic = setTimeout(() => {
+    const runs = existsSync(evidenceRoot) ? readdirSync(evidenceRoot).filter(name => /^\d{8}T/.test(name)) : [];
+    const preparation = runs.map(run => {
+      const path = join(evidenceRoot, run, 'phases/prepare/worker-progress.ndjson');
+      return { run, progress: existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').slice(-6) : [] };
+    });
+    process.stderr.write('ISOLATED_PROOF_FIXTURE_PENDING ' +
+      JSON.stringify({ stage, fixture, fails, ended, valid, preparation }) + '\n');
+  }, 10_000);
   try {
     mkdirSync(runtimeRoot); mkdirSync(dataDir);
     writeFileSync(supervisorPath, `
@@ -736,7 +747,7 @@ process.once('message', async message => {
     if (fails) expect(result.phases.find((p: { phase: string }) => p.phase === 'execute').detail)
       .toContain('original journey assertion');
     const artifacts = new Map<string, string>();
-    for (const path of ['phases/prepare/operator-api-build-result.json',
+    for (const path of ['phases/prepare/worker-progress.ndjson', 'phases/prepare/operator-api-build-result.json',
       'phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl',
       'phases/execute/operator-api-build.log', 'phases/execute/hono-host.mjs.build-steps.jsonl',
       'phases/execute/build.log',
