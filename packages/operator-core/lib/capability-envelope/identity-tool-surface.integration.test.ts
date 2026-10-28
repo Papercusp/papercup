@@ -78,6 +78,12 @@ it('measures the production identity policy read in a private background runtime
         await mkdir(parentBlueprintDir, { recursive: true });
         await writeFile(join(parentBlueprintDir, 'blueprint.yaml'), [
           'id: parent',
+          'workItem:',
+          '  kind: feature',
+          'spine:',
+          '  edges:',
+          '    DONE:',
+          '      to: done',
           'fleet:',
           '  workerRoles:',
           '    - id: su',
