@@ -1303,9 +1303,9 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     expect(publish).toContain('papercusp-page-mode" content="holding"');
   });
 
-  it('public publish verification rejects stale history.json even when index/detail are current (EI-22012030186241177)', () => {
+  it.each(['match', 'stale'] as const)('public publish verification checks history.json with current index/detail (EI-22012030186241177): %s', (historyMode) => {
     const publish = path.resolve(desktopDir, 'bin', 'publish-release-history.sh');
-    const runFixture = (historyMode: 'match' | 'stale') => {
+    const runFixture = () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-history-publish-'));
       const site = path.join(root, 'site');
       const home = path.join(root, 'home');
@@ -1395,34 +1395,48 @@ if (args.includes('-w')) process.stdout.write('200');
         { mode: 0o755 },
       );
 
-      const result = spawnSync('bash', [publish, '1.2.3'], {
-        cwd: path.resolve(__dirname, '../../../../'),
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? ''}`,
-          HOME: home,
-          PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp', 'release-storage.env'),
-          PAPERCUSP_RELEASE_SITE_DIR: site,
-          PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
-          PROBE_SITE: site,
-          PROBE_GCS_STATE: path.join(root, 'gcloud-state.json'),
-          DRY_RUN: '0',
-        },
-        encoding: 'utf8',
-      });
-      fs.rmSync(root, { recursive: true, force: true });
-      return result;
+      const startedAt = Date.now();
+      try {
+        const result = spawnSync('bash', [publish, '1.2.3'], {
+          cwd: path.resolve(__dirname, '../../../../'),
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            HOME: home,
+            PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp', 'release-storage.env'),
+            PAPERCUSP_RELEASE_SITE_DIR: site,
+            PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
+            PROBE_SITE: site,
+            PROBE_GCS_STATE: path.join(root, 'gcloud-state.json'),
+            DRY_RUN: '0',
+          },
+          encoding: 'utf8',
+          timeout: 45_000,
+          killSignal: 'SIGKILL',
+        });
+        process.stderr.write(`RELEASE_HISTORY_FIXTURE ${JSON.stringify({
+          historyMode, durationMs: Date.now() - startedAt, status: result.status,
+          signal: result.signal, error: result.error?.message,
+        })}\n`);
+        return result;
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     };
 
-    // Positive control: matching public bytes still complete the publisher.
-    const matching = runFixture('match');
-    expect(matching.status, [matching.error?.message, matching.stdout, matching.stderr].filter(Boolean).join('\n')).toBe(0);
-    expect(matching.stdout).toContain('history.json served and byte-identical');
-
-    // Falsifier: before the fix this stale feed was never fetched and the same
-    // publisher exited 0 after checking only index/detail. It must now refuse.
-    const stale = runFixture('stale');
-    expect(stale.status).not.toBe(0);
-    expect(`${stale.stdout}\n${stale.stderr}`).toContain('served history.json does NOT match');
+    // Each full publisher invocation gets its own test budget. Combining both
+    // controls in one synchronous test hid which invocation exhausted it.
+    const result = runFixture();
+    const diagnostics = [result.error?.message, result.stdout, result.stderr].filter(Boolean).join('\n');
+    expect(result.error, diagnostics).toBeUndefined();
+    if (historyMode === 'match') {
+      expect(result.status, diagnostics).toBe(0);
+      expect(result.stdout).toContain('history.json served and byte-identical');
+    } else {
+      // Falsifier: the publisher must refuse stale public feed bytes even
+      // when its index and detail page are current.
+      expect(result.status, diagnostics).not.toBe(0);
+      expect(diagnostics).toContain('served history.json does NOT match');
+    }
   });
 });
