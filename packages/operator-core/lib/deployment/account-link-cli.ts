@@ -17,10 +17,10 @@
  *      until it mints the `sk-ant-oat…` token, write it to ~/.papercusp/deploy-credentials/<id>
  *      (0600) + registerAccount, kill the CLI. The token never reaches the browser.
  *
- * The live pty handles live in an in-memory map (a live process is a resource, not
- * persistable state — the storage-policy "no state Maps" rule is about durable state, not
- * process handles). Pinned on globalThis so both HTTP calls on one operator share it; an
- * idle reaper + a TTL kill any link the owner abandons.
+ * The live pty handles stay in an in-memory map. The existing cluster-owner RPC
+ * registry routes sibling workers' follow-up calls to that exact process; pinning
+ * a Map on globalThis alone cannot share handles across reusePort workers.
+ * An idle reaper + a TTL kill abandoned links.
  */
 import { spawn, type IPty } from '@lydell/node-pty';
 import { cp, readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
@@ -34,6 +34,7 @@ import { papercuspPath } from '../papercusp-root';
 import { trackDetached } from '../detached-imports';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
 import { WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN } from '@papercusp/deployment-driver';
+import { bindOwnerRpcResource, locateOwnerRpcResource, callOwnerProcess, registerOwnerRpcHandler } from '../cluster-owner-rpc';
 
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 // Match the authorize URL / the minted token in the CLI's (ANSI-stripped) output.
@@ -50,6 +51,9 @@ const OUTCOME_RE =
 const START_TIMEOUT_MS = 30_000; // the CLI to print the URL
 const COMPLETE_TIMEOUT_MS = 60_000; // the CLI to mint after we feed the code
 const LINK_TTL_MS = 10 * 60 * 1000; // how long a started link waits for the owner's code
+const CLI_LINK_RPC_KIND = 'account-cli-link';
+// Scope process handles to this installation's credential home, like the login itself.
+const cliLinkScope = () => papercuspPath('deploy-credentials');
 // The current `claude setup-token` is an Ink TUI: its masked code input treats a bulk
 // `code\r` write as paste text and SWALLOWS the trailing CR, so the code is never
 // submitted (the "Linking…" stall). The Enter must be its OWN write, sent AFTER the
@@ -251,11 +255,30 @@ export type CliLinkStatus =
   | { status: 'completed'; account: AccountStatusRow | null }
   | { status: 'failed'; error: string }
   | { status: 'unknown' };
-export function getCliLinkStatus(linkId: string): CliLinkStatus {
+function localCliLinkStatus(linkId: string): CliLinkStatus {
   const l = links.get(linkId);
   if (!l) return { status: 'unknown' };
   if (!l.done) return { status: 'pending' };
   return l.done.ok ? { status: 'completed', account: l.done.account } : { status: 'failed', error: l.done.error };
+}
+
+/** Read on the PTY owner, rather than treating a sibling's empty Map as expiry. */
+export async function getCliLinkStatus(linkId: string): Promise<CliLinkStatus> {
+  if (links.has(linkId)) return localCliLinkStatus(linkId);
+  const owner = await locateOwnerRpcResource(CLI_LINK_RPC_KIND, linkId, cliLinkScope());
+  if (!owner.ok) {
+    // A lookup miss includes unknown/expired ids. A timeout proves neither expiry
+    // nor owner loss, so leave the UI pending and allow its next status read.
+    return owner.code === 'timeout' || owner.code === 'send_failed'
+      ? { status: 'pending' }
+      : { status: 'unknown' };
+  }
+  const ownerPid = (owner.result as { ownerPid: number }).ownerPid;
+  if (ownerPid === process.pid) return localCliLinkStatus(linkId);
+  const result = await callOwnerProcess({ targetPid: ownerPid, kind: CLI_LINK_RPC_KIND, payload: { op: 'status', linkId } });
+  if (result.ok) return result.result as CliLinkStatus;
+  if (result.code === 'timeout' || result.code === 'send_failed') return { status: 'pending' };
+  return { status: 'failed', error: `link owner unavailable (${result.code}) — restart the add-account flow` };
 }
 
 type G = typeof globalThis & { __papercuspCliLinks?: Map<string, PendingCliLink> };
@@ -297,6 +320,14 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     return { ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' };
   }
   const provider = normalizeAccountProvider(input.provider);
+  const linkId = randomUUID();
+  // Establish custody BEFORE launching the CLI: a relay failure must not create
+  // an orphan login, or delete a completed credential while trying to unwind it.
+  try {
+    await bindOwnerRpcResource(CLI_LINK_RPC_KIND, linkId, cliLinkScope(), LINK_TTL_MS + DONE_GRACE_MS + 2 * START_TIMEOUT_MS);
+  } catch {
+    return { ok: false, error: 'could not establish account-link process custody — retry the add-account flow' };
+  }
   const configDir = papercuspPath(
     'deploy-credentials',
     provider === 'codex'
@@ -332,7 +363,6 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     await rm(configDir, { recursive: true, force: true }).catch(() => {});
     return { ok: false, error: `couldn't launch the ${providerLabel(provider)} CLI: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
   }
-  const linkId = randomUUID();
   const entry: PendingCliLink = {
     pty,
     buf: '',
@@ -523,7 +553,7 @@ async function expireCliLink(linkId: string): Promise<void> {
 }
 
 /** Feed the pasted code into the held CLI when needed, capture the credential, write + register it. */
-export async function completeCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
+async function completeLocalCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
   const l = links.get(input.linkId);
   if (!l) return { ok: false, error: 'link expired or unknown — restart the add-account flow' };
   if (l.done && (l.done.ok || l.provider !== 'codex')) {
@@ -600,6 +630,35 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
   }
   return result;
 }
+
+/** Completion must write to the same PTY that started the provider handshake. */
+export async function completeCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
+  if (links.has(input.linkId)) return completeLocalCliLink(input, deps);
+  const owner = await locateOwnerRpcResource(CLI_LINK_RPC_KIND, input.linkId, cliLinkScope());
+  if (!owner.ok) return { ok: false, error: `link owner unavailable (${owner.code}) — no replacement login was started` };
+  const ownerPid = (owner.result as { ownerPid: number }).ownerPid;
+  if (ownerPid === process.pid) return completeLocalCliLink(input, deps);
+  const result = await callOwnerProcess({
+    targetPid: ownerPid, kind: CLI_LINK_RPC_KIND,
+    payload: { op: 'complete', ...input }, timeoutMs: COMPLETE_TIMEOUT_MS + 5_000,
+  });
+  return result.ok
+    ? result.result as CompleteCliLinkResult
+    : { ok: false, error: `link owner unavailable (${result.code}) — no replacement login was started` };
+}
+
+registerOwnerRpcHandler(CLI_LINK_RPC_KIND, async (payload) => {
+  const p = payload as Partial<CompleteCliLinkInput> & { op?: unknown } | null;
+  if (!p || typeof p.linkId !== 'string' || !p.linkId ||
+      (p.op !== 'status' && p.op !== 'complete') ||
+      (p.code !== undefined && typeof p.code !== 'string') ||
+      (p.workspace !== undefined && typeof p.workspace !== 'string')) {
+    throw new Error('invalid account link operation');
+  }
+  // Never re-route here: a stale mapping must not cause a forwarding loop.
+  return p.op === 'status' ? localCliLinkStatus(p.linkId)
+    : completeLocalCliLink({ linkId: p.linkId, code: p.code, workspace: p.workspace });
+});
 
 /** Test-only: drop all held links (kills the ptys). */
 export function __resetCliLinksForTest(): void {
