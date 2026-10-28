@@ -1359,12 +1359,29 @@ describe('routines:list', () => {
       },
     ]);
 
-    const b = body(
+    const raw = body(
       await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
     );
+    expect(raw.routines[0].health.last_content_error_signature.length).toBeGreaterThan(4_800);
+    const b = listTool.shape!.trimmed!({
+      count: 1,
+      routines: [{
+        ...raw.routines[0],
+        health: {
+          consecutive_content_error_ticks: raw.routines[0].health.consecutive_content_error_ticks,
+          last_content_error_signature: raw.routines[0].health.last_content_error_signature,
+          last_content_error_count: raw.routines[0].health.last_content_error_count,
+          last_content_errors_omitted: raw.routines[0].health.last_content_errors_omitted,
+          last_content_errors_artifact: raw.routines[0].health.last_content_errors_artifact,
+        },
+      }],
+    }, { args: {} } as never) as {
+      routines: Array<{ health: Record<string, unknown> }>;
+    };
     const health = b.routines[0].health;
-    expect(health.last_content_error_signature.length).toBeLessThanOrEqual(1_000);
-    expect(health.last_content_error_signature).toContain('[TRUNCATED +');
+    const signature = health.last_content_error_signature as string;
+    expect(signature.length).toBeLessThanOrEqual(1_000);
+    expect(signature).toContain('[TRUNCATED +');
     expect(health).toMatchObject({
       consecutive_content_error_ticks: 3,
       last_content_error_count: 20_001,

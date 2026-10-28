@@ -975,7 +975,7 @@ export function acceptanceBarTestCitationProblems(
   const named = criteria.filter(c => c.check?.kind === 'tests' && (c.check.testName || c.check.cases));
   if (named.length === 0) return [];
   const validation = selectCriterionCheckRoot(named, root, REPO_ROOT, { allowPlannedPaths: true }).validation;
-  return [...validation.failures, ...validateCriterionTestCaseCitations(named, validation)].map(failure => ({
+  return [...validation.failures, ...validateCriterionTestCaseCitations(named, validation, { allowPlannedPaths: true })].map(failure => ({
     code: 'bar_contract_check_invalid',
     barKey: failure.criterionKey,
     detail: `${failure.path}: ${failure.reason}`,
