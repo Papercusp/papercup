@@ -2632,6 +2632,41 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
+    path: "packages/operator-core/lib/agent-identities/idop-p001-stack-population.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-013 reviewed bypass for the P-001 population source reader. Its sole process primitive is a synchronous local Git helper used by the dedicated population test to read the frozen superproject/submodule source set. Each call performs one submodule `ls-tree` and six sequential `show` reads, with a 15-second timeout and 4 MiB output cap per command; it creates no detached worker, retry loop, durable queue, or resident runtime work. Any failed pin/blob read aborts before the candidate population is returned. The source predicate pins the exact read set, command, timeout, buffer, and non-detached behavior.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const pathsStart = source.indexOf("  const paths = [");
+      const pathsEnd = source.indexOf("\n  ];", pathsStart);
+      const pathsBlock = pathsStart >= 0 && pathsEnd >= 0
+        ? source.slice(pathsStart, pathsEnd)
+        : "";
+      const pinnedPaths = [...pathsBlock.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+      const expectedPaths = [
+        "packages/operator-core/lib/modes/registry.ts",
+        "packages/operator-core/lib/modes/store.ts",
+        "packages/operator-core/lib/agent-tools/fleet_registry/join.ts",
+        "packages/operator-core/lib/agent-tools/fleet_registry/take-leadership-core.ts",
+        "libs/papercusp/packages/orchestrator/src/blueprint/mode-catalog.generated.ts",
+        "libs/papercusp/packages/orchestrator/src/blueprint/su-stack.ts",
+      ];
+      return resourceStartCallCount(source) === 1 &&
+        JSON.stringify(pinnedPaths) === JSON.stringify(expectedPaths) &&
+        source.includes("export function readIdopP001StackSources(root: string, superprojectCommit: string)") &&
+        source.includes("execFileSync('git', ['-C', repo, ...args], {") &&
+        source.includes("encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 15_000,") &&
+        source.includes("git(root, ['ls-tree', superprojectCommit, 'libs/papercusp'])") &&
+        source.includes("const sources = paths.map(path => {") &&
+        source.includes("const text = git(repo, ['show',") &&
+        source.includes("const commit = nested ? gitlink : superprojectCommit;") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "packages/operator-core/lib/agent-tools/plans/tree-instruments.ts",
     code: "unbounded-resident-queue",
     disposition: "semantic",
