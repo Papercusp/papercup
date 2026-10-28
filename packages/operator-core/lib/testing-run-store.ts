@@ -980,13 +980,16 @@ async function persistReconciledSnapshot(
   reconciled: RunSnapshot,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
+  const finishedAt = reconciled.finishedAt === null
+    ? null
+    : new Date(reconciled.finishedAt).toISOString();
   let update: PromiseLike<unknown>;
   try {
     update = sql`
       UPDATE harness_shared.testing_run_snapshots
          SET status = ${reconciled.status},
              exit_code = ${reconciled.exitCode},
-             finished_at = ${new Date(reconciled.finishedAt!).toISOString()},
+             finished_at = ${finishedAt},
              output = ${reconciled.output},
              truncated = ${reconciled.truncated},
              updated_at = now()
