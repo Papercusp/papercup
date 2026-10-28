@@ -37,6 +37,7 @@ import { attachedInstalledToolLifecycle, type AttachedInstalledToolFunding } fro
 import { productionInstalledToolFunding } from './cupboard/installed-tool-funding';
 import { synthesizeTransportPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
 import { canonicalJson } from './authority/authority-rpc-envelope';
+import type { HostRequestPrincipalResolver } from './auth/require-principal';
 
 type Backend = 'codex' | 'omp';
 type NativeHandle = CodexNativeSessionHandle | OmpNativeSessionHandle;
@@ -71,6 +72,8 @@ export interface SuRpcEngineOptions {
   turnLifecycle?: SuCodexTurnLifecycle;
   /** Host-owned installed funding; never restored from command arguments. */
   installedToolFunding?: AttachedInstalledToolFunding;
+  /** Actual launching request's host-local capability, never saved in JSON. */
+  resolveRequestPrincipal?: HostRequestPrincipalResolver;
 }
 
 /** The user's own OMP MCP servers, minus papercusp-su (P-016). */
@@ -242,6 +245,7 @@ export function startSuRpcEngine(
     session: { workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '', advSessionId: binding.advSessionId,
       principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' },
     funding: options.installedToolFunding,
+    resolveRequestPrincipal: options.resolveRequestPrincipal,
     resolveFunding: () => productionInstalledToolFunding({ workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '',
       principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' }),
     identityLifecycle: { admit: async context => {

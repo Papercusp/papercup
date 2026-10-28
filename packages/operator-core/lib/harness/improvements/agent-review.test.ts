@@ -1636,8 +1636,8 @@ describe('resubmitAgentReview recovers malformed legacy review state', () => {
     });
 
     expect(h.deps.mergeWorkItemPayload).toHaveBeenCalledTimes(2);
-    expect(h.deps.mergeWorkItemPayload.mock.calls[0][1]).toEqual({ agentReview: review });
-    expect(h.deps.mergeWorkItemPayload.mock.invocationCallOrder[0])
+    expect(vi.mocked(h.deps.mergeWorkItemPayload).mock.calls[0][1]).toEqual({ agentReview: review });
+    expect(vi.mocked(h.deps.mergeWorkItemPayload).mock.invocationCallOrder[0])
       .toBeLessThan(h.clearLedgerGrade.mock.invocationCallOrder[0]);
     expect(h.state.issue.payload).toMatchObject({ agentReview: { status: 'pending', round: 2 } });
     expect(h.state.ledger).toMatchObject({ grade: null, feedback: null, gradedBy: null });

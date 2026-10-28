@@ -15,10 +15,12 @@ import { createMicrochargeChannel } from '../p2p/microcharge';
 import { signPaymentTestBytes } from '../p2p/_payment-voucher-fixture';
 import invokeTool, { NestedToolRefusalError } from './tools/invoke';
 import type { ToolResult } from '@papercusp/tooldef';
+import { verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 
 type IdentityLifecycleAdmit = NonNullable<Parameters<NativeInstalledPerUseTurns['nativeLifecycle']>[0]['identityLifecycle']>['admit'];
 
 vi.mock('../cupboard/install-plugin-core', () => ({ readInstalledPluginProvenance: vi.fn() }));
+vi.mock('@papercusp/agent-mcp/provisioning', () => ({ verifyNativeRuntimeBearer: vi.fn() }));
 
 const terms = { unitPriceMicros: 250, meterUnit: 'tool-call', priceVersion: 'v1',
   splitManifestHash: `sha256:${'a'.repeat(64)}` };
@@ -37,6 +39,105 @@ const tool = (fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text:
   pluginName: provenance.name, pluginInstallation: { version: provenance.version, path: '/loaded/plugin', source: 'project' },
   description: 'paid tool', capabilities: [], inputSchema: { type: 'object' },
   expose: { mcp: { name: 'paid.run' }, http: { path: '/api/plugins/paid/run' } }, fn,
+});
+
+describe('host-local native request principal', () => {
+  const fp = (value: string) => createHash('sha256').update(value).digest('hex');
+  async function fixture(args: unknown = { harness: 'selected', resource: 'private' }) {
+    const registry = new NativeInstalledPerUseTurns();
+    const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId: 'workspace',
+      trust: 'trusted' as const, authMethod: 'bearer-token' as const, capabilities: new Set(['*']) };
+    const resolve = vi.fn(async () => principal);
+    const hooks = registry.register({ workspaceId: 'workspace', ownerId: 'host-owner',
+      principalId: 'synthetic-commerce-only', advSessionId: 7, nativeSessionId: 'native-session',
+      ownerTurnId: 'owner-turn', mcpServer: 'papercusp-su', nativeTools: { core_read: 'core:read',
+        tools_invoke: 'tools:invoke' }, admissions: [], resolveRequestPrincipal: resolve });
+    await hooks.bindNativeTurn('native-turn');
+    const observation = { nativeTurnId: 'native-turn', callId: 'call', server: 'papercusp-su', tool: 'core_read', arguments: args };
+    await hooks.observeToolCall!(observation);
+    const input = { workspaceId: 'workspace', ownerId: 'host-owner', advSessionId: 7,
+      nativeSessionFingerprint: fp('native-session'), callIdFingerprint: fp('call'),
+      toolName: 'core:read', arguments: args, runtimeBearer: 'r'.repeat(43) };
+    vi.mocked(verifyNativeRuntimeBearer).mockResolvedValue(true);
+    return { registry, principal, resolve, hooks, observation, input };
+  }
+
+  it('uses the genuine request principal for one exact core call with independent possession', async () => {
+    const f = await fixture();
+    const principal = await f.registry.resolveRequestPrincipal(f.input);
+    expect(principal).toEqual(f.principal);
+    expect(principal!.slug).not.toBe('synthetic-commerce-only');
+    expect(verifyNativeRuntimeBearer).toHaveBeenLastCalledWith(f.input.runtimeBearer,
+      { workspaceId: 'workspace', ownerId: 'host-owner', advSessionId: 7, provider: 'codex' });
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    expect(f.resolve).toHaveBeenCalledOnce();
+    (principal!.capabilities as Set<string>).clear();
+    expect(f.principal.capabilities.has('*')).toBe(true);
+    await f.hooks.withdraw();
+  });
+
+  it.each([
+    { workspaceId: 'other' }, { ownerId: 'other' }, { advSessionId: 8 },
+    { nativeSessionFingerprint: fp('other') }, { callIdFingerprint: fp('other') },
+    { toolName: 'other:read' }, { toolName: 'tools:invoke' }, { toolName: 'code:run' },
+    { arguments: { harness: 'selected', resource: 'different' } }, { arguments: null },
+  ])('refuses changed exact-call binding %j before resolving authority', async changes => {
+    const f = await fixture();
+    expect(await f.registry.resolveRequestPrincipal({ ...f.input, ...changes })).toBeNull();
+    expect(f.resolve).not.toHaveBeenCalled();
+    await f.hooks.withdraw();
+  });
+
+  it('does not let legacy missing arguments or a wrapper borrow direct-call authority', async () => {
+    const f = await fixture(undefined);
+    // Explicit undefined bypasses the fixture default only on the observation.
+    await f.hooks.observeToolCall!({ ...f.observation, callId: 'legacy', arguments: undefined });
+    expect(await f.registry.resolveRequestPrincipal({ ...f.input, callIdFingerprint: fp('legacy'), arguments: {} })).toBeNull();
+    await f.hooks.observeToolCall!({ ...f.observation, callId: 'wrapper', tool: 'tools_invoke', arguments: { name: 'core:read', args: f.input.arguments } });
+    expect(await f.registry.resolveRequestPrincipal({ ...f.input, callIdFingerprint: fp('wrapper') })).toBeNull();
+    expect(f.resolve).not.toHaveBeenCalled(); await f.hooks.withdraw();
+  });
+
+  it('refuses absent possession, revoked principal, and disposal during each awaited check', async () => {
+    const absent = await fixture();
+    vi.mocked(verifyNativeRuntimeBearer).mockResolvedValue(false);
+    expect(await absent.registry.resolveRequestPrincipal(absent.input)).toBeNull();
+    expect(absent.resolve).not.toHaveBeenCalled(); await absent.hooks.withdraw();
+    const revoked = await fixture();
+    revoked.resolve.mockRejectedValueOnce(new Error('revoked'));
+    expect(await revoked.registry.resolveRequestPrincipal(revoked.input)).toBeNull(); await revoked.hooks.withdraw();
+    for (const phase of ['possession', 'principal']) {
+      const f = await fixture();
+      let release!: () => void, entered!: () => void;
+      const started = new Promise<void>(done => { entered = done; });
+      const wait = async () => { entered(); await new Promise<void>(done => { release = done; }); };
+      if (phase === 'possession') vi.mocked(verifyNativeRuntimeBearer).mockImplementationOnce(async () => { await wait(); return true; });
+      else f.resolve.mockImplementationOnce(async () => { await wait(); return f.principal; });
+      const pending = f.registry.resolveRequestPrincipal(f.input);
+      await started; await f.hooks.withdraw(); release(); expect(await pending).toBeNull();
+    }
+  });
+
+  it('reserves an exact call before asynchronous verification so concurrent requests cannot share it', async () => {
+    const f = await fixture();
+    let release!: (value: boolean) => void;
+    vi.mocked(verifyNativeRuntimeBearer).mockImplementationOnce(() => new Promise(done => { release = done; }));
+    const first = f.registry.resolveRequestPrincipal(f.input);
+    expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
+    release(true); expect(await first).toEqual(f.principal); await f.hooks.withdraw();
+  });
+
+  it('still requires the existing dispatcher resource ACL after resolving a genuine principal', async () => {
+    const f = await fixture(), principal = await f.registry.resolveRequestPrincipal(f.input);
+    const target: ProjectedTool = { ...tool(), pluginInstallation: undefined,
+      authorize: vi.fn(async ({ principal: actual, input }) => {
+        expect(actual?.slug).toBe('system:superuser'); expect(input).toEqual(f.input.arguments);
+        return { allow: false, reason: 'resource revoked' };
+      }) };
+    const result = await runDispatchStack(target, 'core:read', f.input.arguments, { ...ctx(), principal: principal! }, {});
+    expect(result).toMatchObject({ ok: false, error: { code: 'authorization_denied' } });
+    expect(target.fn).not.toHaveBeenCalled(); await f.hooks.withdraw();
+  });
 });
 
 describe('trusted observed native call lookup', () => {
@@ -196,6 +297,17 @@ describe('trusted observed native call lookup', () => {
     await f.hooks.withdraw();
   });
 
+  it('a conflicting target observation withdraws the original call before dispatch', async () => {
+    const f = nativeFixture(), target = tool();
+    await f.observe();
+    await expect(f.hooks.observeToolCall!({ ...f.observation, tool: 'tools_invoke' }))
+      .rejects.toThrow('changed its target');
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled();
+    expect(f.turn.snapshot().units).toEqual({});
+    await f.hooks.withdraw();
+  });
+
   it('tools:invoke observation grants one indirect funded target and cannot be reused', async () => {
     const f = nativeFixture(); await f.observe({ tool: 'tools_invoke' });
     const target = tool();
@@ -206,6 +318,61 @@ describe('trusted observed native call lookup', () => {
     expect((await wrapper.handler({ name: 'paid.run' }, outer)).isError).not.toBe(true);
     await expect(wrapper.handler({ name: 'paid.run' }, outer)).rejects.toBeInstanceOf(NestedToolRefusalError);
     expect(target.fn).toHaveBeenCalledOnce();
+  });
+
+  it('a direct observed call cannot substitute resources or lose its exact argument payload', async () => {
+    const f = nativeFixture(), target = tool();
+    await f.hooks.bindNativeTurn('native-turn');
+    const args = { harness: 'original', nested: { id: 7 } };
+    await f.hooks.observeToolCall!({ ...f.observation, arguments: args });
+    for (const input of [{}, { ...args, harness: 'other' }, { ...args, nested: { id: 8 } }]) {
+      expect((await execute(target, f.aroundInvoke, input, f.context)).result?.isError).toBe(true);
+    }
+    expect(target.fn).not.toHaveBeenCalled();
+    expect(f.turn.snapshot().units).toEqual({});
+    expect((await execute(target, f.aroundInvoke,
+      { nested: { id: 7 }, harness: 'original' }, f.context)).result?.isError).not.toBe(true);
+    expect(target.fn).toHaveBeenCalledOnce();
+    await f.hooks.withdraw();
+  });
+
+  it('an observed tools:invoke call binds both its exact target and target arguments', async () => {
+    const f = nativeFixture(), target = tool();
+    await f.hooks.bindNativeTurn('native-turn');
+    const args = { harness: 'original', id: 7 };
+    await f.hooks.observeToolCall!({ ...f.observation, tool: 'tools_invoke',
+      arguments: { name: 'paid.run', args } });
+    const context = { ...f.context, indirectDispatch: true };
+    const other = await runDispatchStack(target, 'paid.other', args, context, { aroundInvoke: f.aroundInvoke });
+    expect(other.result?.isError).toBe(true);
+    expect((await execute(target, f.aroundInvoke, { ...args, harness: 'other' }, context)).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled();
+    expect(f.turn.snapshot().units).toEqual({});
+    expect((await execute(target, f.aroundInvoke, args, context)).result?.isError).not.toBe(true);
+    expect((await execute(target, f.aroundInvoke, args, context)).result?.isError).toBe(true);
+    expect(target.fn).toHaveBeenCalledOnce();
+    await f.hooks.withdraw();
+  });
+
+  it('an observed wrapper with omitted args binds the empty object only', async () => {
+    const f = nativeFixture(), target = tool();
+    await f.hooks.bindNativeTurn('native-turn');
+    await f.hooks.observeToolCall!({ ...f.observation, tool: 'tools_invoke', arguments: { name: 'paid.run' } });
+    const context = { ...f.context, indirectDispatch: true };
+    expect((await execute(target, f.aroundInvoke, { injected: true }, context)).result?.isError).toBe(true);
+    expect((await execute(target, f.aroundInvoke, {}, context)).result?.isError).not.toBe(true);
+    expect(target.fn).toHaveBeenCalledOnce();
+    await f.hooks.withdraw();
+  });
+
+  it.each([null, [], 'invalid'])('malformed observed wrapper args cannot authorize an empty dispatch (%j)', async args => {
+    const f = nativeFixture(), target = tool();
+    await f.hooks.bindNativeTurn('native-turn');
+    await f.hooks.observeToolCall!({ ...f.observation, tool: 'tools_invoke', arguments: { name: 'paid.run', args } });
+    expect((await execute(target, f.aroundInvoke, {}, { ...f.context, indirectDispatch: true })).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled();
+    expect(f.turn.snapshot().units).toEqual({});
+    await f.hooks.withdraw();
   });
 
   it('parallel duplicate requests elect only one dispatch', async () => {

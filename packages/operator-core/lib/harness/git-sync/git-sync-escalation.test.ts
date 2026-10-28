@@ -555,6 +555,7 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
       consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
       errors: [{ scope: 'github-bridge', message: actual }],
     });
+    expect(decision.reasons).toEqual(['sync-failure']);
     expect(decision.broadcast).toContain('cause unclassified — read that routine\'s last_error');
     expect(decision.broadcast).not.toContain('commits NOT reaching origin');
   });
