@@ -411,11 +411,11 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     bucket.push(row);
     byReference.set(key, bucket);
   }
-  // Scenario, causal-pair, and test-case ids are set-valued coverage metadata. When a re-bind
-  // changes only that metadata, the newest immutable row must retain the union from
-  // earlier rows for the same proof and causal pair; otherwise latestLogicalEvidence silently hides
-  // coverage the unchanged run already established. A new run or changed fingerprint
-  // remains a new proof identity and starts a new metadata set.
+  // Scenario, causal-pair, and test-case ids plus scenario-to-case associations are
+  // set-valued coverage metadata. When a re-bind changes only that metadata, the newest
+  // immutable row must retain the union from earlier rows for the same proof and causal
+  // pair; otherwise latestLogicalEvidence silently hides coverage the unchanged run
+  // already established. A new run or changed fingerprint remains a new proof identity.
   const reconciled = latest.map((row) => {
     const rawAdequacy = row.details.adequacy;
     if (
@@ -443,6 +443,35 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
       if (values.length === 0) continue;
       mergedAdequacy[key] = values;
       changed = true;
+    }
+    if (!ownDetails.contractMetadataIssues?.includes('scenarioTestCases:invalid')) {
+      const casesByScenario = new Map<string, Set<string>>();
+      for (const candidate of sameProofRows) {
+        const details = detailsOf(candidate);
+        if (details.contractMetadataIssues?.includes('scenarioTestCases:invalid')) continue;
+        for (const [scenario, titles] of Object.entries(details.scenarioTestCases ?? {})) {
+          const cases = casesByScenario.get(scenario) ?? new Set<string>();
+          for (const title of titles) cases.add(title);
+          casesByScenario.set(scenario, cases);
+        }
+      }
+      const mergedScenarioTestCases: Record<string, string[]> = Object.fromEntries(
+        [...casesByScenario.entries()]
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([scenario, titles]) => [scenario, [...titles].sort((left, right) => left.localeCompare(right))] as const),
+      );
+      const ownScenarioTestCases = Object.fromEntries(
+        Object.entries(ownDetails.scenarioTestCases ?? {})
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([scenario, titles]) => [scenario, [...titles].sort((left, right) => left.localeCompare(right))] as const),
+      );
+      if (
+        Object.keys(mergedScenarioTestCases).length > 0 &&
+        JSON.stringify(mergedScenarioTestCases) !== JSON.stringify(ownScenarioTestCases)
+      ) {
+        mergedAdequacy.scenarioTestCases = mergedScenarioTestCases;
+        changed = true;
+      }
     }
     if (!changed) return row;
     const supportingBindingIds = [...new Set(sameProofRows

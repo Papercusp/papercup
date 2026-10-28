@@ -75,7 +75,7 @@ const proofCoverageIds = z
   .max(100)
   .refine((ids) => new Set(ids).size === ids.length, 'proof coverage ids must be unique');
 const scenarioTestCasesSchema = z
-  .record(z.array(z.string().trim().min(1).max(2000)).min(1).max(100))
+  .record(z.string(), z.array(z.string().trim().min(1).max(2000)).min(1).max(100))
   .refine(
     (mapping) => Object.keys(mapping).length > 0 &&
       Object.entries(mapping).every(([scenario, cases]) =>
@@ -244,7 +244,7 @@ export const bindingSchema = z
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
     environmentFingerprint: fingerprint.nullable().optional().describe(
-      "Live environment; validated ledger-only proof may omit runtimeUnits.",
+      "Live runtime/environment; validated ledger-only proof may omit runtimeUnits.",
     ),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
@@ -254,7 +254,7 @@ export const bindingSchema = z
         "File/row hashes; changes stale.",
       ),
     details: bindingDetailsSchema.optional().describe(
-      "Nest adequacy; required scenarios map through adequacy.scenarioTestCases to exact passing adequacy.testCases; evidencePlane falls back to adequacy.evidencePlane; live needs environmentFingerprint.",
+      "Nest adequacy; required scenarios map through adequacy.scenarioTestCases to exact passing adequacy.testCases; details.evidencePlane falls back to adequacy.evidencePlane; live needs environmentFingerprint.",
     ),
     observedAt: z.string().datetime({ offset: true }).optional(),
     verifiesBindingId: z

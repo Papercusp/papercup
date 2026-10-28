@@ -986,7 +986,12 @@ function caseScopedNegativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {})
 }
 
 function caseScopedTestBinding(): SpecEvidenceForAdequacy {
-  return successfulTestBinding(CASE_SCOPED_TEST_PATH);
+  return successfulTestBinding(CASE_SCOPED_TEST_PATH, {
+    scenarioIds: [RECONNECT_FALSIFIER_SCENARIO],
+    scenarioTestCases: {
+      [RECONNECT_FALSIFIER_SCENARIO]: [DEFAULT_MUTATION_TEST_CASE],
+    },
+  });
 }
 
 function attempt(
@@ -3113,7 +3118,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         },
       },
     });
-    const baseline = successfulTestBinding(testPath, { targeted: treeClause.specId });
+    const baseline = successfulTestBinding(testPath, {
+      targeted: treeClause.specId,
+      scenarioIds: [scenarioId],
+      scenarioTestCases: { [scenarioId]: [DEFAULT_MUTATION_TEST_CASE] },
+    });
     const missingTree = evaluateSpecTestAdequacy({
       clause: treeClause,
       evidence: [baseline, mutation],
@@ -3227,9 +3236,13 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       },
     });
 
+    const passingBinding = successfulTestBinding(testPath, {
+      scenarioIds: [scenarioId],
+      scenarioTestCases: { [scenarioId]: [DEFAULT_MUTATION_TEST_CASE] },
+    });
     const result = evaluateSpecTestAdequacy({
       clause: targetClause,
-      evidence: [successfulTestBinding(testPath), counterexample],
+      evidence: [passingBinding, counterexample],
       classRef: 'plan-class-feature-ship',
     });
 
@@ -4882,9 +4895,19 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidenceRef: 'packages/operator-core/lib/history.test.ts#wrong-subject-exclusion',
       details: { adequacy: { ...baseAdequacy, scenarioIds: ['wrong-subject-exclusion'] } },
     });
+    const staleCase = 'history ignores stale decision context';
+    const wrongSubjectCase = 'history excludes a different subject';
+    const completeBinding = successfulTestBinding('packages/operator-core/lib/history.test.ts', {
+      testCases: [staleCase, wrongSubjectCase],
+      scenarioIds: ['stale-vs-decision', 'wrong-subject-exclusion'],
+      scenarioTestCases: {
+        'stale-vs-decision': [staleCase],
+        'wrong-subject-exclusion': [wrongSubjectCase],
+      },
+    });
     const complete = evaluateSpecTestAdequacy({
       clause: scenarioClause,
-      evidence: [staleDecision, wrongSubject, successfulTestBinding('packages/operator-core/lib/history.test.ts')],
+      evidence: [staleDecision, wrongSubject, completeBinding],
       classRef: 'plan-class-feature-ship',
     });
     expect(complete.ratings['correct-layer'].rating).toBe('pass');
@@ -5098,17 +5121,24 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         },
       },
     });
-    const collapsedRecurrence = evidence({
-      evidenceKind: 'test',
-      evidenceRef: 'packages/operator-core/lib/history.test.ts#after-collapsed-pair',
+    const collapsedBase = successfulTestBinding('packages/operator-core/lib/history.test.ts', {
+      testCases: ['history regression case', 'recovery regression case'],
+      scenarioIds: ['missing-history', 'missing-recovery'],
+      scenarioTestCases: {
+        'missing-history': ['history regression case'],
+        'missing-recovery': ['recovery regression case'],
+      },
+    });
+    const collapsedRecurrence: SpecEvidenceForAdequacy = {
+      ...collapsedBase,
       details: {
+        ...collapsedBase.details,
         adequacy: {
-          ...baseAdequacy,
-          scenarioIds: ['missing-history', 'missing-recovery'],
+          ...(collapsedBase.details.adequacy as Record<string, unknown>),
           causalPairIds: ['missing-history'],
         },
       },
-    });
+    };
 
     const result = evaluateSpecTestAdequacy({
       clause: pairClause,
@@ -6141,7 +6171,11 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
   });
 
   it('preserves same-proof scenario coverage across rebinds and pins every source binding in reruns', () => {
-    const base = successfulTestBinding(CASE_SCOPED_TEST_PATH);
+    const electedLossCase = 'elected leader loss selects the recovery path';
+    const reconnectCase = DEFAULT_MUTATION_TEST_CASE;
+    const base = successfulTestBinding(CASE_SCOPED_TEST_PATH, {
+      testCases: [electedLossCase, reconnectCase],
+    });
     const baseAdequacy = base.details.adequacy as Record<string, unknown>;
     const earlier = {
       ...base,
@@ -6154,6 +6188,10 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
           ...baseAdequacy,
           pathReachable: true,
           scenarioIds: ['elected-loss-recovery', RECONNECT_FALSIFIER_SCENARIO],
+          scenarioTestCases: {
+            'elected-loss-recovery': [electedLossCase],
+            [RECONNECT_FALSIFIER_SCENARIO]: [reconnectCase],
+          },
         },
       },
     };
@@ -6168,6 +6206,7 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
           ...baseAdequacy,
           pathReachable: true,
           scenarioIds: ['elected-loss-recovery'],
+          scenarioTestCases: { 'elected-loss-recovery': [electedLossCase] },
         },
       },
     };
