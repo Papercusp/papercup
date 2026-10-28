@@ -84,6 +84,21 @@ it('publishes distinct runtime possession only in local private provider and MCP
     .toThrow('native_runtime_delivery_denied');
 });
 
+it.each([true, false])('repair removes unreissued possession on gateway=%s and accepts only an explicitly supplied replacement', async (codexGatewayAuto) => {
+  const { writeSuCodexHome, ensureSuCodexHomeConfig } = await import('./role-codex-home');
+  const base = { sessionKey: 'native-repair', mcpUrl: MCP_URL, sid: 'su-native-repair', model: MODEL, codexGatewayAuto };
+  const written = writeSuCodexHome({ ...base, promptText: 'prompt', nativeRuntimeBearer: 'n'.repeat(43) });
+  const repaired = ensureSuCodexHomeConfig(base);
+  expect(repaired.repaired).toBe(true);
+  expect(readFileSync(written.configPath, 'utf8')).not.toContain('n'.repeat(43));
+  const replacement = { ...base, nativeRuntimeBearer: 'r'.repeat(43) };
+  expect(ensureSuCodexHomeConfig(replacement).repaired).toBe(true);
+  expect(parseConfig(written.configPath).mcp_servers?.['papercusp-su']?.http_headers?.['x-papercusp-native-runtime'])
+    .toBe(replacement.nativeRuntimeBearer);
+  expect(ensureSuCodexHomeConfig(replacement).repaired).toBe(false);
+  expect(statSync(written.configPath).mode & 0o777).toBe(0o600);
+});
+
 /** The three D-001 discovery settings, asserted on the PARSED structure. */
 function expectGatewayCatalogDiscovery(config: ParsedConfig) {
   // 1. Codex only consults a custom provider's catalog URL with this feature on.

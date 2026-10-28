@@ -3112,7 +3112,8 @@ export const bootstrapSu = defineTool({
           try {
             const issued = await provisionNativeRuntimeBearer({ workspaceId: workspace, advSessionId: sessionId,
               issuer: launchPrincipal });
-            if (issued.binding.ownerId === sid && issued.binding.provider === agent) nativeRuntimeBearer = issued.bearer;
+            if (issued.binding.workspaceId === workspace && issued.binding.advSessionId === sessionId
+              && issued.binding.ownerId === sid && issued.binding.provider === agent) nativeRuntimeBearer = issued.bearer;
           } catch {
             // Enrollment is optional; never borrow the shared SU bearer or a
             // caller-supplied identity as replacement source authority.

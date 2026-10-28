@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HostedLeadBindingService, type HostedLeadBindingAuthority } from './hosted-lead-binding-service';
-import { HostedLeadBindingChallengeCodec, type HostedLeadBindingChallenge } from './hosted-lead-binding';
+import { HostedLeadBindingChallengeCodec, type HostedLeadBindingChallenge, type HostedLeadBindingScope } from './hosted-lead-binding';
 import { createHostedPrincipal } from './hosted-principal';
 
 const scope = { graphWorkspaceId: 'graph-a', personRef: 'PER-a', environment: 'production' as const };
@@ -9,9 +9,12 @@ const principal = createHostedPrincipal({ workspaceId: 'control', userId: 'user-
 function fixture() {
   let allowed = true;
   let now = 1000;
-  const issuer = vi.fn(async <T>(_scope: typeof scope, _issuer: string, operation: () => Promise<T>) => allowed ? operation() : null);
-  const subject = vi.fn(async <T>(_scope: typeof scope, operation: () => Promise<T>) => allowed ? operation() : null);
-  const authority: HostedLeadBindingAuthority = { withCurrentIssuer: issuer, withCurrentSubject: subject };
+  const issuer = vi.fn((_scope: HostedLeadBindingScope, _issuer: string) => allowed);
+  const subject = vi.fn((_scope: HostedLeadBindingScope) => allowed);
+  const authority: HostedLeadBindingAuthority = {
+    async withCurrentIssuer(scope, ref, operation) { return issuer(scope, ref) ? operation() : null; },
+    async withCurrentSubject(scope, operation) { return subject(scope) ? operation() : null; },
+  };
   const store = { issue: vi.fn(async (_claim: HostedLeadBindingChallenge) => {}), redeem: vi.fn(async () => null),
     read: vi.fn(async () => null), revoke: vi.fn(async () => true) };
   const service = new HostedLeadBindingService(new HostedLeadBindingChallengeCodec('x'.repeat(32)),
@@ -24,7 +27,7 @@ describe('hosted binding host orchestration', () => {
     expect(token).toBeTypeOf('string');
     await f.service.redeem(scope, token, principal);
     expect(f.store.redeem).toHaveBeenCalledWith(f.store.issue.mock.calls[0]?.[0], principal);
-    expect(f.issuer).toHaveBeenLastCalledWith(scope, 'operator-a', expect.any(Function));
+    expect(f.issuer).toHaveBeenLastCalledWith(scope, 'operator-a');
   });
   it('rechecks issuer/canonical authority after issue and denies storage access after revocation or merge', async () => {
     const f = fixture(); const token = await f.service.issue(scope, 'operator-a'); f.deny();

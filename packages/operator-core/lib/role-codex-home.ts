@@ -1974,6 +1974,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
     tomlEscape(mcpUrlWithClient(opts.mcpUrl, opts.sid)) +
     '"\ntool_timeout_sec = 610';
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
+    nativeRuntimeBearer: opts.nativeRuntimeBearer,
     gatewayOn: opts.codexGatewayAuto,
     ownerId: opts.sid,
     priority: opts.codexGatewayPriority,
@@ -1986,7 +1987,13 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
-    const parsedCurrent = parseToml(current) as { features?: Record<string, unknown> };
+    const parsedCurrent = parseToml(current) as { features?: Record<string, unknown>;
+      mcp_servers?: Record<string, { http_headers?: Record<string, unknown> }> };
+    // Repair never adopts a stored possession token as launch authority. A
+    // caller must supply a freshly verified/reissued credential explicitly;
+    // otherwise remove even a direct-route home's stale header.
+    const nativeRuntimeReady = parsedCurrent.mcp_servers?.['papercusp-su']?.http_headers?.['x-papercusp-native-runtime']
+      === (opts.nativeRuntimeBearer || undefined);
     const expectedFeatures = (parseToml(codexIsolationPreamble(opts.headless, opts.capabilityPolicy)) as {
       features?: Record<string, unknown>;
     }).features;
@@ -2022,6 +2029,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
       current.includes(expectedLogDir) &&
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady &&
+      nativeRuntimeReady &&
       headlessPolicyReady &&
       capabilityPolicyReady &&
       subagentPolicyReady &&

@@ -643,7 +643,7 @@ export async function assignActionableWorkItems(
           },
           liftsWhen: 'the target has an available slot under its effective maxConcurrentClaims limit',
           whoCanMakeItTrue: ['self'],
-        },
+        } satisfies RefusalContract,
       })));
     }
   }

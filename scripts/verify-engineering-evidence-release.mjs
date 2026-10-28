@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -78,21 +78,41 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
   // waiting for a long or stalled phase. Injected sinks keep the existing in-memory
   // test seam; retainPhase still applies the same hashes and fail-closed contract.
   const runPhase = (phase, command, args, options) => {
-    if (write !== writePhaseFile) return run(command, args, options);
+    if (write !== writePhaseFile) {
+      const child = run(command, args, options);
+      return { ...child, stdout: child.stdout ?? '', stderr: child.stderr ?? '' };
+    }
     mkdirSync(runDir, { recursive: true });
     const stdoutPath = join(runDir, phase + '.stdout.log');
     const stderrPath = join(runDir, phase + '.stderr.log');
-    let stdoutFd, stderrFd;
+    let stdoutFd, stderrFd, child;
     try {
       stdoutFd = openSync(stdoutPath, 'w');
       stderrFd = openSync(stderrPath, 'w');
-      return run(command, args, { ...options, stdio: ['ignore', stdoutFd, stderrFd] });
+      child = run(command, args, { ...options, stdio: ['ignore', stdoutFd, stderrFd] });
     } catch (error) {
-      return { status: null, signal: null, stdout: null, stderr: null, error };
+      child = { status: null, signal: null, stdout: null, stderr: null, error };
     } finally {
       if (stdoutFd !== undefined) closeSync(stdoutFd);
       if (stderrFd !== undefined) closeSync(stderrFd);
     }
+    try {
+      // spawnSync enforces maxBuffer for pipes, but not when output is sent to
+      // regular files. Reapply the same per-stream byte ceiling before reading
+      // retained output, and fail closed when either stream exceeded it.
+      const maxBuffer = Math.max(0, Math.floor(options.maxBuffer ?? 1024 * 1024));
+      const stdoutBytes = statSync(stdoutPath).size;
+      const stderrBytes = statSync(stderrPath).size;
+      if (stdoutBytes > maxBuffer || stderrBytes > maxBuffer) {
+        if (stdoutBytes > maxBuffer) truncateSync(stdoutPath, maxBuffer);
+        if (stderrBytes > maxBuffer) truncateSync(stderrPath, maxBuffer);
+        return { ...child, status: null,
+          error: Object.assign(new Error(`spawnSync ${command} ENOBUFS`), { code: 'ENOBUFS' }) };
+      }
+    } catch (error) {
+      return { ...child, status: null, stdout: null, stderr: null, error };
+    }
+    return child;
   };
   let budget;
   if (plane === 'current-build') {
