@@ -439,6 +439,24 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     replacesPoll: 'the hourly system:green-checkpoint cron wait after release:repair-queue admit confirm',
   },
+  {
+    family: 'repair-admit-preview',
+    keyTemplate: 'release:repair-queue:admit-preview-settled:<operationId>',
+    // One key per preview handle; the fire is the operation's terminal state (settled | failed).
+    fireProves: 'condition',
+    params: [
+      {
+        name: 'operationId',
+        required: true,
+        describe: 'the preview-operation handle a long-running release:repair-queue admit dry run returned',
+      },
+    ],
+    describe:
+      'A release:repair-queue admit dry run that outlasted its inline budget settled or failed; read it with release:repair-queue { op:\'get\', previewOperationId }.',
+    emitter: 'emitAdmissionPreviewSettled (packages/operator-core/lib/release/admission-preview-operation.ts)',
+    exists: true,
+    replacesPoll: 'polling release:repair-queue op:get on a preview-operation handle',
+  },
   // ── Locks / plan runs ─────────────────────────────────────────────────────
   {
     family: 'lock',
