@@ -239,6 +239,31 @@ export async function upsertDecisionProvenance(key: DecisionKey, p: ResolvedDeci
   });
 }
 
+/** What a decision WRITE reports: the row it recorded, or why no row was recorded. */
+export type RecordedDecisionProvenance =
+  | Exclude<DecisionProvenanceView, { kind: 'unrecorded' }>
+  | { kind: 'unrecorded'; reason: string };
+
+/**
+ * Record the resolved provenance after the decision write landed. Never throws: the decision
+ * is already in the plan, so failing the call would report a written decision as not written.
+ * A missing row is reported in the result instead, and P-019's conversion backfills it.
+ */
+export async function recordDecisionProvenance(
+  key: DecisionKey | null,
+  provenance: ResolvedDecisionProvenance | null,
+  unrecordedReason = 'no provenance resolved',
+): Promise<RecordedDecisionProvenance> {
+  if (!provenance) return { kind: 'unrecorded', reason: unrecordedReason };
+  if (!key) return { kind: 'unrecorded', reason: 'plan scope unresolved; no row written' };
+  try {
+    await upsertDecisionProvenance(key, provenance);
+  } catch (e) {
+    return { kind: 'unrecorded', reason: `provenance row write failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  return { ...provenance, source: 'write', recordedAt: new Date().toISOString() };
+}
+
 interface ProvenanceRow {
   decision_id: string;
   kind: 'owner' | 'agent';
