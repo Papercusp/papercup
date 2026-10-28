@@ -110,7 +110,7 @@ export interface DiskReclaimReceipt {
   /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
   roots?: Array<{ path: string; classId: string; aliases: string[] }>;
   scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
-  /** One scalar observation per initial root census; never persist its inventory. */
+  /** One scalar observation per preparation or initial root census; never persist its inventory. */
   censuses?: Array<{ root: string; classId: string; elapsedMs: number; inspectedNodes: number;
     timing?: RetentionCensusTiming; error?: string; pendingWalk?: PendingRetentionCensus;
     /** Enrollment diagnostics only: never selection or drain continuation evidence. */
