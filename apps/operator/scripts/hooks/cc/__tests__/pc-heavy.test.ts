@@ -1358,10 +1358,14 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   it('emits an undetermined marker when the child-start supervisor never publishes a pid', () => {
     const fakeBin = join(dir, 'child-start-times-out');
     mkdirSync(fakeBin);
-    // The real setsid process remains alive, but never runs the pid-file
-    // publisher. The monitor's five-second publication deadline is the branch
-    // under test; the short sleep lets its reap path finish promptly afterward.
-    writeFileSync(join(fakeBin, 'setsid'), '#!/bin/sh\nsleep 6\n', { mode: 0o755 });
+    // The fake supervisor stays alive far past the monitor's five-second
+    // publication deadline and never runs the pid-file publisher. A short-lived
+    // fake raced that deadline under load (EI-27255002470732496): once it exited
+    // first, the monitor took the child-start-failed path with exit 0. `exec`
+    // makes the TERM reach the sleep itself, so no orphan holds the stdio pipes.
+    // This is also the recurrence guard for the monitor's stop step: without it
+    // the reap waits out the 60s supervisor and runSync's 30s timeout fails here.
+    writeFileSync(join(fakeBin, 'setsid'), '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
 
     const r = runSync(
       [
