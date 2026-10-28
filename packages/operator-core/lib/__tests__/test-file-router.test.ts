@@ -3069,6 +3069,10 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
 
     try {
       const code = await main([selectedFile], {
+        // This child is a measured in-memory fixture. Its receipt policy is
+        // real, but its custody must not recapture the enclosing test run's
+        // source map and native-process inventory on every fixture call.
+        createRouterProofCustodyImpl: () => null,
         restrictedHoldPreflightImpl: () => admission === 'refuse'
           ? { verdict: 'refuse', error: 'restricted_write_held', hint: 'Fixture restricted write is held.' }
           : { verdict: admission },
@@ -3160,6 +3164,7 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
 
     try {
       const code = await main([file], {
+        createRouterProofCustodyImpl: () => null,
         restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
         runVitestListImpl: async () => ({ status: 0, signal: null,
           stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
@@ -3475,6 +3480,10 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     let code: number;
     try {
       code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', error: null, timedOut: false }),
         runCapturedTestProcessImpl: async () => ({
           status,
           signal: null,
