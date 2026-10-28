@@ -1396,13 +1396,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         return;
       }
       const stdout = mode === 'child-output-overflow' ? vi.spyOn(process.stdout, 'write').mockImplementation(() => true) : null;
-      const stderr = mode === 'child-output-overflow' ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true) : null;
+      const stderr = mode === 'child-output-overflow' || mode === 'evidence-retention'
+        ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true) : null;
+      let returnedRefLine: string | undefined;
       try {
         if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
         else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
         else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
         else if (mode === 'output-io-failure') await expect(invocation).rejects.toThrow('Verifier child diagnostics path changed');
         else await expect(invocation).resolves.toBe(['child-failure', 'child-output-overflow'].includes(mode) ? 37 : 0);
+        if (mode === 'evidence-retention') {
+          returnedRefLine = stderr?.mock.calls.map(([chunk]) => String(chunk))
+            .find(line => line.startsWith('VERIFIER_TASK_EVIDENCE '));
+        }
         if (mode === 'child-output-overflow') {
           expect(stdout?.mock.calls.some(([chunk]) => String(chunk).includes('provider bootstrap stdout'))).toBe(true);
           expect(stderr?.mock.calls.some(([chunk]) => String(chunk).includes('provider bootstrap stderr'))).toBe(true);
@@ -1458,7 +1464,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         'source.admission', 'source.freeze', 'receipt.write', 'deps.source.before',
         'deps.source.after-runtime-assets', 'deps.snapshot',
         'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
-        'deps.census', 'deps.receipt.write', 'child.admission', 'child.preflight', 'child.run',
+        'deps.census', 'deps.receipt.write', 'child.admission', 'child.preflight', 'child.environment', 'child.run',
         ...(mode === 'private-pg-release' ? ['private-pg.release'] : []), 'deps.postverify',
         ...(mode === 'dependency-tamper' ? [] : ['source.postverify']), 'cleanup',
       ]);
@@ -1480,12 +1486,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         const taskReceiptPath = `${receiptPath}.task.json`;
         const taskReceipt = JSON.parse(readFileSync(taskReceiptPath, 'utf8'));
         const runId = createHash('sha256').update(receiptPath).digest('hex');
-        const manifestPath = join(checkpointLogDir, `verifier-task-${taskId}`, runId, 'manifest.json');
-        expect(taskReceipt).toMatchObject({ taskId, cleanup: 'completed', evidenceManifestPath: manifestPath });
-        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-        expect(manifest).toMatchObject({ schemaVersion: 'verifier-task-evidence-v1', taskId,
-          runId, sourceCommit: ref, wrapperStatus: 'completed', cleanup: 'completed', childExitCode: 0,
-          childLogs: { stdout: 'stdout.log', stderr: 'stderr.log' } });
+        const expectedManifestPath = join(checkpointLogDir, `verifier-task-${taskId}`, runId, 'manifest.json');
+        expect(taskReceipt).toMatchObject({ taskId, cleanup: 'completed', evidenceManifestPath: expectedManifestPath });
         const temporarySources = {
           'source.json': receiptPath,
           'dependencies.json': `${receiptPath}.dependencies.json`,
@@ -1496,10 +1498,21 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           'stdout.log': `${receiptPath}.stdout.log`,
           'stderr.log': `${receiptPath}.stderr.log`,
         };
-        expect(Object.keys(manifest.artifacts).sort()).toEqual(Object.keys(temporarySources).sort());
         const originalBytes = new Map(Object.entries(temporarySources)
           .map(([name, path]) => [name, readFileSync(path)]));
         for (const path of Object.values(temporarySources)) rmSync(path, { force: true });
+        expect(returnedRefLine).toBeDefined();
+        const returnedRef = JSON.parse(returnedRefLine!.slice('VERIFIER_TASK_EVIDENCE '.length)) as {
+          taskId: string; manifestPath: string;
+        };
+        expect(returnedRef).toEqual({ taskId, manifestPath: expectedManifestPath });
+        const manifest = JSON.parse(readFileSync(returnedRef.manifestPath, 'utf8')) as {
+          artifacts: Record<string, { path: string; sizeBytes: number; sha256: string }>;
+        };
+        expect(manifest).toMatchObject({ schemaVersion: 'verifier-task-evidence-v1', taskId,
+          runId, sourceCommit: ref, wrapperStatus: 'completed', cleanup: 'completed', childExitCode: 0,
+          childLogs: { stdout: 'stdout.log', stderr: 'stderr.log' } });
+        expect(Object.keys(manifest.artifacts).sort()).toEqual(Object.keys(temporarySources).sort());
         for (const [name, artifact] of Object.entries(manifest.artifacts)) {
           const bytes = readFileSync(artifact.path);
           expect(bytes).toEqual(originalBytes.get(name));
@@ -2803,11 +2816,18 @@ describe('BG inherited manifest and original source boundaries', () => {
   }
 
   it('BG recipe output-only mode compiles the original main and worker and publishes complete retained evidence', async () => {
+    const traceEnabled = Boolean(process.env.PAPERCUSP_BG_LOGICAL_TRACE);
+    const trace = (stage: string) => bgFixtureTrace('output-only:' + stage, traceEnabled);
+    trace('fixture:start');
     const fixture = await transactionRecipe();
+    trace('fixture:ready');
     const originalSource = readFileSync(join(fixture.prepared.root, '.verifier-source.json'));
     const child = fixture.runRecipe({ publishOnly: true });
-    expectBgChild(child, fixture.recipePhases(child.pid));
-    const phases = fixture.recipePhases(child.pid).trim().split('\n').map(line => JSON.parse(line));
+    trace('child:ready');
+    const phaseEvidence = fixture.recipePhases(child.pid);
+    if (traceEnabled) process.stderr.write(`BG_RECIPE_PHASES ${JSON.stringify(phaseEvidence)}\n`);
+    expectBgChild(child, phaseEvidence);
+    const phases = phaseEvidence.trim().split('\n').map(line => JSON.parse(line));
     expect(phases.filter(row => row.phase === 'bg.compiler.build' && row.event === 'completed')).toHaveLength(2);
     expect(phases.at(-1)).toMatchObject({ phase: 'bg.recipe.verify', event: 'completed' });
     const publication = JSON.parse(child.stdout);
@@ -2820,15 +2840,21 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(receipts).toHaveLength(2);
     expect(output.files).toHaveLength(4);
     expect(logical.files.map((row: { final: string }) => row.final)).toEqual(fixture.args.outputs.map(row => row.final));
+    trace('publication-verify:start');
     expect(verifyBgVerifierPublication(publication, { binding, receipts, output, logical })).toBe(publication);
+    trace('publication-verify:ready');
     const { identity, ...published } = publication;
     expect(JSON.parse(readFileSync(identity.path, 'utf8'))).toEqual(published);
+    trace('imports:start');
     const main = await import('data:text/javascript;base64,' + readFileSync(fixture.args.recipe.outfile).toString('base64'));
     const worker = await import('data:text/javascript;base64,' + readFileSync(join(fixture.stage, 'worker.mjs')).toString('base64'));
+    trace('imports:ready');
     expect({ y: main.y, dep: main.dep, worker: worker.y }).toEqual({ y: 2, dep: 41, worker: 2 });
     expect(readFileSync(fixture.path, 'utf8')).toBe(fixture.bytes);
     expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(originalSource);
+    trace('replay:start');
     const replay = fixture.runRecipe({ publishOnly: true });
+    trace('replay:ready');
     expect(replay.status).not.toBe(0);
     expect(replay.stderr).toContain('BG recipe publication already exists');
     expect(JSON.parse(readFileSync(identity.path, 'utf8'))).toEqual(published);
