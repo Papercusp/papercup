@@ -28,7 +28,11 @@ import { createTextCollector } from '../child-output';
 import type { CoChangeReport } from './cochange-index';
 import type { WarmCoChangeReply, WarmCoChangeRequest, WarmCoChangeStatus } from './warm-cochange-index.worker';
 
-const run = promisify(execFile);
+// Deferred to first call, memoized (lint:no-eager-execfile-promisify): a module-scope
+// promisify(execFile) runs at import in every transitive importer, including mocked tests.
+type RunFile = (file: string, args: string[], opts: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }>;
+let cachedRun: RunFile | null = null;
+const run: RunFile = (file, args, opts) => (cachedRun ??= promisify(execFile) as unknown as RunFile)(file, args, opts);
 
 export const WARM_COCHANGE_WORKER_BUNDLED = 'warm-cochange-index.worker.mjs';
 export const WARM_COCHANGE_WORKER_SOURCE = 'warm-cochange-index.worker.dev.mjs';

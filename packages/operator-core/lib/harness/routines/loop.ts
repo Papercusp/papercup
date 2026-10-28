@@ -1840,6 +1840,7 @@ export async function reviveDisarmedLoop(
       reschedule_interval_sec: number | null;
       revived_count: number | null;
       from_pause_reason: string | null;
+      next_fire_at: Date | string | null;
     }>
   >`
     UPDATE harness_shared.routines
@@ -1873,7 +1874,8 @@ export async function reviveDisarmedLoop(
     RETURNING workspace_id, install_slug, name, target_role, target_owner_id,
               reschedule_interval_sec,
               (metadata->>'loop_revived_count')::int AS revived_count,
-              metadata->>'loop_revived_from_pause_reason' AS from_pause_reason
+              metadata->>'loop_revived_from_pause_reason' AS from_pause_reason,
+              next_fire_at
   `;
 
   // WI-37571 — the counterpart to the `disarmed` row, and the reason this pair matters more
@@ -1903,7 +1905,7 @@ export async function reviveDisarmedLoop(
       actor: 'stalled-loops-guard-revival',
       // The revival schedules its rescue fire for now() — recorded as the fire time this
       // transition WROTE, matching the column's documented contract for a re-arm.
-      newNextFireAt: new Date().toISOString(),
+      newNextFireAt: transitionNextFireAt(row.next_fire_at),
       intervalSec: row.reschedule_interval_sec,
       detail: {
         reason,

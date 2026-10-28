@@ -6,6 +6,7 @@ import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
+import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
@@ -184,7 +185,7 @@ describe('retention on a real fixture tree', () => {
     try {
       const nowMs = Date.now();
       const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: fixture,
-        protection: () => ({ pins: [], nowMs, isPinned: () => false }) });
+        protection: () => ({ pins: [], nowMs, isPinned: pinProtection([], nowMs) }) });
       // Keep the real lazy owner and its dependencies. Vitest transforms this
       // integration; the plain-Node bundle boundary has its separate unit proof.
       const result = await withFsMutex('papercusp-disk-retention', () =>

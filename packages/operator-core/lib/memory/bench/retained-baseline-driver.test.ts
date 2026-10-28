@@ -13,7 +13,7 @@ describe('retained search baseline edition custody',()=>{
       ' requests=p/"requests.json";population=[{"id":"a","adapter":"search:fulltext","args":{"query":"test","scope":["work_item"],"limit":2}}];requests.write_text(json.dumps(population))',
       ' plan={"adapterCapture":{"program":m.fingerprint(program),"requests":m.fingerprint(requests)}}',
       ' cases=[]',
-      ' for mode in ["pass","request-drift","missing","failed","nan","input-drift","outside-source"]:',
+      ' for mode in ["pass","relative-program","request-drift","missing","failed","nan","input-drift","outside-source"]:',
       '  destination=p/mode;destination.mkdir();calls=[]',
       '  def command(label,args,env):',
       '   calls.append(label);assert env=={"PRIVATE_DB":"fixture"}',
@@ -26,7 +26,8 @@ describe('retained search baseline edition custody',()=>{
       '   if mode=="input-drift":program.write_text("// changed while running")',
       '   pathlib.Path(args[-1]).write_text(json.dumps([] if mode=="missing" else [row]))',
       '  try:',
-      '   r=m.capture_adapters(plan,p/"different" if mode=="outside-source" else p,destination,command,{"PRIVATE_DB":"fixture"})',
+      '   actual_plan={**plan,"adapterCapture":{**plan["adapterCapture"],"program":{**plan["adapterCapture"]["program"],"path":"capture.mjs"}}} if mode=="relative-program" else plan',
+      '   r=m.capture_adapters(actual_plan,p/"different" if mode=="outside-source" else p,destination,command,{"PRIVATE_DB":"fixture"})',
       '   assert r["attempted"]==1 and not r["baselineAccepted"] and not r["adapterBehaviorAuthenticated"]',
       '   assert r["output"]==m.fingerprint(destination/"adapter-captures.json");cases.append([mode,"pass",calls])',
       '  except ValueError:cases.append([mode,"rejected",calls])',
@@ -38,6 +39,7 @@ describe('retained search baseline edition custody',()=>{
     ].join('\n'),driver],{encoding:'utf8'});
     expect(JSON.parse(result)).toEqual([
       ['pass','pass',['actual-adapters']],
+      ['relative-program','pass',['actual-adapters']],
       ...['request-drift','missing','failed','nan','input-drift'].map(mode=>[mode,'rejected',['actual-adapters']]),
       ['outside-source','rejected',[]],['preflight-pin-drift','rejected',[]],
     ]);

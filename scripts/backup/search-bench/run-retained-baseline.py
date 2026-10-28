@@ -84,19 +84,21 @@ def validate_plan(plan):
     if 'adapterCapture' in plan:
         for key in ['program', 'requests']:
             pin = plan['adapterCapture'].get(key, {})
-            if not Path(pin.get('path', '')).is_absolute() or len(pin.get('sha256', '')) != 64:
+            file = Path(pin.get('path', ''))
+            if not pin.get('path') or '..' in file.parts or (key == 'requests' and not file.is_absolute()) \
+                    or len(pin.get('sha256', '')) != 64:
                 raise ValueError('missing actual adapter capture pin: ' + key)
 
 
 def adapter_inputs(plan, repo):
     """Validate capture inputs before expensive restoration and again at dispatch."""
     capture = plan['adapterCapture']
-    program = Path(capture['program']['path']).resolve(strict=True)
+    program = (repo / capture['program']['path']).resolve(strict=True)
     if not program.is_relative_to(repo.resolve()) or program.suffix not in ('.ts', '.mjs', '.js'):
         raise ValueError('adapter program must be inside immutable source tree')
     pins = []
     for key in ['program', 'requests']:
-        actual = fingerprint(capture[key]['path'])
+        actual = fingerprint(program if key == 'program' else capture[key]['path'])
         if actual['sha256'] != capture[key]['sha256']:
             raise ValueError('adapter capture pin differs: ' + key)
         pins.append(actual)

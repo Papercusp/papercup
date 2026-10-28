@@ -369,10 +369,16 @@ function runSync(args: string[], env: Record<string, string> = {}, cwd?: string)
   // never happen. That is a pure fixture artifact: the real default is
   // ${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots, always outside the repo. Keeping the
   // worktree one level down keeps the probe measuring the TEST's edits only.
+  //
+  // stdin is /dev/null on purpose (EI-26833387960556052): pc-heavy.sh enables
+  // coalescing only when its stdin is verifiably /dev/null, because a cached
+  // replay cannot bind input piped in on stdin. spawnSync's default stdin is a
+  // pipe, which would silently disable coalescing for every caller of this helper.
   return spawnSync('bash', [PC_HEAVY, ...args], {
     encoding: 'utf8',
     env: baseEnv(env),
     cwd: cwd ?? dir,
+    stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 30_000,
   });
 }
@@ -3374,7 +3380,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
           const p = spawn(
             'bash',
             [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 0.4; echo same-output`],
-            { env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }), cwd },
+            { env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }), cwd, stdio: ['ignore', 'pipe', 'pipe'] },
           );
           let stdout = '';
           let stderr = '';
@@ -3428,7 +3434,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
           const p = spawn(
             'bash',
             [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 3; echo slow-done`],
-            { env: baseEnv({ PC_HEAVY_SLOTS: '8', PC_HEAVY_COALESCE_SEC: '2' }), cwd },
+            { env: baseEnv({ PC_HEAVY_SLOTS: '8', PC_HEAVY_COALESCE_SEC: '2' }), cwd, stdio: ['ignore', 'pipe', 'pipe'] },
           );
           let stderr = '';
           p.stderr.on('data', (d) => (stderr += d));
@@ -3470,6 +3476,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     ].join('\n');
 
     const wrapper = spawn('bash', [PC_HEAVY, 'bash', '-c', command], {
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }),
       cwd,
     });
@@ -3568,6 +3575,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
         }),
         cwd: dir,
         detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
     const seen = createTextCollector(pipeline.stderr);
@@ -3606,6 +3614,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
         stderr: string;
       }>((resolve, reject) => {
         const child = spawn('bash', [PC_HEAVY, ...cmd], {
+          stdio: ['ignore', 'pipe', 'pipe'],
           env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '1' }),
           cwd,
         });
@@ -3730,6 +3739,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     };
 
     const leader = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
       cwd,
       detached: true,
@@ -3745,6 +3755,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     await new Promise((r) => setTimeout(r, 2300)); // past the 2s coalescing window — lock now stale
 
     const follower = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
+      stdio: ['ignore', 'pipe', 'pipe'],
       // A follower that does NOT reclaim waits PC_HEAVY_COALESCE_MAX_WAIT_SEC
       // before recreating anything. Pin it far above the poll budget below so
       // that budget stays discriminating whatever the script's default becomes.
@@ -4236,6 +4247,7 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     // A caller with a 1s window sees that entry as STALE, so it runs for real —
     // becoming a second leader while the entry is still fresh to a 90s caller.
     const secondLeader = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: baseEnv({ PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '1' }),
       cwd,
       detached: true,
@@ -4289,6 +4301,7 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     // A hard-killed leader must not leave its in-progress temp behind either —
     // the EXIT trap that sweeps the lockdir sweeps these too.
     const doomed = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo x; sleep 30'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: baseEnv({ PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '30' }),
       cwd,
       detached: true,

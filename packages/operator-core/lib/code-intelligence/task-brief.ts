@@ -10,6 +10,8 @@ import { deriveRepoPathsFromText } from '../agent-tools/work_items/_derive-paths
 import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type ChangeReportEffects, type ChangeReportRequest,
   type PackerEffects, type PackerResult } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
+import { pushSnapshotMissReason, queryPushSnapshot } from './push-snapshot';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
 import { getClaimTimePlanDecisions, type ClaimTimePlanDecisionsBrief } from '../plan-decisions-claim-port';
@@ -653,6 +655,9 @@ export interface CompletionBriefDeps {
   runs?: (paths: string[]) => Promise<{ path: string; status: string; runGroupId: string }[] | null>;
   /** The default report's graph leg; `budgetMs` is what remains of the brief deadline. */
   graph?: (request: ChangeReportRequest, root: string, budgetMs: number) => Promise<CodeIntelAnswer>;
+  /** WI-6554700010042518: the operator-home harness's warm caller index and its miss reason. */
+  snapshot?: typeof queryPushSnapshot;
+  snapshotMissReason?: typeof pushSnapshotMissReason;
   /** The default report's non-graph effects (git, artifact writes). */
   effects?: Omit<ChangeReportEffects, 'graph'>;
   cochange?: typeof readWarmCoChange;
@@ -684,6 +689,38 @@ function completionChangedLines(patch: string): number[] | null {
   return seen && !oldLeft && !newLeft ? added : null;
 }
 
+/** WI-6554700010042518: the completion graph leg on the operator-home harness. Answers
+ * DIRECT callers from the maintained push snapshot, a file read by both :3070 and :3170,
+ * so no per-process cache and no cold worker on the request path. The snapshot matches by
+ * name, so an answer counts only when its one declaration is the changed file. A miss is
+ * an unmeasured answer with a named reason, never an empty consumer set. */
+export async function snapshotCallersAnswer(request: ChangeReportRequest, root: string,
+  query: typeof queryPushSnapshot = queryPushSnapshot,
+  missReason: typeof pushSnapshotMissReason = pushSnapshotMissReason): Promise<CodeIntelAnswer> {
+  const started = Date.now();
+  const answer = await query({ op: 'callers', root, name: request.symbol, paths: [...(request.paths ?? ['.'])],
+    limit: request.limit ?? 20 });
+  const file = isAbsolute(request.file) ? relative(root, request.file) : request.file;
+  const declaredAt = [...new Set((answer?.evidence?.relationships ?? [])
+    .flatMap(edge => edge.target ? [edge.target.site.path] : []))];
+  if (answer && declaredAt.length === 1 && declaredAt[0] === file) {
+    const limitations = [...(answer.coverage?.limitations ?? []),
+      'Direct callers from the first-party snapshot; transitive impact was not measured at completion.'];
+    const coverage = { basis: 'syntax' as const, sourceCompleteness: 'unverified' as const, ...answer.coverage, limitations };
+    return { ...answer, coverage, ...(answer.evidence ? { evidence: { ...answer.evidence, graphScope: coverage } } : {}) };
+  }
+  const reason = missReason('papercusp');
+  return {
+    backend: 'first-party-snapshot', intent: 'callers', query: request.symbol, sites: [],
+    truncation: { truncated: false, totalAvailable: null, continuation: null },
+    freshness: { health: 'unknown', indexedAt: null, indexedCommit: null, staleVsDisk: null },
+    latencyMs: Date.now() - started,
+    error: answer ? `snapshot-miss: the snapshot's ${request.symbol} is declared in ${declaredAt.join(', ') || 'no recorded file'}, not ${file}; callers were not measured.`
+      : reason ? `index-not-ready: the caller snapshot is ${reason}; callers were not measured.`
+        : `snapshot-miss: no unique, source-verified caller record for ${request.symbol}; callers were not measured.`,
+  };
+}
+
 /** P-039: reuse the pre-review report at the completion receipt, without
  * treating a declared test command or a static edge as execution evidence. */
 export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[];
@@ -697,9 +734,14 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
   const rootResolver = deps.root ?? defaults.root;
   const deadline = Math.min(ref.deadlineMs ?? Number.POSITIVE_INFINITY, Date.now() + TASK_BRIEF_BUDGET_MS);
   const toolset = readBriefToolset(deps.toolset, ref.workspaceId, ref.reuse?.owner ?? ref.owner);
-  const graphSource = deps.graph ?? ((request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
-    op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
-    direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs }));
+  // WI-6554700010042518: on the operator-home harness a cold per-symbol worker measured past
+  // the completion deadline, so callers come from the maintained push snapshot. Other
+  // harnesses have no snapshot and keep the worker inside what remains of the deadline.
+  const graphSource: NonNullable<CompletionBriefDeps['graph']> = deps.graph ?? (ref.harness === operatorHomeHarnessSlug()
+    ? (request, root) => snapshotCallersAnswer(request, root, deps.snapshot, deps.snapshotMissReason)
+    : (request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
+      op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
+      direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs }));
   // The graph leg gets what remains of the brief deadline. A fixed 2000 ms sub-budget expired
   // under host load (a fresh worker measured 1048-2598 ms), so the brief read `unknown` with
   // most of its own deadline unused (WI-6554700010019386).

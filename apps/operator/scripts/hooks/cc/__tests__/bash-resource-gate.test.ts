@@ -6286,6 +6286,35 @@ describe('interpreter write guard ignores inert serialized code strings (EI-2681
   });
 });
 
+describe('interpreter inline code keeps quoted stdin heredocs as data (EI-26888909335647927)', () => {
+  const archive = JSON.stringify({
+    artifactPath: 'config.toml',
+    source: "writeFileSync('config.toml', 'contents')",
+  }, null, 2);
+
+  it('allows read-only stdin hashing when archived JSON contains filesystem-write source text', () => {
+    const code = 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())';
+    const command = [
+      `python3 -c ${JSON.stringify(code)} <<'ARCHIVE'`,
+      archive,
+      'ARCHIVE',
+    ].join('\n');
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies a real inline repository writer when stdin also comes from a heredoc', () => {
+    const code = "import sys; open('apps/operator/generated.ts', 'w').write(sys.stdin.read())";
+    const command = [
+      `python3 -c ${JSON.stringify(code)} <<'ARCHIVE'`,
+      archive,
+      'ARCHIVE',
+    ].join('\n');
+    const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+});
+
 // ── Substitution gate (bash-to-tool-substitution-2026-07-26, P-016) ─────────
 // Two distinct things are under test and they fail differently:
 //   1. the PRE-FILTER — does a command a registry rule could claim actually

@@ -636,8 +636,8 @@ export async function assignActionableWorkItems(
         refusal: {
           observed: {
             targetAgent: args.targetAgent,
-            activeClaims: capacity!.activeClaims,
-            maxConcurrentClaims: capacity!.maxConcurrentClaims,
+            activeClaims: String(capacity!.activeClaims),
+            maxConcurrentClaims: String(capacity!.maxConcurrentClaims),
             heldIds: capacity!.heldIds.join(','),
             blockerParkedIds: capacity!.blockerParkedIds.join(','),
           },

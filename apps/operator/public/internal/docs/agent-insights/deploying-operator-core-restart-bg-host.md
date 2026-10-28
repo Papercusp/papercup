@@ -34,7 +34,7 @@ Read the returned result. A coalesced request did not restart the process; use i
 
 ## Verify the loaded bundle
 
-After the restart, use `dev:service_health` to confirm the bg-host ticker is healthy and making routine ticks. Check the health result for a stale-bundle fallback.
+After the restart, use `dev:service_health` to confirm the bg-host ticker is healthy and making routine ticks. Then inspect the `bg-host` entry in `servingRuntimes` from `dev:pipeline_position`: `bundle.stale` must be false. A true value means the process booted its last-known-good bundle.
 
 For code containment, call `dev:pipeline_position` with the changed repository path and a distinctive literal marker introduced by that change:
 
@@ -45,7 +45,7 @@ dev:pipeline_position {
 }
 ```
 
-Inspect the `bg-host` entry in `servingRuntimes` and the matching `positionsMarker.runtimes.bg-host` result. The marker must be present in the running runtime's own bundle; a path mtime, a process start, or the operator's deployed SHA does not establish that. Treat `false`, `null`, or an unknown result as unverified, and inspect the bg-host health/log evidence for a stale-bundle fallback before deciding what to do next.
+Inspect `positionsMarker.runtimes.bg-host`. The marker must be present in the running runtime's own bundle; a path mtime, a process start, or the operator's deployed SHA does not establish that. Treat `false`, `null`, an unknown marker result, or `bundle.stale: true` as unverified. Inspect bg-host health/log evidence for a stale-bundle fallback before deciding what to do next.
 
 ## Per-process tuning
 
