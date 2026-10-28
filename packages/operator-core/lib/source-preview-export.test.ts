@@ -1308,7 +1308,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(candidate, '.papercusp/scratch'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention'] as const)
+  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -1317,7 +1317,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
       write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
       write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
-      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\nif [ "${VERIFIER_PREPARE_FAIL:-}" = 1 ]; then echo missing dependency generation >&2; exit 42; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
       write(fixture.repo, provider, [
         "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
@@ -1331,7 +1331,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "  receipt: process.env.VERIFY_TAURI_SOURCE_RECEIPT, repo: process.env.PAPERCUSP_REPO_DIR,",
         "  source: readFileSync('scripts/provider-fixture.mjs', 'utf8'),",
         "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5],",
-        "  privatePgReleaseToken: process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN ?? null }));",
+        "  privatePgReleaseToken: process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN ?? null,",
+        "  preparedChildEnv: process.env.VERIFIER_CHILD_ENV_PREPARED ?? null }));",
         "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
         "if (mode === 'dependency-tamper') writeFileSync('node_modules/@native-proof/runtime/index.mjs', 'tampered installed bytes');",
         "if (mode === 'child-failure' || mode === 'child-output-overflow') {",
@@ -1355,12 +1356,21 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const budgetFrom = join(tmp, 'verifier-command-budget-' + mode + '.jsonl');
       const requestParentPgRelease = vi.fn(async () => {});
       const releasesPrivatePg = mode === 'private-pg-release' || mode === 'output-io-failure';
+      const prepareChildEnv = vi.fn(async ({ sourceRoot }: { sourceRoot: string }) => {
+        const dependencies = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
+        expect(dependencies.sourceCommit).toBe(ref);
+        expect(existsSync(join(sourceRoot, 'node_modules'))).toBe(true);
+        expect(existsSync(proofPath)).toBe(false);
+        return { VERIFIER_CHILD_ENV_PREPARED: 'dependency-generation-ready' };
+      });
       const taskId = mode === 'evidence-retention' ? 'delayed-consumer-fixture' : null;
       const checkpointLogDir = join(tmp, 'verifier-task-evidence-checkpoint-logs');
       const env = { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies',
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 900_000),
         ...(taskId ? { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId,
           PAPERCUSP_CHECKPOINT_LOG_DIR: checkpointLogDir } : {}),
         ...(releasesPrivatePg ? { PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN: 'parent-release-token' } : {}),
+        ...(mode === 'dependency-preflight-failure' ? { VERIFIER_PREPARE_FAIL: '1' } : {}),
         ...(['history-refusal', 'deadline-refusal'].includes(mode) ? {
           PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + (mode === 'deadline-refusal' ? 180_000 : 60_000)),
         } : {}) };
@@ -1379,9 +1389,22 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           ...(mode === 'history-refusal' ? { budgetFrom } : {}),
           childEstimateMs: mode === 'deadline-refusal' ? 600_000 : 0,
           env,
+          prepareChildEnv,
           ...(releasesPrivatePg ? { releaseParentPrivatePg: true,
             requestParentPgReleaseImpl: requestParentPgRelease } : {}) });
+      if (mode === 'dependency-preflight-failure') {
+        await expect(invocation).rejects.toThrow('missing dependency generation');
+        expect(prepareChildEnv).not.toHaveBeenCalled();
+        expect(existsSync(proofPath)).toBe(false);
+        expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+        const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(phases.find(row => row.event === 'failed')).toMatchObject({ phase: 'deps.snapshot' });
+        expect(phases.some(row => row.phase === 'child.environment' || row.phase === 'child.run')).toBe(false);
+        expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+        return;
+      }
       if (mode === 'deadline-refusal' || mode === 'history-refusal') {
+        expect(prepareChildEnv).not.toHaveBeenCalled();
         await expect(invocation).rejects.toThrow('TASK_DEADLINE_REFUSAL');
         expect(existsSync(proofPath)).toBe(false);
         expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
@@ -1414,9 +1437,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           expect(stderr?.mock.calls.some(([chunk]) => String(chunk).includes('provider bootstrap stderr'))).toBe(true);
         }
       } finally { stdout?.mockRestore(); stderr?.mockRestore(); }
+      expect(prepareChildEnv).toHaveBeenCalledTimes(mode === 'donor-change' ? 0 : 1);
       const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
       expect(proof).toMatchObject({ value: 'private-snapshot', ref, receipt: receiptPath,
         source: original, options: '', path: '', flag: '--provider-flag=literal', privatePgReleaseToken: null });
+      if (mode !== 'donor-change') expect(proof.preparedChildEnv).toBe('dependency-generation-ready');
       expect(requestParentPgRelease).toHaveBeenCalledTimes(releasesPrivatePg ? 1 : 0);
       if (releasesPrivatePg) expect(requestParentPgRelease).toHaveBeenCalledWith('parent-release-token');
       expect(proof.root).toBe(proof.repo);
