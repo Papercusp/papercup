@@ -51,6 +51,7 @@ vi.mock('../../events/await/compose-store', () => ({
 }));
 
 import status, { turnProofFields } from './status';
+import { TIMEOUT_WAKE_GUIDANCE } from '../../events/await/timeout-fallback';
 import {
   deliveryBacklogSummary,
   inspectEventKey,
@@ -555,6 +556,34 @@ describe('events:status projection', () => {
     expect(listRecentDeliveries).not.toHaveBeenCalled();
     expect(deliveryBacklogSummary).not.toHaveBeenCalled();
     expect(listMyEventKeySubscriptions).not.toHaveBeenCalled();
+  });
+
+  it('keeps timeout re-arm guidance aligned with the exact-key registered waiter response', async () => {
+    const expiresTs = '2099-07-13T12:30:00.000Z';
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [],
+      waiters: [{
+        id: 32,
+        subscriberId: 'su-status',
+        policy: 'wake',
+        createdAt: '2026-07-13T12:00:00.000Z',
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        expiresTs,
+      }],
+      deliveries: [],
+    } as never);
+
+    const out = await call({ event: 'task:terminal:WI-7' });
+    expect(out.event_inspection.waiters).toMatchObject([
+      { await_id: 32, subscriber_id: 'su-status', state: 'registered', expires_ts: expiresTs },
+    ]);
+    expect(out).not.toHaveProperty('active_awaits');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('event_inspection.waiters');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('state: "registered"');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('future expires_ts');
+    expect(TIMEOUT_WAKE_GUIDANCE).toContain('active_awaits instead');
   });
 
   it('bounds hot exact-key history, keeps the newest rows, and reports omitted rows within the response budget', async () => {
