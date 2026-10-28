@@ -2613,9 +2613,9 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for check-code-health.ts: this advisory CLI performs one synchronous Git reader for the caller-selected diff and source blobs, then computes health in-process. Its captured output is capped at 32 MiB; it creates no service, detached process, or resident queue.",
+      "P-016 reviewed bypass disposition for check-code-health.ts: this advisory CLI performs one synchronous Git reader for the caller-selected diff and source blobs, then computes health in-process. Its captured output is capped at 32 MiB and each Git command has a 30-second timeout; it creates no service, detached process, or resident queue.",
     matchesSource: (source) => resourceStartCallCount(source) === 1 &&
-      source.includes("const git = (...command: string[]) => execFileSync('git', command, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })") &&
+      source.includes("const git = (...command: string[]) => execFileSync('git', command, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 30_000 })") &&
       source.includes("git('diff', '--name-only', '-z', base, '--', '*.ts', '*.tsx')") &&
       source.includes("compareCodeHealth(merge(snapshots.before), merge(snapshots.after), lineage)") &&
       !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
@@ -2625,10 +2625,10 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for check-new-clones.mts: this manually invoked advisory ratchet uses one synchronous Git helper to reconstruct the selected baseline and changed paths, with a 32 MiB output cap. Clone analysis is in-process and any baseline write is the explicit --seed path; no worker remains after the CLI returns.",
+      "P-016 reviewed bypass disposition for check-new-clones.mts: this manually invoked advisory ratchet uses one synchronous Git helper to reconstruct the selected baseline and changed paths, with a 32 MiB output cap and a 30-second per-command timeout. Clone analysis is in-process and any baseline write is the explicit --seed path; no worker remains after the CLI returns.",
     matchesSource: (source) => resourceStartCallCount(source) === 1 &&
       source.includes("const git = (cwd: string, ...argv: string[]) => execFileSync('git', argv,") &&
-      source.includes("maxBuffer: 32 * 1024 * 1024") &&
+      source.includes("maxBuffer: 32 * 1024 * 1024, timeout: 30_000") &&
       source.includes("const scopes = [{ prefix: '', cwd: root, ref: base }, ...declaredSubmodules(root).map(") &&
       source.includes("if (seed && shrink) throw new Error('Choose either --seed or --shrink');") &&
       !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
@@ -2638,11 +2638,12 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for runtime-compatibility-census.mjs: the two synchronous child sites read committed Git objects and ELF metadata for an attended, one-shot installed-artifact census. ELF inspection has a 10-second timeout and 1 MiB output cap; neither site leaves work resident.",
+      "P-016 reviewed bypass disposition for runtime-compatibility-census.mjs: the two synchronous child sites read committed Git objects and ELF metadata for an attended, one-shot installed-artifact census. Git commands have a 120-second per-command timeout; ELF inspection has a 10-second timeout and 1 MiB output cap; neither site leaves work resident.",
     matchesSource: (source) => resourceStartCallCount(source) === 2 &&
       source.includes("function git(root, args, options = {})") &&
       source.includes("execFileSync('git', ['-C', root, ...args], { encoding: 'utf8',") &&
       source.includes("maxBuffer: 256 * 1024 * 1024") &&
+      source.includes("...options, timeout: 120_000") &&
       source.includes("const inspectElf = (path) => execFileSync('readelf', ['--file-header', '--dynamic', '--wide', '--', path],") &&
       source.includes("timeout: 10_000, maxBuffer: 1024 * 1024") &&
       source.includes("export function readCommittedSources(") &&
@@ -2708,7 +2709,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed upstream disposition for workspace-host-gcs-publication.mjs: its two gcloud start sites belong to the existing journaled release adoption/publication consumer. The command and private-byte read have explicit 30-minute and 15-minute deadlines; byte verification binds the exact digest and size, metadata mutation requires the original journal, and direct publication is stage-only.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      const gcloudStarts = [...code.matchAll(/\bexec\s*\(|\bspawnImpl\s*\(/g)].length;
+      const gcloudStarts = childProcessVerbCallCount(code) +
+        [...code.matchAll(/\bspawnImpl\s*\(/g)].length;
       return gcloudStarts === 2 &&
         source.includes("const exec = promisify(execFile);") &&
         source.includes("const runGcloud = async (args) => (await exec('gcloud', args, {") &&
@@ -2728,7 +2730,9 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       const runCalls = [...code.matchAll(/\brun\s*\(/g)].length;
-      return runCalls === 2 &&
+      const unexpectedStarts = childProcessVerbCallCount(code) +
+        [...code.matchAll(/\bspawnImpl\s*\(/g)].length;
+      return runCalls === 2 && unexpectedStarts === 0 &&
         source.includes("run = spawnSync") &&
         source.includes("ENGINEERING_RELEASE_BUDGET_MS = 45 * 60_000") &&
         source.includes("const tests = run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--',") &&
