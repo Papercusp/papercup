@@ -2,8 +2,11 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { provisionNativeRuntimeBearer, verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { registerProjectedTool, _resetProjectionRegistryForTests, type ProjectedTool } from '@papercusp/tooldef/tool-projection';
+import { runDispatchStack, type UnifiedToolContext } from '@papercusp/tooldef';
+import { NativeInstalledPerUseTurns } from '../agent-tools/per-use-chokepoint';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
-import { inspectNativeDispatchCandidate, reconcileNativeCapture } from './native-capture';
+import { appendAuthorizedNativeDispatch, verifyNativeDispatchReceipt, inspectNativeDispatchCandidate,
+  reconcileNativeCapture, type NativeDispatchAppend } from './native-capture';
 import type { SearchSource } from './search-reformulation';
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>;
@@ -25,6 +28,96 @@ const tool: ProjectedTool = { pluginName: 'native-authority-fixture', descriptio
 beforeAll(async () => { f = await sqlMiningFixture(); registerProjectedTool(tool); }, 120_000);
 afterAll(async () => { _resetProjectionRegistryForTests(); await f?.cleanup(); });
 beforeEach(async () => { await f.clear(); await f.db.adminSql`DELETE FROM harness_shared.adv_sessions`; });
+
+async function signingFixture() {
+  await f.db.adminSql`CREATE TABLE IF NOT EXISTS harness_shared.operator_secrets
+    (name text PRIMARY KEY,value_b64 text NOT NULL)`;
+  await f.db.adminSql`INSERT INTO harness_shared.operator_secrets (name,value_b64)
+    VALUES ('spawn-signing-key',${Buffer.alloc(32, 73).toString('base64')})
+    ON CONFLICT (name) DO UPDATE SET value_b64=EXCLUDED.value_b64`;
+  await f.db.adminSql`DELETE FROM harness_shared.agent_activity`;
+  const input: NativeDispatchAppend = { workspaceId, harnessSlug: harness, ownerId: owner, advSessionId: 7,
+    nativeSessionId: 'issued-native-session', callId: 'exact-call', toolName: 'native-proof:inspect',
+    argsFingerprint: sha('{"query":"private-query"}'), principal: { slug: 'system:superuser',
+      kind: 'system', authMethod: 'bearer-token', trust: 'trusted' } };
+  const rows = () => f.db.adminSql<{ detail: { nativeDispatch: Record<string, unknown> } }[]>`
+    SELECT detail FROM harness_shared.agent_activity WHERE workspace_id=${workspaceId}`;
+  return { input, rows };
+}
+
+it('protected append signs only the exact attempt and does not retain arguments or credentials', async () => {
+  const s = await signingFixture(), authorize = vi.fn(async () => true);
+  expect(await appendAuthorizedNativeDispatch(s.input, authorize, f.db.adminSql)).toBe(true);
+  expect(authorize).toHaveBeenCalledTimes(3);
+  const rows = await s.rows(), receipt = rows[0]!.detail.nativeDispatch;
+  expect(rows).toHaveLength(1);
+  expect(await verifyNativeDispatchReceipt(receipt, f.db.adminSql)).toBe(true);
+  expect(JSON.stringify(rows)).not.toContain('private-query');
+  for (const field of ['workspaceId', 'harnessSlug', 'ownerId', 'nativeSessionId', 'callId', 'toolName', 'argsFingerprint']) {
+    expect(await verifyNativeDispatchReceipt({ ...receipt, [field]: 'substituted' }, f.db.adminSql)).toBe(false);
+  }
+  expect(await verifyNativeDispatchReceipt({ ...receipt, principal: { ...s.input.principal, slug: 'other' } }, f.db.adminSql)).toBe(false);
+  expect(await verifyNativeDispatchReceipt({ ...receipt, authority: true }, f.db.adminSql)).toBe(false);
+  await f.db.adminSql`UPDATE harness_shared.operator_secrets SET value_b64=${Buffer.alloc(32, 74).toString('base64')}
+    WHERE name='spawn-signing-key'`;
+  expect(await verifyNativeDispatchReceipt(receipt, f.db.adminSql)).toBe(false);
+});
+
+it.each([1, 2, 3])('protected append rolls back when authority is withdrawn at check %s', async denied => {
+  const s = await signingFixture(); let checks = 0;
+  expect(await appendAuthorizedNativeDispatch(s.input, async () => ++checks !== denied, f.db.adminSql)).toBe(false);
+  expect(await s.rows()).toHaveLength(0);
+});
+
+it.each(['wildcard', 'wrapper', 'bad-key'])('protected append refuses %s without changing the activity index', async kind => {
+  const s = await signingFixture();
+  if (kind === 'wildcard') s.input.harnessSlug = '*';
+  if (kind === 'wrapper') s.input.toolName = 'tools:invoke';
+  if (kind === 'bad-key') await f.db.adminSql`UPDATE harness_shared.operator_secrets SET value_b64=''
+    WHERE name='spawn-signing-key'`;
+  expect(await appendAuthorizedNativeDispatch(s.input, async () => true, f.db.adminSql)).toBe(false);
+  expect(await s.rows()).toHaveLength(0);
+});
+
+it('real issuer possession and host observation reach the existing dispatcher ACL and transactional receipt writer', async () => {
+  const s = await fixture(), signing = await signingFixture();
+  const issuer = { kind: 'system' as const, slug: 'system:superuser', workspaceId,
+    trust: 'trusted' as const, authMethod: 'bearer-token' as const, capabilities: new Set(['*']) };
+  const issued = await provisionNativeRuntimeBearer({ workspaceId, advSessionId: Number(s.binding.id), issuer });
+  const registry = new NativeInstalledPerUseTurns();
+  const hooks = registry.register({ workspaceId, ownerId: owner, principalId: 'synthetic-commerce-only',
+    advSessionId: Number(s.binding.id), nativeSessionId: s.source.namespace!, ownerTurnId: 'host-owner-turn',
+    mcpServer: 'papercusp-su', nativeTools: { native_proof_inspect: 'native-proof:inspect' }, admissions: [],
+    resolveRequestPrincipal: async () => issuer });
+  try {
+    await hooks.bindNativeTurn('native-turn');
+    await hooks.observeToolCall!({ nativeTurnId: 'native-turn', callId: s.source.callId!, server: 'papercusp-su',
+      tool: 'native_proof_inspect', arguments: s.source.args });
+    const principal = await registry.resolveRequestPrincipal({ workspaceId, ownerId: owner,
+      advSessionId: Number(s.binding.id), nativeSessionFingerprint: sha(s.source.namespace!),
+      callIdFingerprint: sha(s.source.callId!), toolName: 'native-proof:inspect', arguments: s.source.args,
+      runtimeBearer: issued.bearer });
+    expect(principal?.slug).toBe('system:superuser');
+    const authorize = vi.fn(async () => ({ allow: true })), fn = vi.fn(async () => ({ content: [] }));
+    const ctx = { workspaceId, harnessSlug: harness, uiClientId: owner, transport: 'mcp', role: 'operator', principal,
+      requestOrigin: s.metadata.requestOrigin, signal: new AbortController().signal,
+      log: vi.fn(), progress: vi.fn(), emit: vi.fn() } as unknown as UnifiedToolContext;
+    const result = await runDispatchStack({ ...tool, requirePrincipal: true, authorize, fn }, 'native-proof:inspect',
+      s.source.args, ctx, { aroundInvoke: async request => {
+        expect(await registry.appendAuthorizedCapture(request, (input, renew) =>
+          appendAuthorizedNativeDispatch(input, renew, f.db.adminSql))).toBe(true);
+        return request.invoke();
+      } });
+    expect(result.ok).toBe(true); expect(fn).toHaveBeenCalledOnce(); expect(authorize).toHaveBeenCalledTimes(4);
+    const rows = await signing.rows(); expect(rows).toHaveLength(1);
+    expect(await verifyNativeDispatchReceipt(rows[0]!.detail.nativeDispatch, f.db.adminSql)).toBe(true);
+    expect(rows[0]!.detail.nativeDispatch).toMatchObject({ advSessionId: Number(s.binding.id),
+      ownerId: owner, harnessSlug: harness, nativeSessionId: s.source.namespace, callId: s.source.callId });
+    // This proves one attempt only; continuity still requires all source calls.
+    expect(await reconcileNativeCapture({ ...s.opts, harnessSlug: harness, sourceBoundary: 'tool-ledger',
+      since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' })).toBe('unknown');
+  } finally { await hooks.withdraw(); }
+});
 async function fixture() {
   const [r] = await f.db.adminSql`INSERT INTO harness_shared.adv_sessions
     (workspace_id,mode,coord_owner_id,agent,session_id) VALUES (${workspaceId},'console',${owner},'codex','native-session') RETURNING id::text`;

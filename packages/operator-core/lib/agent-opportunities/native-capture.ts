@@ -1,7 +1,7 @@
 /** Source-defined native capture reconciliation. The activity ledger is an index,
  * never the population. Only host-issued runtime roots define the expected calls;
  * no request can supply a source path, a completeness flag, or a historical floor. */
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -12,6 +12,8 @@ import { canonicalJson } from '../external-bench/reproducibility/canonical-json'
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
 import { createNativeTranscriptReader, NATIVE_PROVIDERS, type NativeProvider } from './native-operation';
 import type { SearchSource } from './search-reformulation';
+import { decodeOperatorSecretKey } from '../operator-secret-key';
+import { z } from 'zod';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 type Binding = { id: string; owner: string; provider: NativeProvider; harness: string | null };
@@ -34,6 +36,66 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 const micros = (value: string) => BigInt(Date.parse(value)) * 1000n
   + BigInt(((/\.(\d+)/.exec(value)?.[1] ?? '').padEnd(6, '0').slice(3, 6)) || '0');
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const nativeDispatchReceipt = z.object({
+  version: z.literal(1), provider: z.literal('codex'),
+  workspaceId: z.string().min(1).max(256), harnessSlug: z.string().min(1).max(256),
+  ownerId: z.string().min(1).max(256), advSessionId: z.number().int().positive(),
+  nativeSessionId: z.string().min(1).max(256), callId: z.string().min(1).max(256),
+  toolName: z.string().min(1).max(256), argsFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  principal: z.object({ slug: z.string().min(1).max(256), kind: z.string().min(1).max(64),
+    authMethod: z.string().min(1).max(64), trust: z.enum(['trusted', 'verified']) }).strict(),
+  issuedAt: z.string().datetime(), signature: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+type NativeDispatchReceipt = z.infer<typeof nativeDispatchReceipt>;
+export type NativeDispatchAppend = Omit<NativeDispatchReceipt, 'version' | 'provider' | 'issuedAt' | 'signature'>;
+
+async function nativeDispatchSignature(sql: Client, receipt: Omit<NativeDispatchReceipt, 'signature'>) {
+  const [key] = await sql<{ value_b64: string }[]>`
+    SELECT value_b64 FROM harness_shared.operator_secrets WHERE name='spawn-signing-key'`;
+  if (!key) throw new Error('native_dispatch_signing_key_unavailable');
+  return createHmac('sha256', decodeOperatorSecretKey(key.value_b64, 'spawn-signing-key'))
+    .update(canonicalJson(['native-dispatch-receipt-v1', receipt])).digest('hex');
+}
+
+/** Host-only append after the existing dispatcher's resource ACL. Reuse the
+ * activity index and operator signing key, with a separate signing domain.
+ * Neither activity:report detail nor a serialized principal can mint a receipt.
+ * The host renews possession/principal/turn binding inside this transaction;
+ * failed renewal rolls back the append. A receipt attests an authorized attempt,
+ * not handler success, transcript completeness, or permission to execute again. */
+export async function appendAuthorizedNativeDispatch(input: NativeDispatchAppend,
+  authorize: () => Promise<boolean>, client: Client = getOrgPg().sql): Promise<boolean> {
+  try {
+    if (input.workspaceId === '*' || input.harnessSlug === '*'
+      || ['tools:invoke', 'code:run'].includes(input.toolName) || !await authorize()) return false;
+    const unsigned = { ...input, version: 1 as const, provider: 'codex' as const, issuedAt: new Date().toISOString() };
+    return await client.begin(async transaction => {
+      const sql = transaction as unknown as Client;
+      const receipt = nativeDispatchReceipt.parse({ ...unsigned, signature: await nativeDispatchSignature(sql, unsigned) });
+      if (!await authorize()) throw new Error('native_dispatch_authority_withdrawn');
+      await sql`INSERT INTO harness_shared.agent_activity
+        (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,summary,detail,created_at)
+        VALUES (${receipt.workspaceId},${receipt.harnessSlug},${receipt.ownerId},'codex',${receipt.nativeSessionId},
+          'tool',${receipt.toolName},'pre',${receipt.callId},'Authorized native dispatch',
+          ${sql.json({ nativeDispatch: receipt })}::jsonb,${receipt.issuedAt}::timestamptz)`;
+      if (!await authorize()) throw new Error('native_dispatch_authority_withdrawn');
+      return true;
+    }) as boolean;
+  } catch { return false; }
+}
+
+/** Verification of a historical attempt only. Exact row/source correlation and
+ * current read ACL are separate checks. Arbitrary JSON, changed scope/arguments,
+ * and receipts signed under a rotated key cannot pass this check. */
+export async function verifyNativeDispatchReceipt(value: unknown, client: Client = getOrgPg().sql): Promise<boolean> {
+  try {
+    const parsed = nativeDispatchReceipt.safeParse(value);
+    if (!parsed.success) return false;
+    const { signature, ...unsigned } = parsed.data;
+    const expected = await nativeDispatchSignature(client, unsigned);
+    return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
+  } catch { return false; }
+}
 /** D030: exact dispatch correlation is a necessary check, NEVER an authority
  * grant. The existing host stores system-bearer authentication and caller/row
  * consistency, not independently authenticated owner/per-call scope. Keep that
