@@ -224,7 +224,8 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
   return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_IN_FLIGHT_RE.test(after);
 }
 
-const SENTENCE_BOUNDARY_RE = /[\n;]|[.!?](?=\s|$)/g;
+const SENTENCE_BOUNDARY_RE =
+  /[\n;]|,(?=\s+(?:(?:and|but|while|whereas|however)\s+)?(?:\w+\s+){0,4}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b)|[.!?](?=\s|$)/g;
 const RUN_SUBJECT_AFTER_LAUNCH_RE =
   /^\W*(?:(?:a|an|the|my|our|this|that|full|affected|verification|separate)\W+){0,3}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
 
@@ -261,8 +262,13 @@ function runReferenceRange(text: string, index: number, length: number): { start
   const separator = /^[.!?;]?\s*/.exec(text.slice(range.end))?.[0] ?? '';
   const nextStart = range.end + separator.length;
   if (!/^(?:handle|output|log)(?:\s*:|\s+at\b)/i.test(text.slice(nextStart))) return null;
-  const next = sentenceRange(text, nextStart, 0);
-  return hasReference(text.slice(nextStart, next.end)) ? { start: range.start, end: next.end } : null;
+  // A labeled tool handle can contain semicolon-separated fields, e.g.
+  // `Handle: run_in_background:true; bash_id:abc123`. Keep that explicit
+  // metadata together even though semicolons otherwise delimit clauses.
+  const attachedTail = text.slice(nextStart);
+  const terminal = /[\n]|[.!?](?=\s|$)/.exec(attachedTail);
+  const nextEnd = terminal ? nextStart + terminal.index : text.length;
+  return hasReference(text.slice(nextStart, nextEnd)) ? { start: range.start, end: nextEnd } : null;
 }
 
 /** Negation immediately governing this status is not an unread admission.

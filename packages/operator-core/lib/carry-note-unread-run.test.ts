@@ -144,6 +144,19 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)).toBeNull();
   });
 
+  it('does not pair completed test logs with a separate launched publisher command (EI-26820577365848014)', () => {
+    const body = 'Read /tmp/unit.log (73 passed), /tmp/integration.log (52 passed), and ' +
+      '/tmp/tsc.log (exit0), and a separate publisher command was launched.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
+  it('keeps a separately launched publisher command tied to its own output', () => {
+    const body = 'Read /tmp/unit.log (73 passed), and a separate publisher command was ' +
+      'launched at /tmp/publish.log.';
+    expect(describeUnreadRun(body, 0)?.signals.runRefs).toEqual(['/tmp/publish.log']);
+  });
+
   it.each(['output at', 'output:', 'log:', 'Handle:'])(
     'preserves an explicitly attached unread output clause introduced by %s', (label) => {
       const body = `The typecheck is still running; ${label} /tmp/types.log.`;
