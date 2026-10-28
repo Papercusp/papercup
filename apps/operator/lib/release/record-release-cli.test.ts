@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { OwnerDirectiveRow } from '@papercusp/operator-core/lib/owner-directives';
 import {
@@ -1310,10 +1311,26 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
       const site = path.join(root, 'site');
       const home = path.join(root, 'home');
       const bin = path.join(root, 'bin');
+      const fetchPreload = path.join(root, 'fixture-fetch.mjs');
+      const fetchLog = path.join(root, 'link-probes.jsonl');
       fs.mkdirSync(path.join(site, 'plans'), { recursive: true });
       fs.mkdirSync(path.join(site, 'work-items'), { recursive: true });
       fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
       fs.mkdirSync(bin, { recursive: true });
+      // The publisher also runs the real Node link checker. Its fetch calls
+      // bypass the curl stub below, so contain them in this fixture too.
+      fs.writeFileSync(fetchPreload, `import fs from 'node:fs';
+globalThis.fetch = async (url, options = {}) => {
+  const target = new URL(url);
+  if (target.origin !== 'https://release.example' || !target.pathname.startsWith('/secret-path/')) {
+    throw new Error('Unexpected fixture fetch: ' + target.href);
+  }
+  const relative = decodeURIComponent(target.pathname.slice('/secret-path/'.length));
+  if (relative.split('/').includes('..')) throw new Error('Unsafe fixture fetch path');
+  fs.appendFileSync(process.env.PROBE_FETCH_LOG, JSON.stringify({ method: options.method, path: target.pathname }) + '\\n');
+  return new Response(null, { status: fs.existsSync(process.env.PROBE_SITE + '/' + relative) ? 200 : 404 });
+};
+`);
 
       const index = '<html><body><section class="rel" data-newest-release="1.2.3"><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a><a href="changes/desktop-v1.2.3-alpha.html">Changes</a></section></body></html>\n';
       const history = '{"releases":[{"version":"1.2.3","artifacts":[]}]}\n';
@@ -1408,6 +1425,10 @@ if (args.includes('-w')) process.stdout.write('200');
             PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
             PROBE_SITE: site,
             PROBE_GCS_STATE: path.join(root, 'gcloud-state.json'),
+            PROBE_FETCH_LOG: fetchLog,
+            // Fixture CLIs are synthetic programs outside the repository. Do
+            // not bootstrap the outer test runner's source loader in each one.
+            NODE_OPTIONS: `--import=${pathToFileURL(fetchPreload).href}`,
             DRY_RUN: '0',
           },
           encoding: 'utf8',
@@ -1418,7 +1439,10 @@ if (args.includes('-w')) process.stdout.write('200');
           historyMode, durationMs: Date.now() - startedAt, status: result.status,
           signal: result.signal, error: result.error?.message,
         })}\n`);
-        return result;
+        const linkProbes: Array<{ method: string; path: string }> = fs.existsSync(fetchLog)
+          ? fs.readFileSync(fetchLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+          : [];
+        return { ...result, linkProbes };
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
@@ -1429,6 +1453,10 @@ if (args.includes('-w')) process.stdout.write('200');
     const result = runFixture();
     const diagnostics = [result.error?.message, result.stdout, result.stderr].filter(Boolean).join('\n');
     expect(result.error, diagnostics).toBeUndefined();
+    expect(result.linkProbes.sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+      { method: 'HEAD', path: '/secret-path/changes/desktop-v1.2.3-alpha.html' },
+      { method: 'HEAD', path: '/secret-path/work-items/WI-1.html' },
+    ]);
     if (historyMode === 'match') {
       expect(result.status, diagnostics).toBe(0);
       expect(result.stdout).toContain('history.json served and byte-identical');
