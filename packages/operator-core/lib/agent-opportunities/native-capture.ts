@@ -244,10 +244,22 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
     identities, snapshot, complete, continuation: chunked ? cursor : null };
 }
 
-/** A fresh canonical-source reconciliation, not a cached callback attestation.
- * Missing sources, an index rewrite, changed authority, future windows and the
- * pre-install period remain UNKNOWN/gap. Only opaque digests/counts are retained. */
-export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'complete' | 'gap' | 'unknown'> {
+/** Production authority boundary (D030). No existing generic persisted receipt
+ * independently authenticates owner + issued runtime + exact per-call scope.
+ * Until one does, even a perfect candidate index is UNKNOWN. In particular,
+ * never run the candidate indexer here: it writes opts.harnessSlug and cannot
+ * supply its own authority. This is a fail-closed mitigation; the missing
+ * positive binding remains tracked by EI-27075012317842664. */
+export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promise<'unknown'> {
+  try { await opts.authorize(); } catch { /* Revocation/unavailable ACL is also UNKNOWN. */ }
+  return 'unknown';
+}
+
+/** @internal Technical candidate-index preparation, NOT scope authorization or
+ * production continuity. Kept separate to preserve the real filesystem/PG
+ * scanner, receipt-time and cache-invalidation regressions. Only the production
+ * authority boundary above may certify continuity; this helper cannot do so. */
+export async function indexNativeCaptureCandidates(opts: NativeCaptureOptions): Promise<'complete' | 'gap' | 'unknown'> {
   const sql = opts.client ?? getOrgPg().sql, deadline = Date.now() + 1000;
   try {
     if (!opts.harnessSlug || !opts.sourceBoundary || !Number.isFinite(Date.parse(opts.since))

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { registerProjectedTool, _resetProjectionRegistryForTests, type ProjectedTool } from '@papercusp/tooldef/tool-projection';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
-import { inspectNativeDispatchCandidate } from './native-capture';
+import { inspectNativeDispatchCandidate, reconcileNativeCapture } from './native-capture';
 import type { SearchSource } from './search-reformulation';
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>;
@@ -49,6 +49,21 @@ it('D030 exact candidate from full dispatch population still grants NO owner or 
   expect(JSON.stringify(read)).not.toMatch(/private-query|native-session|su-exact-call/);
   // Object order is irrelevant, while arguments remain exact.
   expect(await s.inspect({ ...s.source, args: { query: 'private-query', harness } })).toEqual(read);
+});
+
+it('D030 production reconciliation refuses an exact candidate before writing scope-derived index or receipts', async () => {
+  const s = await fixture();
+  expect((await s.inspect()).correlation).toBe('exact');
+  const snapshot = async () => ({
+    activity: [...await f.db.adminSql`SELECT to_jsonb(a) AS row FROM harness_shared.agent_activity a ORDER BY id`],
+    progress: [...await f.db.adminSql`SELECT to_jsonb(p) AS row FROM harness_shared.sql_intent_progress p ORDER BY scope_id`],
+  });
+  const before = await snapshot();
+  const opts = { ...s.opts, harnessSlug: harness, sourceBoundary: 'tool-ledger',
+    since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' };
+  expect(await reconcileNativeCapture(opts)).toBe('unknown');
+  expect(await reconcileNativeCapture({ ...opts, authorize: async () => false })).toBe('unknown');
+  expect(await snapshot()).toEqual(before);
 });
 
 it('D030 a scoped candidate never scopes unknown siblings or a mixed-harness root', async () => {
