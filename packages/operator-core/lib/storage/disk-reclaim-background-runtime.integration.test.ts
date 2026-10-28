@@ -196,6 +196,10 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
     expectedReclaimCases: selectedCount + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true,
     observedSources: ['packages/operator-core/lib/storage/usage.ts'] }, context),
   options.testTimeoutMs);
+it('retains measured scheduled effects after cleanup failure in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'retains removed fixture effects in the latest durable scheduled receipt after holder cleanup fails',
+  ], expectedReclaimCases: 1, census: false }, context), options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
   options.testTimeoutMs);
