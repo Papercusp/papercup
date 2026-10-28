@@ -5091,6 +5091,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
       approvedBy: 'amendment-actor',
     });
     expect(ineligibleScreen!.implementers).toContain('amendment-actor');
+    expect(ineligibleScreen!.independencePopulation).toContainEqual({
+      ownerId: 'amendment-actor',
+      relation: 'caller',
+    });
     // A self-screen cannot distinguish caller lineage from durable implementer lineage, so it
     // must return an explicit non-verdict instead of a confident false.
     expect(ineligibleScreen!.approverEligibility).toEqual({
@@ -5127,6 +5131,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
       eligible: true,
       relatedImplementer: null,
       eligibleWithUnrelatedApplier: true,
+    });
+    const reviewerPreview = await rubrics.previewAcceptanceBarAmendment({
+      ...amendment,
+      actorId: 'outside-reviewer',
+    });
+    expect(reviewerPreview!.implementers).toContain('outside-reviewer');
+    expect(reviewerPreview!.independencePopulation).toContainEqual({
+      ownerId: 'outside-reviewer',
+      relation: 'caller',
     });
     // Naming no approver asks no eligibility question, so none is answered — but the
     // independence population is still published for a caller screening candidates.
