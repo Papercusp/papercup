@@ -2740,14 +2740,20 @@ describe('all-skipped verdict checks each requested file', () => {
         ],
       }));
       const outcomes = assertionOutcomesFromReport(reportPath);
-
-      expect(allSkippedVerdict({
+      const summary = aggregateGroupResults([{
+        requested: 2,
+        matched: 2,
+        executed: 2,
+        unmatchedCount: 0,
+        failed: false,
+        launchError: false,
+        testsSkipped: outcomes?.skipped.length ?? null,
+        skippedNames: outcomes?.skipped ?? [],
         executedNames: outcomes?.executed ?? [],
         executedFiles: outcomes?.executedFiles ?? [],
-        skippedNames: outcomes?.skipped ?? [],
-        anyFailed: false,
-        skippedUnmeasuredGroups: 0,
-      })).toEqual({
+      }]);
+
+      expect(allSkippedVerdict(summary)).toEqual({
         vacuous: true,
         reason: 'requested-file-has-no-executed-tests',
         files: [skippedFile],
