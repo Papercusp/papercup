@@ -33,14 +33,35 @@ export function findFreeValueReferences(code: string, { jsx, known }?: {
 export function repoOwnedInputs(metafile: {
     inputs?: Record<string, unknown>;
 }, baseDir: string): string[];
+/** Reuse only a successful analysis of the SAME bytes, grammar and globals.
+ * EI-27247628229290204: a first private build reparsed 7,439 unchanged inputs
+ * for 107s. Unlike an mtime baseline, this also works across isolated checkouts.
+ * The scanner and lockfile bytes invalidate prior parser/analysis semantics;
+ * Node's version invalidates the runtime globals. Storage failure is a miss.
+ * This is analysis reuse, not test evidence or permission to skip an input read.
+ */
+export function createCleanInputCache({ directory, implementation, maxEntries }?: {
+    directory?: string | undefined;
+    maxEntries?: number | undefined;
+}): {
+    stats: {
+        hits: number;
+        analyzed: number;
+    };
+    key(code: any, jsx: any, known: any): string;
+    has(key: any): boolean;
+    remember(key: any): void;
+    flush(): void;
+};
 /**
  * @param {string[]} files
- * @param {{ known?: Set<string>, readFile?: (file: string) => string }} [options]
+ * @param {{ known?: Set<string>, readFile?: (file: string) => string, cache?: ReturnType<typeof createCleanInputCache> }} [options]
  * @returns {{ findings: Array<{ file: string, name: string, line: number, column: number }>, unreadable: Array<{ file: string, error: string }>, unparsed: Array<{ file: string, error: string }> }}
  */
-export function checkInputs(files: string[], { known, readFile }?: {
+export function checkInputs(files: string[], { known, readFile, cache }?: {
     known?: Set<string>;
     readFile?: (file: string) => string;
+    cache?: ReturnType<typeof createCleanInputCache>;
 }): {
     findings: Array<{
         file: string;

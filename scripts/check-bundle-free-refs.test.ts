@@ -10,6 +10,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   checkInputs,
+  createCleanInputCache,
   findFreeValueReferences,
   knownGlobalNames,
   main,
@@ -164,6 +165,69 @@ describe('checkInputs', () => {
     expect(findings).toEqual([{ file: '/r/free.ts', name: 'freeOne', line: 1, column: 18 }]);
     expect(unreadable).toEqual([{ file: '/r/gone.ts', error: 'unreadable: ENOENT' }]);
     expect(unparsed.map((u) => u.file)).toEqual(['/r/bad-syntax.ts']);
+  });
+});
+
+describe('successful input analysis reuse (EI-27247628229290204)', () => {
+  let directory: string;
+  beforeEach(() => { directory = mkdtempSync(path.join(tmpdir(), 'free-refs-cache-')); });
+  afterEach(() => { rmSync(directory, { recursive: true, force: true }); });
+  const clean = 'export const value = 1;';
+  const known = knownGlobalNames();
+  const open = (implementation = 'scanner-v1') => createCleanInputCache({ directory, implementation });
+
+  it('reuses identical bytes across processes/checkouts, while still reading each input', () => {
+    const producer = open();
+    expect(checkInputs(['/first/a.ts'], { cache: producer, known, readFile: () => clean }).findings).toEqual([]);
+    expect(producer.stats).toEqual({ analyzed: 1, hits: 0 });
+    producer.flush();
+    const reader = open();
+    let reads = 0;
+    expect(checkInputs(['/relocated/a.ts'], { cache: reader, known, readFile: () => { reads++; return clean; } }))
+      .toEqual({ findings: [], unreadable: [], unparsed: [] });
+    expect(reads).toBe(1);
+    expect(reader.stats).toEqual({ analyzed: 0, hits: 1 });
+  });
+
+  it('invalidates changed bytes and globals, and never caches a finding', () => {
+    const cache = open();
+    const scan = (code: string, globals = known) => checkInputs(['/a.ts'], { cache, known: globals, readFile: () => code });
+    scan(clean);
+    expect(scan('export const value = missing;').findings.map(f => f.name)).toEqual(['missing']);
+    expect(scan('export const value = missing;').findings.map(f => f.name)).toEqual(['missing']);
+    expect(scan('export const value = provided;', knownGlobalNames(['provided'])).findings).toEqual([]);
+    expect(scan('export const value = provided;').findings.map(f => f.name)).toEqual(['provided']);
+    expect(cache.stats).toEqual({ analyzed: 5, hits: 0 });
+  });
+
+  it('separates JSX grammar and implementation identities, and never caches parser gaps', () => {
+    const cache = open();
+    const readFile = () => 'export const node = <div />;';
+    expect(checkInputs(['/a.tsx'], { cache, known, readFile }).unparsed).toEqual([]);
+    expect(checkInputs(['/a.ts'], { cache, known, readFile }).unparsed).toHaveLength(1);
+    expect(checkInputs(['/a.ts'], { cache, known, readFile }).unparsed).toHaveLength(1);
+    expect(cache.stats).toEqual({ analyzed: 3, hits: 0 });
+    cache.flush();
+    const changed = open('scanner-v2');
+    checkInputs(['/a.tsx'], { cache: changed, known, readFile });
+    expect(changed.stats).toEqual({ analyzed: 1, hits: 0 });
+  });
+
+  it('rechecks unreadable inputs and treats corrupt or unavailable storage as a miss', () => {
+    const producer = open();
+    checkInputs(['/a.ts'], { cache: producer, known, readFile: () => clean }); producer.flush();
+    expect(checkInputs(['/a.ts'], { cache: producer, known, readFile: () => { throw new Error('gone'); } }).unreadable).toHaveLength(1);
+    const blocked = path.join(directory, 'not-a-directory'); writeFileSync(blocked, 'blocked');
+    const unavailable = createCleanInputCache({ directory: blocked, implementation: 'scanner-v1' });
+    checkInputs(['/a.ts'], { cache: unavailable, known, readFile: () => clean });
+    expect(() => unavailable.flush()).not.toThrow();
+    expect(unavailable.stats).toEqual({ analyzed: 1, hits: 0 });
+    // A syntactically valid but altered entry must not suppress a real finding.
+    const file = path.join(directory, `${require('node:crypto').createHash('sha256').update('scanner-v1').digest('hex')}.json`);
+    writeFileSync(file, '{"version":1,"clean":["' + '0'.repeat(64) + '"],"sha256":"wrong"}');
+    const corrupted = open();
+    checkInputs(['/a.ts'], { cache: corrupted, known, readFile: () => clean });
+    expect(corrupted.stats).toEqual({ analyzed: 1, hits: 0 });
   });
 });
 
