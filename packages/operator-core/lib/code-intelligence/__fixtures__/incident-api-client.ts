@@ -218,7 +218,8 @@ try {
     WHERE workspace_id = ${workspace} AND owner_id = 'native-incident-private-owner' AND leg = 'incident'`;
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.subject, `failed-tests:${testPath}`);
-  assert.equal(rows[0]!.chars, delivered.text.length + 2);
+  // push-channel.ts records a fact's own block length (no join separator) since a40935b119.
+  assert.equal(rows[0]!.chars, delivered.text.length);
   const duplicate = await postIncident();
   assert(!duplicate.text.includes('Code intelligence (incident)'), duplicate.text);
   const [count] = await getOrgPg().sql<{ count: number }[]>`SELECT count(*)::int AS count
@@ -401,7 +402,8 @@ async function runNativeSnapshotJourney({ call, workspace, root, owner, repo, en
     WHERE workspace_id = ${workspace} AND owner_id = ${owner} AND leg = ${leg}`;
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.subject, leg === 'first-touch' ? target : 'firstTouchTarget');
-  assert.equal(rows[0]!.chars, delivered.text.length + 2);
+  // push-channel.ts records a fact's own block length (no join separator) since a40935b119.
+  assert.equal(rows[0]!.chars, delivered.text.length);
   const duplicate = await dispatcher.post(nativeEvent);
   assert(!duplicate.text.includes(heading), duplicate.text);
   let unresolvedSuppressed: boolean | undefined;
