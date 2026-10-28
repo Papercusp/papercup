@@ -166,7 +166,11 @@ export function classifyGitSyncFailingLeg(
   if (e.includes('conflict')) return 'conflict';
   if (e.includes('could not lock config file') && e.includes('config')) return 'config-lock';
   if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
-  if (e.includes('push')) return 'push';
+  // Require positive evidence that a push attempt failed. A bare substring match
+  // misclassified phrases such as "Origin was never force-pushed" as push failures.
+  if (/\bpush (?:failed|fails|was rejected|is rejected)\b|\b(?:failed|unable|could not|cannot) to push\b/.test(e)) {
+    return 'push';
+  }
   // No usable error text: a commit-only member still cannot have push-failed.
   if (pushMode?.startsWith('commit-only')) return 'commit';
   return 'unknown';

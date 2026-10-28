@@ -535,7 +535,10 @@ describe('dependency source checkout boundaries', () => {
     execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${vendorCommit},libs/vendor`], { cwd: integration });
     // The superproject ignores one too.
     mkdirSync(join(integration, 'tools'), { recursive: true });
-    writeFileSync(join(integration, '.gitignore'), '/tools/package-lock.json\n');
+    writeFileSync(join(integration, '.gitignore'), '/tools/package-lock.json\n/packages/a/package-lock.json\n');
+    writeFileSync(join(integration, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+      'packages/a/node_modules/local': { version: '1.0.0' },
+    } }) + '\n');
     const sourceCommit = commitAllFixture(integration, 'record submodule and ignore rules');
 
     // Install artifacts the commits can never carry.
@@ -545,7 +548,7 @@ describe('dependency source checkout boundaries', () => {
       mkdirSync(join(integration, dir, 'node_modules/unbound'), { recursive: true });
       writeFileSync(join(integration, dir, 'node_modules/unbound/package.json'), '{"name":"unbound","version":"1.0.0"}\n');
     }
-    const trees = spawnSync('bash', ['-c', [
+    const enumerateTrees = () => spawnSync('bash', ['-c', [
       'set -euo pipefail',
       'source "$SCRIPT"',
       'dependency_generation_enumerate_node_modules "$INTEGRATION"',
@@ -553,6 +556,7 @@ describe('dependency source checkout boundaries', () => {
       'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a libs/vendor/kit tools)',
       'dependency_generation_enumerate_node_modules "$INTEGRATION"',
     ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    const trees = enumerateTrees();
     expect(trees.status, trees.stderr).toBe(0);
     expect(trees.stdout.match(/packages\/a\/node_modules/g)).toHaveLength(2);
     expect(trees.stdout).not.toContain('libs/vendor/kit/node_modules');
@@ -573,6 +577,13 @@ describe('dependency source checkout boundaries', () => {
     const exact = fingerprintRef(integration, sourceCommit);
     expect(exact.status, exact.stderr).toBe(0);
     expect(result.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+
+    // A cleaned-up ignored lock must not readmit its leftover private tree.
+    rmSync(join(vendor, 'kit/package-lock.json'));
+    rmSync(join(integration, 'tools/package-lock.json'));
+    const withoutLocks = enumerateTrees();
+    expect(withoutLocks.status, withoutLocks.stderr).toBe(0);
+    expect(withoutLocks.stdout).toBe(trees.stdout);
 
     // An untracked lockfile that is NOT ignored is still a live input: it could be
     // committed, so the comparison must keep refusing until it is.
