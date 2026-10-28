@@ -164,7 +164,7 @@ describe('plan_decision_provenance (migration 1603)', () => {
       { kind: 'owner', turnRef: '[turn:deadbeef@2026-10-28T11:00:00.000Z]' },
       ATTRIBUTED,
     );
-    expect(unresolved.resolution).toMatchObject({ ok: false, error: 'provenance_owner_turn_unverified', field: 'provenance.turnRef' });
+    expect(unresolved.resolution).toMatchObject({ ok: false, error: 'provenance_owner_turn_unverified', field: 'ownerTurnRef' });
     expect(unresolved.rows).toEqual([]);
   });
 

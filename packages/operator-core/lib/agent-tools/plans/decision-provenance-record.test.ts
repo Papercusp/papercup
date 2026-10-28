@@ -8,8 +8,9 @@ vi.mock('../coordination/identity', () => ({
 }));
 
 import {
-  decisionProvenanceArg,
   findOwnerTag,
+  ownerTurnRefArg,
+  provenanceFromOwnerTurnRef,
   resolveDecisionProvenance,
   rowToView,
   type DecisionProvenanceDeps,
@@ -53,12 +54,17 @@ describe('findOwnerTag', () => {
   });
 });
 
-describe('decisionProvenanceArg', () => {
-  it('accepts agent and owner shapes and rejects owner without turnRef or extra keys', () => {
-    expect(decisionProvenanceArg.safeParse({ kind: 'agent' }).success).toBe(true);
-    expect(decisionProvenanceArg.safeParse({ kind: 'owner', turnRef: REF }).success).toBe(true);
-    expect(decisionProvenanceArg.safeParse({ kind: 'owner' }).success).toBe(false);
-    expect(decisionProvenanceArg.safeParse({ kind: 'agent', agentId: 'spoof' }).success).toBe(false);
+describe('ownerTurnRefArg + provenanceFromOwnerTurnRef', () => {
+  it('is a flat bounded string: accepts a ref, rejects empty, over-long and object shapes', () => {
+    expect(ownerTurnRefArg.safeParse(REF).success).toBe(true);
+    expect(ownerTurnRefArg.safeParse('').success).toBe(false);
+    expect(ownerTurnRefArg.safeParse('x'.repeat(201)).success).toBe(false);
+    expect(ownerTurnRefArg.safeParse({ kind: 'owner', turnRef: REF }).success).toBe(false);
+  });
+  it('maps omitted to undefined, null to the agent, and a ref to an owner claim', () => {
+    expect(provenanceFromOwnerTurnRef(undefined)).toBeUndefined();
+    expect(provenanceFromOwnerTurnRef(null)).toEqual({ kind: 'agent' });
+    expect(provenanceFromOwnerTurnRef(REF)).toEqual({ kind: 'owner', turnRef: REF });
   });
 });
 
@@ -89,7 +95,7 @@ describe('resolveDecisionProvenance', () => {
   });
   it('rule 2 negative: a non-owner verdict is refused', async () => {
     const r = await resolveDecisionProvenance({ kind: 'owner', turnRef: REF }, 'b', ME, deps(verdict({ verdict: 'agent-injected' as never })));
-    expect(r).toMatchObject({ ok: false, error: 'provenance_owner_turn_not_owner', field: 'provenance.turnRef' });
+    expect(r).toMatchObject({ ok: false, error: 'provenance_owner_turn_not_owner', field: 'ownerTurnRef' });
   });
   it('rule 2 negative: an unresolvable or unchecked turn is refused (owner needs positive evidence)', async () => {
     const notFound = await resolveDecisionProvenance({ kind: 'owner', turnRef: REF }, 'b', ME, deps(verdict({ found: false, verdict: null })));
@@ -113,7 +119,7 @@ describe('resolveDecisionProvenance', () => {
   it('rule 3 negative: an owner tag in the body is refused unless provenance is owner', async () => {
     for (const arg of [undefined, { kind: 'agent' as const }]) {
       const r = await resolveDecisionProvenance(arg, `Decided ${TAG}.`, ME, deps(null));
-      expect(r).toMatchObject({ ok: false, error: 'provenance_owner_tag_without_owner_kind', field: 'provenance' });
+      expect(r).toMatchObject({ ok: false, error: 'provenance_owner_tag_without_owner_kind', field: 'ownerTurnRef' });
     }
   });
   it('rule 3: the same body is accepted with verified owner provenance, and a turn ref alone stays allowed', async () => {

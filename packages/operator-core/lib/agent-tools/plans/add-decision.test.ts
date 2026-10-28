@@ -107,9 +107,13 @@ const HANDLER_PLAN = [
   '',
 ].join('\n');
 
+// SPEC-P-018: a decision write from an unattributable caller is refused, so the handler
+// fixture carries a caller identity (resolveAgentIdentity's superuser branch).
 const handlerContext = (harnessSlug = '*') => ({
   workspaceId: 'ws-add-decision',
   harnessSlug,
+  isSuperuser: true,
+  uiClientId: 'su-test-recorder',
   metadata: vi.fn(),
 });
 
@@ -737,6 +741,23 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       ok: false,
       slug: 'handler-plan',
       error: 'provenance_owner_tag_without_owner_kind',
+    });
+  });
+
+  it('SPEC-P-018: an unattributable caller is refused before the write, so no decision lands without provenance', async () => {
+    const { isSuperuser: _su, uiClientId: _client, ...anonymous } = handlerContext();
+
+    const result = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'Anonymous ruling', body: 'No provenance shapes.' },
+      anonymous,
+    );
+
+    expect(handlerMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({
+      ok: false,
+      slug: 'handler-plan',
+      error: 'provenance_unattributable',
+      field: 'provenance',
     });
   });
 

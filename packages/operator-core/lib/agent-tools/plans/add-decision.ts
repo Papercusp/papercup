@@ -42,7 +42,8 @@ import {
   hasConcreteDecisionMeasurement,
 } from './decision-provenance';
 import {
-  decisionProvenanceArg,
+  ownerTurnRefArg,
+  provenanceFromOwnerTurnRef,
   recordDecisionProvenance,
   resolveDecisionProvenance,
   type DecisionProvenanceArg,
@@ -100,7 +101,6 @@ const itemSpec = z.object({
   affects: AFFECTS.optional().describe(AFFECTS_DESC),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
-  provenance: decisionProvenanceArg.optional(),
 });
 
 const argsSchema = z
@@ -113,7 +113,9 @@ const argsSchema = z
     refs: REFS.optional(),
     itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
     affects: AFFECTS.optional().describe(AFFECTS_DESC),
-    provenance: decisionProvenanceArg.optional(),
+    ownerTurnRef: ownerTurnRefArg
+      .optional()
+      .describe("'[turn:<session>@<ts>]' of the verified owner turn that ruled this (all items); omit = your own ruling"),
     items: z
       .array(itemSpec)
       .min(1)
@@ -671,7 +673,6 @@ export async function addDecisionOne(
       ? { workspaceId: lockScope.workspaceId, harnessSlug: lockScope.harnessSlug, planSlug: it.slug, decisionId }
       : null,
     provenanceResolution.provenance,
-    'unrecordedReason' in provenanceResolution ? provenanceResolution.unrecordedReason : undefined,
   );
 
   return {
@@ -733,6 +734,8 @@ export default defineTool({
     // accept it here too instead of rejecting the read-shape field name.
     // `refs` wins when both are given on the same object.
     const batchRefs = args.refs ?? args.itemRefs;
+    // P-018: a flat turn-ref arg, top-level only (EI-27076355939117314 — floor-seed budget).
+    const provenance = provenanceFromOwnerTurnRef(args.ownerTurnRef);
     const list: NewDecision[] = args.items?.length
       ? args.items.map((it) => ({
           slug: it.slug,
@@ -743,7 +746,7 @@ export default defineTool({
           affects: it.affects ?? args.affects,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
-          provenance: it.provenance ?? args.provenance,
+          provenance,
         }))
       : [
           {
@@ -755,7 +758,7 @@ export default defineTool({
             affects: args.affects,
             harness: args.harness,
             rationale: args.rationale,
-            provenance: args.provenance,
+            provenance,
           },
         ];
     const env = await runBulk(list, (it) => addDecisionOne(it, ctx), {
