@@ -53,6 +53,7 @@ import {
   codexFreshDefaultAuthPreflight,
   rehealResumeCodexAuth,
 } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
+import { resolvePtoolInvocationCandidates } from '../../../../../apps/operator/scripts/ptool.mjs';
 
 // A per-session codex home (session-42) with two rollouts; the newer UUID wins.
 const ROLLOUT_UUID = '019ea541-e6ed-71c2-bc67-aa25b5164ec5';
@@ -4848,6 +4849,78 @@ describe('executeWake — the liveness ladder', () => {
         expect.objectContaining({ advSessionId, owner: 'su-codex-route', codexHome: home, ...expected }),
       );
     } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('marks a managed Codex wake URL so ptool can recover the current catalog', async () => {
+    const envKeys = [
+      'PAPERCUSP_OPERATOR_URL',
+      'PAPERCUSP_OPERATOR_URL_PROVENANCE',
+      'PAPERCUSP_OPERATOR_BASE',
+      'PAPERCUSP_HONO_PORT',
+      'PAPERCUSP_MCP_STAGING_PROXY_PORT',
+      'PAPERCUSP_MCP_PROXY_TARGET_PORT',
+      'PAPERCUSP_MCP_PROXY',
+      'PAPERCUSP_MCP_STAGING_PROXY',
+    ] as const;
+    const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    const advSessionId = 1014;
+    const home = codexHomeForAdvSession(advSessionId);
+    const nativeId = '11111111-1111-4111-8111-111111111111';
+    const spawnDetached = vi.fn(() => 4321);
+    const repair = vi.fn(async () => ({ ok: true, repaired: true }));
+    rmSync(home, { recursive: true, force: true });
+    const sessionsDir = join(home, 'sessions', '2026', '10', '28');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, `rollout-2026-10-28T18-00-00-${nativeId}.jsonl`), '{}');
+
+    try {
+      process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:9071';
+      process.env.PAPERCUSP_HONO_PORT = '0';
+      process.env.PAPERCUSP_MCP_STAGING_PROXY_PORT = '9171';
+      process.env.PAPERCUSP_MCP_PROXY = '1';
+      process.env.PAPERCUSP_MCP_STAGING_PROXY = '1';
+      delete process.env.PAPERCUSP_OPERATOR_URL_PROVENANCE;
+      delete process.env.PAPERCUSP_OPERATOR_BASE;
+      delete process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT;
+
+      const out = await executeWake(
+        work({
+          subscriberId: 'su-managed-route',
+          wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }),
+        }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () => session({
+            id: advSessionId,
+            agent: 'codex',
+            sessionId: nativeId,
+            coordOwnerId: 'su-managed-route',
+          })) as never,
+          ensureCodexHomeForWake: repair as never,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      const [, , spawnOptions] = spawnDetached.mock.calls[0] as unknown as [
+        string,
+        string[],
+        { env: Record<string, string> },
+      ];
+      expect(spawnOptions.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
+      expect(spawnOptions.env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
+      expect(resolvePtoolInvocationCandidates({ tool: 'coord:orient' }, spawnOptions.env)).toEqual([
+        'http://127.0.0.1:9071',
+        'http://127.0.0.1:9171',
+      ]);
+    } finally {
+      for (const key of envKeys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       rmSync(home, { recursive: true, force: true });
     }
   });

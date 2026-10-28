@@ -6,6 +6,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   EVENT_CATALOG,
   catalogEntry,
@@ -66,6 +68,8 @@ describe('events catalog — registry integrity', () => {
  */
 const ID_SCOPED_FIRE_PROOF: Record<string, FireProof> = {
   'repair-admitted': 'change',
+  // One key per admit-preview handle; the fire is that operation's terminal state.
+  'repair-admit-preview': 'condition',
   lock: 'condition',
   'plan-run': 'condition',
   'task-terminal': 'condition',
@@ -158,6 +162,18 @@ describe('buildKey', () => {
   it('builds the same key the post emitter and recruiter results use', () => {
     expect(buildKey('plan-blind-review-posted', { slug: 'my-plan', bindingId: '17' }))
       .toBe(blindReviewPostedEventKey('my-plan', 17));
+  });
+
+  // R-3 emitter clause: the entry must name the bound post path, and that source must
+  // really fire the family through the shared key helper — so the emitter text cannot drift.
+  it('names the bound plans:blind-review post path as the emitter, and that source fires the key', () => {
+    const entry = catalogEntry('plan-blind-review-posted')!;
+    expect(entry.emitter).toContain('plans:blind-review op post');
+    expect(entry.emitter).toContain('packages/operator-core/lib/agent-tools/plans/blind-review.ts');
+    expect(entry.emitter).toContain('blindReviewPostedEventKey');
+    const source = readFileSync(
+      fileURLToPath(new URL('../../agent-tools/plans/blind-review.ts', import.meta.url)), 'utf8');
+    expect(source).toMatch(/emitAwaitedEvent\(\{[\s\S]{0,200}key: blindReviewPostedEventKey\(/);
   });
 
   it('interpolates a required param', () => {

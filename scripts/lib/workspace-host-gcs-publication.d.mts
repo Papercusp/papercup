@@ -11,6 +11,47 @@ export function verifyGcsPublicBytes(url: any, expected: any, fetchImpl?: typeof
     sha256: string;
     sizeBytes: number;
 }>;
+/** Bounded operational verification through the serving Worker's real storage port.
+ * The caller must durably journal the exact operation before this function writes.
+ * Cleanup is restricted to this unique fixture and generation-fenced; original
+ * artifacts and trusted finalization markers are never written or removed.
+ * @param {{ baseUrl: string, bucket: string, githubToken: string, accessToken: string,
+ * operationId: string, body: string,
+ * recordOperation: (operation: { operationId: string, sha256: string, sizeBytes: number }) => Promise<void>,
+ * positiveControl: { path: string, sha256: string, sizeBytes: number }, fetchImpl?: typeof fetch }} options
+ */
+export function verifyGcsWorkspaceHostUpload({ baseUrl, bucket, githubToken, accessToken, operationId, body, recordOperation, positiveControl, fetchImpl }: {
+    baseUrl: string;
+    bucket: string;
+    githubToken: string;
+    accessToken: string;
+    operationId: string;
+    body: string;
+    recordOperation: (operation: {
+        operationId: string;
+        sha256: string;
+        sizeBytes: number;
+    }) => Promise<void>;
+    positiveControl: {
+        path: string;
+        sha256: string;
+        sizeBytes: number;
+    };
+    fetchImpl?: typeof fetch;
+}): Promise<{
+    startedAt: string;
+    checks: never[];
+    result: string;
+    cleanup: {
+        deleted: never[];
+        complete: boolean;
+        remaining: never[];
+        providerRemaining: never[];
+    };
+    operationId: string;
+    sha256: string;
+    sizeBytes: number;
+}>;
 /**
  * @param {string} uri
  * @param {{ sha256: string, sizeBytes: number }} expected

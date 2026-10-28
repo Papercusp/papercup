@@ -1210,7 +1210,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       { name: 'bindingId', required: true, describe: "the reviewer's blind-review session binding id — returned as awaitKey by plans:blind-review mint, replace and resume" },
     ],
     describe: "A bound blind reviewer's review and its session receipt both persisted. Unbound posts emit nothing. Payload includes bindingId, reviewId, activationAuditSeq and outcome. Posting does not prove a conclusive review or acceptance.",
-    emitter: 'plans:blind-review op post (packages/operator-core/lib/agent-tools/plans/blind-review.ts)',
+    emitter:
+      'plans:blind-review op post (packages/operator-core/lib/agent-tools/plans/blind-review.ts) + blindReviewPostedEventKey (packages/operator-core/lib/blind-review-post-event.ts)',
     exists: true,
     replacesPoll: 're-polling blind-review sessions for a posted review',
   },
