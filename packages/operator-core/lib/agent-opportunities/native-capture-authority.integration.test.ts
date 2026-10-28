@@ -1,11 +1,21 @@
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { provisionNativeRuntimeBearer, verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { registerProjectedTool, _resetProjectionRegistryForTests, type ProjectedTool } from '@papercusp/tooldef/tool-projection';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { inspectNativeDispatchCandidate, reconcileNativeCapture } from './native-capture';
 import type { SearchSource } from './search-reformulation';
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>;
+// Exercise the real issuer SQL under the same workspace RLS as production.
+vi.mock('@papercusp/db-org', async original => ({
+  ...await original<typeof import('@papercusp/db-org')>(),
+  withWorkspace: async (workspace: string, callback: (tx: unknown) => Promise<unknown>) =>
+    f.db.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+      return callback(tx);
+    }),
+}));
 const workspaceId = 'sql-mining-test', owner = 'su-exact-call', harness = 'mining-test';
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const unknown = { authority: 'unknown', correlation: 'unknown' };
@@ -32,7 +42,7 @@ async function fixture() {
       (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,
        coord_owner_id,args_json,transport,principal_kind,principal_auth_method,principal_trust,metadata_json)
       VALUES (${workspaceId},${scope},'agent-mcp',${toolName},'operator','test-request','test','ok',
-        ${owner},${f.db.adminSql.json(source.args)},'mcp','system','bearer-token','trusted',${f.db.adminSql.json(metadata)}) RETURNING id::text`;
+        ${owner},${JSON.stringify(source.args)}::jsonb,'mcp','system','bearer-token','trusted',${f.db.adminSql.json(metadata)}) RETURNING id::text`;
     return String(row!.id);
   };
   const id = await insert();
@@ -40,6 +50,32 @@ async function fixture() {
   const inspect = (s = source) => inspectNativeDispatchCandidate(s, binding, opts);
   return { binding, source, metadata, id, insert, opts, inspect };
 }
+
+it('D030 issuer SQL binds capabilityless possession to the real runtime and immediately invalidates rotation/end', async () => {
+  const s = await fixture();
+  const issuer = { kind: 'system' as const, slug: 'system:superuser', workspaceId,
+    trust: 'trusted' as const, authMethod: 'bearer-token' as const, capabilities: new Set(['*']) };
+  const input = { workspaceId, advSessionId: Number(s.binding.id), issuer };
+  const issued = await provisionNativeRuntimeBearer(input);
+  expect(issued.binding).toEqual({ workspaceId, advSessionId: input.advSessionId, ownerId: owner, provider: 'codex' });
+  expect(await verifyNativeRuntimeBearer(issued.bearer, issued.binding)).toBe(true);
+  const [principal] = await f.db.adminSql`SELECT p.capabilities FROM harness_shared.system_principals p
+    JOIN harness_shared.token_index t ON t.workspace_id=p.workspace_id AND t.harness_slug='system:' || p.name
+    WHERE t.token=${issued.bearer}`;
+  expect(principal?.capabilities).toEqual([]);
+  // Possession alone still cannot turn a perfectly correlated call into scope.
+  expect((await s.inspect()).authority).toBe('unknown');
+  const rotated = await provisionNativeRuntimeBearer(input);
+  expect(rotated.bearer).not.toBe(issued.bearer);
+  expect(await verifyNativeRuntimeBearer(issued.bearer, issued.binding)).toBe(false);
+  expect(await verifyNativeRuntimeBearer(rotated.bearer, rotated.binding)).toBe(true);
+  await f.db.adminSql`UPDATE harness_shared.adv_sessions SET coord_owner_id='su-retargeted' WHERE id=${input.advSessionId}`;
+  expect(await verifyNativeRuntimeBearer(rotated.bearer, rotated.binding)).toBe(false);
+  expect(await verifyNativeRuntimeBearer(rotated.bearer, { ...rotated.binding, ownerId: 'su-retargeted' })).toBe(false);
+  await f.db.adminSql`UPDATE harness_shared.adv_sessions SET coord_owner_id=${owner},ended_at=now() WHERE id=${input.advSessionId}`;
+  expect(await verifyNativeRuntimeBearer(rotated.bearer, rotated.binding)).toBe(false);
+  await expect(provisionNativeRuntimeBearer(input)).rejects.toThrow('native_runtime_issuance_binding_unavailable');
+});
 
 it('D030 exact candidate from full dispatch population still grants NO owner or scope authority', async () => {
   const s = await fixture();

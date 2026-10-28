@@ -24,7 +24,9 @@ RUNTIME_POLICY = {'PAPERCUSP_MEMORY_EMBEDDER': 'gemma', 'PAPERCUSP_EMBED_DEVICE'
 
 def run_in_test_pg(plan_path, preflight_only=False):
     """Apply nonsecret measurement policies after the private runtime sanitizer."""
-    validate_plan(json.loads(Path(plan_path).read_bytes()))
+    plan = json.loads(Path(plan_path).read_bytes())
+    validate_plan(plan)
+    preflight_inputs(plan, Path.cwd())
     if not (Path.cwd() / '.verifier-source.json').is_file():
         raise ValueError('requires maintained immutable source verifier')
     command = ['node', 'scripts/with-test-pg.mjs', '--isolated-runtime', '--', 'env',
@@ -65,6 +67,11 @@ def validate_plan(plan):
     if any(not table.replace('_', '').isalnum() or not isinstance(count, int) or count < 0
            for table, count in plan['expectedCounts'].items()):
         raise ValueError('invalid expected table population')
+    empty = plan.get('expectedEmptyTables', [])
+    if not isinstance(empty, list) or any(not isinstance(table, str) or not table
+            or not table.replace('_', '').isalnum() for table in empty) \
+            or len(set(empty)) != len(empty) or set(empty).intersection(plan['expectedCounts']):
+        raise ValueError('invalid or overlapping empty auxiliary table population')
     destination = Path(plan['outputDirectory'])
     if not destination.is_absolute() or destination.exists():
         raise ValueError('edition requires a new absolute output directory')
@@ -113,6 +120,19 @@ def adapter_inputs(plan, repo):
             raise ValueError('invalid or duplicate adapter request')
         ids.add(row['id'])
     return program, pins, requests
+
+
+def preflight_inputs(plan, repo):
+    """Cheap manifest refusals precede private PG startup and migration work."""
+    inputs = {key: pinned(plan[key]) for key in ['consumption', 'schema', 'queries', 'configuration']}
+    if 'adapterCapture' in plan:
+        adapter_inputs(plan, repo)
+    if inputs['queries']['configuration']['queryEmbeddingProfile'] != {
+            'mode': 'gemma', 'profileId': 'gemma-embeddinggemma-300m-768@v1'}:
+        raise ValueError('exact Gemma query profile required')
+    if set(plan['expectedCounts']) != {t for a in inputs['schema']['archives'] for t in a['tables']}:
+        raise ValueError('expected table population differs from selected archive ownership')
+    return inputs
 
 
 def capture_adapters(plan, repo, destination, command, env):
@@ -236,16 +256,8 @@ def run(plan_path, preflight_only=False):
 
     try:
         phase('input-preflight')
-        consumption = pinned(plan['consumption'])
-        schema = pinned(plan['schema'])
-        queries = pinned(plan['queries'])
-        pinned(plan['configuration'])
-        if 'adapterCapture' in plan:
-            adapter_inputs(plan, repo)
-        if queries['configuration']['queryEmbeddingProfile'] != {'mode': 'gemma', 'profileId': 'gemma-embeddinggemma-300m-768@v1'}:
-            raise ValueError('exact Gemma query profile required')
-        if set(plan['expectedCounts']) != {t for a in schema['archives'] for t in a['tables']}:
-            raise ValueError('expected table population differs from selected archive ownership')
+        inputs = preflight_inputs(plan, repo)
+        consumption, schema, queries = (inputs[key] for key in ['consumption', 'schema', 'queries'])
         receipt['retainedInputs'] = []
         for row in consumption['files']:
             actual = fingerprint(row['path'])
@@ -300,6 +312,12 @@ def run(plan_path, preflight_only=False):
             receipt['counts'][table] = actual
             if actual != expected:
                 raise ValueError('restored table count differs: ' + table)
+        receipt['emptyAuxiliaryTables'] = {}
+        for table in plan.get('expectedEmptyTables', []):
+            actual = int(sql('SELECT count(*) FROM ' + schema['schema'] + '.' + table, database))
+            receipt['emptyAuxiliaryTables'][table] = actual
+            if actual != 0:
+                raise ValueError('auxiliary table unexpectedly contains data: ' + table)
         for number, index in enumerate(schema['indexes']):
             phase('index-start', number=number, index=index['indexname'])
             sql(index['indexdef'].rstrip(';') + ';', database)

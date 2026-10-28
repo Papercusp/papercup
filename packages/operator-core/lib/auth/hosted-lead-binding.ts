@@ -22,6 +22,8 @@ const claimSchema = scopeSchema.extend({
 
 export type HostedLeadBindingScope = z.infer<typeof scopeSchema>;
 export type HostedLeadBindingChallenge = z.infer<typeof claimSchema>;
+export const parseHostedLeadBindingScope = (value: unknown): HostedLeadBindingScope => scopeSchema.parse(value);
+export const parseHostedLeadBindingChallenge = (value: unknown): HostedLeadBindingChallenge => claimSchema.parse(value);
 
 /** Mirrors the maintained hosted cookie's HMAC-SHA256/timing-safe comparison
  * convention with a distinct purpose, preventing cross-protocol token reuse.
