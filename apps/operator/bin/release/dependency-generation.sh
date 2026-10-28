@@ -488,14 +488,43 @@ dependency_generation_configure_workspace_dirs() {
 # Keep its private tree out of the snapshot too; never delete the donor's files.
 # npm-shrinkwrap takes precedence, just as it does for the install itself.
 dependency_generation_is_ignored_install_tree() {
-  local root="$1" tree="$2" name
+  local root="$1" tree="$2" name ignored=0
   [ "$tree" != "$root/node_modules" ] || return 1
   for name in npm-shrinkwrap.json package-lock.json; do
     [ -f "${tree%/node_modules}/$name" ] || continue
-    dependency_generation_is_ignored_input "$root" "${tree%/node_modules}/$name"
-    return $?
+    dependency_generation_is_ignored_input "$root" "${tree%/node_modules}/$name" || return 1
+    ignored=1
+    break
   done
-  return 1
+  # Install cleanup may have removed the ignored lock while leaving its tree.
+  # Git's ignore rule still describes that uncommittable input; an existing
+  # tracked/nonignored lock above always wins over this absent-file check.
+  for name in npm-shrinkwrap.json package-lock.json; do
+    dependency_generation_is_ignored_input "$root" "${tree%/node_modules}/$name" && ignored=1
+  done
+  [ "$ignored" = 1 ] || return 1
+  # A workspace's ignored local lock does not supersede its enclosing install.
+  # Retain trees with exact package paths in a nonignored ancestor lock.
+  "${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$root" "$tree" <<'JS'
+import {readFileSync, existsSync} from 'node:fs';
+import {dirname, join, relative, resolve} from 'node:path';
+import {spawnSync} from 'node:child_process';
+const [root, tree] = process.argv.slice(2).map(p => resolve(p));
+for (let dir = dirname(dirname(tree)); dir === root || dir.startsWith(root + '/'); dir = dirname(dir)) {
+  for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
+    const file = join(dir, name);
+    if (!existsSync(file)) continue;
+    if (spawnSync('git', ['-C', dir, 'check-ignore', '-q', '--', name]).status === 0) break;
+    try {
+      const lock = JSON.parse(readFileSync(file, 'utf8'));
+      const prefix = relative(dir, tree).split('\\').join('/') + '/';
+      if (Object.keys(lock.packages ?? {}).some(key => key.startsWith(prefix))) process.exit(1);
+    } catch { process.exit(1); } // Unreadable custody is never permission to omit a tree.
+    break;
+  }
+  if (dir === root) break;
+}
+JS
 }
 
 dependency_generation_enumerate_node_modules() {
@@ -3171,16 +3200,20 @@ dependency_generation_snapshot_lockfiles() {
 # whose inputs key the generation. Logs the helper's summary + defect lines; returns 0
 # complete, non-zero otherwise.
 dependency_generation_audit_lock_tree() {
-  local tree="$1" lock_root="$2" manifest_file rc=0 output line
+  local tree="$1" lock_root="$2" manifest_file rc=0 output line nm
   local helper="${DEPENDENCY_GENERATION_LOCK_TREE_AUDIT:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs}"
   manifest_file="$(mktemp)" || return 1
   dependency_generation_input_manifest "$lock_root" > "$manifest_file" || {
     rm -f -- "$manifest_file"
     return 1
   }
+  : > "$manifest_file.trees"
+  while IFS= read -r nm; do
+    printf '%s\n' "${nm#"$tree"/}" >> "$manifest_file.trees"
+  done < <(dependency_generation_enumerate_node_modules "$tree")
   output="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
-    --tree-root "$tree" --lock-root "$lock_root" --manifest "$manifest_file")" || rc=$?
-  rm -f -- "$manifest_file"
+    --tree-root "$tree" --lock-root "$lock_root" --manifest "$manifest_file" --installed-trees "$manifest_file.trees")" || rc=$?
+  rm -f -- "$manifest_file" "$manifest_file.trees"
   while IFS= read -r line; do
     case "$line" in
       LOCK_TREE_AUDIT*|LOCK_TREE_DEFECT*) dependency_generation_log "$line" ;;

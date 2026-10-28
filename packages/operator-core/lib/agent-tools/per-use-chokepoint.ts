@@ -224,7 +224,6 @@ export class NativeInstalledPerUseTurns {
         deps.recordFailure({ context: structuredClone(context), turnIds: admissions.map(value => value.turnId), ...failure });
       try {
         plan = await deps.resolvePlan(structuredClone(context));
-        if (plan.installations.length === 0 && !plan.freeAdmissions?.length) return identity;
         if (plan.installations.length + (plan.freeAdmissions?.length ?? 0) > 1000)
           throw new Error('Native installed population exceeds the admission bound');
         for (const installation of plan.installations) {
@@ -325,7 +324,7 @@ export class NativeInstalledPerUseTurns {
     if ([context.workspaceId, context.ownerId, context.principalId, context.nativeSessionId,
       context.ownerTurnId, context.mcpServer].some(value => !boundedId(value)) ||
       context.nativeSessionId.length > 128 || !Number.isSafeInteger(context.advSessionId) || context.advSessionId <= 0 ||
-      original.length + originalFree.length === 0 || original.length + originalFree.length > 1000 ||
+      original.length + originalFree.length > 1000 ||
       Object.entries(context.nativeTools).some(([name, target]) => !boundedId(name) || !boundedId(target))) {
       throw new Error('Exact authenticated native turn context and bounded tool bindings are required');
     }

@@ -646,8 +646,10 @@ describe('host-owned installed tool admission composition', () => {
 
   it('does not treat an unreceipted loaded plugin as a hosted free admission', async () => {
     const f = catalogFixture(); f.readProvenance.mockResolvedValue(null);
-    expect(await f.lifecycle.admit(f.context)).toBe(f.identity);
+    const lease = await f.lifecycle.admit(f.context); expect(lease.ok).toBe(true);
     expect(f.resolveInstallation).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
+    if (!lease.ok) throw new Error('expected identity admission');
+    await lease.reconcile({ phase: 'delivery', message: 'test teardown' });
   });
 
   it('keeps identity refusal ahead of the loaded catalog and financial supplier', async () => {
@@ -683,10 +685,22 @@ describe('host-owned installed tool admission composition', () => {
     expect(f.resolvePlan).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
   });
 
-  it('retains the identity lifecycle when there are no paid installations', async () => {
+  it('registers core observations without manufacturing a funded installation', async () => {
     const f = lifecycleFixture(); f.plan.installations = [];
-    expect(await f.lifecycle.admit(f.context)).toBe(f.identity);
+    const register = vi.spyOn(f.registry, 'register');
+    const lease = await f.lifecycle.admit(f.context); expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error('expected core admission');
+    expect(register).toHaveBeenCalledWith(expect.objectContaining({ admissions: [] }));
+    await lease.bindNativeTurn('native-turn');
+    await lease.observeToolCall!({ ...f.observation, arguments: { harness: 'selected' } });
+    expect(f.identity.bindNativeTurn).toHaveBeenCalledWith('native-turn');
+    expect(f.identity.observeToolCall).toHaveBeenCalledOnce();
     expect(f.admit).not.toHaveBeenCalled();
+    expect((await execute(tool(), f.aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
+    await lease.complete(f.closure);
+    expect(f.identity.complete).toHaveBeenCalledWith(f.closure);
+    expect(f.complete).not.toHaveBeenCalled();
+    await expect(lease.observeToolCall!(f.observation)).rejects.toThrow('original active bound turn');
   });
 
   it('closes only known unserved handles after a later installation admission fails', async () => {
