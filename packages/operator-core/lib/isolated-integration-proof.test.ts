@@ -74,7 +74,7 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
   }
 }
 
-const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, teardownMs: 30 },
+const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, finalizeMs: 30, teardownMs: 30 },
   killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
 
 it('keeps supervised router startup outside the test execution budget', async () => {
@@ -122,20 +122,35 @@ it('bounds cleanup when a supervised router stops before test execution', async 
   });
 });
 
-it('keeps completed router provenance outside execution and bounds finalization without renewing cleanup', async () => {
+it('keeps completed router provenance outside execution and bounds finalization without renewing it', async () => {
   await withCapturedRouter(routerPhaseOptions, async (child, result) => {
     child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
     await vi.advanceTimersByTimeAsync(75);
     child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
     await vi.advanceTimersByTimeAsync(10);
     expect(child.kill).not.toHaveBeenCalled();
-    // Runtime cleanup follows the full source census; it shares the original
-    // finalization deadline rather than restarting it.
-    child.emit('message', { kind: 'isolated-runtime-stopping' });
     child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
     await vi.advanceTimersByTimeAsync(19);
     expect(child.kill).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  });
+});
+
+it('gives runtime shutdown its own bounded allowance after provenance finalization', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(20);
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(child.kill).not.toHaveBeenCalled();
+    // A replayed finalizer or cleanup receipt cannot renew runtime shutdown.
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    await vi.advanceTimersByTimeAsync(10);
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('close');
     expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
@@ -156,7 +171,7 @@ it.each([false, true])('cannot use provenance output to escape bootstrap or disa
 
 it.each([0, 1, 2])('extends bounded finalization only for advancing source census counts: %s', async nextCount => {
   const options = { ...routerPhaseOptions, phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts,
-    teardownMaxMs: 90 } };
+    finalizeMaxMs: 90 } };
   await withCapturedRouter(options, async (child, result) => {
     const progress = (completedFiles: number) => child.stderr!.emit('data',
       'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
@@ -176,7 +191,7 @@ it.each([0, 1, 2])('extends bounded finalization only for advancing source censu
     }
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('close');
-    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
   });
 });
 
