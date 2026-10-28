@@ -28,7 +28,7 @@ test('Quick Access opens as an independent native launcher with reports and exac
   const sql = postgres(database.toString(), { max: 1, onnotice: () => {} });
   const label = 'docs-search-palette';
   const owner = 'su-native-quick-access';
-  const decoyOwner = 'su-native-quick-access-decoy';
+  const decoyOwner = 'su-native-decoy-quick-access';
   const terminal = spawn('xterm', ['-T', 'Quick Access decoy fixture', '-e', 'sleep', '240'], { env: displayEnv, stdio: 'ignore' });
   const targetTerminal = spawn('xterm', ['-T', 'Quick Access exact fixture', '-e', 'sleep', '240'], { env: displayEnv, stdio: 'ignore' });
   async function evaluate(expression: string, window = label) {
