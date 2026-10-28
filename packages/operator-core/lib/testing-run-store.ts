@@ -1447,13 +1447,15 @@ async function reconcilePersistedReportArtifact(
   await appendDetachedOutput(snapshot, outputArtifact ?? null, environment);
   try {
     const expanded = await expandDetachedReportArtifacts(artifacts);
-    const reports = await Promise.all(expanded.map(async artifact => ({
-      artifact, rows: completedDetachedReport(
-        await readFile(artifact.reportPath, 'utf8'), artifact.root, environment, requestedFiles,
-      ),
-    })));
+    const reports = await Promise.all(expanded.map(async artifact => {
+      const reportText = await readFile(artifact.reportPath, 'utf8');
+      return { artifact, reportText, rows: completedDetachedReport(reportText, artifact.root, environment, requestedFiles) };
+    }));
     if (reports.some(report => report.rows === null)
       || !hasCompleteReportCoverage(artifacts, requestedFiles, reports, !environment)) return snapshot;
+    const retainedReports = await Promise.all(reports.map(report =>
+      retainDetachedReportEvidence(snapshot, report.artifact, report.reportText, environment ?? process.env)));
+    const allReportsRetained = retainedReports.every(Boolean);
     const recovered = await boundedOrgTxn(async tx => {
       const scopedSql = tx as unknown as SqlLike;
       // Sibling recovery readers share one transaction lock. Ingestion and the
@@ -1500,14 +1502,16 @@ async function reconcilePersistedReportArtifact(
       return reconciled;
     }, { client: sql as unknown as NonNullable<Parameters<typeof boundedOrgTxn>[1]>['client'],
       statementTimeoutMs: 3_000, lockTimeoutMs: 1_000 });
-    await Promise.all(expanded.map(async artifact => {
-      await rm(artifact.reportPath, { force: true }).catch(() => undefined);
-      if (artifact.failureDetailsPath) await rm(artifact.failureDetailsPath, { force: true }).catch(() => undefined);
-      if (artifact.stdoutPath) await rm(artifact.stdoutPath, { force: true }).catch(() => undefined);
-      if (artifact.stderrPath && artifact.stderrPath !== artifact.stdoutPath) {
-        await rm(artifact.stderrPath, { force: true }).catch(() => undefined);
-      }
-    }));
+    if (allReportsRetained) {
+      await Promise.all(expanded.map(async artifact => {
+        await rm(artifact.reportPath, { force: true }).catch(() => undefined);
+        if (artifact.failureDetailsPath) await rm(artifact.failureDetailsPath, { force: true }).catch(() => undefined);
+        if (artifact.stdoutPath) await rm(artifact.stdoutPath, { force: true }).catch(() => undefined);
+        if (artifact.stderrPath && artifact.stderrPath !== artifact.stdoutPath) {
+          await rm(artifact.stderrPath, { force: true }).catch(() => undefined);
+        }
+      }));
+    }
     return recovered;
   } catch {
     // Retain the report for a later read; ingestion failure must not destroy
@@ -1678,6 +1682,32 @@ async function prepareRunAsync(req: SpawnRequest): Promise<PreparedRun> {
   return prepareRun(req, { cwd, worktreeBefore, detachedReportArtifacts });
 }
 
+async function retainDetachedReportEvidence(
+  snapshot: RunSnapshot,
+  artifact: PreparedDetachedReportArtifact,
+  reportText: string,
+  environment: Readonly<Record<string, string | undefined>>,
+): Promise<{ reportPath: string; manifestPath: string; sha256: string; byteLength: number } | null> {
+  try {
+    const { retainDetachedVitestReport } = await import('./agent-tools/testing/run-artifacts');
+    const retained = await retainDetachedVitestReport({
+      runId: snapshot.runId,
+      root: artifact.root,
+      sourcePath: artifact.reportPath,
+      reportText: redactSensitiveText(reportText, [], environment),
+      ...(artifact.scope ? { scope: artifact.scope } : {}),
+    });
+    appendSnapshotOutput(snapshot,
+      `\n[detached-recovery] retained report artifact ${JSON.stringify(retained)}\n`);
+    return retained;
+  } catch (error) {
+    appendSnapshotOutput(snapshot,
+      `\n[detached-recovery] report retention failed; temporary report kept at ${artifact.reportPath}: ` +
+      `${error instanceof Error ? error.message : String(error)}\n`);
+    return null;
+  }
+}
+
 /**
  * Ingest JSON reports emitted by detached Vitest commands that could not load
  * the Papercusp admin reporter. This is intentionally close-time work: the
@@ -1704,6 +1734,7 @@ async function persistDetachedReportArtifacts(
   await Promise.all(
     expanded.map(async (artifact) => {
       let consumed = false;
+      let durableReportRetained = false;
       try {
         const reportText = await readFile(artifact.reportPath, 'utf8');
         let failureDetails: TestFailureDetail[] = [];
@@ -1737,6 +1768,7 @@ async function persistDetachedReportArtifacts(
         }
         const rows = parseVitestJsonForHarnessRows(reportText, artifact.root, environment);
         if (rows.length > 0 && artifact.scope) {
+          durableReportRetained = Boolean(await retainDetachedReportEvidence(snapshot, artifact, reportText, environment));
           const after = await captureWorktreeSnapshotAsync(artifact.root);
           await boundedOrgTxn(async tx => {
             const scopedSql = tx as unknown as SqlLike;
@@ -1779,20 +1811,20 @@ async function persistDetachedReportArtifacts(
       } catch {
         /* swallow — D-007 */
       } finally {
-        if (consumed) await rm(artifact.reportPath, { force: true }).catch(() => {
+        if (consumed && durableReportRetained) await rm(artifact.reportPath, { force: true }).catch(() => {
           /* swallow — report cleanup is best-effort */
         });
-        if (consumed && artifact.failureDetailsPath && artifact.failureDetailsPath !== artifact.reportPath) {
+        if (consumed && durableReportRetained && artifact.failureDetailsPath && artifact.failureDetailsPath !== artifact.reportPath) {
           await rm(artifact.failureDetailsPath, { force: true }).catch(() => {
             /* swallow — sidecar cleanup is best-effort */
           });
         }
-        if (consumed && artifact.stdoutPath) {
+        if (consumed && durableReportRetained && artifact.stdoutPath) {
           await rm(artifact.stdoutPath, { force: true }).catch(() => {
             /* swallow — output cleanup is best-effort */
           });
         }
-        if (consumed && artifact.stderrPath && artifact.stderrPath !== artifact.stdoutPath) {
+        if (consumed && durableReportRetained && artifact.stderrPath && artifact.stderrPath !== artifact.stdoutPath) {
           await rm(artifact.stderrPath, { force: true }).catch(() => {
             /* swallow — output cleanup is best-effort */
           });
