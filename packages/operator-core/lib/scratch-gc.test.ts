@@ -2074,7 +2074,7 @@ describe('deferred scratch quota recovery', () => {
       return read(path, options);
     }) as typeof readdirAsync);
 
-    _setScratchUsageForTests('ws-Q', 0, Date.now() - USAGE_REFRESH_MS - 1);
+    _resetScratchUsageForTests();
     const timings: ScratchWriteTimings[] = [];
     const expectedPath = relative(scratchRoot(), workspaceRoot);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });

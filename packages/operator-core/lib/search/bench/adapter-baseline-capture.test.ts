@@ -39,6 +39,17 @@ describe('actual Typesense adapter capture', () => {
     expect(() => decodeTypesenseCapture({ ...saved, observation: { ...saved.observation, degraded: false } }, expected)).toThrow();
     expect(() => decodeTypesenseCapture({ ...saved, stdout: JSON.stringify({ hits: [], found: 0, answer: 'invented', conversationId: null }) }, expected)).toThrow();
   });
+  it('applies the conversation twenty-hit cap only before plain-search fallback', () => {
+    const f = sample();
+    const args = { ...f.expected.args, limit: 24 };
+    const expected = { ...f.expected, adapter: 'restart:typesense.searchWithConversation' as const, args };
+    const saved = { ...f.saved, adapter: expected.adapter, request: args,
+      stdout: JSON.stringify({ hits: Array.from({ length: 24 }, (_, i) => ({ id: String(i) })),
+        found: 24, answer: null, conversationId: null }),
+      observation: { path: 'conversation-fallback', degraded: true, evidenceRef: 'runner:fallback' } };
+    expect(decodeTypesenseCapture(saved, expected).hits).toHaveLength(24);
+    expect(() => decodeTypesenseCapture({ ...saved, observation: { ...saved.observation, path: 'conversation' } }, expected)).toThrow(/cutoff/);
+  });
 });
 
 function fixture() {

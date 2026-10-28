@@ -49,7 +49,7 @@ export function decodeTypesenseCapture(capture: unknown, expected: {
   const response = object(JSON.parse(saved.stdout), 'response');
   complete(response);
   if (!Array.isArray(response.hits) || !Number.isInteger(response.found) || (response.found as number) < 0 ||
-      response.hits.length > (conversational ? Math.min(request.limit as number, 20) : request.limit as number)) {
+      response.hits.length > (observation.path === 'conversation' ? Math.min(request.limit as number, 20) : request.limit as number)) {
     throw new Error('invalid delivered ranking or cutoff');
   }
   if (conversational && ((response.answer !== null && typeof response.answer !== 'string') ||
