@@ -630,6 +630,9 @@ describe('resource governor enforcement lint', () => {
       ['scripts/check-code-health.ts', 'timeout: 30_000'],
       ['scripts/check-new-clones.mts', 'timeout: 30_000'],
       ['scripts/lib/runtime-compatibility-census.mjs', 'timeout: 120_000'],
+      ['scripts/lib/verify-tauri-native-env.mjs', "cwd: repoRoot, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384"],
+      ['scripts/lib/verify-tauri-native-env.mjs', "cwd: source, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384"],
+      ['scripts/verify-fleet-capacity-recovery.mts', 'timeout: 30_000'],
     ];
     for (const [path, timeoutPin] of timeoutPins) {
       const source = readFileSync(ROOT + path, 'utf8');

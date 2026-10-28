@@ -2689,10 +2689,12 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for verify-tauri-native-env.mjs: its five starts are limited to two synchronous Git source-pin reads, a 120-second census preflight, and the exact-checkout TypeScript verifier service and command. The service has a startup deadline, is stopped in finally with SIGKILL escalation, and its checker has a 120-second timeout and 8 MiB output cap.",
+      "P-016 reviewed bypass disposition for verify-tauri-native-env.mjs: its two synchronous Git source-pin reads each have a 30-second deadline and 16 KiB output cap; the census preflight is bounded at 120 seconds, and the exact-checkout TypeScript verifier service and command have startup/stop deadlines plus a 120-second checker timeout and 8 MiB output cap.",
     matchesSource: (source) => resourceStartCallCount(source) === 5 &&
       source.includes("execFileSync('git', ['rev-parse', env.VERIFY_TAURI_SOURCE_REF || 'HEAD']") &&
+      source.includes("cwd: repoRoot, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,") &&
       source.includes("execFileSync('git', ['rev-parse', 'HEAD']") &&
+      source.includes("cwd: source, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,") &&
       source.includes("preflightNativeVerifier(repoRoot, env, spawn = spawnSync)") &&
       source.includes("timeout: 120_000, maxBuffer: 1024 * 1024") &&
       source.includes("const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')],") &&
@@ -2761,9 +2763,10 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for verify-fleet-capacity-recovery.mts: its only child reads the exact native evidence blob from the run's immutable Git commit with a 4 MiB output ceiling. The verifier then checks that blob in-process and emits a read-only semantic result; no worker or queue is created.",
+      "P-016 reviewed bypass disposition for verify-fleet-capacity-recovery.mts: its only child reads the exact native evidence blob from the run's immutable Git commit with a 30-second deadline and 4 MiB output ceiling. The verifier then checks that blob in-process and emits a read-only semantic result; no worker or queue is created.",
     matchesSource: (source) => resourceStartCallCount(source) === 1 &&
-      source.includes("execFileSync('git', ['show', native.commitSha + ':' + native.filePath], { cwd: root, maxBuffer: 4 * 1024 * 1024 })") &&
+      source.includes("execFileSync('git', ['show', native.commitSha + ':' + native.filePath], {") &&
+      source.includes("cwd: root, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,") &&
       source.includes("inspectCommittedOperationalEvidence(root, native.filePath, createHash('sha256').update(bytes).digest('hex'))") &&
       source.includes("This is a one-shot, read-only CLI.") &&
       !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
