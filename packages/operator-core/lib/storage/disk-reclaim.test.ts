@@ -184,6 +184,42 @@ describe('bounded scheduled retention drain', () => {
     expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
     expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
   });
+  it('adopts a completed pending census before the next hourly visit can expire it', async () => {
+    const start = Date.parse('2026-10-28T12:12:00Z');
+    const pendingWalk = { root: '/scratch', dir: '/retention/slot', attempt: 1, requestKey: 'exact', launchedAt: start };
+    const pending = partial({ startedAt: new Date(start).toISOString(), finishedAt: new Date(start + 1000).toISOString(),
+      entries: [], effects: [], errors: ['inspect:/scratch: retention census pending; managed walk continues for adoption'],
+      censuses: [{ root: '/scratch', classId: 'scratch', elapsedMs: 1000, inspectedNodes: 0, pendingWalk,
+        error: 'retention census pending; managed walk continues for adoption' }] });
+    const readyAt = start + 17_000;
+    const run = vi.fn().mockResolvedValueOnce(pending).mockResolvedValueOnce(partial({ id: 'adopted',
+      startedAt: new Date(readyAt).toISOString(), finishedAt: new Date(readyAt + 1000).toISOString(), complete: true, errors: [] }));
+    const awaitPendingCensus = vi.fn(async () => true);
+    expect(await drainScheduledDiskReclaim(run, { awaitPendingCensus })).toMatchObject({ batches: 2, stop: 'complete' });
+    expect(awaitPendingCensus).toHaveBeenCalledWith(pendingWalk, start + 900_000);
+    expect(run.mock.calls[1]).toEqual([1, start + 900_000]);
+    // An hourly-only consumer returns after the 15-minute result lifetime.
+    expect(start + 3_600_000 - readyAt).toBeGreaterThan(900_000);
+    run.mockClear().mockResolvedValue(pending);
+    expect((await drainScheduledDiskReclaim(run)).stop).toBe('error');
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it.each(['failed-wait', 'holder-error', 'expired-deadline', 'wrong-root', 'wrong-error'])('does not resume unsafe pending census: %s', async mode => {
+    const pendingWalk = { root: '/scratch', dir: '/retention/slot', attempt: 1, requestKey: 'exact', launchedAt: 0 };
+    const pending = partial({ entries: [], effects: [],
+      censuses: [{ root: '/scratch', classId: 'scratch', elapsedMs: 1000, inspectedNodes: 0, pendingWalk,
+        error: 'retention census pending; managed walk continues for adoption' }],
+      errors: ['inspect:/scratch: retention census pending; managed walk continues for adoption'] });
+    if (mode === 'holder-error') pending.errors.push('incomplete process-holder scan:/scratch');
+    if (mode === 'expired-deadline') pending.finishedAt = new Date(900_000).toISOString();
+    if (mode === 'wrong-root') pendingWalk.root = '/other';
+    if (mode === 'wrong-error') pending.censuses![0]!.error = 'stale or changed retention census result';
+    const run = vi.fn().mockResolvedValue(pending);
+    const awaitPendingCensus = vi.fn(async () => false);
+    await drainScheduledDiskReclaim(run, { awaitPendingCensus });
+    expect(run).toHaveBeenCalledOnce();
+    expect(awaitPendingCensus).toHaveBeenCalledTimes(mode === 'failed-wait' ? 1 : 0);
+  });
   const cappedPartial = (): DiskReclaimReceipt => partial({
     caps: [{ root: '/scratch', classId: 'scratch', maxBytes: 10, beforeBytes: 12,
       pinnedBytes: 0, pinnedPaths: [], afterBytes: 11, overByBytes: 1, pinnedOverageBytes: 0 }],

@@ -109,6 +109,7 @@ import {
   withMcpToolsListPhaseTrace,
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
+import { newScratchQuotaRecoveryDiagnostics } from '../../../scratch-gc';
 import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { observeFallback } from '../../../degradation/fallback-observations';
 import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
@@ -5671,37 +5672,9 @@ export function registerMcpHost(server: McpServer): void {
                     }
                     const recovery = timings.quotaRecoveryDiagnostics;
                     if (recovery) {
-                      const recoveryTotal = total.quotaRecoveryDiagnostics ??= {
-                        sizeWalkMs: 0,
-                        sizeWalkDirectories: 0,
-                        sizeWalkEntries: 0,
-                        sizeWalkFiles: 0,
-                        readdirOperations: 0,
-                        statOperations: 0,
-                        operationTotalMs: 0,
-                        maxOperationMs: 0,
-                        maxOperationKind: null,
-                        currentOperationKind: null,
-                        currentOperationElapsedMs: 0,
-                        directoryReadErrors: 0,
-                        fileStatErrors: 0,
-                        runListingMs: 0,
-                        runsListed: 0,
-                        selectedRunSizingMs: 0,
-                        runsConsidered: 0,
-                        fallbackRunSizes: 0,
-                        deletionMs: 0,
-                        deletePreflightMs: 0,
-                        pinProtectionMs: 0,
-                        rmAsyncMs: 0,
-                        deleteAttempts: 0,
-                        deletePreflightSkips: 0,
-                        lastDeletePreflightErrorCode: null,
-                        deleteErrors: 0,
-                        lastDeleteErrorCode: null,
-                        runsDeleted: 0,
-                        deletedBytes: 0,
-                      };
+                      // The owning module's zero value, not a hand copy: a hand-copied literal
+                      // stranded here when the interface gained four fields (TS2739, 2026-10-28).
+                      const recoveryTotal = total.quotaRecoveryDiagnostics ??= newScratchQuotaRecoveryDiagnostics();
                       for (const field of [
                         'sizeWalkMs',
                         'sizeWalkDirectories',

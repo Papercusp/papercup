@@ -1980,7 +1980,7 @@ export interface ScratchQuotaRecoveryDiagnostics {
   deletedBytes: number;
 }
 
-function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
+export function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
   return {
     sizeWalkMs: 0,
     sizeWalkDirectories: 0,
