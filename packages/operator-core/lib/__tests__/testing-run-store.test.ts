@@ -341,7 +341,7 @@ describe('distillVitestRun', () => {
 
   it('redacts launch-environment secrets in every Vitest report projection', () => {
     const credential = 'synthetic-child-credential-value-never-present-in-parent-env';
-    const environment = { SYNTHETIC_CHILD_CREDENTIAL: credential };
+    const environment = { SYNTHETIC_CHILD_API_KEY: credential };
     const json = report([{
       name: `${ROOT}/pkg/credential.test.ts`, status: 'failed',
       assertionResults: [{
