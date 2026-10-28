@@ -1509,7 +1509,7 @@ describe("independent copy memory admission precedes native preparation", () => 
 });
 
 describe("native copy callers preserve frozen helpers and bounded admission", () => {
-  function snapshot(mode: string, bounded = true) {
+  function snapshot(mode: string, bounded = true, generationStatus: number | null = null) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-copy-helper-"));
     const frozen = resolve(fixture, "frozen");
     const helper = resolve(frozen, "papercusp-desktop/bin/lib/pinned-deps.sh");
@@ -1522,7 +1522,14 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
     writeFileSync(helper, [
       'echo "helper:${BASH_SOURCE[0]}" >> "$WORK/order"',
       'papercusp_pinned_deps_snapshot_locked() { printf "locked:%s:%s:%s\\n" "$1" "$2" "$3" >> "$WORK/order"; }',
-      'if [ "${BASH_SOURCE[0]}" = "$0" ]; then shift; papercusp_pinned_deps_snapshot_locked "$@"; fi',
+      'if [ "${BASH_SOURCE[0]}" = "$0" ]; then',
+      'case "$1" in',
+      ...(generationStatus === null ? [] : [
+        `  snapshot-generation-locked) shift; printf "generation:%s:%s:%s\\n" "$1" "$2" "$3" >> "$WORK/order"; exit ${generationStatus} ;;`,
+      ]),
+      '  *) shift; papercusp_pinned_deps_snapshot_locked "$@" ;;',
+      'esac',
+      'fi',
     ].join("\n"));
     try {
       const before = readFileSync(helper, "utf8");
@@ -1545,6 +1552,12 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toContain("VERIFY_TAURI_COPY_MEMORY_MAX_MB=4096");
     expect(result.order).toBe(`admission\nhelper:${result.helper}\nlocked:/canonical-donor:${result.frozen}:copy\n`);
+  });
+
+  it.each([0, 74])("uses the immutable generation when supported and preserves its refusal: %s", status => {
+    const result = snapshot("copy", true, status);
+    expect(result.status, result.stderr).toBe(status);
+    expect(result.order).toBe(`admission\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
   });
 
   it("refuses an unbounded copy before admission or any helper execution", () => {

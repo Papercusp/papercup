@@ -2040,10 +2040,20 @@ snapshot_verifier_pinned_deps() {
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
     ' "$snapshot_root/scripts/lib/task-cgroup-limits.mjs" || return $?
+    # Reuse the frozen helper's immutable-generation route when published,
+    # as source-preview does. A generation refusal must propagate rather
+    # than silently starting another full mutable-donor copy.
+    local snapshot_command="snapshot-locked"
+    if grep -Eq '^[[:space:]]*snapshot-generation-locked\)' "$pinned_deps_copy"; then
+      snapshot_command="snapshot-generation-locked"
+    else
+      local snapshot_support_status=$?
+      [ "$snapshot_support_status" -eq 1 ] || return "$snapshot_support_status"
+    fi
     # The existing heavy-command wrapper admits the copy's memory reserve;
-    # pinned-deps still owns the host copy lease and donor install mutex.
+    # pinned-deps owns the selected route's copy/selector leases and mutexes.
     bash "$snapshot_root/scripts/pc-heavy.sh" -- bash "$pinned_deps_copy" \
-      snapshot-locked "$REPO_DIR" "$snapshot_root" "$mode"
+      "$snapshot_command" "$REPO_DIR" "$snapshot_root" "$mode"
     return $?
   fi
   # WI-6554700010008536: pinned-deps.sh sources dependency-generation.sh
