@@ -24,12 +24,10 @@ const { runPickupSweep, readPickupHostView, PICKUP_SWEEP_SOURCE } = await import
 const discovery = await import('./psu-pty-discovery');
 import type { ExpiredPickupRow } from './store';
 import type { PickupHostView } from './turn-proof';
+import type { LivenessVerdict } from '../../agent-tools/coordination/liveness-oracle';
 
-type PickupSessionVerdict = {
-  sessionState: string | null;
-  signalMissing?: true;
-  confirmLiveness: boolean | null;
-};
+/** Derived from the real reader's verdict shape so a liveness-oracle change cannot silently drift this fixture. */
+type PickupSessionVerdict = Pick<LivenessVerdict, 'sessionState' | 'signalMissing' | 'confirmLiveness'>;
 
 const T0 = Date.parse('2026-10-10T19:00:00Z');
 
@@ -41,6 +39,7 @@ function row(id: number, subscriberId: string, channel: string | null, extra: Pa
     eventKey: `loop:fire:${subscriberId}`,
     channel,
     source: null,
+    wakeHandle: null,
     deliveredAtMs: T0,
     pickupDeadlineAtMs: T0 + 600_000,
     ...extra,

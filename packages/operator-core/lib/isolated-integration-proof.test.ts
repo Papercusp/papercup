@@ -63,7 +63,8 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
   const result = captureIsolatedWorker(child, evidenceDir, options);
   try { await check(child, result); }
   finally {
-    child.exitCode = 0;
+    // ChildProcess.exitCode is readonly in @types/node; the fake's own field is writable.
+    Object.assign(child, { exitCode: 0 });
     child.emit('exit', 0, null);
     child.emit('close', 0, null);
     await result;
