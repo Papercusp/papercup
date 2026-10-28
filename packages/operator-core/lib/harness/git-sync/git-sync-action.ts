@@ -4338,6 +4338,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
               // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
               env: gitOptions?.env,
+              diagnosticTags: gitOptions?.diagnosticTags,
               signal: liveness.signal,
               onProgress: () => {
                 liveness.touch();

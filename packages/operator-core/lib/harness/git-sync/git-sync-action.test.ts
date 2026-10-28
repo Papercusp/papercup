@@ -3969,6 +3969,24 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it('forwards git-sync runId tags to sidecar process execution', async () => {
+    const diagnosticTags = {
+      runId: '6a2d9e86-5234-4d93-bae1-1b6c9476fcff',
+      commandClass: 'git' as const,
+    };
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      await opts.runGit!(['status', '--porcelain'], repoDir, { diagnosticTags });
+      return syncedOutcome;
+    });
+
+    await action(ctx);
+
+    const taggedCall = runGitBoundedMock.mock.calls.find((args) =>
+      (args[3] as { diagnosticTags?: unknown } | undefined)?.diagnosticTags !== undefined);
+    expect(taggedCall?.[3]).toMatchObject({ diagnosticTags });
+  });
+
   it('bounds concurrent command diagnostics, omits private argv, and clears settled commands', async () => {
     vi.useFakeTimers();
     vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
