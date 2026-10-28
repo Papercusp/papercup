@@ -136,17 +136,19 @@ vi.mock('./modes/store', async (importOriginal) => ({
 }));
 // Match the main bootstrap-su suite: context-budget reads and boot stamps are
 // registry leaves, independent of the bearer transport contract tested here.
-vi.mock('./agent-tools/coordination/presence', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./agent-tools/coordination/presence')>()),
+vi.mock('./agent-tools/coordination/presence', () => ({
   getPresence: vi.fn(async () => null),
   writePresence: vi.fn(async () => null),
+  touchHeartbeat: vi.fn(async () => {}),
 }));
 vi.mock('./task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./task-manager/store')>()),
   bindLiveAgentSessionTasksToNativeSession: vi.fn(async () => []),
 }));
-vi.mock('./role-codex-home', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./role-codex-home')>()),
+// The route consumes only the private writer here. Loading the real home
+// module also boots unrelated identity/presence imports before this fixture
+// can assert non-transit, and can escape its mocked database boundary.
+vi.mock('./role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
   writeSuCodexHomeAsync: async (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
 }));
@@ -240,14 +242,18 @@ describe('bootstrap-su bearer non-transit (D-006)', () => {
     expect(serialized).not.toContain(SECRET_BEARER);
   });
 
-  it.each(['unverified', 'limited', 'foreign', 'unavailable', 'retargeted'])('keeps %s launches unenrolled without borrowing shared authority', async (control) => {
+  it.each(['unverified', 'limited', 'foreign', 'unavailable', 'retargeted', 'runtime', 'workspace'])('keeps %s launches unenrolled without borrowing shared authority', async (control) => {
     nativeMocks.principal = { workspaceId: control === 'foreign' ? 'other' : 'default', slug: 'launch-user', kind: 'user',
       trust: control === 'unverified' ? 'unverified-loopback' : 'verified', authMethod: 'cookie-session',
       capabilities: new Set(control === 'limited' ? ['harness:read'] : ['*']) };
     if (control === 'unavailable') nativeMocks.issue.mockRejectedValue(new Error('issuer unavailable'));
-    else nativeMocks.issue.mockResolvedValue({ bearer: 'n'.repeat(43), binding: { ownerId: 'su-sibling', provider: 'codex' } });
+    else nativeMocks.issue.mockImplementation(async () => ({ bearer: 'n'.repeat(43), binding: {
+      workspaceId: control === 'workspace' ? 'other' : 'default', advSessionId: control === 'runtime' ? 99 : 42,
+      ownerId: control === 'retargeted' ? 'su-sibling'
+        : (recordAdvSessionMock.mock.calls.at(-1)![0] as { coordOwnerId: string }).coordOwnerId, provider: 'codex',
+    } }));
     const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null });
-    if (!['unavailable', 'retargeted'].includes(control)) expect(nativeMocks.issue).not.toHaveBeenCalled();
+    if (['unverified', 'limited', 'foreign'].includes(control)) expect(nativeMocks.issue).not.toHaveBeenCalled();
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({ nativeRuntimeBearer: undefined }));
     expect(await res.text()).not.toContain('n'.repeat(43));
   });
