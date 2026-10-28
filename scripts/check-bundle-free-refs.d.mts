@@ -39,18 +39,23 @@ export function repoOwnedInputs(metafile: {
  * The scanner and lockfile bytes invalidate prior parser/analysis semantics;
  * Node's version invalidates the runtime globals. Storage failure is a miss.
  * This is analysis reuse, not test evidence or permission to skip an input read.
+ * @param {{ directory?: string, implementation?: string, maxEntries?: number }} [options]
  */
 export function createCleanInputCache({ directory, implementation, maxEntries }?: {
-    directory?: string | undefined;
-    maxEntries?: number | undefined;
+    directory?: string;
+    implementation?: string;
+    maxEntries?: number;
 }): {
     stats: {
         hits: number;
         analyzed: number;
     };
-    key(code: any, jsx: any, known: any): string;
-    has(key: any): boolean;
-    remember(key: any): void;
+    /** @param {string} code @param {boolean} jsx @param {Set<string>} known */
+    key(code: string, jsx: boolean, known: Set<string>): string;
+    /** @param {string} key */
+    has(key: string): boolean;
+    /** @param {string} key */
+    remember(key: string): void;
     flush(): void;
 };
 /**
