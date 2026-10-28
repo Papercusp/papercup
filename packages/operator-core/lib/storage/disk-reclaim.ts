@@ -1823,8 +1823,10 @@ export function createWorkspaceHostCutRetentionDelegate(input: {
     if (!protection || !Number.isFinite(protection.nowMs) || notAfterMs === undefined || !Number.isFinite(notAfterMs)) {
       throw new Error('workspace-host retention protection not admitted');
     }
-    const owner = await (input.loadOwner?.() ?? import(pathToFileURL(join(input.repoRoot,
-      'apps/operator/lib/release/workspace-host-release-cut-cli.ts')).href));
+    // Keep this lazy edge visible to the host bundler. A computed file URL
+    // leaves raw TypeScript for plain Node, which cannot strip parameter
+    // properties in the native owner. repoRoot scopes its data, not its code.
+    const owner = await (input.loadOwner?.() ?? import('../../../../apps/operator/lib/release/workspace-host-release-cut-cli'));
     const detail = await owner.reclaimWorkspaceHostCutIntermediatesWithProtection({ repoRoot: input.repoRoot,
       dryRun, notAfterMs, pins: protection.pins, nowMs: protection.nowMs }, protection.isPinned);
     return { ok: detail.ok, detail };

@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { build } from 'esbuild';
 import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionClass } from './retention-policy';
 import { createRetentionHolderScanner, DISK_RECLAIM_CRONTAB, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 import { createWorkspaceHostCutRetentionDelegate } from './disk-reclaim';
@@ -39,6 +42,45 @@ describe('hourly standing reclaim registration', () => {
 });
 
 describe('workspace-host native owner scheduling', () => {
+  it('loads the native owner through a plain Node host bundle', async () => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const compiled = await build({
+      stdin: { contents: `
+        import { createWorkspaceHostCutRetentionDelegate } from './packages/operator-core/lib/storage/disk-reclaim';
+        const nowMs = Date.now();
+        const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: ${JSON.stringify(root)},
+          protection: () => ({ pins: [], nowMs, isPinned: () => false }) });
+        console.log(JSON.stringify(await delegate.run(true, undefined, nowMs + 10000)));
+      `, resolveDir: root, loader: 'ts' },
+      bundle: true, write: false, platform: 'node', format: 'esm', logLevel: 'silent',
+      plugins: [{ name: 'isolate-retention-owner-boundary', setup(builder) {
+        builder.onResolve({ filter: /workspace-host-release-cut-cli/ }, () => ({
+          path: 'workspace-host-release-cut-cli', namespace: 'retention-owner',
+        }));
+        // Other reclaim programs are outside this regression. The actual
+        // delegate and its lazy owner boundary are compiled, never mocked.
+        builder.onResolve({ filter: /.*/ }, args => {
+          if (args.path.endsWith('/storage/disk-reclaim') || args.path.startsWith('node:')) return;
+          return { path: args.path, external: true, sideEffects: false };
+        });
+        builder.onLoad({ filter: /.*/, namespace: 'retention-owner' }, () => ({
+          loader: 'ts', contents: `
+            class CutStep { constructor(readonly dryRun: boolean) {} }
+            export async function reclaimWorkspaceHostCutIntermediatesWithProtection(input, isPinned) {
+              return { ok: !isPinned('/cut'), dryRun: new CutStep(input.dryRun).dryRun, cuts: [] };
+            }
+          `,
+        }));
+      } }],
+    });
+    const result = await promisify(execFile)(process.execPath,
+      ['--input-type=module', '-e', compiled.outputFiles[0]!.text], {
+        cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, timeout: 15000,
+      });
+    expect(JSON.parse(result.stdout)).toEqual({ ok: true, detail: { ok: true, dryRun: true, cuts: [] } });
+    expect(result.stderr).toBe('');
+  });
+
   it('passes the current admission snapshot and deadline to the existing native owner', async () => {
     let pins = [{ paths: ['/cut/sidecar'], expiresAt: '2099-01-01T00:00:00.000Z' }];
     let nowMs = Date.now();
