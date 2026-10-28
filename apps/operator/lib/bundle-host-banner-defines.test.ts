@@ -81,12 +81,17 @@ function hostReaderStageDiagnostic(
   ].join('\n');
 }
 
-function runHostReaderStage(stage: string, args: string[], operatorDir: string) {
+function runHostReaderStage(
+  stage: string,
+  args: string[],
+  operatorDir: string,
+  timeoutMs = HOST_READER_CHILD_TIMEOUT_MS,
+) {
   const startedAt = performance.now();
   const result = spawnSync(process.execPath, args, {
     cwd: operatorDir,
     encoding: 'utf8',
-    timeout: HOST_READER_CHILD_TIMEOUT_MS,
+    timeout: timeoutMs,
     env: {
       ...process.env,
       // The default shared-cache lease can wait 180s, longer than this fixture's
@@ -97,7 +102,7 @@ function runHostReaderStage(stage: string, args: string[], operatorDir: string) 
   const elapsedMs = Math.round(performance.now() - startedAt);
   return {
     result,
-    diagnostic: hostReaderStageDiagnostic(stage, elapsedMs, HOST_READER_CHILD_TIMEOUT_MS, result),
+    diagnostic: hostReaderStageDiagnostic(stage, elapsedMs, timeoutMs, result),
   };
 }
 
@@ -281,6 +286,17 @@ describe('EI-25446866026477971 — host build paths across the package-cache rea
     expect(diagnostic).toContain('stage=compile-selected-path elapsedMs=25000 timeoutMs=25000');
     expect(diagnostic).toContain('status=null signal=SIGTERM errorCode=ETIMEDOUT');
     expect(diagnostic).toContain('cache reader waiting');
+  });
+
+  it('bounds a stalled reader child and reports the phase that timed out', () => {
+    const stalled = runHostReaderStage(
+      'stalled-cache-reader', ['-e', 'setTimeout(() => {}, 5_000)'], REPO_ROOT, 100,
+    );
+
+    expect(stalled.result.status).toBeNull();
+    expect(stalled.result.error?.code).toBe('ETIMEDOUT');
+    expect(stalled.diagnostic).toContain('stage=stalled-cache-reader');
+    expect(stalled.diagnostic).toContain('errorCode=ETIMEDOUT');
   });
 
   it.each([
