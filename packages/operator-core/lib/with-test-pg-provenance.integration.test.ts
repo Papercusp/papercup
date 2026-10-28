@@ -275,9 +275,14 @@ describe('isolated PostgreSQL signal cleanup', () => {
       })]).finally(() => clearTimeout(timer));
       finished = true;
       expect(result.code === 130 || result.signal === 'SIGINT').toBe(true);
-      const receipt = output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
-        .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))
-        .find(row => row.stage === 'complete');
+      const cleanupReceipts = output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
+        .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
+      const receipt = cleanupReceipts.find(row => row.stage === 'complete');
+      // Intentional cancellation must fence supervision before PostgreSQL can
+      // restart during child teardown. Successful eventual cleanup alone misses it.
+      expect(cleanupReceipts.find(row => row.stage === 'pg-stop'), output.slice(-4000) + errors.slice(-500))
+        .toMatchObject({ health: { restarts: 0, pendingAttempt: 0 } });
+      expect(output).not.toMatch(/postgres restart(?:ed| attempt)/);
       expect(receipt, output.slice(-2000) + errors.slice(-500)).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
       expect(observation.observationError).toBeUndefined();
       expect(observation.ended).toMatchObject({
