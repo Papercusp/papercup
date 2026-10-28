@@ -3688,6 +3688,9 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
         env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }),
         cwd,
         timeout: 30_000,
+        // Coalescing only engages when stdin is /dev/null (EI-26833387960556052);
+        // the inner pc-heavy inherits this shell's stdin.
+        stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
     expect(tailed.status).toBe(0);
