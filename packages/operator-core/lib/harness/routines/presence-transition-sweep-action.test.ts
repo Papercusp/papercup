@@ -22,6 +22,10 @@ function harness(rounds: PresenceObservation[][], commitments: Commitment[] = []
   const deps: PresenceTransitionSweepDeps = {
     gather: async () => rounds[Math.min(round++, rounds.length - 1)] ?? [],
     gatherCommitments,
+    // Preserve the production seam's fail-open behavior without falling through
+    // to the real fleet-assignment/PG reader in cases that do not need a state
+    // transition recheck.
+    currentObservation: async () => ({ sessionState: null }),
     deliver: async (n) => {
       delivered.push(n);
     },
