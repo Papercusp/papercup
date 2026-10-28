@@ -2667,6 +2667,44 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
+    path: "packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-014 reviewed parent-owned test-process start. The canonical managed-capability integration file runs under test-files' runGovernedTestFileProcess/runGovernedTestProcess receipt and passes its admission environment through with-test-pg into this test-only fixture. The fixture starts one non-detached private operator host, waits for readiness, then observes its exact process identity gone and closes its loopback page server in teardown before the admitted file worker exits. This adds no independent serving service or resident queue; its lifecycle is covered by the parent test-file admission.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const caller = readFileSync(new URL("../packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts", import.meta.url), "utf8");
+      const testRunner = readFileSync(new URL("./test-files.mjs", import.meta.url), "utf8");
+      const pgWrapper = readFileSync(new URL("./with-test-pg.mjs", import.meta.url), "utf8");
+      const privateHostEnv = readFileSync(new URL("../packages/operator-core/test/private-http-workspace-preflight.ts", import.meta.url), "utf8");
+      const governedRunner = readFileSync(new URL("./lib/governed-test-process.mjs", import.meta.url), "utf8");
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("assert(workspace?.startsWith('test-runtime-'), 'Disposable runtime identity required')") &&
+        source.includes("assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');") &&
+        source.includes("assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');") &&
+        source.includes("const host = spawn(process.execPath, [bundle], { env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });") &&
+        source.includes("try { await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity }); }") &&
+        source.includes("catch (error) { await stopPrivateOperatorHost(host); throw error; }") &&
+        source.includes("async () => { await stopPrivateOperatorHost(host);") &&
+        source.includes("pageServer.close(() => resolve())") &&
+        source.includes("await finishManagedApiTeardown({ hasProof: !!proof, rowCount: rows.length, cleanupErrors, close: [") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !hasCalledResourceStartAlias(code) &&
+        caller.includes("filePath: 'packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts'") &&
+        caller.includes("'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts'") &&
+        caller.includes("resolve(__dirname, '__fixtures__/managed-api-client.mts')") &&
+        caller.includes("captureIsolatedWorker(child, evidenceDir, isolatedTestFileWorkerOptions(childEnv, 1))") &&
+        testRunner.includes("return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild") &&
+        testRunner.includes("const childEnv = startupTraceEnv(governedEnv ?? env);") &&
+        testRunner.includes("env: childEnv,") &&
+        testRunner.includes("child.once('close', (status, signal) => {") &&
+        pgWrapper.includes("...childEnv,") &&
+        privateHostEnv.includes("return { ...env, NODE_OPTIONS: kept.join(' ') }") &&
+        governedRunner.includes("return await api.runGovernedOperation(operation, (context) => {");
+    },
+  },
+  {
     path: "packages/operator-core/lib/agent-tools/plans/tree-instruments.ts",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -3891,7 +3929,7 @@ function hasCalledResourceStartAlias(code) {
   return false;
 }
 const GOVERNED =
-  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation\s*\(|\brunGovernedTestProcess\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
+  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation(?:\s*<[^;()]*>)?\s*\(|\brunGovernedTestProcess\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
 const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
 const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;
