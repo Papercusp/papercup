@@ -2973,11 +2973,58 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     releaseAllResourcesForOwnerMock.mockRejectedValue(new Error('release transaction failed'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await action(ctx);
+      await expect(action(ctx)).rejects.toThrow('local lock cleanup did not complete (incomplete)');
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock-set release failed'));
       expect(emitResourceReleasedEventMock).not.toHaveBeenCalled();
+      expect(gitSyncActivityPatches().some((activity) => activity.phase === 'post-legs')).toBe(false);
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it('does not enter post-legs or emit a release wake before delayed lock cleanup completes', async () => {
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '60000');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '120000');
+    vi.useFakeTimers();
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    let releaseStarted!: () => void;
+    const started = new Promise<void>((resolve) => { releaseStarted = resolve; });
+    let allowRelease!: () => void;
+    const pendingRelease = new Promise<void>((resolve) => { allowRelease = resolve; });
+    let releaseCommitted = false;
+    releaseAllResourcesForOwnerMock.mockImplementationOnce(async () => {
+      releaseStarted();
+      await pendingRelease;
+      releaseCommitted = true;
+      return { released: 3, exclusiveResources: ['git-sync:papercup'], waiters: {} };
+    });
+    emitResourceReleasedEventMock.mockImplementation(() => {
+      expect(releaseCommitted).toBe(true);
+    });
+
+    const running = action(ctx).then(() => null, (error: unknown) => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(15_000);
+      const error = await running;
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('local lock cleanup did not complete (timed-out)');
+      expect(gitSyncActivityPatches().some((activity) => activity.phase === 'post-legs')).toBe(false);
+      expect(emitResourceReleasedEventMock).not.toHaveBeenCalled();
+
+      allowRelease();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(releaseCommitted).toBe(true);
+      expect(emitResourceReleasedEventMock).toHaveBeenCalledOnce();
+    } finally {
+      allowRelease();
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
     }
   });
 
