@@ -777,6 +777,7 @@ describe('gather + execute against a real temporary repo', () => {
     const second = path.join(tmp, 'terminal-second');
     g(repo, 'worktree', 'add', '-q', '--detach', second);
     const result = await reclaimCutWorktrees(await gather(), {}, { usageWalk: slot.usageWalk });
+    expect(result.errors).toEqual([]);
     expect(result.ok).toBe(true);
     expect(result.cap.retainedPaths).toEqual([first, second]);
     expect(slot.launches).toHaveLength(2);
