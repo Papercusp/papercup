@@ -51,7 +51,7 @@ import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
-import { routineFireProvenance, readMonitoredFireSnapshot, type RoutineFireProvenance } from '../harness/routines/fire-provenance';
+import { routineFireProvenance, readMonitoredFireSnapshot, scheduledCensusWorkflowId, type RoutineFireProvenance } from '../harness/routines/fire-provenance';
 import {
   classifyClaimSkip,
   recordUnclaimableRoutine,
@@ -1359,6 +1359,11 @@ async function routinesTickImpl(): Promise<void> {
     void clearUnclaimableRoutine(sql, r.id);
     try {
       await DBOS.startWorkflow(routineFireWorkflow, {
+        // The native verifier can select this canonical due slot before it fires.
+        // Manual fires retain their distinct SDK identity and manual provenance.
+        ...(r.targetRole === 'system:sql-read-census' ? {
+          workflowID: scheduledCensusWorkflowId(r.workspaceId, r.id, r.nextFireAt),
+        } : {}),
         // Queue classification isolates both must-never-starve persistence work (git-sync)
         // and deadline-sensitive loop wakes; long/unknown work stays on the shared lane.
         queueName,

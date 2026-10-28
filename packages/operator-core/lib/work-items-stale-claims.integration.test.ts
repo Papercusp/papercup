@@ -8,11 +8,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 // These fresh-PG fixtures own claim state; original-row cases assert diagnostics.
 // Never let their incidental cleanup observations flush to the operator database.
-// flushFallbackObservations is stubbed too (not importOriginal): callers reached by
-// the sweep invoke it, and the real one would write to the operator database.
-vi.mock('./degradation/fallback-observations', () => ({
+// Partial mock: only observeFallback is stubbed (so nothing is ever buffered). The
+// fresh-PG fixture cleanup (test/_pg-helpers.ts) imports the REAL flush + counters
+// and drains into the fixture's own sql, so those exports must stay real.
+vi.mock('./degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   observeFallback: vi.fn(() => true),
-  flushFallbackObservations: vi.fn(async () => ({ written: 0, failed: 0, dropped: 0, rejected: 0 })),
 }));
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';

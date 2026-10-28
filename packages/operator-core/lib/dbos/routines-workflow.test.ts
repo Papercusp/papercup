@@ -858,6 +858,27 @@ describe('routinesTickImpl — the starvation bound reaches the zero-credit hold
       return `${opts.queueName}:${opts.enqueueOptions.deduplicationID}`;
     });
 
+  it('prebinds the scheduled census to its canonical due slot while retaining scheduler provenance', async () => {
+    const { scheduledCensusWorkflowId } = await import('../harness/routines/fire-provenance');
+    state.poolShedFixture = true;
+    const census = row('rt_census', 'system:sql-read-census', 51);
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([census]);
+    vi.mocked(claimDueRoutine).mockResolvedValueOnce(true);
+    const fire = vi.fn(async () => undefined);
+    state.startWorkflow.mockReturnValueOnce(fire);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      expect(state.startWorkflow).toHaveBeenCalledExactlyOnceWith(routineFireWorkflow, expect.objectContaining({
+        workflowID: scheduledCensusWorkflowId(census.workspaceId, census.id, census.nextFireAt),
+        enqueueOptions: { deduplicationID: 'routine:rt_census' },
+      }));
+      expect(fire).toHaveBeenCalledWith(census.id, census.workspaceId, census.installSlug,
+        census.targetRole, census.triggerConfig, null, census.name, null, null,
+        expect.objectContaining({ origin: 'scheduler', scheduledAt: census.nextFireAt!.toISOString() }));
+    } finally { warn.mockRestore(); }
+  });
+
   it.each([
     { pressure: 'critical' as const, label: 'critical probe (shed)' },
     { pressure: 'ok' as const, label: 'healthy probe, window exhausted' },

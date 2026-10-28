@@ -818,18 +818,19 @@ describe('P001 — actual prose stored-field freshness witness', () => {
     return { key, conversation: null };
   }
 
+  type CanonicalRow = { workspace_id: string; revision: string; id: string; excerpt: string; highlight: string };
   async function canonical(name: Name, key: string) {
     // This oracle reads the base relations, never the source's returned fields.
-    const rows = name === 'escalations' ? await sql`SELECT workspace_id, xmin::text AS revision,
+    const rows = name === 'escalations' ? await sql<CanonicalRow[]>`SELECT workspace_id, xmin::text AS revision,
         harness_slug || ':' || phase AS id, escalation || E'\n' || supervisor_notes AS excerpt,
         escalation || E'\n' || supervisor_notes AS highlight FROM harness_shared.harness_escalations WHERE harness_slug = ${key}`
-      : name === 'brainstorm' ? await sql`SELECT workspace_id, xmin::text AS revision,
+      : name === 'brainstorm' ? await sql<CanonicalRow[]>`SELECT workspace_id, xmin::text AS revision,
         harness_slug || ':' || phase AS id, content AS excerpt, content AS highlight
         FROM harness_shared.harness_brainstorm WHERE harness_slug = ${key}`
-      : name === 'decisions' ? await sql`SELECT workspace_id, xmin::text AS revision,
+      : name === 'decisions' ? await sql<CanonicalRow[]>`SELECT workspace_id, xmin::text AS revision,
         harness_slug || ':' || line_hash AS id, '[' || iso || '] ' || verb || ' ' || args AS excerpt,
         verb || ' ' || args AS highlight FROM harness_shared.harness_decisions WHERE harness_slug = ${key}`
-      : await sql`SELECT c.workspace_id, t.xmin::text || ':' || c.xmin::text AS revision, t.id::text AS id,
+      : await sql<CanonicalRow[]>`SELECT c.workspace_id, t.xmin::text || ':' || c.xmin::text AS revision, t.id::text AS id,
         '[' || t.role || '] ' || t.text AS excerpt, '[' || t.role || '] ' || t.text AS highlight
         FROM harness_shared.operator_turns t JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id
         WHERE t.id = ${key}::uuid`;

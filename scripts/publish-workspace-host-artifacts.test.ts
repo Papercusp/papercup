@@ -142,7 +142,7 @@ for (const loseReply of [false, true]) {
     const input = { ...fixture, ctx, stageOnly: true, runMutation: runJournaledMutation, log: () => {} };
     const result = await publishGcsObjects(input);
     assert.equal(result.provider, 'gcs');
-    assert.equal(result.verified[0].sha256, fixture.objects[0].sha256);
+    assert.equal(result.verified![0].sha256, fixture.objects[0].sha256);
     await publishGcsObjects(input);
     assert.equal(fixture.calls.filter(a => a[1] === 'cp').length, 1);
     assert.ok(!fixture.calls.some(a => a.includes('add-iam-policy-binding')));

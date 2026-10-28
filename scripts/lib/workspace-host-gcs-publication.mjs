@@ -35,6 +35,12 @@ async function verifyGcsStream(body, expected) {
   return { sha256: digest, sizeBytes: size };
 }
 
+/**
+ * @param {string} uri
+ * @param {{ sha256: string, sizeBytes: number }} expected
+ * @param {(command: string, args: string[], options: any) =>
+ *   import('node:child_process').ChildProcessByStdio<null, import('node:stream').Readable, import('node:stream').Readable>} [spawnImpl]
+ */
 export async function verifyGcsPrivateBytes(uri, expected, spawnImpl = spawn) {
   const child = spawnImpl('gcloud', ['storage', 'cat', uri], {
     stdio: ['ignore', 'pipe', 'pipe'], timeout: 900_000,
@@ -51,7 +57,13 @@ export async function verifyGcsPrivateBytes(uri, expected, spawnImpl = spawn) {
 }
 
 /** Adopt already staged bytes into the Worker's descriptor contract. No upload,
- * finalization or IAM mutation is allowed on this recovery path. */
+ * finalization or IAM mutation is allowed on this recovery path.
+ * `ctx`/`runMutation` (the release journal) are optional only for `planOnly`;
+ * a mutating call without them is refused at runtime.
+ * @param {{ target: any, objects: any, ctx?: any, runMutation?: any, planOnly?: boolean,
+ *   gcloud?: (args: any) => Promise<string>, verifyPrivate?: typeof verifyGcsPrivateBytes,
+ *   log?: typeof console.log }} options
+ */
 export async function adoptGcsWorkspaceHostObjects({ target, objects, ctx, runMutation,
   planOnly = false, gcloud = runGcloud, verifyPrivate = verifyGcsPrivateBytes, log = console.log }) {
   const canonical = gcsPublicationTarget(target.bucket, target.digest);
@@ -116,6 +128,14 @@ export async function adoptGcsWorkspaceHostObjects({ target, objects, ctx, runMu
   return { provider: 'gcs', adoptionOnly: true, adopted };
 }
 
+/**
+ * `ctx`/`runMutation` (the release journal) are optional only for `planOnly`.
+ * `fetchImpl` is accepted and deliberately never invoked: private staging must
+ * not claim an anonymous delivery read (tests pass a throwing one as a tripwire).
+ * @param {{ target: any, objects: any, expiresAt: any, ctx?: any, runMutation?: any,
+ *   planOnly?: boolean, stageOnly?: boolean, gcloud?: (args: any) => Promise<string>,
+ *   verifyPrivate?: typeof verifyGcsPrivateBytes, log?: typeof console.log, fetchImpl?: unknown }} options
+ */
 export async function publishGcsObjects({ target, objects, expiresAt, ctx, runMutation,
   planOnly = false, stageOnly = false, gcloud = runGcloud,
   verifyPrivate = verifyGcsPrivateBytes, log = console.log }) {
