@@ -5,6 +5,7 @@
 // runs. The two measured 2026-10-06 regressions are reproduced below as fixtures, each
 // beside a control that must stay clean, so this suite can fail in both directions.
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -176,7 +177,7 @@ describe('successful input analysis reuse (EI-27247628229290204)', () => {
   const known = knownGlobalNames();
   const open = (implementation = 'scanner-v1') => createCleanInputCache({ directory, implementation });
 
-  it('reuses identical bytes across processes/checkouts, while still reading each input', () => {
+  it('reuses a persisted result after relocation, while still reading each input', () => {
     const producer = open();
     expect(checkInputs(['/first/a.ts'], { cache: producer, known, readFile: () => clean }).findings).toEqual([]);
     expect(producer.stats).toEqual({ analyzed: 1, hits: 0 });
@@ -223,11 +224,23 @@ describe('successful input analysis reuse (EI-27247628229290204)', () => {
     expect(() => unavailable.flush()).not.toThrow();
     expect(unavailable.stats).toEqual({ analyzed: 1, hits: 0 });
     // A syntactically valid but altered entry must not suppress a real finding.
-    const file = path.join(directory, `${require('node:crypto').createHash('sha256').update('scanner-v1').digest('hex')}.json`);
+    const file = path.join(directory, `${createHash('sha256').update('scanner-v1').digest('hex')}.json`);
     writeFileSync(file, '{"version":1,"clean":["' + '0'.repeat(64) + '"],"sha256":"wrong"}');
     const corrupted = open();
     checkInputs(['/a.ts'], { cache: corrupted, known, readFile: () => clean });
     expect(corrupted.stats).toEqual({ analyzed: 1, hits: 0 });
+  });
+
+  it('bounds persisted entries without changing the outcome of evicted inputs', () => {
+    const openBounded = () => createCleanInputCache({ directory, implementation: 'bounded', maxEntries: 1 });
+    const producer = openBounded();
+    checkInputs(['/a.ts', '/b.ts'], { cache: producer, known,
+      readFile: file => file === '/a.ts' ? clean : 'export const other = 2;' });
+    producer.flush();
+    const reader = openBounded();
+    expect(checkInputs(['/b.ts', '/a.ts'], { cache: reader, known,
+      readFile: file => file === '/a.ts' ? clean : 'export const other = 2;' }).findings).toEqual([]);
+    expect(reader.stats).toEqual({ analyzed: 1, hits: 1 });
   });
 });
 

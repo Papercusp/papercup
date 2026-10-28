@@ -33,7 +33,7 @@
  * reported as clean.
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { parse } from '@typescript-eslint/typescript-estree';
@@ -188,6 +188,7 @@ const digest = (value) => createHash('sha256').update(value).digest('hex');
  * The scanner and lockfile bytes invalidate prior parser/analysis semantics;
  * Node's version invalidates the runtime globals. Storage failure is a miss.
  * This is analysis reuse, not test evidence or permission to skip an input read.
+ * @param {{ directory?: string, implementation?: string, maxEntries?: number }} [options]
  */
 export function createCleanInputCache({ directory = join(homedir(), '.papercusp', 'cache', 'bundle-free-refs'),
   implementation, maxEntries = 20_000 } = {}) {
@@ -208,13 +209,16 @@ export function createCleanInputCache({ directory = join(homedir(), '.papercusp'
   const stats = { hits: 0, analyzed: 0 };
   return {
     stats,
+    /** @param {string} code @param {boolean} jsx @param {Set<string>} known */
     key(code, jsx, known) { return digest(JSON.stringify([jsx, [...known].sort(), code])); },
+    /** @param {string} key */
     has(key) {
       if (!entries.has(key)) return false;
       stats.hits++;
       entries.delete(key); entries.set(key, true);
       return true;
     },
+    /** @param {string} key */
     remember(key) { entries.delete(key); entries.set(key, true); },
     flush() {
       if (!file) return;
@@ -224,6 +228,12 @@ export function createCleanInputCache({ directory = join(homedir(), '.papercusp'
         const clean = [...entries.keys()].slice(-maxEntries);
         writeFileSync(temporary, JSON.stringify({ version: 1, clean, sha256: digest(JSON.stringify(clean)) }), { mode: 0o600 });
         renameSync(temporary, file);
+        // Keep concurrently active scanner versions; bound old namespaces as
+        // lockfile/scanner revisions accumulate. Eviction only loses reuse.
+        const versions = readdirSync(directory).filter(name => /^[a-f0-9]{64}\.json$/.test(name))
+          .map(name => ({ path: join(directory, name), at: statSync(join(directory, name)).mtimeMs }))
+          .sort((a, b) => b.at - a.at);
+        for (const retired of versions.slice(32)) unlinkSync(retired.path);
       } catch { /* losing reuse cannot turn a failed scan into a pass */ }
       finally { try { unlinkSync(temporary); } catch { /* renamed or never written */ } }
     },
