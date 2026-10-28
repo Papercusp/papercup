@@ -64,12 +64,17 @@ describe('SPEC-P-011 — shadow mode logs the would-be edge and never surfaces i
     expect(read).toBe(0);
   });
 
-  it('keeps the delivered derivation intact when the shadow log throws', async () => {
-    const delivered = await deriveCouplings(EDITOR, [{ ownerId: EDITOR, fleetSlug: 'f' }, { ownerId: HOLDER, fleetSlug: 'f' }], {
+  it('delivers exactly what a run without the shadow source delivers, even when the shadow log throws', async () => {
+    const rosterRows = [{ ownerId: EDITOR }, { ownerId: HOLDER }];
+    const heldFiles = async () => new Map([[EDITOR, ['lib/query.ts']], [HOLDER, ['lib/query.ts']]]);
+    const baseline = await deriveCouplings(EDITOR, rosterRows, { heldFiles });
+    expect(baseline.length).toBeGreaterThan(0);
+    const withShadow = await deriveCouplings(EDITOR, rosterRows, {
+      heldFiles,
       codeDependency: async () => ({ evidence: [evidence()], suppressedPairs: [] }),
       shadowLog: () => { throw new Error('log down'); },
     });
-    expect(delivered.map((d) => d.relation)).toEqual(['same-fleet']);
+    expect(withShadow).toEqual(baseline);
   });
 
   it('logs only pairs whose other endpoint is on the caller roster', async () => {
