@@ -555,7 +555,13 @@ function ledgerCensusEvidence(): SpecEvidenceForAdequacy {
 
 function successfulTestBinding(
   filePath: string,
-  options: { layer?: string; testCases?: string[]; targeted?: boolean | string } = {},
+  options: {
+    layer?: string;
+    testCases?: string[];
+    targeted?: boolean | string;
+    scenarioIds?: string[];
+    scenarioTestCases?: Record<string, string[]>;
+  } = {},
 ): SpecEvidenceForAdequacy {
   const testLayer = options.layer ?? 'integration';
   const testCases = options.testCases ?? [DEFAULT_MUTATION_TEST_CASE];
@@ -583,6 +589,8 @@ function successfulTestBinding(
         executed: true,
         outcome: 'passed',
         testCases,
+        ...(options.scenarioIds ? { scenarioIds: options.scenarioIds } : {}),
+        ...(options.scenarioTestCases ? { scenarioTestCases: options.scenarioTestCases } : {}),
       },
     },
   });
@@ -4881,6 +4889,40 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(complete.ratings['correct-layer'].rating).toBe('pass');
     expect(complete.ratings['correct-layer'].evidence).toContain('Every canonical acceptance scenario');
+  });
+
+  it('requires each canonical scenario to map to an exact passing test case', () => {
+    const scenarioId = 'correlated-tool-error';
+    const dispatchCase = 'preserves a throwing production dispatch handler and exports its correlated sanitized exception';
+    const scenarioClause = clause({
+      requiredTestLayers: ['unit'],
+      falsifier: { observation: 'A production dispatch failure lacks its correlated exception.', requiredScenarios: [scenarioId] },
+    });
+    const exporterOnly = successfulTestBinding('packages/operator-core/lib/observability/posthog-exporter.test.ts', {
+      layer: 'unit',
+      testCases: ['sends model and tool errors to the configured project and capture destination'],
+      scenarioIds: [scenarioId],
+    });
+    const exporterGrade = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [exporterOnly],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(exporterGrade.ratings['correct-layer'].rating).toBe('fail');
+    expect(exporterGrade.ratings['correct-layer'].evidence).toContain(scenarioId);
+
+    const productionDispatch = successfulTestBinding('packages/operator-core/lib/observability/runtime.dispatch.test.ts', {
+      layer: 'unit',
+      testCases: [dispatchCase],
+      scenarioIds: [scenarioId],
+      scenarioTestCases: { [scenarioId]: [dispatchCase] },
+    });
+    const dispatchGrade = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [productionDispatch],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(dispatchGrade.ratings['correct-layer'].rating).toBe('pass');
   });
 
   it('does not count unexecuted or unbacked scenario tags as scenario coverage', () => {

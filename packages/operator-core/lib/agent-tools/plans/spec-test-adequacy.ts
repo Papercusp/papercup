@@ -541,6 +541,7 @@ interface AdequacyDetails {
   targeted?: boolean | string;
   coverageRungs?: Partial<Record<'l1' | 'l2' | 'l3' | 'l4', boolean>>;
   scenarioIds?: string[];
+  scenarioTestCases?: Record<string, string[]>;
   causalPairIds?: string[];
   testCases?: string[];
   contractMetadataIssues?: string[];
@@ -1047,6 +1048,36 @@ function detailsOf(evidence: Pick<SpecEvidenceForAdequacy, 'details' | 'provisio
       contractMetadataIssues.push('testCases:invalid');
     }
   }
+  let scenarioTestCases: Record<string, string[]> | undefined;
+  if (raw.scenarioTestCases !== undefined) {
+    const rawMapping = raw.scenarioTestCases;
+    const entries = rawMapping && typeof rawMapping === 'object' && !Array.isArray(rawMapping)
+      ? Object.entries(rawMapping as Record<string, unknown>)
+      : null;
+    const declaredScenarios = new Set(scenarioIds ?? []);
+    const declaredCases = new Set(testCases ?? []);
+    const normalized: Record<string, string[]> = {};
+    const valid = entries !== null &&
+      entries.length > 0 &&
+      entries.length <= MAX_RECORDED_PASSED_CASES &&
+      scenarioIds !== undefined &&
+      testCases !== undefined &&
+      entries.every(([scenario, cases]) => {
+        if (
+          !SPEC_PROOF_OBLIGATION_ID_RE.test(scenario) ||
+          !declaredScenarios.has(scenario) ||
+          !Array.isArray(cases) ||
+          cases.length === 0 ||
+          cases.length > MAX_RECORDED_PASSED_CASES ||
+          !cases.every((caseTitle) => isRecordedCaseTitle(caseTitle) && declaredCases.has(caseTitle)) ||
+          new Set(cases).size !== cases.length
+        ) return false;
+        normalized[scenario] = [...cases] as string[];
+        return true;
+      });
+    if (valid) scenarioTestCases = normalized;
+    else contractMetadataIssues.push('scenarioTestCases:invalid');
+  }
   const targeted =
     typeof raw.targeted === 'boolean'
       ? raw.targeted
@@ -1076,6 +1107,7 @@ function detailsOf(evidence: Pick<SpecEvidenceForAdequacy, 'details' | 'provisio
         }
       : {}),
     ...(scenarioIds ? { scenarioIds } : {}),
+    ...(scenarioTestCases ? { scenarioTestCases } : {}),
     ...(causalPairIds ? { causalPairIds } : {}),
     ...(testCases ? { testCases } : {}),
     ...(contractMetadataIssues.length > 0 ? { contractMetadataIssues } : {}),
@@ -3748,12 +3780,27 @@ export function evaluateSpecTestAdequacy(input: {
   let scenarioRating: CorrectLayerEvidencePart | null = null;
   if (requiredScenarios.length > 0) {
     const malformedScenarioRows = evidence.filter((row) =>
-      detailsOf(row).contractMetadataIssues?.includes('scenarioIds:invalid'),
+      detailsOf(row).contractMetadataIssues?.some((issue) =>
+        issue === 'scenarioIds:invalid' || issue === 'scenarioTestCases:invalid',
+      ),
     );
     const successfulScenarioRows = evidence.filter(
       (row) => isSuccessfulExecutableEvidence(row) && detailsOf(row).pathReachable === true,
     );
-    const covered = new Set(successfulScenarioRows.flatMap((row) => detailsOf(row).scenarioIds ?? []));
+    const covered = new Set(successfulScenarioRows.flatMap((row) => {
+      const details = detailsOf(row);
+      const declaredScenarios = new Set(details.scenarioIds ?? []);
+      const declaredCases = new Set(details.testCases ?? []);
+      return Object.entries(details.scenarioTestCases ?? {}).flatMap(([scenario, caseTitles]) =>
+        requiredScenarios.includes(scenario) &&
+        declaredScenarios.has(scenario) &&
+        caseTitles.some((caseTitle) =>
+          declaredCases.has(caseTitle) && hasPassingRequiredLayerCase(row, caseTitle),
+        )
+          ? [scenario]
+          : [],
+      );
+    }));
     const missing = requiredScenarios.filter((scenario) => !covered.has(scenario));
     scenarioRating =
       missing.length > 0
@@ -3761,7 +3808,7 @@ export function evaluateSpecTestAdequacy(input: {
             'fail',
             `Canonical acceptance scenario(s) are not covered by successful ledger-backed path proof for ${clauseIdentity(clause)}: ${missing.join(', ')}. Required scenarios: ${requiredScenarios.join(', ')}.`,
             successfulScenarioRows,
-            'Bind successful executed proof whose adequacy.scenarioIds cover every falsifier.requiredScenarios id.',
+            'Bind successful executed proof whose adequacy.scenarioTestCases maps every falsifier.requiredScenarios id to exact passing adequacy.testCases titles from the canonical ledger.',
           )
         : malformedScenarioRows.length > 0
           ? boundCorrectLayerPart(
