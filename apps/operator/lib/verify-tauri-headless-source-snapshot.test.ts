@@ -30,6 +30,12 @@ const SCRIPT = process.env.PROBE_SCRIPT ?? resolve(__dirname, "../../../scripts/
 const src = readFileSync(SCRIPT, "utf8");
 const HOST_ENTRY = resolve(__dirname, "../bin/hono-host.ts");
 const hostEntrySrc = readFileSync(HOST_ENTRY, "utf8");
+const failingOuterPreload = '--import=data:text/javascript,throw%20new%20Error(%22outer%20runner%20preload%20leaked%22)';
+
+function spawnDiagnostic(result: ReturnType<typeof spawnSync>) {
+  return JSON.stringify({ error: result.error?.message, signal: result.signal,
+    stdout: result.stdout, stderr: result.stderr });
+}
 
 const snapshotGuardIdx = src.indexOf("VERIFY_TAURI_SOURCE_SNAPSHOT_PATH=");
 const argumentParserIdx = src.indexOf('if [ "${1:-}" = "--help" ]');
@@ -303,10 +309,11 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
 
   it('guards boot-only cleanup with the persisted reaper and keeps assertion cleanup in teardown', () => {
     const stop = src.slice(src.indexOf('write_stop_script() {'), src.indexOf('# let the one EXIT trap own cleanup.'));
-    expect(stop).toContain('if [ "\\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then');
+    expect(stop).toContain('if [ "\\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ]; then');
+    expect(stop).toContain('if [ -n "$OPERATOR_SOURCE_WORK" ]; then');
     expect(stop).toContain('source "$WORK/frozen-source-reaper.sh"');
-    expect(stop).toContain('reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE"');
-    expect(stop).toContain('rm -rf -- "$OPERATOR_SOURCE_WORK"');
+    expect(stop).toContain('reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE" "$WORK/spa" "$WORK/verifier-spa"');
+    expect(stop).toContain('rm -rf -- "$WORK/spa" "$WORK/verifier-spa" "$OPERATOR_SOURCE_WORK"');
     expect(stop).toContain('SOURCE_CLEANUP_FAILED=1');
     expect(stop).toContain('exit 1');
     const teardown = src.slice(src.indexOf('teardown() {'), src.indexOf('\nverify_assertion_input_integrity()'));
@@ -596,6 +603,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
     failPtool = false,
     trimByDefault = false,
     projectedResponse = "",
+    inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv(),
   ) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-source-lock-census-"));
     const repo = resolve(fixture, "repo");
@@ -632,7 +640,10 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
           encoding: "utf8",
           timeout: 10_000,
           env: {
-            ...hermeticSpawnEnv(),
+            ...inheritedEnv,
+            // The census uses inline JSON parsers and the ptool stub above;
+            // no checkout module is imported by these synthetic children.
+            NODE_OPTIONS: undefined,
             REPO_DIR: repo,
             PAPERCUSP_WORKSPACE: "fixture-workspace",
             TEST_PTOOL_RESPONSE: response,
@@ -647,6 +658,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
       );
       return {
         ...result,
+        diagnostic: spawnDiagnostic(result),
         query: existsSync(queryPath) ? JSON.parse(readFileSync(queryPath, "utf8")) : null,
         ptoolArgs: existsSync(argsPath) ? readFileSync(argsPath, "utf8") : "",
         coordinationDomain: repo,
@@ -659,7 +671,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
   it("queries a complete lock census for the repo's runtime source roots", () => {
     expect(lockCensusStartIdx).toBeGreaterThan(-1);
     const result = queryLocks(JSON.stringify({ active_locks: [] }));
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, result.diagnostic).toBe(0);
     expect(result.query.coordination_domain).toBe(result.coordinationDomain);
     expect(result.query.payloadTier).toBe("full");
     expect(result.query.paths).toEqual(
@@ -668,6 +680,16 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
     expect(result.ptoolArgs).toContain("--workspace=fixture-workspace");
     expect(result.ptoolArgs).toContain("locks:queue");
     expect(result.stderr).toContain("verified no active source-file locks");
+  });
+
+  it('isolates the inline census parsers from a failing outer-runner preload', () => {
+    const result = queryLocks(JSON.stringify({ active_locks: [] }), false, false, '', {
+      ...hermeticSpawnEnv(), NODE_OPTIONS: failingOuterPreload,
+    });
+    expect(result.status, result.diagnostic).toBe(0);
+    expect(result.query.payloadTier).toBe('full');
+    expect(result.stderr).toContain('verified no active source-file locks');
+    expect(result.stderr).not.toContain('outer runner preload leaked');
   });
 
   it("refuses an active runtime-source edit and reports its holder", () => {
@@ -847,7 +869,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
   it('isolates the standalone smoke fixture from a failing outer-runner preload', () => {
     const result = runSmoke("console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n", 3, undefined, undefined, {
       ...hermeticSpawnEnv(),
-      NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22outer%20runner%20preload%20leaked%22)',
+      NODE_OPTIONS: failingOuterPreload,
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: 'passed' });
@@ -1495,10 +1517,7 @@ describe("independent copy memory admission precedes native preparation", () => 
         NODE_OPTIONS: undefined,
         REPO_DIR: fixture, VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy',
       } });
-      return { ...result, diagnostic: JSON.stringify({
-        error: result.error?.message, signal: result.signal,
-        stdout: result.stdout, stderr: result.stderr,
-      }) };
+      return { ...result, diagnostic: spawnDiagnostic(result) };
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   }
 
@@ -1513,7 +1532,7 @@ describe("independent copy memory admission precedes native preparation", () => 
   it.each([null, 4096])('preserves copy admission despite a failing outer-runner preload (%s)', limit => {
     const result = copyMemory(limit, {
       ...hermeticSpawnEnv(),
-      NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22outer%20runner%20preload%20leaked%22)',
+      NODE_OPTIONS: failingOuterPreload,
     });
     expect(result.status, result.diagnostic).toBe(limit ? 0 : 2);
     expect(result.stdout.includes('native-capacity-started')).toBe(Boolean(limit));
@@ -1533,7 +1552,8 @@ describe("independent copy memory admission precedes native preparation", () => 
 });
 
 describe("native copy callers preserve frozen helpers and bounded admission", () => {
-  function snapshot(mode: string, bounded = true, generationStatus: number | null = null) {
+  function snapshot(mode: string, bounded = true, generationStatus: number | null = null,
+    inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv()) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-copy-helper-"));
     const frozen = resolve(fixture, "frozen");
     const helper = resolve(frozen, "papercusp-desktop/bin/lib/pinned-deps.sh");
@@ -1561,13 +1581,16 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
         "set -euo pipefail", dependencySnapshotSource,
         'snapshot_verifier_pinned_deps "$TEST_FROZEN" "$TEST_HELPER"',
       ].join("\n")], { encoding: "utf8", timeout: 10_000, env: {
-        ...hermeticSpawnEnv(), WORK: fixture, REPO_DIR: "/canonical-donor",
+        ...inheritedEnv,
+        // Only the generated task-limit leaf is imported by this fixture.
+        NODE_OPTIONS: undefined,
+        WORK: fixture, REPO_DIR: "/canonical-donor",
         TEST_FROZEN: frozen, TEST_HELPER: helper,
         VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: mode,
       } });
       const order = existsSync(resolve(fixture, "order")) ? readFileSync(resolve(fixture, "order"), "utf8") : "";
       expect(readFileSync(helper, "utf8")).toBe(before);
-      return { ...result, order, helper, frozen };
+      return { ...result, diagnostic: spawnDiagnostic(result), order, helper, frozen };
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   }
 
@@ -1580,8 +1603,17 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
 
   it.each([0, 74])("uses the immutable generation when supported and preserves its refusal: %s", status => {
     const result = snapshot("copy", true, status);
-    expect(result.status, result.stderr).toBe(status);
+    expect(result.status, result.diagnostic).toBe(status);
     expect(result.order).toBe(`admission\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+  });
+
+  it('isolates the synthetic copy helper from a failing outer-runner preload', () => {
+    const result = snapshot('copy', true, 0, {
+      ...hermeticSpawnEnv(), NODE_OPTIONS: failingOuterPreload,
+    });
+    expect(result.status, result.diagnostic).toBe(0);
+    expect(result.order).toBe(`admission\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.stderr).not.toContain('outer runner preload leaked');
   });
 
   it("refuses an unbounded copy before admission or any helper execution", () => {
