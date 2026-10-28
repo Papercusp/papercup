@@ -239,8 +239,12 @@ describe('native operational execution witnesses', () => {
         createTime: '2026-10-14T03:25:36.604Z', databaseVersion: 'POSTGRES_18',
         maintenanceVersion: 'POSTGRES_18_6', state: 'RUNNABLE', settings: { settingsVersion: '8' } };
       const expected = await measureRuntimeEnvironment([], [unit], { describe: async () => JSON.stringify(document) });
-      const reader = vi.fn(async () => mode === 'unavailable' ? null : JSON.stringify({ ...document,
-        settings: { settingsVersion: mode === 'changed' && reader.mock.calls.length > 1 ? '9' : '8' } }));
+      let observations = 0;
+      const reader = vi.fn(async () => {
+        observations += 1;
+        return mode === 'unavailable' ? null : JSON.stringify({ ...document,
+          settings: { settingsVersion: mode === 'changed' && observations > 1 ? '9' : '8' } });
+      });
       configureRemoteRuntimeDescribe(reader);
       try {
         const result = await executeOperationalRun({ ...f.definition, runtimeUnits: [unit] }, f.ctx,

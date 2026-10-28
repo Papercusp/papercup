@@ -724,6 +724,41 @@ describe('retention on a real fixture tree', () => {
     expect(fresh).toHaveBeenCalledWith(root, expect.objectContaining({ paths: [source] }));
   });
 
+  it('prepares independent capped roots despite a delegate failure without resuming effects', async () => {
+    const { root, options } = await setup();
+    const later = join(fixture!, 'later'); await mkdir(later);
+    for (const path of [root, later]) await writeFile(join(path, 'data'), 'retain until a fresh complete pass');
+    const launches = vi.fn(async () => ({ pid: 999_999_999, taskId: 'prepared', confined: true }));
+    const fresh = vi.fn(inspectRetentionTrees), holders = vi.fn(options.scanHolders);
+    const receipts: DiskReclaimReceipt[] = [];
+    const run = vi.fn(async () => {
+      const receipt = await runDiskReclaimOnce({ ...options, yieldAfterPendingCensus: true,
+        roots: [root, later].map(path => ({ path, classId: 'fixture' })),
+        policy: options.policy.map(cls => ({ ...cls, roots: [root, later], maxBytes: 1 })),
+        delegates: [{ classId: 'independent-owner', run: async () => ({ ok: false, detail: 'unavailable' }) }],
+        inspectTrees: fresh, scanHolders: holders,
+        inspectInitialCappedTrees: (path, input, retentionMutex) => inspectDetachedRetentionTrees(path, input, {
+          retentionMutex, dir: join(fixture!, path === root ? 'first-slot' : 'later-slot'),
+          prepareOnly: input.prepareOnly, waitMs: 60_000, pollMs: 2, launch: launches, isAlive: () => true,
+          sleep: async () => { throw new DetachedWalkAbandoned(); },
+        }),
+      });
+      receipts.push(receipt); return receipt;
+    });
+    const awaitPendingCensus = vi.fn(async () => true);
+    expect(await drainScheduledDiskReclaim(run, { awaitPendingCensus })).toMatchObject({ batches: 1, stop: 'error' });
+    expect(run).toHaveBeenCalledOnce(); expect(awaitPendingCensus).not.toHaveBeenCalled();
+    expect(launches).toHaveBeenCalledTimes(2);
+    expect(receipts[0]!.censuses?.filter(row => row.preparationOnly).map(row => row.root)).toEqual([root, later]);
+    expect(receipts[0]!.entries).toEqual([]); expect(receipts[0]!.caps ?? []).toEqual([]);
+    expect(fresh).not.toHaveBeenCalled(); expect(holders).not.toHaveBeenCalled();
+    for (const name of ['first-slot', 'later-slot']) {
+      expect((await readWalkState(join(fixture!, name)))?.attempt).toBe(1);
+      await expect(stat(join(fixture!, name, 'consumed'))).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    for (const path of [root, later]) expect(await readFile(join(path, 'data'), 'utf8')).toBe('retain until a fresh complete pass');
+  });
+
   it.each(['remove', 'new-pin', 'changed-entry'] as const)('continues a pending census outside admission and rechecks %s before effects', async mode => {
     const { root, options } = await setup();
     const source = join(root, 'expired'); await mkdir(source); await writeFile(join(source, 'data'), 'old');
@@ -744,9 +779,9 @@ describe('retention on a real fixture tree', () => {
           previousReceipt: receipts.at(-1), yieldAfterPendingCensus: true, inspectTrees: inspectRetentionTrees,
           readProtection: async () => { protections.push(pinned); return { paths: pinned ? [source] : [] }; },
           inspectInitialCappedTrees: async (path, input, retentionMutex) => {
-            inspections.push(path);
+            if (!input.prepareOnly) inspections.push(path);
             return path === root ? inspectDetachedRetentionTrees(path, input, { retentionMutex, dir: slot,
-              waitMs: 60_000, pollMs: 2, launch: launcher, isAlive: () => receipts.length === 0,
+              prepareOnly: input.prepareOnly, waitMs: 60_000, pollMs: 2, launch: launcher, isAlive: () => receipts.length === 0,
               // Abandon after enrollment reaches its wait, independently of
               // filesystem setup latency. The real FIFO case has its own test.
               sleep: async () => { throw new DetachedWalkAbandoned(); },
@@ -758,7 +793,7 @@ describe('retention on a real fixture tree', () => {
         expect(inspections).toEqual([root]);
         expect(receipts[0]!.errors).toEqual([`inspect:${root}: retention census pending; managed walk continues for adoption`]);
         expect(receipts[0]!.entries).toEqual([]);
-        expect(receipts[0]!.censuses?.[0]?.pendingWalk).toEqual(pending);
+        expect(receipts[0]!.censuses?.find(row => !row.preparationOnly)?.pendingWalk).toEqual(pending);
         // A pin writer obtains the actual mutex while the workflow is paused.
         await withRetentionMutex(async () => {
           pinned = mode === 'new-pin';

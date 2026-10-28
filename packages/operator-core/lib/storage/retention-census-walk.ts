@@ -207,7 +207,7 @@ export async function inspectDetachedRetentionTrees(root: string,
       }, requestKey);
     } catch (error) {
       if (error instanceof DetachedWalkAbandoned) {
-        const pending = await readWalkState(walk.dir);
+        const pending = error.state ?? await readWalkState(walk.dir);
         return { ...incomplete(RETENTION_CENSUS_PENDING_ERROR),
           ...(pending?.root === root && pending.requestKey === requestKey ? { pendingWalk: {
             root, dir: walk.dir, attempt: pending.attempt, requestKey, launchedAt: pending.launchedAt,
