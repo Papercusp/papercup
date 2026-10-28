@@ -28,6 +28,7 @@
  * migration. Versioning falls out of the plan revision spine (no separate machinery).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
@@ -5277,11 +5278,39 @@ async function amendAcceptanceBarRubric(
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
+      const patchBarKeys = [...new Set([
+        ...guard.changes.map((change) => change.barKey),
+        ...approvalBars,
+      ])].sort();
+      const gradeableCriterion = (criterion: Record<string, unknown> | undefined) => {
+        if (!criterion) return null;
+        // Provenance is server-owned lifecycle metadata, not part of the reviewed criterion patch.
+        const { barProvenance: _provenance, ...gradeable } = criterion;
+        return gradeable;
+      };
+      const proposedPatchHash = hashPlanContent(canonicalJson({
+        actorId,
+        reason,
+        bars: patchBarKeys.map((barKey) => ({
+          barKey,
+          prior: gradeableCriterion(stored.criteria.find((criterion) =>
+            (criterion.barKey ?? criterion.key) === barKey,
+          ) as unknown as Record<string, unknown> | undefined),
+          next: gradeableCriterion((guard.data.criteria as Array<Record<string, unknown>>).find((criterion) =>
+            (criterion.barKey ?? criterion.key) === barKey,
+          )),
+        })),
+        proposedSourceHash: proposedSource !== subjectRow.content
+          ? sourceDerivation.proposedSourceFingerprint
+          : null,
+        mappingDelta: mappingDelta.length ? mappingDelta : null,
+      }));
       const approvalRequest: AcceptanceBarApproval = {
         schemaVersion: 1,
         kind: 'acceptance-bar-amendment-approval',
         rubricRef: input.rubricId,
         subjectPlan: subjectPlanHint,
+        proposedPatchHash,
         // A moved BAR appears with prior == next hash: the review covers its map, not its meaning.
         bars: approvalBars.map((barKey) => ({
           barKey,
