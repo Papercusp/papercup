@@ -450,7 +450,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
         'VERIFY_TAURI_SOURCE_REF=HEAD; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
-        'node() { printf "%s\\n" "$*" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; }',
+        'node() { printf "%s\\n" "$@" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "${!#}"; }',
         dependencySnapshotSource,
         committedSnapshotSource(operatorSnapshotCallIdx, sourceRefNormalizationTestStub),
