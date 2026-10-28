@@ -144,18 +144,25 @@ function makeIntegration(): string {
   writeFileSync(join(root, 'node_modules/pkg/package.json'), '{"name":"pkg","version":"1.0.0"}\n');
   writeFileSync(
     join(root, 'package-lock.json'),
-    '{"name":"fixture","lockfileVersion":3,"packages":{}}\n',
+    JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages: {
+      'node_modules/pkg': { version: '1.0.0' },
+      'packages/a/node_modules/local': { version: '1.0.0' },
+      // The incremental-removal cases deliberately omit this optional tree.
+      'packages/b/node_modules/other': { version: '1.0.0', optional: true },
+    } }) + '\n',
   );
   writeFileSync(
     join(root, 'packages/a/node_modules/local/index.js'),
     'local-v1\n',
   );
   writeFileSync(join(root, 'packages/a/package.json'), '{"name":"a"}\n');
+  writeFileSync(join(root, 'packages/a/node_modules/local/package.json'), '{"name":"local","version":"1.0.0"}\n');
   writeFileSync(
     join(root, 'packages/b/node_modules/other/index.js'),
     'other-v1\n',
   );
   writeFileSync(join(root, 'packages/b/package.json'), '{"name":"b"}\n');
+  writeFileSync(join(root, 'packages/b/node_modules/other/package.json'), '{"name":"other","version":"1.0.0"}\n');
   writeFileSync(
     join(root, '.papercusp/worktrees/repair/node_modules/foreign/index.js'),
     'must-not-copy\n',
@@ -1378,7 +1385,9 @@ describe('immutable dependency generation', () => {
 
     writeFileSync(
       join(integration, 'package-lock.json'),
-      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new":{"version":"1.0.0"}}}\n',
+      JSON.stringify({ ...JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')),
+        packages: { ...JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')).packages,
+          'node_modules/new': { version: '1.0.0' } } }) + '\n',
     );
     const miss = selectPrewarmed(generationRoot, integration);
     expect(miss.status).toBe(74);
