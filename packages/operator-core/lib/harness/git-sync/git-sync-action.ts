@@ -3899,7 +3899,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // Keep renewing leases throughout SIGTERM/SIGKILL and exit verification.
       // The cleanup budget below bounds DB cleanup only; it cannot certify exit.
       while (activeGitExecutions.size > 0) await Promise.allSettled([...activeGitExecutions]);
-      await new Promise<GitSyncActionCleanupResult>((resolve) => {
+      return new Promise<GitSyncActionCleanupResult>((resolve) => {
         let finished = false;
         const finish = (result: GitSyncActionCleanupResult): void => {
           if (finished) return;

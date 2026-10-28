@@ -2992,6 +2992,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     const started = new Promise<void>((resolve) => { releaseStarted = resolve; });
     let allowRelease!: () => void;
     const pendingRelease = new Promise<void>((resolve) => { allowRelease = resolve; });
+    let releaseEventEmitted!: () => void;
+    const releaseEvent = new Promise<void>((resolve) => { releaseEventEmitted = resolve; });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let releaseCommitted = false;
     releaseAllResourcesForOwnerMock.mockImplementationOnce(async () => {
       releaseStarted();
@@ -3001,6 +3004,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     });
     emitResourceReleasedEventMock.mockImplementation(() => {
       expect(releaseCommitted).toBe(true);
+      releaseEventEmitted();
     });
 
     const running = action(ctx).then(() => null, (error: unknown) => error);
@@ -3013,11 +3017,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect((error as Error).message).toContain('local lock cleanup did not complete (timed-out)');
       expect(gitSyncActivityPatches().some((activity) => activity.phase === 'post-legs')).toBe(false);
       expect(emitResourceReleasedEventMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock cleanup exceeded 15000ms'));
 
       allowRelease();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      vi.useRealTimers();
+      const eventObserved = await Promise.race([
+        releaseEvent.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+      ]);
+      expect(eventObserved).toBe(true);
       expect(releaseCommitted).toBe(true);
       expect(emitResourceReleasedEventMock).toHaveBeenCalledOnce();
     } finally {
@@ -3025,6 +3033,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       await running;
       vi.useRealTimers();
       vi.unstubAllEnvs();
+      warn.mockRestore();
     }
   });
 
