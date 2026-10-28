@@ -36,6 +36,7 @@ import { resolveAgentBinarySync } from './agent-bin-detect';
 import { attachedInstalledToolLifecycle, type AttachedInstalledToolFunding } from './agent-tools/per-use-chokepoint';
 import { productionInstalledToolFunding } from './cupboard/installed-tool-funding';
 import { synthesizeTransportPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
+import { canonicalJson } from './authority/authority-rpc-envelope';
 
 type Backend = 'codex' | 'omp';
 type NativeHandle = CodexNativeSessionHandle | OmpNativeSessionHandle;
@@ -227,7 +228,7 @@ export function startSuRpcEngine(
   let releaseNativeBinding: (() => void) | undefined;
   let nativeBindingFailed = false;
   let nativeToolObservationTail = Promise.resolve();
-  const observedNativeToolCalls = new Set<string>();
+  const observedNativeToolCalls = new Map<string, string>();
   const completedNativeToolTurns = new Set<string>();
   let inputTail = Promise.resolve();
   let turnEpoch = 0;
@@ -613,12 +614,14 @@ export function startSuRpcEngine(
         return;
       }
     }
+    if (closed || nativeBindingFailed || owner !== ownerTurnId) return;
     if (error) emit({ type: 'error', scope: 'turn', code: `${backend}_turn_failed`, message: error, recoverable: true });
     // The native transcript/RPC frame carries completion, but not the account
     // selected by Papercusp's inference gateway. Refresh that provenance before
     // resolving the owner command so success and known failure both publish a
     // settled descriptor. The adapter's reader is injectable and null-safe.
     await adapter.refreshAccountServed();
+    if (closed || nativeBindingFailed || owner !== ownerTurnId) return;
     host.transition(status === 'interrupted' ? 'interrupted' : 'waiting-for-owner', error ?? `${backend} turn ${status}`);
     turnFinished?.();
   }
@@ -632,12 +635,16 @@ export function startSuRpcEngine(
     if (!admission?.observeToolCall || !owner || turnCompletionSettled ||
         completedNativeToolTurns.has(turn) ||
         thread !== nativeId() || !boundedId(turn) || !boundedId(callId) ||
-        !boundedId(server) || !boundedId(tool) || observedNativeToolCalls.has(callId)) return;
-    observedNativeToolCalls.add(callId);
+        !boundedId(server) || !boundedId(tool)) return;
     const args = nativeToolArguments(item.arguments);
+    const identity = canonicalJson([server, tool, args]);
+    const prior = observedNativeToolCalls.get(callId);
+    if (prior === identity) return;
+    observedNativeToolCalls.set(callId, identity);
     nativeToolObservationTail = nativeToolObservationTail.then(async () => {
       await bindingReady;
       if (closed || nativeBindingFailed || owner !== ownerTurnId || admission !== turnAdmission || turn !== nativeTurnId) return;
+      if (prior !== undefined) throw new Error('Native call observation changed its target or arguments');
       await admission.observeToolCall!({ nativeTurnId: turn, callId, server, tool, arguments: args });
     }).catch(async (error) => {
       // An observation failure cannot release a funded hold or open another
@@ -762,10 +769,19 @@ export function startSuRpcEngine(
   let starting: Promise<void>;
   let nativeForkHistory = false;
   let closing: Promise<void> | undefined;
+  async function reconcileNativeExit(): Promise<void> {
+    if (!turnAdmission || turnCompletionSettled || nativeBindingFailed) return;
+    // Withdraw observation authority before awaiting durable recovery. A peer
+    // exit without turn/completed never proves the admitted turn was unserved.
+    nativeBindingFailed = true;
+    try { await turnAdmission.reconcile({ phase: nativeTurnId ? 'completion' : 'delivery',
+      message: 'Native engine closed before verified turn completion' }); }
+    catch (error) { reportRuntimeFailure(error); }
+  }
   function close(): Promise<void> {
     if (closing) return closing;
     closed = true; ready = false; turnFinished?.(); cards.cancel();
-    closing = (async () => { await peer?.close(); })();
+    closing = (async () => { await reconcileNativeExit(); await peer?.close(); })();
     return closing;
   }
   starting = (async () => {
@@ -796,6 +812,7 @@ export function startSuRpcEngine(
       throw error;
     }).finally(async () => {
       ready = false; turnFinished?.();
+      await reconcileNativeExit();
       if (!host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: closed, reason: `${backend} connection closed` });
       await options.onExit?.();
     });
