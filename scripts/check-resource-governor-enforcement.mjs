@@ -2773,8 +2773,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   },
 ]);
 
-// Supplemental reviewed rows join the shared scanner registry without
-// inflating P016_DISPOSITION_REGISTRY or its exact lane census.
+// Supplemental reviewed rows join the shared scanner registry. Rows with explicit
+// P-016 reviewed provenance also enter the P-016 exact-lane census.
 const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
   {
     path: "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs",
@@ -3011,7 +3011,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The queue and detachedQueue are local graph traversals over the already-parsed symbol population. queued prevents duplicate pending symbols and detached prevents duplicate propagation; this analysis creates no background work.",
+      "P-016 reviewed semantic disposition: the queue and detachedQueue are local graph traversals over the already-parsed symbol population. queued prevents duplicate pending symbols and detached prevents duplicate propagation; this analysis creates no background work.",
     matchesSource: (source) => {
       const start = source.indexOf("const reverse = new Map();");
       const end = source.indexOf("const occurrences = new Map();", start);
@@ -3033,7 +3033,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The local queue computes reverse-dependency closure for one route selection. Every discovered workspace enters affected before enqueue, so each finite graph node is processed at most once; it starts no resident work.",
+      "P-016 reviewed semantic disposition: the local queue computes reverse-dependency closure for one route selection. Every discovered workspace enters affected before enqueue, so each finite graph node is processed at most once; it starts no resident work.",
     matchesSource: (source) => {
       const start = source.indexOf("export function expandAffectedWorkspaceNames(");
       const end = source.indexOf("\n}", start);
@@ -3055,7 +3055,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "This per-invocation queue partitions the finite plan.order file list into slices. A timeout replaces one slice with disjoint sub-slices from that same list, and a single-file hang is terminal, so queued file count is conserved and no persistent service queue is created.",
+      "P-016 reviewed semantic disposition: this per-invocation queue partitions the finite plan.order file list into slices. A timeout replaces one slice with disjoint sub-slices from that same list, and a single-file hang is terminal, so queued file count is conserved and no persistent service queue is created.",
     matchesSource: (source) => {
       const start = source.indexOf("  const queue = [];");
       const end = source.indexOf("\n  summary.state = \"done\";", start);
@@ -3078,7 +3078,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The pending array is a local traversal of the pinned ELF dependency graph. realpath inspection and traversed sets deduplicate nodes, while maxLibraries is validated as a positive safe integer and bounds the inspected population; no resident service work is queued.",
+      "P-016 reviewed semantic disposition: the pending array is a local traversal of the pinned ELF dependency graph. realpath inspection and traversed sets deduplicate nodes, while maxLibraries is validated as a positive safe integer and bounds the inspected population; no resident service work is queued.",
     matchesSource: (source) => {
       const start = source.indexOf("const libraries = [], edges = [], unresolved = [], inspected = new Map(), pending = [], traversed = new Set();");
       const end = source.indexOf("const result = { schema: 'papercusp-elf-library-candidates-v1'", start);
@@ -3100,7 +3100,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "takeTscServiceProjectBatch drains the caller-owned queue into a local snapshot, removes cancelled entries, returns one project batch, and puts only the unchanged remaining entries back. Queue cardinality cannot grow in this helper; the actual service queue has its own upstream disposition.",
+      "P-016 reviewed semantic disposition: takeTscServiceProjectBatch drains the caller-owned queue into a local snapshot, removes cancelled entries, returns one project batch, and puts only the unchanged remaining entries back. Queue cardinality cannot grow in this helper; the actual service queue has its own upstream disposition.",
     matchesSource: (source) => {
       const start = source.indexOf("export function takeTscServiceProjectBatch(queue)");
       const end = source.indexOf("\n}", start);
@@ -3121,7 +3121,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "unbounded-resident-queue",
     disposition: "semantic",
     reason:
-      "The parser worklist contains only suffixes of one finite shell command after comment newlines. Each pushed suffix consumes a newline from its parent, so this is local tokenization state, not queued resource work.",
+      "P-016 reviewed semantic disposition: the parser worklist contains only suffixes of one finite shell command after comment newlines. Each pushed suffix consumes a newline from its parent, so this is local tokenization state, not queued resource work.",
     matchesSource: (source) => {
       const start = source.indexOf("const pending = [command];");
       const end = source.indexOf("\n    if (hasPlaywrightTest(tokens))", start);
@@ -3183,9 +3183,35 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("child.once('error', release);") &&
       source.includes("await reservation?.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));"),
   },
+  {
+    path: "scripts/lib/runtime-compatibility-admission.mjs",
+    code: "missing-admission-context-or-release",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition: this isolated runtime-compatibility fixture validates both admission outcomes. On the admitted gateway path it checks outcome.kind before passing that same outcome.context to governor.release; on the enqueue path it reports the queued receipt without claiming or releasing execution capacity. The context is the runtime Governor result contract, although this JavaScript fixture has no TypeScript AdmissionContext token for the lexical checker.",
+    matchesSource: (source) => {
+      const admit = source.indexOf("outcome = await governor.admit({ idempotencyKey: 'same-request'");
+      const admittedGuard = source.indexOf(
+        "if (outcome.kind !== 'admitted') throw new Error('Gateway did not return an admitted receipt');",
+        admit,
+      );
+      const release = source.indexOf("const released = await governor.release(outcome.context);", admittedGuard);
+      return admit >= 0 && admittedGuard > admit && release > admittedGuard &&
+        source.includes("const result = await new Governor(driver, { now: () => nowMs }).admit({") &&
+        source.includes("return { queued: result.kind === 'queued' };") &&
+        source.includes("return { admitted: true, stateAfterCompetitor: status.state, released: released.released };");
+    },
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
-  P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
+  [
+    ...P016_REVIEWED_DISPOSITIONS,
+    ...SUPPLEMENTAL_REVIEWED_DISPOSITIONS.filter(({ path, reason }) =>
+      reason.startsWith("P-016 reviewed") &&
+      RESOURCE_GOVERNOR_INVENTORY.some(({ migration, paths }) =>
+        migration === "P-016" && paths.some((prefix) => path.startsWith(prefix))),
+    ),
+  ].map(({ path, code, disposition, reason, matchesSource }) => [
     `${path}::${code}`,
     { disposition, reason, ...(matchesSource ? { matchesSource } : {}) },
   ]),
@@ -4054,26 +4080,6 @@ export const BYPASS_REGISTRY = new Map([
         source.includes("server.children.delete(m.id)") &&
         source.includes("server.pending.clear()") &&
         source.includes("server.children.clear()"),
-    },
-  ],
-  [
-    "scripts/lib/runtime-compatibility-admission.mjs::missing-admission-context-or-release",
-    {
-      disposition: "semantic",
-      reason:
-        "This isolated runtime-compatibility fixture validates both admission outcomes. On the admitted gateway path it checks outcome.kind before passing that same outcome.context to governor.release; on the enqueue path it reports the queued receipt without claiming or releasing execution capacity. The context is the runtime Governor result contract, although this JavaScript fixture has no TypeScript AdmissionContext token for the lexical checker.",
-      matchesSource: (source) => {
-        const admit = source.indexOf("outcome = await governor.admit({ idempotencyKey: 'same-request'");
-        const admittedGuard = source.indexOf(
-          "if (outcome.kind !== 'admitted') throw new Error('Gateway did not return an admitted receipt');",
-          admit,
-        );
-        const release = source.indexOf("const released = await governor.release(outcome.context);", admittedGuard);
-        return admit >= 0 && admittedGuard > admit && release > admittedGuard &&
-          source.includes("const result = await new Governor(driver, { now: () => nowMs }).admit({") &&
-          source.includes("return { queued: result.kind === 'queued' };") &&
-          source.includes("return { admitted: true, stateAfterCompetitor: status.state, released: released.released };");
-      },
     },
   ],
 ]);
