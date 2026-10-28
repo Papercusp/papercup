@@ -57,8 +57,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { createRequire, isBuiltin } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
+import { compileFunction } from 'node:vm';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
@@ -1098,6 +1100,30 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
   const originalDirectories = new Map([...directories].map(local => [local, inputIdentity(local)]));
   /** @type {Map<string, { path: string, realpath: string, sha256: string }>} */
   const consumed = new Map();
+  /** Read once and validate the exact buffer handed to an evaluator/compiler.
+   * @param {string} path */
+  const readInput = path => {
+    const physical = realpathSync(path);
+    const local = relative(prepared.root, physical).split(sep).join('/');
+    assert.ok(local && local !== '..' && !local.startsWith('../') && !isAbsolute(local),
+      'BG compiler input escaped selected generation');
+    const expected = files.get(local);
+    assert.ok(expected?.kind === 'file', `BG compiler input is outside original census: ${local}`);
+    const fd = openSync(physical, 'r');
+    /** @type {Buffer} */
+    let contents;
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      assert.ok(before.isFile(), 'BG compiler input must be regular');
+      contents = readFileSync(fd);
+      const after = fstatSync(fd, { bigint: true });
+      assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
+        && realpathSync(path) === physical, `BG compiler input changed while reading: ${local}`);
+    } finally { closeSync(fd); }
+    const sha256 = createHash('sha256').update(contents).digest('hex');
+    assert.equal(sha256, expected.sha256, `BG compiler consumed bytes mismatch: ${local}`);
+    return { contents, identity: { path: local, realpath: physical, sha256 } };
+  };
   // This plugin must precede any other onLoad provider. It fails closed for
   // unknown inputs/loaders instead of asking esbuild to read them unobserved.
   /** @type {import('esbuild').Plugin} */
@@ -1106,35 +1132,19 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
     assert.equal(build.initialOptions.stdin, undefined, 'BG compiler stdin is outside original census');
     build.onLoad({ filter: /.*/ }, ({ path, namespace }) => {
       assert.equal(namespace, 'file', 'BG compiler virtual input is outside original census');
-      const physical = realpathSync(path);
-      const local = relative(prepared.root, physical).split(sep).join('/');
-      assert.ok(local && local !== '..' && !local.startsWith('../') && !isAbsolute(local),
-        'BG compiler input escaped selected generation');
-      const expected = files.get(local);
-      assert.ok(expected?.kind === 'file', `BG compiler input is outside original census: ${local}`);
+      const { contents, identity } = readInput(path);
+      const { path: local, realpath: physical } = identity;
       /** @type {Record<string, import('esbuild').Loader>} */
       const loaders = { js: 'js', mjs: 'js', cjs: 'js', jsx: 'jsx', ts: 'ts', mts: 'ts', cts: 'ts', tsx: 'tsx', json: 'json', css: 'css', txt: 'text' };
       const loader = build.initialOptions.loader?.['.' + local.split('.').at(-1)]
         ?? loaders[local.split('.').at(-1)];
       assert.ok(loader, `BG compiler input loader is UNKNOWN: ${local}`);
-      const fd = openSync(physical, 'r');
-      /** @type {Buffer} */
-      let contents;
-      try {
-        const before = fstatSync(fd, { bigint: true });
-        assert.ok(before.isFile(), 'BG compiler input must be regular');
-        contents = readFileSync(fd);
-        const after = fstatSync(fd, { bigint: true });
-        assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
-          && realpathSync(path) === physical, `BG compiler input changed while reading: ${local}`);
-      } finally { closeSync(fd); }
-      const sha256 = createHash('sha256').update(contents).digest('hex');
-      assert.equal(sha256, expected.sha256, `BG compiler consumed bytes mismatch: ${local}`);
-      consumed.set(local, { path: local, realpath: physical, sha256 });
+      consumed.set(local, identity);
       return { contents, loader, resolveDir: dirname(physical) };
     });
   } };
-  return { plugin, consumed: () => freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path))),
+  return { plugin, readToolchainInput: readInput,
+    consumed: () => freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path))),
     verifyBeforePublication() {
       verifyBgVerifierSource(prepared, 'before-publication');
       assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
@@ -1854,8 +1864,9 @@ function writeBgVerifierBinding(binding) {
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.
- * This does not qualify resolver metadata, compiler self-consumption, runtime
- * imports, a complete multi-entry host build, or service readiness.
+ * The compiler API is evaluated from its validated buffer with builtin-only
+ * imports and no module cache. Native executable consumption, resolver metadata,
+ * runtime imports, full host closure and service readiness remain separate.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
  */
@@ -1892,7 +1903,26 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
   let compiler;
   try {
     process.env = { ...invocation.environment };
-    compiler = await runPhase('bg.compiler.import', () => import(pathToFileURL(invocation.compiler).href));
+    const compilerApi = await runPhase('bg.compiler.import', () => {
+      const source = custody.readToolchainInput(invocation.compiler);
+      const trustedRequire = createRequire(import.meta.url);
+      // The pinned esbuild API needs only Node builtins when its native binary
+      // is explicitly selected. Refuse package/ambient fallback before loading it.
+      const builtinRequire = Object.assign(/** @param {string} name */ name => {
+        assert.ok(isBuiltin(name), `BG compiler API import is outside Node builtins: ${name}`);
+        return trustedRequire(name);
+      }, { resolve(/** @type {string} */ name) {
+        assert.ok(isBuiltin(name), `BG compiler API resolution is outside Node builtins: ${name}`);
+        return trustedRequire.resolve(name);
+      } });
+      const module = { exports: /** @type {typeof import('esbuild')} */ ({}) };
+      // Do not reopen the path or consult Node's CJS/ESM caches after validation.
+      compileFunction(source.contents.toString('utf8'), ['exports', 'require', 'module', '__filename', '__dirname'],
+        { filename: invocation.compiler })(module.exports, builtinRequire, module,
+        invocation.compiler, dirname(invocation.compiler));
+      return { compiler: module.exports, identity: source.identity };
+    });
+    compiler = compilerApi.compiler;
     assert.equal(compiler.version, expectedVersion, 'BG compiler API version mismatch');
     const activeCompiler = compiler;
     const result = await runPhase('bg.compiler.build', () => activeCompiler.build({ ...options, plugins: [custody.plugin] }));
@@ -1913,7 +1943,7 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
       return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
         buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
         originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: activeCompiler.version,
-        binary, consumed, output: readBgIndependentOutputIdentity(options.outfile),
+        compilerApi: compilerApi.identity, binary, consumed, output: readBgIndependentOutputIdentity(options.outfile),
         ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
     });
   } finally {
