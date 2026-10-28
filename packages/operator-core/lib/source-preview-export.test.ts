@@ -1308,7 +1308,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(candidate, '.papercusp/scratch'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release'] as const)
+  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -1355,7 +1355,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const budgetFrom = join(tmp, 'verifier-command-budget-' + mode + '.jsonl');
       const requestParentPgRelease = vi.fn(async () => {});
       const releasesPrivatePg = mode === 'private-pg-release' || mode === 'output-io-failure';
+      const taskId = mode === 'evidence-retention' ? 'delayed-consumer-fixture' : null;
+      const checkpointLogDir = join(tmp, 'verifier-task-evidence-checkpoint-logs');
       const env = { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies',
+        ...(taskId ? { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId,
+          PAPERCUSP_CHECKPOINT_LOG_DIR: checkpointLogDir } : {}),
         ...(releasesPrivatePg ? { PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN: 'parent-release-token' } : {}),
         ...(['history-refusal', 'deadline-refusal'].includes(mode) ? {
           PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + (mode === 'deadline-refusal' ? 180_000 : 60_000)),
@@ -1472,6 +1476,37 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         .toMatchObject({ exitCode: ['child-failure', 'child-output-overflow'].includes(mode) ? 37 : 0,
           diagnosticsPath: receiptPath + '.child.json' });
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+      if (mode === 'evidence-retention') {
+        const taskReceiptPath = `${receiptPath}.task.json`;
+        const taskReceipt = JSON.parse(readFileSync(taskReceiptPath, 'utf8'));
+        const runId = createHash('sha256').update(receiptPath).digest('hex');
+        const manifestPath = join(checkpointLogDir, `verifier-task-${taskId}`, runId, 'manifest.json');
+        expect(taskReceipt).toMatchObject({ taskId, cleanup: 'completed', evidenceManifestPath: manifestPath });
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        expect(manifest).toMatchObject({ schemaVersion: 'verifier-task-evidence-v1', taskId,
+          runId, sourceCommit: ref, wrapperStatus: 'completed', cleanup: 'completed', childExitCode: 0,
+          childLogs: { stdout: 'stdout.log', stderr: 'stderr.log' } });
+        const temporarySources = {
+          'source.json': receiptPath,
+          'dependencies.json': `${receiptPath}.dependencies.json`,
+          'dependencies-after.json': `${receiptPath}.dependencies.after.json`,
+          'task.json': taskReceiptPath,
+          'phases.jsonl': `${receiptPath}.phases.jsonl`,
+          'child.json': `${receiptPath}.child.json`,
+          'stdout.log': `${receiptPath}.stdout.log`,
+          'stderr.log': `${receiptPath}.stderr.log`,
+        };
+        expect(Object.keys(manifest.artifacts).sort()).toEqual(Object.keys(temporarySources).sort());
+        const originalBytes = new Map(Object.entries(temporarySources)
+          .map(([name, path]) => [name, readFileSync(path)]));
+        for (const path of Object.values(temporarySources)) rmSync(path, { force: true });
+        for (const [name, artifact] of Object.entries(manifest.artifacts)) {
+          const bytes = readFileSync(artifact.path);
+          expect(bytes).toEqual(originalBytes.get(name));
+          expect(createHash('sha256').update(bytes).digest('hex')).toBe(artifact.sha256);
+          expect(statSync(artifact.path).mode & 0o777).toBe(0o600);
+        }
+      }
     });
 
   it.each(['hung', 'descendant', 'signal-race', 'unverified', 'completed', 'no-deadline'] as const)(
@@ -3308,6 +3343,27 @@ describe('BG inherited manifest and original source boundaries', () => {
         ? 'BG transaction logical output duplicated' : defect === 'escape' ? 'BG transaction compiler output escaped stage'
           : defect.startsWith('pid-') ? 'BG transaction PID token is outside' : 'BG transaction compiler output membership mismatch');
       expect(existsSync(stage)).toBe(false);
+    });
+
+  it.each(['builder', 'compiler', 'node', 'packageManager', 'configuration', 'environment'] as const)(
+    'BG shared input validation refuses non-first %s divergence at both binding boundaries', async field => {
+      const fixture = await transactionCandidate();
+      const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+      const diverge = (invocation: Parameters<typeof prepareBgVerifierBuildRecord>[0]['invocation']) => {
+        if (field === 'environment') invocation.environment = { ...invocation.environment, PATH: '/unaccepted' };
+        else if (field === 'configuration') invocation.configuration = [];
+        else invocation[field] = field === 'node' ? fixture.invocation.packageManager : fixture.invocation.node;
+      };
+      const changed = JSON.parse(JSON.stringify(transaction)) as typeof transaction;
+      diverge(changed.contexts.invocations[1]!.invocation);
+      expect(() => beginBgVerifierBuildTransaction({ transaction: changed, ownerPid: process.pid })).toThrow();
+      expect(existsSync(fixture.stage)).toBe(false);
+      const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: process.pid });
+      const changedBinding = JSON.parse(JSON.stringify(binding)) as typeof binding;
+      diverge(changedBinding.contexts.invocations[1]!.invocation);
+      expect(() => stageBgVerifierAssetCopies(changedBinding)).toThrow('BG output original contexts changed');
+      expect(readdirSync(fixture.stage)).toEqual([]);
+      expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
     });
 
   it.each(['pid', 'stage', 'bank-link', 'bank-replaced', 'source', 'dependency'] as const)(
