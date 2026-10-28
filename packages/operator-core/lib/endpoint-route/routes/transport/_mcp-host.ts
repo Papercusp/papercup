@@ -3937,6 +3937,10 @@ export async function retainNativeRequestPrincipalForDispatch(
   spawn: BuiltSpawnContext, toolName: string, args: unknown, runtimeBearer: string,
 ): Promise<BuiltSpawnContext> {
   if (spawn.authenticatedPrincipal || !runtimeBearer) return spawn;
+  // Installed commerce admission has its own principal/funding binding. This
+  // core capture lane cannot silently substitute a different payer principal.
+  const target = resolveMcpName(toolName);
+  if (!target || target.pluginInstallation) return spawn;
   const address = nativeMcpToolAddress(spawn);
   if (!address) return spawn;
   const { nativeInstalledPerUseTurns } = await import('../../../agent-tools/per-use-chokepoint');
