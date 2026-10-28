@@ -960,6 +960,7 @@ export function deriveBindingFromTestRun(
   row: TestRunEvidenceRow,
   root: string,
   attribution: HarnessAttribution,
+  mutantSubjectPathAtRoot?: string,
 ): TestRunExpansion {
   const testRunId = Number(row.id);
   const controlsRefusal = mutationCausalControlsRefusal(input, row);
@@ -988,7 +989,7 @@ export function deriveBindingFromTestRun(
     ? parseMutationDescriptor(executionDetails(row.execution_details).mutation)
     : undefined;
   const mutantSubjectPath = mutationDescriptor?.leg === 'mutant'
-    ? repoRelativeTestPath(root, mutationDescriptor.subjectPath)
+    ? mutantSubjectPathAtRoot ?? repoRelativeTestPath(root, mutationDescriptor.subjectPath)
     : null;
   if (mutationDescriptor?.leg === 'mutant' && !mutantSubjectPath) {
     return {
@@ -1165,6 +1166,33 @@ export function deriveBindingFromTestRun(
     ...(input.observedAt ? { observedAt: input.observedAt } : {}),
   };
   return { ok: true, binding, attribution };
+}
+
+/** A mutation descriptor path is relative to the probe subject's Git root, which can be nested. */
+async function mutationSubjectPathAtHarnessRoot(
+  harnessRoot: string,
+  testPath: string,
+  subjectPath: string,
+  git: GitRunner,
+): Promise<string | null> {
+  if (isAbsolute(subjectPath)) return repoRelativeTestPath(harnessRoot, subjectPath);
+  let subjectRepoRoot: string;
+  try {
+    subjectRepoRoot = (await git(dirname(resolve(harnessRoot, testPath)), ['rev-parse', '--show-toplevel'])).trim();
+  } catch {
+    return null;
+  }
+  if (!isAbsolute(subjectRepoRoot)) return null;
+
+  const testWithinRepo = repoRelativeTestPath(subjectRepoRoot, resolve(harnessRoot, testPath));
+  const subjectWithinRepo = repoRelativeTestPath(subjectRepoRoot, resolve(subjectRepoRoot, subjectPath));
+  if (!testWithinRepo || !subjectWithinRepo) return null;
+
+  const harnessRelative = relative(harnessRoot, resolve(subjectRepoRoot, subjectPath));
+  if (!harnessRelative || harnessRelative === '..' || harnessRelative.startsWith(`..${sep}`) || isAbsolute(harnessRelative)) {
+    return null;
+  }
+  return harnessRelative.split(sep).join('/');
 }
 
 /**
@@ -1816,7 +1844,35 @@ async function expandTestRunBindingInScope(
           : ''),
     };
   }
-  const result = deriveBindingFromTestRun(input, { ...row, file_path: testPath }, root, attribution);
+  let mutantSubjectPathAtRoot: string | undefined;
+  if (!input.sourcePaths) {
+    const descriptor = parseMutationDescriptor(executionDetails(row.execution_details).mutation);
+    if (descriptor?.leg === 'mutant' && !isAbsolute(descriptor.subjectPath)) {
+      mutantSubjectPathAtRoot = await mutationSubjectPathAtHarnessRoot(
+        root,
+        testPath,
+        descriptor.subjectPath,
+        deps.git ?? defaultGitRunner,
+      ) ?? undefined;
+      if (!mutantSubjectPathAtRoot) {
+        return {
+          ok: false,
+          error: 'source_paths_underivable',
+          testRunId,
+          message:
+            `test-run ${testRunId} mutation subject ${JSON.stringify(descriptor.subjectPath)} is relative to a Git root ` +
+            `that could not be mapped from ${JSON.stringify(testPath)} into this harness checkout (${root}); pass sourcePaths.`,
+        };
+      }
+    }
+  }
+  const result = deriveBindingFromTestRun(
+    input,
+    { ...row, file_path: testPath },
+    root,
+    attribution,
+    mutantSubjectPathAtRoot,
+  );
   if (result.ok && sibling) {
     result.binding.measurement = { ...result.binding.measurement, rootHarnessSlug: sibling.harnessSlug };
   }

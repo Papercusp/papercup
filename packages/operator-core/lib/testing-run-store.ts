@@ -39,7 +39,7 @@ import {
   captureConfigurationSnapshot,
   type ConfigurationSnapshot,
 } from '@papercusp/test-config/configuration-snapshot';
-import { redactSensitiveText } from './sensitive-text';
+import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
 import { resolveGitContext } from './testing-branch-resolve';
 import type { TestRunSource } from './testing-run-source';
 import { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
@@ -1453,8 +1453,9 @@ async function reconcilePersistedReportArtifact(
     }));
     if (reports.some(report => report.rows === null)
       || !hasCompleteReportCoverage(artifacts, requestedFiles, reports, !environment)) return snapshot;
+    const retainedSnapshot = { ...snapshot };
     const retainedReports = await Promise.all(reports.map(report =>
-      retainDetachedReportEvidence(snapshot, report.artifact, report.reportText, environment ?? process.env)));
+      retainDetachedReportEvidence(retainedSnapshot, report.artifact, report.reportText, environment ?? process.env)));
     const allReportsRetained = retainedReports.every(Boolean);
     const recovered = await boundedOrgTxn(async tx => {
       const scopedSql = tx as unknown as SqlLike;
@@ -1485,24 +1486,29 @@ async function reconcilePersistedReportArtifact(
         || (observedExit && verdict.exitCode !== row.task_exit_code)) {
         throw new Error('detached_report_process_verdict_mismatch');
       }
-      const reconciled = await persistReconciledSnapshot(snapshot, expiredRunningTask ? {
+      const candidate: RunSnapshot = {
         ...snapshot,
+        output: retainedSnapshot.output,
+        truncated: retainedSnapshot.truncated,
+      };
+      const reconciled = await persistReconciledSnapshot(snapshot, expiredRunningTask ? {
+        ...candidate,
         // The report proves per-file assertions, not the detached process exit.
         // Keep deadline expiry visible at the run level and leave its exit unknown.
         status: 'error', exitCode: null, finishedAt: Date.now(),
-        output: snapshot.output + `\n[detached-recovery] recorded completed saved Vitest report (${verdict.status}) `
+        output: candidate.output + `\n[detached-recovery] recorded completed saved Vitest report (${verdict.status}) `
           + 'after the linked task deadline; per-file results were ingested, but the overall run remains error '
           + 'because the process exit code was not observed.\n',
       } : {
-        ...snapshot, status: verdict.status, exitCode: row.task_exit_code!, finishedAt: verdict.finishedAt,
-        output: snapshot.output + '\n[detached-recovery] recovered completed saved Vitest report.'
+        ...candidate, status: verdict.status, exitCode: row.task_exit_code!, finishedAt: verdict.finishedAt,
+        output: candidate.output + '\n[detached-recovery] recovered completed saved Vitest report.'
           + (unobservedExit ? ' The process exit code was not observed.' : '') + '\n',
       }, scopedSql);
       if (reconciled === snapshot) throw new Error('detached_report_snapshot_race');
-      return reconciled;
+      return { snapshot: reconciled, allReportsRetained };
     }, { client: sql as unknown as NonNullable<Parameters<typeof boundedOrgTxn>[1]>['client'],
       statementTimeoutMs: 3_000, lockTimeoutMs: 1_000 });
-    if (allReportsRetained) {
+    if (recovered.allReportsRetained) {
       await Promise.all(expanded.map(async artifact => {
         await rm(artifact.reportPath, { force: true }).catch(() => undefined);
         if (artifact.failureDetailsPath) await rm(artifact.failureDetailsPath, { force: true }).catch(() => undefined);
@@ -1512,7 +1518,7 @@ async function reconcilePersistedReportArtifact(
         }
       }));
     }
-    return recovered;
+    return recovered.snapshot;
   } catch {
     // Retain the report for a later read; ingestion failure must not destroy
     // the only durable assertion evidence or manufacture a passing verdict.
@@ -1687,15 +1693,43 @@ async function retainDetachedReportEvidence(
   artifact: PreparedDetachedReportArtifact,
   reportText: string,
   environment: Readonly<Record<string, string | undefined>>,
+  childEnvironmentAvailable = false,
 ): Promise<{ reportPath: string; manifestPath: string; sha256: string; byteLength: number } | null> {
   try {
     const { retainDetachedVitestReport } = await import('./agent-tools/testing/run-artifacts');
+    let safeReport = redactSensitiveText(reportText, [], environment);
+    let sanitization: string | undefined;
+    if (!childEnvironmentAvailable) {
+      // A post-restart reader does not have the child's launch environment, so
+      // opaque child-only credentials cannot be matched. Preserve the structured
+      // assertion metadata needed for recovery, but omit free-form assertion text.
+      const report = JSON.parse(safeReport) as Record<string, unknown>;
+      const scrub = (value: unknown): unknown => {
+        if (Array.isArray(value)) return value.map(scrub);
+        if (!value || typeof value !== 'object') return value;
+        const result: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value)) {
+          if (['actual', 'expected', 'failureMessages', 'fullName', 'message', 'stack', 'stackTrace', 'title']
+            .includes(key)) {
+            result[key] = '[omitted: child launch environment unavailable]';
+          } else if (key === 'meta') {
+            result[key] = redactSensitiveValue(entry);
+          } else {
+            result[key] = scrub(entry);
+          }
+        }
+        return result;
+      };
+      safeReport = JSON.stringify(scrub(report));
+      sanitization = 'child-launch-environment-unavailable; free-form assertion text omitted';
+    }
     const retained = await retainDetachedVitestReport({
       runId: snapshot.runId,
       root: artifact.root,
       sourcePath: artifact.reportPath,
-      reportText: redactSensitiveText(reportText, [], environment),
+      reportText: safeReport,
       ...(artifact.scope ? { scope: artifact.scope } : {}),
+      ...(sanitization ? { sanitization } : {}),
     });
     appendSnapshotOutput(snapshot,
       `\n[detached-recovery] retained report artifact ${JSON.stringify(retained)}\n`);
@@ -1768,7 +1802,8 @@ async function persistDetachedReportArtifacts(
         }
         const rows = parseVitestJsonForHarnessRows(reportText, artifact.root, environment);
         if (rows.length > 0 && artifact.scope) {
-          durableReportRetained = Boolean(await retainDetachedReportEvidence(snapshot, artifact, reportText, environment));
+          durableReportRetained = Boolean(
+            await retainDetachedReportEvidence(snapshot, artifact, reportText, environment, true));
           const after = await captureWorktreeSnapshotAsync(artifact.root);
           await boundedOrgTxn(async tx => {
             const scopedSql = tx as unknown as SqlLike;

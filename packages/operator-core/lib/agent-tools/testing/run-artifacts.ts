@@ -88,6 +88,7 @@ export async function retainDetachedVitestReport(input: {
   sourcePath: string;
   reportText: string;
   scope?: { harnessSlug: string; workspaceId: string };
+  sanitization?: string;
 }): Promise<RetainedDetachedVitestReport> {
   if (!input.runId || !isAbsolute(input.root) || !isAbsolute(input.sourcePath)) {
     throw new Error('detached_report_artifact_identity_invalid');
@@ -115,6 +116,7 @@ export async function retainDetachedVitestReport(input: {
     runId: input.runId,
     root: input.root,
     scope: input.scope ?? null,
+    ...(input.sanitization ? { sanitization: input.sanitization } : {}),
     report: { path: reportPath, sha256, byteLength: bytes.byteLength },
   }, null, 2)}\n`);
   await writeArtifactAtomically(reportPath, bytes);

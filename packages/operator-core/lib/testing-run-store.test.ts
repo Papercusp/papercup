@@ -1105,13 +1105,9 @@ describe('durable detached snapshot lifecycle', () => {
       const recovered = await recovery;
       const recoveryOutput = recovered?.output ?? '';
       const retainedMatches = [...recoveryOutput.matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)];
-      const reportWasRecovered = /(?:recorded|recovered) completed saved Vitest report/.test(recoveryOutput);
-      const temporaryReportExists = await readFile(reportPath).then(() => true, () => false);
       const expectedRetainedCount = options.routerReports && !options.missingRouterGroup && !options.partialRouterGroup ? 2 : 1;
-      expect(retainedMatches.length).toBeLessThanOrEqual(expectedRetainedCount);
-      if (reportWasRecovered || !temporaryReportExists || options.writeFailure || options.casLost) {
-        expect(retainedMatches).toHaveLength(expectedRetainedCount);
-      }
+      const reportWasRecovered = /(?:recorded|recovered) completed saved Vitest report/.test(recoveryOutput);
+      expect(retainedMatches).toHaveLength(reportWasRecovered ? expectedRetainedCount : 0);
       for (const match of retainedMatches) {
         const retained = JSON.parse(match[1]!) as {
           reportPath: string; manifestPath: string; sha256: string; byteLength: number;
@@ -1129,6 +1125,11 @@ describe('durable detached snapshot lifecycle', () => {
         const manifest = JSON.parse(await readFile(retained.manifestPath, 'utf8'));
         expect(manifest.report).toMatchObject({ path: retained.reportPath, sha256: retained.sha256,
           byteLength: retained.byteLength });
+        if (options.secretOutput) {
+          expect(manifest.sanitization).toBe('child-launch-environment-unavailable; free-form assertion text omitted');
+          expect(retainedReport.testResults[0].assertionResults[0].fullName)
+            .toBe('[omitted: child launch environment unavailable]');
+        }
       }
       if (options.expected === null) expect(recovered).toBeNull();
       else expect(recovered?.status).toBe(options.expected);

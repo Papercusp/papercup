@@ -224,7 +224,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
   /** Throttle observed progress relayed to the encompassing file watchdog. */
   progressIntervalMs?: number;
   cleanupFromStdout?: boolean;
-  /** Direct scripts/test-files.mjs children have router progress, not runtime IPC. */
+  /** Routers, direct or supervised, begin execution at their stdout start marker.
+   * Runtime IPC still proves the private lifetime before collection/admission. */
   testFileExecutionFromStdout?: boolean;
 }) {
   assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
@@ -371,8 +372,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         relayProgress(stage);
       }
       // Repeated or out-of-order IPC cannot renew a phase's deadline.
-      if (kind === 'isolated-runtime-start' && phase === 'bootstrap') armPhase('execute');
-      else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') && phase === 'execute') armPhase('teardown');
+      if (kind === 'isolated-runtime-start' && phase === 'bootstrap' && !options.testFileExecutionFromStdout) armPhase('execute');
+      else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') &&
+          (phase === 'execute' || options.testFileExecutionFromStdout && phase === 'bootstrap')) armPhase('teardown');
       if (phase === 'teardown' && kind === 'isolated-runtime-cleanup') {
         if (typeof stage === 'string' && /^(start|profile-stop|pg-stop|pg-stopped|remove-private-state|complete)$/.test(stage) && !cleanupStages.has(stage)) {
           cleanupStages.add(stage);
