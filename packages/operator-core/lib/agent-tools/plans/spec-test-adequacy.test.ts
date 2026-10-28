@@ -3577,6 +3577,31 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
   });
 
+  it.each([
+    'test-run-worktree-not-clean',
+    'test-run-worktree-cleanliness-unproven',
+  ])('surfaces server-measured unknown currentness reason %s instead of claiming fingerprints are missing', (reason) => {
+    const row = evidence({
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'server-measured',
+        comparisonSupplied: true,
+        dimensions: { ...evidence().currentness.dimensions, testRun: 'unknown' },
+        unknownReasons: [reason],
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.freshness).toMatchObject({ rating: 'unknown' });
+    expect(result.ratings.freshness.evidence).toContain(reason);
+    expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
+  });
+
   // RECURRENCE GUARD (WI-10002320). A replayed tuple that MATCHED its stored values is
   // capped at 'unknown' precisely BECAUSE it matched — so the one thing the message must
   // never say is that fingerprints are missing. Without its own arm the chain fell through
