@@ -81,8 +81,11 @@ test('Quick Access opens as an independent native launcher with reports and exac
     await evaluate('(() => { if(window.__quickAccessErrors) return; window.__quickAccessErrors=[]; addEventListener("error", e=>window.__quickAccessErrors.push(String(e.error||e.message)),true); addEventListener("unhandledrejection", e=>window.__quickAccessErrors.push(String(e.reason))); })()');
   }
   async function open() {
-    await evaluate('window.__TAURI_INTERNALS__.invoke("open_docs_search_palette")', 'main');
+    if (!(await visible())) {
+      await evaluate('window.__TAURI_INTERNALS__.invoke("open_docs_search_palette")', 'main');
+    }
     await ready();
+    await expect.poll(visible).toBe(true);
   }
   try {
     // xdotool exits 1 before the new X window is mapped; --sync waits for it
