@@ -1551,6 +1551,59 @@ describe("independent copy memory admission precedes native preparation", () => 
   });
 });
 
+describe('native shell dependency preflight', () => {
+  const check = src.match(/^verify_frozen_native_cli\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+
+  function run(state: 'missing' | 'broken' | 'present' | 'failed') {
+    expect(check).not.toBe('');
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-native-cli-'));
+    try {
+      const desktop = resolve(fixture, 'desktop');
+      const bin = resolve(desktop, 'node_modules/.bin');
+      const ambient = resolve(fixture, 'ambient');
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(ambient);
+      writeFileSync(resolve(ambient, 'tauri'), '#!/bin/sh\necho ambient-tauri\n', { mode: 0o755 });
+      if (state === 'broken') symlinkSync('../absent/tauri.js', resolve(bin, 'tauri'));
+      if (state === 'present' || state === 'failed') {
+        writeFileSync(resolve(bin, 'tauri'),
+          `#!/bin/sh\n[ "$1" = --version ] || exit 91\necho frozen-tauri\nexit ${state === 'failed' ? 63 : 0}\n`,
+          { mode: 0o755 });
+      }
+      return spawnSync('bash', ['-c', `set -eu\n${check}\nverify_frozen_native_cli`], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...hermeticSpawnEnv(), DESKTOP_DIR: desktop, PATH: `${ambient}:${process.env.PATH}` },
+      });
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }
+
+  it.each(['missing', 'broken'] as const)('rejects a %s frozen Tauri CLI despite an ambient executable', state => {
+    const result = run(state);
+    expect(result.status, spawnDiagnostic(result)).toBe(74);
+    expect(result.stderr).toContain('VERIFY_TAURI_NATIVE_CLI_MISSING');
+    expect(result.stdout).not.toContain('ambient-tauri');
+  });
+
+  it('runs the selected frozen Tauri CLI version probe', () => {
+    const result = run('present');
+    expect(result.status, spawnDiagnostic(result)).toBe(0);
+    expect(result.stdout.trim()).toBe('frozen-tauri');
+  });
+
+  it('preserves a failing frozen CLI version probe', () => {
+    const result = run('failed');
+    expect(result.status, spawnDiagnostic(result)).toBe(63);
+    expect(result.stderr).toContain('VERIFY_TAURI_NATIVE_CLI_UNUSABLE');
+  });
+
+  it('checks native dependencies before either expensive build', () => {
+    const call = src.indexOf('verifier_run_step verifier-native-cli verify_frozen_native_cli');
+    expect(call).toBeGreaterThan(operatorSnapshotCallIdx);
+    expect(call).toBeLessThan(src.indexOf('verifier_run_step verifier-spa-build '));
+    expect(call).toBeLessThan(src.indexOf('verifier_run_step verifier-host-bundle '));
+  });
+});
+
 describe("native copy callers preserve frozen helpers and bounded admission", () => {
   function snapshot(mode: string, bounded = true, generationStatus: number | null = null,
     inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv()) {
