@@ -1475,7 +1475,7 @@ describe("independent copy memory admission precedes native preparation", () => 
   const start = src.indexOf('preflight_verifier_copy_memory() {');
   const end = src.indexOf('\n# EI-25558788631579977:', start);
 
-  it.each([null, 0, 4096])('checks the selected copy ceiling before allocating native capacity (%s)', limit => {
+  function copyMemory(limit: number | null, inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv()) {
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-copy-memory-'));
@@ -1488,13 +1488,37 @@ describe("independent copy memory admission precedes native preparation", () => 
         src.slice(start, end),
         'echo native-capacity-started',
       ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: {
-        ...hermeticSpawnEnv(), REPO_DIR: fixture, VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy',
+        ...inheritedEnv,
+        // This generated leaf module is outside the checkout, like runSmoke's
+        // standalone fixtures. Outer preloads must not consume its bounded
+        // startup budget or replace the admission result under test.
+        NODE_OPTIONS: undefined,
+        REPO_DIR: fixture, VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy',
       } });
-      expect(result.status, result.stderr).toBe(limit ? 0 : 2);
-      expect(result.stdout.includes('native-capacity-started')).toBe(Boolean(limit));
-      expect(result.stderr).toContain(limit ? 'VERIFY_TAURI_COPY_MEMORY_MAX_MB=4096' : 'VERIFY_TAURI_COPY_MEMORY_UNBOUNDED');
-      expect(end).toBeLessThan(src.indexOf('preflight_native_cargo() {'));
+      return { ...result, diagnostic: JSON.stringify({
+        error: result.error?.message, signal: result.signal,
+        stdout: result.stdout, stderr: result.stderr,
+      }) };
     } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }
+
+  it.each([null, 0, 4096])('checks the selected copy ceiling before allocating native capacity (%s)', limit => {
+    const result = copyMemory(limit);
+    expect(result.status, result.diagnostic).toBe(limit ? 0 : 2);
+    expect(result.stdout.includes('native-capacity-started')).toBe(Boolean(limit));
+    expect(result.stderr).toContain(limit ? 'VERIFY_TAURI_COPY_MEMORY_MAX_MB=4096' : 'VERIFY_TAURI_COPY_MEMORY_UNBOUNDED');
+    expect(end).toBeLessThan(src.indexOf('preflight_native_cargo() {'));
+  });
+
+  it.each([null, 4096])('preserves copy admission despite a failing outer-runner preload (%s)', limit => {
+    const result = copyMemory(limit, {
+      ...hermeticSpawnEnv(),
+      NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22outer%20runner%20preload%20leaked%22)',
+    });
+    expect(result.status, result.diagnostic).toBe(limit ? 0 : 2);
+    expect(result.stdout.includes('native-capacity-started')).toBe(Boolean(limit));
+    expect(result.stderr).not.toContain('outer runner preload leaked');
+    expect(result.stderr).toContain(limit ? 'VERIFY_TAURI_COPY_MEMORY_MAX_MB=4096' : 'VERIFY_TAURI_COPY_MEMORY_UNBOUNDED');
   });
 
   it('retains the hardlink route without requiring a copy ceiling', () => {
