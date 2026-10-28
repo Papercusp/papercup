@@ -1706,7 +1706,10 @@ describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
 });
 
 describe('executeWake inbox-wake held-work reminder seam (WI-6554700010018536)', () => {
-  const REMINDER = 'REMINDER (held work): you still hold 2 unfinished work-item(s) [WI-1, WI-2].';
+  const REMINDER =
+    "REMINDER (work list snapshot): a recent read found 2 unfinished work-item(s) [WI-1, WI-2]. " +
+    "This snapshot may be stale by the time you act; recheck each item's current state and assignee with work_items:get before continuing. " +
+    'Answering or reconciling this message does not finish any still-open items.';
   // The pty write receives the injected text as a Buffer: decode every write.
   const written = (write: { mock: { calls: unknown[][] } }): string =>
     write.mock.calls.map((c) => Buffer.from(c[1] as Uint8Array).toString('utf8')).join('');
@@ -1727,6 +1730,34 @@ describe('executeWake inbox-wake held-work reminder seam (WI-6554700010018536)',
     const text = written(write);
     expect(text).toContain('NOTE (inbox-wake)');
     expect(text).toContain(REMINDER);
+  });
+
+  it('labels the read as a snapshot when a work item completes before the wake is injected', async () => {
+    let currentState = 'open';
+    const prep = vi.fn(async () => {
+      const snapshot = REMINDER;
+      // Model a completion in the read-to-injection gap.
+      currentState = 'done';
+      return snapshot;
+    });
+    const write = vi.fn((..._args: unknown[]) => {
+      expect(currentState).toBe('done');
+      return true;
+    });
+    const out = await executeWake(
+      work({ eventKey: 'coord:inbox-wake:su-abc', wakeHandle: advHandle() }),
+      deps({
+        prepareInboxWakeHeldWorkReminder: prep,
+        findPty: vi.fn(() => ({ id: 'pty-inbox' })) as never,
+        write: write as never,
+      }),
+    );
+
+    expect(out.kind).toBe('delivered');
+    const text = written(write);
+    expect(text).toContain('work list snapshot');
+    expect(text).toContain("recheck each item's current state and assignee with work_items:get");
+    expect(text).not.toContain('you still hold');
   });
 
   it('does NOT read the reminder for a non-inbox-wake key', async () => {

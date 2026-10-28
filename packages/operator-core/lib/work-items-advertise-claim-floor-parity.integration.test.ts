@@ -350,15 +350,17 @@ describe('EI-25209690807142935 — admission-pending publishes the fail-open bou
       payload: { dedupCandidates: [{ id: 'WI-FO-CLEAN', method: 'semantic-soft' }], dedupCoverage: { degraded: true } },
     },
     // EI-26515695311006297: degraded rows stay excluded only until the re-screen budget is spent.
+    // The boundary is LITERAL (2 retrying, 3 exhausted) to pin D-017's budget of 3. Deriving it
+    // from ADMISSION_DEGRADED_RESCREEN_ATTEMPTS let a mutant budget of 9999 survive this test.
     {
       id: 'WI-FO-DEGRADED-RETRYING',
       exclusion: 'degraded-dedup-coverage',
-      payload: { dedupCoverage: { degraded: true, rescreen: { attempts: adm.ADMISSION_DEGRADED_RESCREEN_ATTEMPTS - 1 } } },
+      payload: { dedupCoverage: { degraded: true, rescreen: { attempts: 2 } } },
     },
     {
       id: 'WI-FO-DEGRADED-EXHAUSTED',
       exclusion: undefined,
-      payload: { dedupCoverage: { degraded: true, rescreen: { attempts: adm.ADMISSION_DEGRADED_RESCREEN_ATTEMPTS } } },
+      payload: { dedupCoverage: { degraded: true, rescreen: { attempts: 3 } } },
     },
     // A garbage attempts value reads as zero attempts, never as an exhausted budget.
     { id: 'WI-FO-DEGRADED-JUNK-ATTEMPTS', exclusion: 'degraded-dedup-coverage', payload: { dedupCoverage: { degraded: true, rescreen: { attempts: 'many' } } } },

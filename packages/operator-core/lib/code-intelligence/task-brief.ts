@@ -17,7 +17,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { composeReuseBrief, encodeClaimReuseContribution, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
   type ReuseContribution, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
 import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-ledger';
-import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange, type PriorWorkReader } from './change-history';
+import { boundChangeHistoryProviders, changeHistoryProviders, readWarmCoChange, type PriorWorkReader } from './change-history';
 import { readTaskEngineeringEvidence, type TaskEngineeringEvidence } from './task-brief-engineering';
 import type { EngineeringQuery, readEngineeringEvidence } from './engineering-evidence';
 import { withBoundedTimeout } from '../bounded-timeout';
@@ -652,7 +652,7 @@ export interface CompletionBriefDeps {
   graph?: (request: ChangeReportRequest, root: string, budgetMs: number) => Promise<CodeIntelAnswer>;
   /** The default report's non-graph effects (git, artifact writes). */
   effects?: Omit<ChangeReportEffects, 'graph'>;
-  cochange?: typeof readCoChange;
+  cochange?: typeof readWarmCoChange;
   /** One source-qualified, close-bound test run batch, shared by SQL/coverage. */
   coverage?: (context: Readonly<ReuseProviderContext>, signal: AbortSignal) => Promise<CoverageScopeData | null>;
   reuse?: TaskBriefDeps['reuse'];
@@ -750,7 +750,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       root, brief.scope.paths, { engineering: deps.engineering ?? (!deps.root && !deps.report ? defaults.engineering : undefined) }, deadline);
     const historyController = new AbortController();
     const historyTimer = setTimeout(() => historyController.abort(), Math.min(750, Math.max(0, deadline - Date.now())));
-    const history = (ref.reuse ? (deps.cochange ?? readCoChange)(root, brief.scope.paths, undefined, historyController.signal)
+    const history = (ref.reuse ? (deps.cochange ?? readWarmCoChange)(root, brief.scope.paths, undefined, historyController.signal)
       .catch(() => null) : Promise.resolve(null)).finally(() => clearTimeout(historyTimer));
     const captured = new Map<string, string>();
     const tests = new Set<string>();

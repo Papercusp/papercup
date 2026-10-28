@@ -315,6 +315,7 @@ describe('private PostgreSQL independent cleanup', () => {
         },
         cleanup: () => launcher.cleanupOwnedState(),
       };
+      scope.stopPrivatePg = createSingleFlightStop(async () => { await scope.pg.stop(); });
       launcher = runInNewContext(stages + '\n' + ownedCleanup + '\n' + finish
         + '\n({ cleanupStage, queueCleanupStage, cleanupOwnedState, finishChildOwned })', scope);
       try {

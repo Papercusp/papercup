@@ -476,20 +476,20 @@ export function warnMissingReexecLoop({
  * configuration that `warnMissingReexecLoop` exists to warn about.
  *
  * @param {{ onReexec?: unknown, reexecCode?: unknown, bridgeTty?: unknown,
- *           allowInteractive?: boolean, pendingTurnDelivery?: boolean }} args
+ *           allowInteractive?: boolean, pendingWakeDelivery?: boolean }} args
  */
 export function shouldAdoptHostCode({
   onReexec,
   reexecCode,
   bridgeTty,
   allowInteractive = false,
-  pendingTurnDelivery = false,
+  pendingWakeDelivery = false,
 }) {
   if (!onReexec || !reexecCode) return false;
-  // The current host owns pending turn text and delivery IDs in carryRearm's
+  // The current host owns pending turn/cold-carry delivery IDs in carryRearm's
   // process-local state. A launcher handoff carries the compaction first turn,
-  // not those queued loop wakes; cleanup would settle them as host-ending.
-  if (pendingTurnDelivery) return false;
+  // not those queued IDs; cleanup would settle them as host-ending.
+  if (pendingWakeDelivery) return false;
   if (!bridgeTty) return true;
   return Boolean(allowInteractive);
 }
@@ -17676,13 +17676,13 @@ export function hostThroughPty(o) {
         const hostCode = hostCodeStalenessFn();
         if (hostCode.stale) {
           const allowInteractive = interactiveAdoptionOptIn();
-          const pendingTurnDelivery = carryRearm.pendingCount('turn') > 0;
+          const pendingWakeDelivery = carryRearm.pendingCount('turn') > 0 || carryRearm.pendingCount('carry-respawn') > 0;
           const adoptable = shouldAdoptHostCode({
             onReexec,
             reexecCode,
             bridgeTty,
             allowInteractive,
-            pendingTurnDelivery,
+            pendingWakeDelivery,
           });
           appendHostEvent(ownerId, 'host-code-stale', {
             mode: respawnMode,
@@ -17694,7 +17694,7 @@ export function hostThroughPty(o) {
             // ADDITIVE — absent on rows written by older hosts, so a reader must
             // treat `undefined` as "not recorded", never as false.
             adoptable,
-            pendingTurnDelivery,
+            pendingWakeDelivery,
             willAdopt: adoptable && !quotaRecovery && !freshChildOnly,
             notAdoptingReason: adoptable
               ? quotaRecovery
@@ -17708,7 +17708,7 @@ export function hostThroughPty(o) {
                   ? 'no-reexec-callback'
                   : !reexecCode
                     ? 'no-reexec-code'
-                    : 'pending-turn-delivery',
+                    : 'pending-wake-delivery',
             bridgeTty,
             hasReexecCallback: Boolean(onReexec),
             reexecCode: reexecCode ?? null,
@@ -17998,7 +17998,7 @@ export function hostThroughPty(o) {
         reexecCode,
         bridgeTty,
         allowInteractive,
-        pendingTurnDelivery: carryRearm.pendingCount('turn') > 0,
+        pendingWakeDelivery: carryRearm.pendingCount('turn') > 0 || carryRearm.pendingCount('carry-respawn') > 0,
       }) && !freshChildOnly) {
         let hostCode = { stale: false };
         try {

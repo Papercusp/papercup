@@ -86,7 +86,10 @@ it('measures the production identity policy read in a private background runtime
       'scripts/lib/with-test-pg-cleanup.mjs',
       'libs/papercusp/packages/orchestrator/src/blueprint/loader.ts',
     ],
-    retainedArtifacts: ['phases/execute/identity-surface-receipt.json'],
+    retainedArtifacts: [
+      'phases/execute/identity-surface-receipt.json',
+      'phases/execute/worker-progress.ndjson',
+    ],
     execute: async (observe, evidenceDir) => {
       const probe = String.raw`
         import assert from 'node:assert/strict';
@@ -105,6 +108,8 @@ it('measures the production identity policy read in a private background runtime
           if (!path) return;
           await appendFile(path, JSON.stringify({ stage, observedAt: new Date().toISOString(), ...evidence }) + '\n');
         };
+        const { _resetForTests } = await import('@papercusp/db-org');
+        try {
         await progress('runtime-env-validation-start');
         assert.ok(workspaceId && workspaceId.startsWith('test-runtime-'));
         assert.equal(process.env.PAPERCUSP_WORKSPACE, workspaceId);
@@ -303,6 +308,11 @@ it('measures the production identity policy read in a private background runtime
         };
         await progress('identity-policy-receipt-created', { policyReadMs, elapsedMs, eventLoopMaxMs });
         console.log('IDENTITY_POLICY_BACKGROUND_RECEIPT ' + JSON.stringify(receipt));
+        } finally {
+          await progress('operator-pg-pool-reset-start');
+          await _resetForTests();
+          await progress('operator-pg-pool-reset-complete');
+        }
       `;
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
         PAPERCUSP_ISOLATED_PROGRESS_FILE: join(evidenceDir, 'worker-progress.ndjson') };

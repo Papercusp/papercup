@@ -2623,8 +2623,7 @@ export async function markDeliveryDelivered(
            turn_started_at = CASE WHEN ${proof} = 'host-attested' THEN now() ELSE NULL END,
            pickup_deadline_at = CASE WHEN ${proof} = 'awaiting'
                                      THEN now() + make_interval(secs => ${windowSec}) ELSE NULL END
-     WHERE id = ${id}
-       AND status = 'delivering'
+     WHERE id = ${id} AND status = 'delivering'
   `;
 }
 
@@ -2875,12 +2874,12 @@ export async function lastWokenAtForSubscribers(subscriberIds: string[]): Promis
 export async function markDeliveryParked(id: number, reason: string, recheckMs: number): Promise<void> {
   const { sql } = getOrgPg();
   // A cancellation/ACK can settle this row while the pump is awaiting a host or nudge.
-  // Only the worker that still owns the delivering claim may park it afterward.
+  // Active queue states can be parked, but a concurrent ACK's delivered state cannot match.
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'parked', last_error = ${reason},
            next_attempt_at = now() + make_interval(secs => ${Math.ceil(recheckMs / 1000)})
-     WHERE id = ${id} AND status = 'delivering'
+     WHERE id = ${id} AND status IN ('pending', 'parked', 'delivering')
   `;
 }
 
@@ -2889,7 +2888,7 @@ export async function markDeliveryDropped(id: number, reason: string): Promise<v
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'dropped', last_error = ${reason}
-     WHERE id = ${id} AND status = 'delivering'
+     WHERE id = ${id} AND status IN ('pending', 'parked', 'delivering')
   `;
 }
 
@@ -2906,7 +2905,7 @@ export async function markDeliveryFailed(input: {
     const rows = await sql`
       UPDATE harness_shared.event_wake_deliveries
          SET status = 'dead', last_error = ${input.error}
-       WHERE id = ${input.id} AND status = 'delivering'
+       WHERE id = ${input.id} AND status IN ('pending', 'parked', 'delivering')
        RETURNING id
     `;
     if (rows.length === 0) return 'ignored';
@@ -2916,7 +2915,7 @@ export async function markDeliveryFailed(input: {
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'pending', last_error = ${input.error},
            next_attempt_at = now() + make_interval(secs => ${Math.ceil(input.backoffMs / 1000)})
-     WHERE id = ${input.id} AND status = 'delivering'
+     WHERE id = ${input.id} AND status IN ('pending', 'parked', 'delivering')
      RETURNING id
   `;
   if (rows.length === 0) return 'ignored';
@@ -2966,7 +2965,7 @@ export async function markDeliveryDeferred(id: number, deferMs: number): Promise
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'pending', attempts = greatest(attempts - 1, 0),
            next_attempt_at = now() + make_interval(secs => ${Math.ceil(deferMs / 1000)})
-     WHERE id = ${id} AND status = 'delivering'
+     WHERE id = ${id} AND status IN ('pending', 'parked', 'delivering')
   `;
 }
 

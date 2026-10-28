@@ -23,6 +23,7 @@ import '../agent-tools/plans/add-item';
 import '../agent-tools/work_items/create';
 import '../agent-tools/work_items/set_blocker';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-registry';
+import { runWithWorkspace } from '../workspace-als';
 import {
   cleanupPlans,
   seedPlan,
@@ -96,7 +97,12 @@ function ctx(): never {
 async function call(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const projected = lookupByMcpName(tool);
   expect(projected, `${tool} must be registered in the projection registry`).toBeTruthy();
-  const d = await dispatchProjectedTool(projected!, tool, { harness: HARNESS, ...args }, ctx(), {});
+  // A live MCP request runs inside the request-workspace scope the HTTP layer opens, and
+  // the stores stamp workspace_id from activeWorkspaceId(), not from ctx. Without the
+  // scope a row lands in whatever workspace this process's registry selects.
+  const d = await runWithWorkspace(WS, () =>
+    dispatchProjectedTool(projected!, tool, { harness: HARNESS, ...args }, ctx(), {}),
+  );
   const result = d.result as { structuredContent?: unknown; content?: Array<{ text?: string }>; isError?: boolean };
   if (result?.structuredContent && typeof result.structuredContent === 'object') {
     return result.structuredContent as Record<string, unknown>;
@@ -188,30 +194,48 @@ describe('R-11: an agent adds to an active plan without owner approval', () => {
       parent: node!.feature_id,
     });
     expect(created.ok, brief(created)).not.toBe(false);
-    const [child] = await admin<{ feature_id: string; status: string; parent_id: string | null; payload: Record<string, unknown> }[]>`
-      SELECT feature_id, status, parent_id, payload FROM harness_shared.work_items
-       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND parent_id = ${node!.feature_id}`;
+    const childId = (created.results as Array<{ id?: string }> | undefined)?.[0]?.id;
+    expect(childId, brief(created)).toMatch(/^[A-Z]+-\d+$/);
+    const [child] = await admin<{ feature_id: string; status: string; parent_id: string | null; harness_slug: string; payload: Record<string, unknown> }[]>`
+      SELECT feature_id, status, parent_id, harness_slug, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${childId!}`;
     expect(child, `the child lands at once: ${brief(created)}`).toBeTruthy();
+    expect(child!.parent_id, `the child hangs under the line's node: ${brief(child)}`).toBe(node!.feature_id);
     expect(child!.status, 'the child is ordinary open work, not parked for a human').toBe('open');
     expect(child!.payload._claimHold ?? false).toBe(false);
 
-    // 3. A blocker on the child.
+    // 3. A blocker on the child. The wait ref must be provable (set_blocker refuses an
+    // uncatalogued key), so the child waits on a catalogued completion key of an upstream
+    // item the agent also files — that create is itself another unapproved write.
+    const upstream = await call('work_items:create', { kind: 'task', title: 'agent-added upstream build step' });
+    const upstreamId = (upstream.results as Array<{ id?: string }> | undefined)?.[0]?.id;
+    expect(upstreamId, brief(upstream)).toMatch(/^[A-Z]+-\d+$/);
+    const waitRef = `work-item:done:${upstreamId}`;
     const blocked = await call('work_items:set_blocker', {
       id: child!.feature_id,
       kind: 'event',
-      ref: `event:r11-upstream-ready-${RUN}`,
-      summary: 'Waits on the upstream build to publish its artifact.',
+      ref: waitRef,
+      summary: 'Waits on the upstream build step to finish.',
     });
     expect(blocked.ok, brief(blocked)).not.toBe(false);
-    const [afterBlock] = await admin<{ status: string; payload: { externalBlockers?: Array<Record<string, unknown>> } }[]>`
-      SELECT status, payload FROM harness_shared.work_items
-       WHERE workspace_id = ${WS} AND feature_id = ${child!.feature_id}`;
-    const blockers = afterBlock?.payload.externalBlockers ?? [];
+    // A ref that names only a work-item is stored as a `blocks` edge in the single
+    // dependency store (D-009 R-1), not as an external row: set_blocker reports it as
+    // convertedToEdge, and the edge is readable at once.
+    const converted = (blocked.results as Array<{ convertedToEdge?: { rel?: string; blockers?: string[] } }> | undefined)?.[0]
+      ?.convertedToEdge;
+    expect(converted?.rel, `set_blocker records the work-item wait as an edge: ${brief(blocked)}`).toBe('blocks');
+    expect(converted?.blockers ?? []).toContain(upstreamId);
+    const edges = await admin<{ dep_type: string }[]>`
+      SELECT dep_type FROM harness_shared.work_item_deps
+       WHERE blocked_ref = ${child!.feature_id} AND blocker_ref = ${upstreamId!}`;
     expect(
-      blockers.some((b) => b.kind === 'event' && b.ref === `event:r11-upstream-ready-${RUN}`),
-      `the blocker is stored on the item at once: ${brief(blockers)}`,
-    ).toBe(true);
-    expect(afterBlock!.status, 'an event blocker never routes the item to a human').not.toBe('needs-human');
+      edges.map((e) => e.dep_type),
+      `the blocker is stored as a blocks edge at once: ${brief(edges)}`,
+    ).toContain('blocks');
+    const [afterBlock] = await admin<{ status: string }[]>`
+      SELECT status FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${child!.feature_id}`;
+    expect(afterBlock!.status, 'a dependency blocker never routes the item to a human').not.toBe('needs-human');
 
     // No step asked anyone for approval.
     expect(await approvalRowCounts()).toEqual(before);

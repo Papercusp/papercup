@@ -285,6 +285,9 @@ const runtimeId = isolatedRuntime ? `test-runtime-${randomUUID().slice(0, 12)}` 
 const port = await freePort();
 
 let pg = null;
+// Early private-verifier release and terminal wrapper cleanup own the same
+// PG instance. Share one stop so the second path observes the first receipt.
+const stopPrivatePg = createSingleFlightStop(async () => { await pg?.stop(); });
 let profileProcess = null;
 let profileLifetime = null;
 let child = null;
@@ -381,7 +384,8 @@ async function cleanup() {
 async function cleanupOwnedState() {
   cleanupStartedAt = Date.now();
   // Keep failed exit fences visible while stopping the other owned resources.
-  await cleanupOwnedTestState({ child, childLifetime, profileProcess, profileLifetime, pg,
+  const ownedPg = pg ? { stop: stopPrivatePg, health: () => pg?.health?.() ?? null } : null;
+  await cleanupOwnedTestState({ child, childLifetime, profileProcess, profileLifetime, pg: ownedPg,
     dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop,
     receiptFailures: cleanupReceiptFailures, drainReceipts: drainCleanupReceipts,
     stopManagedTasks: managedTasks && managedTaskCleanupEnv ? stopPrivateManagedTasks : null });
@@ -956,7 +960,7 @@ if (isolatedRuntime && child.pid) {
 if (privatePgReleaseToken) {
   const handlePrivatePgRelease = createPrivateTestPgReleaseHandler({
     token: privatePgReleaseToken,
-    stop: () => pg?.stop(),
+    stop: stopPrivatePg,
     respond: message => new Promise((resolve, reject) => {
       if (!child.connected) return reject(new Error('private test-PG child IPC channel disconnected'));
       child.send(message, error => error ? reject(error) : resolve());

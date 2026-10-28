@@ -1142,7 +1142,19 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
           provenance: null,
         },
       },
-      { name: 'routine-fire-active-fence', output: true },
+      {
+        name: 'routine-fire-active-fence',
+        output: {
+          allowed: true,
+          timing: expect.objectContaining({
+            bodyStartedAtEpochMs: expect.any(Number),
+            bodyCompletedAtEpochMs: expect.any(Number),
+            bodyElapsedMs: expect.any(Number),
+            poolAcquireMs: expect.any(Number),
+            predicateReadMs: expect.any(Number),
+          }),
+        },
+      },
       { name: 'loop:wake', output: state.loopResult },
       { name: 'clear-reaper-last-error', output: undefined },
     ]);

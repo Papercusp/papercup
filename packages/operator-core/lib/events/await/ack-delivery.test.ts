@@ -93,7 +93,7 @@ function configureAcceptedParkedDb() {
         return [{ id: 7 }];
       }
       if (text.includes("SET status = 'parked'")) {
-        if (text.includes("AND status = 'delivering'") && row.status !== 'delivering') return [];
+        if (text.includes("AND status IN ('pending', 'parked', 'delivering')") && row.status === 'delivered') return [];
         row.status = 'parked';
         row.lastError = 'stale pump park result';
         return [{ id: 7 }];
@@ -200,7 +200,7 @@ describe('ackDelivery for a pump-claimed row', () => {
     // park result must not reopen the terminally suppressed delivery.
     await store.markDeliveryParked(7, 'stale pump park result', 60_000);
     expect(row).toMatchObject({ status: 'delivered', channel: 'suppressed-redundant' });
-    expect(sqlState.calls.at(-1)?.text).toContain("AND status = 'delivering'");
+    expect(sqlState.calls.at(-1)?.text).toContain("AND status IN ('pending', 'parked', 'delivering')");
   });
 
   it('keeps a parked host-owned delivery active when the host only accepts cancellation request', async () => {
