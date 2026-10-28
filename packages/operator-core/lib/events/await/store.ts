@@ -2607,7 +2607,7 @@ export async function markDeliveryDelivered(
       UPDATE harness_shared.event_wake_deliveries
          SET status = 'delivered', channel = ${channel}, delivered_at = now(), last_error = NULL,
              coalesced_count = ${coalescedCount}
-       WHERE id = ${id}
+       WHERE id = ${id} AND status = 'delivering'
     `;
     return;
   }
@@ -2624,6 +2624,7 @@ export async function markDeliveryDelivered(
            pickup_deadline_at = CASE WHEN ${proof} = 'awaiting'
                                      THEN now() + make_interval(secs => ${windowSec}) ELSE NULL END
      WHERE id = ${id}
+       AND status = 'delivering'
   `;
 }
 
@@ -2639,7 +2640,7 @@ export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: num
       UPDATE harness_shared.event_wake_deliveries
          SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
              last_error = ${`coalesced into wake #${intoDeliveryId}`}
-       WHERE id = ANY(${ids})
+       WHERE id = ANY(${ids}) AND status = 'delivering'
     `;
     return;
   }
@@ -2648,7 +2649,7 @@ export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: num
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
            turn_proof = 'superseded',
            last_error = ${`coalesced into wake #${intoDeliveryId}`}
-     WHERE id = ANY(${ids})
+     WHERE id = ANY(${ids}) AND status = 'delivering'
   `;
 }
 
@@ -2873,11 +2874,13 @@ export async function lastWokenAtForSubscribers(subscriberIds: string[]): Promis
 
 export async function markDeliveryParked(id: number, reason: string, recheckMs: number): Promise<void> {
   const { sql } = getOrgPg();
+  // A cancellation/ACK can settle this row while the pump is awaiting a host or nudge.
+  // Only the worker that still owns the delivering claim may park it afterward.
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'parked', last_error = ${reason},
            next_attempt_at = now() + make_interval(secs => ${Math.ceil(recheckMs / 1000)})
-     WHERE id = ${id}
+     WHERE id = ${id} AND status = 'delivering'
   `;
 }
 
@@ -2886,7 +2889,7 @@ export async function markDeliveryDropped(id: number, reason: string): Promise<v
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'dropped', last_error = ${reason}
-     WHERE id = ${id}
+     WHERE id = ${id} AND status = 'delivering'
   `;
 }
 
@@ -2897,22 +2900,26 @@ export async function markDeliveryFailed(input: {
   attempts: number;
   maxAttempts: number;
   backoffMs: number;
-}): Promise<'retrying' | 'dead'> {
+}): Promise<'retrying' | 'dead' | 'ignored'> {
   const { sql } = getOrgPg();
   if (input.attempts >= input.maxAttempts) {
-    await sql`
+    const rows = await sql`
       UPDATE harness_shared.event_wake_deliveries
          SET status = 'dead', last_error = ${input.error}
-       WHERE id = ${input.id}
+       WHERE id = ${input.id} AND status = 'delivering'
+       RETURNING id
     `;
+    if (rows.length === 0) return 'ignored';
     return 'dead';
   }
-  await sql`
+  const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'pending', last_error = ${input.error},
            next_attempt_at = now() + make_interval(secs => ${Math.ceil(input.backoffMs / 1000)})
-     WHERE id = ${input.id}
+     WHERE id = ${input.id} AND status = 'delivering'
+     RETURNING id
   `;
+  if (rows.length === 0) return 'ignored';
   return 'retrying';
 }
 
@@ -2943,6 +2950,7 @@ export async function reopenDeliveredAfterResumeDeath(input: {
              ELSE now() + make_interval(secs => ${Math.ceil(input.backoffMs / 1000)})
            END
      WHERE id = ${input.id} AND status = 'delivered'
+       AND channel IS DISTINCT FROM 'suppressed-redundant'
     RETURNING status
   `;
   const status = rows[0]?.status;
@@ -2958,7 +2966,7 @@ export async function markDeliveryDeferred(id: number, deferMs: number): Promise
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'pending', attempts = greatest(attempts - 1, 0),
            next_attempt_at = now() + make_interval(secs => ${Math.ceil(deferMs / 1000)})
-     WHERE id = ${id}
+     WHERE id = ${id} AND status = 'delivering'
   `;
 }
 

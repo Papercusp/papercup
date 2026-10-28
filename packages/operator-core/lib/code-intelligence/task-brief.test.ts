@@ -191,6 +191,19 @@ describe('P039 completion pre-review briefs', () => {
     expect(brief.scope.processed).toEqual(['target.ts']);
     expect(brief.limitations).toContainEqual(expect.stringContaining(`Compiler evidence was unmeasured for target.ts#target: ${expired}`));
   });
+  it('spends only the caller deadline, so an outer bound never discards the named reason (WI-6554700010030397)', async () => {
+    const { rootResolver } = setup();
+    const graph = vi.fn(async (request: ChangeReportRequest, graphRoot: string, budgetMs: number) => ({
+      ...firstPartyCallers({ ts, root: graphRoot, name: request.symbol, filePath: request.file, op: 'impact',
+        direction: 'downstream', paths: ['.'], includeInterfaces: true }),
+      error: `the callers worker exceeded its ${budgetMs} ms deadline and was killed`, evidence: undefined }));
+    const deadlineMs = Date.now() + 1_500;
+    const brief = await getCompletionTimeBrief({ ...ref(), deadlineMs }, { root: rootResolver, graph, runs: async () => [],
+      effects: { exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact' } });
+    expect(graph.mock.calls[0]![2]).toBeLessThanOrEqual(1_250);
+    expect(brief).toMatchObject({ status: 'unknown', changes: [] });
+    expect(brief.limitations).toContainEqual(expect.stringContaining('Compiler evidence was unmeasured for target.ts#target'));
+  });
   it('never analyzes an escaping source or an unbounded path population', async () => {
     const { root, report, rootResolver } = setup(); const outside = fixture();
     writeFileSync(join(outside, 'private.ts'), 'export function privateSource() {}');

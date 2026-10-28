@@ -179,7 +179,7 @@ describe('runPickupSweep', () => {
     expect(lines.some((l) => l.includes('emit failed') && l.includes('pg down'))).toBe(true);
   });
 
-  it.each([
+  it.each<[string, PickupSessionVerdict, boolean]>([
     ['ended', { sessionState: 'ended', confirmLiveness: false }, true],
     ['recorded', { sessionState: 'recorded', confirmLiveness: false }, false],
     ['parked', { sessionState: 'parked', confirmLiveness: false }, false],

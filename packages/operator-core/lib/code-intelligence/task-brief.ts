@@ -685,10 +685,14 @@ function completionChangedLines(patch: string): number[] | null {
  * treating a declared test command or a static edge as execution evidence. */
 export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[];
   reuse?: ClaimBriefReuseIdentity; workItem?: string; subject?: ClaimTimeEnrichmentSubject; maxChars?: number;
-  owner?: string },
+  owner?: string;
+  /** WI-6554700010030397: the caller's absolute deadline (epoch ms). A caller that bounds this
+   * brief from outside passes a deadline inside its own bound, so a slow leg returns this
+   * brief's named limitation instead of losing the whole brief to the caller's fallback. */
+  deadlineMs?: number },
   deps: Partial<CompletionBriefDeps> = {}) {
   const rootResolver = deps.root ?? defaults.root;
-  const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
+  const deadline = Math.min(ref.deadlineMs ?? Number.POSITIVE_INFINITY, Date.now() + TASK_BRIEF_BUDGET_MS);
   const toolset = readBriefToolset(deps.toolset, ref.workspaceId, ref.reuse?.owner ?? ref.owner);
   const graphSource = deps.graph ?? ((request, root, budgetMs) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
     op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
@@ -866,7 +870,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
   try {
     result = finish(await Promise.race([work(), new Promise<typeof brief>(resolve => {
       timer = setTimeout(() => resolve(finish({ ...brief, status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null,
-        limitations: [...brief.limitations, 'Completion brief exceeded its read deadline.'] })), TASK_BRIEF_BUDGET_MS);
+        limitations: [...brief.limitations, 'Completion brief exceeded its read deadline.'] })), Math.max(1, deadline - Date.now()));
     })]));
   } catch {
     result = finish({ ...brief, status: 'unknown' as const, changes: [], tests: [], testsWithoutRunEvidence: null,
