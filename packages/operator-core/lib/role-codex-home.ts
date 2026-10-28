@@ -1734,6 +1734,8 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
 /** Inputs the su `config.toml` is rendered from — the subset of
  *  `writeSuCodexHome`'s options that end up IN the file. */
 export interface SuCodexConfigInput {
+  /** Server-issued possession token for this exact runtime; private config only. */
+  nativeRuntimeBearer?: string | null;
   capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'];
   /** Host confinement policy: only the declared native role and assignment
    * may populate this home's readable context and connectors. */
@@ -1817,8 +1819,13 @@ function mcpUrlWithClient(mcpUrl: string, sid: string): string {
  * Both carriers are checked against the owner's registered native incarnation.
  */
 export function suCodexConfigToml(opts: SuCodexConfigInput): string {
+  if (opts.nativeRuntimeBearer && (!/^[A-Za-z0-9_-]{43}$/.test(opts.nativeRuntimeBearer)
+    || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(opts.mcpUrl).hostname))) {
+    throw new Error('native_runtime_delivery_denied');
+  }
   const url = mcpUrlWithClient(opts.mcpUrl, opts.sid);
   const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, {
+    nativeRuntimeBearer: opts.nativeRuntimeBearer,
     gatewayOn: opts.codexGatewayAuto,
     ownerId: opts.sid,
     priority: opts.codexGatewayPriority,
@@ -1856,7 +1863,10 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     // Keep Codex's per-server client timeout just above that contract.
     'tool_timeout_sec = 610',
     ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
-    ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
+    ...(opts.token || opts.nativeRuntimeBearer ? [`http_headers = { ${[
+      ...(opts.token ? [`Authorization = "Bearer ${tomlEscape(opts.token)}"`] : []),
+      ...(opts.nativeRuntimeBearer ? [`"x-papercusp-native-runtime" = "${opts.nativeRuntimeBearer}"`] : []),
+    ].join(', ')} }`] : []),
     'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
     ...projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir),
     '',
@@ -2093,6 +2103,7 @@ export async function ensureSuCodexHomeConfigAsync(
 }
 
 type WriteSuCodexHomeOptions = {
+  nativeRuntimeBearer?: SuCodexConfigInput['nativeRuntimeBearer'];
   /** Task-ledger id of the launching agent task, stamped into the session's activity identity. */
   agentTaskId?: string;
   capabilityPolicy?: SuCodexConfigInput['capabilityPolicy'];
