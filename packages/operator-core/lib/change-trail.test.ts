@@ -88,6 +88,7 @@ describe('buildChangeTrail against a real git repo', () => {
   let shaTrailer: string;
   let shaPlain: string;
   let shaSub: string;
+  let shaTestOnly: string;
 
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -111,6 +112,11 @@ describe('buildChangeTrail against a real git repo', () => {
       'git-sync: sweep\n\nPapercusp-Agent: su-alpha\nPapercusp-Work-Item: WI-1, WI-missing\nPapercusp-Session: sess-1\nPapercusp-Plan: plan-x',
     );
     shaTrailer = git(root, 'rev-parse', 'HEAD');
+    // A later commit that touches only the test: runs at it still tested src/a.ts as of shaTrailer.
+    fs.writeFileSync(nodePath.join(root, 'src/a.test.ts'), 'test\nmore\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-q', '-m', 'test-only commit');
+    shaTestOnly = git(root, 'rev-parse', 'HEAD');
 
     // A nested repo stands in for a submodule: the path must resolve to IT, not the superproject.
     fs.mkdirSync(nodePath.join(root, 'sub'));
@@ -125,8 +131,10 @@ describe('buildChangeTrail against a real git repo', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  function deps(runs: TrailTestRun[] = []): ChangeTrailDeps & { asked: { paths?: string[]; ids?: string[] } } {
-    const asked: { paths?: string[]; ids?: string[] } = {};
+  function deps(
+    runs: TrailTestRun[] = [],
+  ): ChangeTrailDeps & { asked: { paths?: string[]; ids?: string[]; since?: string } } {
+    const asked: { paths?: string[]; ids?: string[]; since?: string } = {};
     return {
       asked,
       git: defaultChangeTrailDeps('ws-test').git,
@@ -136,22 +144,27 @@ describe('buildChangeTrail against a real git repo', () => {
           .filter((id) => id === 'WI-1')
           .map((id) => ({ id, title: 'Do the thing', state: 'done', sourcePlanSlug: 'plan-x', sourcePlanItemIds: ['P-010'] }));
       },
-      async readTestRuns(paths, shas) {
+      async readTestRuns(paths, sinceIso) {
         asked.paths = paths;
-        return runs.filter((r) => shas.includes(r.commitSha));
+        asked.since = sinceIso;
+        return runs;
       },
     };
   }
 
   it('attributes trailer commits and reports untrailered ones as none, newest first', async () => {
-    const d = deps([
-      { file: 'src/a.test.ts', status: 'pass', commitSha: shaTrailer, dirty: false, source: 'ci', finishedAt: null },
-    ]);
+    const atTrailer = { file: 'src/a.test.ts', status: 'pass', commitSha: shaTrailer, dirty: false, source: 'ci', finishedAt: null };
+    // Recorded at a LATER sha that did not change src/a.ts — it tested the shaTrailer version.
+    const atLater = { file: 'src/a.test.ts', status: 'fail', commitSha: shaTestOnly, dirty: false, source: 'ci', finishedAt: null };
+    const unknownSha = { file: 'src/a.ts', status: 'pass', commitSha: 'f'.repeat(40), dirty: true, source: 'local', finishedAt: null };
+    const d = deps([atTrailer, atLater, unknownSha]);
     const trail = await buildChangeTrail({ repoRoot: root, path: 'src/a.ts' }, d);
     expect(trail.repo).toBe('superproject');
     expect(trail.testFiles).toEqual(['src/a.ts', 'src/a.test.ts']);
     expect(d.asked.paths).toEqual(['src/a.ts', 'src/a.test.ts']);
+    expect(d.asked.since).toBe(trail.commits[trail.commits.length - 1].committedAt);
     expect(trail.commits.map((c) => c.sha)).toEqual([shaTrailer, shaPlain]);
+    expect(trail.notes).toEqual(['1 run sha(s) are not in this checkout, so their runs are not attributed']);
 
     const [attributed, plain] = trail.commits;
     expect(attributed.attributionSource).toBe('trailer');
@@ -162,7 +175,7 @@ describe('buildChangeTrail against a real git repo', () => {
       { id: 'WI-1', found: true, title: 'Do the thing', state: 'done', origin: { kind: 'plan-item', ref: 'plan-x#P-010' } },
       { id: 'WI-missing', found: false, origin: { kind: 'none' } },
     ]);
-    expect(attributed.testRuns).toHaveLength(1);
+    expect(attributed.testRuns).toEqual([atTrailer, atLater]);
 
     expect(plain.attributionSource).toBe('none');
     expect(plain.agent).toBeUndefined();

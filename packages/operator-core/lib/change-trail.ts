@@ -12,7 +12,8 @@
  *      re-parsed here);
  *   3. per work-item: title, state, and its ORIGIN per D-001 — directive, else plan item, else
  *      link, else none;
- *   4. test_runs rows at those commit shas for the path and its sibling test file.
+ *   4. test_runs rows of the path and its sibling test file, each attached to the file version
+ *      it tested (the last commit that changed the path as of the run's recorded sha).
  * A commit with no trailer reports `attributionSource: 'none'` rather than a guessed match.
  *
  * The core is pure over injected deps so it is testable against a real fixture repo with no PG.
@@ -107,9 +108,13 @@ export interface TrailTestRun {
 export interface ChangeTrailDeps {
   git(args: string[], cwd: string): Promise<string>;
   readWorkItems(ids: string[]): Promise<WorkItemOriginRow[]>;
-  readTestRuns(paths: string[], shas: string[]): Promise<TrailTestRun[]>;
+  /** Recorded runs of `paths` that finished at or after `sinceIso`, newest first. */
+  readTestRuns(paths: string[], sinceIso: string): Promise<TrailTestRun[]>;
   exists?(absPath: string): boolean;
 }
+
+/** Most distinct run shas resolved to a file version per trail (one `git log -1` each). */
+export const CHANGE_TRAIL_MAX_RUN_SHAS = 60;
 
 export interface ChangeTrailInput {
   repoRoot: string;
@@ -207,12 +212,39 @@ export async function buildChangeTrail(input: ChangeTrailInput, deps: ChangeTrai
   const ids = [...new Set(parsed.flatMap((p) => p.t.workItems))];
   const rows = ids.length ? await deps.readWorkItems(ids) : [];
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const shas = raw.map((c) => c.sha);
-  const runs = shas.length ? await deps.readTestRuns(testFiles, shas) : [];
-  if (owner.repo !== 'superproject' && shas.length && runs.length === 0) {
+  // A run records the superproject HEAD it ran at, which is almost never the commit that changed
+  // the file (measured 2026-10-28: 50 runs of edit-attribution.{ts,test.ts} over 28 shas, none at a
+  // changing commit). So each run is attached to the file VERSION it tested: the last commit that
+  // changed the path as of the run's sha (`git log -1 <runSha> -- <path>`).
+  const runsByCommit = new Map<string, TrailTestRun[]>();
+  if (raw.length && owner.repo !== 'superproject') {
     notes.push(
       `${owner.superRelPath} lives in submodule ${owner.repo}; test_runs.commit_sha records the superproject HEAD, so runs cannot be matched to these submodule commits`,
     );
+  } else if (raw.length) {
+    const oldest = raw[raw.length - 1].committedAt;
+    const runs = await deps.readTestRuns(testFiles, oldest);
+    const runShas = [...new Set(runs.map((r) => r.commitSha))];
+    const resolvable = runShas.slice(0, CHANGE_TRAIL_MAX_RUN_SHAS);
+    const versionOf = new Map<string, string>();
+    let unresolved = 0;
+    for (const runSha of resolvable) {
+      try {
+        const v = (await deps.git(['log', '-1', '--format=%H', runSha, '--', owner.relPath], owner.repoDir)).trim();
+        if (v) versionOf.set(runSha, v);
+      } catch {
+        unresolved += 1;
+      }
+    }
+    for (const r of runs) {
+      const v = versionOf.get(r.commitSha);
+      if (!v) continue;
+      runsByCommit.set(v, [...(runsByCommit.get(v) ?? []), r]);
+    }
+    if (unresolved) notes.push(`${unresolved} run sha(s) are not in this checkout, so their runs are not attributed`);
+    if (runShas.length > resolvable.length) {
+      notes.push(`runs at ${runShas.length - resolvable.length} older sha(s) were not attributed (cap ${CHANGE_TRAIL_MAX_RUN_SHAS})`);
+    }
   }
 
   const commits: ChangeTrailCommit[] = parsed.map(({ c, t }) => {
@@ -237,7 +269,7 @@ export async function buildChangeTrail(input: ChangeTrailInput, deps: ChangeTrai
           origin: workItemOrigin(row),
         };
       }),
-      testRuns: runs.filter((r) => r.commitSha === c.sha),
+      testRuns: runsByCommit.get(c.sha) ?? [],
     };
   });
 
@@ -287,15 +319,16 @@ export function defaultChangeTrailDeps(workspaceId: string): ChangeTrailDeps {
           .map((l) => ({ rel: String(l.rel), dstKind: String(l.dst_kind), dstRef: String(l.dst_ref) })),
       }));
     },
-    async readTestRuns(paths, shas) {
+    async readTestRuns(paths, sinceIso) {
       const { getOrgPg } = await import('@papercusp/db-org');
       const { sql } = getOrgPg();
-      // Scoped by commit sha, never workspace_id: CI rows carry workspace_id NULL by design.
+      // Never scoped by workspace_id: CI rows carry workspace_id NULL by design.
       const rows = (await sql`
         SELECT file_path, status, commit_sha, worktree_dirty, source, finished_at
           FROM harness_shared.test_runs
-         WHERE file_path = ANY(${paths}::text[]) AND commit_sha = ANY(${shas}::text[])
-         ORDER BY finished_at DESC NULLS LAST
+         WHERE file_path = ANY(${paths}::text[]) AND finished_at >= ${sinceIso}::timestamptz
+           AND commit_sha IS NOT NULL AND source <> 'mutation-probe'
+         ORDER BY finished_at DESC
          LIMIT 200`) as unknown as Array<Record<string, any>>;
       return rows.map((r) => ({
         file: String(r.file_path),
