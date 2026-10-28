@@ -286,6 +286,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let lastProgressAt = -Infinity;
     let completedCases = 0;
     const caseProgress = new Set<string>();
+    const provenanceSteps = new Set<string>();
+    let provenanceFiles = 0;
+    let provenanceTotal: number | undefined;
     const relayProgress = (stage: string, force = false) => {
       const at = Date.now();
       if (!force && at - lastProgressAt < (options.progressIntervalMs ?? 30_000)) return;
@@ -302,6 +305,31 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       // private-runtime lifecycle or successful-test evidence.
       if (options.testFileExecutionFromStdout && deadlines && !timedOut && phase === 'bootstrap' &&
           /^TEST_FILE_PROGRESS state=started(?: |$)/.test(line)) armPhase('execute');
+      if (options.testFileExecutionFromStdout && deadlines && !timedOut &&
+          line.startsWith('TEST_FILE_FINALIZATION ')) {
+        try {
+          const value = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length));
+          if (value.phase === 'provenance-start' && phase === 'execute') armPhase('teardown');
+          else if (phase === 'teardown' && value.phase === 'provenance-progress' &&
+              ['git-checkout', 'source-census'].includes(value.step)) {
+            const key = `${value.step}:${value.event}`;
+            if (['start', 'end'].includes(value.event) && !provenanceSteps.has(key)) {
+              provenanceSteps.add(key);
+              progressWatchdog?.noteProgress();
+              relayProgress('provenance-' + key);
+            } else if (value.step === 'source-census' && value.event === 'progress' &&
+                Number.isSafeInteger(value.completedFiles) && Number.isSafeInteger(value.totalFiles) &&
+                value.totalFiles > 0 && value.completedFiles > provenanceFiles &&
+                value.completedFiles <= value.totalFiles &&
+                (provenanceTotal === undefined || value.totalFiles === provenanceTotal)) {
+              provenanceTotal = value.totalFiles;
+              provenanceFiles = value.completedFiles;
+              progressWatchdog?.noteProgress();
+              relayProgress('provenance-files');
+            }
+          }
+        } catch { /* malformed finalization output cannot alter a deadline */ }
+      }
       if (line.startsWith('TEST_FILE_PROGRESS ')) {
         const offset = line.indexOf(' lastOutputLine=');
         if (offset < 0) return;

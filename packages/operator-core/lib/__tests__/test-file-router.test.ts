@@ -2800,7 +2800,7 @@ describe('failed assertion diagnostics — consume the report before private cle
         assertionResults: [{
           status: 'failed',
           fullName: 'suite > compares values',
-          failureMessages: ['Expected 1 to be 2'],
+          failureMessages: ['AssertionError: expected 1 to be 2'],
         }],
       }, {
         name: '/repo/lib/collect.test.ts',
@@ -2813,12 +2813,39 @@ describe('failed assertion diagnostics — consume the report before private cle
       expect(failures).toEqual([{
         file: '/repo/lib/bad.test.ts',
         name: 'suite > compares values',
-        messages: ['Expected 1 to be 2'],
+        messages: ['AssertionError: expected 1 to be 2'],
+        assertionEvidence: true,
       }]);
       expect(formatFailedAssertionDiagnostics(failures)).toContain(
-        'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="suite > compares values" message="Expected 1 to be 2"',
+        'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="suite > compares values" message="AssertionError: expected 1 to be 2"',
       );
       expect(formatFailedAssertionDiagnostics(failures)).not.toContain('SyntaxError: invalid source');
+    });
+  });
+
+  it('does not emit mutation assertion evidence for a runtime exception before the assertion', () => {
+    withReport({
+      testResults: [{
+        name: '/repo/lib/runtime.test.ts',
+        status: 'failed',
+        assertionResults: [{
+          status: 'failed',
+          fullName: 'guard > rejects the mutant',
+          failureMessages: ['TypeError: guard is not a function\n    at runtime.test.ts:4:3'],
+        }],
+      }],
+    }, (path) => {
+      const failures = failedAssertionsFromReport(path, '/repo');
+
+      expect(failures).toEqual([{
+        file: '/repo/lib/runtime.test.ts',
+        name: 'guard > rejects the mutant',
+        messages: ['TypeError: guard is not a function\n    at runtime.test.ts:4:3'],
+        assertionEvidence: false,
+      }]);
+      const diagnostics = formatFailedAssertionDiagnostics(failures);
+      expect(diagnostics).toContain('TEST_FILE_NON_ASSERTION_FAILURE');
+      expect(diagnostics).not.toContain('TEST_FILE_ASSERTION_FAILURE file=');
     });
   });
 
@@ -2873,7 +2900,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
           assertionResults: [{
             status: 'failed',
             fullName: 'router > reports the real assertion',
-            failureMessages: ['Expected 1 to be 2'],
+            failureMessages: ['AssertionError: expected 1 to be 2'],
           }],
         }],
       }));
@@ -2910,7 +2937,7 @@ describe('main() — failed assertion details survive private report cleanup (EI
     expect(code, JSON.stringify(errSpy.mock.calls)).toBe(1);
     const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toContain(
-      'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="router > reports the real assertion" message="Expected 1 to be 2"',
+      'TEST_FILE_ASSERTION_FAILURE file="/repo/lib/bad.test.ts" name="router > reports the real assertion" message="AssertionError: expected 1 to be 2"',
     );
     expect(output).not.toContain('file-level collection text must not be relabelled');
     expect(reportPath).toBeDefined();

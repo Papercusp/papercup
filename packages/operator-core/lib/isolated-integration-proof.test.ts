@@ -122,6 +122,64 @@ it('bounds cleanup when a supervised router stops before test execution', async 
   });
 });
 
+it('keeps completed router provenance outside execution and bounds finalization without renewing cleanup', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(75);
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(child.kill).not.toHaveBeenCalled();
+    // Runtime cleanup follows the full source census; it shares the original
+    // finalization deadline rather than restarting it.
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(19);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  });
+});
+
+it.each([false, true])('cannot use provenance output to escape bootstrap or disabled router observation: %s', async enabled => {
+  await withCapturedRouter({ ...routerPhaseOptions, testFileExecutionFromStdout: enabled }, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(99);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+  });
+});
+
+it.each([0, 1, 2])('extends bounded finalization only for advancing source census counts: %s', async nextCount => {
+  const options = { ...routerPhaseOptions, phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts,
+    teardownMaxMs: 90 } };
+  await withCapturedRouter(options, async (child, result) => {
+    const progress = (completedFiles: number) => child.stderr!.emit('data',
+      'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+        step: 'source-census', event: 'progress', completedFiles, totalFiles: 2 }) + '\n');
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(20);
+    progress(1);
+    await vi.advanceTimersByTimeAsync(39);
+    expect(child.kill).not.toHaveBeenCalled();
+    progress(nextCount);
+    await vi.advanceTimersByTimeAsync(1);
+    if (nextCount === 2) {
+      expect(child.kill).not.toHaveBeenCalled();
+      // Even continuing file progress cannot grow the original absolute ceiling.
+      await vi.advanceTimersByTimeAsync(30);
+    }
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  });
+});
+
 it('recognizes direct test:file execution across chunks without changing phase budgets', async () => {
   const options = isolatedTestFileWorkerOptions({}, 1);
   const { testFileExecutionFromStdout, ...budgets } = options;
