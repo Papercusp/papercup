@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { measureBootOperatorArtifact as measureArtifact, operatorArtifactSource, writeOperatorArtifactManifest } from './operator-artifact';
+import { BG_INPUTS, makeBgCompilerCandidate } from '../source-preview.fixture';
+import { captureVerifierDependencies, createBgVerifierCompilerCustody, verifyBgVerifierSource } from '../../../../scripts/source-preview.mjs';
 
 // Fixtures represent files written before a fresh child would be launched.
 const measureBootOperatorArtifact = (entry: string, sha: string | null) => measureArtifact(entry, sha, Date.now() + 1000);
@@ -100,5 +102,65 @@ describe('operator release artifact provenance', () => {
     writeFileSync(f.entry, 'another bundle with the same baked source SHA'); f.write();
     expect(measureArtifact(f.entry, f.sourceSha).status).toBe('unknown');
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('measured');
+  });
+});
+
+describe('BG compiler input custody', () => {
+  async function compilerCandidate() {
+    const root = mkdtempSync(join(tmpdir(), 'bg-artifact-compiler-'));
+    roots.push(root);
+    return makeBgCompilerCandidate(root);
+  }
+
+  for (const kind of ['source', 'dependency'] as const) {
+    const selector = `bg-r1-compiler-${kind}-transient-substitution-restored rejects selected ${kind} changed during real compiler consumption then restored before final fence`;
+    it(selector, async () => {
+      const { prepared, dependencies } = await compilerCandidate();
+      const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+      const { build } = await import('esbuild');
+      const local = kind === 'source' ? 'packages/core/index.ts' : 'node_modules/fixture-dependency/index.js';
+      const target = join(prepared.root, local), original = readFileSync(target);
+      const replacement = kind === 'source' ? 'export const y = 9;\n' : 'export default 99;\n';
+      expect(Buffer.byteLength(replacement)).toBe(original.length);
+      let substituted = false, restored = false;
+      const result = build({ absWorkingDir: prepared.root, entryPoints: [BG_INPUTS[0]!], bundle: true,
+        format: 'esm', platform: 'node', write: false, logLevel: 'silent',
+        plugins: [custody.plugin, { name: 'independent-transient-substitution', setup(builder) {
+          builder.onResolve({ filter: kind === 'source' ? /core\/index$/ : /^fixture-dependency$/ }, () => {
+            writeFileSync(target, replacement);
+            substituted = true;
+            return { path: target };
+          });
+          builder.onEnd(() => { writeFileSync(target, original); restored = true; });
+        } }] });
+      // A bypass that admits B must retain independently observed compiler output,
+      // with A restored at both endpoint censuses, in the decisive failure.
+      const outcome = await result.then(async compiled => {
+        const emitted = await import('data:text/javascript;base64,'
+          + Buffer.from(compiled.outputFiles[0]!.contents).toString('base64'));
+        return { status: 'compiled', emitted: { y: emitted.y, dep: emitted.dep } };
+      }, (error: unknown) => ({ status: 'rejected', error: String(error) }));
+      expect({ substituted, restored }).toEqual({ substituted: true, restored: true });
+      expect(readFileSync(target)).toEqual(original);
+      expect(verifyBgVerifierSource(prepared, 'before-publication')).toBe(prepared);
+      expect(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source })).toEqual(dependencies);
+      expect(outcome).toEqual({ status: 'rejected',
+        error: expect.stringContaining(`BG compiler consumed bytes mismatch: ${local}`) });
+    });
+  }
+
+  it('bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes', async () => {
+    const { prepared, dependencies } = await compilerCandidate();
+    const originalReceipt = readFileSync(join(prepared.root, '.verifier-source.json'));
+    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+    const { build } = await import('esbuild');
+    const result = await build({ absWorkingDir: prepared.root, entryPoints: [BG_INPUTS[0]!], bundle: true,
+      format: 'esm', platform: 'node', write: false, logLevel: 'silent', plugins: [custody.plugin] });
+    const imported = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0]!.contents).toString('base64'));
+    expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
+    expect(custody.verifyBeforePublication().map(row => row.path)).toEqual([
+      BG_INPUTS[0]!, 'node_modules/fixture-dependency/index.js', 'packages/core/index.ts',
+    ]);
+    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
   });
 });
