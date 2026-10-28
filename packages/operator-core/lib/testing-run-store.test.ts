@@ -2517,15 +2517,18 @@ describe('durable detached snapshot lifecycle', () => {
 
   it.each(['timed_out', 'killed', 'ended_unobserved', 'deadline', 'legacy-error',
     'oversized', 'missing-stderr', 'redirected', 'cas-race', 'live'] as const)(
-    'recovers bounded orphan diagnostics without inventing a test verdict: %s', async scenario => {
+    'withholds orphan child diagnostics when launch environment is unavailable: %s', async scenario => {
       const directory = await mkdtemp('/tmp/detached-orphan-output-');
       try {
         const runId = 'orphan-diagnostic-run';
         const stdoutPath = join(directory, `${runId}.stdout.log`);
         const stderrPath = join(directory, `${runId}.stderr.log`);
+        const childOnlySecret = 'synthetic-child-api-key-value';
         const large = scenario === 'oversized' ? 'x'.repeat(2 * 1024 * 1024) : '';
-        await writeFile(stdoutPath, large + 'ROUTER_PROGRESS completedCases=42\n');
-        if (scenario !== 'missing-stderr') await writeFile(stderrPath, large + 'CHILD_BUDGET timeoutMs=87986\n');
+        await writeFile(stdoutPath, large + `ROUTER_PROGRESS completedCases=42\nSYNTHETIC_CHILD_API_KEY=${childOnlySecret}\n`);
+        if (scenario !== 'missing-stderr') {
+          await writeFile(stderrPath, large + `CHILD_BUDGET timeoutMs=87986\nSYNTHETIC_CHILD_API_KEY=${childOnlySecret}\n`);
+        }
         if (scenario === 'redirected') {
           const outside = join(directory, 'unrelated');
           await writeFile(outside, 'PRIVATE_UNRELATED_CONTENT');
@@ -2569,21 +2572,21 @@ describe('durable detached snapshot lifecycle', () => {
           if (scenario === 'live') expect(outputIo.reads).toHaveLength(0);
         } else {
           expect(result).toMatchObject({ status: 'error', exitCode: null, finishedAt: expect.any(Number) });
-          if (scenario !== 'redirected') expect(result?.output).toContain('ROUTER_PROGRESS completedCases=42');
-          if (scenario !== 'missing-stderr') expect(result?.output).toContain('CHILD_BUDGET timeoutMs=87986');
+          expect(result?.output).not.toContain('ROUTER_PROGRESS completedCases=42');
+          expect(result?.output).not.toContain('CHILD_BUDGET timeoutMs=87986');
           expect(result?.output).not.toContain('PRIVATE_UNRELATED_CONTENT');
+          expect(result?.output).not.toContain(childOnlySecret);
           expect(result?.output.length).toBeLessThanOrEqual(16 * 1024);
-          if (scenario === 'oversized') expect(result?.truncated).toBe(true);
-          expect(updates).toHaveLength(1);
+          if (scenario === 'oversized') expect(result?.truncated).toBe(false);
+          expect(updates).toHaveLength(scenario === 'legacy-error' ? 0 : 1);
           const readCount = outputIo.reads.length;
           const again = await store.getRunAsync(runId, sql);
           expect(again?.output).toBe(result?.output);
-          expect(updates).toHaveLength(1);
+          expect(updates).toHaveLength(scenario === 'legacy-error' ? 0 : 1);
           expect(outputIo.reads).toHaveLength(readCount);
         }
         expect(outputIo.wholeReads).toHaveLength(0);
-        expect(outputIo.reads.reduce((sum, row) => sum + row.bytes, 0)).toBeLessThanOrEqual(16 * 1024);
-        expect(outputIo.reads.every(row => row.requested <= 8 * 1024)).toBe(true);
+        expect(outputIo.reads).toHaveLength(0);
       } finally { await rm(directory, { recursive: true, force: true }); }
     });
 
