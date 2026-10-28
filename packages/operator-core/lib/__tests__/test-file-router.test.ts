@@ -45,10 +45,12 @@ it('records a real node:test child when the focused router starts without a TS l
 });
 // The production entrypoint deliberately stays executable by plain Node.
 import {
+  allSkippedVerdict,
   aggregateGroupResults,
   assertCommittedTestConfigCoverageExports,
   assertExecutedProofOutputCustody,
   assertPrivateIntegrationEvidence,
+  assertionOutcomesFromReport,
   buildNodeTestArgs,
   canonicalMatch,
   classifyGovernedAdmissionFailure,
@@ -2721,6 +2723,48 @@ describe('aggregateGroupResults — no group may be silently abandoned (EI-13535
   it('a clean run with no timed-out group reports anyTimedOut=false (no false positive)', () => {
     const summary = aggregateGroupResults([okGroup(1, 1, 1), okGroup(2, 2, 2)]);
     expect(summary.anyTimedOut).toBe(false);
+  });
+});
+
+describe('all-skipped verdict checks each requested file', () => {
+  it('a mixed two-file request refuses a wholly skipped file when the other file passed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mixed-all-skipped-files-'));
+    try {
+      const reportPath = join(dir, 'report.json');
+      const passedFile = resolve(dir, 'passed.test.ts');
+      const skippedFile = resolve(dir, 'skipped.test.ts');
+      writeFileSync(reportPath, JSON.stringify({
+        testResults: [
+          { name: passedFile, assertionResults: [{ fullName: 'suite > passes', status: 'passed' }] },
+          { name: skippedFile, assertionResults: [{ fullName: 'suite > skipped', status: 'skipped' }] },
+        ],
+      }));
+      const outcomes = assertionOutcomesFromReport(reportPath);
+
+      expect(allSkippedVerdict({
+        executedNames: outcomes?.executed ?? [],
+        executedFiles: outcomes?.executedFiles ?? [],
+        skippedNames: outcomes?.skipped ?? [],
+        anyFailed: false,
+        skippedUnmeasuredGroups: 0,
+      })).toEqual({
+        vacuous: true,
+        reason: 'requested-file-has-no-executed-tests',
+        files: [skippedFile],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit skipped cases measured when the same file also executed a test', () => {
+    expect(allSkippedVerdict({
+      anyFailed: false,
+      executedNames: ['suite > passes'],
+      executedFiles: ['same.test.ts'],
+      skippedNames: [{ name: 'suite > skipped', file: 'same.test.ts' }],
+      skippedUnmeasuredGroups: 0,
+    })).toEqual({ vacuous: false, reason: 'tests-executed' });
   });
 });
 
