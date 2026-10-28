@@ -3892,7 +3892,8 @@ export function writeSelfWatchdogArmMarker(
   info: {
     armedAtMs: number;
     ms: number;
-    hardCeilingMs: number;
+    /** `null` = no absolute ceiling (WI-6554700010042457): recorded as `hardDeadlineAt: null`. */
+    hardCeilingMs: number | null;
     pid: number;
   },
 ): void {
@@ -3903,9 +3904,10 @@ export function writeSelfWatchdogArmMarker(
         armedAt: new Date(info.armedAtMs).toISOString(),
         deadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
         idleDeadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
-        hardDeadlineAt: new Date(
-          info.armedAtMs + info.hardCeilingMs,
-        ).toISOString(),
+        hardDeadlineAt:
+          info.hardCeilingMs === null
+            ? null
+            : new Date(info.armedAtMs + info.hardCeilingMs).toISOString(),
         ms: info.ms,
         idleMs: info.ms,
         hardCeilingMs: info.hardCeilingMs,

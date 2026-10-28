@@ -834,7 +834,9 @@ describe('P001 — actual prose stored-field freshness witness', () => {
         FROM harness_shared.operator_turns t JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id
         WHERE t.id = ${key}::uuid`;
     expect(rows).toHaveLength(1);
-    return { ...rows[0], readAtMs: Date.now() };
+    const row = rows[0];
+    if (!row) throw new Error(`canonical oracle found no ${name} row for ${key}`);
+    return { ...row, readAtMs: Date.now() };
   }
 
   async function mutate(name: Name, key: string) {

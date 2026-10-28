@@ -74,7 +74,7 @@ import type {
   WakeChannel,
   WakeHandle,
 } from './types';
-import { EXPLICIT_PARK_NOTE_MARKER, isExplicitParkNote } from './types';
+import { EXPLICIT_PARK_NOTE_MARKER, INBOX_WAKE_KEY_PREFIX, isExplicitParkNote } from './types';
 import type { ProducerHealthCertificate, ProducerHealthObservation, VerifiedWaitTimeoutResult } from './verified-wait';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
@@ -1325,9 +1325,9 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<Await
   return rows.map(mapAwait);
 }
 
-/** The always-armed per-agent self-wake key prefix (turn-lifecycle-control) —
- *  every live agent holds one, so it signals liveness, NOT a deliberate bench. */
-export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
+/** The always-armed per-agent self-wake key prefix — defined in `./types` (shared
+ *  with dependency-free liveness readers) and re-exported here for existing callers. */
+export { INBOX_WAKE_KEY_PREFIX };
 
 /**
  * The system halt-rescue wake is deliberately not a message. It shares the
