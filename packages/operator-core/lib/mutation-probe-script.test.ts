@@ -3765,6 +3765,99 @@ printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
 });
 
 /**
+ * EI-27221342827374562 — the test:file router exits 2 when a FINISHED Vitest run
+ * lacks an inserted test_runs receipt. Scored as a plain harness error, that hid
+ * a mutant whose every guard test PASSED (a weak guard) behind "re-run, flake".
+ * The probe must name the assertion outcome, disprove a contradicted expectation
+ * (exit 1), and still never credit an agreeing one without the ledger (exit 2).
+ */
+describe('mutation-probe.sh — a missing ledger receipt cannot hide the assertion outcome (EI-27221342827374562)', () => {
+  const finished = (exitStatus: number, signal = 'none', lastOutputLine = 'done') =>
+    `TEST_FILE_PROGRESS state=finished cwd="packages/operator-core" elapsedMs=10 capturedBytes=10 ` +
+    `completedFiles=["fixture.test.ts"] pendingFiles=[] timeoutMs=600000 exitStatus=${exitStatus} ` +
+    `signal=${signal} lastOutputLine="${lastOutputLine}"`;
+  const receiptMissing = 'TEST_FILE_LEDGER_RECEIPT_MISSING requested=1 missing=1 status=not-measured '
+    + 'paths=["fixture.test.ts"] receiptDiagnostics=[] detail="one or more recordable Vitest files lack an inserted ledger receipt"';
+  const passedRun = [finished(0), ' Test Files  1 passed (1)', '      Tests  4 passed (4)', receiptMissing];
+  const failedRun = [
+    finished(1),
+    'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"',
+    ' Test Files  1 failed (1)', '      Tests  1 failed | 3 passed (4)', receiptMissing,
+  ];
+  // The mutant leg prints the router's markers and exits 2 exactly like the
+  // real router's TEST_FILE_EXIT_NOT_MEASURED; the controls pass normally.
+  const routerGuard = (name: string, mutantLines: string[]) => {
+    const guard = join(dir, name);
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf '%s\\n' ${mutantLines.map(line => `'${line}'`).join(' ')}
+  exit 2
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    return `bash ${guard} {}`;
+  };
+  const probe = (guard: string, expectation?: 'caught' | 'survived') => runProbeIO([
+    '--file', subject, '--mutate', 's/beta/BETA/', '--test', guard,
+    ...(expectation ? ['--expect', expectation] : []),
+  ]);
+
+  it('reports a passing mutant run as survived-ledger-unconfirmed and fails a caught expectation', () => {
+    const { code, out } = probe(routerGuard('survivor.sh', passedRun));
+    expect(code, out).toBe(1);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=survived-ledger-unconfirmed expected=caught .* guard_exit=2 .*assertion_evidence=no-vitest-test-failures /m);
+    expect(out).toContain('VERDICT: MUTANT SURVIVED, LEDGER UNCONFIRMED');
+    expect(out).not.toContain('VERDICT: HARNESS ERROR');
+    expect(out).toContain('"verdict":"survived-ledger-unconfirmed"');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('never credits an agreeing survived expectation without the ledger receipt', () => {
+    const { code, out } = probe(routerGuard('survivor-expected.sh', passedRun), 'survived');
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=survived-ledger-unconfirmed expected=survived /m);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('reports a failing mutant run as caught-ledger-unconfirmed without crediting the catch', () => {
+    const { code, out } = probe(routerGuard('caught.sh', failedRun));
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=caught-ledger-unconfirmed expected=caught .* guard_exit=2 .*assertion_evidence=test-file-assertion-failure /m);
+    expect(out).toContain('VERDICT: MUTANT CAUGHT, LEDGER UNCONFIRMED');
+    expect(out).not.toContain('the guard is falsifiable ✓');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('lets a caught-ledger-unconfirmed outcome disprove a survived expectation', () => {
+    const { code, out } = probe(routerGuard('caught-unexpected.sh', failedRun), 'survived');
+    expect(code, out).toBe(1);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=caught-ledger-unconfirmed expected=survived /m);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it.each([
+    ['a run that never finished', [
+      finished(0).replace('state=finished', 'state=running'), '      Tests  4 passed (4)', receiptMissing,
+    ]],
+    ['a finished run with a finalization error', [
+      finished(0), '      Tests  4 passed (4)', receiptMissing, 'TEST_FILE_FINALIZATION_ERROR detail="custody"',
+    ]],
+    ['a run killed by a signal', [finished(0, 'SIGTERM'), '      Tests  4 passed (4)', receiptMissing]],
+    ['a run that executed no passing test', [finished(0), '      Tests  4 skipped (4)', receiptMissing]],
+    ['an exit 2 with no receipt marker', [finished(0), '      Tests  4 passed (4)']],
+    ['an exit-1 run whose lastOutputLine quotes a passing status', [
+      finished(1, 'none', 'exitStatus=0 signal=none'), '      Tests  4 passed (4)', receiptMissing,
+    ]],
+  ])('keeps %s a harness error', (_label, lines) => {
+    const { code, out } = probe(routerGuard('unfinished.sh', lines));
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/^MUTATION_PROBE_RESULT verdict=harness-error /m);
+    expect(out).not.toContain('LEDGER UNCONFIRMED');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
+/**
  * WI-6554700010010581 — the runner-misuse markers are matched anywhere in the
  * captured output, and a failing Vitest toContain prints the WHOLE subject
  * string. A subject whose comment reads `cargo: command not found` therefore

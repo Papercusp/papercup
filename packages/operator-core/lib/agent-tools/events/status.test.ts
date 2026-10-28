@@ -63,6 +63,7 @@ import { listMyEventKeySubscriptions } from '../coordination/event-subscriptions
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
+import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
 import { applyResultDoorAsync, resetResultDoorAggregatesForTests, RESULT_DOOR_TOKENS, type DoorableResult } from '../../result-door';
 import { _resetScratchUsageForTests } from '../../scratch-gc';
@@ -934,9 +935,9 @@ describe('events:status projection', () => {
       deliveries: [],
     } as never);
     vi.mocked(hostAudienceResolvers.listFleetLeader).mockResolvedValueOnce(['su-ended']);
-    vi.mocked(resolveSessionStates).mockResolvedValueOnce(new Map([
-      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
-    ]) as never);
+    mockResolvedOnceTyped(vi.mocked(resolveSessionStates), new Map([
+      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' as const, wakeable: false, liveTurn: false, confirmLiveness: false, heartbeatFresh: false }],
+    ]));
 
     const out = await call({ event: 'gate:fleet-owner' });
     expect(out.event_inspection.declarations[0]).toMatchObject({

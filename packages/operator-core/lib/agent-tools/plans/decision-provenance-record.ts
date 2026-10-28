@@ -42,8 +42,14 @@ import { resolveAgentIdentity } from '../coordination/identity';
  * BUDGET), and compactInputSchema drops descriptions, so the cost is the schema STRUCTURE.
  * Measured 2026-10-28 (`npm run gen:tool-delivery -- --report`): a {kind} discriminated union,
  * top-level plus per item, overran the seed by 548 B (EI-27076355939117314).
+ * The length bounds are enforced in {@link resolveDecisionProvenance} (OWNER_TURN_REF_MAX and the
+ * one-ref parse), not here: a schema-level min/max cost ~30 floor bytes and added no guard the
+ * resolver lacked (WI-6554700010030925, 2026-10-28).
  */
-export const ownerTurnRefArg = z.string().min(1).max(200);
+export const ownerTurnRefArg = z.string();
+
+/** Longest ownerTurnRef the resolver will parse; a longer value is refused as unparseable. */
+export const OWNER_TURN_REF_MAX = 200;
 
 /** The internal form {@link resolveDecisionProvenance} takes. Undefined means the recording agent. */
 export type DecisionProvenanceArg = { kind: 'agent' } | { kind: 'owner'; turnRef: string };
@@ -165,14 +171,18 @@ export async function resolveDecisionProvenance(
   if (!arg || arg.kind === 'agent') {
     return { ok: true, provenance: { kind: 'agent', agentId } };
   }
-  const wrapped = arg.turnRef.trim().startsWith('[') ? arg.turnRef.trim() : `[turn:${arg.turnRef.trim()}]`;
-  const refs = parseTurnRefs(wrapped);
+  const trimmed = arg.turnRef.trim();
+  const wrapped = trimmed.startsWith('[') ? trimmed : `[turn:${trimmed}]`;
+  // The schema is a bare string (floor bytes), so empty and over-long values are refused here.
+  const refs = trimmed.length > 0 && arg.turnRef.length <= OWNER_TURN_REF_MAX ? parseTurnRefs(wrapped) : [];
   if (refs.length !== 1) {
     return {
       ok: false,
       error: 'provenance_owner_turn_unparseable',
       field: 'ownerTurnRef',
-      message: `ownerTurnRef must be exactly one [turn:<session-prefix>@<iso-ts>] ref; got ${JSON.stringify(arg.turnRef)}.`,
+      message:
+        `ownerTurnRef must be exactly one [turn:<session-prefix>@<iso-ts>] ref of at most ${OWNER_TURN_REF_MAX} chars; ` +
+        `got ${JSON.stringify(arg.turnRef.slice(0, OWNER_TURN_REF_MAX))}${arg.turnRef.length > OWNER_TURN_REF_MAX ? '…' : ''}.`,
     };
   }
   let verdicts: TurnRefVerdict[] = [];

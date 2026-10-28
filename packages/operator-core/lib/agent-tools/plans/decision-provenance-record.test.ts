@@ -9,6 +9,7 @@ vi.mock('../coordination/identity', () => ({
 
 import {
   findOwnerTag,
+  OWNER_TURN_REF_MAX,
   ownerTurnRefArg,
   provenanceFromOwnerTurnRef,
   resolveDecisionProvenance,
@@ -55,11 +56,21 @@ describe('findOwnerTag', () => {
 });
 
 describe('ownerTurnRefArg + provenanceFromOwnerTurnRef', () => {
-  it('is a flat bounded string: accepts a ref, rejects empty, over-long and object shapes', () => {
+  it('is a flat string: accepts a ref, rejects object shapes', () => {
     expect(ownerTurnRefArg.safeParse(REF).success).toBe(true);
-    expect(ownerTurnRefArg.safeParse('').success).toBe(false);
-    expect(ownerTurnRefArg.safeParse('x'.repeat(201)).success).toBe(false);
     expect(ownerTurnRefArg.safeParse({ kind: 'owner', turnRef: REF }).success).toBe(false);
+  });
+  // The schema carries no length bounds (floor bytes), so the resolver must refuse empty and
+  // over-long values before it ever consults the turn ledger.
+  it('the resolver refuses empty, blank and over-long refs as unparseable without verifying them', async () => {
+    const wellFormedButLong = `[turn:${'a'.repeat(OWNER_TURN_REF_MAX)}@2026-10-28T11:00:00.000Z]`;
+    for (const turnRef of ['', '   ', 'x'.repeat(OWNER_TURN_REF_MAX + 1), wellFormedButLong]) {
+      const d = deps(verdict({}));
+      const r = await resolveDecisionProvenance({ kind: 'owner', turnRef }, 'b', ME, d);
+      expect(r).toMatchObject({ ok: false, error: 'provenance_owner_turn_unparseable', field: 'ownerTurnRef' });
+      expect(d.calls).toEqual([]);
+      if (!r.ok) expect(r.message.length).toBeLessThan(OWNER_TURN_REF_MAX + 200);
+    }
   });
   it('maps omitted to undefined, null to the agent, and a ref to an owner claim', () => {
     expect(provenanceFromOwnerTurnRef(undefined)).toBeUndefined();

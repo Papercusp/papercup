@@ -421,6 +421,15 @@ type AppendBodyOverflowDiagnostics = {
   remainingCapacityChars: number;
 };
 
+type AppendPriorBodyOverflowDiagnostics = {
+  priorNarrativeChars: number;
+  candidateNarrativeChars: number;
+  submittedAppendChars: number;
+  remainingCapacityChars: number;
+  priorNarrativeRetained: false;
+  submittedAppendRetained: boolean;
+};
+
 /**
  * Keep the append-body refusal honest about WHICH bytes consume the cap.
  * `priorLength` is the whole stored carry note; it is not the check-row
@@ -1222,7 +1231,7 @@ export default defineTool({
   description:
     'Write or clear work-item checkpoints. ' +
     'Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. ' +
-    'Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. ' +
+    'Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text only when the full prior narrative and new append fit under the cap. ' +
     // EI-20218215840085630: this clause used to read "block suspicious shrink",
     // which has been false since EI-20232176364474286 taught the tool to RETRY a
     // refused plain shrink as a safe append. The accurate statement lived only in
@@ -1266,6 +1275,7 @@ export default defineTool({
       'and every refusal carries `errorCode` + recovery args. ' +
       'A non-clear write to a terminal item is refused with `errorCode:"terminal_item"`; reopen it explicitly with ' +
       '`work_items:set_state { id, state:"open", force:true }`, then claim it before resuming work. ' +
+      'A cap-overflow append that would lose the prior narrative is refused with `append_prior_body_overflow`; shorten the new append to preserve all prior text, or pass `confirmShrink:true` only when that loss is intentional. ' +
       'A blocked write carries `errorCode` plus structured `recovery` args: ' +
       '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
       'or `append:false, rowsMode:"replace", confirmShrink:true, retireIds:[...]` for an intentional full body+rows replacement. ' +
@@ -2324,12 +2334,11 @@ export default defineTool({
               }
             : null;
         /**
-         * EI-21399238191579954: legacy notes can carry more check bytes than the
-         * current cap permits. The append transform preserves those rows, then
-         * front-trims the narrative body to make room; when the rows alone consume
-         * the cap, that trim removes the submitted addendum entirely while the
-         * write still returns `verified:true`. Re-run the exact transform under the
-         * same locked prior and refuse unless the submitted body remains intact.
+         * EI-21399238191579954 / EI-26833103898072347: legacy notes can carry more
+         * check bytes than the current cap permits. The append transform preserves
+         * those rows, then trims narrative to make room. A submitted addendum can
+         * survive while previously stored evidence is evicted. Re-run the exact
+         * transform under the same locked prior and refuse if either side is lost.
          */
         const appendBodyPreservationGuard: CheckpointGuard | null =
           !wantsConfirmShrink && didAttemptJoin && joinAddendumStored
@@ -2339,6 +2348,24 @@ export default defineTool({
                   ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
                   : '';
                 const submitted = joinAddendumStored.trim();
+                const priorBody = splitCarryNoteWalls(splitCarryNoteChecks(priorNote).body).body.trim();
+                if (priorBody.length > 0 && !candidateBody.includes(priorBody)) {
+                  appendPriorBodyOverflowDetails = {
+                    priorNarrativeChars: priorBody.length,
+                    candidateNarrativeChars: candidateBody.length,
+                    submittedAppendChars: submitted.length,
+                    remainingCapacityChars: Math.max(0, CHECKPOINT_CAP - priorLen),
+                    priorNarrativeRetained: false,
+                    submittedAppendRetained: candidateBody.endsWith(submitted),
+                  };
+                  return (
+                    `append_prior_body_overflow — this append would evict previously stored narrative ` +
+                    `(${priorBody.length} chars; candidate retains ${candidateBody.length} narrative chars) ` +
+                    `at the ${CHECKPOINT_CAP}-character cap. Refusing the write rather than silently dropping ` +
+                    'prior evidence. Shorten the new append to fit, or intentionally replace/compact only after ' +
+                    'preserving needed evidence elsewhere.'
+                  );
+                }
                 if (candidateBody.endsWith(submitted)) return null;
 
                 // EI-22624970955266330: `priorLen` is the CARRIED NOTE's length, not
@@ -2377,6 +2404,7 @@ export default defineTool({
          */
         let appendChecksOverflowDiagnostics: AppendChecksOverflowRow[] = [];
         let appendBodyOverflowDetails: AppendBodyOverflowDiagnostics | undefined;
+        let appendPriorBodyOverflowDetails: AppendPriorBodyOverflowDiagnostics | undefined;
         /** Set by the overflow guard when it absorbs a legacy over-cap prior instead of
          *  refusing (EI-21534719386975911), so the reply can name the real cause of the
          *  eviction rather than reporting it as an ordinary caller-caused cap cut.
@@ -2636,12 +2664,18 @@ export default defineTool({
                       : { ...bodyRecoveryArg, append: true, checks: [] }
                     : errorCode === 'checks_body_overflow'
                       ? { checks: [] }
+                      : errorCode === 'append_body_overflow' || errorCode === 'append_prior_body_overflow'
+                        ? { ...bodyRecoveryArg, append: true }
                       : { append: true },
                 description:
                   errorCode === 'append_checks_overflow'
                     ? 'Retry as an additive body-only append (omit checks or pass checks: []) after separately retiring stale rows if needed.'
                     : errorCode === 'checks_body_overflow'
                       ? 'Retry without checks to preserve the narrative body, or shorten the checks before retrying the metadata patch.'
+                      : errorCode === 'append_prior_body_overflow'
+                        ? 'Shorten the new append until the complete prior narrative fits; otherwise preserve needed evidence elsewhere before an intentional compacting replacement.'
+                      : errorCode === 'append_body_overflow'
+                        ? 'Shorten the submitted append until it fits without displacing carried checks or prose.'
                       : 'Join this submitted checkpoint onto the existing note and preserve its prior content.',
               },
               replace: {
@@ -2673,6 +2707,9 @@ export default defineTool({
               : {}),
             ...(errorCode === 'append_body_overflow' && appendBodyOverflowDetails
               ? { appendBodyOverflowDiagnostics: appendBodyOverflowDetails }
+              : {}),
+            ...(errorCode === 'append_prior_body_overflow' && appendPriorBodyOverflowDetails
+              ? { appendPriorBodyOverflowDiagnostics: appendPriorBodyOverflowDetails }
               : {}),
           };
         }

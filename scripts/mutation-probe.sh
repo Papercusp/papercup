@@ -262,6 +262,13 @@
 #      copy-out RELOCATION that breaks the subject before any mutation is
 #      applied (the guard fails against an UNMUTATED relocated copy), or a
 #      harness error while running the mutant)
+#   *-ledger-unconfirmed (EI-27221342827374562): the test:file router exits 2
+#      when a finished Vitest run lacks an inserted test_runs receipt. The
+#      probe then reports the assertion outcome it can still read —
+#      verdict=survived-ledger-unconfirmed or caught-ledger-unconfirmed — and
+#      exits 1 when that outcome CONTRADICTS --expect (a survivor is a weak
+#      guard with or without a receipt), or 2 when it agrees (it is not
+#      ledger-backed proof, so it never earns exit 0)
 #   3  IN-TREE RESTORE FAILED — the tree may still be dirty; act immediately
 #
 # READING THE VERDICT
@@ -2436,6 +2443,61 @@ is_assertion_failure_exit() {
   [ "$1" -eq 1 ] || { [ "$1" -eq 101 ] && [ "$2" = cargo-libtest-failed-tests ]; }
 }
 
+# EI-27221342827374562 (measured 2026-10-28): the test:file router exits 2
+# (TEST_FILE_EXIT_NOT_MEASURED) whenever a recordable Vitest file lacks an
+# inserted test_runs receipt, even after Vitest finished and every assertion
+# PASSED with the mutant applied. Reading that exit 2 as a plain harness error
+# hid a SURVIVING mutant as an infrastructure flake, which is the wrong
+# conclusion: "re-run" instead of "my guard has a gap". This recovers the
+# assertion outcome from the router's own column-0 markers, but only for a run
+# that demonstrably FINISHED and whose exit 2 has exactly that one cause:
+#   * a TEST_FILE_LEDGER_RECEIPT_MISSING line exists;
+#   * no TEST_FILE_FINALIZATION_ERROR / ROUTE_ERROR / ALL_SKIPPED line exists;
+#   * at least one `TEST_FILE_PROGRESS state=finished` line, and every one of
+#     them reports signal=none with exitStatus 0 or 1.
+# Prints `passed` (every exit 0, no measured failure, a Vitest summary with at
+# least one passed test and none failed) or `failed` (an exit 1 plus measured
+# assertion-failure evidence) and returns 0. Anything else returns 1, so it
+# stays a harness error. The ledger gap itself is never erased: the verdict
+# names it and the exit code refuses to credit the expectation (see the end).
+classify_ledger_receipt_only_exit() {
+  local log="$1" statuses evidence summaries
+  grep -Eq '^TEST_FILE_LEDGER_RECEIPT_MISSING[[:space:]]' "$log" 2>/dev/null || return 1
+  if grep -Eq '^TEST_FILE_(FINALIZATION_ERROR|ROUTE_ERROR|ALL_SKIPPED)([[:space:]]|$)' "$log" 2>/dev/null; then
+    return 1
+  fi
+  # The leftmost exitStatus/signal pair is the router's own field: it precedes
+  # lastOutputLine, the only field that can quote arbitrary test output.
+  statuses="$(grep -E '^TEST_FILE_PROGRESS state=finished[[:space:]]' "$log" 2>/dev/null | awk '{
+    if (match($0, / exitStatus=[^ ]+ signal=[^ ]+/)) print substr($0, RSTART + 1, RLENGTH - 1)
+    else print "unparsed"
+  }')"
+  [ -n "$statuses" ] || return 1
+  if printf '%s\n' "$statuses" | grep -Evq '^exitStatus=[01] signal=none$'; then
+    return 1
+  fi
+  if printf '%s\n' "$statuses" | grep -q '^exitStatus=1 '; then
+    if evidence="$(detect_assertion_failure_evidence "$log")" \
+       && { [ "$evidence" = test-file-assertion-failure ] || [ "$evidence" = vitest-failed-tests ]; }; then
+      printf '%s' 'failed'
+      return 0
+    fi
+    return 1
+  fi
+  if evidence="$(detect_assertion_failure_evidence "$log")"; then
+    return 1
+  fi
+  [ "$evidence" = no-vitest-test-failures ] || return 1
+  summaries="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$log" 2>/dev/null \
+    | grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+[[:space:]]+(passed|failed|skipped|todo|pending)([[:space:]]|$)')"
+  if printf '%s\n' "$summaries" | grep -Eq '(^|[[:space:]|])[1-9][0-9]*[[:space:]]+failed([[:space:]|]|$)'; then
+    return 1
+  fi
+  printf '%s\n' "$summaries" | grep -Eq '(^|[[:space:]|])[1-9][0-9]*[[:space:]]+passed([[:space:]|]|$)' || return 1
+  printf '%s' 'passed'
+  return 0
+}
+
 # EI-20451290782193791 (measured 2026-08-14, reproduced 2026-09-05): the
 # sibling hole in the detector above. That one only ever runs where the guard
 # exited NONZERO, because a runner that cannot COLLECT fails. A runner that
@@ -3690,6 +3752,22 @@ if [ "$TEST_RC" -eq 1 ] || [ "$TEST_RC" -eq 101 ]; then
   fi
 fi
 
+# EI-27221342827374562: an exit 2 whose ONLY cause is a missing test_runs
+# receipt still carries a finished Vitest run. Recover its assertion outcome so
+# a surviving mutant is reported as one, not hidden as a harness flake.
+LEDGER_UNCONFIRMED_OUTCOME=""
+if [ "$TEST_RC" -eq 2 ]; then
+  if LEDGER_UNCONFIRMED_OUTCOME="$(classify_ledger_receipt_only_exit "$MUTANT_LOG")"; then
+    if [ "$LEDGER_UNCONFIRMED_OUTCOME" = failed ]; then
+      MUTANT_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$MUTANT_LOG")" || MUTANT_ASSERTION_EVIDENCE='exit-code-only'
+    else
+      MUTANT_ASSERTION_EVIDENCE='no-vitest-test-failures'
+    fi
+  else
+    LEDGER_UNCONFIRMED_OUTCOME=""
+  fi
+fi
+
 # A passing copy-out test does not prove it ever imported the mutant. The repo
 # mirror symlinks test files/configs; Node/Vite can realpath a symlinked test
 # before resolving its relative imports, sending them back to the real tree.
@@ -3698,7 +3776,7 @@ fi
 # distinctive top-level throw and rerun the SAME command. Credit survival only
 # if this run fails AND prints the thrown marker: a generic runner error is not
 # evidence that the module was loaded. Never touch the tracked source.
-if [ "$TARGET_MODE" = "copy-out" ] && [ "$TEST_RC" -eq 0 ]; then
+if [ "$TARGET_MODE" = "copy-out" ] && { [ "$TEST_RC" -eq 0 ] || [ "$LEDGER_UNCONFIRMED_OUTCOME" = passed ]; }; then
   case "$FILE" in
     *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.mts|*.cts)
       LOAD_MARKER="PAPERCUSP_MUTATION_TARGET_LOADED_CHECK"
@@ -3747,6 +3825,15 @@ elif [ "$TEST_RC" -eq 0 ]; then
     # ORIGINAL subject. The overlay has no such route; say which one ran.
     log "⚠️  relocation=$RELOCATION_USED: a test that reaches the subject through a SIBLING module (or an alias/package specifier) loads the ORIGINAL file here, so this survival may be the relocation's, not the guard's. Re-run where bwrap can bind (--relocation overlay) or with the fenced --in-tree tier before calling the guard weak."
   fi
+elif [ "$LEDGER_UNCONFIRMED_OUTCOME" = passed ]; then
+  VERDICT="survived-ledger-unconfirmed"
+  log "VERDICT: MUTANT SURVIVED, LEDGER UNCONFIRMED (guard exited 2 only because a test_runs receipt is missing) — Vitest finished and every guard test PASSED with the mutant applied, so the guard does NOT constrain this mutation ✗. This is not an infrastructure flake to re-run away. No receipt exists, so do not bind this run as ledger evidence."
+  if [ "$RELOCATION_USED" = "mirror" ] || [ "$RELOCATION_USED" = "flat" ]; then
+    log "⚠️  relocation=$RELOCATION_USED: a test that reaches the subject through a SIBLING module (or an alias/package specifier) loads the ORIGINAL file here, so this survival may be the relocation's, not the guard's. Re-run where bwrap can bind (--relocation overlay) or with the fenced --in-tree tier before calling the guard weak."
+  fi
+elif [ "$LEDGER_UNCONFIRMED_OUTCOME" = failed ]; then
+  VERDICT="caught-ledger-unconfirmed"
+  log "VERDICT: MUTANT CAUGHT, LEDGER UNCONFIRMED (guard exited 2 only because a test_runs receipt is missing) — the guard's assertions failed on the mutant (${MUTANT_ASSERTION_EVIDENCE}), but this run is not ledger-backed proof. Reconcile the exact run group in the ledger, or re-run, before binding it."
 else
   VERDICT="harness-error"
   log "VERDICT: HARNESS ERROR (guard exited $TEST_RC) — no falsifiability verdict is sound"
@@ -3842,5 +3929,13 @@ REPLAY_RECORD="$(
 printf 'MUTATION_PROBE_EVIDENCE_JSON=%s\n' "$REPLAY_RECORD"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
+# A ledger-unconfirmed outcome can DISPROVE an expectation (the assertions ran
+# and contradict it, with or without a receipt) but can never CREDIT one: an
+# agreeing outcome still lacks the measured test_runs evidence, so exit 2.
+case "$VERDICT" in
+  *-ledger-unconfirmed)
+    [ "${VERDICT%-ledger-unconfirmed}" = "$EXPECT" ] && exit 2
+    exit 1 ;;
+esac
 [ "$VERDICT" = "$EXPECT" ] || exit 1
 exit 0
