@@ -3,6 +3,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: 'authorized-db' })
 vi.mock('./people', () => ({ readPersonQualificationEvidence: vi.fn() }));
 import { leadSourceObservationsRescore } from './qualification-instrument';
 import type { readPersonQualificationEvidence, PersonQualificationEvidence } from './people';
+import { retainMeasurementProvenance, measurementProvenanceStatus } from '../measurement-provenance';
 
 const input = { workspaceId: 'workspace-a', subject: { kind: 'person', ref: 'PER-a' },
   windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
@@ -22,7 +23,17 @@ describe('P019 subject source observation instrument', () => {
     expect(read).toHaveBeenCalledWith('authorized-db', 'workspace-a', 'PER-a',
       { windowStart: input.windowStart, windowEnd: input.windowEnd });
     expect(result).toMatchObject({ verdict: 'pass', value: 1 });
-    expect(JSON.parse(result.detail)).toMatchObject({ personRef: 'PER-survivor', evidenceRefs: ['work-item:REC-a'] });
+    expect(result).toMatchObject({ detail: 'Source observation count for PER-survivor', evidenceRefs: ['work-item:REC-a'] });
+  });
+  it('retains multiple citations beyond the detail-string limit as complete measurement diagnostics', async () => {
+    const sources = Array.from({ length: 20 }, (_, i) => ({ ...available.sources[0]!,
+      recordId: `REC-${i}`, evidenceRef: `work-item:REC-${i}-${'a'.repeat(64)}` }));
+    const read = vi.fn<typeof readPersonQualificationEvidence>().mockResolvedValue({ ...available, sources });
+    const result = await leadSourceObservationsRescore(read).resolve(input);
+    const retained = retainMeasurementProvenance({ procedure: { window: input }, result,
+      startedAt: input.windowStart, finishedAt: input.windowEnd });
+    expect(measurementProvenanceStatus(retained)).toBe('retained');
+    for (const source of sources) expect(retained.diagnostics).toContainEqual(expect.objectContaining({ value: source.evidenceRef }));
   });
   it.each([undefined, { kind: 'email', ref: 'PER-a' }, { kind: 'person', ref: 'ada@example.com' }])(
     'does not read for an unauthoritative subject %j', async subject => {

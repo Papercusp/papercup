@@ -20,9 +20,8 @@ export function leadSourceObservationsRescore(
       if (evidence.status === 'unknown') return { verdict: 'unknown', detail: evidence.reason };
       return {
         verdict: evidence.sources.length ? 'pass' : 'fail', value: evidence.sources.length,
-        detail: JSON.stringify({ personRef: evidence.person.id, window: evidence.window,
-          evidenceRefs: evidence.sources.map(source => source.evidenceRef),
-          measurement: 'source-observation-count' }),
+        detail: `Source observation count for ${evidence.person.id}`,
+        evidenceRefs: evidence.sources.map(source => source.evidenceRef),
       };
     },
   };

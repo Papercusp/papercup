@@ -284,6 +284,9 @@ export interface PlatformInstrument {
        * stored as if it were a measured `unit` (WI-6554700010018719).
        */
       value?: number;
+      /** Cited source records retained individually by measurement provenance,
+       * rather than packed into the bounded human-readable detail string. */
+      evidenceRefs?: string[];
     }>;
   };
 }
