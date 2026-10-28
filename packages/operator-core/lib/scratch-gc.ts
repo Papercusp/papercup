@@ -2030,8 +2030,9 @@ function rememberScratchQuotaOperationError(
   path: string,
   error: unknown,
 ): void {
-  if (diagnostics.firstOperationErrorPath !== null) return;
-  diagnostics.firstOperationErrorCode = scratchFsErrorCode(error) ?? null;
+  const code = scratchFsErrorCode(error);
+  if (!code || diagnostics.firstOperationErrorPath !== null) return;
+  diagnostics.firstOperationErrorCode = code;
   diagnostics.firstOperationErrorKind = kind;
   diagnostics.firstOperationErrorPath = path;
 }
