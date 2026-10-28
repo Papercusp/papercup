@@ -2285,11 +2285,11 @@ function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs,
+export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
   releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
@@ -2429,13 +2429,20 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const childEnv = await runPhase('child.preflight', () => verifierSourceChildEnv({ root, receiptPath,
         env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
           VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } }));
+    // Resource setup that depends on a ready command environment (for example
+    // starting the parent's private PG) happens only after committed source and
+    // dependency-generation preparation have succeeded. A missing generation
+    // therefore cannot allocate PG and then fail inside this verifier.
+    const preparedChildEnv = await runPhase('child.environment', async () =>
+      (await prepareChildEnv({ sourceRoot: root })) ?? {});
+    const finalChildEnv = { ...childEnv, ...preparedChildEnv };
     let exitCode;
     let childRunError;
     try { exitCode = await runPhase('child.run', async () => {
       // Preflight can consume the admitted clock. Check again at the actual
       // spawn boundary, then keep the absolute cutoff until the WHOLE group exits.
       admitBudget(childEstimate);
-      const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv,
+      const child = spawn(command[0], command.slice(1), { cwd: root, env: finalChildEnv,
         detached: process.platform !== 'win32', stdio: ['inherit', 'pipe', 'pipe'] });
       const lifetime = processGroupLifetime(child, message => process.stderr.write(`${message}\n`));
       let diagnostics, captureError;
@@ -2609,9 +2616,12 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         }
         if (taskEvidenceRoot && ownership && phaseArchivePath) {
           try {
-            archiveVerifierTaskEvidence({ evidenceRoot: taskEvidenceRoot, taskId: ownership.taskId,
+            const retainedManifestPath = archiveVerifierTaskEvidence({ evidenceRoot: taskEvidenceRoot, taskId: ownership.taskId,
               sourceCommit, receiptPath, taskReceiptPath, phaseArchivePath, cleanup,
               childExitCode: commandExitCode, error: failure ?? finalizationFailure });
+            process.stderr.write(`VERIFIER_TASK_EVIDENCE ${JSON.stringify({
+              taskId: ownership.taskId, manifestPath: retainedManifestPath,
+            })}\n`);
           } catch (evidenceError) {
             const priorError = failure ?? finalizationFailure;
             if (priorError) throw new AggregateError([priorError, evidenceError],

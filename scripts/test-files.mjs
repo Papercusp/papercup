@@ -3729,7 +3729,6 @@ export async function main(
       const inputs = privateIntegrationVerifierInputs(repoRoot, routes.map(route => route.absolute));
       if (inputs) {
         assertPrivateIntegrationEvidence();
-        const privatePg = await preflightPrivateIntegrationPgImpl();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();
         if (head?.error || head?.status !== 0 || !/^[a-f0-9]{40}$/.test(ref ?? ''))
@@ -3741,10 +3740,14 @@ export async function main(
         try {
           return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,
             releaseParentPrivatePg: Boolean(process.env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV]),
-            // The frozen router takes over this same logical invocation's
-            // barriers; ordinary test children still never inherit them.
+            // The verifier must finish committed source/dependency preparation
+            // before this callback allocates private PG. Ordinary test children
+            // still never inherit the parent's barriers.
+            prepareChildEnv: async () => {
+              const privatePg = await preflightPrivateIntegrationPgImpl();
+              return privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {};
+            },
             env: { ...process.env,
-              ...(privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {}),
               ...(preemptMarkerPaths.readyFile ? { PC_HEAVY_PREEMPT_READY_FILE: preemptMarkerPaths.readyFile } : {}),
               ...(preemptMarkerPaths.finalizationFile ? { PC_HEAVY_PSI_FINALIZATION_FILE: preemptMarkerPaths.finalizationFile } : {}) },
             command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',
