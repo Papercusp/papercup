@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -271,6 +271,43 @@ describe('exact shipped engineering evidence detector', () => {
       expect(JSON.parse(readFileSync(phase.metadataPath, 'utf8'))).toMatchObject({ status: 7, signal: null,
         stdoutSha256: hash(stdout), stderrSha256: hash(stderr) });
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('streams nonce stdout to disk before the child exits', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'engineering-live-phase-'));
+    let observer: ReturnType<typeof spawn> | undefined;
+    try {
+      const f = fixture(), inputsPath = join(dir, 'inputs.json');
+      writeFileSync(inputsPath, f.bytes);
+      const stdoutPath = join(dir, 'runs', f.nonce, 'browser.stdout.log');
+      const markerPath = join(dir, 'observed-before-exit'), endedPath = join(dir, 'child-ended');
+      const message = 'ENGINEERING_EVIDENCE_JOURNEY_VERIFIED ' + JSON.stringify(f.proof);
+      const observerScript = [
+        "const fs=require('node:fs');const [path,marker,ended]=process.argv.slice(1);",
+        "const deadline=Date.now()+5000;function poll(){try{",
+        "if(fs.readFileSync(path,'utf8').includes('ENGINEERING_EVIDENCE_JOURNEY_VERIFIED')){",
+        "if(fs.existsSync(ended))process.exit(2);fs.writeFileSync(marker,String(Date.now()));process.exit(0)",
+        "} }catch{} if(Date.now()>deadline)process.exit(3);setTimeout(poll,5)}poll();",
+      ].join('');
+      observer = spawn(process.execPath, ['-e', observerScript, stdoutPath, markerPath, endedPath], { stdio: 'ignore' });
+      const childScript = "process.stdout.write(" + JSON.stringify(message) + ");setTimeout(()=>{" +
+        "require('node:fs').writeFileSync(" + JSON.stringify(endedPath) +
+        ",String(Date.now()));process.exit(0)},750);";
+      const receipt = JSON.stringify({ driver: 'tauri-agent-tools', plane: f.proof.plane,
+        buildSha: f.proof.buildSha, manifestSha256: f.proof.manifestSha256, nonce: f.nonce });
+      const result = verifyEngineeringRelease({
+        root: '/repository', inputsPath, nonce: f.nonce, env: {},
+        read: path => path === inputsPath ? f.bytes : receipt,
+        run: (_command, _args, options) => spawnSync(process.execPath, ['-e', childScript], options),
+      });
+      const observedAt = Number(readFileSync(markerPath, 'utf8'));
+      const exitedAt = Number(readFileSync(endedPath, 'utf8'));
+      expect(result.status).toBe('pass');
+      expect(observedAt).toBeLessThan(exitedAt);
+      expect(readFileSync(stdoutPath, 'utf8')).toContain(message);
+    } finally {
+      observer?.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   it('refuses a pass when phase diagnostics cannot be retained', () => {
     const f = fixture(); f.write.mockImplementation(() => { throw new Error('disk full'); });
