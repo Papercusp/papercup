@@ -609,6 +609,21 @@ if ! node --import "$REPO_DIR/scripts/lib/committed-source-loader.mjs" \
   exit 1
 fi
 
+# The guarded Tauri launcher diagnoses a missing submodule CLI, but it runs
+# after source/dependency preparation and native setup. Catch an incomplete
+# papercusp-desktop install before those expensive verifier phases begin.
+preflight_desktop_tauri_cli() {
+  local cli="$DESKTOP_DIR/node_modules/.bin/tauri"
+  if [ -x "$cli" ] || command -v tauri >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "VERIFY_TAURI_DESKTOP_CLI_MISSING: @tauri-apps/cli is not installed for papercusp-desktop." >&2
+  echo "Run from the monorepo root: npm run install:safe -- --repo-root papercusp-desktop" >&2
+  echo 'npm run doctor also checks "submodule installs complete".' >&2
+  return 127
+}
+preflight_desktop_tauri_cli || exit $?
+
 # Share source-preview's absolute task admission before dependencies or native
 # capacity are allocated. Recheck the real clock at each expensive boundary;
 # elapsed preparation is deducted from an optional prior phase forecast.
