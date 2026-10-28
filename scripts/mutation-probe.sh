@@ -1330,8 +1330,9 @@ prepare_destructive_scan() {
   # scan: conservative refusal is safer than silently skipping this gate.
   case "$extension" in
     js|jsx|mjs|cjs|ts|tsx|mts|cts)
-      local script_dir scanner_module masked
-      script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
+      local source_script script_dir scanner_module masked
+      source_script="${MUTATION_PROBE_SOURCE_PATH:-${BASH_SOURCE[0]}}"
+      script_dir="$(cd -- "$(dirname -- "$source_script")" && pwd -P)" || return 1
       scanner_module="$script_dir/../node_modules/typescript"
       if [ ! -f "$scanner_module/package.json" ] || ! command -v node >/dev/null 2>&1; then
         return 0
