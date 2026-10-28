@@ -77,6 +77,37 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
 const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, teardownMs: 30 },
   killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
 
+it('keeps supervised router startup outside the test execution budget', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    // The private runtime is observed before the router lists files or admits
+    // Vitest. Its lifetime receipt must not spend the test execution allowance.
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(90);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(79);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'execute' });
+  });
+});
+
+it('bounds supervised router startup despite repeated runtime lifetime receipts', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(70);
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    await vi.advanceTimersByTimeAsync(29);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+  });
+});
+
 it('recognizes direct test:file execution across chunks without changing phase budgets', async () => {
   const options = isolatedTestFileWorkerOptions({}, 1);
   const { testFileExecutionFromStdout, ...budgets } = options;

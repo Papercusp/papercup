@@ -642,7 +642,7 @@ export async function assignActionableWorkItems(
             blockerParkedIds: capacity!.blockerParkedIds.join(','),
           },
           liftsWhen: 'the target has an available slot under its effective maxConcurrentClaims limit',
-          whoCanMakeItTrue: ['target-agent'],
+          whoCanMakeItTrue: ['self'],
         },
       })));
     }
