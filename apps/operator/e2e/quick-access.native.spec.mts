@@ -64,11 +64,16 @@ test('Quick Access opens as an independent native launcher with reports and exac
     const windows = await popupWindows();
     expect(windows).toHaveLength(1);
     await exec('xdotool', ['windowactivate', '--sync', windows[0]], { env: displayEnv, timeout: 15_000 });
-    expect((await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim()).toBe(windows[0]);
+    await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim(), { timeout: 15_000 }).toBe(windows[0]);
     await exec('xdotool', ['key', '--clearmodifiers', 'Escape'], { env: displayEnv, timeout: 15_000 });
   }
   async function setQuery(query: string) {
     await evaluate('(() => { const input=document.querySelector(".pc-qa__search input"); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set; setter.call(input,' + JSON.stringify(query) + '); input.dispatchEvent(new Event("input",{bubbles:true})); input.focus(); })()');
+  }
+  async function expectDefaultTabs() {
+    expect(await evaluate('Array.from(document.querySelectorAll("[aria-label=\\"Quick Panel tabs\\"] [role=tab]")).map(e=>({name:e.textContent.trim(),selected:e.getAttribute("aria-selected")}))'))
+      .toEqual([{ name: 'Search', selected: 'true' }, { name: 'Prompts', selected: 'false' },
+        { name: 'Brainstorm', selected: 'false' }, { name: 'Docs', selected: 'false' }]);
   }
   const visible = () => evaluate('window.__TAURI_INTERNALS__.invoke("plugin:window|is_visible", {label:"docs-search-palette"})');
   async function expectUsable(selectors: string[]) {
@@ -125,15 +130,14 @@ test('Quick Access opens as an independent native launcher with reports and exac
       await evaluate('window.__TAURI_INTERNALS__.invoke("plugin:window|hide", {label:"main"})', 'main');
       async function shortcut() {
         await exec('xdotool', ['windowactivate', '--sync', decoyWindowId], { env: displayEnv, timeout: 15_000 });
-        expect((await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim()).toBe(decoyWindowId);
+        await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim(), { timeout: 15_000 }).toBe(decoyWindowId);
         await exec('xdotool', ['key', '--clearmodifiers', 'ctrl+shift+k'], { env: displayEnv, timeout: 15_000 });
       }
       await shortcut();
       await expect.poll(async () => (await popupWindows()).length, { timeout: 30_000 }).toBe(1);
       await ready();
-      expect(await evaluate('Array.from(document.querySelectorAll("[aria-label=\\"Quick Panel tabs\\"] [role=tab]")).map(e=>({name:e.textContent.trim(),selected:e.getAttribute("aria-selected")}))'))
-        .toEqual([{ name: 'Search', selected: 'true' }, { name: 'Prompts', selected: 'false' },
-          { name: 'Brainstorm', selected: 'false' }, { name: 'Docs', selected: 'false' }]);
+      expect(await popupWindows(false)).toHaveLength(1);
+      await expectDefaultTabs();
       // The established shortcut toggles the existing popup off, then on.
       await shortcut();
       await expect.poll(visible).toBe(false);
@@ -142,6 +146,7 @@ test('Quick Access opens as an independent native launcher with reports and exac
       await ready();
       await expect.poll(visible).toBe(true);
       expect(await popupWindows(false)).toHaveLength(1);
+      await expectDefaultTabs();
     });
     await info.attach('OS shortcut entry', { body: JSON.stringify({
       accelerator: 'CmdOrCtrl+Shift+K', outsideWindowId: decoyWindowId, configHome,
@@ -179,6 +184,8 @@ test('Quick Access opens as an independent native launcher with reports and exac
       expect(await evaluate('location.pathname === "/quick-panel" && !!document.querySelector(".pc-qa__report")')).toBe(true);
       await click('.pc-qa__preview button');
       await wait('!!document.querySelector("[role=\\"dialog\\"]")');
+      await wait('document.querySelector("[role=\\"dialog\\"] .pc-qa__report")?.textContent.includes("Quick Access native body.") === true');
+      expect(await evaluate('location.pathname === "/quick-panel"')).toBe(true);
       await expectUsable(['[role="dialog"]']);
     });
     await test.step('R-5: OS Escape dismisses report, then clears a query without closing the popup', async () => {
