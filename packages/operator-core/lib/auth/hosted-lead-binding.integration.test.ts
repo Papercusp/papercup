@@ -17,6 +17,8 @@ beforeAll(async () => {
   const migration = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1607-hosted-lead-binding-receipts.sql', import.meta.url), 'utf8');
   await db.adminSql.unsafe(migration);
   await db.adminSql.unsafe(migration);
+  const graphRegistry = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1383-relationship-graph-datatypes.sql', import.meta.url), 'utf8');
+  await db.adminSql.unsafe(graphRegistry.replaceAll('papercusp-workspace', 'graph-a'));
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
@@ -81,8 +83,9 @@ async function authorityFixture() {
   expect(issuers, 'exact operator issuer guard').toHaveLength(1);
   const authority = new PostgresHostedLeadBindingAuthority('graph-a', async (_workspace, fn) =>
     await db.adminSql.begin(tx => fn(tx as unknown as Sql)) as Awaited<ReturnType<typeof fn>>);
+  const unbound = async (): Promise<never> => { throw new Error('unbound storage must not run'); };
   const binding = new HostedLeadBindingService(new HostedLeadBindingChallengeCodec('a'.repeat(32)),
-    store, authority, 'production');
+    { issue: unbound, redeem: unbound, read: unbound, revoke: unbound }, authority, 'production');
   const scope = { graphWorkspaceId: 'graph-a', personRef, environment: 'production' as const };
   return { token, operatorId: operator!.id, authority, binding, scope, issuerRef: hostedLeadBindingIssuerRef(token) };
 }
