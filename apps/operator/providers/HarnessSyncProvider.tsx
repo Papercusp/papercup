@@ -34,15 +34,20 @@
  * internal `useTransportFallback` drops SSE → POLLING after sustained SSE
  * failure. That is the degraded mode, not the default.
  */
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { parseAsString, useQueryState } from 'nuqs';
 import {
   SyncProvider,
   setSyncDeltaCodec,
   CONNECTION_CAPPED_MAX_IN_FLIGHT,
   syncMetrics,
+  getSyncQueryClient,
+  enablePersistedSyncCache,
   type SyncProviderProps,
+  type SyncRequestContext,
 } from '@papercusp/sync';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { getBrowserMachineId, getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 import { invoke } from '@tauri-apps/api/core';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
@@ -81,10 +86,6 @@ export function reportSyncTransportFallback(
     } }),
   }).catch(() => { /* best-effort local diagnostics must not break sync */ });
 }
-
-// One QueryClient for the app lifetime. Module-scope (not useMemo) so it
-// survives the provider unmount/remount that happens on some route swaps.
-const queryClient = new QueryClient();
 
 /** Resolve the endpoint props passed to the shared SyncProvider boundary. */
 export function resolveHarnessSyncTransport(): {
@@ -324,6 +325,19 @@ export function HarnessSyncProvider({
   // local install deterministically keeps the legacy endpoint; hosted mode
   // selects only its mounted tenant-aware boundary.
   const [browserTransport] = useState(resolveHarnessSyncTransport);
+  const [selectedMachine] = useQueryState('desktopHost', parseAsString);
+  const machine = selectedMachine ?? getBrowserMachineId() ?? 'local';
+  const workspace = getBrowserWorkspaceId();
+  const local = browserTransport.restEndpoint === DEFAULT_REST_ENDPOINT;
+  const requestContext = useMemo<SyncRequestContext>(() => ({
+    key: JSON.stringify([browserTransport.restEndpoint, userID, workspace, machine]),
+    headers: { 'x-papercusp-machine': machine, ...(local ? { 'x-papercusp-workspace': workspace } : {}) },
+    params: { desktopHost: machine, ...(local ? { ws: workspace } : {}) },
+  }), [browserTransport.restEndpoint, userID, workspace, machine, local]);
+  const queryClient = getSyncQueryClient(requestContext.key);
+  useEffect(() => enablePersistedSyncCache({
+    client: queryClient, key: `papercusp:sync-cache:v1:${encodeURIComponent(requestContext.key)}`, buster: 'v1',
+  }), [queryClient, requestContext.key]);
 
   // P-006: inject the rows-delta codec while the flag is on (the owner flips it after an attended
   // desktop verify). OFF ⇒ setSyncDeltaCodec(null) ⇒ the batch fetcher serves full re-fetches.
@@ -337,11 +351,12 @@ export function HarnessSyncProvider({
   }, [deltaOn]);
 
   return (
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider key={requestContext.key} client={queryClient}>
       <SyncProvider
         syncType="SSE"
         userId={userID}
         restEndpoint={browserTransport.restEndpoint}
+        requestContext={requestContext}
         endpointOverride={browserTransport.endpointOverride}
         ssePollIntervalMs={ssePollIntervalMs}
         maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}
