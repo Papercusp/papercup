@@ -978,6 +978,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
+  it.each(['shadow-path', 'inherited-override'] as const)(
+    'pins the dependency census interpreter under %s', mode => {
+      const root = join(tmp, 'dependency-census-interpreter-' + mode);
+      const shadow = join(root, 'shadow-bin'), marker = join(root, 'shadow-executed');
+      write(root, 'shadow-bin/node', '#!/bin/bash\ntouch "$SHADOW_NODE_MARKER"\nexit 39\n');
+      chmodSync(join(shadow, 'node'), 0o755);
+      write(root, 'papercusp-desktop/bin/lib/pinned-deps.sh', [
+        '#!/bin/bash', 'set -eu', 'test "$1" = trees',
+        '"${DEPENDENCY_GENERATION_NODE:-node}" -e \'console.log("node_modules")\'',
+      ].join('\n'));
+      write(root, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+      write(root, 'node_modules/example/index.mjs', 'export default 1;\n');
+      const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+        testedInputs: [{ path: 'input.mjs', sha256: 'b'.repeat(64) }], files: [], submodules: [] };
+      const env = { ...process.env, PATH: `${shadow}:/usr/bin:/bin`, SHADOW_NODE_MARKER: marker,
+        NODE_OPTIONS: '--import=/ambient/loader', NODE_PATH: '/ambient/dependencies',
+        ...(mode === 'inherited-override' ? { DEPENDENCY_GENERATION_NODE: join(shadow, 'node') } : {}) };
+      expect(captureVerifierDependencies({ dest: root, receipt, env }).trees.map(tree => tree.path))
+        .toEqual(['node_modules']);
+      expect(existsSync(marker)).toBe(false);
+      expect(env.NODE_OPTIONS).toBe('--import=/ambient/loader');
+    });
+
   it.each(['fresh', 'node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345'])(
     'loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal (%s)', async staging => {
     const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies-' + staging));
