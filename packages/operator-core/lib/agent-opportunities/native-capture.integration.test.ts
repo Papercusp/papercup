@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { recordActivity } from '@papercusp/activity-bridge';
 import { createPgTelemetryStore } from '../activity-pg-store';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
@@ -21,9 +21,16 @@ import { runMonitoredCensus } from './census';
 // the final pass is delayed after the fixture has completed its source scans.
 const metadataIO = vi.hoisted(() => ({ delayMs: 0, fastRoot: '', active: 0, peak: 0,
   barrier: null as (() => Promise<void>) | null, roots: [] as string[] }));
+const bodyIO = vi.hoisted(() => new Map<string, number>());
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, realpath: async (...args: Parameters<typeof actual.realpath>) => {
+  return { ...actual, open: async (...args: Parameters<typeof actual.open>) => {
+    // Canonical transcript parsing opens a file handle before reading its body.
+    // Count actual opens without changing the handle, bytes or metadata checks.
+    const path = String(args[0]);
+    bodyIO.set(path, (bodyIO.get(path) ?? 0) + 1);
+    return actual.open(...args);
+  }, realpath: async (...args: Parameters<typeof actual.realpath>) => {
     if (!metadataIO.delayMs) return actual.realpath(...args);
     const path = String(args[0]);
     metadataIO.roots.push(path); metadataIO.active++;
@@ -39,6 +46,7 @@ afterEach(() => {
   metadataIO.barrier = null;
   expect(metadataIO.active).toBe(0);
   Object.assign(metadataIO, { delayMs: 0, fastRoot: '', peak: 0, roots: [] });
+  bodyIO.clear();
 });
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>, root: string;
@@ -497,7 +505,8 @@ it.each(['rewrite', 'predecessor-loss'] as const)(
 
 it('R13-NATIVE reuses source scans across advancing windows and new runtimes without retaining transcript content', async () => {
   const first = await seed();
-  for (let i = 1; i < 33; i++) await seed();
+  const runtimes = [first];
+  for (let i = 1; i < 33; i++) runtimes.push(await seed());
   // This call is outside the first census window but must become eligible when
   // until advances, without reparsing an already completed source batch.
   const later = new Date(f.now + 50).toISOString();
@@ -510,19 +519,30 @@ it('R13-NATIVE reuses source scans across advancing windows and new runtimes wit
   const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
     FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
   const partial = await partialSourceScans();
+  const cachedPaths = runtimes.filter(runtime => partial.scans[createHash('sha256')
+    .update(JSON.stringify([runtime.advId, runtime.owner, runtime.provider])).digest('hex')])
+    .flatMap(runtime => runtime.paths);
+  expect(cachedPaths.length).toBeGreaterThan(0);
+  const cachedBodyOpens = cachedPaths.map(path => bodyIO.get(path) ?? 0);
+  expect(cachedBodyOpens.every(count => count > 0)).toBe(true);
   await seed();
   const rolling = { ...options(), since: new Date(f.now - 50).toISOString(), until: new Date(f.now + 100).toISOString() };
   // Bounded calls may stop before filling a batch. Retained scan evidence must
   // survive until the advancing window completes, independently of turn count.
   expect(await finishRuntimeBatches(rolling)).toBe('complete');
+  // Equal scan objects alone could hide a redundant parse of identical bytes.
+  // Already-scanned source bodies must never reopen, even across >32 runtimes.
+  expect(cachedPaths.map(path => bodyIO.get(path) ?? 0)).toEqual(cachedBodyOpens);
   expect(await receipt()).toMatchObject({ runtimes: 34, sources: 68, calls: 1 });
   for (const [key, scan] of Object.entries(partial.scans)) expect((await receipt()).scans[key]).toEqual(scan);
   // A completed receipt retains the same evidence for both wider and narrower
   // windows. Index rows outside the original window were validated at parse time.
+  const completedBodyOpens = [...bodyIO.entries()];
   expect(await indexNativeCaptureCandidates({ ...rolling, since: options().since })).toBe('complete');
   expect(await receipt()).toMatchObject({ calls: 69 });
   expect(await indexNativeCaptureCandidates({ ...rolling, since: new Date(f.now + 75).toISOString() })).toBe('complete');
   expect(await receipt()).toMatchObject({ calls: 0 });
+  expect([...bodyIO.entries()]).toEqual(completedBodyOpens);
   expect(JSON.stringify(await receipt())).not.toMatch(/private-source|private-future|session-|su-|jsonl|exec_command/);
   expect(await indexNativeCaptureCandidates({ ...rolling, authorize: async () => false })).toBe('unknown');
 }, 120_000);

@@ -106,8 +106,9 @@ export async function verifyNativeDispatchReceipt(value: unknown, client: Client
 
 /** @internal Historical per-call authority, never a root or continuity grant.
  * Read the entire exact-call population before filtering by owner/scope/tool.
- * The caller must independently read the issued runtime's canonical source and
- * call again with that source before exposing a body. Nothing is cached. */
+ * An unsigned event-time index can select the original receipt, but cannot
+ * replace it. The caller must independently read the issued runtime's canonical
+ * source and call again with that source before exposing a body. Nothing is cached. */
 export async function readAuthorizedNativeDispatch(input: {
   id: string; actor: string; provider: NativeProvider; sessionId: string; callId: string;
   source?: SearchSource;
@@ -130,19 +131,31 @@ export async function readAuthorizedNativeDispatch(input: {
           AND i.metadata_json->'requestOrigin'->'nativeSession'->>'callIdFingerprint'=${call}
         ORDER BY i.id LIMIT 2`],
     });
-    const before = await read(), a = before.activity[0], d = before.dispatch[0];
-    if (before.activity.length !== 1 || a?.population !== '1' || before.dispatch.length !== 1 || d?.population !== '1') return null;
+    const before = await read(), d = before.dispatch[0];
+    const candidate = before.activity.find(a => String(a.row.id) === input.id)?.row;
+    const signed = before.activity.filter(a => Object.hasOwn(a.row.detail ?? {}, 'nativeDispatch'));
+    // At most the selected unsigned index and ONE original protected receipt.
+    // Count before filtering: a conflicting receipt in another scope is fatal.
+    if (!candidate || signed.length !== 1 || before.activity.some(a => a.population !== String(before.activity.length))
+      || before.dispatch.length !== 1 || d?.population !== '1') return null;
+    const a = signed[0]!;
     const parsed = nativeDispatchReceipt.safeParse((a.row.detail as { nativeDispatch?: unknown } | null)?.nativeDispatch);
     if (!parsed.success || !await verifyNativeDispatchReceipt(parsed.data, sql)) return null;
     const receipt = parsed.data, row = a.row, invocation = d.row;
-    if (String(row.id) !== input.id || receipt.activityId !== input.id || receipt.workspaceId !== opts.workspaceId
+    if (receipt.activityId !== String(row.id) || receipt.workspaceId !== opts.workspaceId
       || receipt.harnessSlug !== opts.harnessSlug || receipt.ownerId !== input.actor
       || receipt.nativeSessionId !== input.sessionId || receipt.callId !== input.callId
       || row.workspace_id !== receipt.workspaceId || row.harness_slug !== receipt.harnessSlug
       || row.owner_id !== receipt.ownerId || row.agent !== receipt.provider || row.session_id !== receipt.nativeSessionId
       || row.tool_use_id !== receipt.callId || row.tool_name !== receipt.toolName || row.kind !== 'tool' || row.phase !== 'pre'
-      || Date.parse(String(row.created_at)) !== Date.parse(receipt.issuedAt)
+      || micros(String(row.created_at)) !== micros(receipt.issuedAt)
       || ['tools:invoke', 'code:run'].includes(receipt.toolName)) return null;
+    const eventCopy = String(candidate.id) !== receipt.activityId;
+    if (eventCopy && (canonicalJson(candidate.detail) !== '{}'
+      || candidate.workspace_id !== receipt.workspaceId || candidate.harness_slug !== receipt.harnessSlug
+      || candidate.owner_id !== receipt.ownerId || candidate.agent !== receipt.provider
+      || candidate.session_id !== receipt.nativeSessionId || candidate.tool_use_id !== receipt.callId
+      || candidate.tool_name !== receipt.toolName || candidate.kind !== 'tool' || candidate.phase !== 'pre')) return null;
     const origin = (invocation.metadata_json as { requestOrigin?: { transport?: string; nativeSession?: {
       carrier?: string; binding?: string; candidateAdvSessionId?: number;
     } } } | null)?.requestOrigin;
@@ -167,7 +180,8 @@ export async function readAuthorizedNativeDispatch(input: {
       || source.authorizationScope !== opts.sourceBoundary || source.actor !== receipt.ownerId || source.provider !== receipt.provider
       || source.identityAuthority !== 'provider' || !source.sourceComplete || source.namespace !== receipt.nativeSessionId
       || source.callId !== receipt.callId || resolveMcpName(source.tool)?.expose.mcp?.name !== receipt.toolName
-      || canonicalJson(source.args) !== canonicalJson(args))) return null;
+      || canonicalJson(source.args) !== canonicalJson(args)
+      || eventCopy && micros(String(candidate.created_at)) !== micros(source.at))) return null;
     if (!await opts.authorize() || canonicalJson(before) !== canonicalJson(await read())
       || canonicalJson(runtimes) !== canonicalJson(await runtime()) || !await verifyNativeDispatchReceipt(receipt, sql)
       || !await opts.authorize()) return null;

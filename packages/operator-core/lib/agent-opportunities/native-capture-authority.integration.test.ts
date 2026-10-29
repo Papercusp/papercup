@@ -188,6 +188,44 @@ async function authorizedFixture() {
   return canonicalFixture(s);
 }
 
+async function eventCopy(s: Awaited<ReturnType<typeof authorizedFixture>>, at = s.source.at) {
+  // An event index copies identity, never the signed detail or receipt ID.
+  const [row] = await f.db.adminSql`INSERT INTO harness_shared.agent_activity
+    (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,created_at)
+    SELECT workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,'{}'::jsonb,${at}::timestamptz
+    FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint RETURNING id::text`;
+  return { ...s.input, id: String(row!.id) };
+}
+
+it('pairs an unsigned event-time index only with the independent original receipt and canonical event', async () => {
+  const s = await authorizedFixture(), input = await eventCopy(s);
+  const [times] = await f.db.adminSql`SELECT
+    (SELECT created_at FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint)
+      IS DISTINCT FROM created_at AS distinct_times,detail
+    FROM harness_shared.agent_activity WHERE id=${input.id}::bigint`;
+  expect(times).toMatchObject({ distinct_times: true, detail: {} });
+  const read = productionOpportunityReaders(s.opts).readTranscript;
+  expect((await read(input))?.sources[0]?.at).toBe(s.source.at);
+  expect((await read(input))?.sources[0]?.result?.body).toEqual({ private: 'canonical-result' });
+  expect(await reconcileNativeCapture({ ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' })).toBe('unknown');
+});
+
+it.each(['event-time', 'receipt-time', 'scope', 'owner', 'tool', 'session', 'call', 'original-loss', 'revoked'] as const)(
+  'an unsigned event-time index cannot replace original authority after %s', async mismatch => {
+    const s = await authorizedFixture(), input = await eventCopy(s,
+      mismatch === 'event-time' ? '2026-10-25T12:00:00.000001Z' : s.source.at);
+    if (mismatch === 'receipt-time') await f.db.adminSql`UPDATE harness_shared.agent_activity
+      SET created_at=created_at + interval '1 microsecond' WHERE id=${s.input.id}::bigint`;
+    if (mismatch === 'scope') await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='other' WHERE id=${input.id}::bigint`;
+    if (mismatch === 'owner') await f.db.adminSql`UPDATE harness_shared.agent_activity SET owner_id='su-other' WHERE id=${input.id}::bigint`;
+    if (mismatch === 'tool') await f.db.adminSql`UPDATE harness_shared.agent_activity SET tool_name='tools:invoke' WHERE id=${input.id}::bigint`;
+    if (mismatch === 'session') await f.db.adminSql`UPDATE harness_shared.agent_activity SET session_id='other' WHERE id=${input.id}::bigint`;
+    if (mismatch === 'call') await f.db.adminSql`UPDATE harness_shared.agent_activity SET tool_use_id='other' WHERE id=${input.id}::bigint`;
+    if (mismatch === 'original-loss') await f.db.adminSql`DELETE FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+    const opts = { ...s.opts, authorize: async () => mismatch !== 'revoked' };
+    expect(await productionOpportunityReaders(opts).readTranscript(input)).toBeNull();
+  });
+
 it('consumes the row-bound receipt only for its independent canonical source and current read ACL', async () => {
   const s = await authorizedFixture();
   expect(await readAuthorizedNativeDispatch({ ...s.input, source: s.source }, s.opts)).toMatchObject({ binding: { id: s.binding.id } });
@@ -272,15 +310,16 @@ it('does not scope an unsigned sibling in the same canonical runtime', async () 
   expect(await productionOpportunityReaders(s.opts).readTranscript({ ...s.input, callId: 'unsigned-sibling' })).toBeNull();
 });
 
-it('discards a canonical source changed during final authority renewal', async () => {
+it.each(['receipt', 'event-index'] as const)('discards a canonical source changed during final authority renewal through %s', async via => {
   const s = await authorizedFixture(); let checks = 0;
+  const input = via === 'receipt' ? s.input : await eventCopy(s);
   const result = await productionOpportunityReaders({ ...s.opts, authorize: async () => {
     if (++checks === 5) {
       s.records[1]!.payload.arguments = '{"harness":"mining-test","query":"rewritten-after-read"}';
       await writeFile(s.path, s.records.map(r => JSON.stringify(r)).join('\n') + '\n');
     }
     return true;
-  } }).readTranscript(s.input);
+  } }).readTranscript(input);
   expect(checks).toBeGreaterThanOrEqual(5);
   expect(result).toBeNull();
 });
