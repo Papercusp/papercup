@@ -32,8 +32,8 @@ import { stripCommentsOnly } from '../../../../scripts/lib/strip-comments-and-st
 /** Sentinel the config comment must carry while coverage is collected nowhere. */
 export const DISCLAIMER_SENTINEL = 'NOTHING AUTOMATED PASSES';
 
-/** Marks the Vitest coverage provider block as present in the shared config. */
-const PROVIDER_BLOCK = /provider:\s*['"]v8['"]/;
+/** Vitest supports built-in providers and a module-backed custom provider. */
+const PROVIDER_BLOCK = /provider:\s*['"](?:v8|istanbul|custom)['"]/;
 
 /** Anything that would hand `--coverage` to a test runner. */
 const COVERAGE_FLAG = /--coverage\b/;

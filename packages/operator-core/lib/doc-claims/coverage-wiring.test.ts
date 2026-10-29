@@ -48,6 +48,17 @@ const UPLOAD_STEP = `
 
 describe('coverage-wiring doc claim', () => {
   describe('fixture controls (the detector must be able to FAIL)', () => {
+    it('recognizes supported custom and built-in coverage providers without accepting an unknown provider', () => {
+      for (const provider of ['v8', 'istanbul', 'custom', 'unknown']) {
+        const verdict = judgeCoverageWiring({
+          runnerSource: "const args = ['--coverage'];",
+          workflows: [],
+          configSource: `coverage: { provider: '${provider}', customProviderModule: './coverage-provider.ts' },`,
+        });
+        expect(verdict.providerBlockPresent, provider).toBe(provider !== 'unknown');
+      }
+    });
+
     it('preserves quoted globs before real coverage providers and producers', () => {
       const verdict = judgeCoverageWiring({
         runnerSource: "const glob = '**/*';\nconst args = ['--coverage'];",
