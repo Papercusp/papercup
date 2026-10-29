@@ -4549,7 +4549,7 @@ collect_operator_startup_diagnostic() {
   # PID reuse, an old attempt and a foreign host must never receive this signal.
   tr '\0' '\n' < "/proc/$node_pid/cmdline" 2>/dev/null |
     grep -Fxq -- "$OPERATOR_HOST_BUNDLE" || return 0
-  kill -USR2 "$node_pid" 2>/dev/null || return 0
+  kill -WINCH "$node_pid" 2>/dev/null || return 0
   OPERATOR_STARTUP_DIAGNOSTIC_COLLECTED=1
   log "requested credential-free Node startup report from owned pid=$node_pid; retained at $OPERATOR_STARTUP_DIAGNOSTIC_DIR"
 }
