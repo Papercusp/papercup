@@ -1366,7 +1366,7 @@ describe('wake provenance TTL guard (EI-18126834395314388)', () => {
 
   it('rechecks wake provenance at the actual PTY write boundary for a re-armed turn', () => {
     const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
-    const rearmStart = src.indexOf('performDelivery: async (message, { drillId, mode }) => {');
+    const rearmStart = src.indexOf('performDelivery: async (message, { drillId, mode, getDeliveryIds }) => {');
     const rearmEnd = src.indexOf('return recycleChild(message?.data', rearmStart);
     const rearmGuard = src.indexOf(
       "validateBeforeWrite: () => rejectWakeProvenance(message, 'rearm-pre-write')",
