@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, copyFile, open, link } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, copyFile, open, link, readdir } from 'node:fs/promises';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,16 +65,32 @@ vi.mock('../task-manager/managed-spawn', async (original) => {
         const inspect = async (pid: number, depth: number): Promise<void> => {
           try {
             const base = `/proc/${pid}`;
-            const [name, wait, children, status, input, cgroup] = await Promise.all([
+            const cgroup = await readFile(`${base}/cgroup`, 'utf8');
+            if (!cgroup.trim().endsWith(`/pc-${taskId}.scope`)) {
+              processes.push({ pid, scopeMismatch: true });
+              return;
+            }
+            const [name, wait, children, status, input, cmdline, cwd, syscall, descriptors] = await Promise.all([
               readFile(`${base}/comm`, 'utf8'), readFile(`${base}/wchan`, 'utf8'),
               readFile(`${base}/task/${pid}/children`, 'utf8'),
               readFile(`${base}/status`, 'utf8'),
               readlink(`${base}/fd/0`).catch(error => `unavailable:${error.code}`),
-              readFile(`${base}/cgroup`, 'utf8'),
+              readFile(`${base}/cmdline`, 'utf8'),
+              readlink(`${base}/cwd`).catch(error => `unavailable:${error.code}`),
+              readFile(`${base}/syscall`, 'utf8').catch(error => `unavailable:${error.code}`),
+              readdir(`${base}/fd`).catch(() => [] as string[]),
             ]);
+            const fdLinks = await Promise.all(descriptors.slice(0, 32).map(async fd => ({ fd,
+              path: await readlink(`${base}/fd/${fd}`).catch(error => `unavailable:${error.code}`),
+            })));
             // wchan can be zero for an elevated child we cannot ptrace. State
             // and signal masks distinguish a stopped child from that unknown.
+            // A directory-read wait alone cannot identify its cause. Keep the
+            // command and open descriptors from this exact enrolled scope so
+            // the syscall's fd can be matched to the directory being read.
             processes.push({ pid, name: name.trim(), wait: wait.trim(), input,
+              argv: cmdline.split('\0').filter(Boolean).map(arg => arg.slice(0, 2048)),
+              cwd, syscall: syscall.trim(), fdLinks,
               cgroup: cgroup.trim(), status: status.split('\n').filter(line =>
                 /^(State|PPid|TracerPid|Uid|SigPnd|ShdPnd|SigBlk|SigIgn|SigCgt):/.test(line)) });
             if (depth < 3) for (const next of children.trim().split(/\s+/).filter(Boolean).slice(0, 4)) await inspect(Number(next), depth + 1);
