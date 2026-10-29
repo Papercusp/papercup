@@ -117,6 +117,24 @@ import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 import { verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 describe('router native custody population (P002)', () => {
+  it('does not load the scheduler mutation subject when router custody was not requested', () => {
+    const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { registerHooks } from 'node:module';
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith('/scripts/lib/budgeted-task-scheduler.mjs'))
+          throw new Error('router loaded the scheduler mutation subject');
+        return nextLoad(url, context);
+      } });
+      const { createRouterProofCustody } = await import(${JSON.stringify(router)});
+      if (createRouterProofCustody([], {}, process.cwd()) !== null)
+        throw new Error('unrequested custody was activated');
+      console.log('unrequested-custody-remains-unloaded');
+    `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('unrequested-custody-remains-unloaded');
+  });
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'router-native-custody-')); });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });

@@ -80,6 +80,24 @@ async function finishRuntimeBatches(opts = options()) {
   for (let attempt = 0; attempt < 40 && status === 'unknown'; attempt++) status = await indexNativeCaptureCandidates(opts);
   return status;
 }
+/** A turn can legally persist no scan when its bounded work cannot proceed.
+ * Rendezvous on durable progress before mutating an earlier scanned source. */
+async function partialSourceScans(opts = options()) {
+  const read = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]?.receipt;
+  let receipt = await read();
+  const phases: { keys: string[]; scans: number }[] = [];
+  for (let attempt = 0; attempt < 40 && !Object.keys(receipt?.scans ?? {}).length; attempt++) {
+    expect(await indexNativeCaptureCandidates(opts)).toBe('unknown');
+    receipt = await read();
+    phases.push({ keys: Object.keys(receipt ?? {}), scans: Object.keys(receipt?.scans ?? {}).length });
+  }
+  expect(Object.keys(receipt?.scans ?? {}).length,
+    `No durable source scan within 40 bounded turns: ${JSON.stringify(phases)}`).toBeGreaterThan(0);
+  expect(receipt).toMatchObject({ reconciling: true });
+  expect(Object.keys(receipt.scans).length).toBeLessThanOrEqual(32);
+  return receipt;
+}
 async function seed(provider: NativeProvider = 'codex', includeBrowser = false) {
   const owner = `su-${randomUUID()}`, current = randomUUID(), predecessor = randomUUID();
   const [adv] = await f.db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.adv_sessions
@@ -393,17 +411,7 @@ it('R13-NATIVE resumes bounded postbaseline scans across all providers and keeps
   await installed();
   const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
     FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
-  // A bounded turn may exhaust its budget before earning a source scan. Wait
-  // for durable progress, keeping the same finite bound as finishRuntimeBatches;
-  // every pre-progress turn must still refuse complete coverage.
-  let partial = await receipt();
-  for (let attempt = 0; attempt < 40 && !Object.keys(partial.scans ?? {}).length; attempt++) {
-    expect(await indexNativeCaptureCandidates(options())).toBe('unknown');
-    partial = await receipt();
-  }
-  expect(partial).toMatchObject({ reconciling: true });
-  expect(Object.keys(partial.scans).length).toBeGreaterThan(0);
-  expect(Object.keys(partial.scans).length).toBeLessThanOrEqual(32);
+  const partial = await partialSourceScans();
   expect(JSON.stringify(partial)).not.toMatch(/private-source|session-|su-|jsonl|exec_command|#save/);
   expect(await indexNativeCaptureCandidates({ ...options(), authorize: async () => false })).toBe('unknown');
   expect(await receipt()).toEqual(partial);
@@ -412,6 +420,16 @@ it('R13-NATIVE resumes bounded postbaseline scans across all providers and keeps
   const rows = await f.db.adminSql`SELECT agent,count(*)::int AS calls FROM harness_shared.agent_activity GROUP BY agent`;
   expect(rows).toHaveLength(3);
   expect(rows.every(row => row.calls === 44)).toBe(true);
+}, 120_000);
+
+it('R13-NATIVE scan rendezvous tolerates no-progress turns without fabricating partial coverage', async () => {
+  for (let i = 0; i < 33; i++) await seed();
+  await installed();
+  let denials = 2;
+  const partial = await partialSourceScans({ ...options(), authorize: async () => --denials < 0 });
+  expect(denials).toBeLessThan(0);
+  expect(partial).toMatchObject({ reconciling: true });
+  expect(Object.keys(partial.scans).length).toBeGreaterThan(0);
 }, 120_000);
 
 it('R13-NATIVE revalidates every cached root in bounded concurrent metadata waves under real filesystem delay', async () => {
@@ -460,11 +478,9 @@ it.each(['rewrite', 'predecessor-loss'] as const)(
     for (let i = 1; i < 33; i++) await seed();
     expect(await indexNativeCaptureCandidates(options())).toBe('unknown');
     await installed();
-    expect(await indexNativeCaptureCandidates(options())).toBe('unknown');
     const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
       FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
-    expect(Object.keys((await receipt()).scans).length).toBeGreaterThan(0);
-    expect(Object.keys((await receipt()).scans).length).toBeLessThanOrEqual(32);
+    await partialSourceScans();
     if (change === 'predecessor-loss') await rm(first.paths[0]!);
     if (change === 'rewrite') await writeFile(first.paths[0]!,
       (await readFile(first.paths[0]!, 'utf8')).replace('private-source', 'changed-source'));
@@ -491,16 +507,14 @@ it('R13-NATIVE reuses source scans across advancing windows and new runtimes wit
   }) + '\n');
   expect(await indexNativeCaptureCandidates(options())).toBe('unknown');
   await installed();
-  expect(await indexNativeCaptureCandidates(options())).toBe('unknown');
   const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
     FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
-  const partial = await receipt();
-  expect(Object.keys(partial.scans).length).toBeGreaterThan(0);
-  expect(Object.keys(partial.scans).length).toBeLessThanOrEqual(32);
+  const partial = await partialSourceScans();
   await seed();
   const rolling = { ...options(), since: new Date(f.now - 50).toISOString(), until: new Date(f.now + 100).toISOString() };
-  // A reset would need to parse 34 runtimes and could not complete in one batch.
-  expect(await indexNativeCaptureCandidates(rolling)).toBe('complete');
+  // Bounded calls may stop before filling a batch. Retained scan evidence must
+  // survive until the advancing window completes, independently of turn count.
+  expect(await finishRuntimeBatches(rolling)).toBe('complete');
   expect(await receipt()).toMatchObject({ runtimes: 34, sources: 68, calls: 1 });
   for (const [key, scan] of Object.entries(partial.scans)) expect((await receipt()).scans[key]).toEqual(scan);
   // A completed receipt retains the same evidence for both wider and narrower

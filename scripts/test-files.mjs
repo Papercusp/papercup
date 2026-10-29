@@ -21,7 +21,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism, tmpdir, homedir } from 'node:os';
-import { retainNativeProofPacket } from './lib/budgeted-task-scheduler.mjs';
+import { createRequire } from 'node:module';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV } from './lib/with-test-pg-cleanup.mjs';
 import { isVitestAssertionFailure } from '@papercusp/test-config/vitest-failure-classification';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
@@ -636,6 +636,12 @@ export function perGroupVitestEnv(env, groupIndex, groupCount) {
  * start. Keep the unsealed declaration readable if the router is hard-killed. */
 export function createRouterProofCustody(groups, env, repoRoot) {
   if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim() && !env.PAPERCUSP_TEST_ARTIFACT_DIR) return null;
+  // Keep ordinary router supervision independent of the native custody subject.
+  // In mutation probes its test child must exercise the intended overlay; an
+  // eager parent import would instead load committed scheduler bytes even when
+  // this run never requested custody. Active custody still uses the same helper
+  // and remains subject to the committed-source loader's normal checks.
+  const { retainNativeProofPacket } = createRequire(import.meta.url)('./lib/budgeted-task-scheduler.mjs');
   const base = env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'testing-run');
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(base, 'native-router-'));

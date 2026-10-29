@@ -373,7 +373,10 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     assert(item && item.sourcePlanSlug === planSlug, JSON.stringify(itemRead));
     // Match the complete production claim reader, including engineering evidence
     // and compaction. Omitting reuse identity keeps only the mandatory baseline.
-    const baselineRead = await getClaimTimeTaskBrief({ workItem: item, workspaceId: workspace, harness });
+    // The claim's recipient is `owner`: gateTaskBriefRecover keeps each recover ref
+    // (decisions/incident/engineering/top-level) only when that recipient's listed
+    // toolset can call it, so the baseline must be read for the same recipient.
+    const baselineRead = await getClaimTimeTaskBrief({ workItem: item, workspaceId: workspace, harness, owner });
     assert(baselineRead, 'Controlled anchored claim must produce its mandatory baseline');
     const base = baselineRead.taskBrief;
     assert.equal(base.status, 'current', JSON.stringify(base));

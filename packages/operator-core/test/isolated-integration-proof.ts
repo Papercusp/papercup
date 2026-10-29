@@ -192,6 +192,8 @@ export function assertIsolatedWorkerReaped(child: Pick<ChildProcess, 'exitCode' 
 type WorkerPhase = 'bootstrap' | 'execute' | 'finalize' | 'teardown';
 type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; finalizeMs?: number;
   finalizeMaxMs?: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number };
+type WorkerPhaseMaximumOverrides = Partial<Pick<WorkerDeadlines,
+  'bootstrapMaxMs' | 'finalizeMaxMs' | 'teardownMaxMs'>>;
 
 /** Compose the actual nested router contract; startup consumes none of its
  * collection/execution allowance. Teardown allows the router's cgroup stop,
@@ -199,27 +201,35 @@ type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs
  * Actual PG write progress can extend cleanup within the single-file default ceiling;
  * repeated stages, logs and unchanged IO cannot renew it. No budget is proof of cleanup.
  */
-export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv = process.env, executeMaxMs = executeMs) {
+export function isolatedWorkerOptions(
+  executeMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+  executeMaxMs = executeMs,
+  phaseMaxOverrides: WorkerPhaseMaximumOverrides = {},
+) {
   const listMs = testFileListTimeoutMs(env);
   const teardownMs = TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
   // The caller may widen its encompassing file watchdog to fit these phases.
   // Reusing that override here would grow the inner budget twice on every
   // increase, so no parent budget could ever contain it.
   const phaseMaxMs = defaultTestFileRunTimeoutMs(1);
+  const bootstrapMaxMs = phaseMaxOverrides.bootstrapMaxMs ?? Math.max(listMs, phaseMaxMs);
+  const finalizeMaxMs = phaseMaxOverrides.finalizeMaxMs ?? Math.max(teardownMs, phaseMaxMs);
+  const teardownMaxMs = phaseMaxOverrides.teardownMaxMs ?? Math.max(teardownMs, phaseMaxMs);
   const phaseTimeouts: WorkerDeadlines = {
     // Collection time is a progress checkpoint, not a maximum PG boot time.
     // Use the shared single-file default allowance as the absolute
     // preparation ceiling; only distinct observed boot stages can extend it.
     bootstrapMs: listMs,
-    bootstrapMaxMs: Math.max(listMs, phaseMaxMs),
+    bootstrapMaxMs,
     executeMs,
     executeMaxMs,
     // Router source/receipt verification precedes runtime shutdown. Its own
     // bounded progress clock must not consume either assertions or PG cleanup.
     finalizeMs: teardownMs,
-    finalizeMaxMs: Math.max(teardownMs, phaseMaxMs),
+    finalizeMaxMs,
     teardownMs,
-    teardownMaxMs: Math.max(teardownMs, phaseMaxMs),
+    teardownMaxMs,
   };
   return { phaseTimeouts, killGraceMs: teardownMs, drainGraceMs: 5_000,
     testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + phaseTimeouts.finalizeMaxMs! +

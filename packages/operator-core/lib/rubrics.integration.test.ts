@@ -4808,6 +4808,59 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(stored.criteria[0]).not.toHaveProperty('verification');
   });
 
+  it('rejects a method substitution after an outside-lineage BAR amendment preview was approved', async () => {
+    const seeded = await seedBarContract('approval-method-substitution-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const key = before.criteria[0]!.key;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Change the outcome while preserving the reviewed verification method.',
+      requirement: {
+        key,
+        acceptance: { condition: 'The first outcome holds after the approved change.' },
+        verification: { method: 'Reviewer-approved method.' },
+      },
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ approvalRequired: true });
+
+    const approvalRef = await postApproval(amendment);
+    const substituted = {
+      ...amendment,
+      requirement: {
+        ...amendment.requirement,
+        verification: { method: 'Different method than the outside reviewer previewed.' },
+      },
+      approvalRef,
+    };
+    await expect(rubrics.amendRubric(substituted)).rejects.toThrow('acceptance_bar_approval_patch_mismatched');
+    const exactPreview = await rubrics.amendRubric({ ...amendment, approvalRef });
+    expect(exactPreview!.criteria[0]!).toMatchObject({
+      model: amendment.requirement.acceptance.condition,
+      method: amendment.requirement.verification.method,
+    });
+  });
+
+  it('keeps an isolated method-only amendment approval-free', async () => {
+    const seeded = await seedBarContract('method-only-no-approval-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      reason: 'Clarify the verification procedure without changing the outcome.',
+      requirement: {
+        key: before.criteria[0]!.key,
+        verification: { method: 'Run the focused fixture and compare every output record.' },
+      },
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ approvalRequired: false, changedBars: [] });
+    const after = await rubrics.amendRubric(amendment);
+    expect(after!.criteria[0]!.method).toBe(amendment.requirement.verification.method);
+    expect(after!.barSetHash).toBe(before.barSetHash);
+  });
+
   it('amends unified proof depth with approval, preserves BAR identity for methods, and retains projection history', async () => {
     const seeded = await seedBarContract('unified-amendment-subject', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;

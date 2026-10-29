@@ -1,15 +1,21 @@
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { provisionNativeRuntimeBearer, verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { registerProjectedTool, _resetProjectionRegistryForTests, type ProjectedTool } from '@papercusp/tooldef/tool-projection';
 import { runDispatchStack, type UnifiedToolContext } from '@papercusp/tooldef';
 import { NativeInstalledPerUseTurns } from '../agent-tools/per-use-chokepoint';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
-import { appendAuthorizedNativeDispatch, verifyNativeDispatchReceipt, inspectNativeDispatchCandidate,
+import { appendAuthorizedNativeDispatch, verifyNativeDispatchReceipt, inspectNativeDispatchCandidate, readAuthorizedNativeDispatch,
   reconcileNativeCapture, type NativeDispatchAppend } from './native-capture';
 import type { SearchSource } from './search-reformulation';
+import { productionOpportunityReaders } from './source-readers';
+import { canonicalJson } from '../external-bench/reproducibility/canonical-json';
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>;
+let root: string, oldCodexRoot: string | undefined;
 // Exercise the real issuer SQL under the same workspace RLS as production.
 vi.mock('@papercusp/db-org', async original => ({
   ...await original<typeof import('@papercusp/db-org')>(),
@@ -25,8 +31,17 @@ const unknown = { authority: 'unknown', correlation: 'unknown' };
 const tool: ProjectedTool = { pluginName: 'native-authority-fixture', description: 'Exact call fixture',
   inputSchema: { type: 'object' }, capabilities: [], expose: { mcp: { name: 'native-proof:inspect' } },
   fn: async () => ({ content: [] }) };
-beforeAll(async () => { f = await sqlMiningFixture(); registerProjectedTool(tool); }, 120_000);
-afterAll(async () => { _resetProjectionRegistryForTests(); await f?.cleanup(); });
+beforeAll(async () => {
+  f = await sqlMiningFixture(); registerProjectedTool(tool);
+  root = await mkdtemp(join(tmpdir(), 'native-authority-'));
+  oldCodexRoot = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR; process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+}, 120_000);
+afterAll(async () => {
+  _resetProjectionRegistryForTests(); await f?.cleanup();
+  if (oldCodexRoot === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+  else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = oldCodexRoot;
+  if (root) await rm(root, { recursive: true, force: true });
+});
 beforeEach(async () => { await f.clear(); await f.db.adminSql`DELETE FROM harness_shared.adv_sessions`; });
 
 async function signingFixture() {
@@ -53,7 +68,7 @@ it('protected append signs only the exact attempt and does not retain arguments 
   expect(rows).toHaveLength(1);
   expect(await verifyNativeDispatchReceipt(receipt, f.db.adminSql)).toBe(true);
   expect(JSON.stringify(rows)).not.toContain('private-query');
-  for (const field of ['workspaceId', 'harnessSlug', 'ownerId', 'nativeSessionId', 'callId', 'toolName', 'argsFingerprint']) {
+  for (const field of ['activityId', 'workspaceId', 'harnessSlug', 'ownerId', 'nativeSessionId', 'callId', 'toolName', 'argsFingerprint']) {
     expect(await verifyNativeDispatchReceipt({ ...receipt, [field]: 'substituted' }, f.db.adminSql)).toBe(false);
   }
   expect(await verifyNativeDispatchReceipt({ ...receipt, principal: { ...s.input.principal, slug: 'other' } }, f.db.adminSql)).toBe(false);
@@ -113,17 +128,20 @@ it('real issuer possession and host observation reach the existing dispatcher AC
     expect(await verifyNativeDispatchReceipt(rows[0]!.detail.nativeDispatch, f.db.adminSql)).toBe(true);
     expect(rows[0]!.detail.nativeDispatch).toMatchObject({ advSessionId: Number(s.binding.id),
       ownerId: owner, harnessSlug: harness, nativeSessionId: s.source.namespace, callId: s.source.callId });
+    const native = await canonicalFixture(s);
+    expect((await productionOpportunityReaders(native.opts).readTranscript(native.input))?.sources[0]?.args).toEqual(s.source.args);
     // This proves one attempt only; continuity still requires all source calls.
     expect(await reconcileNativeCapture({ ...s.opts, harnessSlug: harness, sourceBoundary: 'tool-ledger',
       since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' })).toBe('unknown');
   } finally { await hooks.withdraw(); }
 });
 async function fixture() {
+  const sessionId = randomUUID();
   const [r] = await f.db.adminSql`INSERT INTO harness_shared.adv_sessions
-    (workspace_id,mode,coord_owner_id,agent,session_id) VALUES (${workspaceId},'console',${owner},'codex','native-session') RETURNING id::text`;
+    (workspace_id,mode,coord_owner_id,agent,session_id) VALUES (${workspaceId},'console',${owner},'codex',${sessionId}) RETURNING id::text`;
   const binding = { id: String(r!.id), owner, provider: 'codex' as const, harness: null };
   const source: SearchSource = { workspaceId, harnessSlug: harness, authorizationScope: 'tool-ledger',
-    actor: owner, provider: 'codex', namespace: 'native-session', callId: 'native-call',
+    actor: owner, provider: 'codex', namespace: sessionId, callId: 'native-call',
     identityAuthority: 'provider', verifiedAgent: true, origin: 'agent', at: '2026-10-25T12:00:00Z',
     copyRef: 'transcript:codex:native-session:1', tool: 'mcp__papercusp_su__native_proof_inspect',
     args: { harness, query: 'private-query' }, result: null, sourceComplete: true };
@@ -143,6 +161,129 @@ async function fixture() {
   const inspect = (s = source) => inspectNativeDispatchCandidate(s, binding, opts);
   return { binding, source, metadata, id, insert, opts, inspect };
 }
+
+async function canonicalFixture(s: Awaited<ReturnType<typeof fixture>>) {
+  const [row] = await f.db.adminSql<{ id: string }[]>`SELECT id::text FROM harness_shared.agent_activity
+    WHERE detail->'nativeDispatch'->>'nativeSessionId'=${s.source.namespace!}`;
+  const input = { id: row!.id, actor: owner, provider: 'codex' as const, sessionId: s.source.namespace!, callId: s.source.callId! };
+  const opts = { ...s.opts, harnessSlug: harness, sourceBoundary: 'tool-ledger' };
+  const dir = join(root, `session-${s.binding.id}`, 'sessions'); await mkdir(dir, { recursive: true });
+  const path = join(dir, `rollout-time-${input.sessionId}.jsonl`);
+  const records = [
+    { type: 'session_meta', payload: { id: input.sessionId } },
+    { type: 'response_item', timestamp: s.source.at, payload: { type: 'function_call',
+      name: s.source.tool, call_id: input.callId, arguments: JSON.stringify(s.source.args) } },
+    { type: 'response_item', timestamp: s.source.at, payload: { type: 'function_call_output',
+      call_id: input.callId, output: '{"private":"canonical-result"}' } },
+  ];
+  await writeFile(path, records.map(r => JSON.stringify(r)).join('\n') + '\n');
+  return { ...s, input, opts, path, records };
+}
+
+async function authorizedFixture() {
+  const s = await fixture(), signing = await signingFixture();
+  expect(await appendAuthorizedNativeDispatch({ ...signing.input, advSessionId: Number(s.binding.id),
+    nativeSessionId: s.source.namespace!, callId: s.source.callId!, argsFingerprint: sha(canonicalJson(s.source.args)) },
+  async () => true, f.db.adminSql)).toBe(true);
+  return canonicalFixture(s);
+}
+
+it('consumes the row-bound receipt only for its independent canonical source and current read ACL', async () => {
+  const s = await authorizedFixture();
+  expect(await readAuthorizedNativeDispatch({ ...s.input, source: s.source }, s.opts)).toMatchObject({ binding: { id: s.binding.id } });
+  const locateTranscript = vi.fn(async () => '/untrusted/override');
+  const result = await productionOpportunityReaders(s.opts, { locateTranscript }).readTranscript(s.input);
+  expect(result?.sources).toHaveLength(1);
+  expect(result?.sources[0]?.result?.body).toEqual({ private: 'canonical-result' });
+  expect(locateTranscript).not.toHaveBeenCalled();
+  expect(await productionOpportunityReaders({ ...s.opts, authorize: async () => false }).readTranscript(s.input)).toBeNull();
+  // Even an independently valid exact attempt never supplies a root certificate.
+  expect(await reconcileNativeCapture({ ...s.opts, since: '2026-10-25T00:00:00Z', until: '2026-10-26T00:00:00Z' })).toBe('unknown');
+});
+
+it.each(['arguments', 'tool', 'provider', 'owner', 'scope', 'call', 'session', 'incomplete'])(
+  'rejects a canonical-source %s mismatch despite a valid signature', async mismatch => {
+    const s = await authorizedFixture();
+    const source = { ...s.source };
+    if (mismatch === 'arguments') source.args = { harness, query: 'different' };
+    if (mismatch === 'tool') source.tool = 'mcp__papercusp_su__tools_invoke';
+    if (mismatch === 'provider') source.provider = 'claude';
+    if (mismatch === 'owner') source.actor = 'su-other';
+    if (mismatch === 'scope') source.harnessSlug = 'other';
+    if (mismatch === 'call') source.callId = 'other';
+    if (mismatch === 'session') source.namespace = randomUUID();
+    if (mismatch === 'incomplete') source.sourceComplete = false;
+    expect(await readAuthorizedNativeDispatch({ ...s.input, source }, s.opts)).toBeNull();
+  });
+
+it.each(['arguments', 'identity', 'truncated', 'missing'])(
+  'production body reader refuses %s canonical files instead of trusting the receipt', async mismatch => {
+    const s = await authorizedFixture();
+    if (mismatch === 'missing') await rm(s.path);
+    else if (mismatch === 'truncated') await writeFile(s.path, (await readFile(s.path)).subarray(0, -1));
+    else {
+      if (mismatch === 'arguments') s.records[1]!.payload.arguments = '{"harness":"mining-test","query":"other"}';
+      else s.records[0]!.payload.id = randomUUID();
+      await writeFile(s.path, s.records.map(r => JSON.stringify(r)).join('\n') + '\n');
+    }
+    expect(await productionOpportunityReaders(s.opts).readTranscript(s.input)).toBeNull();
+  });
+
+it.each(['duplicate-dispatch', 'duplicate-receipt', 'replacement-copy', 'row-scope', 'runtime-owner', 'key-rotation'])(
+  'rejects %s across the whole call population', async mismatch => {
+    const s = await authorizedFixture();
+    let input = s.input;
+    if (mismatch === 'duplicate-dispatch') await s.insert('other-harness', 'other:tool');
+    if (mismatch === 'duplicate-receipt' || mismatch === 'replacement-copy') {
+      const [copy] = await f.db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.agent_activity
+        (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,created_at)
+        SELECT workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,created_at
+        FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint RETURNING id::text`;
+      if (mismatch === 'replacement-copy') {
+        await f.db.adminSql`DELETE FROM harness_shared.agent_activity WHERE id=${s.input.id}::bigint`;
+        input = { ...input, id: copy!.id };
+      }
+    }
+    if (mismatch === 'row-scope') await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='other'
+      WHERE id=${s.input.id}::bigint`;
+    if (mismatch === 'runtime-owner') await f.db.adminSql`UPDATE harness_shared.adv_sessions SET coord_owner_id='su-other'
+      WHERE id=${s.binding.id}::bigint`;
+    if (mismatch === 'key-rotation') await f.db.adminSql`UPDATE harness_shared.operator_secrets
+      SET value_b64=${Buffer.alloc(32, 74).toString('base64')} WHERE name='spawn-signing-key'`;
+    expect(await productionOpportunityReaders(s.opts).readTranscript(input)).toBeNull();
+  });
+
+it('rechecks current ACL and full population after filesystem and authorization awaits', async () => {
+  const s = await authorizedFixture(); let checks = 0;
+  expect(await productionOpportunityReaders({ ...s.opts, authorize: async () => ++checks < 4 }).readTranscript(s.input)).toBeNull();
+  expect(checks).toBe(4); // Three preflight checks, then the first check after canonical IO.
+  checks = 0;
+  expect(await readAuthorizedNativeDispatch(s.input, { ...s.opts, authorize: async () => {
+    if (++checks === 2) await s.insert('other');
+    return true;
+  } })).toBeNull();
+});
+
+it('does not scope an unsigned sibling in the same canonical runtime', async () => {
+  const s = await authorizedFixture();
+  const sibling = { ...s.records[1]!, payload: { ...s.records[1]!.payload, call_id: 'unsigned-sibling' } };
+  await writeFile(s.path, [...s.records, sibling].map(r => JSON.stringify(r)).join('\n') + '\n');
+  expect((await productionOpportunityReaders(s.opts).readTranscript(s.input))?.sources).toHaveLength(1);
+  expect(await productionOpportunityReaders(s.opts).readTranscript({ ...s.input, callId: 'unsigned-sibling' })).toBeNull();
+});
+
+it('discards a canonical source changed during final authority renewal', async () => {
+  const s = await authorizedFixture(); let checks = 0;
+  const result = await productionOpportunityReaders({ ...s.opts, authorize: async () => {
+    if (++checks === 5) {
+      s.records[1]!.payload.arguments = '{"harness":"mining-test","query":"rewritten-after-read"}';
+      await writeFile(s.path, s.records.map(r => JSON.stringify(r)).join('\n') + '\n');
+    }
+    return true;
+  } }).readTranscript(s.input);
+  expect(checks).toBeGreaterThanOrEqual(5);
+  expect(result).toBeNull();
+});
 
 it('D030 issuer SQL binds capabilityless possession to the real runtime and immediately invalidates rotation/end', async () => {
   const s = await fixture();

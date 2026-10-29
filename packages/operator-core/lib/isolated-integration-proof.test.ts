@@ -34,6 +34,21 @@ it('keeps isolated worker phase ceilings independent of a widened outer file bud
     executeMs: 480_000, executeMaxMs: 480_000, teardownMaxMs: 600_000 });
 });
 
+it('composes explicit per-phase maxima into an exact bounded enclosing file budget', () => {
+  const options = isolatedWorkerOptions(120_000, {}, 120_000, {
+    bootstrapMaxMs: 325_000,
+    finalizeMaxMs: 45_000,
+    teardownMaxMs: 45_000,
+  });
+  expect(options.phaseTimeouts).toMatchObject({
+    bootstrapMaxMs: 325_000,
+    executeMaxMs: 120_000,
+    finalizeMaxMs: 45_000,
+    teardownMaxMs: 45_000,
+  });
+  expect(options.testTimeoutMs).toBe(600_000);
+});
+
 it('rejects a short enclosing proof budget before reading source or allocating a worker', async () => {
   vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', '');
   const execute = vi.fn();
