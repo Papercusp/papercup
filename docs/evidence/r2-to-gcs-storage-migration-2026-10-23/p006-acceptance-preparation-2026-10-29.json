@@ -25,7 +25,7 @@
       "auditReadback": "Default/current replacement is current; includeRetracted readback retains both withdrawn rows with actor and reason. No spec change or historical runtime witness was introduced."
     },
     "remainingP005": [
-      "R5 independent oracle/review evidence remains incomplete",
+      "Independent retention-boundary review received; it does not accept R5 or RETAIN",
       "RETAIN operational and falsifiability proof remains incomplete; manual source-exception ownership alone is insufficient",
       "Original source keys/counts, retention and cutover deltas remain unmeasured within the explicit inaccessible-data boundary",
       "Peer P003 publication and old-client recovery evidence remains required"
@@ -35,10 +35,58 @@
     "readerCompatibilityFollowUp": {
       "workItem": "EI-27285944879352300",
       "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
-      "scope": "Exact stored test receipt22606981 is accepted by the current source parser but rejected as invalid-or-unsupported by the older staging reader. Pipeline containment confirms the staging reader lacks current execution-details.ts. Preserve the real passing report and original metadata; no live gate operation or blanket restart was performed."
+      "scope": "Exact stored test receipt22606981 is accepted by the current source parser but rejected as invalid-or-unsupported by the older staging reader. Pipeline containment confirms the staging reader lacks current execution-details.ts. Preserve the real passing report and original metadata; no live gate operation or blanket restart was performed.",
+      "recurrenceGuard": {
+        "file": "packages/operator-core/lib/agent-tools/testing/runs.test.ts",
+        "scenario": "Object and serialized reporter metadata with timing identity and both runtime capture statuses not-configured retain passing counts and root without inventing runtime witnesses.",
+        "command": "npm run test:file -- packages/operator-core/lib/agent-tools/testing/runs.test.ts",
+        "result": { "passed": 68, "failed": 0, "skipped": 0 },
+        "testRunId": 22609629,
+        "sourceScope": "Local b5ad445cd4 plus20 test lines; the old staging reader withholds this new row's execution details too. The original138-test report was not rerun."
+      },
+      "activationDependency": {
+        "workItem": "EI-27289220288494614",
+        "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+        "observation": "Maintained staging-sync candidate b5ad445cd4 failed its SPA build at2026-10-29T05:08:17Z: HarnessSyncProvider imports getSyncQueryClient, absent from committed sync gitlink7f1edfa0. Canonical submodulec561b55 already exports it.",
+        "remedy": "Record the existing compatible submodule through maintained git-sync, then prepare a fresh staging generation and verify exact served-reader acceptance of the same retained receipt. Restarting the old pinned generation does not advance its source.",
+        "currentReaderVerified": false
+      }
     },
     "migrationAccepted": false,
     "p544QualifiedOrShipped": false
+  },
+  "independentRetentionBoundaryReview": {
+    "conversation": "conv-request-0559630beec7594d880248d27680551e8bce2ae0d3b5de145643e86ee694fe23",
+    "reviewer": "su-a80225d0-8e12-4888-b4ee-516b840a66aa",
+    "answerPost": 1210139,
+    "closePost": 1210140,
+    "state": "closed_answered",
+    "verdict": "The precisely enumerated owned inaccessible-data exception and four-file destination/local custody do not prove continuous original R2 retention. RETAIN@1 and the retention conjunct of R5 remain unproven.",
+    "exceptionControlProposal": "A deterministic validator should reject an omitted population, missing owner, unknown count changed to zero, a copy claim without byte/metadata proof, or a premature acceptance claim. Such controls prove exception integrity only.",
+    "requiredSourceEvidence": "Authoritative evidence for the exact source buckets and cutover interval: restored source read entitlement and source snapshots, or immutable provider audit/retention/versioning records. No-delete instructions, unobserved delete calls and successful GCS copies cannot establish inaccessible source retention.",
+    "accountActionReference": "WI-6554700010022667",
+    "sourceExceptionWorkItem": "WI-6554700010025592",
+    "retentionVerified": false,
+    "migrationAccepted": false
+  },
+  "providerRetentionEvidenceAccess": {
+    "observedAt": "2026-10-29T05:20:38.885548Z",
+    "accountId": "f896982ea2f6d507e4f29eeecbd26e94",
+    "credentialSource": "Existing Wrangler OAuth configuration; values were not recorded or changed",
+    "positiveControls": [
+      { "route": "GET /accounts", "http": 200, "success": true, "paginationComplete": true, "returnedAccounts": 1 },
+      { "route": "GET /accounts/<account>/workers/scripts/papercusp-cupboard/deployments", "http": 200, "success": true }
+    ],
+    "auditWindow": { "since": "2026-10-23T00:00:00Z", "before": "2026-10-29T05:20:38.885548Z" },
+    "auditReads": [
+      { "route": "GET /accounts/<account>/audit_logs", "http": 403, "success": false, "errorCode": 10000, "errorMessage": "Authentication error", "populationMeasured": false },
+      { "route": "GET /accounts/<account>/logs/audit", "http": 403, "success": false, "errorCode": 10000, "errorMessage": "Authentication error", "populationMeasured": false }
+    ],
+    "credentialSearchScope": "25 existing dotenv/configuration files under the repository/app roots and standard home Papercusp/Cloudflare locations, plus the current process's standard Cloudflare credential variable names; no alternate API token/key was configured in that bounded scope.",
+    "coverageLimit": "The installed Cloudflare SDK also warns that audit v2 is beta and may omit entries. A successful bounded audit page would still need a coverage argument before proving continuous source retention.",
+    "interpretation": "The same credential can read the exact account and Worker, but audit access is refused. This is not an empty audit population, a source deletion result, or evidence of R2 retention. Disabled R2 object access was not queried again.",
+    "retentionVerified": false,
+    "accountActionReference": "WI-6554700010022667"
   },
   "scopedContentGuard": {
     "observedAt": "2026-10-29T03:41:36.286Z",
