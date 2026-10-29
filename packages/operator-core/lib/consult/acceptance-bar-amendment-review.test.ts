@@ -370,7 +370,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     await expect(resolveAmendmentReviewSources(sourceInput, {
       getRubric: getRubric as never,
       getPlanRow: getPlanRow as never,
-    })).rejects.toThrow('amendment_review_sources_stale: subject plan acceptance-demo is at revision 8, preview is pinned to 7');
+    })).rejects.toThrow("amendment_review_sources_stale: subject plan 'acceptance-demo' is at revision 8, preview is pinned to 7");
   });
 
   it('routes nothing when the preview needs no approval', async () => {
@@ -729,8 +729,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const unchanged = Array.from({ length: 12 }, (_, index) => ({ barKey: `R-${index + 2}`, model: 'unchanged '.repeat(35) }));
     const changed = { barKey: 'R-1', model: 'changed' };
     const brief = buildAmendmentReviewBrief({ ...baseInput, patch: { criteria: [...unchanged, changed] } });
-    const firstBlock = brief.split('```json\n')[1]?.split('\n```')[0] ?? '';
-    const excerpt = JSON.parse(firstBlock) as Record<string, unknown>;
+    const patchBrief = brief.slice(brief.indexOf('Requested patch excerpt:'));
+    const patchBlock = patchBrief.split('```json\n')[1]?.split('\n```')[0] ?? '';
+    const excerpt = JSON.parse(patchBlock) as Record<string, unknown>;
     expect('criteria' in excerpt).toBe(false);
     expect(excerpt.changedCriteria).toEqual([changed]);
     expect(excerpt.omittedUnchangedBarKeys).toEqual(unchanged.map((criterion) => criterion.barKey));
