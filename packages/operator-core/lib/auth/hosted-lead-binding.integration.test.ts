@@ -59,9 +59,26 @@ async function authorityFixture() {
   await db.adminSql`INSERT INTO harness_shared.user_sessions (token, user_id, workspace_id, capabilities, expires_at)
     VALUES (${token}, ${operator!.id}::uuid, 'graph-a', ARRAY['*']::text[], clock_timestamp() + interval '1 hour')`;
   const personRef = `PER-${randomUUID()}`;
+  const [sessionProof] = await db.adminSql`SELECT s.workspace_id, s.capabilities, u.is_active,
+    s.expires_at > clock_timestamp() AS unexpired, encode(sha256(convert_to(s.token, 'UTF8')), 'hex') AS digest
+    FROM harness_shared.user_sessions s JOIN harness_shared.users u ON u.id = s.user_id WHERE s.token = ${token}`;
+  expect(sessionProof).toMatchObject({ workspace_id: 'graph-a', capabilities: ['*'], is_active: true,
+    unexpired: true, digest: hostedLeadBindingIssuerRef(token).slice('operator-session:'.length) });
   await db.adminSql`INSERT INTO harness_shared.harness_features_consolidated
     (workspace_id, harness_slug, feature_id, title, item_kind, nature, payload)
     VALUES ('graph-a', 'papercusp', ${personRef}, 'Binding person', 'person', 'record', '{"canonical":true}'::jsonb)`;
+  const rows = await db.adminSql`SELECT feature_id, payload, item_kind, nature FROM harness_shared.work_items
+    WHERE workspace_id = 'graph-a' AND feature_id = ${personRef}`;
+  expect(rows).toMatchObject([{ feature_id: personRef, item_kind: 'person', nature: 'record', payload: { canonical: true } }]);
+  const guarded = await db.adminSql`SELECT feature_id FROM harness_shared.work_items
+    WHERE workspace_id = 'graph-a' AND feature_id = ${personRef} AND item_kind = 'person' AND nature = 'record'
+      AND payload->>'canonical' = 'true' AND NOT (payload ? 'mergedInto') AND NOT (payload ? 'retiredAt')`;
+  expect(guarded, 'exact canonical subject guard').toHaveLength(1);
+  const issuers = await db.adminSql`SELECT s.user_id FROM harness_shared.user_sessions s
+    JOIN harness_shared.users u ON u.id = s.user_id WHERE s.workspace_id = 'graph-a'
+      AND s.expires_at > clock_timestamp() AND u.is_active = true AND s.capabilities @> ARRAY['*']::text[]
+      AND encode(sha256(convert_to(s.token, 'UTF8')), 'hex') = ${hostedLeadBindingIssuerRef(token).slice('operator-session:'.length)}`;
+  expect(issuers, 'exact operator issuer guard').toHaveLength(1);
   const authority = new PostgresHostedLeadBindingAuthority('graph-a', async (_workspace, fn) =>
     await db.adminSql.begin(tx => fn(tx as unknown as Sql)) as Awaited<ReturnType<typeof fn>>);
   const binding = new HostedLeadBindingService(new HostedLeadBindingChallengeCodec('a'.repeat(32)),

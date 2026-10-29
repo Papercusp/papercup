@@ -2606,6 +2606,8 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(compiled.argv).toEqual(fixture.argv);
     expect(compiled.compilerApi).toEqual({ path: 'node_modules/@papercusp/host-esbuild/lib/main.js',
       realpath: fixture.invocation.compiler, sha256: digest(readFileSync(fixture.invocation.compiler)) });
+    expect(compiled.compilerBinary).toMatchObject({ kind: 'kernel-sealed-fd-v1',
+      sha256: digest(readFileSync(fixture.invocation.environment.ESBUILD_BINARY_PATH)), launches: 1 });
     expect(compiled.consumed.map(row => row.path)).toContain('node_modules/fixture-dependency/index.js');
     const imported = await import('data:text/javascript;base64,' + readFileSync(fixture.entry).toString('base64'));
     expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
@@ -2659,6 +2661,36 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect({ y: output.y, dep: output.dep }).toEqual({ y: 2, dep: 41 });
     expect(process.env).toBe(env);
   });
+
+  it.each(['bg.compiler.binary-seal', 'bg.compiler.build'] as const)(
+    'BG compiler binary substitution has no execution effect at %s even when restored', async boundary => {
+      const fixture = await maintainedCompilerCandidate();
+      const path = fixture.invocation.environment.ESBUILD_BINARY_PATH, original = readFileSync(path);
+      const sentinel = join(tmp, 'compiler-binary-substitution-' + boundary);
+      const env = process.env;
+      const runPhase = bgRecipePhaseRunner('binary-custody-' + boundary);
+      let reachedBoundary = false, failure: unknown;
+      try {
+        await compileBgVerifierInvocation({ ...fixture, runPhase: async (phase, operation) => {
+          if (phase !== boundary) return runPhase(phase, operation);
+          reachedBoundary = true;
+          writeFileSync(path, '#!/bin/sh\nprintf substituted-binary > ' + JSON.stringify(sentinel) + '\nexit 1\n');
+          try { return await runPhase(phase, operation); }
+          finally { writeFileSync(path, original); }
+        } });
+      } catch (error) { failure = error; }
+      expect(reachedBoundary).toBe(true);
+      expect(existsSync(sentinel), 'substituted native binary must have no execution effect').toBe(false);
+      expect(String(failure)).toContain(boundary === 'bg.compiler.binary-seal'
+        ? 'broker_source_seal_failed' : 'BG compiler original input identity changed');
+      // Native equality checks every byte without the assertion framework
+      // recursively visiting ten million indexed Buffer properties.
+      bgFixtureTrace('binary-fixture:restoration-check:started');
+      expect(readFileSync(path).equals(original)).toBe(true);
+      bgFixtureTrace('binary-fixture:restoration-check:completed');
+      expect(process.env).toBe(env);
+      expect(existsSync(fixture.entry)).toBe(false);
+    });
 
   it.each(['argv', 'unknown-switch', 'version', 'ambient-binary', 'actual-node', 'output-escape'] as const)(
     'refuses %s before guarded compiler output', async defect => {

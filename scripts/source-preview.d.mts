@@ -1209,6 +1209,14 @@ export function publishBgVerifierLogicalOutputSet(args: {
             realpath: string;
             sha256: string;
         };
+        compilerBinary: {
+            kind: string;
+            sha256: string;
+            bytes: string;
+            dev: string;
+            ino: string;
+            launches: number;
+        };
         consumed: {
             path: string;
             realpath: string;
@@ -1499,6 +1507,14 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
             path: string;
             realpath: string;
             sha256: string;
+        };
+        compilerBinary: {
+            kind: string;
+            sha256: string;
+            bytes: string;
+            dev: string;
+            ino: string;
+            launches: number;
         };
         consumed: {
             path: string;
@@ -1797,6 +1813,14 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
             realpath: string;
             sha256: string;
         };
+        compilerBinary: {
+            kind: string;
+            sha256: string;
+            bytes: string;
+            dev: string;
+            ino: string;
+            launches: number;
+        };
         consumed: {
             path: string;
             realpath: string;
@@ -1830,8 +1854,8 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.
  * The compiler API is evaluated from its validated buffer with builtin-only
- * imports and no module cache. Native executable consumption, resolver metadata,
- * runtime imports, full host closure and service readiness remain separate.
+ * imports and no module cache. Its native service consumes a retained sealed
+ * descriptor. Runtime imports, full host closure and service readiness remain separate.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
  */
@@ -1866,6 +1890,14 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
         path: string;
         realpath: string;
         sha256: string;
+    };
+    compilerBinary: {
+        kind: string;
+        sha256: string;
+        bytes: string;
+        dev: string;
+        ino: string;
+        launches: number;
     };
     consumed: {
         path: string;
