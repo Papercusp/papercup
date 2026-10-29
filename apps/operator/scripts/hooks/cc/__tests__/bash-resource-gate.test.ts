@@ -4485,7 +4485,8 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     it.each(splices)('still denies an interpreter write using %s', (_label, splice) => {
       const code = "require('node:fs').writeFileSync('apps/operator/generated.ts', 'x')";
       const command = 'node -e ' + shellWord(code, splice);
-      const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain('EI-18691482279179647');
       expect(reason).toContain('apps/operator/generated.ts');
     });
   });
