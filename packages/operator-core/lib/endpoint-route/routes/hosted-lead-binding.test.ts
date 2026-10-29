@@ -3,7 +3,7 @@ import type { Sql } from 'postgres';
 import type { RouteContext } from '@papercusp/tooldef';
 import { createHostedPrincipal } from '../../auth/hosted-principal';
 import { createHostedLeadBindingRoutes } from './hosted-lead-binding';
-import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '../../telemetry-kinds';
+import { DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent } from '../../telemetry-kinds';
 
 vi.mock('../../posthog-config', () => ({ getPosthogConfigWithSource: () => ({ config: {
   host: 'https://posthog.invalid', projectKey: 'capture-key', personalApiKey: 'admin-key',
@@ -17,7 +17,7 @@ const context = { principal, params: {}, input: undefined, signal: new AbortCont
 const scope = { graphWorkspaceId: 'graph-a', personRef: 'PER-a' };
 const receipt = { ...scope, environment: 'production' as const, ref: 'receipt-a', userId: 'user-a',
   organizationId: 'org-a', redeemedAt: new Date(1000).toISOString() };
-function fixture(consents = [{ ...DEFAULT_CLOUD_TELEMETRY_CONSENT,
+function fixture(consents: CloudTelemetryConsent[] = [{ ...DEFAULT_CLOUD_TELEMETRY_CONSENT,
   analytics: { enabled: true, since: '2026-10-15T00:00:00Z' } }]) {
   const service = { redeem: vi.fn(async () => receipt), read: vi.fn(async () => receipt), revoke: vi.fn(async () => true) };
   const tenantCalls: unknown[] = [];
