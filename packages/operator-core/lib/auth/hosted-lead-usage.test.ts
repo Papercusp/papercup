@@ -4,6 +4,7 @@ import { HostedLeadUsageService } from './hosted-lead-usage';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '../telemetry-kinds';
 import { cloudTelemetryIdentity, cloudTelemetrySubjectIdentity } from '../cloud-telemetry';
 import { createHostedPrincipal } from './hosted-principal';
+import type { enforceExactServiceAppKeyScope } from '../connected-apps/enforce';
 
 const input = { personRef: 'PER-a', windowStart: '2026-10-15T00:00:00Z', windowEnd: '2026-10-27T00:00:00Z' };
 const request = { toolName: 'people:usage', capabilities: [], boundary: 'http', args: input,
@@ -14,7 +15,7 @@ const subject = () => ({ receipt: { ref: 'hosted-lead-binding:receipt', graphWor
   redeemedAt: '2026-10-14T00:00:00Z' }, consent: { ...DEFAULT_CLOUD_TELEMETRY_CONSENT,
     analytics: { enabled: true, since: '2026-10-15T00:00:00Z' } } });
 function fixture() {
-  const checkGrant = vi.fn(async () => null);
+  const checkGrant = vi.fn<typeof enforceExactServiceAppKeyScope>(async () => null);
   const readSubject = vi.fn(async () => subject());
   const readUsage = vi.fn(async (args: { readConsent: () => Promise<unknown> }) => {
     await args.readConsent(); await args.readConsent();
@@ -29,7 +30,8 @@ function fixture() {
 describe('D053 background usage authority', () => {
   it('refuses an explicit grant denial before accessing the subject', async () => {
     const f = fixture();
-    f.checkGrant.mockResolvedValueOnce({ decision: 'deny', code: 'app_scope:exact_tool_grant_required' } as never);
+    f.checkGrant.mockResolvedValueOnce({ decision: 'deny', availability: 'available', applied: true,
+      code: 'app_scope:exact_tool_grant_required', reason: 'Exact tool grant required' });
     expect((await f.service.read(input, request)).status).toBe('unknown');
     expect(f.readSubject).not.toHaveBeenCalled(); expect(f.readUsage).not.toHaveBeenCalled();
   });
