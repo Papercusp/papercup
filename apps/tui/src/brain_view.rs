@@ -291,7 +291,7 @@ fn select_newest_with_transcript(
 
 /// Run the read-only transcript pane: connect, resolve the autonomous session
 /// uuid, locate its transcript file, and render new turns into a compact TUI.
-/// Re-resolves periodically so it follows a recycled brain, and shows a clear
+/// Re-resolves on shared invalidation with a slow repair, and shows a clear
 /// placeholder when the agent isn't running — it NEVER blanks or crashes.
 /// Loops until the pane is closed.
 pub async fn run(scope: Scope) -> anyhow::Result<()> {
@@ -421,7 +421,7 @@ async fn follow_brain(
                     due = Instant::now();
                 }
             }
-            _ = time::sleep_until(due) => {
+            _ = async { if due > Instant::now() { time::sleep_until(due).await; } } => {
                 let client = client.clone();
                 let locate = locate.clone();
                 let scope = state.scope;
@@ -709,6 +709,7 @@ fn token_style(token: &str) -> Style {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+    use std::cell::Cell;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -734,6 +735,7 @@ mod tests {
         _server: StopOnDrop,
         _pane: StopOnDrop,
         transcripts: tempfile::TempDir,
+        paused: Cell<bool>,
     }
 
     impl BrainFixture {
@@ -856,6 +858,7 @@ mod tests {
                 _server: StopOnDrop(server),
                 _pane: StopOnDrop(pane),
                 transcripts,
+                paused: Cell::new(false),
             };
             fixture
                 .wait_for(|| {
@@ -892,9 +895,15 @@ mod tests {
         }
 
         async fn wait_for(&self, condition: impl Fn() -> bool) {
-            for _ in 0..100_000 {
+            for step in 0..100_000 {
                 if condition() {
                     return;
+                }
+                // Tokio rounds timer deadlines to milliseconds. Let immediate
+                // HTTP/connect/retry timers cross that boundary while settling
+                // real sockets under the paused clock (at most 100ms total).
+                if self.paused.get() && step % 1000 == 999 {
+                    time::advance(Duration::from_millis(1)).await;
                 }
                 tokio::task::yield_now().await;
             }
@@ -916,6 +925,11 @@ mod tests {
 
         fn latest(&self) -> BrainViewState {
             self.snapshots.lock().unwrap().last().unwrap().clone()
+        }
+
+        fn pause(&self) {
+            time::pause();
+            self.paused.set(true);
         }
     }
 
@@ -967,7 +981,7 @@ mod tests {
     #[tokio::test]
     async fn rules_events_r58_reconnect_and_repair() {
         let f = BrainFixture::start(Scope::Queen, roster(&[], &[])).await;
-        time::pause();
+        f.pause();
         // Failed startup/read retries within five seconds, rather than at repair.
         f.api.lock().unwrap().fail_workspace = 1;
         f.frame("roster", serde_json::json!({}));
@@ -1003,7 +1017,7 @@ mod tests {
     #[tokio::test]
     async fn rules_events_r58_reconnect_and_repair_failed_startup_and_sse() {
         let f = BrainFixture::start_with_faults(Scope::Queen, roster(&[], &[]), 1, 1).await;
-        time::pause();
+        f.pause();
         f.settle().await;
         assert_eq!(f.count("/api/adv/roster?workspace=a"), 0);
         time::advance(RETRY_INTERVAL).await;
@@ -1026,7 +1040,7 @@ mod tests {
         f.write_turn("wake", "before offline");
         f.frame("roster", serde_json::json!({}));
         f.wait_for(|| f.latest().messages.len() == 1).await;
-        time::pause();
+        f.pause();
         f.api.lock().unwrap().blocked_roster = Some("a".into());
         f.frame("roster", serde_json::json!({}));
         f.wait_for(|| f.count("/api/adv/roster?workspace=a") == 3)
@@ -1034,8 +1048,13 @@ mod tests {
         f.write_turn("wake", "appended while HTTP blocked");
         time::advance(TAIL_INTERVAL).await;
         f.wait_for(|| f.latest().messages.len() == 2).await;
+        let rendered: String = transcript_lines(&f.latest())
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
         assert!(
-            format!("{:?}", transcript_lines(&f.latest())).contains("appended while HTTP blocked")
+            rendered.contains("appended while HTTP blocked"),
+            "{rendered}"
         );
         assert_eq!(f.count("/api/adv/roster?workspace=a"), 3);
     }
@@ -1112,7 +1131,7 @@ mod tests {
     #[tokio::test]
     async fn rules_events_r62_no_fast_remote_poll() {
         let f = BrainFixture::start(Scope::Queen, roster(&[], &[])).await;
-        time::pause();
+        f.pause();
         for _ in 0..20 {
             time::advance(TAIL_INTERVAL).await;
             f.settle().await;

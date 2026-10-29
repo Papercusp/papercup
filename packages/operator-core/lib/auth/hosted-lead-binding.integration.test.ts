@@ -170,9 +170,9 @@ describe('hosted lead binding durable proof', () => {
     expect(await store.readServiceSubject(scope)).toBeNull();
     await db.adminSql`UPDATE papercusp_auth.organization_memberships SET status = 'active', suspended_at = NULL
       WHERE user_id = ${principal.userId}::uuid AND organization_id = ${principal.activeOrganizationId}::uuid`;
-    await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'deactivated' WHERE id = ${principal.userId}::uuid`;
+    await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'deactivated', deactivated_at = now() WHERE id = ${principal.userId}::uuid`;
     expect(await store.readServiceSubject(scope)).toBeNull();
-    await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'active' WHERE id = ${principal.userId}::uuid`;
+    await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'active', deactivated_at = NULL WHERE id = ${principal.userId}::uuid`;
     expect(await store.revoke(scope, principal)).toBe(true);
     expect(await store.readServiceSubject(scope)).toBeNull();
   });

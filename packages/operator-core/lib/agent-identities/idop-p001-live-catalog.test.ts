@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { captureIdopLiveCatalog } from './idop-p001-live-catalog';
 
 const env = { PAPERCUSP_SID: 'su-fixture', PAPERCUSP_NATIVE_SESSION_ID: 'native-fixture',
-  PAPERCUSP_WORKSPACE: 'fixture', PAPERCUSP_HARNESS_SLUG: 'fixture', PAPERCUSP_ROLE: 'architect', TOKEN: 'fixture-secret-token' };
+  PAPERCUSP_WORKSPACE: 'fixture', PAPERCUSP_HARNESS_SLUG: 'fixture', PAPERCUSP_AGENT_ROLE: 'architect', TOKEN: 'fixture-secret-token' };
 const endpoint = 'http://127.0.0.1:9171/api/mcp?client=su-fixture&workspace=fixture&harness=fixture&role=architect&sig=fixture-secret-signature';
 const config = (url = endpoint) => `[mcp_servers.papercusp]\nurl = ${JSON.stringify(url)}\nbearer_token_env_var = "TOKEN"\n`;
 const tool = (name: string) => ({ name, description: 'unchanged description', inputSchema: {
@@ -62,5 +62,10 @@ describe('P-001 actual caller raw catalog instrument', () => {
     const result = await captureIdopLiveCatalog(config(), env, c.connect);
     expect(result.failure?.message).toBe('Repeated catalog cursor');
     expect(c.listTools).toHaveBeenCalledTimes(2);
+  });
+  it('refuses conflicting legacy and launcher role attribution before connecting', async () => {
+    const c = connector([]);
+    await expect(captureIdopLiveCatalog(config(), { ...env, PAPERCUSP_ROLE: 'su' }, c.connect)).rejects.toThrow('role mismatch');
+    expect(c.connect).not.toHaveBeenCalled();
   });
 });

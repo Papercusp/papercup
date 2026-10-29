@@ -38,9 +38,12 @@ export async function captureIdopLiveCatalog(
       throw new Error('Caller MCP scope mismatch');
   }
   const configuredRole = url.searchParams.get('role');
-  if (configuredRole && (url.searchParams.getAll('role').length !== 1 || configuredRole !== env.PAPERCUSP_ROLE ||
+  const actualRole = env.PAPERCUSP_AGENT_ROLE || env.PAPERCUSP_ROLE;
+  if (env.PAPERCUSP_AGENT_ROLE && env.PAPERCUSP_ROLE && env.PAPERCUSP_AGENT_ROLE !== env.PAPERCUSP_ROLE)
+    throw new Error('Caller MCP role mismatch');
+  if (configuredRole && (url.searchParams.getAll('role').length !== 1 || configuredRole !== actualRole ||
       url.searchParams.has('superuser'))) throw new Error('Caller MCP role mismatch');
-  if (!configuredRole && env.PAPERCUSP_ROLE && env.PAPERCUSP_ROLE !== 'su')
+  if (!configuredRole && actualRole && actualRole !== 'su')
     throw new Error('Role caller requires its launcher role endpoint');
   const configuredNative = url.searchParams.get('native_session');
   if (configuredNative && configuredNative !== nativeSessionId) throw new Error('Caller MCP native session mismatch');
