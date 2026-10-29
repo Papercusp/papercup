@@ -2641,6 +2641,15 @@ const REPO_WIDE_INVARIANT_GUARDS = [
   },
   {
     workspace: "@papercusp/operator-core",
+    script: "lint:no-bespoke-condition-op",
+    appliesTo: (f) =>
+      f === "package.json" || f === "packages/operator-core/package.json" ||
+      f === "scripts/check-no-bespoke-condition-op.mjs" ||
+      f === "scripts/no-bespoke-condition-op-baseline.json" ||
+      f === "scripts/lib/shrink-only-guard.mjs" || /\.[cm]?[jt]sx?$/.test(f),
+  },
+  {
+    workspace: "@papercusp/operator-core",
     script: "lint:lockfile-census",
     appliesTo: (f) =>
       !f.includes("node_modules/") &&
