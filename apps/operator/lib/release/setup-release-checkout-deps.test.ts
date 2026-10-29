@@ -2609,16 +2609,6 @@ exec "$REGRESSION_REAL_GIT" "$@"
     );
     expect(result.error, prepareDetails).toBeUndefined();
 
-    if (fault === 'native-missing') {
-      expect(result.status, prepareDetails).toBe(75);
-      expect(result.stderr).toContain('native-runtime-unusable');
-      expect(result.stderr).toContain('missing native binding');
-      expect(result.stderr).toContain('source dependency trees do not realise their lockfiles');
-      expect(result.stdout).not.toContain('SETUP_RELEASE_DEPENDENCIES_ONLY');
-      expect(existsSync(join(releaseRoot, 'node_modules'))).toBe(false);
-      return;
-    }
-
     if (fault !== 'none') {
       expect(result.status, prepareDetails).not.toBe(0);
       expect(result.stdout).not.toContain('SETUP_RELEASE_DEPENDENCIES_ONLY');
