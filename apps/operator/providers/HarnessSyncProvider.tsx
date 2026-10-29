@@ -44,7 +44,6 @@ import {
   getSyncQueryClient,
   enablePersistedSyncCache,
   type SyncProviderProps,
-  type SyncRequestContext,
 } from '@papercusp/sync';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { getBrowserMachineId, getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
@@ -53,7 +52,7 @@ import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
 import { isTauri } from '@/app/_components/SetupWizard/tauri-detect';
 import { createSyncDeltaCodec } from './sync-delta-codec';
-import { resolveBrowserApiTransport } from "../lib/hosted-browser-api";
+import { resolveBrowserApiTransport, resolveBrowserSyncRequestContext } from "../lib/hosted-browser-api";
 
 const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
 // SSE drift-repair tick, NOT a freshness source (EI-278). Under SSE,
@@ -328,12 +327,9 @@ export function HarnessSyncProvider({
   const [selectedMachine] = useQueryState('desktopHost', parseAsString);
   const machine = selectedMachine ?? getBrowserMachineId() ?? 'local';
   const workspace = getBrowserWorkspaceId();
-  const local = browserTransport.restEndpoint === DEFAULT_REST_ENDPOINT;
-  const requestContext = useMemo<SyncRequestContext>(() => ({
-    key: JSON.stringify([browserTransport.restEndpoint, userID, workspace, machine]),
-    headers: { 'x-papercusp-machine': machine, ...(local ? { 'x-papercusp-workspace': workspace } : {}) },
-    params: { desktopHost: machine, ...(local ? { ws: workspace } : {}) },
-  }), [browserTransport.restEndpoint, userID, workspace, machine, local]);
+  const requestContext = useMemo(() => resolveBrowserSyncRequestContext({
+    restEndpoint: browserTransport.restEndpoint, userId: userID, workspace, machine,
+  }), [browserTransport.restEndpoint, userID, workspace, machine]);
   const queryClient = getSyncQueryClient(requestContext.key);
   useEffect(() => enablePersistedSyncCache({
     client: queryClient, key: `papercusp:sync-cache:v1:${encodeURIComponent(requestContext.key)}`, buster: 'v1',
