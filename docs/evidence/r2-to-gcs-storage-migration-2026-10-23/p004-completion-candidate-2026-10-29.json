@@ -2,7 +2,16 @@
   "schemaVersion": "r2gcs-p004-completion-candidate-v1",
   "workItemId": "WI-6554700010025563",
   "plan": "r2-to-gcs-storage-migration-2026-10-23",
-  "status": "independent-audits-passed-completion-validation-pending",
+  "status": "completed",
+  "completionReadback": {
+    "workItemState": "done",
+    "completionAuthority": "committed",
+    "terminalOwner": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+    "validationPassed": true,
+    "actualCloseSucceeded": true,
+    "fingerprintSource": "Independent staging3170 get-spec-evidence readback. Source/test/fixture/rubric/environment dimensions current or not-applicable for every supplied tuple; two old dirty mechanical rows retain unknown testRun state and are not qualification proof. Clean baseline70487 and caught70488 remain qualification proof.",
+    "limitation": "P004 bounded implementation acceptance only. Full migration, P003 release and P544 trial shipment remain open."
+  },
   "fullMigrationAccepted": false,
   "shipped": false,
   "sourceBackedCompositionReview": "thread-post:1209843",
@@ -75,7 +84,7 @@
     "Manual live bindings only measure current Worker identity and source at binding time; no historical timestamp is invented.",
     "No full migration, historical R2 census, deployed publish Worker, P003 release, gate operation or P544 cost qualification claimed."
   ],
-  "next": "All five independent audits passed. Supply specAdequacy.current from independently current server-measured binding readback before validateOnly; retained evaluator43145 has a failing spawner measurement path, while staging3170 measures archive current. Never substitute stored fingerprints without confirming each row current. Only after validation succeeds remove validateOnly for actual close. Continue migration P002/P005/P006 and D090 before P544 under D086. Do not duplicate active P003 peer work.",
+  "next": "P004 is complete with committed authority; do not repeat its close, tests, certificates or journeys. Continue migration P002/P005/P006 and D090 before P544 under D086. Retained evaluator43145 measurement path failed; independently current staging3170 fingerprints supplied the successful validated close. Preserve original receipts and missing historical runtime witness. Do not duplicate active P003 peer work.",
   "preparedCompletion": {
     "id": "WI-6554700010025563",
     "harness": "papercusp",
