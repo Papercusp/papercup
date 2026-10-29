@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { recordActivity } from '@papercusp/activity-bridge';
 import { createPgTelemetryStore } from '../activity-pg-store';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
-import { canonicalNativeRuntimeSources, indexNativeCaptureCandidates } from './native-capture';
+import { canonicalNativeRuntimeSources, indexNativeCaptureCandidates, reconcileNativeCapture } from './native-capture';
 import { productionOpportunityReaders } from './source-readers';
 import type { NativeProvider } from './native-operation';
 import { runMonitoredCensus } from './census';
@@ -157,13 +157,77 @@ it('R13-NATIVE prospective production reader never backdates a new installation 
   await seed();
   const reader = productionOpportunityReaders({ ...options(), authorize: async () => true });
   expect(await reader.readContinuity({ family: 'native-operation', since: options().since, until: options().until })).toBe('unknown');
-  const [untouched] = await f.db.adminSql`SELECT count(*)::int AS count FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
-  expect(untouched!.count).toBe(0);
-  expect(await finishRuntimeBatches()).toBe('gap');
-  expect(await indexNativeCaptureCandidates({ ...options(), until: new Date(Date.now() + 86400_000).toISOString() })).toBe('unknown');
+  const [prepared] = await f.db.adminSql`SELECT native_capture_receipt AS receipt,
+    native_capture_from > ${options().until}::timestamptz AS prospective
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
+  expect(prepared).toMatchObject({ receipt: { sourceEnrollment: { version: 1 } }, prospective: true });
+  expect(await indexNativeCaptureCandidates(options())).toBe('unknown');
+  expect(await reconcileNativeCapture({ ...options(), until: new Date(Date.now() + 86400_000).toISOString() })).toBe('unknown');
   const [row] = await f.db.adminSql`SELECT native_capture_receipt, native_capture_from > ${options().until}::timestamptz AS prospective
     FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`;
-  expect(row).toMatchObject({ native_capture_receipt: { baseline: true }, prospective: true });
+  expect(row).toMatchObject({ native_capture_receipt: { sourceEnrollment: { version: 1 } }, prospective: true });
+});
+
+it('D030 production enrollment includes unattributed and other-harness issued roots without reading or scoping their calls', async () => {
+  const a = await seed(), b = await seed(), c = await seed();
+  await f.db.adminSql`DELETE FROM harness_shared.session_briefs WHERE owner_id=${b.owner}`;
+  await f.db.adminSql`UPDATE harness_shared.session_briefs SET harness_slug='other-harness' WHERE owner_id=${c.owner}`;
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt FROM harness_shared.sql_intent_progress
+    WHERE scope_id LIKE 'native:%'`;
+  expect(row!.receipt).toMatchObject({ sourceEnrollment: { version: 1, prepared: true } });
+  expect(Object.keys(row!.receipt.manifest)).toHaveLength(3);
+  expect(Object.values(row!.receipt.manifest).flat()).toHaveLength(6);
+  expect(bodyIO.size).toBe(0);
+  expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
+  expect(JSON.stringify(row!.receipt)).not.toMatch(new RegExp([a.owner, b.owner, c.owner, root, 'private-source'].join('|')));
+  // A candidate scan must not reinterpret production source preparation as its
+  // own baseline, nor may another production read certify unknown siblings.
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+}, 120_000);
+
+it('D030 production enrollment pages more than 500 issued runtimes and resumes past a missing root', async () => {
+  const runtimes = Array.from({ length: 501 }, () => ({ owner: `su-${randomUUID()}`, session: randomUUID() }));
+  const rows = await f.db.adminSql<{ id: string; owner: string; session: string }[]>`INSERT INTO harness_shared.adv_sessions
+    (workspace_id,mode,coord_owner_id,agent,session_id,first_seen_at)
+    SELECT ${workspaceId},'console',r.owner,'codex',r.session,${new Date(f.now - 2000).toISOString()}::timestamptz
+    FROM jsonb_to_recordset(${f.db.adminSql.json(runtimes)}::jsonb) AS r(owner text,session text)
+    RETURNING id::text,coord_owner_id AS owner,session_id AS session`;
+  const paths = rows.map(row => join(process.env.PAPERCUSP_SU_CODEX_HOMES_DIR!, `session-${row.id}`, 'sessions', `rollout-time-${row.session}.jsonl`));
+  for (let i = 1; i < rows.length; i++) {
+    await mkdir(dirname(paths[i]!), { recursive: true });
+    await writeFile(paths[i]!, JSON.stringify({ type: 'session_meta', payload: { id: rows[i]!.session } }) + '\n');
+  }
+  const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]?.receipt;
+  for (let attempt = 0; attempt < 40 && Object.keys((await receipt())?.manifest ?? {}).length < 500; attempt++)
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const partial = await receipt();
+  expect(Object.keys(partial.manifest)).toHaveLength(500);
+  expect(partial.sourceEnrollment.prepared).toBe(false);
+  await mkdir(dirname(paths[0]!), { recursive: true });
+  await writeFile(paths[0]!, JSON.stringify({ type: 'session_meta', payload: { id: rows[0]!.session } }) + '\n');
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const prepared = await receipt();
+  expect(Object.keys(prepared.manifest)).toHaveLength(501);
+  expect(prepared.sourceEnrollment.prepared).toBe(true);
+  expect(bodyIO.size).toBe(0);
+  expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
+}, 120_000);
+
+it('D030 production enrollment refuses stale ACL, runtime population, and source snapshots at its write boundary', async () => {
+  const s = await seed();
+  let calls = 0;
+  const opts = { ...options(), authorize: async () => {
+    if (++calls === 2) await writeFile(s.paths[0]!, 'changed\n');
+    return true;
+  } };
+  expect(await reconcileNativeCapture(opts)).toBe('unknown');
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt FROM harness_shared.sql_intent_progress
+    WHERE scope_id LIKE 'native:%'`;
+  expect(row?.receipt).toBeNull();
+  expect(await reconcileNativeCapture({ ...options(), authorize: async () => false })).toBe('unknown');
+  expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
 });
 
 it('R13-NATIVE candidate preparation preserves positive microsecond windows within one millisecond', async () => {
