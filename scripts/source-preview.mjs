@@ -49,6 +49,7 @@ import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
+import { sealRuntimeSourceHandle } from '@papercusp/operator-core/lib/blind-review-source-seal';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
@@ -1865,8 +1866,8 @@ function writeBgVerifierBinding(binding) {
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.
  * The compiler API is evaluated from its validated buffer with builtin-only
- * imports and no module cache. Native executable consumption, resolver metadata,
- * runtime imports, full host closure and service readiness remain separate.
+ * imports and no module cache. Its native service consumes a retained sealed
+ * descriptor. Runtime imports, full host closure and service readiness remain separate.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
  */
@@ -1901,7 +1902,18 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
   const originalEnv = process.env;
   /** @type {typeof import('esbuild') | undefined} */
   let compiler;
+  /** @type {import('node:fs/promises').FileHandle | undefined} */
+  let sealedBinary;
+  let binaryLaunches = 0;
   try {
+    sealedBinary = await runPhase('bg.compiler.binary-seal', async () => {
+      const original = await fs.open(binary.realpath, 'r');
+      try {
+        return await sealRuntimeSourceHandle(original, binary.sha256, Number((await original.stat()).size));
+      } finally { await original.close(); }
+    });
+    const retainedBinary = sealedBinary;
+    const sealedInfo = await retainedBinary.stat({ bigint: true });
     process.env = { ...invocation.environment };
     const compilerApi = await runPhase('bg.compiler.import', () => {
       const source = custody.readToolchainInput(invocation.compiler);
@@ -1910,6 +1922,23 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
       // is explicitly selected. Refuse package/ambient fallback before loading it.
       const builtinRequire = Object.assign(/** @param {string} name */ name => {
         assert.ok(isBuiltin(name), `BG compiler API import is outside Node builtins: ${name}`);
+        if (name === 'child_process' || name === 'node:child_process') return {
+          /** @param {string} command @param {string[]} args @param {import('node:child_process').SpawnOptions} spawnOptions */
+          spawn(command, args, spawnOptions) {
+            assert.equal(command, binary.realpath, 'BG compiler service command differs from original binary');
+            assert.deepEqual(args, [`--service=${expectedVersion}`, '--ping'], 'BG compiler service argv differs');
+            assert.deepEqual(spawnOptions.stdio, ['pipe', 'pipe', 'inherit'], 'BG compiler service stdio differs');
+            assert.ok(!spawnOptions.shell, 'BG compiler service cannot use a shell');
+            if (spawnOptions.env) assert.deepEqual(spawnOptions.env, invocation.environment,
+              'BG compiler service environment differs');
+            assert.equal(binaryLaunches++, 0, 'BG compiler service may launch only once');
+            // fd 3 is explicitly inherited by the child. The pathname chosen by
+            // esbuild stays bound above, but exec consumes the sealed A bytes even
+            // if that original pathname temporarily names B during service startup.
+            return spawn('/proc/self/fd/3', args, { ...spawnOptions,
+              env: { ...invocation.environment }, stdio: ['pipe', 'pipe', 'inherit', retainedBinary.fd] });
+          },
+        };
         return trustedRequire(name);
       }, { resolve(/** @type {string} */ name) {
         assert.ok(isBuiltin(name), `BG compiler API resolution is outside Node builtins: ${name}`);
@@ -1927,6 +1956,7 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
     const activeCompiler = compiler;
     const result = await runPhase('bg.compiler.build', () => activeCompiler.build({ ...options, plugins: [custody.plugin] }));
     const consumed = await runPhase('bg.compiler.verify', () => {
+      assert.equal(binaryLaunches, 1, 'BG compiler native consumption is UNKNOWN');
       const consumed = custody.verifyBeforePublication();
       verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
       return consumed;
@@ -1943,12 +1973,18 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
       return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
         buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
         originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: activeCompiler.version,
-        compilerApi: compilerApi.identity, binary, consumed, output: readBgIndependentOutputIdentity(options.outfile),
+        compilerApi: compilerApi.identity, binary,
+        compilerBinary: { kind: 'kernel-sealed-fd-v1', sha256: binary.sha256, bytes: String(sealedInfo.size),
+          dev: String(sealedInfo.dev), ino: String(sealedInfo.ino), launches: binaryLaunches },
+        consumed, output: readBgIndependentOutputIdentity(options.outfile),
         ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
     });
   } finally {
     try { await runPhase('bg.compiler.stop', async () => { await compiler?.stop(); }); }
-    finally { process.env = originalEnv; }
+    finally {
+      try { await sealedBinary?.close(); }
+      finally { process.env = originalEnv; }
+    }
   }
 }
 
