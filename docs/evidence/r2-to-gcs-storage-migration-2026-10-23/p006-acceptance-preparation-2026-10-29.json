@@ -6,6 +6,24 @@
   "migrationAccepted": false,
   "shipped": false,
   "observationDateUtc": "2026-10-29",
+  "preparationUpdateUtc": "2026-10-29T03:53:55.291525Z",
+  "scopedContentGuard": {
+    "observedAt": "2026-10-29T03:41:36.286Z",
+    "files": ["scripts/lib/workspace-host-gcs-publication.mjs", "scripts/lib/workspace-host-gcs-publication.d.mts"],
+    "maintainedCommand": "npm run content-lint -- --file=<exact file> --json",
+    "inScopeDetectors": [6, 4],
+    "exitCodes": [0, 0],
+    "flagged": [],
+    "errors": [],
+    "canonicalImporterGuard": "Clear-source baseline returned no offenders; excluding the source caught its exact generated declaration as a positive control.",
+    "workingBytesEqualHead": true,
+    "pairLastCommit": "c70f218bdb252c62ac291b7a47d0000422a14ac2",
+    "gitSyncSnapshot": { "lastFiredAt": "2026-10-29T03:39:37.487Z", "namedFilesInContentErrors": false, "contentErrorsOmitted": 0 },
+    "completionEvent": "plan:r2-to-gcs-storage-migration-2026-10-23:r2gcs-gcs-publication-guard-cleared-20261029",
+    "generation": 1,
+    "peerReply": "coord-send-b77d39ae985b2815eae84b310ae479051e86413aa66f7c9bab78c1b14ac276d4",
+    "scopeLimit": "Exact source/declaration pair only; unrelated git-sync findings remain. No global gate, P003 shipment or migration acceptance claim."
+  },
   "sourceAudit": {
     "scope": [
       "apps/operator-public/src and wrangler.toml",
@@ -125,7 +143,7 @@
       "reuse": ["p002-production-execution.json", "p002-production-live.json", "p002-custody-retention.json"],
       "canonicalRun": 22258800,
       "binding": 73886,
-      "acceptanceRemaining": "Independent P002 grading audit; historical execution has no runtimeBefore/After witness. Do not repeat the production download for recall."
+      "acceptanceRemaining": "P002 completed with committed authority. Reuse its completed candidate and saved canonical proof; historical execution has no runtimeBefore/After witness. Do not repeat the production download for recall."
     },
     {
       "journey": "Private visibility, create-only collision, reconnect, finalization and archive restore",
@@ -153,5 +171,5 @@
     "newProviderExperimentStartedThisTurn": false,
     "p544QualifiedOrShipped": false
   },
-  "next": "Resolve P002 audit, accept P005 after peer release dependency, then obtain independent exact deployed migration acceptance. Preserve all original receipts and the separate P544 obligation."
+  "next": "Complete P005 copy/retention evidence and independent acceptance after the peer P003 release dependency, then obtain independent exact deployed migration acceptance. P002/P004 are complete. Preserve original receipts and the separate P544 obligation."
 }

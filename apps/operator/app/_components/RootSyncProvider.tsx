@@ -30,9 +30,12 @@ import { VoicePrefsSyncBridge } from './voice/VoicePrefsSyncBridge';
  * `new EventSource(...)` call. See
  * `lib/transport-adapters/desktop-bootstrap.ts` for the install rules.
  *
- * `installWorkspaceHeaderFetch` + `installWorkspaceParamEventSource` run
- * immediately after, wrapping whatever `window.fetch` / `window.EventSource` now
- * are — `ipcFetch`/`IpcEventSource` on desktop, native in the dev browser. The
+ * `installOriginSchedulerFetch` wraps the installed fetch, followed by
+ * `installWorkspaceHeaderFetch`. Workspace and machine headers must be stamped
+ * before a request enters the queue or its single-flight key is computed:
+ * a later machine selection must not retarget a queued write or share reads
+ * across machines. `installWorkspaceParamEventSource` wraps the installed
+ * `window.EventSource` — `IpcEventSource` on desktop, native in the browser. The
  * fetch wrapper stamps `x-papercusp-workspace`; the EventSource wrapper appends
  * `?ws=` (streams can't set headers). Both make the backend resolve per-window
  * rather than against the global `reg.current`
@@ -47,12 +50,12 @@ if (typeof window !== 'undefined') {
   // (.churn()/.summary()/.events()) — Plan: calltool-endpoint-seam (Phase C).
   installIpcInspector();
   installDesktopIpcPolyfills();
-  installWorkspaceHeaderFetch();
   // P-019: route every finite operator API fetch through the one process-pinned
-  // per-origin scheduler. This wraps the already-installed IPC/workspace layer,
-  // so desktop routing and per-window workspace headers remain transparent;
-  // sync-owned rest-query and long-lived streams are explicitly skipped.
+  // per-origin scheduler. The workspace layer wraps it next, pinning request
+  // identity before queueing; IPC remains the innermost transport. Sync-owned
+  // rest-query and long-lived streams are explicitly skipped.
   installOriginSchedulerFetch();
+  installWorkspaceHeaderFetch();
   installWorkspaceParamEventSource();
   // Register the callTool seam's transport resolver (tool name → canonical route
   // + Phase-E eligibility). No runtime change yet — nothing calls callTool until
