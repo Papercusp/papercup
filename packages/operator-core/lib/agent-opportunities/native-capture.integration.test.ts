@@ -215,11 +215,11 @@ it('D030 production enrollment pages more than 500 issued runtimes and resumes p
   expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
 }, 120_000);
 
-it('D030 production enrollment refuses stale ACL, runtime population, and source snapshots at its write boundary', async () => {
+it.each([2, 3])('D030 production enrollment refuses a source rewrite during ACL renewal %s', async changedAt => {
   const s = await seed();
   let calls = 0;
   const opts = { ...options(), authorize: async () => {
-    if (++calls === 2) await writeFile(s.paths[0]!, 'changed\n');
+    if (++calls === changedAt) await writeFile(s.paths[0]!, 'changed\n');
     return true;
   } };
   expect(await reconcileNativeCapture(opts)).toBe('unknown');
@@ -227,6 +227,27 @@ it('D030 production enrollment refuses stale ACL, runtime population, and source
     WHERE scope_id LIKE 'native:%'`;
   expect(row?.receipt).toBeNull();
   expect(await reconcileNativeCapture({ ...options(), authorize: async () => false })).toBe('unknown');
+  expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
+});
+
+it.each((['acl', 'insert', 'rebind', 'receipt'] as const).flatMap(mutation =>
+  [2, 3].map(at => ({ mutation, at }))))('D030 production enrollment rejects concurrent $mutation at renewal $at', async ({ mutation, at }) => {
+  const s = await seed(); let calls = 0;
+  const opts = { ...options(), authorize: async () => {
+    if (++calls !== at) return true;
+    if (mutation === 'acl') return false;
+    if (mutation === 'insert') await seed();
+    if (mutation === 'rebind') await f.db.adminSql`UPDATE harness_shared.adv_sessions SET coord_owner_id='su-rebound'
+      WHERE id=${s.advId}::bigint`;
+    if (mutation === 'receipt') await f.db.adminSql`UPDATE harness_shared.sql_intent_progress
+      SET native_capture_receipt='{"concurrent":true}' WHERE scope_id LIKE 'native:%'`;
+    return true;
+  } };
+  expect(await reconcileNativeCapture(opts)).toBe('unknown');
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt FROM harness_shared.sql_intent_progress
+    WHERE scope_id LIKE 'native:%'`;
+  expect(row?.receipt).toEqual(mutation === 'receipt' ? { concurrent: true } : null);
+  expect(bodyIO.size).toBe(0);
   expect(await f.db.adminSql`SELECT id FROM harness_shared.agent_activity`).toHaveLength(0);
 });
 
@@ -674,10 +695,20 @@ it.each(['codex', 'claude', 'omp'] as const)(
     await installed();
     const receipt = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt
       FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
-    expect(await indexNativeCaptureCandidates(options())).toBe('unknown');
-    const partial = await receipt();
-    const offset = (r: typeof partial): number => Math.max(...Object.values(r.pendingSources as Record<string,
+    const offset = (r: Awaited<ReturnType<typeof receipt>>): number => Math.max(...Object.values((r?.pendingSources ?? {}) as Record<string,
       { continuation: { files: Record<string, { offset: number }> } }>).flatMap(s => Object.values(s.continuation.files).map(f => f.offset)));
+    const snapshots = (r: Awaited<ReturnType<typeof receipt>>) => Object.values((r?.pendingSources ?? {}) as Record<string,
+      { continuation: { snapshot: string } }>).map(s => s.continuation.snapshot);
+    const pending = async (opts: ReturnType<typeof options>, accepts: (r: Awaited<ReturnType<typeof receipt>>) => boolean) => {
+      let current = await receipt();
+      for (let attempt = 0; attempt < 40; attempt++) {
+        expect(await indexNativeCaptureCandidates(opts)).toBe('unknown');
+        current = await receipt();
+        if (accepts(current)) return current;
+      }
+      throw new Error(`No durable chunk progress within 40 bounded turns: ${JSON.stringify(current)}`);
+    };
+    const partial = await pending(options(), r => offset(r) > 0);
     const firstOffset = offset(partial);
     expect(firstOffset).toBeGreaterThan(0);
     expect(firstOffset).toBeLessThanOrEqual(4 * 1024 * 1024);
@@ -685,13 +716,16 @@ it.each(['codex', 'claude', 'omp'] as const)(
     expect(await indexNativeCaptureCandidates({ ...options(), authorize: async () => false })).toBe('unknown');
     expect(await receipt()).toEqual(partial);
     const rolling = { ...options(), until: new Date(f.now + 100).toISOString() };
-    expect(await indexNativeCaptureCandidates(rolling)).toBe('unknown');
-    expect(offset(await receipt())).toBeGreaterThan(firstOffset);
+    const advanced = await pending(rolling, r => offset(r) > firstOffset);
+    expect(offset(advanced)).toBeGreaterThan(firstOffset);
     // Rewriting the same source invalidates offsets and already parsed call
     // digests, even if only metadata changes and the census window advances.
     await writeFile(s.paths[0]!, (await readFile(s.paths[0]!, 'utf8')).replace('private-metadata', 'changed-metadata'));
-    expect(await indexNativeCaptureCandidates(rolling)).toBe('unknown');
-    expect(offset(await receipt())).toBeLessThanOrEqual(firstOffset);
+    const beforeRewrite = snapshots(advanced);
+    const restarted = await pending(rolling, r => offset(r) > 0 && snapshots(r).some(s => !beforeRewrite.includes(s)));
+    // The prior turn may stop early at its time bound. A reset must restart in
+    // the first byte chunk, not necessarily at that prior turn's smaller offset.
+    expect(offset(restarted)).toBeLessThanOrEqual(4 * 1024 * 1024);
     expect(await finishRuntimeBatches(rolling)).toBe('complete');
     expect(await receipt()).toMatchObject({ sources: 2, runtimes: 1, calls: 4 });
     const rows = await f.db.adminSql`SELECT tool_use_id FROM harness_shared.agent_activity WHERE workspace_id=${workspaceId}`;

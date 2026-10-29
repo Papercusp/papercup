@@ -454,12 +454,14 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     const key = (b: Binding) => digest([b.id, b.owner, b.provider]);
     const keys = new Set(roster.map(key));
     if (Object.keys(manifest).some(id => !keys.has(id))) return 'unknown';
-    const remaining = roster.filter(b => !manifest[key(b)]);
+    const remaining = roster.filter(b => !manifest[key(b)] || !snapshots[key(b)]);
     // Rotate failures rather than letting one missing root starve every later
     // issued root. Failed roots stay in the full population and block readiness.
     const cursor = remaining.findIndex(b => key(b) === prior?.sourceEnrollment?.cursor);
     const ordered = cursor < 0 ? remaining : [...remaining.slice(cursor + 1), ...remaining.slice(0, cursor + 1)];
-    const wave = (ordered.length ? ordered : roster).slice(0, ENROLLMENT_BATCH);
+    const revisit = roster.findIndex(b => key(b) === prior?.sourceEnrollment?.cursor);
+    const refresh = revisit < 0 ? roster : [...roster.slice(revisit + 1), ...roster.slice(0, revisit + 1)];
+    const wave = (ordered.length ? ordered : refresh).slice(0, ENROLLMENT_BATCH);
     const observed = new Map<string, { binding: Binding; snapshot: string }>();
     let last = prior?.sourceEnrollment?.cursor ?? null;
     for (const binding of wave) {
@@ -471,15 +473,20 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
         if (manifest[last]?.some(id => !source.identities.includes(id))) return 'unknown';
         manifest[last] = source.identities; snapshots[last] = source.snapshot;
         observed.set(last, { binding, snapshot: source.snapshot });
-      } catch { /* Keep the root pending, and prepare other issued roots. */ }
+      } catch {
+        // Retain expected predecessor identities, but revoke their preparation
+        // snapshot when a previously observed root becomes unavailable.
+        delete snapshots[last];
+      }
     }
-    if (!await opts.authorize() || canonicalJson(roster) !== canonicalJson(await population())) return 'unknown';
+    if (!await opts.authorize() || !await opts.authorize()
+      || canonicalJson(roster) !== canonicalJson(await population())) return 'unknown';
     // Close the ACL/DB await gap without opening any transcript body. A source
     // changed during renewal cannot be saved as this turn's enrollment evidence.
     for (const { binding, snapshot } of observed.values())
       if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
-    if (Date.now() >= deadline || !await opts.authorize()) return 'unknown';
-    const prepared = roster.every(b => manifest[key(b)]);
+    if (Date.now() >= deadline) return 'unknown';
+    const prepared = roster.every(b => manifest[key(b)] && snapshots[key(b)]);
     const receipt = { version: 1, manifest, population: digest(roster), revision: progress.revision,
       sourceEnrollment: { version: 1, prepared, snapshots, cursor: last } };
     const previous = progress.receipt == null ? null : sql.json(progress.receipt);
