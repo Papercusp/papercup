@@ -332,8 +332,8 @@
 #                               seconds between DOM assertion attempts (default 1)
 #   VERIFY_TAURI_SETTLE_TIMEOUT seconds VERIFY_TAURI_SETTLE waits for the page to
 #                               go idle before giving up (default: the guarded
-#                               VERIFY_TAURI_DOM_TIMEOUT, otherwise 20; an
-#                               explicit settle timeout still wins)
+#                               VERIFY_TAURI_DOM_TIMEOUT, resolved to 30 by this
+#                               wrapper when unset; explicit settle timeout wins)
 #   VERIFY_TAURI_SETTLE_QUIET_MS
 #                               ms the DOM must stay unchanged, with the sync gate
 #                               idle, before the page counts as settled (default 400)
@@ -405,6 +405,11 @@
 #                                anchor that distinguishes an agent rig from the
 #                                owner's live desktop.
 set -uo pipefail
+
+# Resolve the DOM budget once in the parent environment so the generated poll
+# helper and settle-probe receive the same default when the caller leaves it unset.
+VERIFY_TAURI_DOM_TIMEOUT="${VERIFY_TAURI_DOM_TIMEOUT:-30}"
+export VERIFY_TAURI_DOM_TIMEOUT
 
 verify_tauri_dev_host() {
   local candidate="${VERIFY_TAURI_DEV_HOST:-127.0.0.1}"
