@@ -3504,7 +3504,7 @@ export interface RunTestFilesCoreOptions {
   runId?: string;
   /** Recursive mixed-root groups defer detached recovery to their outer operation. */
   allowDetachedRecovery?: boolean;
-  /** Run the maintained Papercusp router with throwaway product PG and a durable reporter sink. */
+  /** Run through the maintained private-PG wrapper. Auto-selected for isolated integration proof files. */
   privatePg?: boolean;
   /** Explicit registered roots keep relative paths inside that checkout. */
   allowSiblingCheckoutFallback?: boolean;
@@ -3518,7 +3518,25 @@ type TestFilesCoreDeps = {
   reportDirectories?: Record<string, string>;
 };
 
+function usesIsolatedIntegrationSourceObserver(file: string): boolean {
+  try {
+    const source = readFileSync(file, 'utf8');
+    return source.includes('isolated-integration-proof')
+      && /\brecordIsolatedIntegrationProof\s*\(/.test(source);
+  } catch {
+    return false;
+  }
+}
+
 export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
+  const normalizedForPrivatePg = normalizeTestFilePaths(opts.files, opts.root, undefined, {
+    allowSiblingCheckoutFallback: opts.allowSiblingCheckoutFallback,
+  });
+  const autoPrivatePg = opts.privatePg === undefined
+    && !process.env.PAPERCUSP_TEST_PG_ADMIN_URL?.trim()
+    && normalizedForPrivatePg.ok
+    && normalizedForPrivatePg.files.some(usesIsolatedIntegrationSourceObserver);
+  const executionOpts = autoPrivatePg ? { ...opts, privatePg: true } : opts;
   const runId = opts.runId ?? randomUUID();
   // The foreground cap bounds transport waiting, while recoveryTimeoutMs is
   // the requested task budget. Preparation must not consume a cleanup reserve
@@ -3538,7 +3556,7 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   let cleanup: OwnedTestDbCleanupResult | undefined;
   let error: string | undefined;
   try {
-    result = await runTestFilesCoreInternal({ ...opts, runId, taskDeadlineAtMs: deadline.taskDeadlineAtMs,
+    result = await runTestFilesCoreInternal({ ...executionOpts, runId, taskDeadlineAtMs: deadline.taskDeadlineAtMs,
       cleanupReserveMs: deadline.cleanupReserveMs,
       ...(callerBound ? { deadline } : {}),
       ...(callerBound && deadline.taskDeadlineAtMs <= foregroundTransportAtMs
@@ -4318,7 +4336,7 @@ export default defineTool({
         `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for provenance/evidence preparation, ledger readback, and finalization before the ~55s MCP transport cap. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
       ),
     privatePg: z.boolean().optional().describe(
-      'Run tests from one Papercusp router checkout inside scripts/with-test-pg.mjs. Product PG is disposable; testing:run preserves its separate durable ledger sink. Detached recovery keeps the same private-PG route.',
+      'Run tests from one Papercusp router checkout inside scripts/with-test-pg.mjs. Automatically selected for files that call recordIsolatedIntegrationProof when no PAPERCUSP_TEST_PG_ADMIN_URL is set; pass false to opt out. Product PG is disposable; the durable test-ledger sink stays separate.',
     ),
     taskDeadlineAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe(
       'Absolute Unix time in milliseconds for this test task, including preparation, admission and owned cleanup. Never extended or replaced by the foreground transport cap. Recovery beyond that cap retains this deadline and cleanup reserve unchanged.',
@@ -4696,7 +4714,7 @@ export default defineTool({
       ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
-      ...(args.privatePg ? { privatePg: true } : {}),
+      ...(args.privatePg !== undefined ? { privatePg: args.privatePg } : {}),
       allowSiblingCheckoutFallback,
       phaseTimings: phaseTimingsMs,
     });
