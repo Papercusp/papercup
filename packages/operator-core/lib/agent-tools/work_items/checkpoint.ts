@@ -316,8 +316,30 @@ async function unresolvedProsePathsInCheckpoint(
 
     const deps = paths.map((path) => `file:${path}`);
     const tokens = await resolveCurrentTokens(deps, ctx, { allowDirectories: true });
-    const missing = paths.filter((path) => tokens.get(`file:${path}`) === null);
+    let missing = paths.filter((path) => tokens.get(`file:${path}`) === null);
     if (missing.length === 0) return undefined;
+
+    // TypeScript and JavaScript prose commonly uses extensionless module paths.
+    // The freshness resolver intentionally checks literal files, so verify the
+    // unresolved extensionless names against the source suffixes before warning.
+    const extensionless = missing.filter((path) => {
+      const leaf = path.slice(path.lastIndexOf('/') + 1);
+      return leaf.length > 0 && !leaf.includes('.');
+    });
+    if (extensionless.length > 0) {
+      const suffixes = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'] as const;
+      const suffixedDeps = extensionless.flatMap((path) =>
+        suffixes.map((suffix) => 'file:' + path + suffix),
+      );
+      const suffixedTokens = await resolveCurrentTokens(suffixedDeps, ctx);
+      const modulePathsThatResolve = new Set(
+        extensionless.filter((path) =>
+          suffixes.some((suffix) => suffixedTokens.get('file:' + path + suffix) != null),
+        ),
+      );
+      missing = missing.filter((path) => !modulePathsThatResolve.has(path));
+      if (missing.length === 0) return undefined;
+    }
 
     const noun = missing.length === 1 ? 'path' : 'paths';
     return {
