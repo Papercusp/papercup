@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { expect, it } from 'vitest';
 import { resolveAgentBinarySync } from './agent-bin-detect';
@@ -31,7 +32,7 @@ function message(response: ServerResponse, sequence: number, tool?: { id: string
   response.end();
 }
 
-it('retains real CLI tool-use IDs at the SDK-hosted MCP session seam without permission hooks', async () => {
+it.each(['sdk', 'http'] as const)('retains real CLI tool-use IDs at the %s MCP session seam without permission hooks', async transportKind => {
   const binary = resolveAgentBinarySync('claude');
   expect(binary, 'installed Claude is required; do not substitute a protocol peer').toBeTruthy();
   const dir = mkdtempSync(join(tmpdir(), 'claude-native-mcp-'));
@@ -44,13 +45,17 @@ it('retains real CLI tool-use IDs at the SDK-hosted MCP session seam without per
   const matchedNativeCalls: Array<{ id: string; name: string; input: unknown }> = [];
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const errors: string[] = [];
+  const httpNativeHeaders: unknown[] = [];
   let permissionCalls = 0;
-  const mcp = new McpServer({ name: 'papercusp-su', version: '1' }, { capabilities: { tools: {} } });
-  mcp.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'carrier_probe',
+  const hosts: McpServer[] = [];
+  const createMcp = () => {
+    const mcp = new McpServer({ name: 'papercusp-su', version: '1' }, { capabilities: { tools: {} } });
+    hosts.push(mcp);
+    mcp.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'carrier_probe',
     description: 'Private carrier fixture', inputSchema: { type: 'object', properties: {
       index: { type: 'integer' }, session_id: { type: 'string' }, callId: { type: 'string' },
     }, required: ['index', 'session_id', 'callId'] } }] }));
-  mcp.server.setRequestHandler(CallToolRequestSchema, async request => {
+    mcp.server.setRequestHandler(CallToolRequestSchema, async request => {
     // The host must independently observe this exact native call before it
     // could retain a request principal. A matching session closure alone does
     // not prove the call's target or arguments; permission hooks may not run.
@@ -62,13 +67,24 @@ it('retains real CLI tool-use IDs at the SDK-hosted MCP session seam without per
     matchedNativeCalls.push({ id: nativeCall.id, name: nativeCall.name, input: nativeCall.input });
     observations.push({ sessionId: nativeId, meta: request.params._meta, arguments: request.params.arguments });
     return { content: [{ type: 'text', text: 'private carrier observed' }] };
-  });
+    });
+    return mcp;
+  };
+  const mcp = createMcp();
   let mainRequests = 0;
   const api = createServer(async (request, response) => {
     try {
       let text = '';
       for await (const chunk of request) text += chunk;
       const body = text ? JSON.parse(text) : {};
+      if (request.url === '/mcp') {
+        if (body.method === 'tools/call') httpNativeHeaders.push(request.headers['x-papercusp-native-session']);
+        const host = createMcp();
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+        await host.connect(transport);
+        await transport.handleRequest(request, response, body);
+        return;
+      }
       requests.push({ path: request.url ?? '', body });
       if (!request.url?.startsWith('/v1/messages')) {
         response.writeHead(404); response.end('{}'); return;
@@ -105,7 +121,9 @@ it('retains real CLI tool-use IDs at the SDK-hosted MCP session seam without per
       CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' },
     model: 'claude-sonnet-4-5', systemPrompt: 'Private offline carrier test.', tools: [],
     settingSources: [], settings: { disableAllHooks: true }, strictMcpConfig: true,
-    mcpServers: { 'papercusp-su': { type: 'sdk', name: 'papercusp-su', instance: mcp } },
+    mcpServers: { 'papercusp-su': transportKind === 'sdk'
+      ? { type: 'sdk', name: 'papercusp-su', instance: mcp }
+      : { type: 'http', url: `http://127.0.0.1:${address.port}/mcp`, headers: { 'x-papercusp-native-session': nativeId } } },
     allowedTools: [toolName], maxTurns: 3, persistSession: false,
     canUseTool: async () => { permissionCalls++; return { behavior: 'deny', message: 'This test must not need permission callbacks' }; },
   } });
@@ -116,6 +134,7 @@ it('retains real CLI tool-use IDs at the SDK-hosted MCP session seam without per
     expect(observations).toEqual(calls.map((callId, index) => ({ sessionId: nativeId,
       meta: expect.objectContaining({ 'claudecode/toolUseId': callId }), arguments: inputs[index] })));
     expect(permissionCalls).toBe(0);
+    expect(httpNativeHeaders).toEqual(transportKind === 'http' ? [nativeId, nativeId] : []);
     expect(matchedNativeCalls).toEqual(calls.map((id, index) => ({ id, name: toolName, input: inputs[index] })));
     const init = events.find(event => event.type === 'system' && event.subtype === 'init');
     expect(init).toMatchObject({ session_id: nativeId });
@@ -136,7 +155,7 @@ it('retains real CLI tool-use IDs at the SDK-hosted MCP session seam without per
   } finally {
     clearTimeout(deadline);
     run.close();
-    await mcp.close();
+    await Promise.all(hosts.map(host => host.close()));
     api.closeAllConnections();
     await new Promise<void>((resolve, reject) => api.close(error => error ? reject(error) : resolve()));
     rmSync(dir, { recursive: true, force: true });
