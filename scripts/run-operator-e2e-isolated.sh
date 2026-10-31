@@ -71,7 +71,7 @@ native_preflight_args=("$@")
 has_explicit_spec=0
 for arg in "$@"; do
   case "$arg" in
-    *.spec.*|*.test.*) has_explicit_spec=1 ;;
+    *.spec.*|*.test.*|*.live.*) has_explicit_spec=1 ;;
   esac
 done
 if [ "$has_explicit_spec" -eq 0 ]; then
@@ -213,7 +213,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 const repoRoot = resolve(process.argv[2]);
 const operatorRoot = resolve(repoRoot, 'apps/operator');
 const inputs = new Set(['apps/operator/playwright.config.mts', 'apps/operator/playwright.config.ts']);
-const specPath = /\.(?:spec|test)\.[cm]?[jt]sx?$/i;
+const specPath = /\.(?:spec|test|live)\.[cm]?[jt]sx?$/i;
 const valueOptions = new Set([
   '--grep', '-g', '--grep-invert', '--project', '-p', '--workers', '-j',
   '--timeout', '--global-timeout', '--retries', '--repeat-each', '--output', '-o',

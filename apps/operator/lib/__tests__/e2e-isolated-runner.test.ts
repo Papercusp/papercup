@@ -209,7 +209,7 @@ function run(
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
-      ...(!args.some(arg => /\.(?:spec|test)\./.test(arg)) ? {
+      ...(!args.some(arg => /\.(?:spec|test|live)\./.test(arg)) ? {
         VERIFY_TAURI_ISOLATED_SEED: 'ready',
         PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
         PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'full-suite-acceptance.json'),
@@ -255,6 +255,14 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(selected.cwd).toBe(join(REPO_ROOT, 'apps/operator'));
     expect(selected.argv).toEqual([...args, '--list', '--reporter=json']);
     expect(result.out).toContain('OPERATOR_E2E_SELECTION count=1');
+    expect(result.recorded.argv).toEqual(args);
+  });
+
+  it('treats an explicit .live.ts profile as a filtered run before native preflight', () => {
+    const f = fixture(0);
+    const args = ['--config', 'playwright.engineering-evidence.config.ts', 'e2e/engineering-evidence-controls.live.ts'];
+    const result = run(f, args, { PAPERCUSP_ENGINEERING_CONTROLS_LIVE: '1' });
+    expect(result.status, result.out).toBe(0);
     expect(result.recorded.argv).toEqual(args);
   });
   it('admits its maintained assertion through the real native preflight', () => {
@@ -363,6 +371,17 @@ describe('run-operator-e2e-isolated.sh', () => {
     const explicitHead = exercise(join(f.dir, 'explicit-head'), 'HEAD');
     expect(explicitHead.result.status, explicitHead.result.stderr).toBe(0);
     expect(readFileSync(explicitHead.refFile, 'utf8')).toBe(head.stdout.trim());
+
+    const explicitLive = exercise(join(f.dir, 'explicit-live'), 'HEAD', [
+      '--config', 'playwright.engineering-evidence.config.ts', 'e2e/engineering-evidence-controls.live.ts',
+    ]);
+    expect(explicitLive.result.status, explicitLive.result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(readFileSync(explicitLive.inputsPathFile, 'utf8'), 'utf8'))).toEqual([
+      'apps/operator/e2e/engineering-evidence-controls.live.ts',
+      'apps/operator/playwright.config.mts',
+      'apps/operator/playwright.config.ts',
+      'apps/operator/playwright.engineering-evidence.config.ts',
+    ]);
 
     for (const [index, args] of [[], ['--workers=1'], ['--workers', '1']].entries()) {
     const fullSuite = exercise(join(f.dir, 'full-suite-' + index), undefined, args);

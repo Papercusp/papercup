@@ -3520,9 +3520,11 @@ type TestFilesCoreDeps = {
   reportDirectories?: Record<string, string>;
 };
 
-function usesIsolatedIntegrationSourceObserver(file: string): boolean {
+function usesIsolatedIntegrationSourceObserver(file: string, root: string): boolean {
   try {
-    const source = readFileSync(file, 'utf8');
+    const sourcePath = isAbsolute(file) ? file : resolve(root, file);
+    if (!isAbsolute(file) && !isInsideRoot(root, sourcePath)) return false;
+    const source = readFileSync(sourcePath, 'utf8');
     return source.includes('isolated-integration-proof')
       && /\brecordIsolatedIntegrationProof\s*\(/.test(source);
   } catch {
@@ -3537,7 +3539,7 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   const autoPrivatePg = opts.privatePg === undefined
     && !process.env.PAPERCUSP_TEST_PG_ADMIN_URL?.trim()
     && normalizedForPrivatePg.ok
-    && normalizedForPrivatePg.files.some(usesIsolatedIntegrationSourceObserver);
+    && normalizedForPrivatePg.files.some(file => usesIsolatedIntegrationSourceObserver(file, opts.root));
   const executionOpts = autoPrivatePg ? { ...opts, privatePg: true } : opts;
   const runId = opts.runId ?? randomUUID();
   // The foreground cap bounds transport waiting, while recoveryTimeoutMs is
