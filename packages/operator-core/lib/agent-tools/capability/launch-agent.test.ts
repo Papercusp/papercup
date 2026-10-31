@@ -84,11 +84,11 @@ const codexThreadWriterHolderMock = vi.hoisted(() =>
 );
 const originalRoutingGuardMock = vi.hoisted(() => vi.fn());
 const inspectBlindReviewResumeTargetMock = vi.hoisted(() => vi.fn());
-const verifyBlindReviewSessionBindingMock = vi.hoisted(() => vi.fn());
+const verifyBlindReviewSessionResumeBindingMock = vi.hoisted(() => vi.fn());
 vi.mock('../../blind-review-session-bindings', async (orig) => ({
   ...(await orig<typeof import('../../blind-review-session-bindings')>()),
   inspectBlindReviewResumeTarget: (...args: unknown[]) => inspectBlindReviewResumeTargetMock(...args),
-  verifyBlindReviewSessionBinding: (...args: unknown[]) => verifyBlindReviewSessionBindingMock(...args),
+  verifyBlindReviewSessionResumeBinding: (...args: unknown[]) => verifyBlindReviewSessionResumeBindingMock(...args),
 }));
 vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -383,7 +383,7 @@ beforeEach(() => {
     sourcePath: '/repo/blueprint.yaml', sourceRevision: 'pinned-composition-revision', layers: [],
   }));
   inspectBlindReviewResumeTargetMock.mockReset().mockResolvedValue({ binding: null, recruiterLaunch: false });
-  verifyBlindReviewSessionBindingMock.mockReset().mockResolvedValue({ ok: true });
+  verifyBlindReviewSessionResumeBindingMock.mockReset().mockResolvedValue({ ok: true });
   goalLaunchResolveMock.mockReset();
   declareCouplingMock.mockReset().mockResolvedValue({ agentA: 'su-caller', agentB: 'su-verifier' });
   rmSync(HEADLESS_RESUME_LOG_PATH, { force: true });
@@ -4650,7 +4650,7 @@ describe('blind-review resume is recruiter-only', () => {
     }, ctx);
     expect(isError(result)).toBe(true);
     expect(textOf(result)).toContain('blind_review_recovery_recruiter_only');
-    expect(verifyBlindReviewSessionBindingMock).not.toHaveBeenCalled();
+    expect(verifyBlindReviewSessionResumeBindingMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
@@ -4661,7 +4661,7 @@ describe('blind-review resume is recruiter-only', () => {
     resolveResumeTargetMock.mockResolvedValue(source);
     findLiveHostMock.mockReturnValue(null);
     inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
-    verifyBlindReviewSessionBindingMock.mockResolvedValue({ ok: true });
+    verifyBlindReviewSessionResumeBindingMock.mockResolvedValue({ ok: true });
     const permit = {
       bindingId: binding.id, leaseId: 'lease-1', workspaceId: binding.workspaceId, planSlug: binding.planSlug,
       activationAuditSeq: binding.activationAuditSeq, reviewerOwnerId: binding.reviewerOwnerId,
@@ -4671,6 +4671,7 @@ describe('blind-review resume is recruiter-only', () => {
       ...(ctx as unknown as Record<string, unknown>), ownerId: BLIND_GAP_REVIEW_ACTOR,
       principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: 'ws-test' },
       [INTERNAL_BLIND_REVIEW_RESUME]: permit,
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: binding.confinementSnapshot,
     } as never;
     const result = await launchAgent.handler({
       resume: { sessionId: 'blind-native-1' }, fork: false, headless: true, brief: 'continue the review',
@@ -4683,5 +4684,37 @@ describe('blind-review resume is recruiter-only', () => {
     expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--fork');
     expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--model=');
     expect(dataOf(result)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: 'su-reviewer' });
+    expect(declareConfinementMock).toHaveBeenCalledWith({ ownerId: 'su-reviewer', workspaceId: 'ws-test',
+      confinement: binding.confinementSnapshot });
+    expect(verifyBlindReviewSessionResumeBindingMock.mock.invocationCallOrder[0]).toBeLessThan(declareConfinementMock.mock.invocationCallOrder[0]!);
+    expect(declareConfinementMock.mock.invocationCallOrder[0]).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]!);
   });
+  it.each(['wrong-principal', 'wrong-lease', 'expired-lease', 'unbound-target', 'missing-ceiling', 'changed-ceiling', 'changed-declaration', 'renewal-failure'])
+    ('refuses recruiter recovery for %s before spawn', async (failure) => {
+      callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
+      resolveResumeTargetMock.mockResolvedValue(source);
+      findLiveHostMock.mockReturnValue(null);
+      inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
+      if (failure === 'unbound-target') resolveResumeTargetMock.mockResolvedValue({ ...source, advSessionId: null });
+      if (failure === 'expired-lease') inspectBlindReviewResumeTargetMock.mockResolvedValue({
+        binding: { ...binding, resumeLeaseExpiresAt: new Date(Date.now() - 1).toISOString() }, recruiterLaunch: true });
+      const permit = { bindingId: binding.id, leaseId: failure === 'wrong-lease' ? 'other' : 'lease-1',
+        workspaceId: binding.workspaceId, planSlug: binding.planSlug, activationAuditSeq: binding.activationAuditSeq,
+        reviewerOwnerId: binding.reviewerOwnerId, advSessionId: binding.advSessionId, nativeSessionId: binding.nativeSessionId };
+      if (failure === 'changed-declaration') verifyBlindReviewSessionResumeBindingMock.mockResolvedValue({
+        ok: false, code: 'confinement_mismatch', message: 'changed' });
+      if (failure === 'renewal-failure') declareConfinementMock.mockRejectedValueOnce(new Error('store down'));
+      const result = await launchAgent.handler({ resume: { sessionId: 'blind-native-1' }, fork: false,
+        headless: true, brief: 'continue' }, {
+        ...(ctx as unknown as Record<string, unknown>), ownerId: BLIND_GAP_REVIEW_ACTOR,
+        principal: { kind: 'system', slug: failure === 'wrong-principal' ? 'other' : BLIND_GAP_REVIEW_ACTOR, workspaceId: 'ws-test' },
+        [INTERNAL_BLIND_REVIEW_RESUME]: permit,
+        ...(failure === 'missing-ceiling' ? {} : { [INTERNAL_SCOPED_SESSION_CONFINEMENT]: failure === 'changed-ceiling'
+          ? { ...binding.confinementSnapshot, denyOutside: ['plans:blind-review', 'capability:bash'] } : binding.confinementSnapshot }),
+      } as never);
+      expect(isError(result), textOf(result)).toBe(true);
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      if (failure !== 'renewal-failure') expect(declareConfinementMock).not.toHaveBeenCalled();
+    });
 });

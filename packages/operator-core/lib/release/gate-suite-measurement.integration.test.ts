@@ -32,7 +32,7 @@ beforeEach(async () => {
   for (const t of [target, other]) {
     await sql`INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id, metadata)
-      VALUES (${t.workspaceId}, ${t.installSlug}, 'green-checkpoint', 'cron', '{}'::jsonb,
+      VALUES (${t.workspaceId}, ${t.installSlug}, ${t === target ? 'green-checkpoint' : 'other-checkpoint'}, 'cron', '{}'::jsonb,
         'system:green-checkpoint', TRUE, ${t.workspaceId}, '{"sentinel":true,"gate_health":{"foreignKey":"keep"}}'::jsonb)`;
   }
 });

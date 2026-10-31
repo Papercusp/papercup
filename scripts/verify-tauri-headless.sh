@@ -1267,6 +1267,21 @@ preflight_verifier_pinned_inputs() {
 }
 verifier_run_step verifier-pinned-inputs-preflight preflight_verifier_pinned_inputs || exit $?
 
+# EI-27529057401533862: a live Xvfb alone cannot activate native windows.
+# Reject missing display tools before reserving Cargo or preparing snapshots.
+preflight_native_display_dependencies() {
+  [ "$PREPARE_ONLY" != "1" ] || return 0
+  local dependency missing=0
+  for dependency in Xvfb openbox xdpyinfo xprop timeout; do
+    if ! command -v "$dependency" >/dev/null 2>&1; then
+      echo "FATAL: native display dependency missing: $dependency (install it before running the native verifier)" >&2
+      missing=1
+    fi
+  done
+  [ "$missing" -eq 0 ]
+}
+verifier_run_step native-display-dependencies preflight_native_display_dependencies || exit $?
+
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
 # slot descriptor for the whole run; tauri-guarded inherits this exact target.
@@ -3850,6 +3865,44 @@ start_display_server() {
   fi
   start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox
   OPENBOX_PID="$VERIFY_STARTED_PROCESS_PID"
+  # Starting the process is not readiness: a missing/exited WM used to surface
+  # only after a full desktop build as xdotool's _NET_ACTIVE_WINDOW error.
+  # EWMH requires a root supporting-window pointer and its reciprocal pointer.
+  # Also require activation support, with bounded probes and both PIDs alive.
+  local wm_started=$SECONDS wm_deadline=$((SECONDS + 15)) wm_failure wm_window
+  while :; do
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+      wm_failure="Xvfb exited before window-manager readiness"
+      break
+    fi
+    if ! kill -0 "$OPENBOX_PID" 2>/dev/null; then
+      wm_failure="Openbox exited before readiness"
+      break
+    fi
+    if timeout --signal=TERM --kill-after=1s 2s env DISPLAY=":$DISPLAY_NUM" \
+      xprop -root _NET_SUPPORTING_WM_CHECK _NET_SUPPORTED >"$WORK/ewmh-root.log" 2>&1; then
+      wm_window="$(sed -n 's/^_NET_SUPPORTING_WM_CHECK(WINDOW): window id # \(0x[[:xdigit:]]*\)$/\1/p' "$WORK/ewmh-root.log")"
+      if [ -n "$wm_window" ] && ! [[ "$wm_window" =~ ^0x0+$ ]] && \
+        grep -Eq '^_NET_SUPPORTED\(ATOM\) =.*[ ,]_NET_ACTIVE_WINDOW(,|$)' "$WORK/ewmh-root.log" && \
+        timeout --signal=TERM --kill-after=1s 2s env DISPLAY=":$DISPLAY_NUM" \
+          xprop -id "$wm_window" _NET_SUPPORTING_WM_CHECK >"$WORK/ewmh-wm.log" 2>&1 && \
+        grep -Fxq "_NET_SUPPORTING_WM_CHECK(WINDOW): window id # $wm_window" "$WORK/ewmh-wm.log" && \
+        kill -0 "$OPENBOX_PID" 2>/dev/null && kill -0 "$XVFB_PID" 2>/dev/null; then
+        log "Openbox :$DISPLAY_NUM EWMH ready after $((SECONDS - wm_started))s (pid=$OPENBOX_PID, window=$wm_window)"
+        break
+      fi
+    fi
+    if [ "$SECONDS" -ge "$wm_deadline" ]; then
+      wm_failure="EWMH readiness deadline exceeded (requires _NET_SUPPORTING_WM_CHECK and _NET_ACTIVE_WINDOW)"
+      break
+    fi
+    sleep 0.2
+  done
+  if [ -n "${wm_failure:-}" ]; then
+    echo "FATAL: window manager :$DISPLAY_NUM $wm_failure — see $WORK/openbox.log and $WORK/ewmh-*.log" >&2
+    tail -n 40 "$WORK/openbox.log" "$WORK/xvfb.log" "$WORK/ewmh-root.log" "$WORK/ewmh-wm.log" >&2 2>/dev/null || true
+    exit 1
+  fi
 }
 # Arm the EXIT/signal traps BEFORE the first start_display_server call (not
 # after, as a naive factor-out would do) — teardown()/handle_signal() check
