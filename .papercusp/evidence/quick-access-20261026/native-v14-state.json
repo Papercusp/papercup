@@ -1,0 +1,46 @@
+{
+  "status": "repair-verified-awaiting-containing-commit-no-native-launched",
+  "pinStatus": "The pin/root below are historical c999 qualification failure, ineligible for native. A NEW final containing pin is required.",
+  "publicationAwait": { "id": 389261, "event": "resource:released:git-sync:papercusp", "harness": "papercusp", "timeoutSec": 300, "onTimeout": "wake" },
+  "publicationFire": { "execSession": 16659, "route": "ptool git-sync:run explicit3271", "status": "completed-skipped-exclusive_pending", "cause": "Temporary global git-sync barrier held by system:dev-restart at call time; later live read confirmed barrier cleared and scheduled papercusp sync acquired shared global lease21:27. No fire session remains running; do not drain/retry16659." },
+  "codexLocks": { "mode": "manual", "reason": "Latest automatic post-edit release failed at21:28. Exact own orphan1c22e9ed released explicitly. Use manual until a fresh orient verifies automatic again." },
+  "nextAudit": "WI9574 is marked grinding/distinct-failures. Before any next slow attempt read the current verification-attempt fingerprints and post the canonical [attempt-audit] note naming every fingerprint, failure class, repair and recurrence proof. Source: packages/operator-core/lib/verification-attempts/loop-gate.ts and plan-iteration-metrics.ts.",
+  "nativeSnapshotNeedle": "Quick Access launcher",
+  "currentFixtureRepair": {
+    "issue": "EI-27530973613249380",
+    "source": "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts",
+    "changes": "Isolate pinned preflight extraction; accept both configured timeout124 and hard-kill137 outcomes while preserving bounded failure and retained evidence assertions.",
+    "passed": 116, "skipped": 0, "exitCode": 0,
+    "finishedAt": "2026-10-31T21:16:30.794Z",
+    "proofScope": "Local dirty fixture at8cd08107; publication and clean qualification still required.",
+    "actualProbe": "Identical budget1 production probes returned124/1027ms and137/2216ms, both shell1/process-failed/START only; budget3 control passed1569ms. Production timeouts unchanged."
+  },
+  "workItem": "WI-6554700010029574",
+  "harnessRepair": "EI-27529057401533862",
+  "originalPopupIssue": "EI-27287192561301343",
+  "pin": "c999b378e82113689f9b73dbdc0c8b06947e44b3",
+  "desktopPin": "f0e107bc3275816d50be2fd59af66ea260a71d16",
+  "root": "/tmp/pcv/papercusp-lint-as-committed-c999b378e8-H4pp0Q",
+  "retainedBy": ".papercusp/evidence/quick-access-20261026/successor-final-native.json",
+  "qualification": {
+    "task": "0mvww1gxe978mnznvzr",
+    "testObservation": "Source-snapshot pinned-input fixture failed because its extraction ran the new display preflight with PREPARE_ONLY unset. The clean candidate is ineligible. Corrected fixture on canonical staging to isolate its own preflight invocation. Exact task terminal exit still requires authoritative receipt; live task read returned ended_unobserved/null exitCode. Native and collection did not run because qualification was first in an && chain.",
+    "bash": "5ae571d4-347",
+    "log": ".papercusp/scratch/bash-5ae571d4-347.log",
+    "deadline": "2026-10-31T21:33:16.526Z",
+    "memoryMaxMb": 16384,
+    "confined": true,
+    "insideOperatorCgroup": false,
+    "scopeUnit": "pc-0mvww1gxe978mnznvzr.service",
+    "procedure": "Eight maintained diagnostic, cleanup, source-seal, display, GTK and boot/ownership test files, then collection of exactly one native Quick Access case. Require terminal exit0 and zero skips before launching native."
+  },
+  "localRepairChecks": {
+    "correctedDisplayTests": { "passed": 13, "skipped": 0, "exitCode": 0, "scope": "local dirty source; clean qualification required" },
+    "companionTests": { "passed": 26, "skipped": 0, "exitCode": 0 },
+    "bashSyntax": "pass",
+    "diffCheck": "pass",
+    "actualProductionProbe": "start_display_server with private real Xvfb and Openbox exited0 and advertised reciprocal EWMH activation readiness. xprop supported-atoms uses '=', corrected before this pass."
+  },
+  "audit": "V13 failed before first shortcut because Openbox was absent and unchecked. Early dependencies now reject missing tools before Cargo/snapshot; bounded live-PID and reciprocal-EWMH activation probes prevent false boot success. Existing failure-class guards for generated cleanup census, frozen dependency/CLI closure, source-loader seal and passive popup diagnostics are included in clean qualification. Original R1 visibility assertion and deadlines are unchanged. Do not rerun failed8fed0b/46f; next full run must use this qualified clean pin and a new task/group. No native pass/acceptance/ship claim.",
+  "next": "Finish canonical fingerprint audit before any slow attempt. On await389261 release/timeout verify six selected files match HEAD, materialize a NEW containing pin, qualify cleanly and collect one native case before ONE confined native. Set VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Quick Access launcher'. Do not launch native from c999 or failed8fed0b/46f. Saved v13 amendment remains ineligible."
+}
