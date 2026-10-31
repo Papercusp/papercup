@@ -507,6 +507,26 @@ describe('a refusal is an ANSWER that can never read as an empty selection', () 
 });
 
 describe('provenance states what the pack actually is', () => {
+  it('reports the producer phases before a slow flag read can consume the caller deadline', async () => {
+    let finishFlag!: (enabled: boolean) => void;
+    vi.mocked(getFlag).mockReturnValueOnce(new Promise<boolean>(resolve => { finishFlag = resolve; }));
+    const phases: string[] = [];
+    const pending = packerFacade('pack', BASE, stubEffects({ onPhase: phase => phases.push(phase) }));
+    expect(phases).toEqual(['flag-read']);
+    finishFlag(false);
+    expect((await pending).answer.error).toMatch(/disabled/);
+    expect(phases).toEqual(['flag-read']);
+  });
+
+  it('distinguishes execution, provenance, artifact and preview phases without changing the pack', async () => {
+    const phases: string[] = [];
+    const result = await packerFacade('pack', BASE, stubEffects({ onPhase: phase => phases.push(phase) }));
+    expect(phases).toEqual(['flag-read', 'identity', 'execution', 'selection', 'provenance', 'artifact-write', 'preview']);
+    expect(result.answer.error).toBeNull();
+    expect(result.artifact?.provenance.securityScan).toBe('secretlint+deny-set');
+    expect(result.answer.sites.map(site => site.path)).toEqual(['a.ts']);
+  });
+
   it('stamps engine, version, commit, dirtiness and selection', async () => {
     const r = await packerFacade('pack', BASE, stubEffects());
     const p = r.artifact?.provenance;

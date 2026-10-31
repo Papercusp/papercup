@@ -711,6 +711,32 @@ describe('P012 bounded scoped task briefs', () => {
         /^Task brief exceeded its bounded read deadline during safe-pack \(elapsed \d+ms; setup \d+ms, repository-root \d+ms, scope-read \d+ms, safe-pack \d+ms\)\.$/);
     } finally { vi.useRealTimers(); }
   }, 10_000);
+  it.each(['flag-read', 'execution', 'artifact-write', 'preview'] as const)(
+    'preserves the safe packer %s phase when the unchanged claim deadline wins', async stage => {
+      const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+      const deps = depsFor(root);
+      let packStarted: () => void = () => {};
+      const started = new Promise<void>(resolve => { packStarted = resolve; });
+      deps.pack = vi.fn((_op, _args, effects) => {
+        effects?.onPhase?.(stage);
+        packStarted();
+        return new Promise<never>(() => {});
+      });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const pending = getClaimTimeTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
+          payload: { paths: ['target.ts'] } } }, deps);
+        await started;
+        await vi.advanceTimersByTimeAsync(TASK_BRIEF_BUDGET_MS);
+        const brief = (await pending)?.taskBrief;
+        expect(brief?.status).toBe('unknown');
+        expect(brief?.sourceFingerprint).toBeNull();
+        expect(brief?.files).toEqual([]);
+        expect(brief?.exclusions[0]).toContain(`during safe-pack:${stage} (`);
+        expect(brief?.exclusions[0]).toMatch(/safe-pack:[a-z-]+ \d+ms/);
+      } finally { vi.useRealTimers(); }
+    }, 10_000);
+
   it('shares the capture window with compilation and rejects evidence from a file omitted by the safe packer', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "CURRENT_SOURCE"; }');
     const deps = depsFor(root), pack = deps.pack;

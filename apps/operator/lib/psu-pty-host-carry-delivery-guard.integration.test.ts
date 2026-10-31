@@ -171,6 +171,7 @@ describe('carry-respawn native-turn delivery authority', () => {
     const eventLog = eventLogPathForOwner(ownerId);
     const marker = '⟦turn-origin:self-compaction nonce:0011223344556677⟧';
     const text = `${marker}\nContinue the exact saved work`;
+    const deliveryId = `late-binding-${ownerId}`;
     const { captured, typeInput, io } = fakeIo();
     const emitCompacted = vi.fn();
     let confirm: ((id?: string) => void) | undefined;
@@ -207,7 +208,8 @@ describe('carry-respawn native-turn delivery authority', () => {
       : [];
     try {
       await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 2000 });
-      await injectEnvelope(socketPath, { mode: 'carry-respawn', data: text, systemPromptAddendum: 'carry fixture' });
+      const carry = { mode: 'carry-respawn', deliveryId, data: text, systemPromptAddendum: 'carry fixture' };
+      await injectEnvelope(socketPath, carry);
       await vi.waitFor(() => expect(events()).toContainEqual(expect.objectContaining({
         kind: 'respawn-carry-dropped', reason: 'successor-reanchor-unconfirmed',
       })), { timeout: 3000 });
@@ -228,6 +230,8 @@ describe('carry-respawn native-turn delivery authority', () => {
         expect(readFileSync(transcript, 'utf8').trim().split('\n')).toHaveLength(1);
         expect(events().filter((event) => event.kind === 'respawn-carry-delivered')).toHaveLength(1);
         expect(emitCompacted).toHaveBeenCalledOnce();
+        expect(await injectEnvelope(socketPath, carry)).toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+        expect(events().filter((event) => event.kind === 'pty-spawned')).toHaveLength(2);
       }
     } finally {
       if (existsSync(socketPath)) await injectRaw(socketPath, 'QUIT');
@@ -795,7 +799,9 @@ describe('carry-respawn native-turn delivery authority', () => {
           kind: 'respawn-carry-delivered',
         }));
         expect(existsSync(socketPath)).toBe(true);
-        expect(JSON.parse(readFileSync(metaPath, 'utf8')).carryDropCount).toBe(1);
+        // The event log is synchronous; discovery metadata uses an async
+        // atomic writer and can still contain the preceding snapshot here.
+        await vi.waitFor(() => expect(JSON.parse(readFileSync(metaPath, 'utf8')).carryDropCount).toBe(1));
         await injectRaw(socketPath, 'QUIT\n');
         expect(await done).toBe(0);
         expect(exitCode).toBe(0);

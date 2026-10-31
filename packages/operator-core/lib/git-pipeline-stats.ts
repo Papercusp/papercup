@@ -46,7 +46,7 @@ import {
   type StoredFrozenRepairConvergence,
 } from './release/frozen-candidate-repair-queue';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
-import { parseTestPassReuseHealth, type TestPassReuseHealth } from './release/test-pass-reuse-report';
+import { parseGateSuiteMeasurement, parseTestPassReuseHealth, type TestPassReuseHealth } from './release/test-pass-reuse-report';
 import { parseGateRoundPhases, type GateRoundPhases } from './release/gate-round-phases';
 import { readGateNonVerdictReasons, reconstructGateFireDays, type GateFireDay } from './release/gate-fire-ledger';
 import { resolveWorkspaceForHarness } from './harness/workspace-for-harness';
@@ -387,6 +387,7 @@ export interface GitPipelineSnapshot {
      * field, or a malformed blob) — NOT that reuse saved nothing.
      */
     testPassReuse?: TestPassReuseHealth | null;
+    lastSuiteMeasurement?: import('./release/test-pass-reuse-report').GateSuiteMeasurement | null;
     /** P-013: where the latest gate round's wall-clock time went (stamped setup phases, the
      *  candidate suite, and `other`). Null = not measured this round, never "took no time". */
     roundPhases?: GateRoundPhases | null;
@@ -1964,6 +1965,7 @@ export async function gitPipelineSnapshot(
       slo,
       // P-013: same shape-checked discipline — an absent or wrong-typed blob reads as null.
       testPassReuse: parseTestPassReuseHealth(gateHealth['testPassReuse']),
+      lastSuiteMeasurement: parseGateSuiteMeasurement(gateHealth['lastSuiteMeasurement']),
       roundPhases: parseGateRoundPhases(gateHealth['roundPhases']),
     },
     openConflict,

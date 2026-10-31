@@ -5679,12 +5679,13 @@ export function retirePendingSubmission(pendingById: Map<string, unknown>, pendi
  * @param {{nativeId?: string | null, readNativeId?: () => string | null,
  * report?: (id: string, options: {onConfirmed: (id?: string) => void}) => any,
  * isCurrent?: () => boolean, timeoutMs?: number, pollMs?: number,
- * alreadyConfirmed?: boolean, discoveryTimeoutMs?: number}} options
+ * alreadyConfirmed?: boolean, discoveryTimeoutMs?: number,
+ * onConfirmed?: (binding: {ok: true, nativeId: string, reason: string}) => void}} options
  * `discoveryTimeoutMs` (P-005 / D-003) bounds only the search for a missing
  * native id. Once the id is known, the operator report keeps `timeoutMs`: a late
  * id found at the edge of the window must still be able to confirm.
  */
-export function waitForRespawnBinding({ nativeId, readNativeId, report, isCurrent, timeoutMs, pollMs, alreadyConfirmed, discoveryTimeoutMs, }: {
+export function waitForRespawnBinding({ nativeId, readNativeId, report, isCurrent, timeoutMs, pollMs, alreadyConfirmed, discoveryTimeoutMs, onConfirmed: notifyConfirmed, }: {
     nativeId?: string | null;
     readNativeId?: () => string | null;
     report?: (id: string, options: {
@@ -5695,6 +5696,11 @@ export function waitForRespawnBinding({ nativeId, readNativeId, report, isCurren
     pollMs?: number;
     alreadyConfirmed?: boolean;
     discoveryTimeoutMs?: number;
+    onConfirmed?: (binding: {
+        ok: true;
+        nativeId: string;
+        reason: string;
+    }) => void;
 }): Promise<{
     ok: boolean;
     nativeId: string | null;

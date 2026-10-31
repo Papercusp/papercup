@@ -8,7 +8,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import type { ClaimTimeEnrichmentSubject } from '../claim-time-enrichment';
 import { deriveRepoPathsFromText } from '../agent-tools/work_items/_derive-paths';
 import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type ChangeReportEffects, type ChangeReportRequest,
-  type PackerEffects, type PackerResult } from './packer-facade';
+  type PackerEffects, type PackerPhase, type PackerResult } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { pushSnapshotMissReason, queryPushSnapshot } from './push-snapshot';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -294,7 +294,7 @@ export function claimedScopePaths(items: readonly Pick<ClaimTimeEnrichmentSubjec
 
 /** The capture phase in flight; a deadline fallback reports it so a timeout is diagnosable. */
 export type TaskBriefPhase = 'setup' | 'repository-root' | 'plan-decisions' | 'scope-read' | 'safe-pack'
-  | 'compiler-wait' | 'incident' | 'source-recheck';
+  | `safe-pack:${PackerPhase}` | 'compiler-wait' | 'incident' | 'source-recheck';
 
 /** Root authority is the workspace registry, never payload.rootPath or operator cwd. */
 export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
@@ -343,10 +343,13 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     if (ms <= 0) throw new Error('task brief deadline exceeded');
     return ms;
   };
-  const effects: PackerEffects = { ...deps.effects, exec: (bin, argv, opts) => deps.effects.exec(bin, argv, {
-    ...opts, timeoutMs: Math.min(opts?.timeoutMs ?? TASK_BRIEF_BUDGET_MS, remaining()),
-    maxBuffer: Math.min(opts?.maxBuffer ?? 262144, 262144),
-  }) };
+  const effects: PackerEffects = { ...deps.effects,
+    onPhase: value => { phase.current = `safe-pack:${value}`; deps.effects.onPhase?.(value); },
+    exec: (bin, argv, opts) => deps.effects.exec(bin, argv, {
+      ...opts, timeoutMs: Math.min(opts?.timeoutMs ?? TASK_BRIEF_BUDGET_MS, remaining()),
+      maxBuffer: Math.min(opts?.maxBuffer ?? 262144, 262144),
+    }),
+  };
   try {
     const workspaceId = ref.workspaceId ?? activeWorkspaceId();
     phase.current = 'repository-root';
@@ -423,6 +426,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     const packed: PackerResult = await deps.pack('pack', {
       rootPath: root, include: brief.scope.paths, format: 'xml', compress: false,
     }, effects);
+    phase.current = 'source-recheck';
     if (packed.answer.error || !packed.artifact?.path) throw new Error(packed.answer.error ?? 'safe pack unavailable');
     const after = await Promise.all([...texts.keys()].map(async path => [path, hash(await readFile(join(root, path), 'utf8'))]));
     if (hash(JSON.stringify(after)) !== before) throw new Error('task source changed while packing; re-read before using excerpts');

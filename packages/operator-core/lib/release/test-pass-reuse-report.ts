@@ -1053,6 +1053,94 @@ export interface TestPassReuseSuite {
   completedAtMs: number;
 }
 
+/** P-009: one actual suite invocation, independent of later verdict replays/queue ticks. */
+export interface GateSuiteMeasurement extends TestPassReuseSuite {
+  schemaVersion: 1;
+  judgedSha: string;
+  /** null means the suite did not print a complete, valid resume summary. */
+  resume: {
+    hits: number;
+    misses: number;
+    reasons: Record<string, number>;
+    invocations: Array<{
+      hits: number;
+      misses: number;
+      proofIdentity: string;
+      group: string;
+      scope: string | null;
+      reasons: Record<string, number>;
+    }>;
+  } | null;
+  reuse: TestPassReuseHealth | null;
+}
+
+function parseTaskResume(value: unknown): GateSuiteMeasurement['resume'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as NonNullable<GateSuiteMeasurement['resume']>;
+  const counts = (r: unknown): r is Record<string, number> =>
+    Boolean(r && typeof r === 'object' && !Array.isArray(r) && Object.values(r).every(isCount));
+  if (!Array.isArray(v.invocations) || !v.invocations.length || !counts(v.reasons) ||
+      !isCount(v.hits) || !isCount(v.misses)) return null;
+  const reasons = new Map<string, number>();
+  let hits = 0;
+  let misses = 0;
+  for (const row of v.invocations) {
+    if (!row || !isCount(row.hits) || !isCount(row.misses) || !counts(row.reasons) ||
+        !['current-run', 'initial-run', 'cross-run'].includes(row.proofIdentity) ||
+        typeof row.group !== 'string' || !/^(?:[0-9a-f]{12}|missing)$/.test(row.group) ||
+        !(row.scope === null || ['proof', 'current-run', 'cross-run', 'missing'].includes(row.scope)) ||
+        Object.values(row.reasons).reduce((a, b) => a + b, 0) !== row.hits + row.misses) return null;
+    hits += row.hits;
+    misses += row.misses;
+    for (const [reason, count] of Object.entries(row.reasons)) reasons.set(reason, (reasons.get(reason) ?? 0) + count);
+  }
+  if (!isCount(hits) || !isCount(misses) || hits !== v.hits || misses !== v.misses ||
+      reasons.size !== Object.keys(v.reasons).length || [...reasons].some(([k, n]) => v.reasons[k] !== n)) return null;
+  return { hits, misses, reasons: Object.fromEntries(reasons), invocations: v.invocations.map((r) => ({ ...r, reasons: { ...r.reasons } })) };
+}
+
+export function parseGateSuiteMeasurement(value: unknown): GateSuiteMeasurement | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as GateSuiteMeasurement;
+  const suite = parseReuseSuite(v, v.completedAtMs);
+  if (v.schemaVersion !== 1 || !suite || typeof v.judgedSha !== 'string' || !/^[0-9a-f]{7,64}$/.test(v.judgedSha)) return null;
+  const reuse = parseTestPassReuseHealth(v.reuse);
+  // Never attach counters from a different invocation, even when both judged the same SHA.
+  if (v.reuse !== null && (!reuse || reuse.judgedSha !== v.judgedSha ||
+      reuse.suite?.runGroupId !== suite.runGroupId || reuse.suite.command !== suite.command ||
+      reuse.suite.startedAtMs !== suite.startedAtMs || reuse.suite.completedAtMs !== suite.completedAtMs)) return null;
+  const resume = parseTaskResume(v.resume);
+  if (v.resume !== null && !resume) return null;
+  return { schemaVersion: 1, judgedSha: v.judgedSha, ...suite, resume, reuse };
+}
+
+/** Input is ONLY this child's suite output, never the orchestrator or post-suite log. */
+export function buildGateSuiteMeasurement(
+  output: string, judgedSha: string | null | undefined, suite: TestPassReuseSuite,
+): GateSuiteMeasurement | null {
+  const invocations: NonNullable<GateSuiteMeasurement['resume']>['invocations'] = [];
+  let malformed = false;
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.includes('AFFECTED_TASK_CACHE_SUMMARY')) continue;
+    const m = line.match(/AFFECTED_TASK_CACHE_SUMMARY hits=(\d+) misses=(\d+) proofIdentity=(\S+) group=(\S+)(?: scope=(\S+))? reasons=(\{.*\})\s*$/);
+    if (!m) { malformed = true; continue; }
+    try {
+      invocations.push({ hits: Number(m[1]), misses: Number(m[2]), proofIdentity: m[3]!, group: m[4]!, scope: m[5] ?? null, reasons: JSON.parse(m[6]!) });
+    } catch { malformed = true; }
+  }
+  const reasons = new Map<string, number>();
+  for (const row of invocations) {
+    if (!row.reasons || typeof row.reasons !== 'object') { malformed = true; continue; }
+    for (const [reason, n] of Object.entries(row.reasons)) reasons.set(reason, (reasons.get(reason) ?? 0) + n);
+  }
+  const resume = malformed || !invocations.length ? null : parseTaskResume({
+    hits: invocations.reduce((n, r) => n + r.hits, 0), misses: invocations.reduce((n, r) => n + r.misses, 0),
+    reasons: Object.fromEntries(reasons), invocations,
+  });
+  return parseGateSuiteMeasurement({ schemaVersion: 1, judgedSha, ...suite, resume,
+    reuse: buildTestPassReuseHealth(output, judgedSha, suite.completedAtMs, suite) });
+}
+
 function parseReuseSuite(value: unknown, recordedAtMs: number): TestPassReuseSuite | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
