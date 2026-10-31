@@ -2154,6 +2154,37 @@ snapshot_verifier_pinned_deps() {
       local snapshot_support_status=$?
       [ "$snapshot_support_status" -eq 1 ] || return "$snapshot_support_status"
     fi
+    # A generation snapshot only selects an already-published immutable tree.
+    # Ensure the exact source inputs first so a cold selector fails or builds
+    # here, before the verifier spends time on native setup and acceptance.
+    # Keep prewarm and materialization in one admitted heavy operation.
+    if [ "$snapshot_command" = "snapshot-generation-locked" ]; then
+      local generation_script="$snapshot_root/apps/operator/bin/release/dependency-generation.sh"
+      [ -f "$generation_script" ] || {
+        echo "FATAL: frozen verifier source is missing dependency-generation.sh: $generation_script" >&2
+        return 74
+      }
+      local generation_source_ref="${VERIFY_TAURI_SOURCE_REF:-}"
+      local generation_copy_command='
+        set -euo pipefail
+        generation_script="$1"
+        donor="$2"
+        source_ref="$3"
+        pinned_deps="$4"
+        snapshot_root="$5"
+        mode="$6"
+        if [ -n "$source_ref" ]; then
+          bash "$generation_script" --integration "$donor" --ensure-ref "$source_ref"
+        else
+          bash "$generation_script" --integration "$donor"
+        fi
+        bash "$pinned_deps" snapshot-generation-locked "$donor" "$snapshot_root" "$mode"
+      '
+      bash "$snapshot_root/scripts/pc-heavy.sh" -- bash -c "$generation_copy_command" \
+        _ "$generation_script" "$REPO_DIR" "$generation_source_ref" \
+        "$pinned_deps_copy" "$snapshot_root" "$mode"
+      return $?
+    fi
     # The existing heavy-command wrapper admits the copy's memory reserve;
     # pinned-deps owns the selected route's copy/selector leases and mutexes.
     bash "$snapshot_root/scripts/pc-heavy.sh" -- bash "$pinned_deps_copy" \
