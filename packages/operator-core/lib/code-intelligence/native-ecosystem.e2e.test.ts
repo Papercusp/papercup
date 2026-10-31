@@ -148,7 +148,8 @@ function privateHostHandler(root: string, sourceKey: string) {
 async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse' | 'reuse-claim',
   recordRuntime?: (runId: string) => void) {
     const root = resolve(import.meta.dirname, '../../../..');
-    const sourcePaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
+    const sourcePaths = ['packages/operator-core/lib/code-intelligence/native-cli.fixture.ts',
+      'packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
       'packages/operator-core/lib/code-intelligence/clone-brief-provider.ts',
       'packages/operator-core/lib/code-intelligence/change-history.ts',
       'packages/operator-core/lib/code-intelligence/reuse-brief-providers.ts',
@@ -183,7 +184,8 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     const beforeHashes = sourceHashes();
     // Native Node children execute committed source under the inherited guard.
     // Refuse before bundling/allocating PG if their fixture would be substituted.
-    const committedPaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
+    const committedPaths = ['packages/operator-core/lib/code-intelligence/native-cli.fixture.ts',
+      'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
       ...(mode.startsWith('reuse') ? ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
         'packages/operator-core/lib/code-intelligence/change-history.ts',
         'libs/test-config/src/test-coverage-provider.ts', 'libs/test-config/src/admin-test-runs-reporter.ts',
