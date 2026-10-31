@@ -2277,10 +2277,10 @@ describe('retention on a real fixture tree', () => {
       expect((await stat(fifo)).isFIFO()).toBe(true);
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
-  it('never follows a symlink into owner data', async () => {
+  it.each([undefined, inspectRetentionTrees])('never follows a symlink into owner data (%s)', async (inspectTrees) => {
     const { root, options } = await setup(); const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
     await symlink(owner, join(root, 'link'));
-    const receipt = await runDiskReclaimOnce(options);
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees });
     expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
     expect(receipt.entries).toEqual([expect.objectContaining({ path: join(root, 'link'), status: 'protected', reason: 'symlink boundary' })]);
     expect(await stat(join(owner, 'data'))).toBeTruthy();
@@ -2292,7 +2292,7 @@ describe('retention on a real fixture tree', () => {
     const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
     await symlink(owner, join(tree, 'link'));
     const expired = join(root, 'expired'); await writeFile(expired, 'remove');
-    const receipt = await runDiskReclaimOnce(options);
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees });
     expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
     expect(receipt.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: tree, status: 'removed' }),
