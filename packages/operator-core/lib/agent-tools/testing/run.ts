@@ -1634,6 +1634,8 @@ type TestFilesCorePayload =
         | 'invalid_root'
         | 'ambiguous_workspace_path'
         | 'managed_app_path_unresolved'
+        | 'private_pg_requires_single_checkout'
+        | 'private_pg_route_unavailable'
         | 'mutation_probe_active'
         | 'mutation_probe_state_unknown'
         | 'restricted_write_held'

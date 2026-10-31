@@ -297,7 +297,8 @@ vi.mock('../../blueprint/phone-producer-admission', () => ({
     updatedTs: 1, readStoredOutcome: async () => ({}) })),
 }));
 
-const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
+const ctxFields = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' };
+const ctx = ctxFields as never;
 
 describe('work_items:complete — ambient workspace transaction safety (EI-20194230704550984)', () => {
   it('opts out because completion owns its workspace-scoped ledger operations', () => {
@@ -1056,7 +1057,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
         'work_items:complete',
         input,
         {
-          ...ctx,
+          ...ctxFields,
           log: vi.fn(),
           signal: new AbortController().signal,
           progress: vi.fn(),
