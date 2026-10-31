@@ -1898,6 +1898,30 @@ describe('background job deadlines (WI-6677)', () => {
     expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
   });
 
+  it('peels supported timeout wrappers before classifying the actual test or verifier command', () => {
+    for (const command of [
+      'timeout --signal=TERM --kill-after=60s 2700s scripts/verify-tauri-headless.sh -- true',
+      'env PAPERCUSP_TEST_RUN_HARNESS=papercusp timeout --signal TERM --kill-after 60s 2700s bash -- ./scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+      'timeout -sTERM -k60s 2700s npx vitest run',
+      'timeout 10s npm run test:file -- example.test.ts',
+      'rtk test -- timeout 2700s scripts/verify-tauri-headless.sh',
+    ]) expect(isBackgroundTestCommand(command), command).toBe(true);
+
+    for (const command of [
+      'rg -n "timeout 2700s scripts/verify-tauri-headless.sh" .',
+      'timeout 2700s printf "scripts/verify-tauri-headless.sh"',
+      'timeout 2700s node -e "scripts/verify-tauri-headless.sh"',
+      'timeout --unknown 2700s scripts/verify-tauri-headless.sh',
+      'timeout --kill-after=invalid 2700s scripts/verify-tauri-headless.sh',
+    ]) expect(isBackgroundTestCommand(command), command).toBe(false);
+
+    const longNearMiss = 'timeout --unknown=' + 'X'.repeat(10_000) + ' 2700s scripts/verify-tauri-headless.sh';
+    expect(runInNewContext('classify(command)', {
+      classify: isBackgroundTestCommand,
+      command: longNearMiss,
+    }, { timeout: 1_000 })).toBe(false);
+  });
+
   it('applies the finite test budget to an explicitly RTK-wrapped test command', () => {
     const originalCommand = 'rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
     expect(isBackgroundTestCommand(originalCommand)).toBe(true);
@@ -2030,6 +2054,7 @@ describe('background job deadlines (WI-6677)', () => {
   it.each([
     "env PAPERCUSP_TEST_RUN_HARNESS=papercusp bash scripts/run-operator-e2e-isolated.sh e2e/ongoing-work-ui.spec.ts --grep 'ongoing work stays visible|mobile strip preserves' --workers=1",
     'bash scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
+    'timeout --signal=TERM --kill-after=60s 2700s scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
     'VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS="completion kindEvidence" scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime',
     "env -- LABEL='with spaces' bash -- scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime",
   ])('budgets a maintained verifier before preparation: %s', (command) => {

@@ -1844,12 +1844,15 @@ async function tryBuildUnboundSpawnContext(
         const observation = nativeSessionFailure(binding.advSessionId);
         if (observation) {
           nativeSessionAudit = { ...observation, binding: binding.binding };
-          // Codex supplies callId alongside threadId in each MCP request.
-          // An inherited header or output cohort cannot identify a native
-          // call. Keep only the fingerprint; this observation grants no
-          // funding authority until the trusted host matches its exact call.
-          const nativeCallId = requestMeta?.callId;
-          if (binding.binding === 'bound' && nativeThread &&
+          // Codex/OMP supply callId alongside threadId. The installed Claude
+          // CLI supplies claudecode/toolUseId on both HTTP and SDK MCP calls;
+          // its verified native-session header retains a DIFFERENT carrier.
+          // This is diagnostic correlation only: inherited headers and caller
+          // metadata never replace the trusted host's exact call observation.
+          // Native principal/receipt lookup still requires meta:threadId.
+          const nativeCallId = nativeThread ? requestMeta?.callId
+            : nativeSessionHeader ? requestMeta?.['claudecode/toolUseId'] : undefined;
+          if (binding.binding === 'bound' &&
               typeof nativeCallId === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(nativeCallId)) {
             nativeSessionAudit.callIdFingerprint = createHash('sha256').update(nativeCallId, 'utf8').digest('hex');
           }

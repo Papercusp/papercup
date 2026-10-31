@@ -533,7 +533,18 @@ export async function runProjectHistoryRefreshAction(
     `[project-history-refresh] generating ${config.projectId} history -> ${config.output} ` +
       `(harness=${config.harness} prefix="${config.planPrefix}" cli=${cliBin} ptool=${ptool})`,
   );
-  const r = await generator(cliBin, config, timeoutMs, env);
+  let r: GenerateRunResult;
+  try {
+    r = await generator(cliBin, config, timeoutMs, env);
+  } catch (error) {
+    const detail = error instanceof Error
+      ? [error.name, error.message].filter(Boolean).join(': ')
+      : String(error);
+    const reason = 'Project History generator failed before returning a result: ' + detail;
+    console.error('[project-history-refresh] FAILED: ' + reason);
+    await recordFailure(reason, config.output);
+    return;
+  }
   const elapsedSec = Math.round((now() - startedAt) / 1000);
   const success = !r.timedOut && r.code === 0;
 

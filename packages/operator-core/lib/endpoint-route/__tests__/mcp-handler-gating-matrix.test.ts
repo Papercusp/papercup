@@ -199,6 +199,7 @@ const h = vi.hoisted(() => {
         uiClientId?: string | null;
         isSuperuser?: boolean;
         transport?: string;
+        principal?: UnifiedToolContext['principal'];
         requestOrigin?: UnifiedToolContext['requestOrigin'];
       };
       args?: unknown;
@@ -6381,6 +6382,45 @@ describe('successful native-session audit (get-feedback D-006)', () => {
     } });
     expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(callId);
     expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
+  });
+
+  it('retains Claude native call correlation as diagnostics on its verified header carrier', async () => {
+    const native = 'native-owner-session', callId = 'toolu_claude-native-item';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+    const meta = { 'claudecode/toolUseId': callId };
+    const extra = { ...(superuserExtra('&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'header:x-papercusp-native-session', binding: 'bound', candidateAdvSessionId: 541,
+      callIdFingerprint: createHash('sha256').update(callId, 'utf8').digest('hex'),
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(callId);
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
+    expect(h.invocations[0]?.ctx.principal).toBeNull();
+  });
+
+  it.each([undefined, '', ' leading-space', 'trailing-space ', 'a/b', 'x'.repeat(257), 7, { callId: 'nested' }])(
+    'omits malformed Claude native call correlation %j', async callId => {
+      const native = 'native-owner-session';
+      h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+      const meta = { 'claudecode/toolUseId': callId };
+      const extra = { ...(superuserExtra('&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+      const res = await callTool('gatingtest:scoped', {}, extra, meta);
+      expect(res.isError, textOf(res)).toBeUndefined();
+      expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
+    },
+  );
+
+  it.each(['unbound', 'query', 'thread'] as const)('cannot borrow Claude native call correlation from a %s carrier', async kind => {
+    const native = 'native-owner-session';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: kind === 'unbound' ? null : native, active: true }]]]);
+    const meta = { 'claudecode/toolUseId': 'toolu_unproven', ...(kind === 'thread' ? { threadId: native } : {}) };
+    const extra = { ...(superuserExtra('&client=su-owner' + (kind === 'query' ? `&native_session=${native}` : ''),
+      kind === 'query' ? {} : { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
   });
 
   it.each([undefined, '', ' leading-space', 'trailing-space ', 'a/b', 'x'.repeat(257), 7, { callId: 'nested' }])(

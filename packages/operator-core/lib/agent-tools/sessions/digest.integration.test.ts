@@ -104,7 +104,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 
-async function callDigest(): Promise<{ count: number; total: number; digests: Digest[] }> {
+async function callDigest(args: Record<string, unknown> = {}): Promise<{ count: number; total: number; digests: Digest[] }> {
   const result = await (
     digestTool as unknown as {
       handler: (
@@ -112,7 +112,7 @@ async function callDigest(): Promise<{ count: number; total: number; digests: Di
         ctx: unknown,
       ) => Promise<{ data: { count: number; total: number; digests: Digest[] } }>;
     }
-  ).handler({ limit: 30 }, { workspaceId: WORKSPACE, tx: sql });
+  ).handler({ limit: 30, ...args }, { workspaceId: WORKSPACE, tx: sql });
   return result.data;
 }
 
@@ -165,6 +165,45 @@ async function legacyRows(): Promise<LegacyRow[]> {
 }
 
 describe('sessions:digest narrow CTE + primary-key text join (WI-6843)', () => {
+  it('finds the task after native bootstrap instructions and retains its source without claiming owner provenance', async () => {
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+      VALUES
+        (${WORKSPACE}, 'codex', 'bootstrap-task', 0, '2026-02-01T00:00Z', 'su-task', 'user', '# AGENTS.md instructions\n<INSTRUCTIONS>Workspace conventions</INSTRUCTIONS>'),
+        (${WORKSPACE}, 'codex', 'bootstrap-task', 1, '2026-02-01T00:01Z', 'su-task', 'user', '<environment_context>cwd=/repo</environment_context>'),
+        (${WORKSPACE}, 'codex', 'bootstrap-task', 2, '2026-02-01T00:02Z', 'su-task', 'user', 'Find agents interrupted by account limits and summarize their work'),
+        (${WORKSPACE}, 'codex', 'bootstrap-task', 3, '2026-02-01T00:03Z', 'su-task', 'assistant', 'Investigating the interrupted sessions')
+    `;
+    try {
+      const result = await callDigest({ session: 'bootstrap-task' });
+      expect(result.digests).toHaveLength(1);
+      expect(result.digests[0]).toMatchObject({
+        kickoff: 'Find agents interrupted by account limits and summarize their work',
+        kickoffRef: 'session_turn:codex:bootstrap-task:2',
+        kickoffProvenance: 'transcript-candidate',
+        bootstrap: '# AGENTS.md instructions <INSTRUCTIONS>Workspace conventions</INSTRUCTIONS>',
+      });
+    } finally {
+      await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'bootstrap-task'`;
+    }
+  });
+
+  it('keeps an autonomous wake goal instead of dropping the whole machine envelope', async () => {
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      VALUES (${WORKSPACE}, 'codex', 'autonomous-task', 0, '2026-02-02T00:00Z', 'user',
+        'You are continuing your OWN warm session, toward: Repair account recovery. STATE: running')
+    `;
+    try {
+      const result = await callDigest({ session: 'autonomous-task' });
+      expect(result.digests[0]).toMatchObject({ kickoff: 'Repair account recovery', loopGoal: 'Repair account recovery', kickoffProvenance: 'autonomous-goal' });
+    } finally {
+      await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'autonomous-task'`;
+    }
+  });
+
   it('preserves the legacy digest output while excluding same-key text from another workspace', async () => {
     const [actual, legacy] = await Promise.all([callDigest(), legacyRows()]);
     const expected = legacy.map((row) => ({

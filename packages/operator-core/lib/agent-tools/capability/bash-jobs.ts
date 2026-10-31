@@ -148,6 +148,13 @@ const TEST_ENV_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:[^\s"'\\;&|]|\\
 // Keep this prefix shared so npm/direct runners cannot miss the verifier's case.
 const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:${TEST_ENV_ASSIGNMENT})*(?:env\s+(?:--\s+)?(?:${TEST_ENV_ASSIGNMENT})*)?`;
 const RTK_TEST_WRAPPER_PREFIX = String.raw`(?:rtk\s+test\s+--\s+)?`;
+const TIMEOUT_DURATION = String.raw`(?:\d+(?:\.\d*)?|\.\d+)(?:[smhd])?`;
+const TIMEOUT_SIGNAL = String.raw`[A-Za-z0-9]+`;
+const TIMEOUT_OPTION = String.raw`(?:--foreground|--preserve-status|--verbose|-f|-p|-v|--signal(?:=${TIMEOUT_SIGNAL}|[ \t]+${TIMEOUT_SIGNAL})|-s(?:${TIMEOUT_SIGNAL}|[ \t]+${TIMEOUT_SIGNAL})|--kill-after(?:=${TIMEOUT_DURATION}|[ \t]+${TIMEOUT_DURATION})|-k(?:${TIMEOUT_DURATION}|[ \t]+${TIMEOUT_DURATION}))`;
+const TIMEOUT_WRAPPER_RE = new RegExp(
+  String.raw`(${TEST_SEGMENT_PREFIX})(rtk\s+test\s+--\s+)?timeout(?:[ \t]+${TIMEOUT_OPTION})*(?:[ \t]+--)?[ \t]+${TIMEOUT_DURATION}[ \t]+`,
+  'ig',
+);
 const DIRECT_TEST_RUNNER_RE = new RegExp(
   `${TEST_SEGMENT_PREFIX}${RTK_TEST_WRAPPER_PREFIX}(?:(?:npx|bunx|pnpm\\s+exec|yarn\\s+dlx)\\s+)?` +
     String.raw`(?:vitest|jest|mocha|ava|pytest|playwright\s+test|cargo\s+test|go\s+test)(?:\s|$)`,
@@ -175,7 +182,10 @@ const MAINTAINED_VERIFIER_RE = new RegExp(
  * policy classification only; the command is still executed byte-for-byte.
  */
 export function isBackgroundTestCommand(command: string): boolean {
-  return DIRECT_TEST_RUNNER_RE.test(command) || PACKAGE_TEST_SCRIPT_RE.test(command) || MAINTAINED_VERIFIER_RE.test(command);
+  const withoutTimeout = command.replace(TIMEOUT_WRAPPER_RE, '$1$2');
+  return [command, withoutTimeout].some((candidate) =>
+    DIRECT_TEST_RUNNER_RE.test(candidate) || PACKAGE_TEST_SCRIPT_RE.test(candidate) || MAINTAINED_VERIFIER_RE.test(candidate),
+  );
 }
 
 /** Reserved child-env provenance for long-running physical drills. Only the

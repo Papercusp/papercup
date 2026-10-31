@@ -141,6 +141,24 @@ test('requires an index postimage hash for every patched file', () => {
   );
 });
 
+test('rejects malformed hunk counts even when postimage metadata is present', (t) => {
+  const fixture = makeFixture(t);
+  const malformed = fixture.patchSource.replace('@@ -1 +1 @@', '@@ -1 +1,2 @@');
+  assert.throws(
+    () => parsePatchPostimages(malformed, fixture.patchPath),
+    /invalid unified diff/,
+  );
+});
+
+test('the committed Postgres patch parses with the application hunk parser', () => {
+  const patch = readFileSync(new URL('../patches/postgres+3.4.9.patch', import.meta.url), 'utf8');
+  assert.doesNotThrow(() => execFileSync('git', ['apply', '--numstat', '-'], {
+    input: patch,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: 30_000,
+  }));
+});
+
 test('runs the postimage check immediately after patch-package in root postinstall', () => {
   const packageJson = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8'),

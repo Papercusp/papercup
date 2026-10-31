@@ -239,6 +239,35 @@ describe('runProjectHistoryRefreshAction health bookkeeping', () => {
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({ success: true, code: 0, output: '/repo/history.ts' });
   });
+
+  it('surfaces a generator rejection and records its first causal error', async () => {
+    const outcomes: ProjectHistoryHealthOutcome[] = [];
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(runProjectHistoryRefreshAction(ctx(validConfig), {
+        env: { PATH: '/empty' },
+        exists: () => true,
+        resolveCliBin: () => '/cli',
+        resolvePtool: () => '/ptool',
+        runGenerate: async () => { throw new Error('first causal failure'); },
+        recordHealth: async (_ctx, outcome) => { outcomes.push(outcome); },
+      })).resolves.toBeUndefined();
+
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('first causal failure'));
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        success: false,
+        timedOut: false,
+        code: 1,
+        output: '/repo/history.ts',
+        reason: expect.stringContaining('first causal failure'),
+        stderr: expect.stringContaining('first causal failure'),
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
 
 describe('decideProjectHistoryHealthUpdate', () => {

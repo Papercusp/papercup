@@ -168,7 +168,7 @@ index 8e79170..9afca0c 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -534,15 +605,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -534,15 +605,47 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -593,7 +593,7 @@ index 07f6716..c6bf17d 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +603,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +603,47 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -1018,7 +1018,7 @@ index 1b1cccd..feb611e 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +603,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +603,47 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -1303,7 +1303,7 @@ index 13c3432..ef2a2fb 100644
    /** Transform hooks */
    transform: {
      /** Transforms outcoming undefined values */
-@@ -198,6 +213,26 @@ type Return<T, K extends readonly any[]> =
+@@ -198,6 +213,28 @@ type Return<T, K extends readonly any[]> =
    postgres.Helper<T, K>
  
  declare namespace postgres {

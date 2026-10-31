@@ -37,6 +37,7 @@ import {
   normalizeWindowBound,
 } from './_shared';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
+import { isUnenrolledMachineSurface } from '../../turn-provenance/machine-surface-catalogue';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
@@ -85,6 +86,7 @@ interface DigestRow {
   tool_call_count: number | null;
   kickoff_text: string | null;
   closing_text: string | null;
+  task_candidates: Array<{ turn_idx: number; text: string }> | null;
   total_matching: number;
 }
 
@@ -103,6 +105,11 @@ function loopGoalOf(text: string | null | undefined): string | null {
   const t = (text ?? '').replace(/\s+/g, ' ');
   const m = /(?:continuing your OWN warm session,?\s*(?:toward|MONITORING)[::]?\s*)(.+?)(?:\.\s|STATE:|Each wake|$)/i.exec(t);
   return m?.[1] ? excerpt(m[1], 240) : null;
+}
+
+/** Candidate selection does not assert that an unenrolled user turn was owner-authored. */
+export function actionableTaskOf(candidates: Array<{ turn_idx: number; text: string }> | null | undefined) {
+  return candidates?.find((turn) => loopGoalOf(turn.text) || !isUnenrolledMachineSurface(turn.text)) ?? null;
 }
 
 export default defineTool({
@@ -263,6 +270,7 @@ export default defineTool({
              s.tool_call_count,
              kt.text AS kickoff_text,
              ct.text AS closing_text,
+             tasks.candidates AS task_candidates,
              a.total_matching
         FROM selected a
         LEFT JOIN kickoff_key k
@@ -286,12 +294,27 @@ export default defineTool({
         LEFT JOIN state_agg s
           ON s.source_kind = a.source_kind
          AND s.session_id = a.session_id
+        LEFT JOIN LATERAL (
+          SELECT jsonb_agg(jsonb_build_object('turn_idx', candidate.turn_idx, 'text', candidate.text)
+                           ORDER BY candidate.turn_idx) AS candidates
+            FROM (
+              SELECT t.turn_idx, left(t.text, 4000) AS text
+                FROM harness_shared.session_turns t
+               WHERE t.source_kind = a.source_kind AND t.session_id = a.session_id
+                 AND (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
+                 AND t.speaker = 'user'
+                 AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 't', [readerOwnerOf(ctx)]) as never}
+               ORDER BY t.turn_idx
+               LIMIT 16
+            ) candidate
+        ) tasks ON true
        ORDER BY a.last_ts_raw DESC NULLS LAST
     `;
 
     const total = rows[0]?.total_matching ?? 0;
 
     let digests = rows.map((r) => {
+      const task = actionableTaskOf(r.task_candidates);
       const lastMs = r.last_ts_ms ? Number(r.last_ts_ms) : null;
       const cls = classifySessionEnd({
         lastAssistantText: r.closing_text,
@@ -311,8 +334,12 @@ export default defineTool({
         tool_call_count: r.tool_call_count,
         // What it was FOR. A looping session states its goal in the wake envelope —
         // strictly better than its first-ever prompt — so prefer that when present.
-        kickoff: excerpt(r.kickoff_text),
-        loopGoal: loopGoalOf(r.kickoff_text),
+        kickoff: task ? excerpt(loopGoalOf(task.text) ?? task.text) : null,
+        kickoffRef: task ? `session_turn:${r.source_kind}:${r.session_id}:${task.turn_idx}` : null,
+        kickoffProvenance: task ? (loopGoalOf(task.text) ? 'autonomous-goal' : 'transcript-candidate') : 'unknown',
+        bootstrap: excerpt(r.kickoff_text),
+        taskCoverage: { candidateLimit: 16, status: task ? 'found' : 'unknown' },
+        loopGoal: loopGoalOf(task?.text ?? r.kickoff_text),
         // Where it got to. May legitimately be null (crashed before speaking) —
         // which is WHY kickoff/endedReason carry the answer instead.
         closing: excerpt(r.closing_text),
@@ -343,8 +370,9 @@ export default defineTool({
             }
           : {}),
         note:
-          "kickoff = the session's OPENING turn (what it was launched to do) — present even when the session crashed before " +
-          'writing a summary. closing = its last assistant turn. endedReason is classified from the closing turn and always ' +
+          'kickoff = the first actionable task among up to 16 user turns, excluding maintained machine/bootstrap surfaces; ' +
+          'kickoffRef links its source and kickoffProvenance does not claim proven owner authorship. bootstrap preserves the original opening turn. ' +
+          'closing = its last assistant turn. endedReason is classified from the closing turn and always ' +
           'carries endedEvidence so you can verify it rather than trust the label.',
         digests,
       },
