@@ -205,8 +205,10 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
         ...scopedNativeFixtureArgs(new URL('./__fixtures__/incident-api-client.ts', import.meta.url).href,
           'runNativeIncidentApi', [join(homedir(), '.papercusp/vendor/repomix'),
             join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash, mode])];
-    if (mode.startsWith('reuse')) {
-      expect(recordRuntime, 'Reuse acceptance requires a retained original runtime receipt').toBeTypeOf('function');
+    // Capture incident timings in the same retained packet as reuse journeys;
+    // the detached runner's bounded console tail can omit a passing proof line.
+    if (mode.startsWith('reuse') || mode === 'incident') {
+      expect(recordRuntime, 'Native reuse and incident acceptance requires a retained original runtime receipt').toBeTypeOf('function');
       const runId = await recordIsolatedIntegrationProof({ root,
         filePath: 'packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts',
         sourcePaths: [...sourcePaths, 'scripts/with-test-pg.mjs',
@@ -321,8 +323,10 @@ describe('native P036 private operator installed first-touch Read', () => {
 });
 
 describe('native P018 private operator CLI incident claim and resume', () => {
-  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
-    const proof = await privateNativeJourney('incident');
+  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async (context) => {
+    const proof = await privateNativeJourney('incident', runId => {
+      Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    });
     expect(proof).toMatchObject({
       transport: 'real-cli-http', failure: 'actual-node-assertion', staticCandidate: true,
       cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,
