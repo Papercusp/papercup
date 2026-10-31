@@ -378,26 +378,71 @@ export class NativeInstalledPerUseTurns {
         if (entry.withdrawn || entry.nativeTurnId === null || entry.nativeTurnId !== nativeTurnId || !boundedId(callId)) {
           throw new Error('Native call observation requires its original active bound turn');
         }
-        if (server !== context.mcpServer || !Object.hasOwn(context.nativeTools, tool)) return;
-        const toolName = context.nativeTools[tool]!;
-        const args = nativeToolArguments(rawArguments);
-        const callKey = fingerprint(callId), prior = entry.observations.get(callKey);
-        if (prior) {
-          if (prior.toolName !== toolName) {
-            entry.withdrawn = true;
-            throw new Error('Native call observation changed its target');
-          }
-          if (canonicalJson(prior.arguments) !== canonicalJson(args)) {
-            entry.withdrawn = true;
-            throw new Error('Native call observation changed its arguments');
-          }
-          return;
-        }
-        if (entry.observations.size >= 1000) throw new Error('Native turn call population exceeds the admission bound');
-        entry.observations.set(callKey, { toolName, callId, arguments: args, consumed: false, principalClaimed: false });
+        this.recordObservedCall(entry, { callId, server, tool, arguments: rawArguments });
       },
       withdraw: () => this.withdrawEntry(key, entry),
     };
+  }
+
+  /** Host-only scope for an actually accepted Claude root input. Its SDK does
+   * not expose the native turn UUID. Do not manufacture that UUID from an
+   * assistant/API message or conflate this scope with funded turn admission.
+   * The producer must independently observe the accepted native input/session
+   * and every exact call; neither MCP metadata nor model arguments register it.
+   * Withdrawal ends this input before the host can admit its successor. */
+  registerNativeInput(input: NativeInstalledTurnContext & {
+    provider: 'claude'; nativeInputId: string;
+    resolveRequestPrincipal: HostRequestPrincipalResolver;
+  }): {
+    observeToolCall(input: { nativeSessionId: string; nativeInputId: string; callId: string;
+      server: string; tool: string; arguments?: unknown }): Promise<void>;
+    withdraw(): Promise<void>;
+  } {
+    const { provider, nativeInputId, ...context } = input;
+    if (provider !== 'claude' || !/^[A-Za-z0-9._:-]{1,256}$/.test(nativeInputId)
+      || typeof context.resolveRequestPrincipal !== 'function'
+      || Object.hasOwn(input, 'admissions') || Object.hasOwn(input, 'freeAdmissions')) {
+      throw new Error('Native input scope requires its genuine host binding and no funded admissions');
+    }
+    const registration = this.register({ ...context, admissions: [] });
+    const key = this.key(context.workspaceId, context.advSessionId, fingerprint(context.nativeSessionId));
+    const entry = this.turns.get(key)!;
+    entry.nativeInput = Object.freeze({ provider, id: nativeInputId });
+    return {
+      observeToolCall: async observation => {
+        if (entry.withdrawn || this.turns.get(key) !== entry
+          || observation.nativeSessionId !== entry.context.nativeSessionId
+          || observation.nativeInputId !== entry.nativeInput!.id
+          || !/^[A-Za-z0-9._:-]{1,256}$/.test(observation.callId)) {
+          throw new Error('Native input call requires its original active session and input');
+        }
+        this.recordObservedCall(entry, observation);
+      },
+      withdraw: registration.withdraw,
+    };
+  }
+
+  private recordObservedCall(entry: NativeInstalledTurnEntry, call: {
+    callId: string; server: string; tool: string; arguments?: unknown;
+  }): void {
+    const { context } = entry;
+    if (call.server !== context.mcpServer || !Object.hasOwn(context.nativeTools, call.tool)) return;
+    const toolName = context.nativeTools[call.tool]!;
+    const args = nativeToolArguments(call.arguments);
+    const callKey = fingerprint(call.callId), prior = entry.observations.get(callKey);
+    if (prior) {
+      if (prior.toolName !== toolName) {
+        entry.withdrawn = true;
+        throw new Error('Native call observation changed its target');
+      }
+      if (canonicalJson(prior.arguments) !== canonicalJson(args)) {
+        entry.withdrawn = true;
+        throw new Error('Native call observation changed its arguments');
+      }
+      return;
+    }
+    if (entry.observations.size >= 1000) throw new Error('Native turn call population exceeds the admission bound');
+    entry.observations.set(callKey, { toolName, callId: call.callId, arguments: args, consumed: false, principalClaimed: false });
   }
 
   /** Only a direct, exact call observed by this process's live native engine
@@ -415,18 +460,18 @@ export class NativeInstalledPerUseTurns {
       || ['tools:invoke', 'code:run'].includes(input.toolName)) return null;
     const key = this.key(input.workspaceId, input.advSessionId, input.nativeSessionFingerprint);
     const entry = this.turns.get(key);
-    if (!entry || entry.withdrawn || entry.nativeTurnId === null || !entry.resolveRequestPrincipal
+    if (!entry || entry.withdrawn || entry.nativeTurnId === null && !entry.nativeInput || !entry.resolveRequestPrincipal
       || entry.context.ownerId !== input.ownerId) return null;
     const observed = entry.observations.get(input.callIdFingerprint), args = nativeToolArguments(input.arguments);
     if (!observed || observed.principalClaimed || observed.consumed || observed.arguments === null || args === null
       || observed.toolName !== input.toolName || canonicalJson(observed.arguments) !== canonicalJson(args)) return null;
     // Reserve synchronously before either awaited check, even when it refuses.
     observed.principalClaimed = true;
-    const active = () => this.turns.get(key) === entry && !entry.withdrawn && entry.nativeTurnId !== null
+    const active = () => this.turns.get(key) === entry && !entry.withdrawn && (entry.nativeTurnId !== null || !!entry.nativeInput)
       && entry.observations.get(input.callIdFingerprint) === observed;
     try {
       if (!await verifyNativeRuntimeBearer(input.runtimeBearer, { workspaceId: entry.context.workspaceId,
-        advSessionId: entry.context.advSessionId, ownerId: entry.context.ownerId, provider: 'codex' }) || !active()) return null;
+        advSessionId: entry.context.advSessionId, ownerId: entry.context.ownerId, provider: entry.nativeInput?.provider ?? 'codex' }) || !active()) return null;
       const principal = await entry.resolveRequestPrincipal();
       if (!active() || !principal || principal.workspaceId !== entry.context.workspaceId
         || !['trusted', 'verified'].includes(principal.trust)) return null;
@@ -570,6 +615,8 @@ interface NativeInstalledTurnEntry {
   context: NativeInstalledTurnContext;
   resolveRequestPrincipal?: HostRequestPrincipalResolver;
   nativeTurnId: string | null;
+  /** Separate from nativeTurnId: never qualifies for funded lookup or receipts. */
+  nativeInput?: Readonly<{ provider: 'claude'; id: string }>;
   withdrawn: boolean;
   admissions: readonly FundedInstalledAdmission[];
   freeAdmissions: readonly VerifiedFreeToolAdmission[];

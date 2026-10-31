@@ -14,7 +14,10 @@ const root = resolve(import.meta.dirname, '../../../..');
 // The outer Vitest case and file router must outlive every independently
 // bounded private-worker phase. recordIsolatedIntegrationProof checks the file
 // runner allowance before it allocates the disposable runtime.
-const workerOptions = isolatedWorkerOptions(120_000, process.env, 120_000, {
+// One retained run completed the identity read and listener/pool cleanup but
+// timed out on a referenced MessagePort; another stalled inside parallel
+// identity-module imports. Leave enough bounded time to locate the stall.
+const workerOptions = isolatedWorkerOptions(240_000, process.env, 240_000, {
   // The migration boot has measured at about four minutes. Keep enough room for
   // that distinct bootstrap progress while ensuring the composed proof fits the
   // maintained test-file router's 600s ceiling.
@@ -172,15 +175,26 @@ it('measures the production identity policy read in a private background runtime
         await import('./packages/operator-core/lib/agent-tools/index.ts');
         await progress('agent-tools-bootstrap-complete');
         await progress('identity-modules-import-start');
+        const importWithProgress = async (name, load) => {
+          await progress('identity-module-import-start', { module: name });
+          try {
+            const module = await load();
+            await progress('identity-module-import-complete', { module: name });
+            return module;
+          } catch (error) {
+            await progress('identity-module-import-failed', { module: name, error: String(error) });
+            throw error;
+          }
+        };
         const [{ compileAgentSpecification }, { listAllProjectedTools },
           { readOperatorState, writeOperatorState },
           { checkIdentityGrantKernel, readIdentityGrantPolicy },
           { resolveIdentityToolSurface }] = await Promise.all([
-          import('@papercusp/orchestrator/blueprint'),
-          import('@papercusp/agent-mcp'),
-          import('./packages/operator-core/lib/operator-state-pg.ts'),
-          import('./packages/operator-core/lib/capability-envelope/identity-grants-port.ts'),
-          import('./packages/operator-core/lib/capability-envelope/identity-tool-surface.ts'),
+          importWithProgress('orchestrator-blueprint', () => import('@papercusp/orchestrator/blueprint')),
+          importWithProgress('agent-mcp', () => import('@papercusp/agent-mcp')),
+          importWithProgress('operator-state-pg', () => import('./packages/operator-core/lib/operator-state-pg.ts')),
+          importWithProgress('identity-grants-port', () => import('./packages/operator-core/lib/capability-envelope/identity-grants-port.ts')),
+          importWithProgress('identity-tool-surface', () => import('./packages/operator-core/lib/capability-envelope/identity-tool-surface.ts')),
         ]);
         await progress('identity-modules-import-complete');
 
