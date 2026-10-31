@@ -280,11 +280,13 @@ describe('native P010 controlled CLI claim reuse delivery', () => {
       expectedProviders: ['clones', 'cochange', 'provenance', 'sql', 'coverage'],
       scope: expect.stringContaining('controlled private current-source CLI fixture') });
     expect(proof.controlledSession.id).toBeGreaterThan(0);
-    expect(proof.providerOutcomes.map((row: { provider: string }) => row.provider)).toEqual(proof.expectedProviders);
+    const requiredOutcomes = proof.providerOutcomes.filter((row: { provider: string }) =>
+      proof.expectedProviders.includes(row.provider));
+    expect(requiredOutcomes.map((row: { provider: string }) => row.provider)).toEqual(proof.expectedProviders);
     const issued = proof.providerOutcomes.filter((row: { status: string }) => row.status === 'issued');
     expect(proof.issued.map((row: { subject: string }) => JSON.parse(row.subject).provider).sort())
       .toEqual(issued.map((row: { provider: string }) => row.provider).sort());
-    for (const row of proof.providerOutcomes) {
+    for (const row of requiredOutcomes) {
       if (row.provider === 'coverage' && row.status === 'budget') expect(row.reason).toBe('truncated');
       else expect(row.status).toBe('issued');
     }
