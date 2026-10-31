@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { channel } from 'node:diagnostics_channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
 import { buildTaskBrief, claimedScopePaths, enrichTaskBriefWithReuse, gateTaskBriefRecover, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, snapshotCallersAnswer, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
@@ -15,6 +16,7 @@ import { toolsetFromNames } from './push-toolset';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import type { queryPushSnapshot } from './push-snapshot';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { TASK_BRIEF_CAPTURE_CHANNEL, type TaskBriefCaptureTiming } from './task-brief';
 
 // Pass-through spy: every test keeps the real worker; WI-6554700010042518 asserts it never starts.
 vi.mock('./first-party-callers-offthread', async original => {
@@ -687,6 +689,33 @@ describe('P012 bounded scoped task briefs', () => {
       expect(vi.mocked(deps.graph).mock.calls[0]![4]).toBeLessThan(TASK_BRIEF_BUDGET_MS);
     } finally { now.mockRestore(); }
   }, 10_000);
+  it('publishes the successful capture clock so native deadlines can be compared with passing calls', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const deps = depsFor(root), pack = deps.pack;
+    const timings: TaskBriefCaptureTiming[] = [];
+    const diagnostics = channel(TASK_BRIEF_CAPTURE_CHANNEL);
+    const observe = (message: unknown) => { timings.push(message as TaskBriefCaptureTiming); };
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    deps.pack = async (...args) => {
+      args[2]?.onPhase?.('identity');
+      clock.mockReturnValue(10_007);
+      args[2]?.onPhase?.('execution');
+      clock.mockReturnValue(10_018);
+      return pack(...args);
+    };
+    diagnostics.subscribe(observe);
+    try {
+      const result = await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
+        payload: { paths: ['target.ts'] } } }, deps);
+      expect(result?.taskBrief.status).toBe('current');
+      expect(timings).toHaveLength(1);
+      expect(timings[0]).toMatchObject({ workItem: 'WI-task', status: 'current', elapsedMs: 18 });
+      expect(timings[0]?.phases).toEqual(expect.arrayContaining([
+        { phase: 'safe-pack:identity', elapsedMs: 7 }, { phase: 'safe-pack:execution', elapsedMs: 11 },
+      ]));
+      expect(JSON.stringify(result)).not.toContain('elapsedMs');
+    } finally { diagnostics.unsubscribe(observe); clock.mockRestore(); }
+  });
   it('names the capture phase in flight when the claim-time deadline fallback wins', async () => {
     // A hung safe pack must surface as an honest unknown that says WHERE the
     // budget went; a bare "exceeded its deadline" was undiagnosable (WI-10007889 P018).
