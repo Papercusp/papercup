@@ -125,12 +125,12 @@ it('measures the production identity policy read in a private background runtime
         const asyncResources = new Map();
         const asyncResourceHook = createHook({
           init(asyncId, type, triggerAsyncId) {
-            if (!['TCPSocketWrap', 'Timeout'].includes(type) || asyncResources.size >= 256) return;
+            if (!['TCPSocketWrap', 'Timeout', 'MESSAGEPORT'].includes(type) || asyncResources.size >= 256) return;
             asyncResources.set(asyncId, {
               asyncId,
               type,
               triggerAsyncId,
-              stack: new Error().stack?.split('\n').slice(2, 7),
+              stack: new Error().stack?.split('\n').slice(2, 12),
             });
           },
           destroy(asyncId) { asyncResources.delete(asyncId); },
@@ -365,6 +365,7 @@ it('measures the production identity policy read in a private background runtime
                 timeout: typeof handle.timeout === 'number' ? handle.timeout : null,
               }));
               await progress('operator-pg-pool-reset-complete', {
+                processConnected: process.connected,
                 activeResources: process.getActiveResourcesInfo(),
                 activeHandleTypes: activeHandleDetails.map(handle => handle.type),
                 activeHandleDetails,

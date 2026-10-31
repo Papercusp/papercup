@@ -530,7 +530,7 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
       const call = calls.find(c => c.args.includes("test"));
       expect(call?.args.slice(-2)).toEqual(["--", "--passWithNoTests"]);
       expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBe("/fixture/verified-passes.json");
-      expect(arm).toHaveBeenCalledWith(expect.objectContaining({ env: expect.objectContaining({ PAPERCUSP_TEST_RUN_GROUP: deps.runId }) }));
+      expect(arm.mock.calls[0]?.[0].env.PAPERCUSP_TEST_RUN_GROUP).toBe(deps.runId);
       expect(finish).toHaveBeenCalledOnce();
       expect(deps.suiteMeasurements).toEqual([expect.objectContaining({ kind: 'targeted-gate', judgedSha: sha,
         command: expect.stringContaining('test'), runGroupId: deps.runId,

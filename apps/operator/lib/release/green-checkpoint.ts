@@ -25307,7 +25307,7 @@ export function realCheckpointDeps(
       const env = buildGreenCheckpointEnv(
         null,
         process.env,
-        runId,
+        undefined,
         cfg.greenCheckpointCapacityMode,
       );
       env.VITEST_MAX_FORKS = "1";
@@ -25466,7 +25466,7 @@ export function realCheckpointDeps(
       const env = buildGreenCheckpointEnv(
         null,
         process.env,
-        undefined,
+        runId,
         cfg.greenCheckpointCapacityMode,
         undefined,
         // WI-1702898's rule applied to this leg: the rows a task writes here describe `ref`, so
