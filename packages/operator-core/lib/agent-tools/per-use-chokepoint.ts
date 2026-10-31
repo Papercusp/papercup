@@ -399,7 +399,7 @@ export class NativeInstalledPerUseTurns {
     withdraw(): Promise<void>;
   } {
     const { provider, nativeInputId, ...context } = input;
-    if (provider !== 'claude' || !/^[A-Za-z0-9._:-]{1,256}$/.test(nativeInputId)
+    if (provider !== 'claude' || typeof nativeInputId !== 'string' || !/^[A-Za-z0-9._:-]{1,256}$/.test(nativeInputId)
       || typeof context.resolveRequestPrincipal !== 'function'
       || Object.hasOwn(input, 'admissions') || Object.hasOwn(input, 'freeAdmissions')) {
       throw new Error('Native input scope requires its genuine host binding and no funded admissions');
@@ -413,6 +413,7 @@ export class NativeInstalledPerUseTurns {
         if (entry.withdrawn || this.turns.get(key) !== entry
           || observation.nativeSessionId !== entry.context.nativeSessionId
           || observation.nativeInputId !== entry.nativeInput!.id
+          || typeof observation.callId !== 'string'
           || !/^[A-Za-z0-9._:-]{1,256}$/.test(observation.callId)) {
           throw new Error('Native input call requires its original active session and input');
         }
@@ -460,7 +461,7 @@ export class NativeInstalledPerUseTurns {
       || ['tools:invoke', 'code:run'].includes(input.toolName)) return null;
     const key = this.key(input.workspaceId, input.advSessionId, input.nativeSessionFingerprint);
     const entry = this.turns.get(key);
-    if (!entry || entry.withdrawn || entry.nativeTurnId === null && !entry.nativeInput || !entry.resolveRequestPrincipal
+    if (!entry || entry.withdrawn || (entry.nativeTurnId === null && !entry.nativeInput) || !entry.resolveRequestPrincipal
       || entry.context.ownerId !== input.ownerId) return null;
     const observed = entry.observations.get(input.callIdFingerprint), args = nativeToolArguments(input.arguments);
     if (!observed || observed.principalClaimed || observed.consumed || observed.arguments === null || args === null

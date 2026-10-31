@@ -92,7 +92,7 @@ describe('host-local native request principal', () => {
       { workspaceId: 'workspace', ownerId: 'host-owner', advSessionId: 7, provider: 'claude' });
     expect(await f.registry.resolveRequestPrincipal(f.input)).toBeNull();
     expect(f.hooks).not.toHaveProperty('bindNativeTurn');
-    const request = { tool: tool(), toolName: 'core:read', input: f.observation.arguments, invoke: vi.fn(),
+    const request = { tool: tool(), toolName: 'core:read', callId: 'dispatch-native-input', input: f.observation.arguments, invoke: vi.fn(),
       ctx: { ...ctx(), workspaceId: 'workspace', harnessSlug: 'selected', transport: 'mcp',
         principal, uiClientId: 'host-owner', advSessionId: 7, requestOrigin: { transport: 'mcp', nativeSession: {
           carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 7,
@@ -157,6 +157,15 @@ describe('host-local native request principal', () => {
       .toThrow('no funded admissions');
     return f.hooks.withdraw();
   });
+
+  it.each([undefined, null, 7, true, '', ' leading', 'bad/id', 'x'.repeat(257), ['native-input']])(
+    'rejects malformed Claude native input identity %j before registering', async nativeInputId => {
+      const f = nativeInputFixture();
+      expect(() => Reflect.apply(f.registry.registerNativeInput, f.registry, [{ ...f.context, nativeInputId }]))
+        .toThrow('genuine host binding');
+      await f.hooks.withdraw();
+    },
+  );
 
   it('uses the genuine request principal for one exact core call with independent possession', async () => {
     const f = await fixture();
