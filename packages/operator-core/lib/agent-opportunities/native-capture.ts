@@ -668,27 +668,38 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     const wave = (ordered.length ? ordered : refresh).slice(0, ENROLLMENT_BATCH);
     const observed = new Map<string, { binding: Binding; snapshot: string }>();
     let last = prior?.sourceEnrollment?.cursor ?? null;
-    for (const binding of wave) {
-      if (Date.now() >= deadline - 100) break;
+    // Use the same bounded, fully drained metadata wave as population closure.
+    // Serial enrollment followed by serial renewal can exhaust the fixed
+    // deadline on every turn and discard otherwise valid preparation forever.
+    const reads = Date.now() < deadline - 100
+      ? await Promise.allSettled(wave.map(binding => canonicalNativeRuntimeManifest(binding, deadline - 100))) : [];
+    for (const [index, read] of reads.entries()) {
+      const binding = wave[index]!;
       last = key(binding);
-      try {
-        const source = await canonicalNativeRuntimeManifest(binding, deadline - 100);
+      if (read.status === 'fulfilled') {
+        const source = read.value;
         // Losing a predecessor is a gap, never a smaller completed population.
         if (manifest[last]?.some(id => !source.identities.includes(id))) return 'unknown';
         manifest[last] = source.identities; snapshots[last] = source.snapshot;
         observed.set(last, { binding, snapshot: source.snapshot });
-      } catch {
+      } else {
         // Retain expected predecessor identities, but revoke their preparation
         // snapshot when a previously observed root becomes unavailable.
         delete snapshots[last];
       }
     }
+    const renewObserved = async () => {
+      const observations = [...observed.values()];
+      const renewed = await Promise.allSettled(observations.map(({ binding }) =>
+        canonicalNativeRuntimeManifest(binding, deadline)));
+      return renewed.every((read, index) => read.status === 'fulfilled'
+        && read.value.snapshot === observations[index]!.snapshot);
+    };
     if (!await opts.authorize() || !await opts.authorize()
       || canonicalJson(roster) !== canonicalJson(await population())) return 'unknown';
     // Close the ACL/DB await gap without opening any transcript body. A source
     // changed during renewal cannot be saved as this turn's enrollment evidence.
-    for (const { binding, snapshot } of observed.values())
-      if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
+    if (!await renewObserved()) return 'unknown';
     if (Date.now() >= deadline) return 'unknown';
     const prepared = roster.every(b => manifest[key(b)] && snapshots[key(b)]);
     // Source enrollment is only the first phase. On later turns independently
@@ -831,8 +842,7 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     }
     // Final authority awaits must precede the last filesystem renewal, just as
     // in enrollment. This metadata pass neither reopens bodies nor grants scope.
-    for (const { binding, snapshot } of observed.values())
-      if ((await canonicalNativeRuntimeManifest(binding, deadline)).snapshot !== snapshot) return 'unknown';
+    if (!await renewObserved()) return 'unknown';
     if (Date.now() >= deadline) return 'unknown';
     const receipt = { version: 1, manifest, population: digest(roster), revision: progress.revision,
       sourceEnrollment: { version: 1, prepared, snapshots, cursor: last },
