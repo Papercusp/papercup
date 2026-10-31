@@ -9,7 +9,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { moduleRepoRoot } from '../../module-repo-root.ts';
 import { createAdaptorServer } from '@hono/node-server';
-import { nativeCliPlan, nativeCliResult } from '../native-cli.fixture.ts';
+import { nativeCliPlan, nativeCliResult, preparePrivateNativeCallerSnapshot } from '../native-cli.fixture.ts';
 import { createTextCollector } from '../../child-output.js';
 
 // The plain-Node bootstrap supplies this callback from outside tsx's namespace.
@@ -489,10 +489,8 @@ async function runNativeTaskBriefJourney({ call, workspace, root, owner }: {
   // current-source proof this private fixture claims to exercise, after the
   // target edit so its per-file hash cannot be stale by construction.
   const sha = (path: string) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');
-  const snapshotPath = join(homedir(), '.papercusp/graph-snapshot', workspace, 'dependency-snapshot.json');
-  await mkdir(resolve(snapshotPath, '..'), { recursive: true });
   const sources = paths.map(path => ({ path, sha256: sha(path) }));
-  await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+  await preparePrivateNativeCallerSnapshot(workspace, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
     index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
     edges: paths.slice(1).map(importer => ({ imported: paths[0], importer, importerSha256: sha(importer) })),
     symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols: [{
