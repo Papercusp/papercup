@@ -366,6 +366,8 @@ describe('session:assume production receipt adapter (real PG)', () => {
     }> = [];
     const latestSample = new Map<number, (typeof waitSamples)[number]>();
     const sampleErrors: string[] = [];
+    let resolveLockWait!: () => void;
+    const lockWaitSeen = new Promise<void>(resolve => { resolveLockWait = resolve; });
     let sampling = true;
     const poll = (async () => {
       while (sampling) {
@@ -384,6 +386,7 @@ describe('session:assume production receipt adapter (real PG)', () => {
               "AND query ILIKE '%FROM harness_shared.carry_notes%'",
           );
           for (const row of rows) {
+            if (row.wait_event_type === 'Lock') resolveLockWait();
             const signature = [row.state, row.wait_event_type ?? 'none', row.wait_event ?? 'none'].join('/');
             const ageMs = Number(row.query_age_ms);
             const previous = latestSample.get(row.pid);
@@ -411,14 +414,45 @@ describe('session:assume production receipt adapter (real PG)', () => {
         if (sampling) await new Promise(resolve => setTimeout(resolve, 50));
       }
     })();
+    let releaseTableLock!: () => void;
+    const tableLockRelease = new Promise<void>(resolve => { releaseTableLock = resolve; });
+    let markTableLockHeld!: () => void;
+    const tableLockReady = new Promise<void>(resolve => { markTableLockHeld = resolve; });
+    let tableLockError: unknown = null;
+    const tableLockHolder = database.adminSql.begin(async tx => {
+      await tx.unsafe("SET LOCAL lock_timeout = '1500ms'");
+      await tx.unsafe('LOCK TABLE harness_shared.carry_notes IN ACCESS EXCLUSIVE MODE');
+      markTableLockHeld();
+      await tableLockRelease;
+    }).catch(error => {
+      tableLockError = error;
+      markTableLockHeld();
+    });
+    await tableLockReady;
+    if (tableLockError) {
+      sampling = false;
+      await poll;
+      throw tableLockError;
+    }
     const startedAt = process.hrtime.bigint();
     let returned = false;
     let callError: string | null = null;
+    let lockWaitObserved = false;
+    let returningCall: Promise<void> = Promise.resolve();
     try {
-      returned = await completeAssumeCallerReturn(f.returning, deps);
-    } catch (error) {
-      callError = String(error);
+      returningCall = completeAssumeCallerReturn(f.returning, deps).then(value => {
+        returned = value;
+      }, error => {
+        callError = String(error);
+      });
+      lockWaitObserved = await Promise.race([
+        lockWaitSeen.then(() => true),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2_000)),
+      ]);
     } finally {
+      releaseTableLock();
+      await tableLockHolder;
+      await returningCall;
       sampling = false;
       await poll;
     }
@@ -451,8 +485,10 @@ describe('session:assume production receipt adapter (real PG)', () => {
       explainError = 'recovery checkpoint ref is not a carry-note scope';
     }
     console.info('[R-5 getCarryNote diagnostic]', JSON.stringify({
-      returned, elapsedMs, waitSamples, sampleErrors, queryPlan, explainError, callError,
+      returned, elapsedMs, lockWaitObserved, waitSamples, sampleErrors, queryPlan, explainError, callError,
     }));
+    expect(lockWaitObserved).toBe(true);
+    expect(waitSamples.some(sample => sample.waitEventType === 'Lock')).toBe(true);
     expect(returned).toBe(true);
     expect(await readAssumeCallerPause(f.caller.ownerId)).toBeNull();
     expect((await f.originStore.load())?.callerReturn).toMatchObject({ transitionKey: f.key,
