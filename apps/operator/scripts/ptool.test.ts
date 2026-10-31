@@ -156,6 +156,36 @@ describe('ptool post-connect phase diagnostics', () => {
     },
   );
 
+  it('records a phase that exceeds the diagnostic threshold even when its timer callback was delayed', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let now = 10;
+    const result = { ok: true };
+    try {
+      await expect(withPtoolConnectionPhaseTrace(
+        trace,
+        'mcp-initialize',
+        route,
+        () => {
+          now += PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS + 25;
+          return Promise.resolve(result);
+        },
+        { now: () => now },
+      )).resolves.toBe(result);
+
+      const events = log.mock.calls.map(([line]) =>
+        JSON.parse(String(line).replace('ptool: connection trace ', '')),
+      );
+      expect(events).toMatchObject([
+        { ...trace, event: 'phase-pending', stage: 'mcp-initialize', route,
+          elapsedMs: PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS + 25 },
+        { ...trace, event: 'phase-complete', stage: 'mcp-initialize', route,
+          elapsedMs: PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS + 25 },
+      ]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('preserves the original rejection and clears its pending timer', async () => {
     vi.useFakeTimers();
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -3754,6 +3784,29 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
       network.resolve({});
       vi.useRealTimers();
     }
+  });
+
+  it('counts synchronous connection setup against the attempt deadline and closes a late client', async () => {
+    let now = 100;
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn(() => {
+      now += 16;
+      return Promise.resolve(client);
+    });
+
+    await expect(connectWithLocalRetry(connectOnce, 'http://127.0.0.1:3170', {}, {
+      now: () => now,
+      maxAttempts: 1,
+      attemptTimeoutMs: 15,
+      totalTimeoutMs: 0,
+      retryJitterMs: 0,
+      sleep: async () => {},
+    })).rejects.toThrow(/local operator connection attempt timed out after 15ms \[1 connect attempt\(s\).*attempt-timeout\]/);
+
+    await Promise.resolve();
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+    expect(connectOnce.mock.calls[0]?.[2]).toEqual({ timeoutMs: 15 });
+    expect(client.close).toHaveBeenCalledTimes(1);
   });
 
   it('recovers a direct local pin by retrying the same named-call candidate', async () => {

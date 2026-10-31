@@ -460,7 +460,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
       && JSON.parse(row.subject).indexVersion && row.chars > 0));
     const proof = { workspace, harness, root, fixtureWorkItem: id,
       planSlug, baseline, handlerHash, sourceFingerprint: brief.sourceFingerprint, controlledSession, cohortCandidates,
-      transport: 'real-cli-http', expectedProviders: expected, response, base, issued: finalIssued,
+      transport: 'real-cli-http', expectedProviders: expected, providerOutcomes, response, base, issued: finalIssued,
       testRunIds: run.testRunIds, runGroupId: run.runId,
       scope: managed ? 'controlled staging CLI fixture; no model invocation, live user census or final shipment'
         : 'controlled private current-source CLI fixture; no model invocation, live user census or final shipment' };

@@ -134,8 +134,9 @@ export function ptoolConnectionRetryOptions(args?: {}, env?: NodeJS.ProcessEnv):
     maxAttempts: number;
     totalTimeoutMs?: undefined;
 };
-export function withPtoolConnectionPhaseTrace(trace: any, phase: any, route: any, operation: any, { traceFastOutcome, completionFields }?: {
+export function withPtoolConnectionPhaseTrace(trace: any, phase: any, route: any, operation: any, { traceFastOutcome, completionFields, now }?: {
     traceFastOutcome?: boolean | undefined;
+    now?: typeof ptoolMonotonicNowMs | undefined;
 }): Promise<any>;
 /**
  * Correlate each direct HTTP request with the operator's existing MCP trace.
@@ -757,11 +758,11 @@ export function dispatchScriptedToolWithoutCatalogWithTokenFallback(client: any,
  * @param {{maxAttempts?: number, retryDelayMs?: number, attemptTimeoutMs?: number,
  * totalTimeoutMs?: number, sleep?: (ms: number) => Promise<void>, rand?: () => number,
  * retryJitterMs?: number, rediscover?: (() => string | null) | null,
- * onRebase?: ((url: string) => void) | null}} [options]
+ * onRebase?: ((url: string) => void) | null, now?: () => number}} [options]
  */
 export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: object, options?: {
     timeoutMs: number;
-}) => Promise<T>, operatorUrl: string, scope: object, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rand, retryJitterMs, rediscover, onRebase, }?: {
+}) => Promise<T>, operatorUrl: string, scope: object, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rand, retryJitterMs, rediscover, onRebase, now, }?: {
     maxAttempts?: number;
     retryDelayMs?: number;
     attemptTimeoutMs?: number;
@@ -771,6 +772,7 @@ export function connectWithLocalRetry<T>(connectOnce: (url: string, scope: objec
     retryJitterMs?: number;
     rediscover?: (() => string | null) | null;
     onRebase?: ((url: string) => void) | null;
+    now?: () => number;
 }): Promise<any>;
 /**
  * Connect to the first reachable operator candidate. Later candidates are
@@ -1134,6 +1136,7 @@ export type ToolCatalogEntry = {
     };
 };
 export type EnvironmentMap = Record<string, string | undefined>;
+declare function ptoolMonotonicNowMs(): number;
 /**
  * Read the payload back out of one spill file. Line-oriented: a magic line, a
  * manifest line, then the JSON payload — parsed from the LAST non-empty line

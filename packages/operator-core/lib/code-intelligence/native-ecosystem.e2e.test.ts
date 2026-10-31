@@ -272,7 +272,7 @@ describe('native P010 private operator completion reuse delivery', () => {
 });
 
 describe('native P010 controlled CLI claim reuse delivery', () => {
-  it('preserves the anchored base and issues five capped providers with actual controlled edit provenance', async (context) => {
+  it('preserves the anchored base and records five capped provider outcomes with actual controlled edit provenance', async (context) => {
     const proof = await privateNativeJourney('reuse-claim', runId => {
       Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
     });
@@ -280,7 +280,14 @@ describe('native P010 controlled CLI claim reuse delivery', () => {
       expectedProviders: ['clones', 'cochange', 'provenance', 'sql', 'coverage'],
       scope: expect.stringContaining('controlled private current-source CLI fixture') });
     expect(proof.controlledSession.id).toBeGreaterThan(0);
-    expect(proof.issued).toHaveLength(5);
+    expect(proof.providerOutcomes.map((row: { provider: string }) => row.provider)).toEqual(proof.expectedProviders);
+    const issued = proof.providerOutcomes.filter((row: { status: string }) => row.status === 'issued');
+    expect(proof.issued.map((row: { subject: string }) => JSON.parse(row.subject).provider).sort())
+      .toEqual(issued.map((row: { provider: string }) => row.provider).sort());
+    for (const row of proof.providerOutcomes) {
+      if (row.provider === 'coverage' && row.status === 'budget') expect(row.reason).toBe('truncated');
+      else expect(row.status).toBe('issued');
+    }
   }, privateJourneyTimeoutMs);
 });
 
