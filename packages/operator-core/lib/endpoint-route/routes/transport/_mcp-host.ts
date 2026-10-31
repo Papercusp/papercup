@@ -183,6 +183,7 @@ import {
   type NativeSessionVerificationPhase,
 } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { findLiveHost } from '../../../events/await/psu-pty-discovery';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
 import { isReservedHarnesslessRoutineHost } from '../../../harness/routines/routine-host';
 import {
@@ -1817,6 +1818,23 @@ async function tryBuildUnboundSpawnContext(
           verifierTraceId,
         );
         if (binding.binding === 'foreign') {
+          return {
+            kind: 'failed',
+            reason: 'superuser_foreign_native_session',
+            nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
+          };
+        }
+        // A native session can remain validly bound to the same stable owner
+        // after a carry/wake starts a successor. That is enough for attribution,
+        // but not enough to authorize writes: same-owner file locks are
+        // intentionally re-entrant. When this owner has a live psu host, its
+        // discovery record names the one current Codex child. Reject an older
+        // still-bound native session before any tool dispatch so both the
+        // native edit hook (locks:acquire) and capability:edit share this fence.
+        const liveHost = findLiveHost(suIdentity, undefined, {
+          workspaceId: headerWs || wsParam || undefined,
+        });
+        if (liveHost?.nativeSessionId && liveHost.nativeSessionId !== nativeSessionId) {
           return {
             kind: 'failed',
             reason: 'superuser_foreign_native_session',

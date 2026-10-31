@@ -1148,6 +1148,8 @@ export function buildGateSuiteMeasurement(
   let reuseOutput = kind === 'targeted-gate' ? output.replace(/(^|\n)TARGETED_/g, '$1') : output;
   const runs = parseTestPassReuse(reuseOutput);
   const selectors = runs.flatMap((r) => r.workspaces).filter((w) => w.applied);
+  const incompleteTotals = runs.some((r) => r.applied && r.workspaces.some((w) => w.applied) && r.total === null);
+  let totalsCompleted = false;
   const refusals = new Map<string, number>();
   for (const w of selectors) for (const reason of [...TEST_PASS_REUSE_EXCLUSION_REASONS, 'otherLane']) {
     if (isCount(w.counts[reason])) refusals.set(reason, (refusals.get(reason) ?? 0) + w.counts[reason]!);
@@ -1158,9 +1160,10 @@ export function buildGateSuiteMeasurement(
       selectors.every((w) => isCount(w.counts.candidates) && isCount(w.counts.reused))) {
     const sum = (key: string) => selectors.reduce((n, w) => n + (w.counts[key] ?? 0), 0);
     reuseOutput += `\nTEST_PASS_REUSE_TOTAL tasks=${selectors.length} candidates=${sum('candidates')} reused=${sum('reused')} audited=${sum('audited')} minSavedTestMs=unknown unmeasured=0`;
+    totalsCompleted = true;
   }
   return parseGateSuiteMeasurement({ schemaVersion: 1, kind, judgedSha, ...suite, resume,
-    reuse: buildTestPassReuseHealth(reuseOutput, judgedSha, suite.completedAtMs, suite),
+    reuse: incompleteTotals && !totalsCompleted ? null : buildTestPassReuseHealth(reuseOutput, judgedSha, suite.completedAtMs, suite),
     reuseRefusals: refusals.size ? Object.fromEntries(refusals) : null });
 }
 

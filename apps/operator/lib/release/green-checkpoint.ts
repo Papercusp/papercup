@@ -25307,7 +25307,7 @@ export function realCheckpointDeps(
       const env = buildGreenCheckpointEnv(
         null,
         process.env,
-        undefined,
+        runId,
         cfg.greenCheckpointCapacityMode,
       );
       env.VITEST_MAX_FORKS = "1";
