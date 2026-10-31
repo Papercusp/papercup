@@ -44,6 +44,12 @@ describe('owner brief test progress retrieval', () => {
       measurements: [{ id: 'lint:tsc', lastMeasuredRound: 9 }, { id: 'lint:other', lastMeasuredRound: 9 }] });
     expect(queueLegs.lastSuite?.runGroupId).toBe('real-suite-A');
     expect(queueLegs.lastSuite?.completedAtMs).toBe(NOW - 5000);
+    const targeted = buildGateSuiteMeasurement('TARGETED_TEST_PASS_REUSE ws=core::test candidates=9 reused=4 noProof=5',
+      MAIN_PIN, { command: 'npm run test -w core', runGroupId: 'targeted-C', startedAtMs: NOW - 500, completedAtMs: NOW }, 'targeted-gate')!;
+    const all = progress({ lastSuiteMeasurement: lastSuite, lastTargetedSuiteMeasurement: targeted });
+    expect(all.lastTargetedSuite).toEqual(targeted);
+    expect(all.taskResume.runGroupId).toBe('real-suite-A');
+    expect(all.lastTargetedSuite?.reuseRefusals).toEqual({ noProof: 5 });
   });
 
   const failures: NonNullable<GateOwnerBriefInput['candidateFailures']> = {

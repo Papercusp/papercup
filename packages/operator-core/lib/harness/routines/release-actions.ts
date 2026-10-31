@@ -1441,6 +1441,7 @@ function boundedTypecheckPreflight(
 
 import { parseGateSuiteVerdictReplay, type GateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
 import { parseGateSuiteMeasurement, type GateSuiteMeasurement } from '../../release/test-pass-reuse-report';
+import { mergeGateSuiteMeasurement } from '../../release/gate-health-merge';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** P-014: reuse append-only verdict detail; never read a mutable live verdict as history. */
@@ -1498,6 +1499,7 @@ export interface CheckpointVerdict {
    *  version-skew fallback reads it back out of JSON. ABSENT ⇒ not reported this round. */
   testPassReuse?: TestPassReuseHealth;
   suiteMeasurement?: GateSuiteMeasurement;
+  suiteMeasurements?: GateSuiteMeasurement[];
   /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): structural mirror of
    *  CheckpointResult.promotionRatchet — blocking-failure and downgraded-failing counts.
    *  Re-validated with parsePromotionRatchetHealth before it is stored. */
@@ -2105,6 +2107,8 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
   const detail: Record<string, unknown> = { green: v.green ?? null };
   const suiteMeasurement = parseGateSuiteMeasurement(v.suiteMeasurement);
   if (suiteMeasurement) detail.suiteMeasurement = suiteMeasurement;
+  if (Array.isArray(v.suiteMeasurements)) detail.suiteMeasurements = v.suiteMeasurements
+    .map(parseGateSuiteMeasurement).filter((m) => m !== null);
   if (v.suiteVerdictReplay) detail.suiteVerdictReplay = parseGateSuiteVerdictReplay(v.suiteVerdictReplay)
     ?? { invalid: true, error: 'malformed measured-suite replay' };
   if (v.suiteReplayCanary) detail.suiteReplayCanary = v.suiteReplayCanary;
@@ -2598,6 +2602,7 @@ export async function recordCheckpointVerdict(
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
       suiteMeasurement: verdict.suiteMeasurement,
+      suiteMeasurements: verdict.suiteMeasurements,
       promotionRatchet: verdict.promotionRatchet,
       verdictFlipQuarantine: verdict.verdictFlipQuarantine,
       ratchetShadow: verdict.ratchetShadow,
@@ -2685,6 +2690,7 @@ export async function recordPendingCheckpointVerdict(
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
       suiteMeasurement: verdict.suiteMeasurement,
+      suiteMeasurements: verdict.suiteMeasurements,
       promotionRatchet: verdict.promotionRatchet,
       verdictFlipQuarantine: verdict.verdictFlipQuarantine,
       ratchetShadow: verdict.ratchetShadow,
@@ -3372,6 +3378,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         postSuiteLegs: parsed?.postSuiteLegs,
         testPassReuse: parsed?.testPassReuse,
         suiteMeasurement: parsed?.suiteMeasurement,
+        suiteMeasurements: parsed?.suiteMeasurements,
         promotionRatchet: parsed?.promotionRatchet,
         verdictFlipQuarantine: parsed?.verdictFlipQuarantine,
         ratchetShadow: parsed?.ratchetShadow,
@@ -4615,6 +4622,7 @@ export async function trackGateStall(
      *  here, so a malformed or pre-emitter value is dropped instead of stored. */
     testPassReuse?: unknown;
     suiteMeasurement?: unknown;
+    suiteMeasurements?: unknown[];
     /** P-004: the round's promotion-ratchet counts; shape-checked here like testPassReuse. */
     promotionRatchet?: unknown;
     /** P-008 (R-7): the round's verdict-flip quarantine record; shape-checked like testPassReuse. */
@@ -4631,17 +4639,9 @@ export async function trackGateStall(
   // advance this field; an older terminal observation cannot replace a newer measurement.
   const suiteMeasurement = parseGateSuiteMeasurement(options.suiteMeasurement);
   if (suiteMeasurement) {
-    const { getOrgPg } = await import('@papercusp/db-org');
-    await getOrgPg().sql.unsafe(
-      `UPDATE harness_shared.routines SET metadata = jsonb_set(
-         COALESCE(metadata, '{}'::jsonb), '{gate_health}',
-         COALESCE(metadata->'gate_health', '{}'::jsonb) || jsonb_build_object('lastSuiteMeasurement', $3::jsonb), true)
-       WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:green-checkpoint'
-         AND (CASE WHEN jsonb_typeof(metadata #> '{gate_health,lastSuiteMeasurement,completedAtMs}') = 'number'
-           THEN (metadata #>> '{gate_health,lastSuiteMeasurement,completedAtMs}')::numeric ELSE -1 END) <= $4`,
-      [ctx.installSlug, ctx.workspaceId, JSON.stringify(suiteMeasurement), suiteMeasurement.completedAtMs],
-    );
+    await mergeGateSuiteMeasurement(ctx, suiteMeasurement);
   }
+  for (const measurement of options.suiteMeasurements ?? []) await mergeGateSuiteMeasurement(ctx, measurement);
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
@@ -5920,6 +5920,7 @@ export async function trackGateStall(
   // The monotonic measurement writer above owns this field. Carry it from the LIVE SQL row,
   // never the SELECT snapshot, which can predate a concurrent suite's completed measurement.
   delete next.lastSuiteMeasurement;
+  delete next.lastTargetedSuiteMeasurement;
   await sql.unsafe(
     `UPDATE harness_shared.routines
         SET metadata = jsonb_set(

@@ -10201,6 +10201,9 @@ describe("runGreenCheckpoint", () => {
       recorder: null,
       headline: "per-file reuse: 7 of 10 candidate file(s) reused",
     };
+    const suiteMeasurement = { schemaVersion: 1 as const, kind: 'candidate-suite' as const, judgedSha: reuse.judgedSha,
+      command: 'npm run test:affected', runGroupId: 'measured-suite', startedAtMs: 100, completedAtMs: 200,
+      resume: null, reuse: null };
 
     it("carries it onto an ADVANCE verdict", async () => {
       const c1 = await commit("a", "1", "c1");
@@ -10209,11 +10212,12 @@ describe("runGreenCheckpoint", () => {
       const { deps, calls } = stubDeps(true);
       deps.runGreen = async () => {
         calls.push("runGreen");
-        return { green: true, summary: "all pass", testPassReuse: reuse };
+        return { green: true, summary: "all pass", testPassReuse: reuse, suiteMeasurement };
       };
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r).toMatchObject({ advanced: true, green: true });
       expect(r.testPassReuse).toEqual(reuse);
+      expect(r.suiteMeasurement).toEqual(suiteMeasurement);
       // The round's phase breakdown is built once, against the whole pass: the candidate suite
       // is stamped, the parts add up to the total, and the internal carrier never leaks out.
       expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
@@ -10233,11 +10237,13 @@ describe("runGreenCheckpoint", () => {
           summary: "1 failing",
           failingTests: ["lib/x.test.ts"],
           testPassReuse: reuse,
+          suiteMeasurement,
         };
       };
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r.green).toBe(false);
       expect(r.testPassReuse).toEqual(reuse);
+      expect(r.suiteMeasurement).toEqual(suiteMeasurement);
       expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
       expect("roundPhaseStamps" in r).toBe(false);
     });
@@ -10251,12 +10257,13 @@ describe("runGreenCheckpoint", () => {
       const { deps, calls } = stubDeps(true);
       deps.runGreen = async () => {
         calls.push("runGreen");
-        return { green: true, summary: "all pass", testPassReuse: reuse };
+        return { green: true, summary: "all pass", testPassReuse: reuse, suiteMeasurement };
       };
       deps.perfGate = async () => ({ action: "block", summary: "perf BLOCK" });
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r).toMatchObject({ green: true, advanced: false, reason: "perf-held" });
       expect(r.testPassReuse).toEqual(reuse);
+      expect(r.suiteMeasurement).toEqual(suiteMeasurement);
       expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
       expect("roundPhaseStamps" in r).toBe(false);
     });
@@ -10269,6 +10276,7 @@ describe("runGreenCheckpoint", () => {
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r.green).toBe(true);
       expect("testPassReuse" in r).toBe(false);
+      expect("suiteMeasurement" in r).toBe(false);
     });
   });
 

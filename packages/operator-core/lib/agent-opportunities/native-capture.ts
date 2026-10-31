@@ -17,6 +17,16 @@ import { z } from 'zod';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 type Binding = { id: string; owner: string; provider: NativeProvider; harness: string | null };
+/** Interpret only our MCP server's advertisement. Codex's maintained parser
+ * preserves its `functions` namespace; remove that transport prefix without
+ * letting a foreign server borrow the same registered Papercusp tool name.
+ * Resolution is correlation only: receipt, call, runtime and ACL checks follow. */
+function nativeDispatchTool(source: Pick<SearchSource, 'provider' | 'tool'>) {
+  const name = source.provider === 'codex' && /^functions\.mcp__/i.test(source.tool)
+    ? source.tool.slice('functions.'.length) : source.tool;
+  if (/^mcp__/i.test(name) && !/^mcp__papercusp(?:[-_]su)?__/i.test(name)) return undefined;
+  return resolveMcpName(name);
+}
 type CallEvidence = Record<string, { fingerprint: string; at: string }>;
 type SourceContinuation = { snapshot: string; files: Record<string, {
   offset: number; lines: number; identity: boolean; retainedBytes: number; calls: number; fingerprint: string; done: boolean;
@@ -249,7 +259,7 @@ export async function readAuthorizedNativeDispatch(input: {
     if (source && (source.workspaceId !== receipt.workspaceId || source.harnessSlug !== receipt.harnessSlug
       || source.authorizationScope !== opts.sourceBoundary || source.actor !== receipt.ownerId || source.provider !== receipt.provider
       || source.identityAuthority !== 'provider' || !source.sourceComplete || source.namespace !== receipt.nativeSessionId
-      || source.callId !== receipt.callId || resolveMcpName(source.tool)?.expose.mcp?.name !== receipt.toolName
+      || source.callId !== receipt.callId || nativeDispatchTool(source)?.expose.mcp?.name !== receipt.toolName
       || canonicalJson(source.args) !== canonicalJson(args)
       || eventCopy && micros(String(candidate.created_at)) !== micros(source.at))) return null;
     // Finish every caller-supplied ACL await BEFORE the final database/key
@@ -311,7 +321,7 @@ export async function inspectNativeDispatchCandidate(source: SearchSource, bindi
   try {
     // Native shell/browser tools and code-mode/wrapper fanout have no faithful
     // one-to-one dispatch projection. Do not inspect their program text.
-    const tool = resolveMcpName(source.tool)?.expose.mcp?.name;
+    const tool = nativeDispatchTool(source)?.expose.mcp?.name;
     const args = object(source.args);
     if (!tool || ['tools:invoke', 'code:run'].includes(tool) || !args || Object.hasOwn(args, '_truncated')
       || !source.callId || !source.namespace || source.workspaceId !== opts.workspaceId

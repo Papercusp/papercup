@@ -123,6 +123,8 @@ import {
 } from "@papercusp/operator-core/lib/release/frozen-repair-carry";
 import {
   buildTestPassReuseHealth,
+  buildGateSuiteMeasurement,
+  type GateSuiteMeasurement,
   parsePureProofCaptureResult,
   parsePureProofCaptureArchive,
   type PureProofCaptureArchive,
@@ -800,6 +802,8 @@ export interface CheckpointDeps {
     Promise<RecordCheckpointVerdictOptions['qualificationWork']>;
   /** Internal trace shared across this physical run's recursive refires. Never live state. */
   decisionTrace?: GateDecisionReplay[];
+  /** Actual child measurements, including targeted task re-runs, within this physical run. */
+  suiteMeasurements?: GateSuiteMeasurement[];
   /**
    * Report forward progress from the real checkpoint process. This is deliberately
    * separate from `log`: child output can be noisy or silent, while phase transitions
@@ -927,6 +931,7 @@ export interface CheckpointDeps {
      *  suite ran at. ABSENT ⇒ the round reported nothing (a candidate predating the emitter, an
      *  early abort, a stub dep) — never read as "nothing was reused". */
     testPassReuse?: TestPassReuseHealth;
+    suiteMeasurement?: GateSuiteMeasurement;
     /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): the blocking-failure and
      *  downgraded-failing counts of a red suite. ABSENT ⇒ the rule did not run (a green suite,
      *  a build failure, no gate target, a stub dep) — never read as "nothing was downgraded". */
@@ -1944,6 +1949,8 @@ export interface CheckpointResult {
    *  none, so a missing site shows the prior round's numbers as this one's. ABSENT ⇒ the suite
    *  did not run this round (or the runner reported nothing). */
   testPassReuse?: TestPassReuseHealth;
+  suiteMeasurement?: GateSuiteMeasurement;
+  suiteMeasurements?: GateSuiteMeasurement[];
   /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): carried from `runGreen`; the recorder
    *  persists it as `gate_health.promotionRatchet` (blocking-failure count, downgraded-failing
    *  count, whether the red was promoted because every failure was downgraded). */
@@ -15604,6 +15611,7 @@ async function runGreenCheckpointInner(
     postSuiteLegs,
     infraFault,
     testPassReuse,
+    suiteMeasurement,
     promotionRatchet,
     verdictFlipQuarantine,
     ratchetShadow: runnerRatchetShadow,
@@ -15640,10 +15648,11 @@ async function runGreenCheckpointInner(
     : null;
   const roundObservations: Pick<
     CheckpointResult,
-    | "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1" | "promotionRatchet"
+    | "testPassReuse" | "suiteMeasurement" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1" | "promotionRatchet"
     | "verdictFlipQuarantine" | "excludedFromCount" | "ratchetShadow"
   > = {
     ...(testPassReuse ? { testPassReuse } : {}),
+    ...(suiteMeasurement ? { suiteMeasurement } : {}),
     ...(promotionRatchet ? { promotionRatchet } : {}),
     ...(verdictFlipQuarantine ? { verdictFlipQuarantine } : {}),
     ...(ratchetShadow ? { ratchetShadow } : {}),
@@ -18797,6 +18806,7 @@ export async function runGreenCheckpoint(
   } : undefined);
   let finalResult: CheckpointResult = {
     ...result,
+    ...(deps.suiteMeasurements?.length ? { suiteMeasurements: structuredClone(deps.suiteMeasurements) } : {}),
     // Seal the complete run trace before handing it to an asynchronous recorder.
     ...(verdictReplay ? { suiteVerdictReplay: JSON.parse(JSON.stringify(verdictReplay)) as GateSuiteVerdictReplay } : {}),
     ...(suiteReplayCanary ? { suiteReplayCanary } : {}),
@@ -18935,7 +18945,15 @@ export async function runGreenCheckpoint(
   // the measurement can retire a signature entry that just passed, and routing the
   // pre-measurement snapshot would re-open a condition for that already-fixed leg.
   // Additive + fail-safe (see helper).
+  // WI-6554700010043382: repair-tick legs include full workspace test lanes and can
+  // legitimately run for tens of minutes. Do not leave the qualification runner in
+  // `finalizing` while they execute: the post-verdict hang detector deliberately pages
+  // a live finalizing runner after 20m because the *bounded tail* below should take only
+  // seconds. Model this suite-like measurement as `suite`, then re-enter `finalizing`
+  // once it completes so a genuinely stuck routing/finalization tail is still detected.
+  deps.reportProgress?.("phase:suite");
   finalResult = await augmentWithRepairTickLegs(finalResult, deps);
+  deps.reportProgress?.("phase:finalizing");
   // P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): route each failing leg of the
   // queue this tick ended holding to its own claimable item, from the same funnel every
   // return site passes through, so no branch can skip it. An unreadable queue is skipped
@@ -22672,12 +22690,14 @@ export function realCheckpointDeps(
     } };
   };
   const executeCheckpointCommand = exec;
+  const suiteMeasurements: GateSuiteMeasurement[] = [];
   return {
     qualificationWorkForVerdict,
     isolationRun,
     concurrentRun,
     workspaceRerun,
     runId,
+    suiteMeasurements,
     gateFireId,
     // EI-27265866190725513: runGreenCheckpoint reports every phase through
     // deps.reportProgress("phase:<x>"). Without this key those calls were no-ops in
@@ -25166,6 +25186,12 @@ export function realCheckpointDeps(
         } : null,
       );
       if (testPassReuse) log(`TEST_PASS_REUSE_ROUND ${testPassReuse.headline}`);
+      const suiteMeasurement = runId && suiteCompletedAtMs !== null
+        ? buildGateSuiteMeasurement(suiteOutput, resolvedHeadAtStart ?? execution?.candidate, {
+            command: cfg.greenCmd, runGroupId: runId,
+            startedAtMs: suiteStartedAtMs, completedAtMs: suiteCompletedAtMs,
+          }) : null;
+      if (suiteMeasurement) suiteMeasurements.push(suiteMeasurement);
       return {
         green,
         summary,
@@ -25195,6 +25221,7 @@ export function realCheckpointDeps(
           : {}),
         ...(infraFault ? { infraFault } : {}),
         ...(testPassReuse ? { testPassReuse } : {}),
+        ...(suiteMeasurement ? { suiteMeasurement } : {}),
         ...(promotionRatchet ? { promotionRatchet } : {}),
         ...(verdictFlipQuarantine ? { verdictFlipQuarantine } : {}),
         ...(ratchetShadow ? { ratchetShadow } : {}),
@@ -25467,6 +25494,7 @@ export function realCheckpointDeps(
         // discarded every pass, so the next round and the promotion run at the same repair head
         // re-ran them all again. Fail-open: an unverified checkout, or any failure inside the
         // arming, runs the task exactly as before.
+        const reuseLines: string[] = [];
         const armed =
           workspace && verifiedHead === ref
             ? await armTargetedTaskReuse({
@@ -25485,10 +25513,9 @@ export function realCheckpointDeps(
                 releaseRoot: cfg.releaseRoot,
               }).catch(async (e: unknown) => {
                 const reason = `arming-threw(${String(e instanceof Error ? e.message : e).replace(/\s+/g, "_").slice(0, 160)})`;
-                log(
-                  `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false ` +
-                    `reason=${reason}`,
-                );
+                const line = `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false reason=${reason}`;
+                reuseLines.push(line);
+                log(line);
                 const recorded = await recordGateReuseDecision(`${workspace}::${script}`, { offReason: reason }, {
                   runContext: env.GREEN_CHECKPOINT === "1" && env.PAPERCUSP_TEST_RUN_SOURCE === "ci"
                     ? "green-checkpoint"
@@ -25499,21 +25526,34 @@ export function realCheckpointDeps(
                 return null;
               })
             : null;
-        for (const line of armed?.lines ?? []) log(line);
+        for (const line of armed?.lines ?? []) { reuseLines.push(line); log(line); }
         // WI-10006055: a live-plane lint re-run here needs the operator DSN too.
         const taskEnv = gateScriptEnv(script, armed?.env ?? env);
+        const startedAtMs = Date.now();
+        let completedAtMs: number | null = null;
+        let taskResult: Awaited<ReturnType<CheckpointExec>> | null = null;
+        let measuredCommand = '';
         try {
           const taskArgs = armed?.args?.length
             ? [...invocation.args, "--", ...armed.args]
             : invocation.args;
-          return await exec(invocation.cmd, taskArgs, {
+          measuredCommand = [invocation.cmd, ...taskArgs].join(' ');
+          taskResult = await exec(invocation.cmd, taskArgs, {
             cwd: invocation.cwd,
             env: taskEnv,
             allowNonZero: true,
             ...rescueTaskWatchdogOptions(script, taskEnv),
           });
+          completedAtMs = Date.now();
+          return taskResult;
         } finally {
-          for (const line of armed?.finish() ?? []) log(line);
+          for (const line of armed?.finish() ?? []) { reuseLines.push(line); log(line); }
+          if (taskResult && completedAtMs !== null && verifiedHead === ref) {
+            const measurement = buildGateSuiteMeasurement(
+              [...reuseLines, taskResult.stdout, taskResult.stderr].join('\n'), verifiedHead,
+              { command: measuredCommand, runGroupId: runId, startedAtMs, completedAtMs }, 'targeted-gate');
+            if (measurement) suiteMeasurements.push(measurement);
+          }
         }
       });
       return {

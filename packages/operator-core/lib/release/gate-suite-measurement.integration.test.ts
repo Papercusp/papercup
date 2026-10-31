@@ -1,13 +1,8 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
-const db = vi.hoisted(() => ({ sql: null as Sql | null }));
-vi.mock('@papercusp/db-org', async (original) => ({
-  ...(await original<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: db.sql }),
-}));
-import { trackGateStall } from '../harness/routines/release-actions';
+import { mergeGateHealth, mergeGateSuiteMeasurement } from './gate-health-merge';
 import { buildGateSuiteMeasurement, parseGateSuiteMeasurement } from './test-pass-reuse-report';
 
 let org: OrgTestDb;
@@ -21,10 +16,8 @@ const measurement = (runGroupId: string, completedAtMs: number) => buildGateSuit
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
-  db.sql = sql;
 });
 afterAll(async () => {
-  db.sql = null;
   await org?.cleanup();
 });
 beforeEach(async () => {
@@ -50,11 +43,10 @@ describe('P009 last actual suite persistence (real isolated Postgres)', () => {
   it('retains the newest measured run across replay-only ticks and late writes, scoped by workspace', async () => {
     const newer = measurement('suite-new', 500);
     // A promotion-held suite must persist too; it need not change the live verdict counters.
-    await trackGateStall(target, 'perf-held', undefined, undefined, null, undefined, null, undefined, { suiteMeasurement: newer });
+    await mergeGateSuiteMeasurement(target, newer, sql);
     expect(parseGateSuiteMeasurement((await health()).lastSuiteMeasurement)).toEqual(newer);
-    await trackGateStall(target, 'skipped-locked');
-    await trackGateStall(target, 'perf-held', undefined, undefined, null, undefined, null, undefined,
-      { suiteMeasurement: measurement('suite-older-delivered-late', 200) });
+    await mergeGateHealth(target, { observedAt: 600, lastVerdict: 'green' }, sql, true);
+    await mergeGateSuiteMeasurement(target, measurement('suite-older-delivered-late', 200), sql);
     expect(parseGateSuiteMeasurement((await health()).lastSuiteMeasurement)).toEqual(newer);
     expect((await health()).foreignKey).toBe('keep');
     expect((await health(other.workspaceId)).lastSuiteMeasurement).toBeUndefined();
@@ -63,10 +55,23 @@ describe('P009 last actual suite persistence (real isolated Postgres)', () => {
   it('keeps a concurrent newer measurement when a status writer finishes later', async () => {
     const newer = measurement('suite-concurrent', 500);
     await Promise.all([
-      trackGateStall(target, 'advanced', undefined, undefined, null, undefined, null, undefined,
-        { suiteMeasurement: measurement('suite-old-status', 200) }),
-      trackGateStall(target, 'perf-held', undefined, undefined, null, undefined, null, undefined, { suiteMeasurement: newer }),
+      mergeGateSuiteMeasurement(target, measurement('suite-old-status', 200), sql),
+      mergeGateSuiteMeasurement(target, newer, sql),
+      mergeGateHealth(target, { observedAt: 600, lastVerdict: 'green' }, sql, true),
     ]);
     expect(parseGateSuiteMeasurement((await health()).lastSuiteMeasurement)).toEqual(newer);
+  });
+
+  it('retains targeted reuse separately, with its own run, SHA, command, time and refusals', async () => {
+    const full = measurement('full-A', 200);
+    const targeted = buildGateSuiteMeasurement(
+      'TARGETED_TEST_PASS_REUSE ws=core::test candidates=9 reused=4 noProof=5', 'b'.repeat(40),
+      { command: 'npm run test -w core', runGroupId: 'target-B', startedAtMs: 300, completedAtMs: 500 }, 'targeted-gate')!;
+    await mergeGateSuiteMeasurement(target, full, sql);
+    await mergeGateSuiteMeasurement(target, targeted, sql);
+    const gh = await health();
+    expect(parseGateSuiteMeasurement(gh.lastSuiteMeasurement)).toEqual(full);
+    expect(parseGateSuiteMeasurement(gh.lastTargetedSuiteMeasurement)).toEqual(targeted);
+    expect(targeted).toMatchObject({ reuse: { candidates: 9, reused: 4 }, reuseRefusals: { noProof: 5 } });
   });
 });

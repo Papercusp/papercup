@@ -1056,6 +1056,7 @@ export interface TestPassReuseSuite {
 /** P-009: one actual suite invocation, independent of later verdict replays/queue ticks. */
 export interface GateSuiteMeasurement extends TestPassReuseSuite {
   schemaVersion: 1;
+  kind: 'candidate-suite' | 'targeted-gate';
   judgedSha: string;
   /** null means the suite did not print a complete, valid resume summary. */
   resume: {
@@ -1072,6 +1073,8 @@ export interface GateSuiteMeasurement extends TestPassReuseSuite {
     }>;
   } | null;
   reuse: TestPassReuseHealth | null;
+  /** Measured selector refusal counters; absent keys were not printed, never assumed zero. */
+  reuseRefusals?: Record<string, number> | null;
 }
 
 function parseTaskResume(value: unknown): GateSuiteMeasurement['resume'] {
@@ -1103,7 +1106,8 @@ export function parseGateSuiteMeasurement(value: unknown): GateSuiteMeasurement 
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as GateSuiteMeasurement;
   const suite = parseReuseSuite(v, v.completedAtMs);
-  if (v.schemaVersion !== 1 || !suite || typeof v.judgedSha !== 'string' || !/^[0-9a-f]{7,64}$/.test(v.judgedSha)) return null;
+  if (v.schemaVersion !== 1 || !suite || typeof v.judgedSha !== 'string' || !/^[0-9a-f]{7,64}$/.test(v.judgedSha) ||
+      !['candidate-suite', 'targeted-gate'].includes(v.kind ?? 'candidate-suite')) return null;
   const reuse = parseTestPassReuseHealth(v.reuse);
   // Never attach counters from a different invocation, even when both judged the same SHA.
   if (v.reuse !== null && (!reuse || reuse.judgedSha !== v.judgedSha ||
@@ -1111,12 +1115,16 @@ export function parseGateSuiteMeasurement(value: unknown): GateSuiteMeasurement 
       reuse.suite.startedAtMs !== suite.startedAtMs || reuse.suite.completedAtMs !== suite.completedAtMs)) return null;
   const resume = parseTaskResume(v.resume);
   if (v.resume !== null && !resume) return null;
-  return { schemaVersion: 1, judgedSha: v.judgedSha, ...suite, resume, reuse };
+  const reuseRefusals = v.reuseRefusals ?? null;
+  if (reuseRefusals !== null && (typeof reuseRefusals !== 'object' || Array.isArray(reuseRefusals) ||
+      !Object.values(reuseRefusals).every(isCount))) return null;
+  return { schemaVersion: 1, kind: v.kind ?? 'candidate-suite', judgedSha: v.judgedSha, ...suite, resume, reuse, reuseRefusals };
 }
 
 /** Input is ONLY this child's suite output, never the orchestrator or post-suite log. */
 export function buildGateSuiteMeasurement(
   output: string, judgedSha: string | null | undefined, suite: TestPassReuseSuite,
+  kind: GateSuiteMeasurement['kind'] = 'candidate-suite',
 ): GateSuiteMeasurement | null {
   const invocations: NonNullable<GateSuiteMeasurement['resume']>['invocations'] = [];
   let malformed = false;
@@ -1137,8 +1145,23 @@ export function buildGateSuiteMeasurement(
     hits: invocations.reduce((n, r) => n + r.hits, 0), misses: invocations.reduce((n, r) => n + r.misses, 0),
     reasons: Object.fromEntries(reasons), invocations,
   });
-  return parseGateSuiteMeasurement({ schemaVersion: 1, judgedSha, ...suite, resume,
-    reuse: buildTestPassReuseHealth(output, judgedSha, suite.completedAtMs, suite) });
+  let reuseOutput = kind === 'targeted-gate' ? output.replace(/(^|\n)TARGETED_/g, '$1') : output;
+  const runs = parseTestPassReuse(reuseOutput);
+  const selectors = runs.flatMap((r) => r.workspaces).filter((w) => w.applied);
+  const refusals = new Map<string, number>();
+  for (const w of selectors) for (const reason of [...TEST_PASS_REUSE_EXCLUSION_REASONS, 'otherLane']) {
+    if (isCount(w.counts[reason])) refusals.set(reason, (refusals.get(reason) ?? 0) + w.counts[reason]!);
+  }
+  // A targeted task prints one selector line, with no affected-suite TOTAL. Sum those exact
+  // task populations only when both counts are present; durations remain explicitly unknown.
+  if (kind === 'targeted-gate' && selectors.length && runs.every((r) => r.total === null) &&
+      selectors.every((w) => isCount(w.counts.candidates) && isCount(w.counts.reused))) {
+    const sum = (key: string) => selectors.reduce((n, w) => n + (w.counts[key] ?? 0), 0);
+    reuseOutput += `\nTEST_PASS_REUSE_TOTAL tasks=${selectors.length} candidates=${sum('candidates')} reused=${sum('reused')} audited=${sum('audited')} minSavedTestMs=unknown unmeasured=0`;
+  }
+  return parseGateSuiteMeasurement({ schemaVersion: 1, kind, judgedSha, ...suite, resume,
+    reuse: buildTestPassReuseHealth(reuseOutput, judgedSha, suite.completedAtMs, suite),
+    reuseRefusals: refusals.size ? Object.fromEntries(refusals) : null });
 }
 
 function parseReuseSuite(value: unknown, recordedAtMs: number): TestPassReuseSuite | null {

@@ -84,6 +84,13 @@ describe('P009 actual-suite measurements', () => {
     expect(buildGateSuiteMeasurement(output, sha, suite)?.resume).toMatchObject({ hits: 0, misses: 0, reasons: {} });
   });
 
+  it('reads targeted reuse under its own invocation, without mixing it into candidate-suite evidence', () => {
+    const output = 'TARGETED_TEST_PASS_REUSE ws=core::test candidates=9 reused=4 noProof=5 minSavedTestMs=10';
+    const targeted = buildGateSuiteMeasurement(output, sha, suite, 'targeted-gate')!;
+    expect(targeted).toMatchObject({ kind: 'targeted-gate', ...suite, reuse: { candidates: 9, reused: 4 } });
+    expect(buildGateSuiteMeasurement(output, sha, suite)?.reuse).toBeNull();
+  });
+
   it('refuses reuse from another run, SHA, or suite window', () => {
     const m = buildGateSuiteMeasurement('TEST_PASS_REUSE applied=false reason=disabled', sha, suite)!;
     for (const over of [{ judgedSha: 'b'.repeat(40) }, { suite: { ...suite, runGroupId: 'other' } },

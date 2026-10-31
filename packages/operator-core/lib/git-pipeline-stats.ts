@@ -388,6 +388,7 @@ export interface GitPipelineSnapshot {
      */
     testPassReuse?: TestPassReuseHealth | null;
     lastSuiteMeasurement?: import('./release/test-pass-reuse-report').GateSuiteMeasurement | null;
+    lastTargetedSuiteMeasurement?: import('./release/test-pass-reuse-report').GateSuiteMeasurement | null;
     /** P-013: where the latest gate round's wall-clock time went (stamped setup phases, the
      *  candidate suite, and `other`). Null = not measured this round, never "took no time". */
     roundPhases?: GateRoundPhases | null;
@@ -1966,6 +1967,7 @@ export async function gitPipelineSnapshot(
       // P-013: same shape-checked discipline — an absent or wrong-typed blob reads as null.
       testPassReuse: parseTestPassReuseHealth(gateHealth['testPassReuse']),
       lastSuiteMeasurement: parseGateSuiteMeasurement(gateHealth['lastSuiteMeasurement']),
+      lastTargetedSuiteMeasurement: parseGateSuiteMeasurement(gateHealth['lastTargetedSuiteMeasurement']),
       roundPhases: parseGateRoundPhases(gateHealth['roundPhases']),
     },
     openConflict,

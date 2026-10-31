@@ -131,12 +131,15 @@ it.each(['claude', 'codex', 'omp'] as const)('recognizes replacement MCP shell c
   const context = { workspaceId: scope.workspaceId, harnessSlug: 'native', authorizationScope: scope.sourceBoundary,
     actor: 'su-native', verifiedAgent: true, origin: 'agent' as const, provider, sessionId: 'session-1', complete: true };
   const lines = ['one', 'two'].flatMap(id => {
-    const records = wire(provider, id);
+    const records: unknown[] = wire(provider, id);
     if (provider === 'codex') {
       records[0] = { timestamp: '2026-10-24T12:00:00Z', type: 'response_item', payload: {
         type: 'function_call', namespace: 'functions', name: 'mcp__papercusp_su__capability_bash',
         call_id: id, arguments: JSON.stringify({ command: 'rg private' }),
-      } } as typeof records[0];
+      } };
+      records[1] = { timestamp: '2026-10-24T12:00:00Z', type: 'response_item', payload: {
+        type: 'function_call_output', call_id: id, output: '{"exit_code":0}',
+      } };
     } else if (provider === 'claude') {
       const block = (records[0] as { message: { content: { name: string }[] } }).message.content[0]!;
       block.name = 'mcp__papercusp-su__capability_bash';
@@ -152,7 +155,8 @@ it.each(['claude', 'codex', 'omp'] as const)('recognizes replacement MCP shell c
     { kind: 'shell', logicalDemand: 2, successCount: 2 },
   ]);
   expect(nativeTranscriptSources(lines, { ...context, complete: false }).map(call => observe(call)))
-    .toEqual(expect.arrayContaining([expect.objectContaining({ fingerprint: null, outcome: 'UNKNOWN' })]));
+    .toEqual([expect.objectContaining({ fingerprint: null, outcome: 'UNKNOWN' }),
+      expect.objectContaining({ fingerprint: null, outcome: 'UNKNOWN' })]);
 });
 
 it('keeps replacement names distinct from foreign servers, wrapper fanout and missing results', () => {

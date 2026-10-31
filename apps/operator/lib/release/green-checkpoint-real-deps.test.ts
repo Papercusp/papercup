@@ -514,7 +514,7 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
     const finish = vi.fn(() => []);
     const arm = vi.spyOn(targetedTaskReuse, "armTargetedTaskReuse").mockResolvedValue({
       env: { GREEN_CHECKPOINT: "1", PC_TEST_REUSE_SKIP_LIST: "/fixture/verified-passes.json" },
-      args: ["--passWithNoTests"], lines: [], reused: 2, recording: true, finish,
+      args: ["--passWithNoTests"], lines: ['TARGETED_TEST_PASS_REUSE ws=@papercusp/operator-vite::test candidates=2 reused=2 noProof=0 minSavedTestMs=5'], reused: 2, recording: true, finish,
     });
     const { exec, calls } = makeExec([{ code: 0 }]);
     const deps = realCheckpointDeps({ ...cfg, checkpointRoot: tree }, exec);
@@ -531,6 +531,9 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
       expect(call?.args.slice(-2)).toEqual(["--", "--passWithNoTests"]);
       expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBe("/fixture/verified-passes.json");
       expect(finish).toHaveBeenCalledOnce();
+      expect(deps.suiteMeasurements).toEqual([expect.objectContaining({ kind: 'targeted-gate', judgedSha: sha,
+        command: expect.stringContaining('test'), runGroupId: deps.runId,
+        reuse: expect.objectContaining({ candidates: 2, reused: 2 }) })]);
     } finally { arm.mockRestore(); }
   });
 
@@ -1757,7 +1760,7 @@ describe("P-007/D-004: the real deps no longer wire a frozen-repair staging join
 describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
   it("archives the actual candidate suite command and child completion clock", async () => {
     const sha = 'a'.repeat(40);
-    const output = 'TEST_PASS_REUSE applied=false reason=disabled';
+    const output = 'AFFECTED_TASK_CACHE_SUMMARY hits=3 misses=1 proofIdentity=initial-run group=111111111111 scope=proof reasons={"passing":3,"inputChanged":1}\nTEST_PASS_REUSE applied=false reason=disabled';
       const { exec, calls } = makeExec([{ code: 1, stdout: output }]);
     let clock = 100;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
@@ -1771,6 +1774,9 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
         cpTree, null, { candidate: sha });
       expect(result.testPassReuse?.suite).toEqual({ command: cfg.greenCmd,
         runGroupId: 'suite-clock-run', startedAtMs: 100, completedAtMs: 200 });
+      expect(result.suiteMeasurement).toMatchObject({ command: cfg.greenCmd, judgedSha: sha,
+        runGroupId: 'suite-clock-run', startedAtMs: 100, completedAtMs: 200,
+        resume: { hits: 3, misses: 1 }, reuse: { offReasons: ['disabled'] } });
       expect(calls[0].opts?.env?.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT).toBe(cfg.checkpointRoot);
       expect(calls[0].opts?.env?.PC_TEST_REUSE_INTEGRATION_ROOT).toBe(cfg.integrationRoot);
       expect(calls[0].opts?.env?.PC_TEST_REUSE_RELEASE_ROOT).toBe(cfg.releaseRoot);

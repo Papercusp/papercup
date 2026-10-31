@@ -2561,6 +2561,7 @@ describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReu
     await trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, { suiteMeasurement: m });
     expect(latestHeadlineHealth?.lastSuiteMeasurement).toEqual(m);
     expect(buildCheckpointDetail({ reason: status, suiteMeasurement: m }).suiteMeasurement).toEqual(m);
+    expect(buildCheckpointDetail({ reason: status, suiteMeasurements: [m] }).suiteMeasurements).toEqual([m]);
     const write = calls.find((c) => c.query.includes("jsonb_build_object('lastSuiteMeasurement'"))!;
     expect(write.params).toEqual([ctx.installSlug, ctx.workspaceId, JSON.stringify(m), 200]);
     expect(write.query).toContain("target_role = 'system:green-checkpoint'");

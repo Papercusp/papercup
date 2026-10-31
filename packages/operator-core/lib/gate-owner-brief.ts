@@ -367,6 +367,7 @@ export interface GateOwnerBriefInput {
   convergence?: FrozenRepairConvergenceCellProjection | null;
   testPassReuse?: TestPassReuseHealth | null;
   lastSuiteMeasurement?: GateSuiteMeasurement | null;
+  lastTargetedSuiteMeasurement?: GateSuiteMeasurement | null;
 }
 
 /** No new reads: retain each existing instrument's units, identity and missingness. */
@@ -397,6 +398,7 @@ function composeTestProgress(inp: GateOwnerBriefInput) {
     // P-009: queue ticks and replayed verdicts have their own timestamps. This identity
     // belongs only to the last actual suite; never pair its counters with the current run.
     lastSuite: inp.lastSuiteMeasurement ?? null,
+    lastTargetedSuite: inp.lastTargetedSuiteMeasurement ?? null,
     taskResume: {
       status: inp.lastSuiteMeasurement?.resume == null ? 'not-recorded' as const : 'recorded' as const,
       runGroupId: inp.lastSuiteMeasurement?.runGroupId ?? null,

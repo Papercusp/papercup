@@ -194,6 +194,7 @@ index 8e79170..9afca0c 100644
 +        errorClass: error && typeof error.name === 'string' ? error.name
 +          : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
 +        serverRoutine: error && typeof error.routine === 'string' ? error.routine : null,
++        queryOrigin: query.origin,
 +        context: diagnostic.context,
 +        result: error ? undefined : (results || result)
 +      })
@@ -333,6 +334,59 @@ index ffbe7ae..929b6a8 100644
      }
    }
  
+@@ -370,4 +406,7 @@ function Postgres(a, b) {
+-    await 1
+-    let timer
+-    return ending = Promise.race([
+-      new Promise(r => timeout !== null && (timer = setTimeout(destroy, timeout * 1000, r))),
++    const endCaller = timeout !== null && typeof options.onresult === 'function'
++      ? new Error().stack
++      : null
++    await 1
++    let timer
++    return ending = Promise.race([
++      new Promise(r => timeout !== null && (timer = setTimeout(() => destroy(r, endCaller), timeout * 1000))),
+@@ -385,6 +421,37 @@ function Postgres(a, b) {
+-  async function destroy(resolve) {
++  async function destroy(resolve, endCaller) {
+     await Promise.all(connections.map(c => c.terminate()))
+-    while (queries.length)
+-      queries.shift().reject(Errors.connection('CONNECTION_DESTROYED', options))
++    while (queries.length) {
++      const query = queries.shift()
++      const error = Errors.connection('CONNECTION_DESTROYED', options)
++      if (query instanceof Query && typeof options.onresult === 'function') {
++        try {
++          const diagnostic = query.resultDiagnostic
++          const startedAt = diagnostic && diagnostic.startedAt || query.diagnosticHandleStartedAt
++          options.onresult({
++            connectionId: 0,
++            queryId: diagnostic ? diagnostic.queryId : 0,
++            backendPid: query.state && typeof query.state.pid === 'number' ? query.state.pid : null,
++            query: diagnostic && diagnostic.query || '',
++            command: null,
++            rowCount: diagnostic ? diagnostic.rowCount : 0,
++            wireBytes: diagnostic ? diagnostic.wireBytes : 0,
++            elapsedMs: Number.isFinite(startedAt) ? Math.max(0, performance.now() - startedAt) : null,
++            preBuildMs: diagnostic && diagnostic.preBuildMs != null ? diagnostic.preBuildMs : null,
++            status: 'error',
++            errorCode: error && typeof error.code === 'string' ? error.code : null,
++            errorClass: error && typeof error.name === 'string' ? error.name
++              : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
++            serverRoutine: null,
++            context: diagnostic ? diagnostic.context : query.diagnosticContext,
++            queryOrigin: query.origin,
++            endCaller,
++            result: undefined
++          })
++        } catch (_) {
++          // Diagnostics must never alter the queued query's rejection.
++        }
++      }
++      query.reject(error)
++    }
+     resolve()
+   }
 @@ -421,6 +454,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
@@ -565,6 +619,7 @@ index 07f6716..c6bf17d 100644
 +        errorClass: error && typeof error.name === 'string' ? error.name
 +          : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
 +        serverRoutine: error && typeof error.routine === 'string' ? error.routine : null,
++        queryOrigin: query.origin,
 +        context: diagnostic.context,
 +        result: error ? undefined : (results || result)
 +      })
@@ -704,6 +759,59 @@ index f09c61c..a874fff 100644
      }
    }
  
+@@ -369,4 +405,7 @@ function Postgres(a, b) {
+-    await 1
+-    let timer
+-    return ending = Promise.race([
+-      new Promise(r => timeout !== null && (timer = setTimeout(destroy, timeout * 1000, r))),
++    const endCaller = timeout !== null && typeof options.onresult === 'function'
++      ? new Error().stack
++      : null
++    await 1
++    let timer
++    return ending = Promise.race([
++      new Promise(r => timeout !== null && (timer = setTimeout(() => destroy(r, endCaller), timeout * 1000))),
+@@ -384,6 +420,37 @@ function Postgres(a, b) {
+-  async function destroy(resolve) {
++  async function destroy(resolve, endCaller) {
+     await Promise.all(connections.map(c => c.terminate()))
+-    while (queries.length)
+-      queries.shift().reject(Errors.connection('CONNECTION_DESTROYED', options))
++    while (queries.length) {
++      const query = queries.shift()
++      const error = Errors.connection('CONNECTION_DESTROYED', options)
++      if (query instanceof Query && typeof options.onresult === 'function') {
++        try {
++          const diagnostic = query.resultDiagnostic
++          const startedAt = diagnostic && diagnostic.startedAt || query.diagnosticHandleStartedAt
++          options.onresult({
++            connectionId: 0,
++            queryId: diagnostic ? diagnostic.queryId : 0,
++            backendPid: query.state && typeof query.state.pid === 'number' ? query.state.pid : null,
++            query: diagnostic && diagnostic.query || '',
++            command: null,
++            rowCount: diagnostic ? diagnostic.rowCount : 0,
++            wireBytes: diagnostic ? diagnostic.wireBytes : 0,
++            elapsedMs: Number.isFinite(startedAt) ? Math.max(0, performance.now() - startedAt) : null,
++            preBuildMs: diagnostic && diagnostic.preBuildMs != null ? diagnostic.preBuildMs : null,
++            status: 'error',
++            errorCode: error && typeof error.code === 'string' ? error.code : null,
++            errorClass: error && typeof error.name === 'string' ? error.name
++              : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
++            serverRoutine: null,
++            context: diagnostic ? diagnostic.context : query.diagnosticContext,
++            queryOrigin: query.origin,
++            endCaller,
++            result: undefined
++          })
++        } catch (_) {
++          // Diagnostics must never alter the queued query's rejection.
++        }
++      }
++      query.reject(error)
++    }
+     resolve()
+   }
 @@ -420,6 +453,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
@@ -936,6 +1044,7 @@ index 1b1cccd..feb611e 100644
 +        errorClass: error && typeof error.name === 'string' ? error.name
 +          : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
 +        serverRoutine: error && typeof error.routine === 'string' ? error.routine : null,
++        queryOrigin: query.origin,
 +        context: diagnostic.context,
 +        result: error ? undefined : (results || result)
 +      })
@@ -1075,6 +1184,59 @@ index c7fba3d..32fae94 100644
      }
    }
  
+@@ -369,4 +405,7 @@ function Postgres(a, b) {
+-    await 1
+-    let timer
+-    return ending = Promise.race([
+-      new Promise(r => timeout !== null && (timer = setTimeout(destroy, timeout * 1000, r))),
++    const endCaller = timeout !== null && typeof options.onresult === 'function'
++      ? new Error().stack
++      : null
++    await 1
++    let timer
++    return ending = Promise.race([
++      new Promise(r => timeout !== null && (timer = setTimeout(() => destroy(r, endCaller), timeout * 1000))),
+@@ -384,6 +420,37 @@ function Postgres(a, b) {
+-  async function destroy(resolve) {
++  async function destroy(resolve, endCaller) {
+     await Promise.all(connections.map(c => c.terminate()))
+-    while (queries.length)
+-      queries.shift().reject(Errors.connection('CONNECTION_DESTROYED', options))
++    while (queries.length) {
++      const query = queries.shift()
++      const error = Errors.connection('CONNECTION_DESTROYED', options)
++      if (query instanceof Query && typeof options.onresult === 'function') {
++        try {
++          const diagnostic = query.resultDiagnostic
++          const startedAt = diagnostic && diagnostic.startedAt || query.diagnosticHandleStartedAt
++          options.onresult({
++            connectionId: 0,
++            queryId: diagnostic ? diagnostic.queryId : 0,
++            backendPid: query.state && typeof query.state.pid === 'number' ? query.state.pid : null,
++            query: diagnostic && diagnostic.query || '',
++            command: null,
++            rowCount: diagnostic ? diagnostic.rowCount : 0,
++            wireBytes: diagnostic ? diagnostic.wireBytes : 0,
++            elapsedMs: Number.isFinite(startedAt) ? Math.max(0, performance.now() - startedAt) : null,
++            preBuildMs: diagnostic && diagnostic.preBuildMs != null ? diagnostic.preBuildMs : null,
++            status: 'error',
++            errorCode: error && typeof error.code === 'string' ? error.code : null,
++            errorClass: error && typeof error.name === 'string' ? error.name
++              : error && error.constructor && typeof error.constructor.name === 'string' ? error.constructor.name : null,
++            serverRoutine: null,
++            context: diagnostic ? diagnostic.context : query.diagnosticContext,
++            queryOrigin: query.origin,
++            endCaller,
++            result: undefined
++          })
++        } catch (_) {
++          // Diagnostics must never alter the queued query's rejection.
++        }
++      }
++      query.reject(error)
++    }
+     resolve()
+   }
 @@ -420,6 +453,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
@@ -1153,13 +1315,15 @@ index 13c3432..ef2a2fb 100644
 +    command: string | null;
 +    rowCount: number;
 +    wireBytes: number;
-+    elapsedMs: number;
++    elapsedMs: number | null;
 +    /** First Query.handle to connection build; excludes caller-controlled lazy time. */
 +    preBuildMs: number | null;
 +    status: 'ok' | 'error';
 +    errorCode: string | null;
 +    errorClass: string | null;
 +    serverRoutine: string | null;
++    queryOrigin?: string | null;
++    endCaller?: string | null;
 +    context?: unknown;
 +    /** Exact fulfilled object, only for a local synchronous weak-reference observer. */
 +    result?: object;
