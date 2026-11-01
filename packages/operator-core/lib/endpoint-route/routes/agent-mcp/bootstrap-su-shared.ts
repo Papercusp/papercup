@@ -59,9 +59,12 @@ export const AUTO_MODE_DIRECTIVE =
 export const AUTO_MODE_DIRECTIVE_LOOP_ARMED =
   'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
   'loop continuously until the work is done. You are a fleet member with no human at your ' +
-  'keyboard; your self-sustaining engine loop is ALREADY ARMED server-side, so each wake ' +
-  're-invokes you: self-assign + advance a work_item every wake (loop:status inspects it; ' +
-  'loop:end + loop:arm retunes it; loop:end ONLY when the goal is done or you are blocked). ' +
+  'keyboard; the server successfully armed your engine loop at bootstrap. This is a launch-time ' +
+  'fact, not a guarantee that it remains active: a later loop:end or fleet wind-down can stop it. ' +
+  '`loop:status` is authoritative before relying on a future wake; honor explicitlyEnded and ' +
+  'fleet winding-down, and re-arm only after explicit owner/leader authorization. While the loop ' +
+  'is active, each wake re-invokes you: self-assign + advance a work_item every wake (loop:end ' +
+  'ONLY when the goal is done or you are blocked). ' +
   "(The persona's AUTO-mode section governs; the narrow irreversible-high-stakes brakes " +
   'still apply.)';
 
