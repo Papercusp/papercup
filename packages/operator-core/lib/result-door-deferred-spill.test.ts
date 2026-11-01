@@ -379,6 +379,57 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
+  it('keeps spill and durable fallback waits inside the remaining MCP response deadline', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    const deadlineAtMs = Date.now() + 5_000;
+    await vi.advanceTimersByTimeAsync(3_500);
+
+    let releaseWrite!: () => void;
+    let signalStarted!: () => void;
+    let writerSettlement: Promise<void> | undefined;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      writerSettlement = stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+      return writerSettlement;
+    });
+    const durablePersist = vi.spyOn(scratchReference, 'persistVolatileScratchReference')
+      .mockImplementation(() => new Promise(() => {}));
+    let resultPromise: Promise<DoorableResult> | undefined;
+    let settled = false;
+
+    try {
+      resultPromise = applyResultDoorAsync(oversized(), {
+        ...OPTS,
+        responseDeadlineAtMs: deadlineAtMs,
+      });
+      resultPromise.then(() => { settled = true; });
+      await writeStarted;
+
+      await vi.advanceTimersByTimeAsync(1_249);
+      expect(settled).toBe(false);
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      const meta = result._meta?.resultDoor as { spillPending?: boolean; spillErrorCode?: string };
+      expect(meta).toMatchObject({ spillPending: true, spillErrorCode: 'ETIMEDOUT' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('result-door scratch spill write exceeded 500ms'));
+      expect(Date.now()).toBeLessThanOrEqual(deadlineAtMs - 250);
+      expect(Date.now()).toBeLessThan(deadlineAtMs);
+    } finally {
+      releaseWrite();
+      await writerSettlement?.catch(() => undefined);
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('promotes a timed-out volatile fallback when durable recovery outlasts the former sub-budget', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
