@@ -24,7 +24,7 @@ import { buildCheckpointSystemdArgv } from "@papercusp/operator-core/lib/release
 import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-head-admission";
 import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
-  runGreenCheckpoint,
+  runGreenCheckpoint as runGreenCheckpointImpl,
   CheckpointQualificationBoundaryError,
   planCheckpointCarryAtCut,
   failingRepairLegsForRouting,
@@ -1076,6 +1076,22 @@ describe("EI-21228180621817003: safe scoped format writes", () => {
     expect(formatted).not.toContain("};)");
   });
 });
+
+/**
+ * Testing the checkpoint under testing:run can inherit an already-expired task deadline.
+ * Give ordinary orchestration cases their own salvage budget; budget-specific tests pass
+ * salvageDeadlineMs explicitly and keep that value.
+ */
+const runGreenCheckpoint = (
+  config: Parameters<typeof runGreenCheckpointImpl>[0],
+  deps: Parameters<typeof runGreenCheckpointImpl>[1],
+  options: NonNullable<Parameters<typeof runGreenCheckpointImpl>[2]> = {},
+) =>
+  runGreenCheckpointImpl(config, deps, {
+    ...options,
+    salvageDeadlineMs:
+      options.salvageDeadlineMs ?? Date.now() + 24 * 60 * 60_000,
+  });
 
 /**
  * WI-479091 — longest-green-prefix salvage must be REACHABLE, not merely present.
@@ -14751,14 +14767,25 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
           confirmGreen: true,
         });
 
-        const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+        const previousTaskDeadline =
+          process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+        process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() - 1);
+        try {
+          const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
-        expect(r.advanced).toBe(false);
-        expect(await revParse(repo, "ready")).toBe(c1); // never FF'd to the vacuous prefix
-        // The whole point: not one confirm suite was spent on a foregone red.
-        expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(0);
-        // It fell back to the workspace scan rather than simply giving up.
-        expect(calls.some((c) => c.startsWith("affected:"))).toBe(true);
+          expect(r.advanced).toBe(false);
+          expect(await revParse(repo, "ready")).toBe(c1); // never FF'd to the vacuous prefix
+          // The whole point: not one confirm suite was spent on a foregone red.
+          expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(0);
+          // It fell back to the workspace scan rather than simply giving up.
+          expect(calls.some((c) => c.startsWith("affected:"))).toBe(true);
+        } finally {
+          if (previousTaskDeadline === undefined) {
+            delete process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+          } else {
+            process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = previousTaskDeadline;
+          }
+        }
       });
 
       it("CALIBRATION: the guard does NOT fire when the excluded TIP commit implicates the failure — the legitimate salvage still advances", async () => {
