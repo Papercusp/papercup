@@ -21,6 +21,7 @@ import {
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as Sql,
   denied: false, revoked: false,
+  revokedReviewers: new Set<string>(),
   wake: vi.fn(), model: vi.fn(), claim: vi.fn(), dispatches: vi.fn(),
   denyPickupClaim: false,
   kernelDenied: false, kernelUnavailable: false, suToken: 'test-only-original-bearer-not-a-real-credential',
@@ -50,7 +51,9 @@ vi.mock('./harness/routines/system-actions', async (orig) => ({
 }));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
-  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'reviewer-session' && h.revoked }),
+  getPresence: async (actor: string) => ({
+    workspaceId: 'default', revoked: (actor === 'reviewer-session' && h.revoked) || h.revokedReviewers.has(actor),
+  }),
 }));
 vi.mock('./modes/store', async (orig) => ({
   ...await orig<typeof import('./modes/store')>(), getModes: async () => [],
@@ -221,6 +224,7 @@ afterAll(async () => db?.cleanup());
 beforeEach(async () => {
   h.denied = false;
   h.revoked = false;
+  h.revokedReviewers.clear();
   h.denyPickupClaim = false;
   h.kernelDenied = false;
   h.kernelUnavailable = false;
@@ -874,7 +878,7 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     const revokedRequest = await review(revokedItem.id);
     const validRequest = await review(validItem.id, reviewLeader);
     const revokedBefore = await row(revokedItem.id);
-    h.revoked = true;
+    h.revokedReviewers.add(reviewerOwnerId);
 
     const result = await tick();
     expect(result.guardRefusals).toContainEqual(expect.objectContaining({
