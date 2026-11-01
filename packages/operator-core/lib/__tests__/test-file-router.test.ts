@@ -211,7 +211,7 @@ describe('router native custody population (P002)', () => {
       try {
         const result = session.finish();
         expect(result.status).toBe('complete');
-        expect(result.manifest.groups[0].families.find(family => family.family === 'D')!.state)
+        expect(result.manifest.groups[0].families.find((family: { family: string }) => family.family === 'D')!.state)
           .toBe(mode === 'enabled' ? 'produced' : 'not-requested');
         if (mode === 'enabled') {
           rmSync(session.expected[0].out + '.processes', { recursive: true });
@@ -3837,7 +3837,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       expect(output).toContain('status=passed');
       expect(output).toContain('finalizationError=true');
       const diagnosticPrefix = 'TEST_FILE_FINALIZATION_ERROR phase=native-proof-custody detail=';
-      const diagnosticLine = errors.split('\n').find(line => line.startsWith(diagnosticPrefix));
+      const diagnosticLine = errors.split('\n').find((line: string) => line.startsWith(diagnosticPrefix));
       expect(diagnosticLine).toBeDefined();
       expect(JSON.parse(diagnosticLine!.slice(diagnosticPrefix.length))).toMatchObject({
         status: 'partial', bytesRead: limits.bytes, limits, gapCount: gaps.length,
