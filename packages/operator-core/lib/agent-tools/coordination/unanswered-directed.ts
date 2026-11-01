@@ -11,11 +11,13 @@
  *
  * Definitions:
  *   - "directed": kind='message' (or unset, the default), addressed via
- *     explicit ownerId(s) or a resolved `@file` selector. Selector expansion
- *     stores concrete ownerIds in `to` and the original selector in `audience`.
- *     Wildcard broadcasts and other selector audiences remain excluded until
- *     their group-reply semantics are defined. Sender != recipient (never
- *     counts a message against its own author, e.g. a fanout that lists the sender).
+ *     explicit ownerId(s), a resolved `@file` selector, or a resolved
+ *     `@fleet-leader` selector (which names one concrete recipient). Selector
+ *     expansion stores concrete ownerIds in `to` and the original selector in
+ *     `audience`. Wildcard broadcasts and multi-recipient selector audiences
+ *     remain excluded until their group-reply semantics are defined. Sender !=
+ *     recipient (never counts a message against its own author, e.g. a fanout
+ *     that lists the sender).
  *   - "expects reply": the sender explicitly sets `expectsReply:true`, or
  *     uses the coord:send ergonomic `wake:'required'` + `replyDeadlineSec`
  *     combination (which stamps the same field). FYI/status reports are
@@ -532,6 +534,7 @@ export async function fetchUnansweredDirected(
                   END
                 ) AS audience_selector(value)
                WHERE audience_selector.value LIKE '@file:%'
+                  OR audience_selector.value LIKE '@fleet-leader:%'
             )
             AND NOT ((eb.b->'audience') ? '*')
           )
@@ -1130,6 +1133,7 @@ export async function fetchOpenAsks(
                    END
                  ) AS audience_selector(value)
                 WHERE audience_selector.value LIKE '@file:%'
+                   OR audience_selector.value LIKE '@fleet-leader:%'
              )
              AND NOT ((e.body->'audience') ? '*')
            )

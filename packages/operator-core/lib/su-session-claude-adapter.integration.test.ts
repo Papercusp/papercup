@@ -25,19 +25,21 @@ const CLAUDE_SESSION_B = '99999999-aaaa-4bbb-8ccc-dddddddddddd';
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
 
-it.each(['transcript', 'account', 'exit', 'dispose'] as const)(
-  'P-009: replaced Claude adapter cannot publish stale %s callbacks', async (action) => {
+it.each((['pty', 'programmatic'] as const).flatMap(executionKind =>
+  (['transcript', 'account', 'exit', 'dispose'] as const).map(action => ({ executionKind, action })),
+))(
+  'P-009: replaced Claude $executionKind adapter cannot publish stale $action callbacks', async ({ executionKind, action }) => {
     let settleAccount!: (account: string) => void;
     const account = new Promise<string>((resolve) => { settleAccount = resolve; });
     const old = createClaudeSuSessionAdapter(binding(), runtime(), {
-      agentChatId: `stale-claude-${action}`, runtimeGeneration: 1,
+      agentChatId: `stale-claude-${executionKind}-${action}`, runtimeGeneration: 1, executionKind,
       servedAccountReader: () => account,
     });
     const refresh = action === 'account' ? old.refreshAccountServed() : Promise.resolve();
     old.reconcileRuntimeExit({ expected: false, exitCode: 1 });
     const ownerTurn = vi.fn<ClaudeSuSessionControls['ownerTurn']>(async () => ({ ok: true }));
     const current = createClaudeSuSessionAdapter(binding(), runtime(), {
-      agentChatId: `stale-claude-${action}`, host: old.host, runtimeGeneration: 2,
+      agentChatId: `stale-claude-${executionKind}-${action}`, host: old.host, runtimeGeneration: 2, executionKind,
       runtimeReady: () => true, controls: { ownerTurn },
     });
     try {

@@ -88,10 +88,12 @@ async function storedTurns() {
 }
 
 describe('SU command acceptance through real PostgreSQL', () => {
-  it.each(['claude', 'codex'] as const)(
-    'P-009: a %s runtime replacement cannot consume an earlier generation reservation', async (backend) => {
+  it.each((['claude', 'codex'] as const).flatMap(backend =>
+    (['pty', 'programmatic'] as const).map(executionKind => ({ backend, executionKind })),
+  ))(
+    'SU-EXEC R-8 acceptance contract: $backend $executionKind replacement fences durable admission and replay', async ({ backend, executionKind }) => {
       await sql`UPDATE harness_shared.adv_sessions SET agent = ${backend} WHERE id = ${advSessionId}`;
-      const snapshot = { ...descriptor(), executionKind: 'programmatic',
+      const snapshot = { ...descriptor(), executionKind,
         identity: { ...descriptor().identity, backend },
         backendExtension: backend === 'claude' ? descriptor().backendExtension : { backend, codexHome: null },
       } as SuSessionDescriptor;
@@ -112,7 +114,7 @@ describe('SU command acceptance through real PostgreSQL', () => {
         },
         finish: durable.finish,
       };
-      const command = { ...ownerTurn(`${backend}-reserved-before-replacement`), target: snapshot.identity };
+      const command = { ...ownerTurn(`${backend}-${executionKind}-reserved-before-replacement`), target: snapshot.identity };
       let restored: InstanceType<typeof SuSessionHost> | undefined;
       try {
         const pending = host.acceptCommand(command, store);
@@ -138,6 +140,7 @@ describe('SU command acceptance through real PostgreSQL', () => {
         host.dispose();
         const record = await readDurableSuSession({ advSessionId, workspaceId });
         expect(record?.runtimeGeneration).toBe(2);
+        expect(record?.descriptor?.executionKind).toBe(executionKind);
         restored = new SuSessionHost({ descriptor: record!.descriptor!, executeCommand: replacement });
         const replay = await restored.acceptCommand(command, durable);
         expect(replay.replayed).toBe(true);

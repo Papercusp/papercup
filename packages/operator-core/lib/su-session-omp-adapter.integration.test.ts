@@ -25,19 +25,21 @@ const THREAD_B = '99999999-aaaa-4bbb-8ccc-dddddddddddd';
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
 
-it.each(['transcript', 'account', 'exit', 'dispose'] as const)(
-  'P-009: replaced OMP adapter cannot publish stale %s callbacks', async (action) => {
+it.each((['pty', 'programmatic'] as const).flatMap(executionKind =>
+  (['transcript', 'account', 'exit', 'dispose'] as const).map(action => ({ executionKind, action })),
+))(
+  'P-009: replaced OMP $executionKind adapter cannot publish stale $action callbacks', async ({ executionKind, action }) => {
     let settleAccount!: (account: string) => void;
     const account = new Promise<string>((resolve) => { settleAccount = resolve; });
     const old = createOmpSuSessionAdapter(binding(), runtime(), {
-      agentChatId: `stale-omp-${action}`, runtimeGeneration: 1,
+      agentChatId: `stale-omp-${executionKind}-${action}`, runtimeGeneration: 1, executionKind,
       servedAccountReader: () => account,
     });
     const refresh = action === 'account' ? old.refreshAccountServed() : Promise.resolve();
     old.reconcileRuntimeExit({ expected: false, exitCode: 1 });
     const ownerTurn = vi.fn<OmpSuSessionControls['ownerTurn']>(async () => ({ ok: true }));
     const current = createOmpSuSessionAdapter(binding(), runtime(), {
-      agentChatId: `stale-omp-${action}`, host: old.host, runtimeGeneration: 2,
+      agentChatId: `stale-omp-${executionKind}-${action}`, host: old.host, runtimeGeneration: 2, executionKind,
       runtimeReady: () => true, controls: { ownerTurn },
     });
     try {

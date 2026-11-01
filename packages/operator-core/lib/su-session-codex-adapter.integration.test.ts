@@ -26,19 +26,21 @@ const ROLLOUT_B = '019f0000-5555-7666-8777-888888888888';
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
 
-it.each(['transcript', 'account', 'exit', 'dispose'] as const)(
-  'P-009: replaced Codex adapter cannot publish stale %s callbacks', async (action) => {
+it.each((['pty', 'programmatic'] as const).flatMap(executionKind =>
+  (['transcript', 'account', 'exit', 'dispose'] as const).map(action => ({ executionKind, action })),
+))(
+  'P-009: replaced Codex $executionKind adapter cannot publish stale $action callbacks', async ({ executionKind, action }) => {
     let settleAccount!: (account: string) => void;
     const account = new Promise<string>((resolve) => { settleAccount = resolve; });
     const old = createCodexSuSessionAdapter(binding(), runtime(), {
-      agentChatId: `stale-codex-${action}`, runtimeGeneration: 1,
+      agentChatId: `stale-codex-${executionKind}-${action}`, runtimeGeneration: 1, executionKind,
       servedAccountReader: () => account,
     });
     const refresh = action === 'account' ? old.refreshAccountServed() : Promise.resolve();
     old.reconcileRuntimeExit({ expected: false, exitCode: 1 });
     const ownerTurn = vi.fn<CodexSuSessionControls['ownerTurn']>(async () => ({ ok: true }));
     const current = createCodexSuSessionAdapter(binding(), runtime(), {
-      agentChatId: `stale-codex-${action}`, host: old.host, runtimeGeneration: 2,
+      agentChatId: `stale-codex-${executionKind}-${action}`, host: old.host, runtimeGeneration: 2, executionKind,
       runtimeReady: () => true, controls: { ownerTurn },
     });
     try {

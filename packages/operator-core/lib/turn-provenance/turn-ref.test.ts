@@ -819,11 +819,12 @@ describe('hook-stamp agreement — a turn the live hook judged non-owner never r
     expect(stamp).toEqual({ ref: '[turn:bf1881bc@2026-09-23T11:41:31.793Z]', verdict: 'agent-injected', origin: 'loop-fire' });
   });
 
-  it('CONTROL: without the hook stamp, an envelope-less machine turn falls to the text default (owner-typed)', async () => {
-    // Proves the stamp — not some other change — is what flips the next test.
+  it('classifies an envelope-less cold-loop banner as machine without the hook stamp', async () => {
+    // The fixed banner is enough to prevent an owner-typed fallback; the stamp below
+    // still supplies the specific loop-fire origin when the envelope is missing.
     write([userLine(ENVELOPE_LOST, '2026-09-23T12:00:00.000Z')]);
     const stamp = await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID });
-    expect(stamp?.verdict).toBe('owner-typed');
+    expect(stamp).toEqual({ ref: '[turn:bf1881bc@2026-09-23T12:00:00.000Z]', verdict: 'machine-surface', origin: null });
   });
 
   it('writtenDuring defers to a VERIFIED AGENT-ORIGIN hook stamp when the envelope was lost in transit', async () => {

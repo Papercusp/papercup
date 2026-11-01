@@ -13675,7 +13675,7 @@
           "POST"
         ]
       },
-      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
+      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec and identity. Any explicit per-member claim spec is copied before launch; otherwise the member inherits the fleet lane. When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
       "capabilities": [
         "fleet:respawn-member"
       ],
@@ -35984,7 +35984,7 @@
           "POST"
         ]
       },
-      "description": "Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.",
+      "description": "Claim one or many work-items for yourself or an assignee. Single: { id, assignee? }; many: ids:[…] or items:[{ id, assignee?, harness? }]. Results are independent. Fleet members receive only items matching their claim spec. Evidence judges may self-claim only one task with a supported payload.reviewConsult and changeKinds:[\"no-code-change\"]. Named claims override readiness floors, not terminal state, fleet scope or born-pending admission/trust; server-derived dispatch/force may bypass pending rows. Reopen terminal work first with work_items:set_state { force:true, reason }. `force:true` here is an audited, liveness-checked holder takeover.",
       "capabilities": [
         "work_items:write"
       ],
@@ -36007,6 +36007,7 @@
         "release-fixer",
         "merge-resolver",
         "content-fixer",
+        "judge",
         "researcher"
       ],
       "profile": "engineer",

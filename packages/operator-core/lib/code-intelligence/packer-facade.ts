@@ -62,6 +62,8 @@ import { FLAGS } from '@papercusp/flags';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread.ts';
 import { LSP_VENDOR_DIR } from './lsp-adapter.ts';
 import { getBuildInfo } from '../build-info.ts';
+import { writeScratchReference } from '../scratch-reference.ts';
+import { activeWorkspaceId } from '../workspace-registry.ts';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
@@ -910,8 +912,19 @@ export interface PackerEffects {
 
 const defaultWriteArtifact = async (body: string, engine: PackerEngine | 'native-source-path', format: PackFormat): Promise<string> => {
   const dir = papercuspPath('scratch', 'packs');
-  await mkdir(dir, { recursive: true });
   const sha = createShortHash(body);
+  if (engine === 'native-source-path') {
+    // Expansion is an exact recovery transport. Framed payload pages retain the
+    // captured hash and remain readable after the caller's aggregate door fills.
+    const path = join(dir, `${engine}-${sha}-${Date.now()}.spill`);
+    const deferredWrites: Promise<void>[] = [];
+    writeScratchReference({ filePath: path, payload: body, workspaceId: activeWorkspaceId(),
+      audience: 'workspace', mediaType: 'application/json', bodyOffsetInPayload: 0,
+      content: [{ index: 0, type: 'text', byteCount: Buffer.byteLength(body, 'utf8') }], deferredWrites });
+    await Promise.all(deferredWrites);
+    return path;
+  }
+  await mkdir(dir, { recursive: true });
   const path = join(dir, `${engine}-${sha}-${Date.now()}.${format === 'xml' ? 'xml' : 'md'}`);
   await writeFile(path, body, 'utf8');
   return path;
