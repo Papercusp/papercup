@@ -658,7 +658,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
   });
 
   it('preserves the full requester reason in the review brief body', () => {
-    const reason = `Disposition of earlier objections: ${'reason-detail '.repeat(120)}`;
+    const reason = `Disposition of earlier objections: ${'reason-detail '.repeat(120).trimEnd()}`;
     expect(reason.length).toBeGreaterThan(800);
 
     const brief = buildAmendmentReviewBrief({ ...baseInput, reason });

@@ -728,4 +728,69 @@ describe('detectUnscannedStagedOffenders — bounded byte-safe private-index bat
     expect(shown.sort()).toEqual(files.map((entry) => entry.file).sort());
     expect(calls).toEqual(['--batch-check=%(objectname) %(objecttype) %(objectsize)']);
   });
+
+  it('keeps the 1,402-path scan bounded instead of spawning one git show per path', async () => {
+    const count = 1402;
+    const entries = Array.from({ length: count }, (_, index) => ({
+      file: `docs/batch-${String(index).padStart(4, '0')}.md`,
+      oid: index.toString(16).padStart(40, '0'),
+      bytes: Buffer.from('safe\n'),
+    }));
+    const byPath = new Map(entries.map((entry) => [entry.file, entry]));
+    const byOid = new Map(entries.map((entry) => [entry.oid, entry]));
+    const indexBatchSizes: number[] = [];
+    const checkBatchSizes: number[] = [];
+    const blobBatchSizes: number[] = [];
+    const shown: string[] = [];
+
+    const manyPathRunGit: RunGit = async (args) => {
+      if (args[0] === 'ls-files') {
+        const paths = args.slice(args.indexOf('--') + 1);
+        indexBatchSizes.push(paths.length);
+        const stdout = paths
+          .map((file) => byPath.get(file))
+          .filter((entry): entry is (typeof entries)[number] => entry !== undefined)
+          .map((entry) => `100644 ${entry.oid} 0\t${entry.file}\0`)
+          .join('');
+        return { code: 0, stdout, stderr: '' };
+      }
+      if (args[0] === 'show') {
+        shown.push(args[1]!.slice(1));
+        return { code: 1, stdout: '', stderr: 'unexpected per-file staged read' };
+      }
+      return { code: 1, stdout: '', stderr: `unexpected git ${args.join(' ')}` };
+    };
+    const manyPathRunGitStdin: RunGitStdin = async (args, _cwd, input) => {
+      const oids = input.split('\n').filter(Boolean);
+      if (args[1]?.startsWith('--batch-check=')) {
+        checkBatchSizes.push(oids.length);
+        const rows = oids.map((oid) => `${oid} blob ${byOid.get(oid)!.bytes.length}`);
+        return { code: 0, stdout: Buffer.from(`${rows.join('\n')}\n`), stderr: '' };
+      }
+      if (args[1] === '--batch') {
+        blobBatchSizes.push(oids.length);
+        const frames = oids.map((oid) => {
+          const entry = byOid.get(oid)!;
+          return Buffer.concat([Buffer.from(`${oid} blob ${entry.bytes.length}\n`), entry.bytes, Buffer.from('\n')]);
+        });
+        return { code: 0, stdout: Buffer.concat(frames), stderr: '' };
+      }
+      return { code: 1, stdout: Buffer.alloc(0), stderr: 'unexpected cat-file command' };
+    };
+
+    const offenders = await detectUnscannedStagedOffenders({
+      runGit: manyPathRunGit,
+      runGitStdin: manyPathRunGitStdin,
+      repoPath: '/repo',
+      staged: entries.map((entry) => entry.file),
+      scanned: new Map(),
+      detectors: [makeDetector({ matches: () => true })],
+    });
+
+    expect(offenders).toEqual([]);
+    expect(indexBatchSizes).toEqual([256, 256, 256, 256, 256, 122]);
+    expect(checkBatchSizes).toEqual([1024, 378]);
+    expect(blobBatchSizes).toEqual([1402]);
+    expect(shown).toEqual([]);
+  });
 });
