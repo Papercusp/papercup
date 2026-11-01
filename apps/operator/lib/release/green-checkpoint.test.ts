@@ -552,6 +552,51 @@ describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
     expect(calls).not.toContain("advance");
   });
 
+  it("preserves a ready-to-test frozen queue and its disk-headroom blocker in the freeze disposition", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    const queue: FrozenCandidateRepairQueue = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 1,
+      openedAtMs: now - 60_000,
+      updatedAtMs: now - 30_000,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(true);
+    const observations: unknown[] = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.checkDiskHeadroom = async () => ({
+      ok: false,
+      summary: "/tmp 5.7 GiB free; low-bytes breaches the gate floor",
+    });
+    deps.recordDerivedFreezeDisposition = async (value) => {
+      observations.push(value);
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      green: null,
+      reason: "disk-headroom",
+      repairQueue: { phase: "ready-to-test", candidate: frozen },
+      preconditionBlocker: "disk-headroom",
+    });
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      repairQueue: { phase: "ready-to-test", candidate: frozen },
+      blockedBy: "disk-headroom",
+    });
+    expect(calls).not.toContain("runGreen");
+  });
+
   it("continues normally when the same preflight reports safe headroom", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);

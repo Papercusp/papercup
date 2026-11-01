@@ -222,7 +222,7 @@ import { evaluatePartialTaskContinuation, partialCurrentExecutionFingerprint, pa
   preparePartialNativeProducerChannels, preparePartialNativeProducerSelection,
   preparePartialRemainingSelection, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion,
   writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
-// eslint-disable-next-line import/no-relative-packages -- share the native reporter's maintained input classifier
+// Share the native reporter's maintained input classifier.
 import { classifyReadPaths } from "../../../../libs/test-config/src/executed-read-paths";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 import type { CheckpointVerdict, RecordCheckpointVerdictOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
@@ -14875,7 +14875,7 @@ async function runGreenCheckpointInner(
       // P-022: a wedged copy lock is the same condition as setup's own exit 76, so it takes that
       // path's classification ('infra-inconclusive', self-clearing) rather than 'disk-headroom'.
       const blocker = headroom.blocker ?? "disk-headroom";
-      return {
+      return withRepairIdentity({
         advanced: false,
         candidate,
         from: lastReady,
@@ -14883,7 +14883,8 @@ async function runGreenCheckpointInner(
         reason: blocker === "copy-lock" ? "infra-inconclusive" : "disk-headroom",
         preconditionBlocker: blocker,
         summary: headroom.summary,
-      };
+        ...(repairQueue ? { repairQueue } : {}),
+      });
     }
   }
 
@@ -18930,6 +18931,7 @@ export async function runGreenCheckpoint(
             (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
           repairQueue: finalResult.repairQueue ?? null,
           repairQueueRead: finalResult.repairQueueRead,
+          blockedBy: finalResult.preconditionBlocker ?? null,
           summary: finalResult.summary ?? null,
           green: finalResult.green ?? null,
         });
@@ -25457,6 +25459,10 @@ export function realCheckpointDeps(
         () => "unresolved",
       );
       const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
+      // A verified-ref task is a child execution, not part of the candidate suite's
+      // test group. Give each invocation its own UUID so reuse observations and test
+      // rows remain correlated without merging into the parent candidate run.
+      const targetedRunGroupId = randomUUID();
       // EI-20092765275570648: two admissible entry shapes (see isRerunnableGateEntry) —
       // a registry id expands to its root script(s); a `<ws> :: <script>` task id runs
       // that script IN its workspace, which is how a workspace-scoped lint leg becomes
@@ -25466,7 +25472,7 @@ export function realCheckpointDeps(
       const env = buildGreenCheckpointEnv(
         null,
         process.env,
-        runId,
+        targetedRunGroupId,
         cfg.greenCheckpointCapacityMode,
         undefined,
         // WI-1702898's rule applied to this leg: the rows a task writes here describe `ref`, so
@@ -25551,7 +25557,7 @@ export function realCheckpointDeps(
           if (taskResult && completedAtMs !== null && verifiedHead === ref) {
             const measurement = buildGateSuiteMeasurement(
               [...reuseLines, taskResult.stdout, taskResult.stderr].join('\n'), verifiedHead,
-              { command: measuredCommand, runGroupId: runId, startedAtMs, completedAtMs }, 'targeted-gate');
+              { command: measuredCommand, runGroupId: targetedRunGroupId, startedAtMs, completedAtMs }, 'targeted-gate');
             if (measurement) suiteMeasurements.push(measurement);
           }
         }

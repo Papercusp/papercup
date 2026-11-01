@@ -530,12 +530,42 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
       const call = calls.find(c => c.args.includes("test"));
       expect(call?.args.slice(-2)).toEqual(["--", "--passWithNoTests"]);
       expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBe("/fixture/verified-passes.json");
-      expect(arm.mock.calls[0]?.[0].env.PAPERCUSP_TEST_RUN_GROUP).toBe(deps.runId);
+      const targetedRunGroupId = arm.mock.calls[0]?.[0].env.PAPERCUSP_TEST_RUN_GROUP ?? "";
+      expect(targetedRunGroupId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      expect(targetedRunGroupId).not.toBe(deps.runId);
       expect(finish).toHaveBeenCalledOnce();
       expect(deps.suiteMeasurements).toEqual([expect.objectContaining({ kind: 'targeted-gate', judgedSha: sha,
-        command: expect.stringContaining('test'), runGroupId: deps.runId,
+        command: expect.stringContaining('test'), runGroupId: targetedRunGroupId,
         reuse: expect.objectContaining({ candidates: 2, reused: 2 }) })]);
     } finally { arm.mockRestore(); }
+  });
+
+  it("assigns a fresh run group to each verified-ref gate rerun", async () => {
+    const tree = fileURLToPath(new URL("../../../../", import.meta.url));
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" });
+    expect(head.status).toBe(0);
+    const sha = head.stdout.trim();
+    const arm = vi.spyOn(targetedTaskReuse, "armTargetedTaskReuse").mockResolvedValue({
+      env: { GREEN_CHECKPOINT: "1" }, args: [], lines: [], reused: 0, recording: true,
+      finish: vi.fn(() => []),
+    });
+    const { exec } = makeExec([{ code: 0 }, { code: 0 }]);
+    const deps = realCheckpointDeps({ ...cfg, checkpointRoot: tree }, exec);
+    deps.setupTree = async () => {};
+    try {
+      await deps.runGateAtRef!(sha, ["@papercusp/operator-vite :: test"]);
+      await deps.runGateAtRef!(sha, ["@papercusp/operator-vite :: test"]);
+      const runGroups = arm.mock.calls.map(
+        ([options]) => options.env.PAPERCUSP_TEST_RUN_GROUP ?? "",
+      );
+      expect(runGroups).toHaveLength(2);
+      expect(runGroups.every((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))).toBe(true);
+      expect(new Set(runGroups).size).toBe(2);
+      expect(runGroups).not.toContain(deps.runId);
+      expect(deps.suiteMeasurements?.map(({ runGroupId }) => runGroupId)).toEqual(runGroups);
+    } finally {
+      arm.mockRestore();
+    }
   });
 
   it("records an arming exception as a hard reuse fail-open before running the task", async () => {
@@ -554,6 +584,9 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
       expect(record).toHaveBeenCalledWith("@papercusp/operator-vite::test", {
         offReason: "arming-threw(fixture_arming_failure)",
       }, expect.objectContaining({ runContext: "green-checkpoint" }));
+      const failOpenRunGroupId = record.mock.calls[0]?.[2]?.runGroupId ?? "";
+      expect(failOpenRunGroupId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      expect(failOpenRunGroupId).not.toBe(deps.runId);
       const call = calls.find(c => c.args.includes("test"));
       expect(call?.args.slice(0, 2)).toEqual(["run", "test"]);
       expect(call?.args).not.toContain("--passWithNoTests");
