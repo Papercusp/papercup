@@ -1849,7 +1849,8 @@ async function tryBuildUnboundSpawnContext(
           // its verified native-session header retains a DIFFERENT carrier.
           // This is diagnostic correlation only: inherited headers and caller
           // metadata never replace the trusted host's exact call observation.
-          // Native principal/receipt lookup still requires meta:threadId.
+          // The private Claude SDK host can retain an exact observed root-input
+          // principal. Input scope cannot qualify as a funded turn/receipt.
           const nativeCallId = nativeThread ? requestMeta?.callId
             : nativeSessionHeader ? requestMeta?.['claudecode/toolUseId'] : undefined;
           if (binding.binding === 'bound' &&
@@ -3934,7 +3935,8 @@ async function assertNativeOwnerServingGeneration(declared: unknown): Promise<vo
 
 function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | null {
   const native = spawn.requestOrigin?.nativeSession;
-  if (native?.carrier !== 'meta:threadId' || native.binding !== 'bound' || !native.callIdFingerprint) return null;
+  if (!native || !['meta:threadId', 'header:x-papercusp-native-session'].includes(native.carrier)
+    || native.binding !== 'bound' || !native.callIdFingerprint) return null;
   if (spawn.workspaceId === '*' || spawn.advSessionId !== native.candidateAdvSessionId ||
       !Number.isSafeInteger(spawn.advSessionId) || spawn.advSessionId! <= 0 ||
       !/^[a-f0-9]{64}$/.test(native.callIdFingerprint) ||

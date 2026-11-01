@@ -6,6 +6,15 @@ import type {} from '../test/_integration-substrate.globalSetup';
 // Exercises the real integration config/globalSetup selection. If the baseline
 // database is selected alongside this canary, its baseline must still be ready.
 describe('integration selection without a PostgreSQL dependency', () => {
+  it('keeps installed Claude authority on its private migrated PG and preserves mixed selection setup', async () => {
+    const fixture = fileURLToPath(new URL('./su-session-claude-mcp.integration.test.ts', import.meta.url));
+    const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
+    const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });
+    await setupIntegrationSubstrate({}, [fixture], { baseline, org });
+    expect(baseline).not.toHaveBeenCalled(); expect(org).not.toHaveBeenCalled();
+    expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
+    expect(integrationNeedsPostgres([])).toBe(true);
+  });
   it('runs the installed compiler socket fixture without initializing shared PG', async () => {
     const fixture = fileURLToPath(new URL('./tsc-service.integration.test.ts', import.meta.url));
     const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });

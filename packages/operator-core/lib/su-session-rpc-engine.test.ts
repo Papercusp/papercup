@@ -195,7 +195,7 @@ it.each((['codex', 'omp'] as const).flatMap(backend =>
     });
     const snapshot = host.snapshot(), events = [...host.recent];
     if (action === 'frame') f.emit(backend === 'codex'
-      ? { method: 'error', params: { error: { message: 'late old error' } } }
+      ? { method: 'thread/tokenUsage/updated', params: { threadId: 'native-codex', tokenUsage: { last: { totalTokens: 123 } } } }
       : { type: 'agent_start' });
     if (action === 'models') {
       catalog.resolve({ data: [{ id: 'late-model', model: 'late-model', displayName: 'Late model' }],
@@ -205,7 +205,8 @@ it.each((['codex', 'omp'] as const).flatMap(backend =>
     }
     if (action === 'startup') gate.resolve();
     if (action === 'exit') await f.engine.close();
-    await readiness;
+    const result = await readiness;
+    if (action === 'startup') expect(result).toBeInstanceOf(Error);
     if (action === 'startup') await f.engine.close();
     expect(host.snapshot()).toEqual(snapshot);
     expect(host.recent).toEqual(events);

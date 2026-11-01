@@ -318,9 +318,18 @@ for (const { backend, registrationFailure, pty, name } of [
     const fired = await fireAwaitsForKey({ eventKey }); expect(fired.map(row => row.id)).toEqual([awaited.id]);
     expect(await insertDeliveries({ awaits: fired, payload: { secret: 'PARENT_WAKE_PRIVATE' } })).toBe(1);
     const [delivery] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE await_id = ${awaited.id}`;
+    // The production pump claims pending rows before settling the channel result. Simulate
+    // that transition for this row only so the fixture does not drain unrelated deliveries.
+    const [claim] = await fixture.sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivering', attempts = attempts + 1
+       WHERE id = ${delivery.id} AND status = 'pending'
+       RETURNING id
+    `;
+    expect(claim, 'the fixture delivery must be claimed before channel settlement').toBeDefined();
     await markDeliveryDelivered(Number(delivery.id), 'psu-socket-inject');
     const [before] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE id = ${delivery.id}`;
-    expect(before).toMatchObject({ status: 'delivered', turn_proof: 'awaiting', turn_started_at: null });
+    expect(before, JSON.stringify(before)).toMatchObject({ status: 'delivered', turn_proof: 'awaiting', turn_started_at: null });
     expect(queueSettled).toBe(false);
     if (pty) {
       expect(execFileSync('claude', ['--version'], { encoding: 'utf8' })).toContain(SU_EXEC_INVENTORY.versions.claude);
