@@ -62,6 +62,7 @@ vi.mock('../../../auth/require-principal', () => ({
 // The route uses mocked store calls. Importing the real store here still loads its
 // entire dependency graph before beforeAll, even though no store implementation runs.
 vi.mock('../../../adv-sessions', () => ({
+  RECORDED_LIVE_MAX_AGE_MS: 12 * 60 * 60 * 1000,
   NATIVE_SESSION_ID_RE: /^[0-9a-f-]{36}$/i,
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
