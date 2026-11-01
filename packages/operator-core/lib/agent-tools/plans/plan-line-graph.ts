@@ -63,11 +63,14 @@ export async function writePlanLineNodes(
     const status = item.status === 'todo' || item.status === 'blocked' ? 'open' : item.status;
     if (old) {
       const changeStatus = item.status !== old.status && !(item.status === 'blocked' && old.status === 'todo');
+      const changeText = item.text !== old.text;
       await tx`
         UPDATE harness_shared.work_items SET plan_seq = ${seq}, plan_phase = ${item.phase},
           plan_importance = ${item.importance}, plan_decision_refs = ${item.decisionRefs}::text[],
           plan_deliverable = ${item.deliverable ?? null}, plan_owner_gate_marker = ${item.ownerGateMarker ?? null},
-          plan_line_text = ${item.text}, title = ${item.text.slice(0, 300)}, summary = ${item.text},
+          plan_line_text = ${item.text},
+          title = CASE WHEN ${changeText} THEN ${item.text.slice(0, 300)} ELSE title END,
+          summary = CASE WHEN ${changeText} THEN ${item.text} ELSE summary END,
           status = CASE WHEN ${changeStatus} THEN ${status} ELSE status END,
           closed_ts = CASE WHEN ${changeStatus} THEN CASE WHEN ${status} IN ('done', 'dropped') THEN ${now}::bigint ELSE NULL END ELSE closed_ts END,
           updated_ts = ${now}, origin = 'local'
