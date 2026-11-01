@@ -1090,24 +1090,53 @@ describe('ptool operator routing', () => {
     expect(shouldRediscoverOperatorUrl({}, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
       PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
-    })).toBe(true);
+    }, 'http://127.0.0.1:24689')).toBe(true);
     expect(shouldRediscoverOperatorUrl({ tool: 'work_items:get' }, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
       PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
-    })).toBe(true);
+    }, 'http://127.0.0.1:24689')).toBe(true);
+  });
+
+  it('keeps a launcher-managed proxy on its selected route instead of rebasing to another operator.json port', async () => {
+    const selected = 'http://127.0.0.1:9171';
+    const env = {
+      PAPERCUSP_OPERATOR_URL: selected,
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    };
+    const discover = vi.fn(() => 'http://127.0.0.1:16964');
+    const rediscover = shouldRediscoverOperatorUrl({}, env, selected) ? discover : null;
+    const client = { close: vi.fn() };
+    const refused = Object.assign(new Error('fetch failed'), {
+      cause: { code: 'ECONNREFUSED' },
+    });
+    const connectOnce = vi.fn().mockRejectedValueOnce(refused).mockResolvedValueOnce(client);
+
+    const result = await connectWithLocalRetry(connectOnce, selected, {}, {
+      maxAttempts: 2,
+      totalTimeoutMs: 0,
+      retryDelayMs: 0,
+      retryJitterMs: 0,
+      rand: () => 0,
+      sleep: async () => {},
+      rediscover,
+    });
+
+    expect(discover).not.toHaveBeenCalled();
+    expect(result).toBe(client);
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([selected, selected]);
   });
 
   it('keeps a bare inherited env URL pinned when no launcher marker is present', () => {
     expect(shouldRediscoverOperatorUrl({}, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
-    })).toBe(false);
+    }, 'http://127.0.0.1:24689')).toBe(false);
   });
 
   it('keeps an explicit --url pin authoritative even with a launcher marker', () => {
     expect(shouldRediscoverOperatorUrl({ url: 'http://127.0.0.1:3170' }, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
       PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
-    })).toBe(false);
+    }, 'http://127.0.0.1:3170')).toBe(false);
   });
 
   it('keeps explicit and bare local URL pins in place with a bounded recovery budget', () => {
