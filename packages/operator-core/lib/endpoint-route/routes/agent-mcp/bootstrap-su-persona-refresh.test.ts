@@ -237,6 +237,9 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
       const rootDir = join(sourceDir, '.papercusp', 'blueprints', 'refresh-suite');
       mkdirSync(domainDir, { recursive: true });
       mkdirSync(rootDir, { recursive: true });
+      const domainPromptDir = join(domainDir, 'prompts');
+      mkdirSync(domainPromptDir, { recursive: true });
+      writeFileSync(join(domainPromptDir, 'agent-base-overlay.md'), '# Refresh domain fixture\n');
       const componentPath = join(domainDir, 'blueprint.yaml');
       writeFileSync(componentPath,
         'id: refresh-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');
