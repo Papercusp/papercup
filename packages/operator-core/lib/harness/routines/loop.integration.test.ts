@@ -99,7 +99,9 @@ describe('managed self-compaction continuation keeps loop status from reporting 
       pid: 41001,
       ptyPid: 41002,
       childGeneration: 7,
-      startedAt: now - 30_000,
+      // The host must predate its receipt of this fire; tests may model an
+      // active operation that began several minutes ago.
+      startedAt: Math.min(now - 30_000, firedAtMs),
       sock: '/tmp/loop-status-test.sock',
       command: 'codex',
       nativeSessionId: 'native-session-current-fire',
