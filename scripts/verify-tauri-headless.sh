@@ -93,7 +93,7 @@
 # USAGE
 #   scripts/verify-tauri-headless.sh -- <assertion-command...>
 #     Boots the instance, runs <assertion-command...> with
-#     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_DEV_URL /
+#     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_PTY_PORT / VERIFY_TAURI_DEV_URL /
 #     VERIFY_TAURI_DISPLAY exported (VERIFY_TAURI_DEV_URL is the plain
 #     selected loopback host:$VERIFY_TAURI_PORT origin — use it instead of
 #     reconstructing the URL or parsing `tauri-agent-tools eval
@@ -3359,6 +3359,7 @@ write_boot_only_env_script() {
     {
       printf 'VERIFY_TAURI_PID=%q\n' "$VERIFY_TAURI_PID"
       printf 'VERIFY_TAURI_PORT=%q\n' "$VERIFY_TAURI_PORT"
+      printf 'VERIFY_TAURI_PTY_PORT=%q\n' "$VERIFY_TAURI_PTY_PORT"
       printf 'VERIFY_TAURI_DEV_URL=%q\n' "$(verify_tauri_dev_url "$VERIFY_TAURI_PORT")"
       printf 'VERIFY_TAURI_DISPLAY=%q\n' "$VERIFY_TAURI_DISPLAY"
       printf 'VERIFY_TAURI_OWNER_SID=%q\n' "$VERIFY_TAURI_OWNER_SID"
@@ -3432,6 +3433,7 @@ verify_tauri_assert_owned() {
   target_environ="$(tr '\0' '\n' < "/proc/$VERIFY_TAURI_PID/environ" 2>/dev/null || true)"
   if ! grep -qxF "DISPLAY=$VERIFY_TAURI_DISPLAY" <<<"$target_environ" \
     || ! grep -qxF "OPERATOR_DEV_PORT=$VERIFY_TAURI_PORT" <<<"$target_environ" \
+    || ! grep -qxF "OPERATOR_DEV_PTY_PORT=$VERIFY_TAURI_PTY_PORT" <<<"$target_environ" \
     || ! grep -qxF "PAPERCUSP_SID=$VERIFY_TAURI_OWNER_SID" <<<"$target_environ" \
     || ! grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE" <<<"$target_environ"; then
     echo "FATAL: VERIFY_TAURI_ENV_FILE points at a verifier owned by another session or a process with changed launch provenance." >&2
@@ -3467,7 +3469,7 @@ DISPLAY="$VERIFY_TAURI_DISPLAY"
 export DISPLAY
 export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
 export VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
-export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DEV_URL VERIFY_TAURI_DISPLAY
+export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_PTY_PORT VERIFY_TAURI_DEV_URL VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_OWNER_SID VERIFY_TAURI_LAUNCH_PROVENANCE VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL VERIFY_TAURI_SETTLE VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
 export VERIFY_TAURI_SPA_DIST VERIFY_TAURI_LIVENESS_CHECK
@@ -5000,6 +5002,7 @@ log "bridge provenance verified: owner=$TAURI_LAUNCH_PROVENANCE pid=$BRIDGE_PID 
 
 export VERIFY_TAURI_PID="$BRIDGE_PID"
 export VERIFY_TAURI_PORT="$DEV_PORT"
+export VERIFY_TAURI_PTY_PORT="$PTY_PORT"
 export VERIFY_TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"
 export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export DISPLAY="$VERIFY_TAURI_DISPLAY"
@@ -5415,10 +5418,12 @@ verify_isolated_storage_sentinel() {
   local evidence_dir="${VH_RUN_DIR:-$WORK}/phases/boot/isolated-storage" probe_status=0
   mkdir -p -- "$evidence_dir" || return 1
   ISOLATED_STORAGE_SENTINEL_KEY='papercusp.verify-tauri-headless.isolated-sentinel.v1'
-  # A failed evaluation is unmeasured storage, not an empty sentinel result.
+  # Use the JSON envelope so an empty eval result remains observable. The
+  # default CLI formatter prints an empty string as a blank line, which shell
+  # command substitution strips and confuses with a missing response.
   # Keep both streams and the real status before teardown destroys the WebView.
   timeout --signal=TERM --kill-after=1 "${HEALTH_PROBE_TIMEOUT}s" \
-    "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
+    "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" --json "
     (function () {
       var key = '$ISOLATED_STORAGE_SENTINEL_KEY';
       var value = 'verify-tauri-headless-isolated-v1';
@@ -5430,10 +5435,35 @@ verify_isolated_storage_sentinel() {
     })()
   " >"$evidence_dir/probe.stdout" 2>"$evidence_dir/probe.stderr" || probe_status=$?
   printf '%s\n' "$probe_status" >"$evidence_dir/probe.status" || return 1
-  ISOLATED_STORAGE_SENTINEL_JSON="$(cat "$evidence_dir/probe.stdout")" || return 1
   if [ "$probe_status" -ne 0 ]; then
     echo "FATAL: isolated WebView storage evaluation did not complete (exit=$probe_status); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
     cat "$evidence_dir/probe.stdout" "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
+  if [ ! -s "$evidence_dir/probe.stdout" ]; then
+    echo "FATAL: isolated WebView storage evaluation returned no JSON envelope (exit=0); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
+  if ! ISOLATED_STORAGE_SENTINEL_JSON="$(
+    node -e '
+      const fs = require("node:fs");
+      const envelope = JSON.parse(fs.readFileSync(0, "utf8"));
+      if (!envelope || typeof envelope !== "object" ||
+          !Object.prototype.hasOwnProperty.call(envelope, "result")) {
+        throw new Error("missing result field");
+      }
+      if (typeof envelope.result !== "string") throw new Error("result must be a string");
+      process.stdout.write(envelope.result);
+    ' < "$evidence_dir/probe.stdout" 2>"$evidence_dir/probe.parse.stderr"
+  )"; then
+    echo "FATAL: isolated WebView storage evaluation returned an invalid JSON envelope; storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.parse.stderr" "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
+  if [ -z "$ISOLATED_STORAGE_SENTINEL_JSON" ]; then
+    echo "FATAL: isolated WebView storage evaluation returned an empty result (exit=0); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.stderr" >&2
     return 1
   fi
   if ! grep -Eq '"before"[[:space:]]*:[[:space:]]*null' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \
