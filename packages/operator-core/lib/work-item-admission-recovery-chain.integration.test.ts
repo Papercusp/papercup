@@ -861,6 +861,39 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     expect(h.model).not.toHaveBeenCalled();
   });
 
+  it('isolates a revoked earlier review request and completes the later valid review', async () => {
+    const ordered = [
+      await create('Earlier revoked review'),
+      await create('Later valid review'),
+    ].sort((a, b) => a.id.localeCompare(b.id));
+    const [revokedItem, validItem] = ordered;
+    await claimOriginal(revokedItem.id);
+    await claimOriginal(validItem.id);
+    await placeReview(revokedItem.id);
+    await placeReview(validItem.id);
+    const revokedRequest = await review(revokedItem.id);
+    const validRequest = await review(validItem.id, reviewLeader);
+    const revokedBefore = await row(revokedItem.id);
+    h.revoked = true;
+
+    const result = await tick();
+    expect(result.guardRefusals).toContainEqual(expect.objectContaining({
+      itemId: revokedItem.id,
+      canonicalId: null,
+      reason: 'review-gated',
+      detail: expect.stringContaining('review requester absent, revoked or foreign'),
+    }));
+    expect(await row(revokedItem.id)).toEqual(revokedBefore);
+    expect(await row(validItem.id)).toMatchObject({
+      admission: 'admitted',
+      taken_by: reviewerOwnerId,
+      payload: { _admissionReviewReceipt: { requestId: validRequest.requestId, pickupConfirmed: false } },
+    });
+    expect(revokedRequest.requestId).not.toBe(validRequest.requestId);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
   it('enforces the actual review write policy independently of dispatch and claim permissions', async () => {
     const original = await create();
     await claimOriginal(original.id);
