@@ -26,6 +26,38 @@ const ROLLOUT_B = '019f0000-5555-7666-8777-888888888888';
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
 
+it.each(['transcript', 'account', 'exit', 'dispose'] as const)(
+  'P-009: replaced Codex adapter cannot publish stale %s callbacks', async (action) => {
+    let settleAccount!: (account: string) => void;
+    const account = new Promise<string>((resolve) => { settleAccount = resolve; });
+    const old = createCodexSuSessionAdapter(binding(), runtime(), {
+      agentChatId: `stale-codex-${action}`, runtimeGeneration: 1,
+      servedAccountReader: () => account,
+    });
+    const refresh = action === 'account' ? old.refreshAccountServed() : Promise.resolve();
+    old.reconcileRuntimeExit({ expected: false, exitCode: 1 });
+    const ownerTurn = vi.fn<CodexSuSessionControls['ownerTurn']>(async () => ({ ok: true }));
+    const current = createCodexSuSessionAdapter(binding(), runtime(), {
+      agentChatId: `stale-codex-${action}`, host: old.host, runtimeGeneration: 2,
+      runtimeReady: () => true, controls: { ownerTurn },
+    });
+    try {
+      const before = current.host.snapshot();
+      if (action === 'transcript') old.ingestNativeLine('malformed old frame');
+      if (action === 'exit') old.reconcileRuntimeExit({ expected: false, exitCode: 137 });
+      if (action === 'dispose') old.dispose();
+      settleAccount('old-account');
+      await refresh;
+      expect(current.host.snapshot()).toEqual(before);
+      const dispatch = current.host.startCommand(command(current, {
+        type: 'owner_turn', commandId: 'current-turn', turnId: 'current-turn', content: 'continue',
+      }));
+      await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+      expect(ownerTurn).toHaveBeenCalledOnce();
+    } finally { settleAccount('old-account'); current.dispose(); old.dispose(); }
+  },
+);
+
 it('SU-EXEC R-7 acceptance contract', async () => {
   const routes = SU_EXEC_FORK_ROUTES.filter(row => row.provider === 'codex');
   expect(routes.map(row => row.execution).sort()).toEqual(['programmatic', 'pty']);

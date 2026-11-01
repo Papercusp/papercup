@@ -26,6 +26,7 @@ describe('historical provider stop distinctions', () => {
     ['API Error: 429 Too many requests', 'rate_limit'],
     ['API Error: maximum context length exceeded', 'context_limit'],
     ['API Error: model example not found', 'model_error'],
+    ['⚠ Selected model is at capacity. Please try a different model.', 'capacity'],
     ['We discussed 429 handling and insufficient credits', null],
     ['The message said "You\'ve hit your session limit"', null],
   ])('classifies %s without conflating provider failures', (text, expected) => {

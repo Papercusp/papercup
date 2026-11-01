@@ -36,6 +36,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg, isParkedNextFire, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
@@ -2131,14 +2132,17 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   const executionRecovery = r.metadata?.executionRecovery as
     | { status?: string; reason?: string; observedAt?: number }
     | undefined;
+  const managedContinuationInFlight = r.managed_continuation_in_flight === true;
   const currentExecutionInFlight =
-    parked &&
-    lastFiredMs != null &&
-    executionRecovery?.status === 'running' &&
-    (executionRecovery.reason === 'active-inference' || executionRecovery.reason === 'native-operation') &&
-    Number.isFinite(executionRecovery.observedAt) &&
-    Number(executionRecovery.observedAt) >= lastFiredMs &&
-    Number(executionRecovery.observedAt) <= Date.now();
+    managedContinuationInFlight || (
+      parked &&
+      lastFiredMs != null &&
+      executionRecovery?.status === 'running' &&
+      (executionRecovery.reason === 'active-inference' || executionRecovery.reason === 'native-operation') &&
+      Number.isFinite(executionRecovery.observedAt) &&
+      Number(executionRecovery.observedAt) >= lastFiredMs &&
+      Number(executionRecovery.observedAt) <= Date.now()
+    );
   const turnsStalled = computeTurnsStalled({
     active: Boolean(r.active) && !providerBackoffActive,
     fireCount: firesSinceArm,
@@ -2269,6 +2273,7 @@ export async function getLoopStatuses(
   const owners = [...new Set(ownerIds.filter(Boolean))];
   if (owners.length === 0) return out;
   const sql = opts.sql ?? getOrgPg().sql;
+  const liveTurnWindowSec = Math.max(1, Math.round(PRESENCE_STALE_MS / 1000));
   const read = (client: Sql | TransactionSql) => client<any[]>`
     SELECT DISTINCT ON (r.target_owner_id)
            r.install_slug,
@@ -2281,6 +2286,95 @@ export async function getLoopStatuses(
            -- into loop:status. Selected rather than key-extracted because the record is a
            -- typed OBJECT (code/authorityCode/reason/atMs), not a scalar.
            r.metadata,
+           -- A managed loop-fire/self-compaction successor may be executing while the loop
+           -- row is still parked. executionRecovery is a per-fire repair receipt and is not
+           -- guaranteed to be persisted for every continuation. Derive this from the same
+           -- cross-CLI activity sources as presence-wakeability.liveTurn, correlated to the
+           -- latest typed prompt and its exact routine/fire start stamp. A newer user turn,
+           -- trailing session-end marker, or activity that predates the prompt prevents
+           -- unrelated owner activity from masking genuine starvation.
+           EXISTS (
+             SELECT 1
+               FROM LATERAL (
+                 SELECT st.ts AS prompt_at, st.workspace_id, st.source_kind, st.session_id, st.turn_idx,
+                        st.turn_origin
+                   FROM harness_shared.session_turns st
+                  WHERE st.owner = r.target_owner_id
+                    AND st.speaker = 'user'
+                    AND st.turn_origin IN ('loop-fire', 'self-compaction')
+                    AND st.ts >= COALESCE(
+                          (r.metadata->>'armed_at')::timestamptz,
+                          '-infinity'::timestamptz
+                        )
+                    AND st.ts > COALESCE(
+                          r.last_fired_at,
+                          (r.metadata->>'armed_at')::timestamptz,
+                          '-infinity'::timestamptz
+                        )
+                    AND EXISTS (
+                      SELECT 1
+                        FROM harness_shared.agent_activity start_stamp
+                       WHERE start_stamp.owner_id = r.target_owner_id
+                         AND start_stamp.kind = 'lifecycle'
+                         AND start_stamp.summary = ${LOOP_TURN_START_MARKER}
+                         AND start_stamp.detail->'loopFire'->>'routineId' = r.id
+                         AND CASE
+                               WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
+                               THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
+                             END = COALESCE((r.metadata->>'fire_count')::int, 0)
+                         AND (
+                           (start_stamp.detail->>'source' = 'session-ingest'
+                             AND start_stamp.workspace_id = st.workspace_id
+                             AND start_stamp.detail->'indexedTurn'->>'workspaceId' = st.workspace_id
+                             AND start_stamp.detail->'indexedTurn'->>'sourceKind' = st.source_kind
+                             AND start_stamp.detail->'indexedTurn'->>'sessionId' = st.session_id
+                             AND start_stamp.detail->'indexedTurn'->>'turnIdx' = st.turn_idx::text)
+                           OR (st.turn_origin = 'loop-fire'
+                             AND start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
+                             AND st.ts >= start_stamp.created_at)
+                         )
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1
+                        FROM harness_shared.session_turns newer
+                       WHERE newer.owner = r.target_owner_id
+                         AND newer.speaker = 'user'
+                         AND newer.ts > st.ts
+                    )
+                  ORDER BY st.ts DESC
+                  LIMIT 1
+               ) continuation
+               CROSS JOIN LATERAL (
+                 SELECT GREATEST(
+                   (SELECT aa.created_at
+                      FROM harness_shared.agent_activity aa
+                     WHERE aa.owner_id = r.target_owner_id
+                       AND aa.created_at > continuation.prompt_at
+                       AND aa.created_at >= now() - make_interval(secs => ${liveTurnWindowSec})
+                       AND (aa.session_id IS NULL OR aa.session_id = continuation.session_id)
+                     ORDER BY aa.created_at DESC
+                     LIMIT 1),
+                   (SELECT ti.invoked_at
+                      FROM harness_shared.tool_invocations ti
+                     WHERE ti.coord_owner_id = r.target_owner_id
+                       AND ti.invoked_at > continuation.prompt_at
+                       AND ti.invoked_at >= now() - make_interval(secs => ${liveTurnWindowSec})
+                     ORDER BY ti.invoked_at DESC
+                     LIMIT 1)
+                 ) AS last_activity_at
+               ) activity
+               LEFT JOIN LATERAL (
+                 SELECT ae.created_at AS last_end_at
+                   FROM harness_shared.agent_activity ae
+                  WHERE ae.owner_id = r.target_owner_id
+                    AND ae.kind = 'lifecycle'
+                    AND ae.summary = ${SESSION_END_MARKER}
+                  ORDER BY ae.created_at DESC
+                  LIMIT 1
+               ) ended ON true
+              WHERE activity.last_activity_at > continuation.prompt_at
+                AND activity.last_activity_at > COALESCE(ended.last_end_at, '-infinity'::timestamptz)
+           ) AS managed_continuation_in_flight,
            COALESCE((r.metadata->>'fire_count')::int, 0)                  AS fire_count,
            -- WI-36070: the dead-man's baseline, stamped by stampLoopArmedAt on every arm/re-arm.
            -- Selected so loop:status can report firesSinceArm — the number maxFires is actually

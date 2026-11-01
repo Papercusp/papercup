@@ -171,7 +171,7 @@ const EVIDENCE_MAX = 200;
 /** Narrow historical incident vocabulary; keep billing and temporary throttles
  * separate from the legacy terminal-state labels used by liveness callers. */
 export const HISTORICAL_STOP_KINDS = ['quota', 'authentication', 'billing', 'rate_limit', 'capacity', 'model_error', 'context_limit'] as const;
-export const HISTORICAL_STOP_OPENING = /^[\s\W]{0,8}(?:API Error[:\s]|Error:\s*|[45][0-9]{2}\s|Your organization has disabled|Organization has disabled|Subscription access.*disabled|You(?:'|’)ve hit your|You have (?:hit your|exceeded your)|Usage limit reached|Quota exceeded|Insufficient credits|Authentication failed|Unauthorized|Rate limit|Too many requests|Prompt is too long|Context window exceeded)/i;
+export const HISTORICAL_STOP_OPENING = new RegExp(`^[\\s\\W]{0,8}(?:API Error[:\\s]|Error:\\s*|[45][0-9]{2}\\s|Your organization has disabled|Organization has disabled|Subscription access.*disabled|You(?:'|’)ve hit your|You have (?:hit your|exceeded your)|Usage limit reached|Quota exceeded|Insufficient credits|Authentication failed|Unauthorized|Rate limit|Too many requests|Prompt is too long|Context window exceeded|${MODEL_CAPACITY_RE.source})`, 'i');
 export function classifyHistoricalSessionStop(text: string | null | undefined): typeof HISTORICAL_STOP_KINDS[number] | null {
   if (!text || !HISTORICAL_STOP_OPENING.test(text)) return null;
   const opening = text.slice(0, 700);

@@ -311,15 +311,17 @@ fi
 # valid anchored title can select nothing. Collection never runs fixtures and
 # uses its own JSON reporter; execution keeps the config's ledger reporters.
 selection_report="$VH_PHASE_DIR/selection.json"
+selection_stdout="$VH_PHASE_DIR/selection.stdout.log"
 selection_errors="$VH_PHASE_DIR/selection.stderr.log"
 (
   cd "$ROOT/apps/operator" || exit 2
-  timeout --signal=TERM --kill-after=5s 60s bash -c \
+  PLAYWRIGHT_JSON_OUTPUT_FILE="$selection_report" timeout --signal=TERM --kill-after=5s 60s bash -c \
     'exec $OPERATOR_E2E_PLAYWRIGHT "$@" --list --reporter=json' -- "$@"
-) >"$selection_report" 2>"$selection_errors"
+) >"$selection_stdout" 2>"$selection_errors"
 selection_status=$?
 if [ "$selection_status" -ne 0 ]; then
   vh_fail selection-collection-failed
+  tail -n 20 "$selection_stdout" >&2
   tail -n 20 "$selection_errors" >&2
   echo "run-operator-e2e-isolated: selection collection failed (rc=$selection_status); refusing native rig; evidence=$selection_report" >&2
   exit 2

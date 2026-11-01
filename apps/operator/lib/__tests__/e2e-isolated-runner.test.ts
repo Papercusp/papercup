@@ -114,10 +114,11 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '  if [ "$arg" = "--list" ]; then',
       '    case "${E2E_FIXTURE_SELECTION:-pass}" in',
       '      error) echo "fixture collection failed" >&2; exit 63 ;;',
-      '      zero) echo \'{"suites":[]}\'; exit 0 ;;',
-      '      malformed) echo "invalid collection JSON"; exit 0 ;;',
+      '      zero) printf \'%s\' \'{"suites":[]}\' > "$PLAYWRIGHT_JSON_OUTPUT_FILE"; exit 0 ;;',
+      '      malformed) printf \'%s\' \'invalid collection JSON\' > "$PLAYWRIGHT_JSON_OUTPUT_FILE"; exit 0 ;;',
+      '      stdout-prefix) echo "CHROMIUM_NETLOG /tmp/fixture-netlog.json" ;;',
       '    esac',
-      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));process.stdout.write(JSON.stringify({suites:[{title:"fixture.spec.ts",specs:[{title:"fixture selected",tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
+      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));if(!process.env.PLAYWRIGHT_JSON_OUTPUT_FILE)throw new Error("missing JSON output file");fs.writeFileSync(process.env.PLAYWRIGHT_JSON_OUTPUT_FILE,JSON.stringify({suites:[{title:"fixture.spec.ts",specs:[{title:"fixture selected",tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
       '    exit 0',
       '  fi',
       'done',
@@ -256,6 +257,14 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(selected.argv).toEqual([...args, '--list', '--reporter=json']);
     expect(result.out).toContain('OPERATOR_E2E_SELECTION count=1');
     expect(result.recorded.argv).toEqual(args);
+  });
+
+  it('keeps Playwright selection valid when instrumentation writes to stdout', () => {
+    const f = fixture(0);
+    const result = run(f, ['e2e/chat-streaming.spec.ts'], { E2E_FIXTURE_SELECTION: 'stdout-prefix' });
+    expect(result.status, result.out).toBe(0);
+    expect(result.out).toContain('OPERATOR_E2E_SELECTION count=1');
+    expect(result.recorded).not.toBeNull();
   });
 
   it('treats an explicit .live.ts profile as a filtered run before native preflight', () => {

@@ -15,6 +15,7 @@ import {
   checkInstalledPatchPostimages,
   parsePatchPostimages,
 } from './check-installed-patch-postimages.mjs';
+import { publishDependencyGeneration } from './npm-install-safe.mjs';
 
 function makeFixture(t) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'papercusp-patch-postimage-'));
@@ -98,6 +99,34 @@ function makeFixture(t) {
   ]);
 
   return { repoRoot, patchFile, patchPath, patchSource, targetFile, targetPath };
+}
+
+for (const installedState of ['matching', 'stale', 'missing', 'modified-patch']) {
+  test(`generation publication validates patch postimages before a cache hit (${installedState})`, async (t) => {
+    const fixture = makeFixture(t);
+    if (installedState === 'stale') writeFileSync(fixture.targetFile, 'before\n');
+    if (installedState === 'missing') rmSync(fixture.targetFile);
+    if (installedState === 'modified-patch') {
+      writeFileSync(fixture.patchFile, fixture.patchSource + '\n# local change\n');
+    }
+    let publisherCalls = 0;
+    const messages = [];
+    const status = await publishDependencyGeneration({
+      repoRoot: fixture.repoRoot,
+      env: {},
+      log: (line) => messages.push(line),
+      // Model an already-cached generation: no copy or postinstall repairs it.
+      runPublisher: () => { publisherCalls += 1; return { status: 0 }; },
+    });
+
+    assert.equal(status, installedState === 'matching' ? 0 : 1);
+    assert.equal(publisherCalls, installedState === 'matching' ? 1 : 0);
+    if (installedState !== 'matching') {
+      assert.match(messages.join('\n'), /installed patch postimages/);
+      assert.match(messages.join('\n'), new RegExp(installedState === 'modified-patch'
+        ? 'patch sources differ from HEAD' : 'node_modules/example/index.js'));
+    }
+  });
 }
 
 test('parses one committed postimage per diff block', () => {

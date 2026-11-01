@@ -16,6 +16,7 @@ import {
   BASH_TEST_MEMORY_MAX_BYTES,
   BASH_TEST_TASKS_MAX,
   capturePreflightAttributionSnapshot,
+  classifyBackgroundCloseStatus,
   classifyDeadlineReason,
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -1692,34 +1693,63 @@ describe('background job deadlines (WI-6677)', () => {
   async function expireDeadlineAfterOutput(command: string, marker: string) {
     // These cases test deadline classification, whose precondition is an
     // observed landmark. Hold ONLY that deadline callback until real shell
-    // output arrives; separate tests above still exercise real wall clocks.
-    // Deliberately delayed output in the callers guards the former 400ms race.
-    const realSetTimeout = globalThis.setTimeout;
-    let expire: (() => void) | undefined;
-    let heldTimer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
-      if (delay !== 400) return realSetTimeout(callback, delay, ...args);
-      expire = () => callback(...args);
-      heldTimer = realSetTimeout(() => {}, 30_000);
-      return heldTimer;
+    // output arrives; use an unconfined enrollment so systemd's rounded
+    // RuntimeMaxSec cannot preempt this deliberately held 400ms local timer.
+    // Real confined deadlines are covered by the SIGTERM cleanup test below.
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'deadline-classification-test', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
     });
-    let job: ReturnType<typeof startBackground>;
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
     try {
-      job = startBackground({ command, cwd: STATE, stateDir: STATE }, 400);
+      const realSetTimeout = globalThis.setTimeout;
+      let expire: (() => void) | undefined;
+      let heldTimer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
+        if (delay !== 400) return realSetTimeout(callback, delay, ...args);
+        expire = () => callback(...args);
+        heldTimer = realSetTimeout(() => {}, 30_000);
+        return heldTimer;
+      });
+      let job: ReturnType<typeof startBackground>;
+      try {
+        job = startBackground({ command, cwd: STATE, stateDir: STATE }, 400);
+      } finally {
+        timeoutSpy.mockRestore();
+      }
+      try {
+        const diagnostic = () => JSON.stringify({
+          status: job.status,
+          exitCode: job.exitCode,
+          scopeUnit: job.scopeUnit,
+          startedAt: job.startedAt,
+          deadlineAt: job.deadlineAt,
+          endedAt: job.endedAt,
+          output: job.buffer,
+          phaseTiming: job.phaseTiming,
+        });
+        expect(await waitForOutput(job.id, marker), `shell never emitted ${marker}: ${diagnostic()}`).toBe(true);
+        expect(job.scopeUnit, diagnostic()).toBeNull();
+        expect(job.status, diagnostic()).toBe('running');
+        expect(expire, `startBackground did not arm its deadline: ${diagnostic()}`).toBeDefined();
+        clearTimeout(heldTimer);
+        expire!();
+        await waitForEnd(job.id);
+        return job;
+      } finally {
+        clearTimeout(heldTimer);
+        if (job.status === 'running') {
+          killJob(job);
+          await waitForEnd(job.id, 5_000);
+        }
+      }
     } finally {
-      timeoutSpy.mockRestore();
-    }
-    try {
-      expect(await waitForOutput(job.id, marker), `shell never emitted ${marker}`).toBe(true);
-      expect(job.status).toBe('running');
-      expect(expire, 'startBackground did not arm its deadline').toBeDefined();
-      clearTimeout(heldTimer);
-      expire!();
-      await waitForEnd(job.id);
-      return job;
-    } finally {
-      clearTimeout(heldTimer);
-      if (job.status === 'running') killJob(job);
+      begin.mockRestore();
+      complete.mockRestore();
+      finish.mockRestore();
     }
   }
 
@@ -1738,8 +1768,15 @@ describe('background job deadlines (WI-6677)', () => {
   it('records the effective deadline on the job so the caller can be told it up front', () => {
     const job = startBackground({ command: 'sleep 60', cwd: STATE, stateDir: STATE }, 45_000);
     expect(job.timeoutMs).toBe(45_000);
-    expect(job.deadlineAt).toBeGreaterThanOrEqual(job.startedAt + 45_000 - 50);
+    expect(job.deadlineAt).toBe(job.startedAt + 45_000);
     killJob(job);
+  });
+
+  it('classifies a systemd close after the deadline even when its timer callback has not run', () => {
+    expect(classifyBackgroundCloseStatus('running', 2_000, 2_000)).toBe('timed_out');
+    expect(classifyBackgroundCloseStatus('running', 2_000, 1_999)).toBe('running');
+    expect(classifyBackgroundCloseStatus('timed_out', 2_000, 2_102)).toBe('timed_out');
+    expect(classifyBackgroundCloseStatus('completed', 2_000, 2_102)).toBe('completed');
   });
 
   it('classifies deadline phase only from an explicit pc-heavy marker', () => {
@@ -2116,7 +2153,17 @@ describe('background job deadlines (WI-6677)', () => {
       'the job never reached its own `echo working`, so its TERM trap was never installed: this run cannot distinguish SIGTERM from SIGKILL (startup race — WI-1046842) and is NOT evidence of a cleanup regression',
     ).toBe(true);
     await waitForEnd(job.id);
-    expect(job.status).toBe('timed_out');
+    expect(
+      job.status,
+      JSON.stringify({
+        exitCode: job.exitCode,
+        scopeUnit: job.scopeUnit,
+        startedAt: job.startedAt,
+        deadlineAt: job.deadlineAt,
+        endedAt: job.endedAt,
+        phaseTiming: job.phaseTiming,
+      }),
+    ).toBe('timed_out');
     // The whole point: a SIGKILLed job cannot leave this behind.
     //
     // WI-1046842 / WI-1064487 — carry the job's EXIT CODE into the failure message. But

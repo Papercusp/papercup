@@ -298,10 +298,14 @@ export function pgLivenessReaders(sql: Sql, implementerOwners: readonly string[]
       return { eligible: e.eligible ?? null, ...o, eligibleMutations: e.eligibleMutations, allTrackedMutations: e.allTrackedMutations };
     },
     measureOp: async (op: LivenessOp, w: MeasureWindow): Promise<SignalCounts> => {
+      // Schema/role refusals never reach the handler and cannot produce a code-intel
+      // result. Keep attempted unknowns, errors, cancellations and timeouts eligible:
+      // those are real demand that the liveness check must still detect as unserved.
       const r = await one(sql, `SELECT count(*) AS calls,
             count(*) FILTER (WHERE metadata_json->'codeIntelResult'->>'status' = 'measured') AS measured,
             count(*) FILTER (WHERE metadata_json->'codeIntelResult'->>'status' = 'measured' AND coord_owner_id <> ALL($5::text[])) AS outside
           FROM harness_shared.tool_invocations WHERE workspace_id = $1 AND tool_name = $2 AND invoked_at >= $3 AND invoked_at < $4
+            AND status NOT IN ('role-not-allowed', 'invalid-input')
             AND coord_owner_id IS DISTINCT FROM '${CANARY_OWNER}'`,
         [w.workspaceId, op, iso(w.start), iso(w.end), impl]);
       return { eligible: num(r.calls), outputs: num(r.measured), outsideLineageOutputs: num(r.outside) };
