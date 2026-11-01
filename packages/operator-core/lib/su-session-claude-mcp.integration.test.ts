@@ -22,7 +22,8 @@ import { resolveAgentBinarySync } from './agent-bin-detect';
 import { createClaudeNativeMcpServer } from './su-session-claude-mcp';
 import { startClaudeSuEngine, type ClaudeSuEngine } from './su-session-claude-engine';
 import { nativeInstalledPerUseTurns } from './agent-tools/per-use-chokepoint';
-import { retainNativeRequestPrincipalForDispatch, type BuiltSpawnContext } from './endpoint-route/routes/transport/_mcp-host';
+import { retainNativeRequestPrincipalForDispatch, runNativeMcpTargetOnOwner, type BuiltSpawnContext } from './endpoint-route/routes/transport/_mcp-host';
+import { _configureSuSessionRoutingForTest, localSuSessionHostOwner } from './su-session-owner-routing';
 import { sqlMiningFixture } from '../test/_sql-mining-fixture';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 
@@ -352,6 +353,8 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
       authMethod: 'bearer-token' as const, trust: 'trusted' as const, capabilities: new Set(['*']) };
     const resolvePrincipal = vi.fn(async () => principal);
     registerProjectedTool(target);
+    const readOwner = vi.fn(async () => localSuSessionHostOwner());
+    _configureSuSessionRoutingForTest({ readOwner });
     registerAuthorityHost = server => {
       server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'native_authority_inspect',
         description: target.description, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] }));
@@ -372,6 +375,8 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
           const ctx = { workspaceId, harnessSlug: harness, uiClientId: owner, transport: 'mcp', role: 'operator',
             principal: retained.authenticatedPrincipal, requestOrigin: spawn.requestOrigin,
             signal: extra.signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn() } as unknown as UnifiedToolContext;
+          const response = await runNativeMcpTargetOnOwner({ toolName: canonical, args: request.params.arguments,
+            spawn: retained, fullSource: false, structuredSource: false, indirect: false }, async () => {
           const result = await runDispatchStack(target, canonical, request.params.arguments, ctx, { aroundInvoke: async attempt => {
             // Native input identity is capture-only, not a fabricated native turn.
             expect(nativeInstalledPerUseTurns.resolve(attempt)).toBeNull();
@@ -381,10 +386,12 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
             return attempt.invoke();
           } });
           observed.push({ callId, principal: retained.authenticatedPrincipal?.slug, ok: result.ok });
+          return { content: [{ type: 'text' as const, text: result.ok ? 'authorized private result' : 'private ACL denied' }], isError: !result.ok };
+          }, 20_000);
           // The same exact-call principal cannot be borrowed a second time.
           expect((await retainNativeRequestPrincipalForDispatch(spawn, canonical, request.params.arguments, bearer)).authenticatedPrincipal).toBeUndefined();
           allowed = false;
-          return { content: [{ type: 'text', text: result.ok ? 'authorized private result' : 'private ACL denied' }], isError: !result.ok };
+          return response;
         } catch (error) { errors.push(String(error)); throw error; }
       });
     };
@@ -400,7 +407,7 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
       workspaceId, harnessSlug: harness, planSlug: null, nativeSession: null },
     { nativeSession: { backend: 'claude', source: 'adv_sessions', ownerId: owner, sessionId: nativeId,
       configDir: dir, configDirSource: 'live-process', configDirUnresolvedReason: null, exactResumeSupported: true, missingReason: null },
-      transcriptPath: null }, { agentChatId: 'private-claude-authority', register: false,
+      transcriptPath: null }, { agentChatId: 'private-claude-authority',
       startupTimeoutMs: 20_000, deliveryTimeoutMs: 15_000, turnStallTimeoutMs: 20_000,
       resolveRequestPrincipal: resolvePrincipal, servedAccountReader: async () => null,
       query: input => {
@@ -430,6 +437,7 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
     expect(errors).toEqual([]);
     expect(observed).toEqual(calls.map((callId, index) => ({ callId, principal: principal.slug, ok: index === 0 })));
     expect(fn).toHaveBeenCalledOnce(); expect(authorize).toHaveBeenCalledTimes(2);
+    expect(readOwner).toHaveBeenCalledTimes(2);
     expect(resolvePrincipal.mock.calls.length).toBeGreaterThanOrEqual(4);
     expect(events).toContainEqual(expect.objectContaining({ type: 'user', session_id: nativeId, parent_tool_use_id: null }));
     expect(bearerCopies).toHaveLength(2); expect(bearerCopies[0]).toBe(bearerCopies[1]);
@@ -445,6 +453,7 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
       if (engine) { await engine.close(); engine.adapter.dispose(); }
       api.closeAllConnections(); if (api.listening) await new Promise<void>((resolve, reject) => api.close(error => error ? reject(error) : resolve()));
       unregisterProjectedToolsForPlugin('native-authority'); registerAuthorityHost = undefined;
+      _configureSuSessionRoutingForTest();
       await authorityDb?.cleanup(); authorityDb = undefined;
     } finally {
       if (oldAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
