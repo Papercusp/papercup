@@ -320,7 +320,7 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
   const args = { harness, query: 'private query', session_id: 'model-forged-session' };
   const fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'authorized private result' }] }));
   const authorize = vi.fn(async () => ({ allow: allowed, reason: 'private ACL revoked' }));
-  const target: ProjectedTool = { name: 'inspect', pluginName: 'native-authority', description: 'Private authority test',
+  const target: ProjectedTool = { pluginName: 'native-authority', description: 'Private authority test',
     inputSchema: { type: 'object' }, capabilities: [], expose: { mcp: { name: canonical } },
     requirePrincipal: true, authorize, fn };
   const api = createServer(async (request, response) => {
