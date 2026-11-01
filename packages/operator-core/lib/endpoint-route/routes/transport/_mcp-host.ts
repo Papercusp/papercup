@@ -4593,7 +4593,7 @@ export function registerMcpHost(server: McpServer): void {
             let harnessWs: string | null = null;
             try {
               harnessWs = await transportScopePhases.track('harnessWorkspaceResolution',
-                () => resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah));
+                () => resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah, transportScopePhases));
             } catch {
               // Ambiguous cross-workspace collision (resolver throws) or an infra error:
               // fail OPEN — let the tool resolve/fail loud rather than block a same-name slug.
