@@ -16170,6 +16170,9 @@ export function hostThroughPty(o) {
               capMs: turnInjectBusyCapMs,
               observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
               quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
+              // EI-27011834448959237: preserve the native veto sampled by the
+              // busy gate on its final pass; the retry/stall record may arrive later.
+              nativeBusy: atPrompt?.nativeBusy ?? null,
               // P-003: whether a NATIVE boundary proof was even available for
               // this defer. Without it, a defer on a repainting claude TUI is
               // indistinguishable from one on a genuinely busy agent, which is
