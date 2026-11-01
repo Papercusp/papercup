@@ -1790,6 +1790,19 @@ test('native dependency verification fails closed when a required addon resolves
   }
 });
 
+test("root install-script policy permits the locked better-sqlite3 native build", () => {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  const lock = JSON.parse(readFileSync(join(repoRoot, "package-lock.json"), "utf8"));
+  const lockedVersion = lock.packages?.["node_modules/better-sqlite3"]?.version;
+  assert.equal(typeof lockedVersion, "string", "better-sqlite3 must remain in the root lockfile");
+  const approvals = manifest.allowScripts ?? {};
+  assert.ok(
+    approvals["better-sqlite3"] === true || approvals[`better-sqlite3@${lockedVersion}`] === true,
+    `allowScripts must approve better-sqlite3@${lockedVersion}; its node-gyp script builds the native binding required by install:safe verification`,
+  );
+});
+
 for (const needsRepair of [false, true]) {
   test(`dependency verification provisions embedded extensions after scoped reify (repair=${needsRepair})`, async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-pg-extensions-"));
