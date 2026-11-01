@@ -284,7 +284,9 @@ describe('Claude accepted native input capture producer', () => {
     const { p, engine, replay } = await active();
     expect(p.options()?.mcpServers?.['papercusp-su']).toMatchObject({ type: 'sdk', instance: server });
     const input = nativeTransport.create.mock.calls[0]![0];
-    input.onToolsListed?.([{ name: 'capability_bash' }]);
+    // The canonical host lists colon names; the installed CLI calls their
+    // underscore spellings. Inventory and observation must still rendezvous.
+    input.onToolsListed?.([{ name: 'capability:bash' }]);
     expect(input.url).toContain('workspace=workspace');
     expect(input.headers['x-papercusp-native-session']).toBe(nativeId);
     expect(input.runtimeBearer).toBe('private-runtime-token');

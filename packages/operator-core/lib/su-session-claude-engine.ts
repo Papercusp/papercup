@@ -299,7 +299,12 @@ export function startClaudeSuEngine(
     const names: Record<string, string> = Object.create(null);
     for (const tool of tools) {
       const prefix = 'mcp__papercusp-su__';
-      const name = tool.name.startsWith(prefix) ? tool.name : prefix + tool.name;
+      const advertised = tool.name.startsWith(prefix) ? tool.name.slice(prefix.length) : tool.name;
+      // Claude presents canonical MCP names (e.g. reports:get) to the model
+      // with unsupported name characters replaced by underscores. Keep the
+      // exact observed-call key in that native spelling, while registry
+      // resolution still refuses ambiguous separator aliases.
+      const name = prefix + advertised.replace(/[^a-zA-Z0-9_-]/g, '_');
       const canonical = resolveMcpName(normalizeMcpName(name))?.expose.mcp?.name;
       if (canonical) names[name] = canonical;
     }
