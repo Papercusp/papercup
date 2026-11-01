@@ -2027,16 +2027,6 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
   }
 
   it('applies fleet:status tiers at the actual CallToolRequestSchema boundary', async () => {
-    const statusDefinition = getCatalog().find(tool => tool.name === 'fleet:status');
-    if (!statusDefinition) throw new Error('Expected the production fleet:status definition');
-    const mutableStatus = statusDefinition as unknown as {
-      handler: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>;
-      shape?: { standard?: unknown; trimmed?: unknown };
-    };
-    expect(mutableStatus.shape?.standard).toBeTypeOf('function');
-    expect(mutableStatus.shape?.trimmed).toBeTypeOf('function');
-
-    const originalHandler = mutableStatus.handler;
     const handlerContexts: Array<Record<string, unknown>> = [];
     const source = {
       ok: true,
@@ -2100,21 +2090,31 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       expect(governor.historyTotal).toBe(32);
     };
 
-    mutableStatus.handler = async (_args, ctx) => {
-      const context = ctx as unknown as Record<string, unknown>;
-      handlerContexts.push({
-        transport: context.transport,
-        requestedStructured: context.requestedStructured,
-        payloadTierOverride: context.payloadTierOverride,
-      });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(source) }] };
-    };
+    await withSdkHost(
+      superuserExtra('&workspace=ws-test&client=su-tier-shaping&harness=papercup&role=operator'),
+      async client => {
+        await client.listTools();
+        const statusDefinition = getCatalog().find(tool => tool.name === 'fleet:status');
+        if (!statusDefinition) throw new Error('Expected the production fleet:status definition after tools/list');
+        const mutableStatus = statusDefinition as unknown as {
+          handler: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>;
+          shape?: { standard?: unknown; trimmed?: unknown };
+        };
+        expect(mutableStatus.shape?.standard).toBeTypeOf('function');
+        expect(mutableStatus.shape?.trimmed).toBeTypeOf('function');
 
-    try {
-      await withSdkHost(
-        superuserExtra('&workspace=ws-test&client=su-tier-shaping&harness=papercup&role=operator'),
-        async client => {
-          await client.listTools();
+        const originalHandler = mutableStatus.handler;
+        mutableStatus.handler = async (_args, ctx) => {
+          const context = ctx as unknown as Record<string, unknown>;
+          handlerContexts.push({
+            transport: context.transport,
+            requestedStructured: context.requestedStructured,
+            payloadTierOverride: context.payloadTierOverride,
+          });
+          return { content: [{ type: 'text' as const, text: JSON.stringify(source) }] };
+        };
+
+        try {
           const directStandard = await client.callTool({
             name: 'fleet:status',
             arguments: { fleet: 'rocket', payloadTier: 'standard' },
@@ -2139,12 +2139,12 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
             _meta: { format: 'json' },
           }) as CallResult;
           assertTier(directTrimmed, 'trimmed');
-        },
-        'http',
-      );
-    } finally {
-      mutableStatus.handler = originalHandler;
-    }
+        } finally {
+          mutableStatus.handler = originalHandler;
+        }
+      },
+      'http',
+    );
 
     expect(handlerContexts).toEqual([
       { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'standard' },
