@@ -230,10 +230,12 @@ export async function postInjection(port, body, opts = {}) {
     } catch { /* optional per-request evidence never changes hook delivery */ }
   };
   const startedAt = now();
-  // Diagnostic only (WI-6554700010042393): which branch of this exchange produced
+  // WI-6554700010042393: which branch of this exchange produced
   // the answer. Every failure below returns the same empty finish(), so without
   // this an abort during local collection is indistinguishable from an empty
-  // server answer. Reported once; a throwing callback never changes delivery.
+  // server answer. The mutation guard also uses the actual response receipt;
+  // an empty successful verdict must not be mistaken for unavailable authority.
+  // Reported once; a throwing callback never changes transport delivery.
   let collectMs = null;
   const collectErrors = [];
   let hookOutcomeReported = false;
@@ -704,9 +706,9 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       env,
       fetchImpl,
       ...(ledger ? { onTurnStartOutcome: outcome => ledger.recordOutcome(outcome) } : {}),
-      ...(trace ? { onHookOutcome: outcome => { post = outcome; } } : {}),
+      onHookOutcome: outcome => { post = outcome; },
     });
-    if (!response && unavailableMutationGuard)
+    if (!response && post?.stage !== 'response-received' && unavailableMutationGuard)
       return done('guard-unavailable-deny', unavailableMutationGuard(), { port });
     const safeText = fenceControlTransition(response?.text ?? null, owner);
     if (!safeText) return done(response?.text ? 'fenced-empty' : 'no-text', null, { port });

@@ -2567,7 +2567,7 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
         meaning:
           'A frozen candidate is being HELD: no verdict this tick, no queue mutation, re-measured next tick. Repairs are expected to land on it meanwhile.',
         safeAction:
-          'Read `holdUntilMs` for when the hold gives up, and `reason` for what it is waiting on. Land fixes ON TOP of the frozen candidate so they join the judged lineage; do not cut a fresh one.',
+          'Read `blockedBy` for a refused precondition and `queuePhase` for the frozen queue stage; `reason` gives its detail. Land fixes ON TOP of the frozen candidate so they join the judged lineage; do not cut a fresh one.',
       },
       retired: {
         meaning:
@@ -2586,6 +2586,8 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
       'gate.freezeDisposition.unmeasured',
       'gate.freezeDisposition.reason',
       'gate.freezeDisposition.enabled',
+      'gate.freezeDisposition.queuePhase',
+      'gate.freezeDisposition.blockedBy',
       'gate.freezeDisposition.observedAtMs',
       'gate.freezeDisposition.stale',
     ],
@@ -2616,7 +2618,7 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
     path: 'gate.freezeDisposition.state',
   },
   shape:
-    '{ gate: { freezeDisposition: { code, unmeasured, state, reason, enabled, candidate, holdUntilMs, capacityRetryAtMs, observedAtMs, ageMs, stale, summary } } }',
+    '{ gate: { freezeDisposition: { code, unmeasured, state, reason, enabled, candidate, queuePhase, blockedBy, holdUntilMs, capacityRetryAtMs, observedAtMs, ageMs, stale, summary } } }',
 };
 
 /**

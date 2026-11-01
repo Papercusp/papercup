@@ -2787,7 +2787,6 @@ function isCurrentNativeExecutionForLoopFire(
     || !Number.isFinite(execution.turnStartedAt) || execution.turnStartedAt! <= firedAtMs
     || execution.turnStartedAt! > execution.observedAt
     || execution.ownerInputPending || execution.ownerStopRequested
-    || (host.nativeSessionId != null && execution.nativeSessionId !== host.nativeSessionId)
     || (execution.phase !== 'running' && Number(execution.pendingTools) <= 0)) return false;
   return true;
 }

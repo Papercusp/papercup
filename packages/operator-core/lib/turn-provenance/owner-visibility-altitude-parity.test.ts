@@ -56,6 +56,7 @@ const MACHINE_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['machine self-compaction', '/compact ⟦machine-issued self-compaction — not owner-typed⟧ focus on the plan'],
   ['compaction status line', '✻ Conversation compacted to 12,000 tokens'],
   ['codex AGENTS.md wrapper', '# AGENTS.md instructions\n\n<INSTRUCTIONS>\nbe helpful\n</INSTRUCTIONS>'],
+  ['codex environment context wrapper', '<environment_context>\n<cwd>/workspace/papercusp</cwd>\n</environment_context>'],
   ['codex plugin preamble', '<recommended_plugins>\nHere is a list of plugins\n</recommended_plugins>'],
   ['codex Stop-hook response wrapper', '<hook_prompt hook_run_id=stop:22:/tmp/hooks.json>\nStop context'],
   ['cold-loop wake banner', '❄️ COLD LOOP WAKE (fire #41) — a context reset was REQUESTED for this session.'],

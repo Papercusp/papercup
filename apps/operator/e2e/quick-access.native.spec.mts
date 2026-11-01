@@ -182,6 +182,15 @@ test('Quick Access opens as an independent native launcher with reports and exac
       await expect.poll(visible).toBe(true);
       expect(await popupWindows(false)).toHaveLength(1);
       await expectDefaultTabs();
+      // A real departure must still dismiss. Unlike the passive shortcut
+      // grab above, the X server moves input focus to this other application.
+      await exec('xdotool', ['windowactivate', '--sync', decoyWindowId], { env: displayEnv, timeout: 15_000 });
+      await expect.poll(async () => (await exec('xdotool', ['getwindowfocus'], { env: displayEnv })).stdout.trim()).toBe(decoyWindowId);
+      await expect.poll(visible).toBe(false);
+      expect(await popupWindows(false)).toHaveLength(1);
+      await shortcut();
+      await ready();
+      await expect.poll(visible).toBe(true);
     }, () => recordPopup('R-1-failure')));
     await info.attach('OS shortcut entry', { body: JSON.stringify({
       accelerator: 'CmdOrCtrl+Shift+K', outsideWindowId: decoyWindowId, configHome,

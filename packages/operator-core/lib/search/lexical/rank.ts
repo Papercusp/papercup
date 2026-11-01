@@ -599,6 +599,14 @@ export const BM25_LATENCY_CANARY_QUERIES = [
   'migration index', 'release gate', 'memory recall', 'work item',
 ] as const;
 
+/**
+ * Timed samples per fixed canary. With eight queries and one sample each, nearest-rank p95
+ * is the maximum, so a single transient outlier determines the health verdict for the
+ * five-minute cache window. Forty repeated warm samples can tolerate one isolated slow query
+ * while still detecting a persistently slow canary.
+ */
+export const BM25_LATENCY_REPETITIONS_PER_QUERY = 5;
+
 export interface Bm25Latency {
   corpusIndex: string;
   samplesMs: number[];
@@ -622,14 +630,17 @@ export async function measureWarmBm25QueryLatencies(
   queries: readonly string[],
   run: (query: string) => unknown,
   now: () => number = () => performance.now(),
+  repetitionsPerQuery = 1,
 ): Promise<number[]> {
   for (const query of queries) await run(query);
 
   const samplesMs: number[] = [];
-  for (const query of queries) {
-    const started = now();
-    await run(query);
-    samplesMs.push(now() - started);
+  for (let repetition = 0; repetition < repetitionsPerQuery; repetition += 1) {
+    for (const query of queries) {
+      const started = now();
+      await run(query);
+      samplesMs.push(now() - started);
+    }
   }
   return samplesMs;
 }
@@ -669,7 +680,12 @@ export async function measureBm25Latency(
       () => false,
     );
   };
-  const samplesMs = await measureWarmBm25QueryLatencies(queries, run);
+  const samplesMs = await measureWarmBm25QueryLatencies(
+    queries,
+    run,
+    undefined,
+    BM25_LATENCY_REPETITIONS_PER_QUERY,
+  );
   return {
     corpusIndex: corpus.indexName,
     samplesMs,

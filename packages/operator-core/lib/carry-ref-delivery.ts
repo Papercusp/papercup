@@ -148,7 +148,7 @@ export async function carryRefChangesForRecovery(input: {
       const readLoop = input.readLoopRefStamps ?? (await defaultLoopRefStampReader());
       const { note, stamps } = await readLoop({ harness: loop.harnessSlug, ownerId: input.ownerId }).catch(() => ({
         note: null,
-        stamps: [] as DepStamp[],
+        stamps: [] as CarryRefStamp[],
       }));
       const cited = stampsCitedBy(note, stamps);
       if (cited.length > 0) sources.push({ label: 'loop note', stamps: cited, harness: loop.harnessSlug });
@@ -158,7 +158,7 @@ export async function carryRefChangesForRecovery(input: {
       const readItems = input.readWorkItemRefStamps ?? (await defaultWorkItemRefStampReader());
       const byId = await readItems(
         citing.map((item) => ({ harness: item.harness, workItemId: item.id, workspaceId: input.workspaceId })),
-      ).catch(() => new Map<string, { note: string; stamps: DepStamp[] }>());
+      ).catch(() => new Map<string, { note: string; stamps: CarryRefStamp[] }>());
       for (const item of citing) {
         const stored = byId.get(item.id);
         // The successor is shown `item.checkpoint`; re-check only what THAT text cites.

@@ -2356,10 +2356,12 @@ export default defineTool({
          * check bytes than the current cap permits. The append transform preserves
          * those rows, then trims narrative to make room. A submitted addendum can
          * survive while previously stored evidence is evicted. Re-run the exact
-         * transform under the same locked prior and refuse if either side is lost.
+         * transform under the same locked prior. Without explicit confirmation,
+         * refuse loss of prior narrative; regardless of that option, never allow the
+         * newly submitted addendum to be clipped.
          */
         const appendBodyPreservationGuard: CheckpointGuard | null =
-          !wantsConfirmShrink && didAttemptJoin && joinAddendumStored
+          didAttemptJoin && joinAddendumStored
             ? (priorNote, priorLen) => {
                 const candidate = timedChecksTransform?.(priorNote, checkpointToStore);
                 const candidateBody = candidate
@@ -2367,7 +2369,7 @@ export default defineTool({
                   : '';
                 const submitted = joinAddendumStored.trim();
                 const priorBody = splitCarryNoteWalls(splitCarryNoteChecks(priorNote).body).body.trim();
-                if (priorBody.length > 0 && !candidateBody.includes(priorBody)) {
+                if (!wantsConfirmShrink && priorBody.length > 0 && !candidateBody.includes(priorBody)) {
                   appendPriorBodyOverflowDetails = {
                     priorNarrativeChars: priorBody.length,
                     candidateNarrativeChars: candidateBody.length,
@@ -2407,9 +2409,9 @@ export default defineTool({
                   '(1) SAFE — first retire specific stale rows in a separate, non-append write ' +
                   '({ rowsMode: "replace", checks: [], retireIds: [...] } naming the specific row IDs), ' +
                   'which frees cap room without replacing the prose, then retry this append; ' +
-                  '(2) pass { confirmShrink: true } to THIS append — it keeps every carried check row intact but ' +
-                  'silently trims or entirely drops the append body you are submitting now, so use it only when ' +
-                  'losing this new note (never the checks) is acceptable.'
+                  '(2) shorten the new append or compact the prior note in a separate write before retrying. ' +
+                  '{ confirmShrink: true } may authorize trimming superseded prior narrative, but it never allows ' +
+                  'this newly submitted append to be clipped; every carried check row remains intact.'
                 );
               }
             : null;

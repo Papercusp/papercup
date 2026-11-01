@@ -1693,6 +1693,28 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(storedArg.endsWith(addendum)).toBe(true);
     });
 
+    it('confirmShrink:true cannot truncate the newly submitted append', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      const prior = '## MEASURED BASELINE\nshort prior';
+      const addendum = '## LATEST PROGRESS\n' + 'A'.repeat(CHECKPOINT_BODY_CAP_CHARS);
+      let stored = prior;
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
+        const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        return { stored, priorLength: prior.length, blockedReason };
+      });
+
+      const result = await one({ id: 'WI-7', checkpoint: addendum, append: true, confirmShrink: true });
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'append_body_overflow',
+        appendBodyOverflowDiagnostics: { submittedAppendChars: addendum.length },
+      });
+      expect(result.error).toContain('Refusing the write');
+      expect(stored).toBe(prior);
+    });
+
     it('EI-26833103898072347: refuses a capped append that retains the addendum but evicts prior narrative', async () => {
       getWorkItem.mockResolvedValue({ id: 'EI-268331-PRIOR-BODY-OVERFLOW', harness: 'papercusp' });
       const prior = '## VERIFIED HANDBACK\n' + 'P'.repeat(31970);

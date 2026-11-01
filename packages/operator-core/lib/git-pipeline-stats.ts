@@ -809,6 +809,8 @@ export function projectFrozenRepairQueueRead(
             `${describeUnreadableFrozenCandidateRepairQueue(parsed)}; ` +
             'refusing to report the queue as absent or freeze state none',
           candidate: null,
+          queuePhase: null,
+          blockedBy: null,
           holdUntilMs: null,
           capacityRetryAtMs: null,
           observedAtMs: nowMs,
