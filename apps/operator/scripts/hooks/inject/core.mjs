@@ -652,6 +652,7 @@ export function clampPrompt(prompt) {
 export async function runInjection({ adapter, nativeEvent, event, env = process.env, fetchImpl, openDeliveryLedger }) {
   const trace = hookOutcomeTracer(env, { client: adapter?.client ?? null, nativeEvent: nativeEvent ?? null });
   let post = null;
+  let unavailableMutationGuard = null;
   const done = (stage, value = null, extra = {}) => {
     trace?.({ stage, ...(post ? { post } : {}), ...extra });
     return value;
@@ -670,6 +671,13 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     // batch, a blank prompt. Spend nothing: no request, no output.
     const partial = adapter.parse(port, event);
     if (!partial) return done('no-signal', null, { port });
+    // EI-27540173897381380: an unavailable guard is not permission to mutate.
+    // Context delivery retains its fail-silent contract; native edits and arbitrary
+    // shell execution require an actual server verdict. Read/Grep/Glob still work.
+    if (port === 'pre-tool' && /^(?:Edit|Write|MultiEdit|edit|write|apply_patch|Bash|bash|exec_command|shell_command|shell|write_stdin)$/.test(partial.tool ?? '')) {
+      unavailableMutationGuard = () => adapter.render('pre-tool',
+        'plan_execution_not_ready: execution authority is unavailable; this mutation is refused. Use read-only tools or restore the operator, then retry.', event);
+    }
 
     const detectorSessionKey =
       typeof env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY === 'string' &&
@@ -698,6 +706,8 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       ...(ledger ? { onTurnStartOutcome: outcome => ledger.recordOutcome(outcome) } : {}),
       ...(trace ? { onHookOutcome: outcome => { post = outcome; } } : {}),
     });
+    if (!response && unavailableMutationGuard)
+      return done('guard-unavailable-deny', unavailableMutationGuard(), { port });
     const safeText = fenceControlTransition(response?.text ?? null, owner);
     if (!safeText) return done(response?.text ? 'fenced-empty' : 'no-text', null, { port });
 
@@ -712,6 +722,8 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     });
     return done('emitted', payload, { port, payloadChars: payload.length });
   } catch (err) {
+    if (unavailableMutationGuard)
+      return done('guard-threw-deny', unavailableMutationGuard(), { error: String(err?.message ?? err).slice(0, 300) });
     // Invariant 1, final backstop: an adapter bug must cost silence, not a turn.
     return done('runner-threw', null, { error: String(err?.message ?? err).slice(0, 300) });
   }

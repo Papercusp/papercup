@@ -114,8 +114,13 @@ export function canDispatchPtoolOnFallback(toolName: any, callArgs: any, tool: a
  * packaged operator that restarts onto a different port. Explicit CLI/env
  * URLs are pins: changing them behind the caller's back would violate the
  * caller's transport choice (and could route a request to the wrong host).
+ * Once the selected endpoint is a proxy, its upstream routing is authoritative:
+ * rebasing the CLI to operator.json can cross into another local operator and
+ * return a confident absence from a different database (EI-26993615074036891).
+ * Keep retries on that proxy; direct packaged operator URLs may still follow
+ * operator.json when the desktop process moves ports.
  */
-export function shouldRediscoverOperatorUrl(args?: {}, env?: NodeJS.ProcessEnv): boolean;
+export function shouldRediscoverOperatorUrl(args?: {}, env?: NodeJS.ProcessEnv, selectedOperatorUrl?: null): boolean;
 /**
  * Pinned operator URLs are caller-selected endpoints, not managed launcher
  * routes. Keep the selected host authoritative: a retry may reconnect to that
