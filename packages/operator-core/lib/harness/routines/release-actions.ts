@@ -1283,12 +1283,12 @@ function runScript(
     Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0 ? inheritedDeadline : Infinity);
   // Null = unbounded: neither a kill timer nor a deadline env is armed for the child.
   const callerDeadlineEpochMs: number | null = Number.isFinite(boundedDeadline) ? boundedDeadline : null;
-  const base = committedRuntime
-    ? ['/bin/bash', '-c', buildCommittedCheckpointToolingCommand(root, committedRuntime.buildSha, relScript, args, committedRuntime.runId)]
-    : [tsxBin(root), path.join(root, relScript), ...args];
   // Isolation kill-switch: PAPERCUSP_CHECKPOINT_SCOPE=0 forces the pre-2026-07-01
   // direct spawn (ops escape hatch, peer of PAPERCUSP_GATEWAY_RPM_SMOOTH).
   const wantScope = !!isolate && process.env.PAPERCUSP_CHECKPOINT_SCOPE !== '0';
+  const base = committedRuntime && wantScope
+    ? ['/bin/bash', '-c', buildCommittedCheckpointToolingCommand(root, committedRuntime.buildSha, relScript, args, committedRuntime.runId)]
+    : [tsxBin(root), path.join(root, relScript), ...args];
   // The routine parent is not the durable owner of a scheduled run: it can be reaped while
   // the systemd scope keeps the suite alive. Put the log + EXIT terminal writer INSIDE that
   // scope, before the suite starts, so a completed or abnormal child exit leaves attributable
