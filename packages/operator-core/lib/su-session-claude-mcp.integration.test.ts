@@ -377,16 +377,16 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
             signal: extra.signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn() } as unknown as UnifiedToolContext;
           const response = await runNativeMcpTargetOnOwner({ toolName: canonical, args: request.params.arguments,
             spawn: retained, fullSource: false, structuredSource: false, indirect: false }, async () => {
-          const result = await runDispatchStack(target, canonical, request.params.arguments, ctx, { aroundInvoke: async attempt => {
-            // Native input identity is capture-only, not a fabricated native turn.
-            expect(nativeInstalledPerUseTurns.resolve(attempt)).toBeNull();
-            const append = vi.fn();
-            expect(await nativeInstalledPerUseTurns.appendAuthorizedCapture(attempt, append)).toBe(false);
-            expect(append).not.toHaveBeenCalled();
-            return attempt.invoke();
-          } });
-          observed.push({ callId, principal: retained.authenticatedPrincipal?.slug, ok: result.ok });
-          return { content: [{ type: 'text' as const, text: result.ok ? 'authorized private result' : 'private ACL denied' }], isError: !result.ok };
+            const result = await runDispatchStack(target, canonical, request.params.arguments, ctx, { aroundInvoke: async attempt => {
+              // Native input identity is capture-only, not a fabricated native turn.
+              expect(nativeInstalledPerUseTurns.resolve(attempt)).toBeNull();
+              const append = vi.fn();
+              expect(await nativeInstalledPerUseTurns.appendAuthorizedCapture(attempt, append)).toBe(false);
+              expect(append).not.toHaveBeenCalled();
+              return attempt.invoke();
+            } });
+            observed.push({ callId, principal: retained.authenticatedPrincipal?.slug, ok: result.ok });
+            return { content: [{ type: 'text' as const, text: result.ok ? 'authorized private result' : 'private ACL denied' }], isError: !result.ok };
           }, 20_000);
           // The same exact-call principal cannot be borrowed a second time.
           expect((await retainNativeRequestPrincipalForDispatch(spawn, canonical, request.params.arguments, bearer)).authenticatedPrincipal).toBeUndefined();
