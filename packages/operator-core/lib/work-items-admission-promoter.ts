@@ -2906,10 +2906,19 @@ async function failRun(
   committedItemIds?: readonly string[],
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
+  const transportMetadata = error && typeof error === 'object'
+    ? error as { gatewayRequestId?: unknown; gatewayRoutedAccountId?: unknown }
+    : null;
+  const gatewayRequestId = typeof transportMetadata?.gatewayRequestId === 'string'
+    ? transportMetadata.gatewayRequestId : undefined;
+  const gatewayRoutedAccountId = typeof transportMetadata?.gatewayRoutedAccountId === 'string'
+    ? transportMetadata.gatewayRoutedAccountId : undefined;
   const detail = JSON.stringify({
     status: 'failed',
     mode,
     error: message,
+    ...(gatewayRequestId ? { gatewayRequestId } : {}),
+    ...(gatewayRoutedAccountId ? { gatewayRoutedAccountId } : {}),
     ...(usage ? { modelCostUsd: usage.modelCostUsd } : {}),
     ...(committedItemIds ? { committedItemIds } : {}),
     outcome: {
@@ -6087,6 +6096,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
         messages: [{ role: 'user', content: prompt.user }],
         responseFormat: 'json',
         maxTokens: Math.min(8_000, 500 + pairs.length * 180),
+        ownerId: PROMOTER_ACTOR,
       }));
       // Capture usage before parsing. A schema-invalid response still consumed
       // tokens/cost and the failed run must retain that actual evidence.
