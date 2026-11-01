@@ -50,6 +50,7 @@ type TestClaimSpecRecord = {
   updatedBy: string | null;
   updatedAt: string | null;
   fleetSlug?: string;
+  warnings?: string[];
 };
 const getClaimSpecRecordM = vi.hoisted(() =>
   vi.fn(
@@ -466,6 +467,34 @@ describe('scheduler:get_next records early refusal dispositions (EI-258800743930
     expect(metadata).toHaveBeenLastCalledWith({
       schedulerDisposition: { kind: 'no-claim', reason: 'missing' },
     });
+  });
+
+  it('returns inherited stored claim-spec compatibility warnings with the pull result', async () => {
+    const warning = 'Ignored unsupported top-level claim-spec key(s) during stored read: futureLane.';
+    const record: TestClaimSpecRecord = {
+      source: 'fleet',
+      spec: {
+        specId: 'bugs-rev4', revision: 4,
+        view: { filter: { field: 'plan', op: '=', value: 'alpha' } },
+      },
+      revision: 4,
+      updatedBy: null,
+      updatedAt: null,
+      fleetSlug: 'bugs',
+      warnings: [warning],
+    };
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record,
+    };
+    getClaimSpecRecordM.mockResolvedValue(record);
+    getNextM.mockResolvedValue(null);
+
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(handlerPayload(out)).toMatchObject({ claimSpecWarnings: [warning] });
   });
 
   it('persists a bounded control-anchor acquisition snapshot on the invocation row', async () => {

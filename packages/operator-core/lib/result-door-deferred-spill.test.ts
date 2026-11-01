@@ -57,6 +57,7 @@ const OPTS = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID } as co
 
 let sandbox: string;
 let prevScratchRoot: string | undefined;
+let prevFsMutexLockDir: string | undefined;
 let prevKillSwitch: string | undefined;
 
 function oversized() {
@@ -134,6 +135,8 @@ beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'papercusp-deferred-spill-test-'));
   prevScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
   process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+  prevFsMutexLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(sandbox, 'fs-mutex-locks');
   prevKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
   delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
 });
@@ -142,6 +145,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   if (prevScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
+  if (prevFsMutexLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = prevFsMutexLockDir;
   if (prevKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
   else process.env.PAPERCUSP_RESULT_DOOR_OFF = prevKillSwitch;
   rmSync(sandbox, { recursive: true, force: true });

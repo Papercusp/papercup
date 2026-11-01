@@ -18,6 +18,9 @@ export interface SuNativeToolCall {
   callId: string;
   tool: string;
   arguments: Record<string, unknown>;
+  /** Present only on the later native tool_result observation. The original
+   * arguments stay unchanged; neither snapshot supplies resource authority. */
+  executedArguments?: Record<string, unknown>;
 }
 
 export function agentMcpMode(value: string | undefined): AgentMcpMode {

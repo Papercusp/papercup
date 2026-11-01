@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 993,
+  "count": 994,
   "tools": [
     {
       "name": "ablation:report",
@@ -6197,6 +6197,26 @@
         "when": "You need the answer rate or failure reasons of routed reviews/consults (rubric vetting, acceptance grading, grading-integrity audits, ordinary consults) — instead of hand-written SQL over consult_state.",
         "notWhen": "One consult’s own history → conversations:get on its conversation id. Asking a peer a question → consult:get_feedback.",
         "chaining": "Read bounded.truncatedByLimit and consultsWithoutDispatchRecords before trusting a zero: consults routed before the dispatch recorder shipped carry no records."
+      }
+    },
+    {
+      "name": "consult:transfer",
+      "http": {
+        "path": "/api/agent-tools/consult/transfer",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Transfer a consult's plan-start follow-up authority to the current superuser session when its current requester/delegate is confirmed ended. The original requester_id and consult history remain unchanged; this does not reopen a settled consult.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "guidance": {
+        "when": "A saved consult follow-up must continue in this superuser session after the current follow-up owner is confirmed ended. Transfer authority before passing consult_id to plans:start.",
+        "notWhen": "The current requester is live, the consult is still routing, or the caller cannot establish the ended-session record. This is not a way to reopen a closed consult or transfer authority to a different target."
       }
     },
     {
