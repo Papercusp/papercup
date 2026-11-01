@@ -549,8 +549,11 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
         graph: { status: 'unknown', consumers: [], relationships: [] },
-        exclusions: [`Task brief exceeded its bounded read deadline during ${phase.current}`
-          + ` (elapsed ${Date.now() - started}ms; ${phaseTimings()}).`],
+        exclusions: [
+          `Task brief exceeded its bounded read deadline during ${phase.current}`
+            + ` (elapsed ${Date.now() - started}ms; ${phaseTimings()}).`,
+          'Scope paths are unknown because the bounded capture did not complete; an empty path list does not prove an empty input scope.',
+        ],
         recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);

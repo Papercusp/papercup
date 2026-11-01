@@ -733,11 +733,16 @@ describe('P012 bounded scoped task briefs', () => {
       const result = await pending;
       expect(result?.taskBrief.status).toBe('unknown');
       expect(result?.taskBrief.files).toEqual([]);
+      expect(result?.taskBrief.scope.paths).toEqual([]);
+      expect(deps.pack).toHaveBeenCalledWith('pack', expect.objectContaining({ include: ['target.ts'] }), expect.anything());
       // The phase in flight AND how the window was spent (WI-6554700010018774):
       // every phase entered is listed in order with its elapsed time.
-      expect(result?.taskBrief.exclusions).toHaveLength(1);
+      expect(result?.taskBrief.exclusions).toHaveLength(2);
       expect(result?.taskBrief.exclusions[0]).toMatch(
         /^Task brief exceeded its bounded read deadline during safe-pack \(elapsed \d+ms; setup \d+ms, repository-root \d+ms, scope-read \d+ms, safe-pack \d+ms\)\.$/);
+      expect(result?.taskBrief.exclusions[1]).toBe(
+        'Scope paths are unknown because the bounded capture did not complete; an empty path list does not prove an empty input scope.',
+      );
     } finally { vi.useRealTimers(); }
   }, 10_000);
   it.each(['flag-read', 'execution', 'artifact-write', 'preview'] as const)(
