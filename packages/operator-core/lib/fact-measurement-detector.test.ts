@@ -140,7 +140,7 @@ describe('fact absence detector — a worded absence gets its own advisory (EI-2
 
   it('does not treat a negated evidence claim as an observed absence', () => {
     const rules = [
-      'Emitter death or replacement alone is not proof that a degraded condition recovered.',
+      'Emitter death or replacement alone is not proof that a degraded:* condition recovered.',
       'This emitter event is not evidence that a result was emitted.',
     ];
     for (const rule of rules) expect(detectFactAbsenceClaims(rule), rule).toEqual([]);
