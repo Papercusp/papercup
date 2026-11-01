@@ -86,6 +86,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   missingTranscript?: boolean;
   deliveryTimeoutMs?: number;
   beforeReady?: () => Promise<void>;
+  onExit?: () => Promise<void>;
   toolApproval?: 'prompt';
   identity?: 'su' | 'coding-assistant';
   turnLifecycle?: SuCodexTurnLifecycle;
@@ -146,6 +147,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     deliveryTimeoutMs: overrides.deliveryTimeoutMs,
     servedAccountReader: overrides.servedAccountReader,
     beforeReady: overrides.beforeReady,
+    onExit: overrides.onExit,
     toolApproval: overrides.toolApproval,
     identity: overrides.identity,
     turnLifecycle: overrides.turnLifecycle,
@@ -170,6 +172,46 @@ function deferred<T>() {
   const promise = new Promise<T>(yes => { resolve = yes; });
   return { promise, resolve };
 }
+
+it.each((['codex', 'omp'] as const).flatMap(backend =>
+  (['frame', 'models', 'startup', 'exit'] as const).map(action => ({ backend, action })),
+))('P-009: replaced $backend engine fences delayed $action callbacks', async ({ backend, action }) => {
+  const gate = deferred<void>(), catalog = deferred<RpcFrame>();
+  const beforeReady = vi.fn(async () => { if (action === 'startup') await gate.promise; });
+  const onExit = vi.fn(async () => undefined);
+  const f = fixture(backend, { beforeReady, onExit, request: frame => {
+    if (action === 'models' && (frame.method === 'model/list' || frame.type === 'get_available_models')) return catalog.promise;
+    return undefined;
+  } });
+  const readiness = f.engine.ready.catch(error => error);
+  try {
+    await vi.waitFor(() => expect(beforeReady).toHaveBeenCalledOnce());
+    if (action !== 'startup') await f.engine.ready;
+    const host = f.engine.adapter.host;
+    f.engine.adapter.reconcileRuntimeExit({ expected: false, exitCode: 137 });
+    host.attachRuntime({
+      descriptor: { ...host.descriptor(), lifecycle: 'ready', runtimeGeneration: 1 },
+      executeCommand: async () => ({ status: 'completed' }), runtimeReady: () => true,
+    });
+    const snapshot = host.snapshot(), events = [...host.recent];
+    if (action === 'frame') f.emit(backend === 'codex'
+      ? { method: 'error', params: { error: { message: 'late old error' } } }
+      : { type: 'agent_start' });
+    if (action === 'models') {
+      catalog.resolve({ data: [{ id: 'late-model', model: 'late-model', displayName: 'Late model' }],
+        models: [{ provider: 'openai', id: 'late-model', name: 'Late model' }] });
+      await vi.waitFor(() => expect(f.request).toHaveResolved());
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    if (action === 'startup') gate.resolve();
+    if (action === 'exit') await f.engine.close();
+    await readiness;
+    if (action === 'startup') await f.engine.close();
+    expect(host.snapshot()).toEqual(snapshot);
+    expect(host.recent).toEqual(events);
+    expect(onExit).not.toHaveBeenCalled();
+  } finally { gate.resolve(); catalog.resolve({}); await f.engine.close(); }
+});
 
 it('attaches the exact registered Codex child without creating a second fork', async () => {
   const f = fixture('codex', { resume: true }); await f.engine.ready;
