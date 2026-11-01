@@ -3959,7 +3959,7 @@ const NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY = 'native_tool_owner_unsupported_
 export async function retainNativeRequestPrincipalForDispatch(
   spawn: BuiltSpawnContext, toolName: string, args: unknown, runtimeBearer: string,
 ): Promise<BuiltSpawnContext> {
-  if (spawn.authenticatedPrincipal || !runtimeBearer) return spawn;
+  if (spawn.authenticatedPrincipal) return spawn;
   // Installed commerce admission has its own principal/funding binding. This
   // core capture lane cannot silently substitute a different payer principal.
   const target = resolveMcpName(toolName);

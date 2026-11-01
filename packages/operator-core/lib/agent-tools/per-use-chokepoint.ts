@@ -384,22 +384,28 @@ export class NativeInstalledPerUseTurns {
     };
   }
 
-  /** Host-only scope for an actually accepted Claude root input. Its SDK does
-   * not expose the native turn UUID. Do not manufacture that UUID from an
+  /** Host-only scope for an actually accepted root input. These runtimes do
+   * not expose a proven native turn UUID. Do not manufacture that UUID from an
    * assistant/API message or conflate this scope with funded turn admission.
    * The producer must independently observe the accepted native input/session
    * and every exact call; neither MCP metadata nor model arguments register it.
    * Withdrawal ends this input before the host can admit its successor. */
   registerNativeInput(input: NativeInstalledTurnContext & {
-    provider: 'claude'; nativeInputId: string;
+    nativeInputId: string;
     resolveRequestPrincipal: HostRequestPrincipalResolver;
-  }): {
+  } & ({ provider: 'claude'; resolveRuntimeBearer?: never } | {
+    provider: 'omp';
+    /** Same-process credential rendezvous. Never a child/config/JSON value. */
+    resolveRuntimeBearer: () => Promise<string | null>;
+  })): {
     observeToolCall(input: { nativeSessionId: string; nativeInputId: string; callId: string;
       server: string; tool: string; arguments?: unknown }): Promise<void>;
     withdraw(): Promise<void>;
   } {
-    const { provider, nativeInputId, ...context } = input;
-    if (provider !== 'claude' || typeof nativeInputId !== 'string' || !/^[A-Za-z0-9._:-]{1,256}$/.test(nativeInputId)
+    const { provider, nativeInputId, resolveRuntimeBearer, ...context } = input;
+    if (!['claude', 'omp'].includes(provider)
+      || (provider === 'omp' ? typeof resolveRuntimeBearer !== 'function' : resolveRuntimeBearer !== undefined)
+      || typeof nativeInputId !== 'string' || !/^[A-Za-z0-9._:-]{1,256}$/.test(nativeInputId)
       || typeof context.resolveRequestPrincipal !== 'function'
       || Object.hasOwn(input, 'admissions') || Object.hasOwn(input, 'freeAdmissions')) {
       throw new Error('Native input scope requires its genuine host binding and no funded admissions');
@@ -407,7 +413,7 @@ export class NativeInstalledPerUseTurns {
     const registration = this.register({ ...context, admissions: [] });
     const key = this.key(context.workspaceId, context.advSessionId, fingerprint(context.nativeSessionId));
     const entry = this.turns.get(key)!;
-    entry.nativeInput = Object.freeze({ provider, id: nativeInputId });
+    entry.nativeInput = Object.freeze({ provider, id: nativeInputId, resolveRuntimeBearer });
     return {
       observeToolCall: async observation => {
         if (entry.withdrawn || this.turns.get(key) !== entry
@@ -463,6 +469,7 @@ export class NativeInstalledPerUseTurns {
     const entry = this.turns.get(key);
     if (!entry || entry.withdrawn || (entry.nativeTurnId === null && !entry.nativeInput) || !entry.resolveRequestPrincipal
       || entry.context.ownerId !== input.ownerId) return null;
+    if (!input.runtimeBearer && !entry.nativeInput?.resolveRuntimeBearer) return null;
     const observed = entry.observations.get(input.callIdFingerprint), args = nativeToolArguments(input.arguments);
     if (!observed || observed.principalClaimed || observed.consumed || observed.arguments === null || args === null
       || observed.toolName !== input.toolName || canonicalJson(observed.arguments) !== canonicalJson(args)) return null;
@@ -471,14 +478,20 @@ export class NativeInstalledPerUseTurns {
     const active = () => this.turns.get(key) === entry && !entry.withdrawn && (entry.nativeTurnId !== null || !!entry.nativeInput)
       && entry.observations.get(input.callIdFingerprint) === observed;
     try {
-      if (!await verifyNativeRuntimeBearer(input.runtimeBearer, { workspaceId: entry.context.workspaceId,
+      // OMP's owned extension lives in the child. Its verified session/call
+      // metadata only finds this independently observed scope; it never gets
+      // the parent's runtime credential or principal capability. An explicit
+      // invalid credential cannot fall back to the private resolver.
+      const runtimeBearer = input.runtimeBearer || await entry.nativeInput?.resolveRuntimeBearer?.();
+      if (!runtimeBearer || !active()) return null;
+      if (!await verifyNativeRuntimeBearer(runtimeBearer, { workspaceId: entry.context.workspaceId,
         advSessionId: entry.context.advSessionId, ownerId: entry.context.ownerId, provider: entry.nativeInput?.provider ?? 'codex' }) || !active()) return null;
       const principal = await entry.resolveRequestPrincipal();
       if (!active() || !principal || principal.workspaceId !== entry.context.workspaceId
         || !['trusted', 'verified'].includes(principal.trust)) return null;
       const retained = structuredClone(principal);
       observed.requestPrincipal = retained;
-      observed.runtimeBearer = input.runtimeBearer;
+      observed.runtimeBearer = runtimeBearer;
       return retained;
     } catch { return null; }
   }
@@ -617,7 +630,8 @@ interface NativeInstalledTurnEntry {
   resolveRequestPrincipal?: HostRequestPrincipalResolver;
   nativeTurnId: string | null;
   /** Separate from nativeTurnId: never qualifies for funded lookup or receipts. */
-  nativeInput?: Readonly<{ provider: 'claude'; id: string }>;
+  nativeInput?: Readonly<{ provider: 'claude' | 'omp'; id: string;
+    resolveRuntimeBearer?: () => Promise<string | null> }>;
   withdrawn: boolean;
   admissions: readonly FundedInstalledAdmission[];
   freeAdmissions: readonly VerifiedFreeToolAdmission[];

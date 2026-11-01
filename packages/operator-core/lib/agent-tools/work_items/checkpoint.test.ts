@@ -1696,7 +1696,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     it('confirmShrink:true cannot truncate the newly submitted append', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       const prior = '## MEASURED BASELINE\nshort prior';
-      const addendum = '## LATEST PROGRESS\n' + 'A'.repeat(CHECKPOINT_BODY_CAP_CHARS);
+      const progressPrefix = '## LATEST PROGRESS\n';
+      // The submitted value must satisfy the 32,000-char input schema while the
+      // prior note makes the joined candidate exceed the storage cap.
+      const addendum = progressPrefix + 'A'.repeat(CHECKPOINT_BODY_CAP_CHARS - progressPrefix.length);
       let stored = prior;
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
         const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;

@@ -20,6 +20,8 @@ type Frame = Record<string, unknown>;
 it('carries the actual installed OMP session and each native call ID over MCP', async () => {
   const root = await mkdtemp(join(tmpdir(), 'omp-native-carrier-'));
   const calls: Frame[] = [];
+  const frames: Frame[] = [];
+  const observedAtCall: Frame[][] = [];
   const servers = new Set<Server>();
   const http = createServer((request, response) => {
     const server = new Server({ name: 'native-carrier', version: '1' }, { capabilities: { tools: {} } });
@@ -29,6 +31,7 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
         properties: { value: { type: 'string' } }, required: ['value'] }, annotations: { readOnlyHint: true } }] }));
     server.setRequestHandler(CallToolRequestSchema, async message => {
       calls.push(message.params);
+      observedAtCall.push([...frames]);
       return { content: [{ type: 'text', text: String(message.params.arguments?.value) }] };
     });
     const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
@@ -88,7 +91,6 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
         PAPERCUSP_NATIVE_SESSION_ID: 'inherited-parent', CODEX_SESSION_ID: 'unrelated-codex',
       },
     });
-    const frames: Frame[] = [];
     let stdout = '';
     let launchError: Error | undefined;
     child.on('error', error => { launchError = error; });
@@ -119,6 +121,12 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
     const nativeSessionId = (state.data as Frame).sessionId;
     expect(nativeSessionId).toEqual(expect.any(String));
     expect(nativeSessionId).not.toBe('inherited-parent');
+    // OMP mounts extension MCP tools as xd devices. dumpTools is the separate
+    // top-level inventory and cannot establish this server's call population.
+    const prompt = ((state.data as Frame).systemPrompt as string[]).join('\n');
+    const routes = prompt.split(/^## MCP Tool Routes\r?$/m).slice(1)
+      .flatMap(section => section.split(/^#{1,2} /m, 1)[0]!.match(/xd:\/\/[^`\s]+/g) ?? []);
+    expect(routes).toContain('xd://mcp__papercusp_su_echo');
     child.stdin.write(`${JSON.stringify({ id: 'proof', type: 'prompt', message: 'Run the two local calls.' })}\n`);
     await waitFor(() => frames.find(frame => frame.type === 'agent_end'));
     expect(frames.filter(frame => frame.type === 'tool_execution_end').map(frame => frame.isError)).toEqual([false, false]);
@@ -127,6 +135,25 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
       expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-1' }),
       expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-2' }),
     ]);
+    // An attached host must independently see the accepted root input and
+    // exact model call. MCP metadata alone cannot grant retained authority.
+    // Check the installed runtime's actual order at the HTTP boundary, not a
+    // protocol peer or a reconstruction after agent_end.
+    for (const [index, observed] of observedAtCall.entries()) {
+      const input = observed.find(frame => frame.type === 'message_start'
+        && (frame.message as Frame)?.role === 'user');
+      expect(input, JSON.stringify(observed)).toMatchObject({ message: { role: 'user',
+        content: [{ type: 'text', text: 'Run the two local calls.' }] } });
+      const assistant = observed.filter(frame => frame.type === 'message_end'
+        && (frame.message as Frame)?.role === 'assistant');
+      const nativeCalls = assistant.flatMap(frame => (frame.message as Frame).content as Frame[])
+        .filter(block => block.type === 'toolCall');
+      expect(nativeCalls, JSON.stringify(observed)).toContainEqual({ type: 'toolCall',
+        id: `native-call-${index + 1}`, name: 'mcp__papercusp_su_echo',
+        arguments: calls[index]!.arguments });
+      expect(observed.some(frame => frame.type === 'agent_start')).toBe(true);
+      expect(observed.some(frame => frame.type === 'agent_end')).toBe(false);
+    }
   } finally {
     if (child && child.exitCode === null && child.signalCode === null && child.pid) {
       const exited = once(child, 'exit');

@@ -96,7 +96,8 @@ describe('D-063 owner rebuild of native MCP targets', () => {
     expect(await retainNativeRequestPrincipalForDispatch(spawn, 'native-fixture:run', {}, '')).toBe(spawn);
     const ordinary = { ...spawn, requestOrigin: undefined };
     expect(await retainNativeRequestPrincipalForDispatch(ordinary, 'native-fixture:run', {}, 'runtime-bearer')).toBe(ordinary);
-    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(resolve).toHaveBeenLastCalledWith(expect.objectContaining({ runtimeBearer: '' }));
     expect(spawn.authenticatedPrincipal).toBeUndefined();
   });
 
