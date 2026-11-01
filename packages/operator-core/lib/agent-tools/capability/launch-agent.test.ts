@@ -4655,10 +4655,10 @@ describe('blind-review resume is recruiter-only', () => {
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
-  it('allows only the exact leased recruiter resume, with the saved backend, account and placement', async () => {
+  it.each(['codex', 'claude'])('allows only the exact leased recruiter resume, preserving the saved %s backend, account and placement', async (agent) => {
     callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
     spawnHeadlessMock.mockResolvedValueOnce(headlessSpawnResult());
-    resolveResumeTargetMock.mockResolvedValue(source);
+    resolveResumeTargetMock.mockResolvedValue({ ...source, agent });
     findLiveHostMock.mockReturnValue(null);
     inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
     verifyBlindReviewSessionResumeBindingMock.mockResolvedValue({ ok: true });
@@ -4680,6 +4680,8 @@ describe('blind-review resume is recruiter-only', () => {
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
     expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({ launchedBy: BLIND_GAP_REVIEW_ACTOR });
     expect(spawnedCommand(spawnHeadlessMock)).toContain('--resume=blind-native-1');
+    // Exact resume lets psu recover the saved backend; a caller override would change it.
+    expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--agent=');
     expect(spawnedCommand(spawnHeadlessMock)).toContain('--account=auto');
     expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--fork');
     expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--model=');
@@ -4689,13 +4691,14 @@ describe('blind-review resume is recruiter-only', () => {
     expect(verifyBlindReviewSessionResumeBindingMock.mock.invocationCallOrder[0]).toBeLessThan(declareConfinementMock.mock.invocationCallOrder[0]!);
     expect(declareConfinementMock.mock.invocationCallOrder[0]).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]!);
   });
-  it.each(['wrong-principal', 'wrong-lease', 'expired-lease', 'unbound-target', 'missing-ceiling', 'changed-ceiling', 'changed-declaration', 'renewal-failure'])
+  it.each(['wrong-principal', 'wrong-lease', 'expired-lease', 'unbound-target', 'unknown-backend', 'missing-ceiling', 'changed-ceiling', 'changed-declaration', 'renewal-failure'])
     ('refuses recruiter recovery for %s before spawn', async (failure) => {
       callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
       resolveResumeTargetMock.mockResolvedValue(source);
       findLiveHostMock.mockReturnValue(null);
       inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
       if (failure === 'unbound-target') resolveResumeTargetMock.mockResolvedValue({ ...source, advSessionId: null });
+      if (failure === 'unknown-backend') resolveResumeTargetMock.mockResolvedValue({ ...source, agent: 'other' });
       if (failure === 'expired-lease') inspectBlindReviewResumeTargetMock.mockResolvedValue({
         binding: { ...binding, resumeLeaseExpiresAt: new Date(Date.now() - 1).toISOString() }, recruiterLaunch: true });
       const permit = { bindingId: binding.id, leaseId: failure === 'wrong-lease' ? 'other' : 'lease-1',

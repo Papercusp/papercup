@@ -22,11 +22,16 @@
  * cannot see.
  */
 
-import { carryRefChangesBlock, extractCarryRefDeps, type CarryRefResolver, type CarryRefSource } from './carry-ref-stamps';
-import type { DepStamp } from './freshness/index';
+import {
+  carryRefChangesBlock,
+  extractCarryRefDeps,
+  type CarryRefResolver,
+  type CarryRefSource,
+  type CarryRefStamp,
+} from './carry-ref-stamps';
 
 /** Keep only the stamps whose reference the delivered note text still cites. */
-export function stampsCitedBy(note: string | null | undefined, stamps: readonly DepStamp[]): DepStamp[] {
+export function stampsCitedBy(note: string | null | undefined, stamps: readonly CarryRefStamp[]): CarryRefStamp[] {
   if (!note || stamps.length === 0) return [];
   const cited = new Set(extractCarryRefDeps(note, { max: Number.MAX_SAFE_INTEGER }));
   return stamps.filter((stamp) => cited.has(stamp.dep));
@@ -37,12 +42,12 @@ export type LoopRefStampReader = (ref: {
   harness: string;
   ownerId: string;
   workspaceId?: string;
-}) => Promise<{ note: string | null; stamps: DepStamp[] }>;
+}) => Promise<{ note: string | null; stamps: CarryRefStamp[] }>;
 
 /** Shape of the batched work-item stamp reader (`getWorkItemCheckpointRefStamps`). */
 export type WorkItemRefStampReader = (
   refs: ReadonlyArray<{ harness: string | null; workItemId: string; workspaceId?: string }>,
-) => Promise<Map<string, { note: string; stamps: DepStamp[] }>>;
+) => Promise<Map<string, { note: string; stamps: CarryRefStamp[] }>>;
 
 async function defaultLoopRefStampReader(): Promise<LoopRefStampReader> {
   return (await import('./carry-note')).getLoopCarryNoteRefStamps;

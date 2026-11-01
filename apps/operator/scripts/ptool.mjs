@@ -469,17 +469,57 @@ export function canDispatchPtoolOnFallback(
 // caller pin: a wake-respawn must be allowed to rediscover operator.json when
 // the desktop operator has moved to a new port. The launcher stamps this value
 // only on managed exports; a bare PAPERCUSP_OPERATOR_URL remains authoritative.
+function isLocalPtoolProxyUrl(operatorUrl, env) {
+  try {
+    const url = new URL(operatorUrl);
+    const localHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase());
+    if (url.protocol !== 'http:' || !localHost) return false;
+
+    const proxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+      ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+      : '';
+    if (proxyBase) {
+      try {
+        if (new URL(proxyBase).origin === url.origin) return true;
+      } catch {
+        // An invalid optional proxy base cannot identify a route.
+      }
+    }
+
+    const port = url.port || '80';
+    const resilientProxyPort = validLocalPort(env.PAPERCUSP_MCP_PROXY_PORT) ?? '9071';
+    const stagingProxyPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) ??
+      DEFAULT_MCP_STAGING_PROXY_PORT;
+    return port === resilientProxyPort || port === stagingProxyPort;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
  * URLs are pins: changing them behind the caller's back would violate the
  * caller's transport choice (and could route a request to the wrong host).
+ * Once the selected endpoint is a proxy, its upstream routing is authoritative:
+ * rebasing the CLI to operator.json can cross into another local operator and
+ * return a confident absence from a different database (EI-26993615074036891).
+ * Keep retries on that proxy; direct packaged operator URLs may still follow
+ * operator.json when the desktop process moves ports.
  */
-export function shouldRediscoverOperatorUrl(args = {}, env = process.env) {
-  return !args.url && (
+export function shouldRediscoverOperatorUrl(args = {}, env = process.env, selectedOperatorUrl = null) {
+  if (args.url) return false;
+  const managedHandoff = (
     !env.PAPERCUSP_OPERATOR_URL ||
     env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
   );
+  if (!managedHandoff) return false;
+  const selected = typeof selectedOperatorUrl === 'string' && selectedOperatorUrl.trim()
+    ? selectedOperatorUrl.trim()
+    : typeof env.PAPERCUSP_OPERATOR_URL === 'string'
+      ? env.PAPERCUSP_OPERATOR_URL.trim()
+      : '';
+  return !selected || !isLocalPtoolProxyUrl(selected, env);
 }
 
 /**
@@ -4872,7 +4912,7 @@ async function main() {
   const tokenPaths = resolveTokenPaths({ tokenFile: args.tokenFile });
   let activeTokenFile = null;
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
-  const rediscover = shouldRediscoverOperatorUrl(args, process.env) &&
+  const rediscover = shouldRediscoverOperatorUrl(args, process.env, operatorUrl) &&
     Object.keys(retryOptions).length === 0
     ? discoverOperatorUrl
     : null;

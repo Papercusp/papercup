@@ -204,6 +204,10 @@ export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   /^\s*Stop hook feedback:/,
   // Codex's native Stop-hook wrapper around a Papercusp refusal/reinjection.
   CODEX_STOP_HOOK_PROMPT_RE,
+  // A cold-loop carry can lose its enrolled envelope at the PTY/carry boundary;
+  // the fixed wake banner still identifies the whole turn as machine-authored.
+  // Anchor the marker so an owner quoting it later in a sentence remains visible.
+  /^\s*❄️\s*COLD LOOP WAKE\b/i,
   // The MCP transport auto-heal advisory (mcp-dark-watchdog).
   /^\s*⚠\s*MCP transport auto-heal/,
   // Claude Code's skill-loader preamble, e.g. "Base directory for this skill: …"

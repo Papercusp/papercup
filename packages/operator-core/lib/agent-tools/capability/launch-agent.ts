@@ -32,6 +32,7 @@
  *     `fork:false` instead requires an in-place resume and refuses a live source.
  */
 import { randomUUID } from 'node:crypto';
+import { isBlindReviewerBackendAgent } from '../../blind-reviewer-backends';
 import { SCOPED_INFERENCE_GATEWAY_ENV, snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
@@ -1282,7 +1283,7 @@ export default defineTool({
             target.live === false && target.ownerId === binding.reviewerOwnerId &&
             target.advSessionId === binding.advSessionId && target.binding?.coordOwnerId === binding.reviewerOwnerId &&
             target.binding?.sessionId === binding.nativeSessionId && !!target.binding?.startedAt &&
-            target.agent === 'codex' && target.account === binding.accountRoute && target.headless === true &&
+            isBlindReviewerBackendAgent(target.agent) && target.account === binding.accountRoute && target.headless === true &&
             slug === binding.harnessSlug && args.headless === true && args.agent === undefined &&
             args.account === undefined && args.model === undefined && args.originalRouting === undefined &&
             !!permit && permit.bindingId === binding.id && permit.leaseId === binding.resumeLeaseId &&

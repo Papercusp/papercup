@@ -37,6 +37,7 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg, isParkedNextFire, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
+import { findLiveHostAsync, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
@@ -2747,9 +2748,48 @@ export async function getLoopStatuses(
 
 export async function getLoopStatus(
   ownerId: string,
-  opts: { sql?: Sql | TransactionSql } = {},
+  opts: { sql?: Sql | TransactionSql; findHost?: typeof findLiveHostAsync } = {},
 ): Promise<LoopStatus | null> {
-  return (await getLoopStatuses([ownerId], opts)).get(ownerId) ?? null;
+  const status = (await getLoopStatuses([ownerId], { sql: opts.sql })).get(ownerId) ?? null;
+  if (!status || (!status.turnsStalled && !status.fireStarved) || !status.active || !status.parked
+    || !status.lastFiredAt) return status;
+  const firedAtMs = Date.parse(status.lastFiredAt);
+  if (!Number.isFinite(firedAtMs)) return status;
+  const host = await (opts.findHost ?? findLiveHostAsync)(ownerId);
+  if (!isCurrentNativeExecutionForLoopFire(host, ownerId, firedAtMs, Date.now())) return status;
+  // The recovery actor persists executionRecovery on its next sweep. A loop:status
+  // read must not claim starvation in the gap when this exact host has already
+  // accepted and started the current fire's native turn.
+  return { ...status, turnsStalled: false, fireStarved: false };
+}
+
+const CURRENT_NATIVE_EXECUTION_MAX_AGE_MS = 15_000;
+
+/** Positive host-bound evidence for the native turn delivered by this exact fire.
+ * Reachability, a live session, or a stale `running` phase alone cannot suppress
+ * a stalled verdict. */
+function isCurrentNativeExecutionForLoopFire(
+  host: PsuPtyHost | null,
+  ownerId: string,
+  firedAtMs: number,
+  nowMs: number,
+): boolean {
+  const execution = host?.execution;
+  if (!host || !execution || host.parked === true || host.ownerId !== ownerId
+    || execution.ownerId !== ownerId || execution.hostPid !== host.pid
+    || !Number.isInteger(host.childGeneration) || host.childGeneration! <= 0
+    || execution.childGeneration !== host.childGeneration
+    || !Number.isInteger(host.ptyPid) || host.ptyPid! <= 0 || execution.childPid !== host.ptyPid
+    || !Number.isFinite(execution.receivedAtMs) || execution.receivedAtMs! < host.startedAt
+    || execution.receivedAtMs! < firedAtMs
+    || !Number.isFinite(execution.observedAt) || execution.observedAt > nowMs
+    || nowMs - execution.observedAt > CURRENT_NATIVE_EXECUTION_MAX_AGE_MS
+    || !Number.isFinite(execution.turnStartedAt) || execution.turnStartedAt! <= firedAtMs
+    || execution.turnStartedAt! > execution.observedAt
+    || execution.ownerInputPending || execution.ownerStopRequested
+    || (host.nativeSessionId != null && execution.nativeSessionId !== host.nativeSessionId)
+    || (execution.phase !== 'running' && Number(execution.pendingTools) <= 0)) return false;
+  return true;
 }
 
 /**
