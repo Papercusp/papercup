@@ -1,4 +1,16 @@
 {
+  "currentDiagnosis20261101": {
+    "authority": "Supersedes running/await fields in every historical section below. Actual v14 failed; no native remains live.",
+    "terminalEvidence": ".papercusp/evidence/quick-access-20261026/native-v14-terminal.json",
+    "trace": ".papercusp/evidence/quick-access-20261026/native-v14-trace.zip",
+    "diagnostics": ".papercusp/evidence/quick-access-20261026/native-v14-popup-diagnostics.json",
+    "task": "0mvx0wttt19w2mzb1ag",
+    "testRun": 22831246,
+    "pin": "1ec67623111706cc98d4a7bb124df64b1a4cd696",
+    "verdict": "Inner+outer FAIL; file sink exit1. Ledger exit remains unobserved; do not turn that into a running payload or accepted result.",
+    "causeEvidence": "Repeat shortcut: native blur handler hides before shortcut handler sees is_visible=false and reopens. Trace same popup focused+mapped before/after. Independent private X11/GTK/libX11 passive-grab probe produces NotifyGrab focus-out without an outside click. Product fix pending.",
+    "next": "On EI272871 fix transient shortcut-grab dismissal in existing native window code; reuse x11rb/gtk/native_terminal active-window logic. Update changeKinds before product edit if test-only declaration remains. Add maintained tests; no blind full native retry. After verified new native rebuild v14 amendment from preserved v13 methods and complete independent acceptance."
+  },
   "currentContinuation20261031T2320Z": {
     "authority": "This section supersedes every historical continuation and next action below. Same A/self/AUTO; manual locks; no LIVE_GATE_OPS.",
     "pin": "1ec67623111706cc98d4a7bb124df64b1a4cd696",
