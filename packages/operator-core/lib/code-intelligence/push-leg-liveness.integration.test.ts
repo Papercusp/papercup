@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { LIVENESS_OPS, pgLivenessReaders } from './push-leg-liveness';
+import { captureInterfaceEligibility } from './interface-eligibility';
 
 const WS = `liveness-op-eligibility-${process.pid}`;
 const START = Date.parse('2026-10-01T00:00:00Z');
@@ -28,6 +29,24 @@ beforeAll(async () => {
       row('invalid-input', 'peer', undefined, `${WS}-denied-only`),
     ])}`;
   }
+  const observation = (beforeText: string | null, afterText: string) => captureInterfaceEligibility({
+    file: 'target.ts', beforeText, afterText, capturedAt: new Date(START + 1000).toISOString(),
+    peerEvidence: { status: 'unknown', peers: [] },
+  });
+  const row = (workspace: string, file: string, signal: unknown, at = START + 1000) => ({
+    workspace_id: workspace, repo_root: '/clone-fixture', file, agent_id: 'peer',
+    ts: new Date(at), signal_eligibility: sql.json({ interface: signal } as Parameters<typeof sql.json>[0]),
+  });
+  const added = observation('', 'export function added() {}\nexport const arrow = () => 1;');
+  const unchanged = observation('export function old() {}', 'export function old(x = 1) {}');
+  await sql`INSERT INTO harness_shared.edit_attribution_ledger ${sql([
+    row(`${WS}-clone`, 'added.ts', added), row(`${WS}-clone`, 'old.ts', unchanged),
+    row(`${WS}-clone`, 'README.md', {}),
+    row(`${WS}-clone`, 'before.ts', added, START - 1), row(`${WS}-clone`, 'end.ts', added, END),
+    row(`${WS}-clone-other`, 'other.ts', added),
+    row(`${WS}-clone-partial`, 'known.ts', added), row(`${WS}-clone-partial`, 'legacy.ts', {}),
+    row(`${WS}-clone-unknown`, 'unknown.ts', observation(null, 'export function added() {}')),
+  ])}`;
 }, 120_000);
 
 afterAll(async () => { await db?.cleanup(); }, 30_000);
@@ -44,5 +63,18 @@ describe('op liveness eligibility (WI-6554700010030319, real invocation ledger)'
     const readers = pgLivenessReaders(db!.adminSql as unknown as Parameters<typeof pgLivenessReaders>[0], []);
     expect(await readers.measureOp('lsp:query', { workspaceId: `${WS}-denied-only`, start: START, end: END }))
       .toEqual({ eligible: 0, outputs: 0, outsideLineageOutputs: 0 });
+  });
+});
+
+describe('clone liveness eligibility (independent edit journal, no push outputs)', () => {
+  const measure = (suffix: string) => pgLivenessReaders(db!.adminSql as unknown as Parameters<typeof pgLivenessReaders>[0], [])
+    .measureLeg('clone', { workspaceId: `${WS}-${suffix}`, start: START, end: END });
+
+  it('counts edits adding exported functions once, independently of output or peer availability', async () => {
+    expect(await measure('clone')).toMatchObject({ eligible: 1, outputs: 0, outsideLineageOutputs: 0 });
+  });
+
+  it.each(['clone-partial', 'clone-unknown'])('keeps %s eligibility unmeasured instead of treating missing observations as zero', async suffix => {
+    expect(await measure(suffix)).toMatchObject({ eligible: null, outputs: 0 });
   });
 });
