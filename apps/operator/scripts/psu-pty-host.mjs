@@ -7628,6 +7628,12 @@ export function identityAssumeResponseFromRows(rows, { agent, request, sinceMs, 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
  *  Pure — exported for tests. */
+export function controlSocketProbeOutcome(msg, ownerId) {
+  if (msg?.mode !== 'probe') return null;
+  if (msg.ownerId !== ownerId) return { ok: false, reason: 'ownerId-mismatch' };
+  return { ok: true, reason: 'control-socket-live' };
+}
+
 export function decodeControl(payload) {
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
   try {
@@ -7636,6 +7642,7 @@ export function decodeControl(payload) {
       o &&
       o.v === 1 &&
       (o.mode === 'turn' ||
+        o.mode === 'probe' ||
         o.mode === 'delivery-cancel' ||
         o.mode === 'raw' ||
         o.mode === 'osc' ||
@@ -7677,6 +7684,8 @@ export function decodeControl(payload) {
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
         };
+      if (o.mode === 'probe')
+        return { mode: 'probe', data: '', gated: false, ...decodeOwnerIdentity(o) };
       if (o.mode === 'identity-assume') return {
         mode: 'identity-assume', data: '', gated: false,
         ownerId: o.ownerId, action: o.action, request: o.request,
@@ -12225,7 +12234,7 @@ export function hostThroughPty(o) {
     // name its native session id. The fence identity requires it, and only codex wires
     // resolveRespawnNativeId; a Claude host that advertised the cap refused every
     // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
-    caps: ['carry-respawn', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+    caps: ['carry-respawn', 'control-socket-probe-v1', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
@@ -15444,6 +15453,8 @@ export function hostThroughPty(o) {
         }
         return { ok: false, reason: 'ownerId-mismatch' };
       }
+      const controlSocketProbe = controlSocketProbeOutcome(msg, ownerId);
+      if (controlSocketProbe) return controlSocketProbe;
       const continuationRefusal = continuationIdentityRefusal(msg, ownerId);
       if (continuationRefusal) {
         appendHostEvent(ownerId, 'control-payload-rejected', { ...continuationRefusal, mode: msg.mode });

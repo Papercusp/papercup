@@ -2729,6 +2729,10 @@ export function identityAssumeResponseFromRows(rows: any[], { agent, request, si
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
  *  Pure — exported for tests. */
+export function controlSocketProbeOutcome(msg: any, ownerId: any): {
+    ok: boolean;
+    reason: string;
+} | null;
 export function decodeControl(payload: any): {
     ownerId: any;
     gated: boolean;
