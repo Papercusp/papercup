@@ -223,7 +223,8 @@ const testRequire = createRequire(import.meta.url);
 it("EI-27302708766102651: the production checkpoint imports outside Vitest", async () => {
   const checkpoint = new URL("./green-checkpoint.ts", import.meta.url).href;
   const { stdout } = await promisify(execFile)(process.execPath, [
-    "--import", testRequire.resolve("tsx"), "--input-type=module", "-e",
+    "--experimental-transform-types",
+    "--import", testRequire.resolve("tsx/esm"), "--input-type=module", "-e",
     `await import(${JSON.stringify(checkpoint)}); console.log("checkpoint-import-ok"); process.exit(0);`,
   ], { cwd: REPO_ROOT, timeout: 30_000, maxBuffer: 1024 * 1024 });
   expect(stdout).toContain("checkpoint-import-ok");

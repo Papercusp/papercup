@@ -172,7 +172,37 @@ describe('private native proof custody (P002)', () => {
     expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
   });
 
-  it('keeps other native families and command receipts when evaluator custody reaches its family cap', () => {
+  it.each(['native-proof-custody-v1', 'native-proof-custody-v2'] as const)
+    ('continues to verify retained %s packets', schemaVersion => {
+      const f = fixture(), saved = f.save(), manifest = structuredClone(saved.manifest);
+      manifest.schemaVersion = schemaVersion;
+      delete manifest.segments;
+      delete manifest.archiveLimits;
+      for (const group of manifest.groups) for (const entry of [
+        ...group.families.flatMap(family => family.entries), ...group.auxiliary,
+      ]) if (entry.artifact) delete entry.artifact.segment;
+      if (schemaVersion === 'native-proof-custody-v1')
+        manifest.limits = { objects: 16384, bytes: 64 * 1024 * 1024, objectBytes: 16 * 1024 * 1024 };
+      const pin = createNativeArtifactPersister(join(f.directory, 'objects'))
+        .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+      const inventoryHash = createHash('sha256').update(JSON.stringify({ groups: manifest.groups, gaps: manifest.gaps })).digest('hex');
+      expect(verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: pin, inventoryHash }, f.contract).status).toBe('complete');
+    });
+
+  it.each(['reporter-json', 'native-digest'] as const)
+    ('retains rejected %s bytes as sealed partial diagnostics', fault => {
+      const f = fixture(), group = f.contract.expected[0]!;
+      if (fault === 'reporter-json') writeFileSync(group.out!, '{');
+      else {
+        const directory = group.out! + '.native-processes';
+        writeFileSync(join(directory, readdirSync(directory)[0]!), 'wrong digest');
+      }
+      const saved = f.save();
+      expect(saved.status).toBe('partial');
+      expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+    });
+
+  it('rolls evaluator custody into bounded segments without losing other families or receipts', () => {
     const f = fixture(), group = f.contract.expected[0]!, modules = group.out! + '.modules';
     rmSync(modules, { recursive: true });
     mkdirSync(modules);
@@ -190,13 +220,46 @@ describe('private native proof custody (P002)', () => {
     writeFileSync(group.out!, JSON.stringify(payload));
     const saved = f.save(), retained = saved.manifest.groups[0]!;
     const family = (name: 'A' | 'B' | 'C' | 'D') => retained.families.find(row => row.family === name)!;
-    expect(saved.status).toBe('partial');
-    expect(family('B')).toMatchObject({ state: 'partial', reason: 'custody B byte limit' });
+    expect(saved.status).toBe('complete');
+    expect(family('B')).toMatchObject({ state: 'produced' });
     expect(family('C').state).toBe('produced');
     expect(family('D').state).toBe('produced');
     expect(retained.auxiliary.every(entry => entry.artifact)).toBe(true);
-    expect(saved.manifest.bytesReadByFamily!.B).toBeLessThanOrEqual(saved.manifest.limits.families!.B.bytes);
-    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+    expect(saved.manifest.segments!.length).toBeGreaterThan(1);
+    for (const segment of saved.manifest.segments!)
+      expect(segment.bytesReadByFamily.B).toBeLessThanOrEqual(saved.manifest.limits.families!.B.bytes);
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
+  });
+
+  it('retains more than 64MiB across segments in a fresh consumer and rejects segment loss or replacement', () => {
+    const f = fixture(), group = f.contract.expected[0]!;
+    for (let index = 0; index < 9; index++)
+      writeFileSync(join(group.out! + '.modules', `large-${index}.js`), Buffer.alloc(8 * 1024 * 1024, index));
+    const saved = f.save();
+    expect(saved.status).toBe('complete');
+    expect(saved.manifest.bytesRead).toBeGreaterThan(64 * 1024 * 1024);
+    expect(saved.manifest.segments!.length).toBeGreaterThan(1);
+    for (const segment of saved.manifest.segments!)
+      expect(segment.bytesRead).toBeLessThanOrEqual(64 * 1024 * 1024);
+    rmSync(f.producer, { recursive: true });
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'console.log(verifyNativeProofPacket(...JSON.parse(process.argv[1])).status)',
+      JSON.stringify([f.directory, saved.locator, f.contract])], { encoding: 'utf8', timeout: 30_000 });
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(child.stdout.trim()).toBe('complete');
+    const pin = saved.manifest.segments![1]!.artifact;
+    const path = join(f.directory, 'objects', pin.ref), original = readFileSync(path);
+    writeFileSync(path, Buffer.from('{}'));
+    expect(() => verifyNativeProofPacket(f.directory, saved.locator, f.contract)).toThrow();
+    writeFileSync(path, original);
+    const manifest = structuredClone(saved.manifest);
+    manifest.segments!.pop();
+    const forged = createNativeArtifactPersister(join(f.directory, 'objects'))
+      .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: forged }, f.contract)).toThrow();
+    rmSync(path);
+    expect(() => verifyNativeProofPacket(f.directory, saved.locator, f.contract)).toThrow();
   });
 
   it.each(['group', 'attempt', 'family', 'occurrence', 'auxiliary', 'workspace', 'harness', 'run',
@@ -278,7 +341,9 @@ describe('private native proof custody (P002)', () => {
     expect(full.manifest.bytesReadByFamily!.auxiliary).toBe(auxiliaryLimit - group.auxiliary.length);
     expect(full.manifest.bytesRead).toBeLessThanOrEqual(full.manifest.limits.bytes);
     expect(verifyNativeProofPacket(f.directory, full.locator, f.contract).status).toBe('complete');
-    writeFileSync(group.auxiliary[4].path, Buffer.alloc(remaining + 1024));
+    // An individual object must fit its family's segment budget. Rollover
+    // cannot make a single oversized object admissible.
+    writeFileSync(group.auxiliary[4].path, Buffer.alloc(auxiliaryLimit + 1));
     const partial = f.save();
     expect(partial.status).toBe('partial');
     expect(partial.manifest.gaps).toContain('group-0:cleanup:custody auxiliary byte limit');

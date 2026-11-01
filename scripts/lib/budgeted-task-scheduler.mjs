@@ -277,6 +277,21 @@ const custodyFamilies = Object.freeze({
   auxiliary: Object.freeze({ objects: 1024, bytes: 8 * 1024 * 1024 }),
 });
 const custodyLimits = Object.freeze({ ...legacyCustodyLimits, referenceOccurrences: 65536, families: custodyFamilies });
+// v3 keeps each segment under the existing IO/family limits. The archive has
+// an independent finite population bound; rollover never admits a larger object.
+const custodyArchiveLimits = Object.freeze({ segments: 64, objects: custodyLimits.objects });
+const custodyFamilyKeys = ['A', 'B', 'C', 'D', 'auxiliary'];
+function custodyProcessSourcesRequested(expected) {
+  // Older independent contracts required all four families unconditionally.
+  if (expected.processSources === undefined) return true;
+  const { preload, workspace, root } = expected.processSources;
+  // Producer: executed-config-load-capture.ts install() and termination hook.
+  return preload === '1' && Boolean(workspace && expected.out && root && isAbsolute(root));
+}
+function custodyAccounting(budget) {
+  return { bytesRead: budget.bytes, objectsRead: budget.objects,
+    bytesReadByFamily: { ...budget.bytesByFamily }, objectsReadByFamily: { ...budget.objectsByFamily } };
+}
 function custodyBudget() {
   return { objects: 0, bytes: 0, objectsByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 },
     bytesByFamily: { A: 0, B: 0, C: 0, D: 0, auxiliary: 0 } };
@@ -315,13 +330,13 @@ function custodyRead(path, budget, family = null, limits = custodyLimits) {
     if (family) budget.bytesByFamily[family] += count;
   });
 }
-function custodyInventory(directory) {
+function custodyInventory(directory, objectLimit = custodyLimits.objects) {
   custodyDirectory(directory);
   const stat = lstatSync(directory), names = [];
   const handle = opendirSync(directory);
   try {
     for (let entry; (entry = handle.readSync()) !== null;) {
-      if (names.length === custodyLimits.objects) throw new Error('custody inventory limit');
+      if (names.length === objectLimit) throw new Error('custody inventory limit');
       if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('custody inventory nonregular entry');
       names.push(entry.name);
     }
@@ -395,7 +410,35 @@ export function retainNativeProofPacket(directory, input) {
   mkdirSync(objectRoot, { mode: 0o700, recursive: true });
   custodyDirectory(objectRoot, true);
   const store = createNativeArtifactPersister(objectRoot), budget = custodyBudget(), gaps = [];
-  const capture = (path, suffix = 'bytes', family = null) => store.persist(custodyRead(path, budget, family), suffix);
+  const segments = [];
+  const capture = (path, suffix = 'bytes', family = null) => {
+    const size = lstatSync(path).size, limit = custodyLimits.families[family];
+    if (size > custodyLimits.objectBytes) throw new Error('custody object byte limit');
+    if (size + 1 > limit.bytes) throw new Error('custody ' + family + ' byte limit');
+    if (budget.objects === custodyArchiveLimits.objects) throw new Error('custody archive object limit');
+    let segment = segments.at(-1);
+    if (!segment || segment.budget.bytes + size + 1 > custodyLimits.bytes ||
+        segment.budget.objects + 1 > custodyLimits.objects ||
+        segment.budget.bytesByFamily[family] + size + 1 > limit.bytes ||
+        segment.budget.objectsByFamily[family] + 1 > limit.objects) {
+      if (segments.length === custodyArchiveLimits.segments) throw new Error('custody archive segment limit');
+      segment = { index: segments.length, budget: custodyBudget(), entries: [] };
+      segments.push(segment);
+    }
+    const before = custodyAccounting(segment.budget);
+    try {
+      const pin = { ...store.persist(custodyRead(path, segment.budget, family), suffix), segment: segment.index };
+      segment.entries.push({ family, artifact: pin });
+      return pin;
+    } finally {
+      budget.bytes += segment.budget.bytes - before.bytesRead;
+      budget.objects += segment.budget.objects - before.objectsRead;
+      for (const key of custodyFamilyKeys) {
+        budget.bytesByFamily[key] += segment.budget.bytesByFamily[key] - before.bytesReadByFamily[key];
+        budget.objectsByFamily[key] += segment.budget.objectsByFamily[key] - before.objectsReadByFamily[key];
+      }
+    }
+  };
   const observations = input.observations ?? [];
   if (observations.length !== input.expected.length || new Set(observations.map(row => row.id)).size !== observations.length)
     gaps.push('group-population-mismatch');
@@ -414,14 +457,19 @@ export function retainNativeProofPacket(directory, input) {
         entry.reason = expected.runner === 'vitest' ? 'reporter-not-armed' : `runner:${expected.runner}`;
         continue;
       }
+      if (family === 'D' && !custodyProcessSourcesRequested(expected)) {
+        entry.state = 'not-requested';
+        entry.reason = 'process-source-preload-not-requested';
+        continue;
+      }
       try {
         if (!observed || !expected.out || !isAbsolute(expected.out)) throw new Error('producer-unavailable');
         const path = expected.out + suffix;
         if (family === 'A') {
           const artifact = capture(path, 'out.json', family);
+          entry.entries.push({ original: path, artifact });
           const payload = JSON.parse(readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
             custodyLimits.objectBytes).toString('utf8'));
-          entry.entries.push({ original: path, artifact });
           const refs = custodyReferences(payload);
           group.references = refs.occurrences;
           group.referenceArtifacts = refs.artifacts;
@@ -437,12 +485,15 @@ export function retainNativeProofPacket(directory, input) {
               modulePopulationMatched: payload.nativeRun?.modulePopulationMatched ?? null }, status: 'unqualified' };
         } else {
           const names = custodyInventory(path);
+          if (family === 'D' && names.length === 0) throw new Error('process-source-receipts-missing');
           for (const name of names) {
             const original = join(path, name), artifact = capture(original, 'bytes', family);
+            // Retain even semantically rejected bytes; partial custody must
+            // still reconcile with the segment's exact capture inventory.
+            entry.entries.push({ original, artifact });
             if (family === 'C' && /^[a-f0-9]{64}\.(json|source|stream)$/.test(name) &&
                 artifact.sha256 !== name.slice(0, 64)) throw new Error('native-artifact-digest');
             if (family === 'D' && name.endsWith('.pending')) gaps.push(`${expected.id}:process-writer-pending`);
-            entry.entries.push({ original, artifact });
           }
           if (JSON.stringify(custodyInventory(path)) !== JSON.stringify(names)) throw new Error('inventory-changed');
           if (family === 'B') for (const ref of group.referenceArtifacts) {
@@ -474,16 +525,21 @@ export function retainNativeProofPacket(directory, input) {
     }
     return group;
   });
-  const manifest = { schemaVersion: 'native-proof-custody-v2', identity: input.identity,
+  const retainedSegments = segments.map(segment => ({ index: segment.index, ...custodyAccounting(segment.budget),
+    artifact: store.persist(Buffer.from(JSON.stringify({ schemaVersion: 'native-proof-segment-v1',
+      index: segment.index, entries: segment.entries })), 'native-segment.json') }));
+  const manifest = { schemaVersion: 'native-proof-custody-v3', identity: input.identity,
     expected: input.expected, expectedHash: custodyHash(input.expected), groups, limits: custodyLimits,
     bytesRead: budget.bytes, bytesReadByFamily: budget.bytesByFamily,
     objectsRead: budget.objects, objectsReadByFamily: budget.objectsByFamily,
+    segments: retainedSegments, archiveLimits: custodyArchiveLimits,
     gaps, predecessor: input.predecessor ?? null,
     verdicts: { custody: gaps.length ? 'partial' : 'complete', execution: input.execution ?? 'unknown',
       protocol: 'unqualified', producerRetirement: 'not-performed', cleanup: input.cleanup ?? 'unknown',
       nativeProof: 'unqualified', acceptance: 'unmeasured' } };
   const manifestPin = store.persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
-  for (const name of custodyInventory(objectRoot)) {
+  // Segment/manifest metadata is separately object-bounded, not capture content.
+  for (const name of custodyInventory(objectRoot, custodyLimits.objects + custodyArchiveLimits.segments + 1)) {
     const fd = openSync(join(objectRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
   }
@@ -494,7 +550,7 @@ export function retainNativeProofPacket(directory, input) {
   // Keep the producer's observed inventory and partial states in the original
   // locator. A newly sealed manifest cannot redefine which objects were captured.
   const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash,
-    inventoryHash: custodyHash({ groups, gaps }) };
+    inventoryHash: custodyHash({ groups, gaps, segments: retainedSegments }) };
   const verified = verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
   return { directory: root, locator, ...verified };
 }
@@ -505,11 +561,19 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   custodyIdentity(contract?.identity); custodyPopulation(contract?.expected);
   const root = custodyDirectory(directory, true), objects = custodyDirectory(join(root, 'objects'), true);
   const budget = Object.assign(custodyBudget(), { private: true });
+  const segmentBudgets = [], segmentEntries = [], consumedEntries = [];
+  let segmented = false;
   let readLimits = custodyLimits;
   const read = (pin, readBudget = budget, family = null) => {
     if (!pin || !comparisonDigest(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
         pin.byteLength < 0 || basename(pin.ref ?? '') !== pin.ref || !pin.ref.startsWith(`${pin.sha256}.`))
       throw new Error('custody invalid retained pin');
+    if (segmented && family !== null) {
+      if (!Number.isSafeInteger(pin.segment) || !segmentBudgets[pin.segment])
+        throw new Error('custody retained segment missing');
+      readBudget = segmentBudgets[pin.segment];
+      consumedEntries[pin.segment].push({ family, artifact: pin });
+    }
     const bytes = custodyRead(join(objects, pin.ref), readBudget, family, readLimits);
     if (bytes.length !== pin.byteLength || createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
       throw new Error('custody retained bytes differ');
@@ -520,7 +584,8 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   // the manifest still has its own ordinary single-object bound.
   const manifest = JSON.parse(read(locator.manifest, { objects: 0, bytes: 0, private: true }, null).toString('utf8'));
   const legacy = manifest.schemaVersion === 'native-proof-custody-v1';
-  const current = manifest.schemaVersion === 'native-proof-custody-v2';
+  segmented = manifest.schemaVersion === 'native-proof-custody-v3';
+  const current = manifest.schemaVersion === 'native-proof-custody-v2' || segmented;
   readLimits = legacy ? legacyCustodyLimits : custodyLimits;
   if ((!legacy && !current) || JSON.stringify(manifest.limits) !== JSON.stringify(readLimits) ||
       JSON.stringify(manifest.identity) !== JSON.stringify(contract.identity) ||
@@ -530,18 +595,53 @@ export function verifyNativeProofPacket(directory, locator, contract) {
       !Array.isArray(manifest.groups) || manifest.groups.length !== contract.expected.length)
     throw new Error('custody identity or expected population mismatch');
   if (current) {
-    const familyKeys = ['A', 'B', 'C', 'D', 'auxiliary'];
+    const familyKeys = custodyFamilyKeys;
     const byteTotal = familyKeys.reduce((sum, key) => sum + manifest.bytesReadByFamily?.[key], 0);
     const objectTotal = familyKeys.reduce((sum, key) => sum + manifest.objectsReadByFamily?.[key], 0);
     if (familyKeys.some(key => !Number.isSafeInteger(manifest.bytesReadByFamily?.[key]) ||
-        manifest.bytesReadByFamily[key] < 0 || manifest.bytesReadByFamily[key] > custodyLimits.families[key].bytes ||
+        manifest.bytesReadByFamily[key] < 0 || manifest.bytesReadByFamily[key] > custodyLimits.families[key].bytes * (segmented ? custodyArchiveLimits.segments : 1) ||
         !Number.isSafeInteger(manifest.objectsReadByFamily?.[key]) ||
-        manifest.objectsReadByFamily[key] < 0 || manifest.objectsReadByFamily[key] > custodyLimits.families[key].objects) ||
+        manifest.objectsReadByFamily[key] < 0 || manifest.objectsReadByFamily[key] > custodyLimits.families[key].objects * (segmented ? custodyArchiveLimits.segments : 1)) ||
         byteTotal !== manifest.bytesRead || objectTotal !== manifest.objectsRead)
       throw new Error('custody family budget accounting mismatch');
   }
+  if (segmented) {
+    if (JSON.stringify(manifest.archiveLimits) !== JSON.stringify(custodyArchiveLimits) ||
+        !Array.isArray(manifest.segments) || manifest.segments.length > custodyArchiveLimits.segments ||
+        !Number.isSafeInteger(manifest.objectsRead) || manifest.objectsRead > custodyArchiveLimits.objects)
+      throw new Error('custody archive population mismatch');
+    const sums = custodyBudget();
+    for (const [index, segment] of manifest.segments.entries()) {
+      if (segment.index !== index || !Number.isSafeInteger(segment.bytesRead) || segment.bytesRead < 0 ||
+          segment.bytesRead > custodyLimits.bytes || !Number.isSafeInteger(segment.objectsRead) ||
+          segment.objectsRead < 0 || segment.objectsRead > custodyLimits.objects)
+        throw new Error('custody segment budget mismatch');
+      let bytes = 0, objects = 0;
+      for (const key of custodyFamilyKeys) {
+        const nbytes = segment.bytesReadByFamily?.[key], nobjects = segment.objectsReadByFamily?.[key];
+        if (!Number.isSafeInteger(nbytes) || nbytes < 0 || nbytes > custodyFamilies[key].bytes ||
+            !Number.isSafeInteger(nobjects) || nobjects < 0 || nobjects > custodyFamilies[key].objects)
+          throw new Error('custody segment family budget mismatch');
+        bytes += nbytes; objects += nobjects;
+        sums.bytesByFamily[key] += nbytes; sums.objectsByFamily[key] += nobjects;
+      }
+      if (bytes !== segment.bytesRead || objects !== segment.objectsRead)
+        throw new Error('custody segment accounting mismatch');
+      sums.bytes += bytes; sums.objects += objects;
+      const metadata = JSON.parse(read(segment.artifact, { objects: 0, bytes: 0, private: true }).toString('utf8'));
+      if (metadata.schemaVersion !== 'native-proof-segment-v1' || metadata.index !== index ||
+          !Array.isArray(metadata.entries) || metadata.entries.length > custodyLimits.objects)
+        throw new Error('custody segment inventory mismatch');
+      segmentBudgets.push(Object.assign(custodyBudget(), { private: true }));
+      segmentEntries.push(metadata.entries); consumedEntries.push([]);
+    }
+    if (JSON.stringify(custodyAccounting(sums)) !== JSON.stringify({ bytesRead: manifest.bytesRead,
+      objectsRead: manifest.objectsRead, bytesReadByFamily: manifest.bytesReadByFamily,
+      objectsReadByFamily: manifest.objectsReadByFamily })) throw new Error('custody archive accounting mismatch');
+  }
   if (!comparisonDigest(locator.inventoryHash) ||
-      custodyHash({ groups: manifest.groups, gaps: manifest.gaps }) !== locator.inventoryHash)
+      custodyHash({ groups: manifest.groups, gaps: manifest.gaps,
+        ...(segmented ? { segments: manifest.segments } : {}) }) !== locator.inventoryHash)
     throw new Error('custody captured inventory mismatch');
   for (const expected of contract.expected) {
     const group = manifest.groups.find(row => row.id === expected.id);
@@ -563,7 +663,11 @@ export function verifyNativeProofPacket(directory, locator, contract) {
         const bytes = read(entry.artifact, budget, family.family);
         if (family.family === 'A' && index === 0) reporter = bytes;
       }
-      if (family.state !== 'produced' && expected.armed && expected.runner === 'vitest' &&
+      const processNotRequested = segmented && expected.armed && expected.runner === 'vitest' &&
+        family.family === 'D' && !custodyProcessSourcesRequested(expected);
+      if (processNotRequested && (family.state !== 'not-requested' || family.entries.length ||
+          family.reason !== 'process-source-preload-not-requested')) throw new Error('custody process applicability mismatch');
+      if (family.state !== 'produced' && !processNotRequested && expected.armed && expected.runner === 'vitest' &&
           !familyGap(family.family) && !groupGap)
         throw new Error('custody unsupported family absence');
     }
@@ -595,6 +699,15 @@ export function verifyNativeProofPacket(directory, locator, contract) {
       else if (spec.state === 'produced' && !familyGap(spec.role))
         throw new Error('custody auxiliary bytes missing');
     });
+  }
+  if (segmented) for (let index = 0; index < segmentEntries.length; index++) {
+    if (JSON.stringify(segmentEntries[index]) !== JSON.stringify(consumedEntries[index]))
+      throw new Error('custody segment captured inventory mismatch');
+    const actual = custodyAccounting(segmentBudgets[index]), declared = manifest.segments[index];
+    if (actual.bytesRead > declared.bytesRead || actual.objectsRead > declared.objectsRead ||
+        custodyFamilyKeys.some(key => actual.bytesReadByFamily[key] > declared.bytesReadByFamily[key] ||
+          actual.objectsReadByFamily[key] > declared.objectsReadByFamily[key]))
+      throw new Error('custody segment capture accounting understated');
   }
   if (manifest.verdicts.nativeProof !== 'unqualified' || manifest.verdicts.acceptance !== 'unmeasured' ||
       manifest.verdicts.protocol !== 'unqualified' || manifest.verdicts.custody !== (manifest.gaps.length ? 'partial' : 'complete'))
