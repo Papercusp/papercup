@@ -52,7 +52,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe.each(['codex', 'claude'] as const)('%s native MCP owner request materialization', backend => {
+describe.each(['codex', 'claude', 'omp'] as const)('%s native MCP owner request materialization', backend => {
   beforeEach(() => {
     const descriptor = hostState.host.descriptor();
     hostState.host.descriptor = () => ({ ...descriptor, identity: { ...descriptor.identity, backend } });
@@ -79,7 +79,7 @@ describe.each(['codex', 'claude'] as const)('%s native MCP owner request materia
         if (fault === 'adv-session') descriptor.identity.advSessionId++;
         if (fault === 'owner') descriptor.identity.ownerId = 'foreign-owner';
         if (fault === 'native-session') descriptor.identity.nativeSessionId = 'replaced-session';
-        if (fault === 'unsupported-backend') descriptor.identity.backend = 'omp';
+        if (fault === 'unsupported-backend') descriptor.identity.backend = 'unsupported-fixture';
         hostState.host.descriptor = () => descriptor;
       }
       if (fault === 'recycled-process') {

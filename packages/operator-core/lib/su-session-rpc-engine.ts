@@ -33,7 +33,8 @@ import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
 import { resolveAgentBinarySync } from './agent-bin-detect';
-import { attachedInstalledToolLifecycle, type AttachedInstalledToolFunding } from './agent-tools/per-use-chokepoint';
+import { attachedInstalledToolLifecycle, nativeInstalledPerUseTurns, type AttachedInstalledToolFunding } from './agent-tools/per-use-chokepoint';
+import { listAllProjectedTools } from '@papercusp/tooldef';
 import { productionInstalledToolFunding } from './cupboard/installed-tool-funding';
 import { synthesizeTransportPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
 import { canonicalJson } from './authority/authority-rpc-envelope';
@@ -240,6 +241,35 @@ export function startSuRpcEngine(
   const tools = new Map<string, string>();
   const initializingFrames: RpcFrame[] = [];
   let initializingFrameBytes = 0;
+  // OMP has no proven billing turn ID. This is only an independently observed
+  // root-input scope; its credential and principal resolver stay in this host.
+  let ompRuntimeBearer: string | undefined;
+  let ompInput: { id: string; ownerTurnId: string; text: string; principalId: string;
+    rootSeen: boolean; agentStarted: boolean; nativeTools: Readonly<Record<string, string>> } | undefined;
+  let ompInputScope: ReturnType<typeof nativeInstalledPerUseTurns.registerNativeInput> | undefined;
+  const withdrawOmpInput = () => {
+    ompInput = undefined;
+    const scope = ompInputScope;
+    ompInputScope = undefined;
+    // The registry tombstones before its returned cleanup promise settles.
+    return scope?.withdraw();
+  };
+  const acceptOmpInput = () => {
+    const input = ompInput;
+    if (!input || !input.rootSeen || !input.agentStarted || ompInputScope || closed || !ready
+      || !ownsRuntime() || interruptInFlight || turnCompletionSettled || input.ownerTurnId !== ownerTurnId
+      || !options.resolveRequestPrincipal || !ompRuntimeBearer) return;
+    ompInputScope = nativeInstalledPerUseTurns.registerNativeInput({ provider: 'omp',
+      nativeInputId: input.id, nativeSessionId: nativeId(), ownerTurnId,
+      workspaceId: boot.workspaceId, advSessionId: binding.advSessionId, ownerId: binding.ownerId!,
+      principalId: input.principalId, mcpServer: 'papercusp-su', nativeTools: input.nativeTools,
+      resolveRequestPrincipal: async () => {
+        if (closed || !ownsRuntime() || ompInput !== input) return null;
+        const principal = await options.resolveRequestPrincipal!();
+        return !closed && ownsRuntime() && ompInput === input ? principal : null;
+      },
+      resolveRuntimeBearer: async () => !closed && ownsRuntime() && ompInput === input ? ompRuntimeBearer ?? null : null });
+  };
   const unavailable = (message: string) => ({ ok: false as const, code: 'engine_delivery_unknown', message, retryable: false });
   const turnLifecycle = options.turnLifecycle ?? (su && backend === 'codex' ? attachedInstalledToolLifecycle({
     session: { workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '', advSessionId: binding.advSessionId,
@@ -364,6 +394,27 @@ export function startSuRpcEngine(
             prepared = await prepareSuSessionInput({ content, input: richInput }, { workspaceId: boot.workspaceId, root: boot.cwd });
           }
           if (!ready || closed || !ownsRuntime()) throw new Error('The engine closed or was replaced during input preparation');
+          if (backend === 'omp' && su && ompRuntimeBearer && options.resolveRequestPrincipal) {
+            const principal = await options.resolveRequestPrincipal();
+            if (!ready || closed || !ownsRuntime() || interruptInFlight) throw new Error('OMP input authority changed before delivery');
+            if (principal && principal.workspaceId === boot.workspaceId && ['trusted', 'verified'].includes(principal.trust)) {
+              // get_state exposes a bounded preview, not an exhaustive catalog.
+              // Use the maintained host registry and the owned extension's exact
+              // native spelling. Ambiguous separator aliases grant no authority.
+              const names: Record<string, string> = Object.create(null), collisions = new Set<string>();
+              for (const tool of listAllProjectedTools()) {
+                const canonical = tool.expose.mcp?.name;
+                if (!canonical) continue;
+                const name = `mcp__papercusp-su_${canonical}`.replace(/[^a-zA-Z0-9_]/g, '_');
+                if (collisions.has(name)) continue;
+                if (Object.hasOwn(names, name) && names[name] !== canonical) {
+                  delete names[name]; collisions.add(name);
+                } else names[name] = canonical;
+              }
+              ompInput = { id: `omp-input:${turnEpoch}`, ownerTurnId: turnId, text: content,
+                principalId: principal.slug, rootSeen: false, agentStarted: false, nativeTools: Object.freeze(names) };
+            }
+          }
           // The command is durably accepted before native delivery. Persist its
           // visible prompt before RPC can stream a reply; restored sessions use
           // these owner events to place each reply under its original prompt.
@@ -411,6 +462,7 @@ export function startSuRpcEngine(
           adapter.reconcileRuntimeExit({ expected: false, reason: `Native delivery is unknown: ${String(error)}` });
           await close();
         } finally {
+          void withdrawOmpInput();
           turnFinished?.();
           releaseNativeBinding?.();
           turnAdmission = undefined; nativeBinding = undefined; releaseNativeBinding = undefined;
@@ -479,6 +531,7 @@ export function startSuRpcEngine(
   };
   async function interruptNativeTurn() {
       if (!peer || closed) return unavailable('The engine is disconnected');
+      void withdrawOmpInput();
       cards.cancel();
       const completing = turnCompletion;
       const owner = ownerTurnId, starting = nativeStart;
@@ -599,6 +652,7 @@ export function startSuRpcEngine(
     const owner = ownerTurnId, admission = turnAdmission;
     const completedAtMs = Date.now();
     if (!owner || turnCompletionSettled) return;
+    if (backend === 'omp') void withdrawOmpInput();
     // Close this exact turn's observation population synchronously. Waiting
     // for binding first would admit item/started frames after turn/completed.
     // An early unrelated completion closes only its own ID, not the current
@@ -669,7 +723,7 @@ export function startSuRpcEngine(
     });
   }
   function onMessage(frame: RpcFrame): void {
-    if (closed || !ownsRuntime()) return;
+    if (closed || !ownsRuntime()) { void withdrawOmpInput(); return; }
     const frameThreadId = object(frame.params).threadId ?? object(frame.params).conversationId;
     if (backend === 'codex' && frameThreadId && !nativeId()) {
       // App-server can announce MCP startup before thread/start responds.
@@ -747,10 +801,24 @@ export function startSuRpcEngine(
           const channel = event.type === 'text_delta' ? 'text' : 'reasoning';
           transcript(`${channel}:${event.contentIndex ?? 0}`, channel, string(event.delta));
         }
+      } else if (type === 'message_start' && object(frame.message).role === 'user') {
+        const content = object(frame.message).content;
+        if (ompInput && Array.isArray(content) && content.length === 1
+          && object(content[0]).type === 'text' && object(content[0]).text === ompInput.text) {
+          ompInput.rootSeen = true;
+          acceptOmpInput();
+        }
       } else if (type === 'message_end' && object(frame.message).role === 'assistant') {
         const message = object(frame.message);
         for (const [index, value] of (Array.isArray(message.content) ? message.content : []).entries()) {
           const block = object(value), channel = block.type === 'thinking' ? 'reasoning' : 'text';
+          if (block.type === 'toolCall' && ompInputScope && ompInput && !closed && ownsRuntime()) {
+            // observeToolCall records synchronously, before any await. The
+            // following MCP HTTP request must find this exact name/ID/args.
+            void ompInputScope.observeToolCall({ nativeSessionId: nativeId(), nativeInputId: ompInput.id,
+              server: 'papercusp-su', callId: string(block.id), tool: string(block.name), arguments: block.arguments })
+              .catch(error => { void withdrawOmpInput(); reportRuntimeFailure(error); void close(); });
+          }
           if (block.type === 'text' || block.type === 'thinking') {
             const key = `${channel}:${index}`;
             transcript(key, channel, streams.has(key) ? '' : string(block.text ?? block.thinking), true);
@@ -772,7 +840,10 @@ export function startSuRpcEngine(
         if (type === 'tool_execution_start') emit({ type: 'tool', phase: 'started', turnId: ownerTurnId, callId, name, input: frame.args as SuSessionJsonValue });
         else emit({ type: 'tool', phase: 'completed', turnId: ownerTurnId, callId, name, output: frame.result as SuSessionJsonValue, isError: frame.isError === true });
       } else if (type === 'agent_end' || type === 'prompt_result' && frame.agentInvoked === false) void finish('completed');
-      else if (type === 'agent_start') host.transition('running', 'OMP native turn started');
+      else if (type === 'agent_start') {
+        if (ompInput) { ompInput.agentStarted = true; acceptOmpInput(); }
+        host.transition('running', 'OMP native turn started');
+      }
       else if (type === 'auto_compaction_start') host.transition('compacting', 'OMP is compacting its native context');
       else if (type === 'response' && frame.success === false) void finish('failed', string(frame.error));
     }
@@ -793,6 +864,8 @@ export function startSuRpcEngine(
   function close(): Promise<void> {
     if (closing) return closing;
     closed = true; ready = false; turnFinished?.(); cards.cancel();
+    void withdrawOmpInput();
+    ompRuntimeBearer = undefined;
     closing = (async () => { await reconcileNativeExit(); await peer?.close(); })();
     return closing;
   }
@@ -824,6 +897,8 @@ export function startSuRpcEngine(
       throw error;
     }).finally(async () => {
       ready = false; turnFinished?.();
+      void withdrawOmpInput();
+      ompRuntimeBearer = undefined;
       await reconcileNativeExit();
       if (!host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: closed, reason: `${backend} connection closed` });
       if (ownsRuntime()) await options.onExit?.();
@@ -903,6 +978,18 @@ export function startSuRpcEngine(
       const linked = await setAdvSessionOmpThreadId(binding.advSessionId, id);
       if (linked !== 'linked' && linked !== 'already_linked') throw new Error(`OMP native identity link failed (${linked})`);
       await (adapter as OmpSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, ompThreadId: id }, transcriptPath: nativePath });
+      if (su && options.resolveRequestPrincipal) {
+        const principal = await options.resolveRequestPrincipal();
+        if (principal) {
+          const { provisionNativeRuntimeBearer } = await import('@papercusp/agent-mcp/provisioning');
+          const issued = await provisionNativeRuntimeBearer({ workspaceId: boot.workspaceId,
+            advSessionId: binding.advSessionId, issuer: principal }).catch(() => null);
+          if (!closed && ownsRuntime() && issued?.binding.provider === 'omp' && issued.binding.ownerId === binding.ownerId
+            && issued.binding.workspaceId === boot.workspaceId && issued.binding.advSessionId === binding.advSessionId) {
+            ompRuntimeBearer = issued.bearer;
+          }
+        }
+      }
       const model = object(state.model);
       actualModel = [string(model.provider), string(model.id)].filter(Boolean).join('/');
       updateOmpContextWindow(model);

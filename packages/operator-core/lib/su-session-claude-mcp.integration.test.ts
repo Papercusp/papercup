@@ -15,16 +15,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { expect, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
-import { registerProjectedTool, unregisterProjectedToolsForPlugin, runDispatchStack, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
+import { type ProjectedTool } from '@papercusp/tooldef';
 import { verifyNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { resolveAgentBinarySync } from './agent-bin-detect';
 import { createClaudeNativeMcpServer } from './su-session-claude-mcp';
 import { startClaudeSuEngine, type ClaudeSuEngine } from './su-session-claude-engine';
 import { nativeInstalledPerUseTurns } from './agent-tools/per-use-chokepoint';
-import { retainNativeRequestPrincipalForDispatch, runNativeMcpTargetOnOwner, type BuiltSpawnContext } from './endpoint-route/routes/transport/_mcp-host';
+import { retainNativeRequestPrincipalForDispatch } from './endpoint-route/routes/transport/_mcp-host';
 import { _configureSuSessionRoutingForTest, localSuSessionHostOwner } from './su-session-owner-routing';
 import { sqlMiningFixture } from '../test/_sql-mining-fixture';
+import { publishReport } from './report-library';
+import { lookupByMcpName } from '@papercusp/tooldef';
+import { flushPendingTelemetry } from './projected-tool-deps';
+import { drainDetached } from './detached-imports';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 
 let authorityDb: Awaited<ReturnType<typeof sqlMiningFixture>> | undefined;
@@ -34,6 +38,19 @@ let registerAuthorityHost: ((server: McpServer) => void) | undefined;
 // dispatcher ACL all execute their maintained implementations.
 vi.mock('@papercusp/db-org', async original => ({
   ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => {
+    if (!authorityDb) throw new Error('Private authority database unavailable');
+    return { sql: authorityDb.db.adminSql };
+  },
+  getOrgPgApp: () => {
+    if (!authorityDb) throw new Error('Private authority database unavailable');
+    return { sql: authorityDb.db.appSql };
+  },
+  // No fallback may open an inherited production connection, even on failure.
+  createDedicatedOrgPg: () => { throw new Error('Private authority fixture forbids extra pools'); },
+  getOrgPgListener: () => { throw new Error('Private authority fixture forbids listener pools'); },
+  getOrgPgLosslessBigint: () => { throw new Error('Private authority fixture forbids extra pools'); },
+  getHarnessPg: () => { throw new Error('Private authority fixture forbids harness pools'); },
   withWorkspace: async (workspace: string, callback: (tx: unknown) => Promise<unknown>) => {
     if (!authorityDb) throw new Error('Private authority database unavailable');
     return authorityDb.db.appSql.begin(async tx => {
@@ -42,6 +59,14 @@ vi.mock('@papercusp/db-org', async original => ({
     });
   },
 }));
+// This fixture mounts only the maintained report reader, not the operator's
+// unrelated tools/list catalogue and their runtime boot side effects.
+vi.mock('./agent-tools/operator-tool-catalogue', () => ({
+  loadOperatorToolCatalogue: async () => { await import('./agent-tools/reports/get'); },
+}));
+// Initialize negotiation remains SDK/host-owned. Memory/model enrichment is an
+// unrelated external dependency and must never start inside this offline rig.
+vi.mock('./memory/mcp-prelude', () => ({ buildMcpPrelude: async () => null }));
 vi.mock('./endpoint-route/routes/transport/_mcp-host', async original => ({
   ...await original<typeof import('./endpoint-route/routes/transport/_mcp-host')>(),
   registerMcpHost: (server: McpServer) => {
@@ -302,28 +327,29 @@ it('withholds the private bearer from missing and unobserved call metadata', asy
   } finally { await client.close(); await host.close(); }
 });
 
-it('real Claude engine joins accepted input, PG possession, host principal and current ACL without inventing a billing turn', async () => {
+it('real Claude engine joins accepted input, PG possession, host principal and current ACL without inventing a billing turn: canonical-host', async () => {
   const binary = resolveAgentBinarySync('claude');
   expect(binary, 'installed Claude required; no protocol peer substitution').toBeTruthy();
   const dir = mkdtempSync(join(tmpdir(), 'claude-engine-authority-'));
   const nativeId = randomUUID(), owner = 'su-private-claude-authority', workspaceId = 'sql-mining-test';
-  const harness = 'mining-test', canonical = 'native-authority:inspect', nativeName = 'mcp__papercusp-su__native_authority_inspect';
+  const harness = 'mining-test', canonical = 'reports:get';
+  const nativeName = 'mcp__papercusp-su__reports_get';
   const hash = (value: string) => createHash('sha256').update(value).digest('hex');
   const promptFile = join(dir, 'su.md');
   writeFileSync(promptFile, 'Private offline SU authority integration.\n'.repeat(100));
-  let engine: ClaudeSuEngine | undefined, allowed = true, requests = 0;
+  let engine: ClaudeSuEngine | undefined, requests = 0;
   let pg: DedicatedNativePg | undefined;
   const oldAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+  const oldPapercuspHome = process.env.PAPERCUSP_HOME;
+  process.env.PAPERCUSP_HOME = dir;
+  writeFileSync(join(dir, 'superuser-token'), 'private-fixture-operator-token', { mode: 0o600 });
   let phase = 'private-pg';
   const errors: string[] = [], bearerCopies: string[] = [], events: SDKMessage[] = [];
   const bodies: unknown[] = [], observed: Array<{ callId: string; principal: string | undefined; ok: boolean }> = [];
   const calls = ['toolu_authority_allowed', 'toolu_authority_revoked'];
-  const args = { harness, query: 'private query', session_id: 'model-forged-session' };
-  const fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'authorized private result' }] }));
-  const authorize = vi.fn(async () => ({ allow: allowed, reason: 'private ACL revoked' }));
-  const target: ProjectedTool = { pluginName: 'native-authority', description: 'Private authority test',
-    inputSchema: { type: 'object' }, capabilities: [], expose: { mcp: { name: canonical } },
-    requirePrincipal: true, authorize, fn };
+  let args: Record<string, unknown> = {};
+  let reportTool: ProjectedTool | undefined, originalReportFn: ProjectedTool['fn'] | undefined;
+  const handlerPrincipals: unknown[] = [];
   const api = createServer(async (request, response) => {
     try {
       let text = ''; for await (const chunk of request) text += chunk;
@@ -352,55 +378,74 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
     const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId,
       authMethod: 'bearer-token' as const, trust: 'trusted' as const, capabilities: new Set(['*']) };
     const resolvePrincipal = vi.fn(async () => principal);
-    registerProjectedTool(target);
+    {
+      const report = await publishReport(db.adminSql, { workspaceId, title: 'Private native ACL fixture',
+        bodyMd: 'private canonical body', visibility: 'workspace' }, { authorOwnerId: 'another-author' });
+      args = { id: report.reportId };
+      await import('./agent-tools/reports/get');
+      reportTool = lookupByMcpName('reports:get');
+      if (!reportTool) throw new Error('Production reports:get unavailable');
+      originalReportFn = reportTool.fn;
+      const realReportFn = originalReportFn;
+      reportTool.fn = async (input, ctx) => {
+        // The per-call authority deliberately snapshots the host principal with
+        // structuredClone. Verify its authority, not the resolver's object identity.
+        expect(ctx.principal).toStrictEqual(principal);
+        handlerPrincipals.push(ctx.principal);
+        expect(ctx.requestOrigin?.nativeSession).toMatchObject({ binding: 'bound',
+          carrier: 'header:x-papercusp-native-session', candidateAdvSessionId: advSessionId });
+        // Execute the production reader and SQL visibility predicate unchanged.
+        const result = await realReportFn(input, ctx);
+        await db.adminSql`UPDATE harness_shared.report_library SET visibility='owner'
+          WHERE workspace_id=${workspaceId} AND report_id=${report.reportId}`;
+        return result;
+      };
+    }
     const readOwner = vi.fn(async () => localSuSessionHostOwner());
     _configureSuSessionRoutingForTest({ readOwner });
+    const actualHost = await vi.importActual<typeof import('./endpoint-route/routes/transport/_mcp-host')>('./endpoint-route/routes/transport/_mcp-host');
     registerAuthorityHost = server => {
-      server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'native_authority_inspect',
-        description: target.description, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] }));
-      server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-        try {
-          const callId = String(request.params._meta?.['claudecode/toolUseId']);
-          expect(calls).toContain(callId);
-          const bearer = String(extra.requestInfo?.headers?.['x-papercusp-native-runtime'] ?? '');
-          expect(bearer).not.toBe(''); bearerCopies.push(bearer);
-          expect(await verifyNativeRuntimeBearer(bearer, { workspaceId, ownerId: owner, advSessionId, provider: 'claude' })).toBe(true);
-          const spawn: BuiltSpawnContext = { workspaceId, harnessSlug: harness, role: 'operator', featureId: null,
-            chunkId: null, runId: 'private-run', spawnId: 'private-request', parentSpawnId: null,
-            uiClientId: owner, detectorSessionKey: null, advSessionId, isSuperuser: true,
-            requestOrigin: { transport: 'mcp', nativeSession: { carrier: 'header:x-papercusp-native-session',
-              binding: 'bound', candidateAdvSessionId: advSessionId, valueFingerprint: hash(nativeId), callIdFingerprint: hash(callId) } } };
-          const retained = await retainNativeRequestPrincipalForDispatch(spawn, canonical, request.params.arguments, bearer);
-          expect(retained.authenticatedPrincipal?.slug).toBe(principal.slug);
-          const ctx = { workspaceId, harnessSlug: harness, uiClientId: owner, transport: 'mcp', role: 'operator',
-            principal: retained.authenticatedPrincipal, requestOrigin: spawn.requestOrigin,
-            signal: extra.signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn() } as unknown as UnifiedToolContext;
-          const response = await runNativeMcpTargetOnOwner({ toolName: canonical, args: request.params.arguments,
-            spawn: retained, fullSource: false, structuredSource: false, indirect: false }, async () => {
-            const result = await runDispatchStack(target, canonical, request.params.arguments, ctx, { aroundInvoke: async attempt => {
-              // Native input identity is capture-only, not a fabricated native turn.
-              expect(nativeInstalledPerUseTurns.resolve(attempt)).toBeNull();
-              const append = vi.fn();
-              expect(await nativeInstalledPerUseTurns.appendAuthorizedCapture(attempt, append)).toBe(false);
-              expect(append).not.toHaveBeenCalled();
-              return attempt.invoke();
-            } });
-            observed.push({ callId, principal: retained.authenticatedPrincipal?.slug, ok: result.ok });
-            return { content: [{ type: 'text' as const, text: result.ok ? 'authorized private result' : 'private ACL denied' }], isError: !result.ok };
-          }, 20_000);
-          // The same exact-call principal cannot be borrowed a second time.
-          expect((await retainNativeRequestPrincipalForDispatch(spawn, canonical, request.params.arguments, bearer)).authenticatedPrincipal).toBeUndefined();
-          allowed = false;
-          return response;
-        } catch (error) { errors.push(String(error)); throw error; }
-      });
+      {
+        const setHandler = server.server.setRequestHandler.bind(server.server);
+        server.server.setRequestHandler = (schema, handler) => setHandler(schema, async (request, extra) => {
+          try {
+            if (request.method !== 'tools/call') return await handler(request, extra);
+            const callId = String(request.params?._meta?.['claudecode/toolUseId']);
+            const enriched = { ...extra, _meta: request.params?._meta };
+            const built = await actualHost.tryBuildSpawnContext(enriched);
+            expect(built).toMatchObject({ kind: 'ok', ctx: { workspaceId, harnessSlug: harness,
+              uiClientId: owner, advSessionId, requestOrigin: { nativeSession: { binding: 'bound',
+                valueFingerprint: hash(nativeId), callIdFingerprint: hash(callId) } } } });
+            const bearer = String(extra.requestInfo?.headers?.['x-papercusp-native-runtime'] ?? '');
+            expect(bearer).not.toBe(''); bearerCopies.push(bearer);
+            const possession = { workspaceId, ownerId: owner, advSessionId, provider: 'claude' as const };
+            expect(await verifyNativeRuntimeBearer(bearer, possession)).toBe(true);
+            expect(await verifyNativeRuntimeBearer('invalid-private-bearer', possession)).toBe(false);
+            expect(await verifyNativeRuntimeBearer(bearer, { ...possession, advSessionId: advSessionId + 1 })).toBe(false);
+            const result = await handler(request, extra);
+            const text = JSON.stringify(result);
+            if (!text.includes(observed.length === 0 ? 'private canonical body' : 'access_denied')) {
+              throw new Error(`Canonical tools/call result: ${text.slice(0, 6000)}`);
+            }
+            expect(text).toContain(observed.length === 0 ? 'private canonical body' : 'access_denied');
+            if (observed.length > 0) expect(text).not.toContain('private canonical body');
+            observed.push({ callId, principal: principal.slug, ok: observed.length === 0 });
+            if (built.kind !== 'ok') throw new Error('Verified native spawn missing');
+            expect((await retainNativeRequestPrincipalForDispatch(built.ctx, canonical, request.params?.arguments, bearer)).authenticatedPrincipal).toBeUndefined();
+            return result;
+          } catch (error) { errors.push(String(error)); throw error; }
+        });
+        actualHost.registerMcpHost(server);
+        return;
+      }
     };
     api.listen(0, '127.0.0.1'); await once(api, 'listening');
     const address = api.address(); if (!address || typeof address === 'string') throw new Error('Private API unavailable');
     const boot = { status: 'ok', specificationRevision: 'fixture-spec', stateRevision: 'fixture-state', compositionSource: 'blueprint',
       agent: 'claude', sessionId: advSessionId, nativeSessionId: nativeId, workspaceId, harnessSlug: harness, planSlug: null,
       codexHome: null, coordExtPath: null, cwd: dir, promptFile,
-      envelopeEnv: { PAPERCUSP_SID: owner, PAPERCUSP_WORKSPACE: workspaceId, CLAUDE_CONFIG_DIR: dir },
+      envelopeEnv: { PAPERCUSP_SID: owner, PAPERCUSP_WORKSPACE: workspaceId, CLAUDE_CONFIG_DIR: dir,
+        PAPERCUSP_TOOLS: canonical, PAPERCUSP_TOOLS_COMPACT: '', PAPERCUSP_CONTEXT_TIER: 'full' },
     } satisfies BootstrapSuResult;
     phase = 'engine-startup';
     engine = startClaudeSuEngine(boot, { operation: 'created', backend: 'claude', advSessionId, ownerId: owner,
@@ -436,7 +481,7 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
     await vi.waitFor(() => expect(events.some(event => event.type === 'result')).toBe(true), { timeout: 20_000 });
     expect(errors).toEqual([]);
     expect(observed).toEqual(calls.map((callId, index) => ({ callId, principal: principal.slug, ok: index === 0 })));
-    expect(fn).toHaveBeenCalledOnce(); expect(authorize).toHaveBeenCalledTimes(2);
+    expect(handlerPrincipals).toHaveLength(2);
     expect(readOwner).toHaveBeenCalledTimes(2);
     expect(resolvePrincipal.mock.calls.length).toBeGreaterThanOrEqual(4);
     expect(events).toContainEqual(expect.objectContaining({ type: 'user', session_id: nativeId, parent_tool_use_id: null }));
@@ -447,17 +492,22 @@ it('real Claude engine joins accepted input, PG possession, host principal and c
       nativeSessionFingerprint: hash(nativeId), callIdFingerprint: hash(calls[1]!), toolName: canonical,
       arguments: args, runtimeBearer: bearerCopies[0]! })).toBeNull();
   } catch (error) {
-    throw new Error(`Private Claude authority integration failed during ${phase}`, { cause: error });
+    throw new Error(`Private Claude authority integration failed during ${phase}; errors=${JSON.stringify(errors)}; requests=${requests}; observed=${JSON.stringify(observed)}; eventTypes=${JSON.stringify(events.slice(-8).map(event => event.type))}`, { cause: error });
   } finally {
     try {
       if (engine) { await engine.close(); engine.adapter.dispose(); }
       api.closeAllConnections(); if (api.listening) await new Promise<void>((resolve, reject) => api.close(error => error ? reject(error) : resolve()));
-      unregisterProjectedToolsForPlugin('native-authority'); registerAuthorityHost = undefined;
+      registerAuthorityHost = undefined;
+      if (reportTool && originalReportFn) reportTool.fn = originalReportFn;
       _configureSuSessionRoutingForTest();
+      await flushPendingTelemetry();
+      await drainDetached();
       await authorityDb?.cleanup(); authorityDb = undefined;
     } finally {
       if (oldAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
       else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = oldAdminUrl;
+      if (oldPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = oldPapercuspHome;
       await pg?.stop();
       rmSync(dir, { recursive: true, force: true });
     }
