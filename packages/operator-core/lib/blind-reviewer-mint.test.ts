@@ -28,6 +28,7 @@ import {
 } from './blind-reviewer-mint';
 import { INTERNAL_BLIND_REVIEW_RESUME } from './blind-review-session-bindings';
 import type { createBlindReviewSessionBinding } from './blind-review-session-bindings';
+import type { FreshLaunchSessionProbe } from './agent-launch-core';
 import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
 
 const REPO = resolve(__dirname, '../../..');
@@ -615,6 +616,80 @@ describe('mintBlindGapReviewer', () => {
     expect(d.launcher).not.toHaveBeenCalled();
     expect(d.handler).not.toHaveBeenCalled();
     expect(d.createSessionBinding).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a completed launch whose verifier timed out, including same-key replay', async () => {
+    const d = deps();
+    const launch = { requestKind: 'capability:launch-agent', launchState: 'completed',
+      mode: 'fresh', opened: 1, failed: 0, partial: false, expectedCount: 1,
+      spawnAttempted: true, startedAt: 1700000000000, ownerIds: ['su-reviewer-1'],
+      tasks: [{ taskId: 'task-reviewer-1', ownerId: 'su-reviewer-1' }] };
+    d.handler.mockResolvedValue({ data: { launch } });
+    const probeLaunchSessions = vi.fn(async () => [{ ownerId: 'su-reviewer-1',
+      advSessionId: 42, sessionId: 'native-review-1' }] as FreshLaunchSessionProbe[]);
+    const input = { slug: SLUG, harness: 'papercusp', requestKey: 'same-request', ctx: { workspaceId: 'ws-1' } };
+    expect(await mintBlindGapReviewer(input, { ...d.deps, probeLaunchSessions }))
+      .toMatchObject({ ok: true, launchStatus: 'bound', binding: { advSessionId: 42, nativeSessionId: 'native-review-1' } });
+    d.handler.mockResolvedValue({ data: { deduped: true, launch: { ...launch, deduped: true } } });
+    expect(await mintBlindGapReviewer(input, { ...d.deps, probeLaunchSessions }))
+      .toMatchObject({ ok: true, launchStatus: 'bound', binding: { reviewerOwnerId: 'su-reviewer-1' } });
+    expect(probeLaunchSessions).toHaveBeenCalledWith({ workspaceId: 'ws-1',
+      launcherOwnerId: BLIND_GAP_REVIEW_ACTOR, since: launch.startedAt, expectedOwnerIds: ['su-reviewer-1'] });
+    expect(d.handler).toHaveBeenCalledTimes(2);
+    const keys = d.handler.mock.calls.map(call => (call as unknown as [{ idempotencyKey: string }])[0].idempotencyKey);
+    expect(keys[1]).toBe(keys[0]);
+    expect(d.createSessionBinding).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [],
+    [{ ownerId: 'su-other', advSessionId: 42, sessionId: 'native-other' }],
+    [{ ownerId: 'su-reviewer-1', advSessionId: 0, sessionId: 'native-review-1' }],
+    [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: null }],
+    [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' },
+      { ownerId: 'su-reviewer-1', advSessionId: 43, sessionId: 'native-review-2' }],
+  ].map(sessions => ({ sessions })))('keeps ambiguous completed-launch identities unbound: %j', async ({ sessions }) => {
+    const d = deps();
+    d.handler.mockResolvedValue({ data: { launch: { requestKind: 'capability:launch-agent',
+      launchState: 'completed', mode: 'fresh', opened: 1, failed: 0, partial: false,
+      expectedCount: 1, spawnAttempted: true, startedAt: 1700000000000,
+      ownerIds: ['su-reviewer-1'], tasks: [{ ownerId: 'su-reviewer-1' }] } } });
+    const probeLaunchSessions = vi.fn(async () => sessions as FreshLaunchSessionProbe[]);
+    expect(await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } },
+      { ...d.deps, probeLaunchSessions })).toMatchObject({ ok: true, launchStatus: 'uncertain', binding: null });
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+    expect(d.handler).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { launchState: 'spawning' }, { partial: true }, { spawnAttempted: false },
+    { tasks: [{ ownerId: 'su-other' }] }, { startedAt: 0 },
+    { freshVerdict: { sessions: [] } },
+  ])('does not reconcile incomplete or contradictory launch evidence: %j', async changed => {
+    const d = deps();
+    d.handler.mockResolvedValue({ data: { launch: { requestKind: 'capability:launch-agent',
+      launchState: 'completed', mode: 'fresh', opened: 1, failed: 0, partial: false,
+      expectedCount: 1, spawnAttempted: true, startedAt: 1700000000000,
+      ownerIds: ['su-reviewer-1'], tasks: [{ ownerId: 'su-reviewer-1' }], ...changed } } });
+    const probeLaunchSessions = vi.fn(async () => [] as FreshLaunchSessionProbe[]);
+    expect(await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } },
+      { ...d.deps, probeLaunchSessions })).toMatchObject({ ok: true, launchStatus: 'uncertain' });
+    expect(probeLaunchSessions).not.toHaveBeenCalled();
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+  });
+
+  it('reports an unavailable reconciliation probe without launching another reviewer', async () => {
+    const d = deps();
+    d.handler.mockResolvedValue({ data: { launch: { requestKind: 'capability:launch-agent',
+      launchState: 'completed', mode: 'fresh', opened: 1, failed: 0, partial: false,
+      expectedCount: 1, spawnAttempted: true, startedAt: 1700000000000,
+      ownerIds: ['su-reviewer-1'], tasks: [{ ownerId: 'su-reviewer-1' }] } } });
+    const probeLaunchSessions = vi.fn(async (): Promise<FreshLaunchSessionProbe[]> => { throw new Error('probe unavailable'); });
+    expect(await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } },
+      { ...d.deps, probeLaunchSessions })).toMatchObject({ ok: false, code: 'session_binding_failed',
+      message: expect.stringContaining('probe unavailable') });
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+    expect(d.handler).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed if the existing-binding lookup is unavailable', async () => {
