@@ -2028,12 +2028,16 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
 
   it('applies fleet:status tiers at the actual CallToolRequestSchema boundary', async () => {
     const handlerContexts: Array<Record<string, unknown>> = [];
+    const memberIds = (count: number, first = 0) => Array.from({ length: count }, (_, index) => {
+      const id = String(first + index);
+      return `su-${id.padStart(8, '0')}-0000-0000-0000-${id.padStart(12, '0')}`;
+    });
     const source = {
       ok: true,
       slug: 'rocket',
       leaderId: 'su-tier-leader',
-      memberCount: 20,
-      members: Array.from({ length: 20 }, (_, index) => ({
+      memberCount: 59,
+      members: Array.from({ length: 59 }, (_, index) => ({
         agentId: index === 0 ? 'su-tier-leader' : `su-tier-member-${index}`,
         label: `Member ${index}`,
         fleetRole: index === 0 ? 'leader' : 'member',
@@ -2046,12 +2050,75 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         lastToolCallAt: '2026-11-01T12:00:00Z',
       })),
       launchTransaction: {
+        requestedMemberIds: memberIds(53, 10000),
+        failed: [],
         governor: {
           history: Array.from({ length: 32 }, (_, index) => ({
             at: index,
             action: 'observe',
-            reason: `event ${index}`,
+            reason: `event ${index} ${'x'.repeat(500)}`,
           })),
+          terminalVerdict: {
+            outcome: 'unknown',
+            action: 'maintain',
+            decidedAt: 1,
+            target: 50,
+            productiveCapacityFloor: 1,
+            liveMemberIds: memberIds(53, 20000),
+            workerReadyMemberIds: memberIds(3, 21000),
+            unreadyMemberIds: [],
+            unverifiedMemberIds: memberIds(50, 22000),
+            reason: 'live members without typed worker attestation remain unknown',
+          },
+        },
+      },
+      populationLifecycle: {
+        schemaVersion: 'fleet-population-lifecycle.v1',
+        fleet: 'rocket',
+        currentRunnableRoster: { census: { total: 52 }, ownerIds: memberIds(52, 30000) },
+        relevantRoster: { census: { total: 54 }, ownerIds: memberIds(54, 31000) },
+        everMembers: {
+          population: 'ever-members',
+          basis: 'membership events',
+          writer: 'harness_shared.fleet_membership_events',
+          available: true,
+          counted: 2705,
+          ownerIds: memberIds(2705, 40000),
+        },
+        membersLost: {
+          population: 'ever-members-absent-from-roster',
+          basis: 'ever members minus every identity still present on the fleet roster',
+          writer: 'harness_shared.fleet_membership_events',
+          available: true,
+          count: 2646,
+          ownerIds: memberIds(2646, 43000),
+          timing: {
+            status: 'not-measured',
+            reason: 'current roster read does not provide last activity for membersLost',
+            insteadRead: 'coord_presence.last_active_at per member',
+          },
+        },
+        target: { count: 50 },
+        liveness: { status: 'measured' },
+        claimFlow: { status: 'measured' },
+      },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(250_000);
+    const fullSource = {
+      ...source,
+      memberCount: 20,
+      members: source.members.slice(0, 20),
+      populationLifecycle: undefined,
+      launchTransaction: {
+        ...source.launchTransaction,
+        requestedMemberIds: memberIds(20, 10000),
+        governor: {
+          ...source.launchTransaction.governor,
+          terminalVerdict: {
+            ...source.launchTransaction.governor.terminalVerdict,
+            liveMemberIds: memberIds(20, 20000),
+            unverifiedMemberIds: memberIds(20, 22000),
+          },
         },
       },
     };
@@ -2083,11 +2150,25 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       const memberCap = tier === 'standard' ? 12 : 8;
       const historyCap = tier === 'standard' ? 24 : 12;
       const members = out!.members as Array<Record<string, unknown>>;
-      const governor = (out!.launchTransaction as { governor: Record<string, unknown> }).governor;
+      const transaction = out!.launchTransaction as Record<string, unknown> & { governor: Record<string, unknown> };
+      const governor = transaction.governor;
       expect(members).toHaveLength(memberCap + 1);
       expect(members.at(-1)?.agentId).toBe('(truncated)');
       expect(governor.history as unknown[]).toHaveLength(historyCap);
       expect(governor.historyTotal).toBe(32);
+      expect(transaction.requestedMemberIds).toHaveLength(memberCap);
+      expect(transaction.requestedMemberIdsTotal).toBe(53);
+      const verdict = governor.terminalVerdict as Record<string, unknown>;
+      expect(verdict.liveMemberIds).toHaveLength(memberCap);
+      expect(verdict.liveMemberIdsTotal).toBe(53);
+      expect(verdict.unverifiedMemberIds).toHaveLength(memberCap);
+      expect(verdict.unverifiedMemberIdsTotal).toBe(50);
+      const lifecycle = out!.populationLifecycle as Record<string, unknown>;
+      const lost = lifecycle.membersLost as Record<string, unknown>;
+      expect(lost.count).toBe(2646);
+      expect(lost.ownerIds).toHaveLength(memberCap);
+      expect(lost.ownerIdsTruncated).toBe(2646);
+      expect(JSON.stringify(out).length).toBeLessThan(30_000);
     };
 
     await withSdkHost(
@@ -2117,7 +2198,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
           // envelope. Exercise that real registration path here: a raw JSON
           // ToolResult takes a separate MCP-only re-encoding branch and can
           // pass this boundary without proving the production data shaper ran.
-          return { data: source };
+          return { data: context.payloadTierOverride === 'full' ? fullSource : source };
         };
 
         try {
