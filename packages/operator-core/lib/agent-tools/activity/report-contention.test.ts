@@ -59,7 +59,7 @@ describe('activity:report — telemetry INSERT never blocks the hook response (E
     );
 
     const res = await run(
-      { owner: 'su-abc', kind: 'tool', tool_name: 'Edit', summary: 'edited a file' },
+      { hook_bundle: true, owner: 'su-abc', kind: 'tool', tool_name: 'Edit', summary: 'edited a file' },
       { metadata },
     );
     const content = (res as { content: { text: string }[] }).content;
@@ -91,7 +91,7 @@ describe('activity:report — telemetry INSERT never blocks the hook response (E
 
   it('a transient lock_timeout (55P03) is a SOFT drop, not a hard tool error', async () => {
     h.append.mockRejectedValueOnce(lockTimeoutError());
-    const res = await run({ owner: 'su-abc', kind: 'tool', tool_name: 'Edit', summary: 'edited a file' });
+    const res = await run({ hook_bundle: true, owner: 'su-abc', kind: 'tool', tool_name: 'Edit', summary: 'edited a file' });
     const content = (res as { isError?: boolean; content: { text: string }[] }).content;
     // The append settles independently of the response; the receipt states that persistence is async.
     expect((res as { isError?: boolean }).isError).toBeUndefined();
@@ -100,7 +100,7 @@ describe('activity:report — telemetry INSERT never blocks the hook response (E
 
   it('a statement_timeout (57014) is likewise a soft drop', async () => {
     h.append.mockRejectedValueOnce(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }));
-    const res = await run({ owner: 'su-abc', kind: 'tool', tool_name: 'Bash', summary: 'ran a command' });
+    const res = await run({ hook_bundle: true, owner: 'su-abc', kind: 'tool', tool_name: 'Bash', summary: 'ran a command' });
     const content = (res as { content: { text: string }[] }).content;
     expect(JSON.parse(content[0].text)).toMatchObject({ ok: true, id: null, persistence: 'async' });
   });
@@ -109,14 +109,17 @@ describe('activity:report — telemetry INSERT never blocks the hook response (E
     const error = new Error('relation does not exist');
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
     h.append.mockRejectedValueOnce(error);
-    const res = await run({ owner: 'su-abc', kind: 'tool', tool_name: 'Edit', summary: 'x' });
+    const res = await run({ hook_bundle: true, owner: 'su-abc', kind: 'tool', tool_name: 'Edit', summary: 'x' });
     expect((res as { isError?: boolean }).isError).toBeUndefined();
     expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('relation does not exist'));
   });
 
-  it('the happy path returns an async receipt instead of waiting for the INSERT id', async () => {
+  it('the plain report awaits and preserves the INSERT id receipt', async () => {
     const res = await run({ owner: 'su-abc', kind: 'tool', tool_name: 'Read', summary: 'read a file' });
     const content = (res as { content: { text: string }[] }).content;
-    expect(JSON.parse(content[0].text)).toMatchObject({ ok: true, id: null, persistence: 'async' });
+    const receipt = JSON.parse(content[0].text);
+    expect(receipt).toMatchObject({ ok: true, id: '42' });
+    expect(receipt).not.toHaveProperty('persistence');
+    expect(h.append).toHaveBeenCalledOnce();
   });
 });
