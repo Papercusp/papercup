@@ -50,6 +50,22 @@ describe('production managed tick alarm adapter', () => {
     expect(workspaceBackgroundActivityAllowed).not.toHaveBeenCalled();
   });
 
+  it('withholds malformed scoped registrations before reading any workspace policy', async () => {
+    vi.useFakeTimers();
+    installManagedTickAlarm();
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(true);
+    const tick = vi.fn();
+    for (const [name, workspaceId, featureId] of [
+      ['unknown-workspace', '*', `activity-${'a'.repeat(64)}`],
+      ['missing-feature', 'workspace-a', ''],
+    ]) managedSetInterval(name, 1000, tick, {
+      category: 'global-sweep', activity: { kind: 'workspace', workspaceId, featureId },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tick).not.toHaveBeenCalled();
+    expect(workspaceBackgroundActivityAllowed).not.toHaveBeenCalled();
+  });
+
   it('withholds control declarations without a reason and failed optional-policy reads', async () => {
     vi.useFakeTimers();
     configureScheduledRegistry({ log: vi.fn() });

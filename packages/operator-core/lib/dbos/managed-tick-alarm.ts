@@ -18,6 +18,8 @@ export function installManagedTickAlarm(deps: AlarmAttentionDeps = {}): void {
       if (activity.kind === 'required-control')
         return typeof activity.reason === 'string' && activity.reason.trim().length > 0;
       if (activity.kind !== 'workspace') return false;
+      if (typeof activity.workspaceId !== 'string' || !activity.workspaceId.trim() || activity.workspaceId === '*'
+        || typeof activity.featureId !== 'string' || !/^activity-[a-f0-9]{64}$/.test(activity.featureId)) return false;
       return import('../device-operator-actions').then(({ workspaceBackgroundActivityAllowed }) =>
         workspaceBackgroundActivityAllowed(activity.workspaceId, activity.featureId));
     },
