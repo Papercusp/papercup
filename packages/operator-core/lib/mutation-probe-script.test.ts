@@ -233,6 +233,51 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(retained.every((entry: { path: string }) => !existsSync(entry.path))).toBe(true);
   });
 
+  it.each([
+    ['direct', 'subject'], ['direct', 'cwd'],
+    ['npm', 'subject'], ['npm', 'cwd'],
+    ['pnpm', 'subject'], ['pnpm', 'cwd'],
+  ])('refuses a %s guard with an immutable archive above the %s before baseline', (route, location) => {
+    const archive = join(dir, 'immutable archive');
+    const nested = join(archive, 'nested', 'fixture');
+    mkdirSync(nested, { recursive: true });
+    const archiveMarker = join(archive, '.verifier-source.json');
+    const receipt = JSON.stringify({ source: 'immutable fixture' });
+    writeFileSync(archiveMarker, receipt);
+    const file = location === 'subject' ? join(nested, 'subject.txt') : subject;
+    writeFileSync(file, ORIGINAL);
+    const cwd = location === 'cwd' ? nested : dir;
+    const marker = join(dir, 'guard-started');
+    const launcher = join(dir, route === 'direct' ? 'test-files.mjs' : 'guard-marker.mjs');
+    writeFileSync(launcher, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'started');\n`);
+    const guard = route === 'direct'
+      ? `node ${JSON.stringify(launcher)} {}`
+      : `node ${JSON.stringify(launcher)} {} && ${route} run test:file -- provider.test.ts`;
+    const { code, out } = runProbeIO([
+      '--file', file, '--mutate', 's/beta/BROKEN/', '--test', guard,
+    ], process.env, cwd);
+    expect(code, out).toBe(2);
+    expect(out).toContain('reason=immutable-verifier-archive');
+    expect(out).toContain('--materialize-only');
+    expect(out).not.toContain('running baseline guard');
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(file, 'utf8')).toBe(ORIGINAL);
+    expect(readFileSync(archiveMarker, 'utf8')).toBe(receipt);
+  });
+
+  it('keeps ordinary redirectable guards usable inside an immutable archive', () => {
+    writeFileSync(join(dir, '.verifier-source.json'), '{}\n');
+    const marker = join(dir, 'guard-phases');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BROKEN/',
+      '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q beta {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('refuses a CommonJS npm guard that propagates the committed loader before starting its baseline', () => {
     const repo = join(dir, 'cjs-npm-guard');
     mkdirSync(repo);

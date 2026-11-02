@@ -1131,12 +1131,20 @@ fi
 # A writable TMPDIR does not establish that npm's independent, host-stable
 # mutex root can allocate its metadata. Check both before spending a baseline,
 # and use the existing root resolver rather than deriving a second lock domain.
-if ! node --input-type=module - "$SCRATCH" "$FILE" "$TEST_CMD" "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/lib/fs-mutex.mjs" <<'JS'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+if ! node --input-type=module - "$SCRATCH" "$FILE" "$TEST_CMD" "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/lib/fs-mutex.mjs" "$ORIGINAL_CWD" <<'JS'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const [scratch, subject, guard, mutexModule] = process.argv.slice(2);
+const [scratch, subject, guard, mutexModule, cwd] = process.argv.slice(2);
 let rootKind = 'scratch';
+function findImmutableArchive(root) {
+  for (;;) {
+    if (existsSync(join(root, '.verifier-source.json'))) return root;
+    const parent = dirname(root);
+    if (parent === root) return null;
+    root = parent;
+  }
+}
 function checkRoot(root, copySubject) {
   mkdirSync(root, { recursive: true });
   const probe = mkdtempSync(join(root, '.mutation-probe-preflight-'));
@@ -1148,6 +1156,20 @@ function checkRoot(root, copySubject) {
   }
 }
 try {
+  // The managed router validates the whole immutable archive. Its deliberate
+  // mutant therefore fails source custody before it can produce ledger proof.
+  // Reject this incompatible route before paying for either baseline; ordinary
+  // redirectable guards do not consume the archive through that validator.
+  const managedTestGuard = /(?:^|[\s/"'])test-files\.mjs(?=$|[\s"'])|\b(?:npm|pnpm)\s+run\s+test:file(?=$|[\s"'])/.test(guard);
+  if (managedTestGuard) {
+    const archive = [dirname(realpathSync(subject)), realpathSync(cwd)]
+      .map(findImmutableArchive).find(Boolean);
+    if (archive) {
+      console.error('MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=immutable-verifier-archive');
+      console.error(`mutation-probe: the managed guard would reject the intentional mutant inside immutable verifier archive ${archive}. Keep archive validation strict. Prepare a Git checkout with scripts/lint-as-committed.mjs --materialize-only and run the probe there.`);
+      process.exit(2);
+    }
+  }
   // A native CommonJS import bypasses Vitest's module transforms. Propagating
   // the committed-source loader through NODE_OPTIONS therefore refuses the
   // intentional mutant before any assertion runs (EI-26005614073216227).
