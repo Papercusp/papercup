@@ -50,7 +50,8 @@ describe('archiveBlindReviewScratchPlans — real archive SQL', () => {
     expect(await run()).toEqual({ prefix, archived: 2 });
     const rows = await fx.admin<{ plan_slug: string; archived: boolean }[]>`
       SELECT plan_slug, archived FROM harness_shared.harness_plans
-       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS}`;
+       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS}
+         AND plan_slug = ANY(${slugs})`;
     expect(Object.fromEntries(rows.map(r => [r.plan_slug, r.archived]))).toEqual({
       [`${prefix}one`]: true, [`${prefix}two`]: true, [`${otherReviewer}three`]: false, [REVIEWED]: false, [`x${prefix}four`]: false,
     });
