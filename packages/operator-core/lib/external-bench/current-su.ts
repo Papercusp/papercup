@@ -1893,7 +1893,8 @@ export interface CurrentSuBenchObservations {
 }
 export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'admit'> {
   verifyGenerationBudget?(budget: GenerationBudget, taskId: string): {
-    frozenBudget: GenerationBudget; topology?: 'repeated-session'; sessionBudget?: CurrentBenchSessionBudget;
+    frozenBudget: GenerationBudget; topology?: 'repeated-session' | 'solo'; sessionBudget?: CurrentBenchSessionBudget;
+    capabilityControl?: ReturnType<typeof currentBenchSoloCapabilityControl>;
   };
   releaseGateway?(): Promise<void>;
   collectCost?: BenchHarnessOps['collectCost'];
@@ -1972,6 +1973,26 @@ function currentBenchLedgerEnabled(arm: CurrentBenchmarkProtocol['arms'][number]
   // Uncontrolled legacy runs keep their existing workflow. Controlled runs
   // derive exposure only from the frozen arm, never a caller launch option.
   return arm.control?.capabilities['work-item-ledger'] !== 'off';
+}
+/** Compile only controls the maintained native launch actually enforces. This
+ * is a ceiling, not evidence that an agent used a capability. Unsupported on
+ * toggles must fail before admission; declaring a topology cannot enable them. */
+export function currentBenchSoloCapabilityControl(arm: CurrentBenchmarkProtocol['arms'][number]) {
+  if (arm.control?.topology !== 'solo' || arm.agent !== 'codex')
+    throw new Error('Native capability control requires a frozen Codex solo arm.');
+  const unsupported = Object.entries(arm.control.capabilities)
+    .filter(([capability, toggle]) => toggle === 'on' && capability !== 'work-item-ledger')
+    .map(([capability]) => capability);
+  if (unsupported.length)
+    throw new Error(`Native capability control is unavailable for: ${unsupported.join(', ')}.`);
+  return Object.freeze({ topology: 'solo' as const,
+    capabilities: Object.freeze({ ...arm.control.capabilities }),
+    // No managed carry, recall, dispatch, consult or ambient context in this
+    // control. Observer ownership remains outside the experimental ceiling.
+    toolNames: Object.freeze(currentBenchLedgerEnabled(arm)
+      ? ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']
+      : ['coord:whoami']),
+  });
 }
 function currentBenchTaskInstruction(handle: BenchHarnessHandle, ledger: boolean): string {
   const task = 'Resolve the assigned benchmark task in this repository. Preserve your work in the checkout.';
@@ -2088,13 +2109,19 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
         if (opts.signal?.aborted) return { disposition: 'timeout', detail: 'Benchmark cancelled before launch.', armMeta: { currentExecution: record } };
         const task = registeredTasks.get(handle.slug);
         if (!task) throw new Error('Current benchmark task has no registered assignment.');
-        // A controlled protocol must name the topology this runner really executes. The stock driver IS the
-        // stock-native reference (every product capability off, schema-enforced). The su driver declares
-        // none: its assignment confinement (denyOutside + denyAmbientContext below) does not yet derive
-        // which product capabilities it delivers, so a controlled su arm is refused rather than trusted.
+        // A controlled protocol must name the topology the host actually
+        // executes. Only a verified native port may declare solo delivery;
+        // other treatment controls remain unavailable rather than approximated.
         const allowance = ports.verifyGenerationBudget?.(budget, task.instanceId);
         if (allowance?.topology === 'repeated-session' && kind !== 'stock-native')
           throw new Error('Repeated-session allowances require the stock native driver.');
+        if (allowance?.topology === 'solo') {
+          if (kind !== 'current-su' || canonicalJson(allowance.capabilityControl) !==
+              canonicalJson(currentBenchSoloCapabilityControl(currentBenchmarkProtocolSchema.parse(opts.preregistration.config)
+                .arms.find(arm => arm.id === opts.armId)!)))
+            throw new Error('Solo native allowance lacks its exact frozen capability control.');
+          record.nativeCapabilityControl = allowance.capabilityControl;
+        }
         const frozen = requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId,
           budget: allowance?.frozenBudget ?? budget,
           topology: allowance?.topology ?? (kind === 'stock-native' ? 'stock-native-reference' : undefined) });
@@ -3236,6 +3263,10 @@ export function liveCurrentSuBenchPorts(
       }
       if (canonicalJson(budget) !== canonicalJson(host.arm.generationBudget))
         throw new Error('Current benchmark admission differs from its host assignment or budget.');
+      if (host.arm.control?.topology === 'solo') {
+        const capabilityControl = currentBenchSoloCapabilityControl(host.arm);
+        return { frozenBudget: { ...host.arm.generationBudget }, topology: 'solo', capabilityControl };
+      }
       return { frozenBudget: { ...host.arm.generationBudget } };
     },
     admit: async (handle, budget, taskId) => {
@@ -3296,6 +3327,8 @@ export function liveCurrentSuBenchPorts(
           !args.brief.endsWith(readRestoredBenchmarkContext(input).contextText))
         throw new Error('Benchmark native launch requires its physically restored frozen context.');
       const ledger = currentBenchLedgerEnabled(requireBinding().arm);
+      const control = requireBinding().arm.control
+        ? currentBenchSoloCapabilityControl(requireBinding().arm) : undefined;
       const instruction = currentBenchTaskInstruction({ slug: input.binding.harnessSlug,
         featureId: input.workItemId, worktreePath: input.checkout }, ledger);
       if (!args.brief.startsWith(`${instruction}\n\n`))
@@ -3311,7 +3344,7 @@ export function liveCurrentSuBenchPorts(
       // coding tools. Discovery, remote brains, arbitrary server execution and
       // lifecycle fan-out cannot cause unmetered inference for this assignment.
       const confinement = Object.freeze({ denyTools: Object.freeze([] as string[]),
-        denyOutside: Object.freeze(ledger
+        denyOutside: control?.toolNames ?? Object.freeze(ledger
           ? ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']
           : ['coord:whoami', 'session:request-compaction']),
         denyAmbientContext: true as const,
