@@ -19,11 +19,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { Hono } from 'hono';
 import { listAllProjectedTools, projectedToolProviderVersion, registerProjectedTool, unregisterProjectedToolsForPlugin } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface } from '@papercusp/testing-shell/census';
 import { censusProviders } from './provider-registry';
 import { assertRegistryNonEmpty } from './providers/_non-empty';
-import { honoRoutesProvider, HTTP_ROUTE_KIND } from './providers/hono-routes';
+import { enumerateMountedHonoSurfaces, honoRoutesProvider, HTTP_ROUTE_KIND } from './providers/hono-routes';
 import { enumerateProjectedHandlerSurfaces, mcpToolsProvider, MCP_TOOL_KIND } from './providers/mcp-tools';
 import { syncQueriesProvider, SYNC_QUERY_KIND } from './providers/sync-queries';
 import { routeRegistrationOrder } from '../endpoint-route/register';
@@ -113,6 +114,44 @@ describe.each([
 });
 
 describe('hono-routes population', () => {
+  it('captures actual raw and nested Hono routes, middleware and duplicate handlers without dispatch', async () => {
+    let calls = 0;
+    const app = new Hono(), nested = new Hono();
+    app.use('*', async (_c, next) => { calls++; await next(); });
+    app.post('/raw', c => { calls++; return c.text('raw'); });
+    nested.get('/probe', async (_c, next) => { calls++; await next(); });
+    nested.get('/probe', c => { calls++; return c.text('nested'); });
+    app.route('/prefix', nested);
+    const captured = enumerateMountedHonoSurfaces(app, 'actual-host');
+    expect(calls).toBe(0);
+    expect(captured.surfaces.map(s => s.attrs?.routeId)).toEqual(['ALL /*', 'POST /raw', 'GET /prefix/probe', 'GET /prefix/probe']);
+    expect(new Set(captured.surfaces.map(s => s.surfaceId)).size).toBe(4);
+    expect(captured.surfaces.map(s => s.attrs?.mountIndex)).toEqual([0, 1, 2, 3]);
+    expect(captured.surfaces.map(s => s.attrs?.occurrence)).toEqual([1, 1, 1, 2]);
+    expect(captured.unresolved).toEqual(['http-stack-nested-dispatch-unverified:actual-host']);
+    // Later registration cannot silently change an already captured snapshot.
+    app.get('/later', c => c.text('later'));
+    expect(captured.surfaces).toHaveLength(4);
+    expect(enumerateMountedHonoSurfaces(app, 'actual-host').surfaces).toHaveLength(5);
+    expect((await app.request('/prefix/probe')).status).toBe(200);
+    expect(calls).toBe(3);
+  });
+
+  it('retains opaque/malformed stack entries as gaps without invoking getters', () => {
+    const trap = { get routes() { throw new Error('must not execute'); } };
+    expect(enumerateMountedHonoSurfaces(trap, 'opaque').unresolved).toEqual(['http-stack-unavailable:opaque']);
+    const routes = [null, { get method() { throw new Error('must not execute'); }, path: '/' },
+      { method: 'GET', path: '/missing-handler' }];
+    Object.defineProperty(routes, '3', { get() { throw new Error('must not execute'); } });
+    const captured = enumerateMountedHonoSurfaces({ routes }, 'broken');
+    expect(captured.surfaces).toHaveLength(1);
+    expect(captured.surfaces[0].attrs).toMatchObject({ hasHandler: false, nestedDispatchCoverage: 'unknown' });
+    expect(captured.unresolved).toEqual(['http-stack-invalid-row:broken:0', 'http-stack-invalid-route:broken:1',
+      'http-stack-handler-unavailable:broken:2', 'http-stack-invalid-row:broken:3', 'http-stack-nested-dispatch-unverified:broken']);
+    expect(enumerateMountedHonoSurfaces({ routes: [] }, 'empty').unresolved).toEqual(['http-stack-empty:empty']);
+    expect(() => enumerateMountedHonoSurfaces({}, ' ')).toThrow('mount_id_required');
+  });
+
   it('is exactly the mounted route table — no invented or dropped routes', async () => {
     const surfaces = await honoRoutesProvider.enumerate(ctx);
     const mounted = routeRegistrationOrder().map((r) => `${r.method.toUpperCase()} ${r.path}`);
