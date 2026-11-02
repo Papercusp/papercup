@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-11-02T03:06:43.682Z",
+  "capturedAt": "2026-11-02T03:17:02.134Z",
   "viewport": {
     "width": 1440,
     "height": 880
@@ -362,6 +362,18 @@
       "file": "c-overview.png",
       "bounds": [],
       "overviewCards": 5
+    },
+    {
+      "direction": "b",
+      "surface": "dismissed",
+      "file": "b-dismissed.png",
+      "lifecycle": true
+    },
+    {
+      "direction": "b",
+      "surface": "chat-pinned",
+      "file": "b-chat-pinned.png",
+      "lifecycle": true
     },
     {
       "platform": "ubuntu",
