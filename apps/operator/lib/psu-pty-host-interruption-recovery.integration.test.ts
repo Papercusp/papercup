@@ -35,10 +35,13 @@ async function eventually<T>(read: () => T | undefined): Promise<T> {
 
 describe('lost host to restored native conversation', () => {
   it.each([
-    { headless: true, waiting: false, stopped: false },
-    { headless: false, waiting: true, stopped: false },
-    { headless: true, waiting: false, stopped: true },
-  ])('preserves placement=$headless wait=$waiting stop=$stopped', async scenario => {
+    { headless: true, waiting: false, stopped: false, negative: null },
+    { headless: false, waiting: true, stopped: false, negative: null },
+    { headless: true, waiting: false, stopped: true, negative: null },
+    { headless: true, waiting: false, stopped: false, negative: 'completed' },
+    { headless: true, waiting: false, stopped: false, negative: 'unknown' },
+    { headless: true, waiting: false, stopped: false, negative: 'stale' },
+  ])('preserves placement=$headless wait=$waiting stop=$stopped negative=$negative', async scenario => {
     const root = mkdtempSync(join(tmpdir(), 'interrupted-host-journey-'));
     const owner = `ih-${process.pid}-${Date.now()}`;
     const ws = 'interrupted-host-journey';
@@ -62,6 +65,8 @@ describe('lost host to restored native conversation', () => {
         process.on('SIGINT',()=>{});
         setTimeout(()=>{if (${work}) fs.appendFileSync(${JSON.stringify(transcript)}, JSON.stringify({type:'event_msg',
           timestamp:new Date().toISOString(),payload:{type:'task_started'}})+'\\n');},100);
+        ${work && scenario.negative === 'completed' ? `setTimeout(()=>fs.appendFileSync(${JSON.stringify(transcript)},
+          JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_complete'}})+'\\n'),200);` : ''}
         process.stdout.write('READY\\n'); setInterval(()=>process.stdout.write('.'),100);`;
       const hostCode = `import {hostThroughPty} from ${JSON.stringify(hostModule)};
         import {EventEmitter} from 'node:events';
@@ -96,7 +101,7 @@ describe('lost host to restored native conversation', () => {
       const original = await start(true);
       await eventually(() => {
         const meta = readMeta();
-        return meta?.execution?.phase === 'running' &&
+        return meta?.execution?.phase === (scenario.negative === 'completed' ? 'settled' : 'running') &&
           (!scenario.stopped || meta.execution.ownerStopRequested) ? meta : undefined;
       });
       if (scenario.waiting) await db.adminSql`INSERT INTO harness_shared.event_awaits
@@ -108,6 +113,11 @@ describe('lost host to restored native conversation', () => {
       const exited = new Promise(resolve => first.once('exit', resolve));
       process.kill(-first.pid!, 'SIGKILL');
       await exited;
+      if (scenario.negative === 'unknown') await db.adminSql`UPDATE harness_shared.adv_sessions
+        SET launch_spec = NULL WHERE id = ${adv.id}`;
+      if (scenario.negative === 'stale') await db.adminSql`UPDATE harness_shared.adv_sessions
+        SET session_id = 'superseding-native' WHERE id = ${adv.id}`;
+      const transcriptBeforeRecovery = readFileSync(transcript, 'utf8');
       m.launch.mockReset().mockImplementation(async (args: any) => {
         expect(args).toMatchObject({ resume: { agentId: owner }, fork: false, headless: scenario.headless });
         expect(args[Symbol.for('host-journey')]).toEqual({ ownerId: owner,
@@ -122,9 +132,17 @@ describe('lost host to restored native conversation', () => {
       });
       const result = await sweepSessionInterruptions({ workspaceId: ws,
         installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null });
-      if (scenario.stopped) {
+      if (scenario.stopped || scenario.negative) {
         expect(m.launch).not.toHaveBeenCalled();
-        expect(result.held[owner]).toBe('owner-stop');
+        if (scenario.stopped) expect(result.held[owner]).toBe('owner-stop');
+        if (scenario.negative === 'completed') expect(result.held[owner]).toBe('completed-or-idle');
+        if (scenario.negative === 'unknown') expect(result.held[owner]).toBe('launch-recipe-unknown');
+        if (scenario.negative === 'stale') expect(result.checked).toBe(0);
+        await sweepSessionInterruptions({ workspaceId: ws, installSlug: 'papercusp',
+          triggerConfig: {}, payloadTemplate: null });
+        expect(m.launch).not.toHaveBeenCalled();
+        expect(children).toHaveLength(1);
+        expect(readFileSync(transcript, 'utf8')).toBe(transcriptBeforeRecovery);
       } else {
         expect(result.restored).toContain(owner);
         expect(m.launch).toHaveBeenCalledTimes(1);
