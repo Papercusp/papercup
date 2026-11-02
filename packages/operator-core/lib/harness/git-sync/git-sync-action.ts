@@ -8881,5 +8881,8 @@ registerSystemAction(
   // `scheduling: 'on-demand'` (EI-18752496371939475): one row per HARNESS, ensured by
   // `git-sync-routine.ts` as harnesses are registered — not a standing workspace-wide row a
   // seed script creates. A workspace with no harnesses yet legitimately has zero rows.
-  { ownSteps: true, scheduling: 'on-demand' },
+  {
+    ownSteps: true, scheduling: 'on-demand',
+    requiredForControl: 'Preserves shared uncommitted work and transports recovery fixes while optional work is paused.',
+  },
 );
