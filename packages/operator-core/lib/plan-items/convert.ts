@@ -299,6 +299,7 @@ export async function findConvertedWorkItemByStamp(
   planSlug: string,
   itemId: string,
   harnessSlug: string,
+  workspaceId?: string,
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // The stamp is identical across families — match plan_slug + item_id (harness is in
@@ -321,7 +322,11 @@ export async function findConvertedWorkItemByStamp(
   const stampMatch = () =>
     sql`payload->'plan_item' IS NOT NULL
     AND payload->'plan_item'->>'plan_slug' = ${planSlug}
-    AND payload->'plan_item'->>'item_id' = ${itemId}`;
+    AND payload->'plan_item'->>'item_id' = ${itemId}
+    AND payload->'plan_item'->>'harness_slug' = ${harnessSlug}`;
+  const workspaceMatch = workspaceId
+    ? sql`workspace_id = ${workspaceId}`
+    : sql`TRUE`;
   // Same live-record preference as findImplementingWorkItem (EI-21213528544407590):
   // recency is only a tie-break, so a newer TERMINAL stamped row can never mask an
   // older stamped row that is still open. The newest terminal row remains the answer
@@ -330,7 +335,9 @@ export async function findConvertedWorkItemByStamp(
   const featureRows = await sql<{ feature_id: string; harness_slug: string }[]>`
     SELECT feature_id, harness_slug
       FROM harness_shared.harness_features_consolidated
-     WHERE harness_slug = ${harnessSlug} AND ${stampMatch()}
+     WHERE ${workspaceMatch}
+       AND harness_slug = ${harnessSlug}
+       AND ${stampMatch()}
      ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of featureRows) {
     const wi = await getWorkItem(r.feature_id, r.harness_slug);
@@ -347,6 +354,7 @@ export async function findConvertedWorkItemByStamp(
     SELECT feature_id AS issue_id
       FROM harness_shared.work_items
      WHERE item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
+       AND ${workspaceMatch}
        AND ${stampMatch()}
      ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of issueRows) {
@@ -808,7 +816,7 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     : await findImplementingWorkItem(opts.planSlug, opts.itemId);
   let edgeMissing = Boolean(node);
   if (!existing || TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
-    const stamped = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
+    const stamped = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug, opts.workspaceId);
     if (stamped && (!existing || !TERMINAL_WORK_ITEM_STATES.has(stamped.state))) {
       // Adopted from the stamp ⇒ this record carries no live implements edge
       // (one would have been returned above), so re-link it below.

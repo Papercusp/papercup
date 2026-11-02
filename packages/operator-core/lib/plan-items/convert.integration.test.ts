@@ -32,6 +32,7 @@ import { applyMigrationForTest, applyPlanItemAnchorMigrationsForTest } from '../
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
+import { checkDraftItemStartGateLive } from '../agent-tools/plans/draft-item-start-gate';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -105,6 +106,9 @@ beforeAll(async () => {
   // P-010 unification: work_items base + hfc/ei compat views (replaces hand-rolled hfc + ei).
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await applyPlanItemAnchorMigrationsForTest(rootSql);
+  await applyMigrationForTest(rootSql, fileURLToPath(new URL(
+    '../../../../libs/papercusp/libs/db/sql/832-plan-audits.sql', import.meta.url,
+  )));
   // WI-6993 / EI-19342686955096692 / migration 725: the shared fixture DDL deliberately
   // omits check constraints (see _work-items-schema.ts's doc comment — "add it in the
   // specific test, not here"). This test's whole point is proving the production
@@ -340,6 +344,36 @@ describe('findCoverageWorkItems (PG)', () => {
   });
 });
 
+describe('draft item-start gate recognizes stamped execution coverage (PG)', () => {
+  it('lets an implements-only stamped work-item continue through an unaudited draft plan', async () => {
+    const id = 'EI-draft-gate-stamped';
+    const slug = 'p-draft-gate-stamped';
+    const itemId = 'P-008';
+    const content =
+      '---\ntitle: T\nstatus: draft\n---\n\n## Phase 1 — Work\n\n- **P-008** `todo` implementation\n';
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES ('web', ${id}, 'bug', ${WS},
+                          ${rootSql.json({ plan_item: { plan_slug: slug, item_id: itemId, harness_slug: 'web' } })})`;
+    await edge({ plan: slug, item: itemId, srcKind: 'issue', srcRef: id, rel: IMPLEMENTS_REL });
+
+    // The residual-coverage helper intentionally remains relates-only. The start
+    // gate also consults the durable conversion stamp for existing execution work.
+    expect(await findCoverageWorkItems(slug, itemId, [WS])).toEqual([]);
+    const input = {
+      workspaceId: WS,
+      harnessSlug: 'web',
+      slug,
+      itemId,
+      toStatus: 'done',
+      planContent: content,
+    };
+    expect(await checkDraftItemStartGateLive(input)).toBeNull();
+
+    wiState.states[id] = 'done';
+    expect(await checkDraftItemStartGateLive(input)).toBeNull();
+  });
+});
+
 describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
   const stamp = (plan: string, item: string) => ({ plan_item: { plan_slug: plan, item_id: item, harness_slug: 'web' } });
 
@@ -370,6 +404,20 @@ describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
     await rootSql`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, payload)
                   VALUES (${WS}, 'EI-9', ${rootSql.json(stamp('p3', 'I-3'))})`;
     expect(await findConvertedWorkItemByStamp('p3', 'I-3', 'web')).toMatchObject({ id: 'EI-9' });
+  });
+
+  it('scopes stamped issue matches to the requested workspace and harness', async () => {
+    const plan = 'p-stamp-scope';
+    const item = 'P-002';
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES ('web', 'EI-stamp-foreign', 'bug', 'other-workspace', ${rootSql.json(stamp(plan, item))})`;
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES ('web', 'EI-stamp-wrong-harness', 'bug', ${WS},
+                          ${rootSql.json({ plan_item: { plan_slug: plan, item_id: item, harness_slug: 'other' } })})`;
+
+    expect(await findConvertedWorkItemByStamp(plan, item, 'web', WS)).toBeNull();
+    expect(await findConvertedWorkItemByStamp(plan, item, 'web', 'other-workspace'))
+      .toMatchObject({ id: 'EI-stamp-foreign' });
   });
 
   it('returns null when no stamp matches', async () => {

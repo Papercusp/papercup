@@ -5518,8 +5518,31 @@ async function completeOneTracked(
   const planLanePreviewError = it.validateOnly && closeIntentRequested && effectiveState
     ? await workItemPlanLaneTransitionRefusal(existing, effectiveState) ?? undefined
     : undefined;
-  setContractRequirement('plan-item-lane', closeIntentRequested, planLanePreviewError);
-  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError ?? planLanePreviewError;
+  const planStampForPreview =
+    it.validateOnly && closeIntentRequested && effectiveState ? finishPlanStamp(existing) : null;
+  const reflectedPlanStatus = effectiveState ? reflectedTerminalStatus(effectiveState) : null;
+  let draftPlanStartGatePreviewError: string | undefined;
+  if (planStampForPreview && reflectedPlanStatus === 'done' && !planLanePreviewError) {
+    try {
+      const { checkDraftItemStartGateLive } = await import('../plans/draft-item-start-gate');
+      const refusal = await checkDraftItemStartGateLive({
+        workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+        harnessSlug: planStampForPreview.harness_slug,
+        slug: planStampForPreview.plan_slug,
+        itemId: planStampForPreview.item_id,
+        toStatus: reflectedPlanStatus,
+      });
+      if (refusal) draftPlanStartGatePreviewError = refusal.error + ': ' + refusal.hint;
+    } catch (error) {
+      draftPlanStartGatePreviewError =
+        'Could not evaluate the plan-item activation precondition for ' +
+        planStampForPreview.plan_slug + '#' + planStampForPreview.item_id + ': ' +
+        (error instanceof Error ? error.message : String(error));
+    }
+  }
+  const planItemPreviewError = planLanePreviewError ?? draftPlanStartGatePreviewError;
+  setContractRequirement('plan-item-lane', closeIntentRequested, planItemPreviewError);
+  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError ?? planItemPreviewError;
   if (it.validateOnly) {
     // EI-26592766858681844: the content floor already lowered the authority above. Surface
     // its measured paths here too, without borrowing the real close's settlement promises.
