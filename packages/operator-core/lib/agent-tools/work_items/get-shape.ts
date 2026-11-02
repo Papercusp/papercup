@@ -1880,6 +1880,9 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
       ? `Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`
       : "";
 
+    const reportedDrops = [...dropped]
+      .filter((entry) => entry !== "textClip" || (dropped.size === 1 && stubbedCount === 0))
+      .sort();
     out = {
       ...d,
       ...(readInfo
@@ -1904,12 +1907,12 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
               ...(checkpointChars > 0 ? { checkpointCharsPerRow: checkpointChars } : {}),
               ...(summaryChars > 0 ? { summaryCharsPerRow: summaryChars } : {}),
               ...(lifecycleChars > 0 ? { lifecycleCharsPerRow: lifecycleChars } : {}),
-              dropped: [...dropped].filter((entry) => entry !== "textClip" || dropped.size === 1).sort(),
+              ...(reportedDrops.length > 0 ? { dropped: reportedDrops } : {}),
               ...(stubbedCount > 0
                 ? {
                     stubbed: {
                       count: stubbedCount,
-                      note: "stub rows preserve only id + _stub; re-read an id alone for detail",
+                      note: "stub rows keep only id + _stub; re-read an id alone for detail",
                       ...(stubCompletionEvidence ? { completionEvidence: stubCompletionEvidence } : {}),
                     },
                   }

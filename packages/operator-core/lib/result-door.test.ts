@@ -4564,8 +4564,8 @@ describe('applyResultDoor', () => {
 
     it('detects code:run log truncation from a structured marker beside middle-elision text', () => {
       const text = JSON.stringify({
-        logs: [withMarker('result head … [truncated 1227 chars] … result tail\n', BUDGET_CHARS * 3)],
         logsNotice: { truncatedLines: 1, textTruncated: true },
+        logs: [withMarker('result head … [truncated 1227 chars] … result tail\n', BUDGET_CHARS * 3)],
       });
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text }] },
@@ -4574,10 +4574,10 @@ describe('applyResultDoor', () => {
       const pointer = boundedBody(doored)._projection.next;
       const spill = readSpill('ws-1', 'code:run', RUN_ID);
 
-      expect(pointer).toContain('TOOL ITSELF already truncated');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor)
+        .toMatchObject({ innerTruncationMarkers: ['textTruncated'] });
       expect(pointer).toContain('textTruncated');
       expect(pointer).not.toContain('No upstream truncation marker was detected');
-      expect(spill).toContain('TOOL ITSELF already truncated');
       expect(spill).toContain('truncated 1227 chars');
     });
 

@@ -1124,9 +1124,10 @@ export function shapeCodeRunLogs<T extends { logs?: unknown }>(
     return result;
   }
 
+  const { logs: _originalLogs, logsNotice: _previousNotice, ...rest } = result as T & { logsNotice?: unknown };
   return {
-    ...result,
-    logs: limited,
+    // The result door scans a bounded prefix before it spills large text bodies.
+    // Put this structured marker before logs so it remains visible when logs are long.
     logsNotice: {
       rawCount: logs.length,
       shownCount: limited.length,
@@ -1137,7 +1138,9 @@ export function shapeCodeRunLogs<T extends { logs?: unknown }>(
       ...(truncatedLines > 0 || droppedAfterLimit > 0 ? { textTruncated: true as const } : {}),
       note: 'code:run logs were shaped to keep terminal noise bounded; the script return value in `summary` is unchanged',
     },
-  };
+    ...rest,
+    logs: limited,
+  } as T & { logs: string[]; logsNotice: CodeRunLogsNotice };
 }
 
 function sanitizeCodeRunLogLine(raw: string): string {
