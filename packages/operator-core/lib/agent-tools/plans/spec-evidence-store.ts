@@ -32,7 +32,7 @@ import type { SpecClauseSql } from './spec-clauses-store';
 // Type-only: spec-test-adequacy imports this module, so its runtime is loaded lazily below.
 import type { FixtureAbsencePairingKey } from './spec-test-adequacy';
 import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
-import { resolvePlanScope } from './source';
+import type { resolvePlanScope as ResolvePlanScope } from './source';
 import { trackDetached } from '../../detached-imports';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { measureNativeColdEnvironment, nativeColdInstrumentKeySchema } from '../../storage/cold-tier-evidence';
@@ -67,6 +67,13 @@ import {
 
 export { ADHOC_WORK_ITEM_SPEC_SCOPE, MEASUREMENT_PIN_DETAILS_KEY };
 export type { MeasurementPin, MovedPath };
+
+// Scope resolution reaches the plan/event runtime, which imports testing evidence.
+// Loading it with this store evaluates that consumer before our schemas initialize
+// (EI-27689464176702417). Operations need scope; schema construction does not.
+async function resolvePlanScope(...args: Parameters<typeof ResolvePlanScope>) {
+  return (await import('./source')).resolvePlanScope(...args);
+}
 
 export const SPEC_EVIDENCE_KINDS = [
   'test',

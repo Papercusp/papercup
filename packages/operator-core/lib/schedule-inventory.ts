@@ -749,7 +749,7 @@ export interface StartupActivityHistoryEntry {
   actor: string;
   trigger: string;
   source?: 'settings' | 'native' | 'routine' | 'timer' | 'event' | 'supervisor';
-  reason?: 'user-choice' | 'automatic-start' | 'clean-quit' | 'pause-expired' | 'dispatch-blocked' | 'service-recovery';
+  reason?: 'user-choice' | 'automatic-start' | 'clean-quit' | 'pause-expired' | 'dispatch-blocked' | 'service-recovery' | 'invocation';
   previous: StartupActivityPolicy | null;
   resulting: StartupActivityPolicy | null;
 }
@@ -878,7 +878,7 @@ export const startupHistorySchema = z.object({
   actor: historyCode,
   trigger: historyCode,
   source: z.enum(['settings', 'native', 'routine', 'timer', 'event', 'supervisor']).optional(),
-  reason: z.enum(['user-choice', 'automatic-start', 'clean-quit', 'pause-expired', 'dispatch-blocked', 'service-recovery']).optional(),
+  reason: z.enum(['user-choice', 'automatic-start', 'clean-quit', 'pause-expired', 'dispatch-blocked', 'service-recovery', 'invocation']).optional(),
   previous: startupPolicySchema.nullable(),
   resulting: startupPolicySchema.nullable(),
 });

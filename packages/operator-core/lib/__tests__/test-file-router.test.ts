@@ -2916,6 +2916,22 @@ describe('failed assertion diagnostics — consume the report before private cle
     });
   });
 
+  it('emits mutation assertion evidence for a Testing Library missing-element assertion', () => {
+    const serialized = 'TestingLibraryElementError: Unable to find an element with the text: Authorized document.\n\nIgnored nodes: comments, script, style\n<body><p>This result is unavailable.</p></body>\n    at Object.getElementError (/repo/node_modules/@testing-library/dom/dist/config.js:37:19)\n    at guard.integration.test.tsx:240:19';
+    withReport({
+      testResults: [{
+        name: '/repo/lib/guard.integration.test.tsx',
+        status: 'failed',
+        assertionResults: [{ status: 'failed', fullName: 'guard > preserves authorized content', failureMessages: [serialized] }],
+      }],
+    }, (path) => {
+      const failures = failedAssertionsFromReport(path, '/repo');
+      expect(failures?.[0]?.assertionEvidence).toBe(true);
+      expect(formatFailedAssertionDiagnostics(failures)).toContain('TEST_FILE_ASSERTION_FAILURE file=');
+      expect(formatFailedAssertionDiagnostics(failures)).not.toContain('TEST_FILE_NON_ASSERTION_FAILURE');
+    });
+  });
+
   it('does not emit mutation assertion evidence for a runtime exception before the assertion', () => {
     withReport({
       testResults: [{

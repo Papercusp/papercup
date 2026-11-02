@@ -14,7 +14,7 @@
  *   - an executable criterion with no ledger result (or a row for a different unit) rates
  *     `unknown` with a reason and a next action, and is not asked of the grader;
  *   - a hand-typed rating for a ledger-owned criterion is accepted only when it agrees with the
- *     ledger (it may add remediation/disregard/suggestion); a disagreeing one is refused;
+ *     ledger (it may add context/remediation/disregard/suggestion); a disagreeing one is refused;
  *   - a poor ledger result is routed with a rating-free disposition (`dispositions`), so the
  *     grader never retypes a rating to satisfy the poor-rating disposition gate;
  *   - a manual criterion is never auto-rated: when its rating is missing the emit is refused with
@@ -231,7 +231,10 @@ function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, 
     : '';
   const p = row.check.provenance;
   const context = p
-    ? `; provenance ${measurementProvenanceStatus(p)}, original window ${p.startedAt}..${p.finishedAt}, procedure sha256 ${p.procedure.sha256}${p.transactionAt ? `, transaction ${p.transactionAt}` : ''}`
+    ? `; provenance ${measurementProvenanceStatus(p)}, original window ${p.startedAt}..${p.finishedAt}, procedure sha256 ${p.procedure.sha256}${p.transactionAt ? `, transaction ${p.transactionAt}` : ''}` +
+      // Retention already bounds and redacts this snapshot. Quote it exactly: a hash alone
+      // cannot tell an independent grader which SQL, tool args or argv produced the value.
+      `; retained procedure ${p.procedure.snapshot}${p.gaps.length ? `; provenance gaps ${p.gaps.join(', ')}` : ''}`
     : '; provenance legacy-missing (original diagnostics/window not retained)';
   return `${binding.id}=${shown} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})${detail}${context}`;
 }
@@ -248,14 +251,18 @@ const GRADER_ANNOTATIONS = ['remediation', 'disregard', 'suggestion', 'attributi
 /**
  * The routing a grader owns for a ledger-rated criterion, supplied WITHOUT a rating: a poor
  * ledger result still needs an owned remediation or disregard, but never a retyped rating.
+ * Optional evidence adds calibration or subject context after the server-owned measurement.
  */
-export type LedgerDisposition = Partial<Pick<ObservationRatingEntry, (typeof GRADER_ANNOTATIONS)[number]>>;
+export type LedgerDisposition = Partial<Pick<ObservationRatingEntry, (typeof GRADER_ANNOTATIONS)[number] | 'evidence'>>;
 
 function applyAnnotations(entry: ObservationRatingEntry, source: Partial<ObservationRatingEntry> | undefined): void {
   if (!source) return;
   for (const field of GRADER_ANNOTATIONS) {
     if (source[field] !== undefined) (entry as unknown as Record<string, unknown>)[field] = source[field];
   }
+  // Grader context supplements the ledger's evidence; it never replaces the measurement,
+  // provenance, evidenceRef or computed rating, even when a caller supplies its own prose.
+  if (source.evidence?.trim()) entry.evidence += `\nGrader context: ${source.evidence.trim()}`;
 }
 
 export type LedgerFillOutcome =

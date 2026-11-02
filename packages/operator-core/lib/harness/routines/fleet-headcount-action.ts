@@ -30,7 +30,8 @@ import {
 import type { FleetTopUpRule } from '../../fleet/top-up-rule';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
-import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { listFleetRosterDiagnosed, liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { readFleetLaneHealthDiagnosed } from '../../fleet/lane-health';
 import { isWorkspaceWideLoopStanddownActive } from './release-pause-ttl';
 import { getLoopStatuses } from './loop';
 import {
@@ -1153,6 +1154,96 @@ function governorLaunchTransaction(args: {
   return transaction;
 }
 
+type FleetHeadcountRepairAdmission =
+  | { allowed: true }
+  | { allowed: false; reason: string };
+
+/**
+ * Unattended repair acts on behalf of a live fleet leader and must launch only
+ * into a measured, currently claimable fleet lane. A stored leader id or a
+ * stale claim spec alone is not launch authority.
+ */
+async function readFleetHeadcountRepairAdmission(args: {
+  fleetSlug: string;
+  workspaceId: string;
+  leaderOwnerId: string | null;
+  harness?: string;
+}): Promise<FleetHeadcountRepairAdmission> {
+  let roster;
+  try {
+    roster = await listFleetRosterDiagnosed({
+      fleetSlug: args.fleetSlug,
+      workspaceId: args.workspaceId,
+      leaderOwnerId: args.leaderOwnerId,
+    });
+  } catch (error) {
+    return {
+      allowed: false,
+      reason:
+        'headcount repair held: registered leader liveness could not be read; ' +
+        (error instanceof Error ? error.message : String(error)),
+    };
+  }
+
+  const leader = roster.leaderLiveness;
+  const leaderEvidenceComplete = args.leaderOwnerId == null || leader?.complete === true;
+  const leaderLive =
+    args.leaderOwnerId != null &&
+    leaderEvidenceComplete &&
+    leader?.presenceRow === true &&
+    leader?.sessionState === 'live';
+  if (!leaderLive) {
+    const cause = args.leaderOwnerId == null
+      ? 'the fleet has no durable leader identity'
+      : !leaderEvidenceComplete
+        ? 'the registered leader liveness is unknown'
+        : 'the registered leader is not positively live';
+    return {
+      allowed: false,
+      reason: 'headcount repair held: ' + cause + '; an unattended member must not inherit an unconfirmed lane',
+    };
+  }
+
+  let lane;
+  try {
+    lane = await readFleetLaneHealthDiagnosed({
+      fleet: args.fleetSlug,
+      harness: args.harness,
+      workspaceId: args.workspaceId,
+    });
+  } catch (error) {
+    return {
+      allowed: false,
+      reason:
+        'headcount repair held: current fleet lane eligibility could not be read; ' +
+        (error instanceof Error ? error.message : String(error)),
+    };
+  }
+
+  const claimable = lane.laneHealth?.effective.claimable;
+  if (claimable == null) {
+    return {
+      allowed: false,
+      reason:
+        'headcount repair held: current fleet lane eligibility is unknown; ' +
+        (lane.unavailable?.detail ?? 'the family-complete claimable count was not measured'),
+    };
+  }
+  if (!(claimable > 0)) {
+    const spec = lane.laneHealth?.spec;
+    const specRef = spec
+      ? ' ' + spec.specId + '@' + (spec.revision ?? 'unknown')
+      : '';
+    return {
+      allowed: false,
+      reason:
+        'headcount repair held: fleet claim spec' + specRef +
+        ' has no currently claimable work; no member was pruned or launched',
+    };
+  }
+  return { allowed: true };
+}
+
 async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<void> {
   const { workspaceId } = ctx;
   // EI-23259368987233359, half 2 of 2 — THE BARRIER A MEMBER IS ACTUALLY OPENED
@@ -1340,6 +1431,38 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       transaction,
       now,
     });
+
+    if (assessment.action === 'spawn' || assessment.action === 'prune') {
+      const admission = await readFleetHeadcountRepairAdmission({
+        fleetSlug,
+        workspaceId,
+        leaderOwnerId: fleet.leaderOwnerId,
+        harness: config.harness,
+      });
+      if (!admission.allowed) {
+        transaction = transactionForGovernorVerdict({
+          transaction,
+          liveMemberIds,
+          launcherOwnerId: fleet.leaderOwnerId,
+          now,
+        });
+        const verdict = governorVerdictForAssessment(assessment, now, {
+          action: 'wait',
+          outcome: 'unverified',
+          reason: admission.reason,
+        });
+        recordGovernorVerdict(transaction, verdict);
+        transaction.recovery.nextAction = verdict.reason;
+        await persistTransaction(transaction);
+        await recordFleetHeadcountAttempt({
+          workspaceId,
+          fleetSlug,
+          succeeded: false,
+          error: verdict.reason,
+        });
+        return;
+      }
+    }
 
     if (assessment.action === 'none' || assessment.action === 'wait' || assessment.action === 'retry') {
       transaction = transactionForGovernorVerdict({

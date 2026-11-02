@@ -26,6 +26,7 @@ import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declare
 // @ts-ignore -- share the unit-test process boundary with other standalone runtimes.
 import { isolatedRuntimeEnv } from '../../../scripts/lib/isolation-child-env.mjs';
 import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { nativeProcessTraceEnv } from '../../../scripts/lib/vitest-startup-trace.mjs';
 
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
@@ -506,7 +507,8 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
 /** Prepared ESM bundles must not inherit test transformers or Vitest's passive
  * startup tracer into their confined native descendants. Keep source guards,
  * unrelated preloads and all resource limits. */
-export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv,
+  observation?: { traceOut: string }): NodeJS.ProcessEnv {
   const tokens = (env.NODE_OPTIONS ?? '').match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
   const value = (token: string) => token.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g,
     (_, double: string | undefined, single: string | undefined) => double?.replace(/\\(["\\])/g, '$1') ?? single!);
@@ -522,7 +524,15 @@ export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessE
       && tokens[i + 1] && testPreload(value(tokens[i + 1]))) { i++; continue; }
     kept.push(tokens[i]);
   }
-  return { ...env, NODE_OPTIONS: kept.join(' ') };
+  const runtime = { ...env, NODE_OPTIONS: kept.join(' ') };
+  if (!observation) return runtime;
+  assert.ok(isAbsolute(observation.traceOut) && observation.traceOut.trim() === observation.traceOut,
+    'Private host trace requires an absolute channel');
+  assert.ok(!existsSync(observation.traceOut) && !existsSync(observation.traceOut + '.native-processes'),
+    'Private host trace requires a fresh channel');
+  // Select the maintained passive preload only after removing inherited test
+  // transformers and trace preloads. Its evidence remains loader-return only.
+  return nativeProcessTraceEnv({ ...runtime, PC_EXECUTED_SOURCE_MAP_OUT: observation.traceOut });
 }
 
 /** Retain readiness evidence even when the host exits, is signaled, or fails

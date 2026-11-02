@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { hostname, userInfo } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { pinModuleState } from '@papercusp/module-singleton';
+import type { ManagedStopRequest, ManagedStopStatus } from '@papercusp/scheduled-registry';
 import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from './workspace-registry';
 import { readOperatorState } from './operator-state-pg';
@@ -40,7 +42,7 @@ const validFeatureId = /^activity-[a-f0-9]{64}$/;
 const persistedHistorySchema = startupHistorySchema.extend({
   featureId: startupHistorySchema.shape.featureId.regex(validFeatureId),
   actor: startupHistorySchema.shape.actor.regex(/^(user|system):[a-f0-9]{64}$/),
-  trigger: startupHistorySchema.shape.trigger.regex(/^(manual|login|boot|timer|event|supervisor|upgrade|repair|settings|pause-expiry)$/),
+  trigger: startupHistorySchema.shape.trigger.regex(/^(manual|login|boot|timer|event|supervisor|upgrade|repair|settings|pause-expiry|unknown)$/),
   source: startupHistorySchema.shape.source.unwrap(),
   reason: startupHistorySchema.shape.reason.unwrap(),
 });
@@ -119,6 +121,93 @@ export async function recordStartupActivityHistory(
     INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
     VALUES (${randomUUID()}, ${new Date(safe.at).getTime()}, ${safe.actor}, ${historyAction}, ${safe.featureId},
       ${JSON.stringify({ startupActivity: safe })}::text::jsonb, ${workspace})`;
+}
+
+type ObservedActivityScope = { workspaceId: string; featureId: string };
+type ObservedInvocation = { settled: Promise<ManagedStopStatus> };
+interface ObservedInvocationGroup {
+  active: Set<ObservedInvocation>;
+  stop?: { targets: Set<ObservedInvocation>; settled: Promise<ManagedStopStatus> };
+}
+// The observer is reached through both lazy dispatch imports and settings. Keep
+// those imports on the same process-local lifecycle; no second scheduler/store.
+const observedInvocations = pinModuleState('@papercusp/operator-core.background-invocations', () =>
+  new Map<string, ObservedInvocationGroup>());
+function observedActivityKey(scope: ObservedActivityScope): string {
+  if (!scope.workspaceId.trim() || scope.workspaceId === '*' || !validFeatureId.test(scope.featureId))
+    throw new Error('Startup history requires an identified invocation');
+  return JSON.stringify([scope.workspaceId, scope.featureId]);
+}
+
+/** Only a callback observed HERE establishes runtime control; a missing local
+ * callback says nothing about another process or a detached effect it launched.
+ */
+export function observedBackgroundActivityStatus(scope: ObservedActivityScope): {
+  running: true; stopStatus: 'draining' | null; cancellable: false;
+} | null {
+  const group = observedInvocations.get(observedActivityKey(scope));
+  if (!group?.active.size) return null;
+  const draining = group.stop && [...group.active].some(invocation => group.stop!.targets.has(invocation));
+  return { running: true, stopStatus: draining ? 'draining' : null, cancellable: false };
+}
+
+/** Drain the callbacks present at this request, preserving future dispatch and
+ * policy. There is no cancellation acknowledgment for these noncancellable calls.
+ */
+export function stopObservedBackgroundActivity(scope: ObservedActivityScope): ManagedStopRequest {
+  const group = observedInvocations.get(observedActivityKey(scope));
+  if (!group?.active.size) return { status: 'unavailable', settled: Promise.resolve('unavailable') };
+  if (!group.stop || [...group.active].some(invocation => !group.stop!.targets.has(invocation))) {
+    const targets = new Set(group.active);
+    group.stop = { targets, settled: Promise.all([...targets].map(invocation => invocation.settled))
+      .then(statuses => statuses.every(status => status === 'completed') ? 'completed' : 'failed') };
+  }
+  return { status: 'draining', settled: group.stop.settled };
+}
+
+/** Observe an invoked callback, rather than queue admission or an armed schedule.
+ * Completion here describes this invocation, never detached work it may launch.
+ * Audit failures cannot replay an effect or leak its arguments/error body.
+ */
+export async function runObservedBackgroundActivity<T>(
+  scope: { workspaceId: string; featureId: string; source: 'routine' | 'event' | 'timer'; trigger: 'timer' | 'event' | 'manual' | 'unknown' },
+  invoke: () => T | Promise<T>,
+): Promise<T> {
+  const key = observedActivityKey(scope);
+  const group = observedInvocations.get(key) ?? { active: new Set<ObservedInvocation>() };
+  let resolve!: (status: ManagedStopStatus) => void;
+  const invocation = { settled: new Promise<ManagedStopStatus>(done => { resolve = done; }) };
+  group.active.add(invocation);
+  observedInvocations.set(key, group);
+  const finish = (status: 'completed' | 'failed') => {
+    group.active.delete(invocation);
+    if (!group.active.size) observedInvocations.delete(key);
+    resolve(status);
+  };
+  const at = new Date().toISOString();
+  const audit = async (status: 'running' | 'failed') => {
+    try {
+      await recordStartupActivityHistory({ featureId: scope.featureId, operation: 'start', status,
+        at, actor: 'system', trigger: scope.trigger, source: scope.source,
+        reason: scope.trigger === 'manual' ? 'user-choice' : scope.trigger === 'unknown' ? 'invocation' : 'automatic-start',
+        previous: null, resulting: null,
+      }, 'background-invocation', 'system', { sql: getOrgPg().sql, workspaceId: scope.workspaceId });
+    } catch {
+      console.warn('[background-activity] invocation history unavailable');
+    }
+  };
+  let pending: T | Promise<T>;
+  try { pending = invoke(); }
+  catch (error) { finish('failed'); await audit('failed'); throw error; }
+  // Attach rejection handling immediately, including while the audit write is pending.
+  const outcome = Promise.resolve(pending).then(
+    value => { finish('completed'); return { ok: true as const, value }; },
+    error => { finish('failed'); return { ok: false as const, error }; },
+  );
+  await audit('running');
+  const result = await outcome;
+  if (!result.ok) { await audit('failed'); throw result.error; }
+  return result.value;
 }
 
 /** Trusted in-process workspace scope plus opaque feature identity; no caller-supplied workspace. */
@@ -265,5 +354,13 @@ export async function collectCurrentStartupActivity(deps: Partial<ScheduleInvent
     policy,
   });
   snapshot.unavailable = [...new Set([...snapshot.unavailable, ...(native?.unavailable ?? [])])].sort();
+  for (const feature of snapshot.features) {
+    if (feature.scope.kind !== 'workspace' || !feature.scope.id) continue;
+    const local = observedBackgroundActivityStatus({ workspaceId: feature.scope.id, featureId: feature.id });
+    if (local) {
+      feature.observed = 'running';
+      feature.stop ??= { status: local.stopStatus, cancellable: false };
+    }
+  }
   return snapshot;
 }

@@ -11,6 +11,7 @@ import * as ts from 'typescript';
 import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
+import { readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
@@ -154,13 +155,48 @@ it.skipIf(process.platform !== 'linux')('runs the private artifact census in pla
   expect(own.filter(row => ['module-load-error', 'module-load-limit', 'module-load-unavailable'].includes(row.event))).toEqual([]);
 });
 
+it('observes a real private Node host through an explicitly fresh trace after removing inherited test preloads', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-host-selected-trace-'));
+  dirs.push(root);
+  const bundle = join(root, 'host.mjs'), traceOut = join(root, 'host-source.json');
+  const source = 'console.log(JSON.stringify({ pid: process.pid, argv: process.argv }));';
+  writeFileSync(bundle, source);
+  const inherited = { ...process.env, NODE_OPTIONS: '--import tsx',
+    PC_EXECUTED_SOURCE_MAP_OUT: join(root, 'inherited.json') };
+  const env = privateBundleRuntimeEnv(inherited, { traceOut });
+  expect(env.NODE_OPTIONS).not.toContain('tsx');
+  expect(inherited.NODE_OPTIONS).toBe('--import tsx');
+  const startedAtMs = Date.now();
+  const child = JSON.parse(execFileSync(process.execPath, [bundle], { cwd: root, env,
+    encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024 }));
+  const trace = readNativeProcessTraceArtifacts(traceOut, startedAtMs, Date.now());
+  expect(trace.population.complete).toBe(true);
+  expect(existsSync(inherited.PC_EXECUTED_SOURCE_MAP_OUT + '.native-processes')).toBe(false);
+  const own = trace.rows.map(({ row }) => row).filter(row => row.pid === child.pid);
+  expect(own.filter(row => row.event === 'node-entry')).toEqual([expect.objectContaining({ cwd: root,
+    argv: child.argv, reporterOut: traceOut, executable: process.execPath })]);
+  expect(new Set(own.map(row => row.processIdentity)).size).toBe(1);
+  expect(own.find(row => row.event === 'node-exit')).toMatchObject({ code: 0, exitListenersComplete: true });
+  expect(own.filter(row => row.event === 'module-load-return')).toEqual([expect.objectContaining({
+    url: pathToFileURL(bundle).href, source: expect.objectContaining({ status: 'hashed',
+      scope: 'node-loader-returned-source', sha256: createHash('sha256').update(source).digest('hex') }),
+  })]);
+  expect(() => privateBundleRuntimeEnv(inherited, { traceOut })).toThrow('fresh channel');
+  expect(() => privateBundleRuntimeEnv(inherited, { traceOut: 'relative.json' })).toThrow('absolute channel');
+  const occupied = join(root, 'occupied.json');
+  writeFileSync(occupied, 'existing evidence');
+  expect(() => privateBundleRuntimeEnv(inherited, { traceOut: occupied })).toThrow('fresh channel');
+});
+
 it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
   vi.useFakeTimers();
   const directory = mkdtempSync(join(tmpdir(), 'private-stop-evidence-'));
   dirs.push(directory);
   const trace = join(directory, 'host-stop.jsonl');
+  // Synthetic event emitters have no kernel process. A made-up PID can belong
+  // to a real host process and make teardown inspect unrelated descendants.
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    pid: undefined, exitCode: null, signalCode: null, stdout: null, stderr: null,
     kill: vi.fn(() => false),
   }) as unknown as import('node:child_process').ChildProcess;
   const observations: unknown[] = [];
@@ -170,7 +206,7 @@ it('retains teardown signal evidence on a forced-exit timeout and removes its li
   });
   const rejected = expect(stopped).rejects.toMatchObject({
     message: 'Private host forced exit did not settle',
-    privateHostStop: { pid: 12345, phase: 'forced exit', sigtermAccepted: false,
+    privateHostStop: { pid: null, phase: 'forced exit', sigtermAccepted: false,
       sigkillAccepted: false, exitObserved: false, closeObserved: false },
   });
   await Promise.all([rejected, vi.advanceTimersByTimeAsync(21)]);
@@ -387,7 +423,7 @@ it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and 
 it('waits for delayed exit before cleanup and separately waits for pipe closure', async () => {
   vi.useFakeTimers();
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: null as number | null, signalCode: null,
+    pid: undefined, exitCode: null as number | null, signalCode: null,
     stdout: { destroyed: false, readableEnded: false }, stderr: null,
     kill: vi.fn(() => true),
   });
@@ -412,7 +448,7 @@ it('waits for delayed exit before cleanup and separately waits for pipe closure'
 it('retains a stdio timeout after process exit and safely stops an already closed host again', async () => {
   vi.useFakeTimers();
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: 0, signalCode: null,
+    pid: undefined, exitCode: 0, signalCode: null,
     stdout: { destroyed: false, readableEnded: false }, stderr: null,
     kill: vi.fn(() => true),
   });
@@ -432,7 +468,7 @@ it('retains a stdio timeout after process exit and safely stops an already close
 it('retains a signal exception without running dependent cleanup', async () => {
   const denied = Object.assign(new Error('signal denied'), { code: 'EPERM' });
   const child = Object.assign(new EventEmitter(), {
-    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    pid: undefined, exitCode: null, signalCode: null, stdout: null, stderr: null,
     kill: vi.fn(() => { throw denied; }),
   });
   const cleanup = vi.fn();
@@ -1028,7 +1064,7 @@ it('hands a verified Git clone to the real source guard without its donor archiv
     stderr: 'bundle-host.sh: pinned source receipt requires its archive marker\n' });
   const environment = privateGitCloneBundleEnv(root, selectedCommit, env);
   expect(environment).toEqual({ NODE_OPTIONS: env.NODE_OPTIONS, OTHER: 'keep' });
-  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) + '\n' });
+  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) });
   expect(env.VERIFY_TAURI_SOURCE_RECEIPT).toBe('/donor/source.json');
   expect(() => privateGitCloneBundleEnv(root, '0'.repeat(40), env)).toThrow('differs from the selected commit');
   mkdirSync(join(root, 'nested'));

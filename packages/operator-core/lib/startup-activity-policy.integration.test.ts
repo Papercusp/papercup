@@ -17,7 +17,8 @@ vi.mock('./schedule-inventory', async orig => ({
 import { createOrgTestDb } from '../test/_org-test-db';
 import { setFeatureBackgroundActivityPolicy, setWorkspaceBackgroundActivityPolicy,
   setPaused, setResumed, setBackgroundActivityAutomatic, workspaceBackgroundActivityAllowed, stopFeatureBackgroundActivity } from './device-operator-actions';
-import { readStartupActivityHistory, recordStartupActivityHistory, workspaceBackgroundActivityFeatureId } from './startup-activity';
+import { readStartupActivityHistory, recordStartupActivityHistory, workspaceBackgroundActivityFeatureId,
+  runObservedBackgroundActivity, observedBackgroundActivityStatus } from './startup-activity';
 import { readOperatorState, updateOperatorState, writeOperatorState } from './operator-state-pg';
 import { reactionStartupFeature, startupActivityFeatureId } from './schedule-inventory';
 import { notifySyncInvalidate } from './sync-sse';
@@ -48,6 +49,39 @@ beforeEach(async () => {
 });
 
 describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
+  it.each(['routine', 'event'] as const)('drains a local %s effect with audited settlement and no saved policy mutation', async source => {
+    const rule = { id: 'startup-stop-event', on: 'policy:test', fire: 'test:optional', when: () => true, args: () => ({}) };
+    if (source === 'event') { registerReactionRule(rule); h.rows = []; }
+    const id = source === 'event' ? reactionStartupFeature(rule, workspace).id : featureId;
+    await setFeatureBackgroundActivityPolicy(id, { action: 'automatic', automatic: false }, 0, user);
+    const before = await readOperatorState('operator_paused', workspace, { fresh: true });
+    let finish!: () => void;
+    const invocation = runObservedBackgroundActivity({ workspaceId: workspace, featureId: id, source,
+      trigger: source === 'event' ? 'event' : 'manual' }, () => new Promise<void>(resolve => { finish = resolve; }));
+    try {
+      await expect(stopFeatureBackgroundActivity(id, { ...user, workspace_id: 'other' }))
+        .rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+      await expect(stopFeatureBackgroundActivity(id, user)).resolves.toMatchObject({
+        status: 'draining', policy: { automatic: false, revision: 1 },
+      });
+      expect(observedBackgroundActivityStatus({ workspaceId: workspace, featureId: id })).toMatchObject({
+        running: true, stopStatus: 'draining', cancellable: false,
+      });
+      expect((await readStartupActivityHistory([id])).filter(entry => entry.operation === 'stop').map(entry => entry.status).sort())
+        .toEqual(['draining', 'pending']);
+      finish();
+      await invocation;
+      await vi.waitFor(async () => expect((await readStartupActivityHistory([id]))
+        .some(entry => entry.operation === 'stop' && entry.status === 'completed')).toBe(true));
+      expect(await readOperatorState('operator_paused', workspace, { fresh: true })).toEqual(before);
+      expect(observedBackgroundActivityStatus({ workspaceId: workspace, featureId: id })).toBeNull();
+      await expect(stopFeatureBackgroundActivity(id, user)).resolves.toMatchObject({ status: 'unavailable' });
+    } finally {
+      finish(); await invocation;
+      if (source === 'event') unregisterReactionRule(rule.id);
+    }
+  });
+
   it.each([false, true])('stops only the current managed invocation with acknowledged cancellation=%s and unchanged policy', async cancellable => {
     const tick: { fire?: () => void } = {};
     let finish!: () => void;

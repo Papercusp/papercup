@@ -24,7 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -408,6 +408,41 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         event: { tool_name: 'exec_command', tool_input: { cmd: contentEdit } },
         env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
       expect(JSON.parse(rejectedContentEdit!).hookSpecificOutput.permissionDecision).toBe('deny');
+    }
+  });
+
+  it('pre-tool: a wall during authority fetch permits grouped read-only inspection but still denies writes', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const stalledFetch = ((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    })) as unknown as typeof fetch;
+    const readOnlyInspection = [
+      'rg --files apps/operator/scripts/hooks/inject',
+      "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject",
+      "sed -n '1,20p' apps/operator/scripts/hooks/inject/core.mjs",
+    ].join('\n');
+
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      vi.useFakeTimers();
+      try {
+        const read = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: readOnlyInspection } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(await read).toBeNull();
+
+        const write = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: 'touch source.ts' } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        const decision = JSON.parse((await write)!).hookSpecificOutput;
+        expect(decision).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     }
   });
 

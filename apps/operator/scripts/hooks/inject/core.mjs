@@ -650,27 +650,61 @@ function shellCommandFromPartial(partial) {
 }
 
 /**
- * Permit only a single, read-only ripgrep invocation when authority lookup is
- * unavailable. shell-quote exposes operators/substitutions as non-string
- * tokens; reject those and ripgrep's command/config execution options.
+ * Parse a bounded shell command into simple invocations. Newlines, `;`, and
+ * `&&` separate commands; every other shell operator stays fail-closed. Split
+ * newlines before parsing because shell-quote treats them as whitespace.
  * @param {string} command
- * @param {NodeJS.ProcessEnv} env
+ * @returns {string[][] | null}
  */
-function isReadOnlyRipgrepCommand(command, env) {
+function readOnlyCommandSegments(command) {
   if (command.length > 16_384 ||
       command.includes(String.fromCharCode(0)) ||
-      command.includes(String.fromCharCode(10)) ||
-      command.includes(String.fromCharCode(13)) ||
       command.includes(String.fromCharCode(96)) ||
-      command.includes('$')) return false;
+      command.includes('$')) return null;
 
-  let tokens;
-  try {
-    tokens = parseShellCommand(command);
-  } catch {
-    return false;
+  const normalized = command.replace(/\r\n/g, '\n');
+  if (normalized.includes(String.fromCharCode(13))) return null;
+  const segments = [];
+  for (const line of normalized.split('\n')) {
+    if (!line.trim()) continue;
+    if (line.trimEnd().endsWith('\\')) return null;
+
+    let tokens;
+    try {
+      tokens = parseShellCommand(line);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(tokens) || tokens.length === 0) return null;
+
+    let current = [];
+    for (const token of tokens) {
+      if (typeof token === 'string') {
+        current.push(token);
+        continue;
+      }
+      if (token && typeof token === 'object' &&
+          (token.op === ';' || token.op === '&&') && current.length > 0) {
+        segments.push(current);
+        current = [];
+        continue;
+      }
+      return null;
+    }
+    if (current.length === 0) return null;
+    segments.push(current);
+    if (segments.length > 16) return null;
   }
-  if (!Array.isArray(tokens) || tokens.length === 0 || tokens.some(token => typeof token !== 'string')) return false;
+  return segments.length > 0 ? segments : null;
+}
+
+/**
+ * Permit only ripgrep commands that cannot execute configured helpers while
+ * authority lookup is unavailable.
+ * @param {string[]} tokens
+ * @param {NodeJS.ProcessEnv} env
+ */
+function isReadOnlyRipgrepInvocation(tokens, env) {
   if (tokens[0] !== 'rg') return false;
   const args = tokens.slice(1);
   if (args.some(arg => /^--(?:pre|pre-glob|config-path)(?:=|$)/.test(arg))) return false;
@@ -679,26 +713,11 @@ function isReadOnlyRipgrepCommand(command, env) {
 }
 
 /**
- * Permit file readers while the execution-authority server is unavailable.
  * cat accepts only input paths; sed accepts only explicit line-range printing.
- * Reject shell operators, substitutions, in-place edits, and sed write/exec scripts.
- * @param {string} command
+ * @param {string[]} tokens
  */
-function isReadOnlyFileReadCommand(command) {
-  if (command.length > 16_384 ||
-      command.includes(String.fromCharCode(0)) ||
-      command.includes(String.fromCharCode(10)) ||
-      command.includes(String.fromCharCode(13)) ||
-      command.includes(String.fromCharCode(96)) ||
-      command.includes('$')) return false;
-
-  let tokens;
-  try {
-    tokens = parseShellCommand(command);
-  } catch {
-    return false;
-  }
-  if (!Array.isArray(tokens) || tokens.length < 2 || tokens.some(token => typeof token !== 'string')) return false;
+function isReadOnlyFileReadInvocation(tokens) {
+  if (tokens.length < 2) return false;
   const [tool, ...args] = tokens;
   if (tool === 'cat') {
     return args.length > 0 && args.every(arg => arg.length > 0 && !arg.startsWith('-'));
@@ -755,8 +774,9 @@ function isSafeWithoutExecutionAuthority(partial, env) {
   if (!SHELL_PRE_TOOL_NAMES.has(partial?.tool ?? '')) return false;
   const command = shellCommandFromPartial(partial);
   if (command === null) return false;
-  return isReadOnlyRipgrepCommand(command, env) ||
-    isReadOnlyFileReadCommand(command) ||
+  const segments = readOnlyCommandSegments(command);
+  return (segments !== null && segments.every(tokens =>
+    isReadOnlyRipgrepInvocation(tokens, env) || isReadOnlyFileReadInvocation(tokens))) ||
     isCanonicalPlanAnchorRepairCommand(command);
 }
 

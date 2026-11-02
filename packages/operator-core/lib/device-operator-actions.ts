@@ -10,7 +10,8 @@
  */
 import { notifySyncInvalidate } from './sync-sse';
 import { readOperatorState, updateOperatorState } from './operator-state-pg';
-import { recordStartupActivityHistory, savedBackgroundActivitySchema, savedStartupActivityPolicy, savedStartupActivityStateSchema, startupPauseIsActive,
+import { observedBackgroundActivityStatus, stopObservedBackgroundActivity,
+  recordStartupActivityHistory, savedBackgroundActivitySchema, savedStartupActivityPolicy, savedStartupActivityStateSchema, startupPauseIsActive,
   workspaceBackgroundActivityFeatureId, workspaceBackgroundActivityPolicy } from './startup-activity';
 import { collectScheduleInventory, reactionStartupFeature, scheduleStartupFeature, startupActivityFeatureId, startupPolicySchema, type StartupActivityPolicy } from './schedule-inventory';
 import { getSystemActionEntry, SYSTEM_TARGET_PREFIX } from './harness/routines/system-actions';
@@ -213,8 +214,10 @@ export async function stopFeatureBackgroundActivity(featureId: string, principal
   const policy = savedStartupActivityPolicy(feature,
     await readOperatorState('operator_paused', workspace, { fresh: true }) ?? {}, workspace);
   const live = row?.source === 'managed' ? getManaged(row.name) : undefined;
-  if (!live || live.instanced || live.activity?.kind !== 'workspace'
-    || live.activity.workspaceId !== workspace || live.activity.featureId !== featureId)
+  const managed = live && !live.instanced && live.activity?.kind === 'workspace'
+    && live.activity.workspaceId === workspace && live.activity.featureId === featureId;
+  const scope = { workspaceId: workspace, featureId };
+  if (!managed && !observedBackgroundActivityStatus(scope))
     return { status: 'unavailable', policy, reason: 'runtime-control-unavailable' };
   const audit = (status: 'pending' | 'draining' | 'completed' | 'failed') => recordStartupActivityHistory({
     featureId, operation: 'stop', status, at: new Date().toISOString(), actor: 'user',
@@ -222,7 +225,7 @@ export async function stopFeatureBackgroundActivity(featureId: string, principal
   }, principal.id, 'user', { sql: getOrgPg().sql, workspaceId: workspace });
   // Persist intent before touching the runtime. An audit outage cannot produce an unaudited stop.
   await audit('pending');
-  const request = stopManagedInvocation(row!.name);
+  const request = managed ? stopManagedInvocation(row!.name) : stopObservedBackgroundActivity(scope);
   if (request.status === 'unavailable') {
     await audit('failed');
     return { status: 'unavailable', policy, reason: 'runtime-control-unavailable' };

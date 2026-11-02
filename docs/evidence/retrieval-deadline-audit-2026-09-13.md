@@ -2,6 +2,7 @@
 
 Date: 2026-09-13. Plan: `retrieval-soft-budget-hard-deadline-2026-09-13`.
 Preparation item: WI-10001232 / P-001. Author: su-8ee55568-a37b-4b6b-84f3-e02e11c10d86.
+Current-source reconciliation: 2026-11-02 by su-6af62442-baf5-46b3-8ceb-00c02cf7cf65.
 
 This is pre-implementation evidence, not a claim that the new policy has shipped.
 
@@ -51,11 +52,15 @@ explicitly migrated.
    from graceful degradation. Preserve that distinction when introducing a
    partial hard-deadline result.
 3. `embedWithBudget` supplies an abort signal to transport-aware embedders.
-   The corpus wrapper currently uses a one-argument closure around its warm
-   embedder; the closure does not forward that signal or function metadata.
-   This must be examined when wiring cancellation and vector provenance.
-4. The corpus whole-operation race swallows the losing promise. It does not
-   itself cancel that work or return already-completed candidates.
+   The current corpus memo wrapper forwards that signal to its warm embedder
+   and preserves mode/profile metadata with `stampEmbedderMode`. Reuse this
+   implementation and preserve its provenance assertion; the earlier finding
+   that the wrapper dropped cancellation and metadata is superseded.
+4. The corpus now wraps its operation in `createMemoryWorkDeadline`, combining
+   parent cancellation and remaining time with its own 2,000 ms bound. It passes
+   that signal and bounded source-stage windows to the search engine. Its outer
+   timeout still returns an empty result; it does not expose already-completed
+   candidates when the whole operation expires.
 5. The corpus has an additive second query: retained first-stage results must not
    disappear if widening or reranking times out.
 6. Partial output still requires the normal workspace/harness, self-session,
@@ -122,6 +127,15 @@ The implementation test population includes:
 Use deterministic clocks for boundary tests. Live measurements must separately
 report acquisition, admission/queue, inference, SQL/highlight and rerank time,
 cache behavior, request size, concurrency, process identity and build.
+
+The November 2 reconciliation also found existing regression cases in
+`corpus-recall-io.test.ts` for preserving the prose query profile through
+memoization, retaining first-stage hits when another source search cannot fit,
+and keeping a healthy source above the old half-budget cap. These are reusable
+baseline protections; they do not prove the requested 1,200/10,000 ms policy.
+Compared with baseline commit `af52a46a8a`, the inspected deadline/search source
+files were unchanged. The inspected `core.mjs` changes concerned shell-command
+classification and its parser import; its injection timeout policy was unchanged.
 
 ## Historical recommendation authority
 

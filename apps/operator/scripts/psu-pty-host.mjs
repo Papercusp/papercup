@@ -13660,6 +13660,20 @@ export function hostThroughPty(o) {
   const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false, onConfirmed = () => {}) => {
     const target = child;
     const targetStartedAtMs = childStartedAtMs;
+    const targetChildGeneration = childGeneration;
+    let confirmationEventLogged = false;
+    const recordBindingConfirmed = (binding) => {
+      if (confirmationEventLogged) return;
+      confirmationEventLogged = true;
+      appendHostEvent(ownerId, 'respawn-binding-confirmed', {
+        nativeId: binding.nativeId,
+        reason: binding.reason,
+        ownerId,
+        advSessionId: baseMeta.advSessionId,
+        hostStartedAt: baseMeta.startedAt,
+        childGeneration: targetChildGeneration,
+      });
+    };
     if (carryBindingChild !== target) carryBindingNativeId = nativeId;
     else if (nativeId) carryBindingNativeId = nativeId;
     carryBindingChild = target;
@@ -13672,6 +13686,7 @@ export function hostThroughPty(o) {
       onConfirmed: (binding) => {
         confirmedCarryChild = target;
         confirmedCarryNativeId = binding.nativeId;
+        recordBindingConfirmed(binding);
         onConfirmed(binding);
       },
       timeoutMs: Math.max(0, deadline - Date.now()),
@@ -13679,12 +13694,20 @@ export function hostThroughPty(o) {
         ? Math.max(0, targetStartedAtMs + unboundWindowMs - Date.now())
         : Infinity,
     });
-    appendHostEvent(ownerId, result.ok ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed', {
-      nativeId: result.nativeId, reason: result.reason,
-      ...(!result.ok && result.reason === 'successor-native-id-missing' && targetStartedAtMs > 0
-        ? { childAgeMs: Date.now() - targetStartedAtMs, windowMs: unboundWindowMs }
-        : {}),
-    });
+    if (result.ok) {
+      recordBindingConfirmed(result);
+    } else {
+      appendHostEvent(ownerId, 'respawn-binding-unconfirmed', {
+        nativeId: result.nativeId, reason: result.reason,
+        ownerId,
+        advSessionId: baseMeta.advSessionId,
+        hostStartedAt: baseMeta.startedAt,
+        childGeneration: targetChildGeneration,
+        ...(result.reason === 'successor-native-id-missing' && targetStartedAtMs > 0
+          ? { childAgeMs: Date.now() - targetStartedAtMs, windowMs: unboundWindowMs }
+          : {}),
+      });
+    }
     if (!result.ok && result.reason === 'successor-native-id-missing' && stuckSnapshotChild !== target &&
         env.PAPERCUSP_AGENT === 'codex' && child === target && !hostCleanedUp && !shuttingDown) {
       // One snapshot per child: the evidence does not change between attempts,
@@ -17978,6 +18001,38 @@ export function hostThroughPty(o) {
         : freshChildOnly
           ? 'launch-fresh-child'
           : 'recycle';
+      const carrySourceNativeId = respawnMode === 'carry-respawn' && env.PAPERCUSP_AGENT === 'codex'
+        ? currentNativeSessionId(child.pid, resolveRespawnNativeId)
+        : null;
+      const carrySourceNativeRef = carrySourceNativeId
+        ? newestNativeTranscriptPath('codex', env, homedir(), carrySourceNativeId)
+        : null;
+      const carrySourceChildGeneration = childGeneration;
+      const managedCarryLineageForTarget = (targetNativeId = null, targetNativeRef = null) => {
+        const lineageAdvSessionId = Number(baseMeta.advSessionId);
+        const lineageHostStartedAt = Number(baseMeta.startedAt);
+        const hasTargetId = typeof targetNativeId === 'string' && targetNativeId.length > 0;
+        const hasTargetRef = typeof targetNativeRef === 'string' && targetNativeRef.length > 0;
+        if (!carrySourceNativeId || !carrySourceNativeRef ||
+            !Number.isSafeInteger(lineageAdvSessionId) || lineageAdvSessionId <= 0 ||
+            !Number.isFinite(lineageHostStartedAt) || lineageHostStartedAt <= 0 ||
+            !Number.isSafeInteger(carrySourceChildGeneration) || !Number.isSafeInteger(childGeneration) ||
+            childGeneration !== carrySourceChildGeneration + 1 || hasTargetId !== hasTargetRef ||
+            (hasTargetId && (targetNativeId === carrySourceNativeId || targetNativeRef === carrySourceNativeRef))) {
+          return null;
+        }
+        return {
+          ownerId,
+          advSessionId: lineageAdvSessionId,
+          hostStartedAt: lineageHostStartedAt,
+          sourceNativeId: carrySourceNativeId,
+          sourceNativeRef: carrySourceNativeRef,
+          sourceChildGeneration: carrySourceChildGeneration,
+          targetChildGeneration: childGeneration,
+          targetNativeId: hasTargetId ? targetNativeId : null,
+          targetNativeRef: hasTargetRef ? targetNativeRef : null,
+        };
+      };
       const carrySourceTranscript = systemPromptAddendum
         ? sourceTranscriptPath || newestNativeTranscriptPath(env.PAPERCUSP_AGENT, env)
         : null;
@@ -18760,9 +18815,11 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, 'carry-drill-respawned', respawnedExtra);
         appendSharedDrillLedgerEvent(ownerId, 'carry-drill-respawned', respawnedExtra);
       } else {
+        const managedCarryLineage = managedCarryLineageForTarget();
         appendHostEvent(ownerId, 'respawned', {
           mode: respawnMode,
           nativeId: nativeId ?? null,
+          ...(managedCarryLineage ? { managedCarryLineage } : {}),
           launchContextPath,
           // false = the successor boots with NO first prompt (P-010 answered case)
           // and waits for its loop/coord wake — expected, but worth seeing.
@@ -18803,6 +18860,7 @@ export function hostThroughPty(o) {
       const bindingCarryOwnerGeneration = ownerInputGeneration;
       let confirmedRecoveryBinding = null;
       let recoverCarry = null;
+      let announceCarryAfterBinding = null;
       let bindingRecoveryScheduled = false;
       const bindingRecoveryRejection = () => {
         if (hostCleanedUp || shuttingDown || cleaned) return 'host-ended';
@@ -18814,24 +18872,59 @@ export function hostThroughPty(o) {
         }
         return null;
       };
+      const bindingAnnouncementRejection = () => {
+        if (hostCleanedUp || shuttingDown || cleaned) return 'host-ended';
+        if (child !== bindingCarryChild || lastRespawnAtMs !== bindingCarryEpoch) return 'superseded';
+        if (carryRequest?.deliveryId &&
+            ['cancelled', 'superseded'].includes(deliveryDedup.state(carryRequest.deliveryId))) {
+          return 'delivery-cancelled-or-superseded';
+        }
+        return null;
+      };
       const tryBindingRecovery = () => {
-        if (!recoverCarry || !confirmedRecoveryBinding || bindingRecoveryScheduled) return;
+        if ((!recoverCarry && !announceCarryAfterBinding) ||
+            !confirmedRecoveryBinding || bindingRecoveryScheduled) return;
         bindingRecoveryScheduled = true;
         const redeliver = recoverCarry;
+        const announce = announceCarryAfterBinding;
+        const binding = confirmedRecoveryBinding;
         recoverCarry = null;
+        announceCarryAfterBinding = null;
         void (async () => {
           const release = await injectMutex.acquire();
           try {
-            const reason = bindingRecoveryRejection();
+            const reason = redeliver ? bindingRecoveryRejection() : bindingAnnouncementRejection();
             if (reason) {
-              appendHostEvent(ownerId, 'respawn-carry-binding-recovery-cancelled', { nativeId, reason });
+              appendHostEvent(ownerId, redeliver
+                ? 'respawn-carry-binding-recovery-cancelled'
+                : 'respawn-compaction-announcement-cancelled', { nativeId, reason });
               return;
             }
-            appendHostEvent(ownerId, 'respawn-carry-binding-recovery-started', { nativeId });
-            await redeliver(confirmedRecoveryBinding);
+            if (redeliver) {
+              appendHostEvent(ownerId, 'respawn-carry-binding-recovery-started', { nativeId });
+              await redeliver(binding);
+              return;
+            }
+            appendHostEvent(ownerId, 'respawn-compaction-announcement-after-binding-started', {
+              nativeId: binding.nativeId,
+            });
+            const result = await announce(binding);
+            if (result?.announced) {
+              appendHostEvent(ownerId, 'respawn-compaction-announced-after-binding', {
+                nativeId: result.nativeId ?? binding.nativeId,
+              });
+            } else {
+              appendHostEvent(ownerId, 'respawn-compaction-unannounced', {
+                nativeId: result?.nativeId ?? binding.nativeId,
+                reason: result?.reason ?? 'late-announcement-failed',
+              });
+            }
           } catch (error) {
-            appendHostEvent(ownerId, 'respawn-carry-binding-recovery-failed', {
-              nativeId, detail: String(error?.message ?? error).slice(0, 200),
+            appendHostEvent(ownerId, redeliver
+              ? 'respawn-carry-binding-recovery-failed'
+              : 'respawn-compaction-announcement-failed', {
+              nativeId: redeliver ? nativeId : binding.nativeId,
+              detail: String(error?.message ?? error).slice(0, 200),
             });
           } finally {
             release();
@@ -19106,9 +19199,26 @@ export function hostThroughPty(o) {
         });
         if (announcement.nativeId) nativeId = announcement.nativeId;
         if (!announcement.announced) {
-          appendHostEvent(ownerId, 'respawn-compaction-unannounced', {
-            nativeId: nativeId ?? null, reason: announcement.reason,
-          });
+          if (deliveryBinding && turnStartProof?.persisted &&
+              announcement.reason === 'successor-reanchor-unconfirmed') {
+            announceCarryAfterBinding = (binding) => {
+              if (binding?.nativeId) nativeId = binding.nativeId;
+              respawnReported = Boolean(binding?.ok);
+              return announceVerifiedCarryRespawn({
+                ownerId, agent: env.PAPERCUSP_AGENT, nativeId, proof: turnStartProof,
+                alreadyReported: respawnReported, emit: emitCompacted,
+                isCurrent: () => !bindingAnnouncementRejection(),
+              });
+            };
+            appendHostEvent(ownerId, 'respawn-compaction-awaiting-reanchor', {
+              nativeId: nativeId ?? null, reason: announcement.reason,
+            });
+            tryBindingRecovery();
+          } else {
+            appendHostEvent(ownerId, 'respawn-compaction-unannounced', {
+              nativeId: nativeId ?? null, reason: announcement.reason,
+            });
+          }
         }
       }
       if (!carryResult.delivered) {
@@ -19168,9 +19278,13 @@ export function hostThroughPty(o) {
         // "fleet-wide carry-respawn starvation" from what was actually just
         // this asymmetric-logging gap. Mirroring the call here (matching the
         // drill branch just above, which has always logged both) closes it.
+        const managedCarryLineage = respawnMode === 'carry-respawn'
+          ? managedCarryLineageForTarget(nativeId ?? null, turnStartProof?.nativeRef ?? null)
+          : null;
         const terminalExtra = {
           mode: respawnMode,
           nativeId: nativeId ?? null,
+          ...(managedCarryLineage ? { managedCarryLineage } : {}),
           reason: carryResult.delivered ? undefined : carryResult.reason,
           attempts: carryResult.attempts,
           outputSeen: childStartupOutput.length > 0,

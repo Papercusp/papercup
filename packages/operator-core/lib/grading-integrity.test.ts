@@ -54,6 +54,7 @@ import {
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
 import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
+import { GradingAuditRuntimeReadinessError, type GradingAuditRuntimeReadinessDiagnostic } from './release/grading-audit-runtime';
 
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
 type ReadEvidence = NonNullable<DispatchPendingGradingAuditsDeps['readEvidence']>;
@@ -586,6 +587,22 @@ describe('dispatchPendingGradingAudits', () => {
     );
 
     expect(d.launch).toHaveBeenCalledOnce();
+  });
+
+  it('carries the originating completion reference into the auditor brief without changing its target', async () => {
+    const d = deps();
+    const issueId = 'EI-acceptance-ref';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+
+    await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx, harness: 'papercusp', acceptanceRef: 'F-101' },
+      d,
+    );
+
+    expect(d.launch).toHaveBeenCalledOnce();
+    const launchInput = d.launch.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(launchInput.workItem).toBe(issueId);
+    expect(launchInput.brief).toContain('Originating completion reference: "F-101"');
   });
 
   it('cancels the pending lease and retires its live auditor when the target was superseded', async () => {
@@ -1512,6 +1529,44 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('preserves exact readiness diagnostics through the repair receipt (evaluator drift: %s)', async drift => {
+    const d = deps();
+    const issueId = 'EI-runtime-unready';
+    const evaluatorBuild = { sha: drift ? 'old-evaluator' : 'live-evaluator-sha', version: '1.2.3' };
+    d.listScorecards.mockResolvedValue([card(issueId, {
+      gradedGeneration: { deployedSha: '2222222' } as ScorecardRow['gradedGeneration'],
+      ...(drift ? { rerunRecipe: {
+        schemaVersion: 1, evaluator: 'plans:evaluate-spec-test-adequacy', evaluatorBuild,
+        evaluatorRevision: 20, classRef: 'plan-class-bugfix',
+        args: { harness: 'papercusp', slug: 'retained-unready', classRef: 'plan-class-bugfix',
+          specIds: ['SPEC-RETAINED-UNREADY'], includeDraft: true },
+        selection: { planSlug: 'retained-unready', specId: 'SPEC-RETAINED-UNREADY', specRevision: 1,
+          specFingerprint: 'retained-unready-fingerprint', bindingIds: [], evidence: [] },
+        current: { supplied: false, fingerprints: [] },
+        derivation: { kind: 'listSpecEvidence.currentness', classifier: 'classifySpecEvidenceCurrentness', unknownWhenMissing: true },
+      } as NonNullable<ScorecardRow['rerunRecipe']> } : {}),
+    })]);
+    const diagnostic: GradingAuditRuntimeReadinessDiagnostic = {
+      taskId: 'runtime-unready', logPath: '/logs/exact-runtime.log', attempts: 1,
+      locator: { schemaVersion: 1, sourceRoot: '/immutable/checkout', bundlePath: '/immutable/checkout/apps/operator/dist-host/hono-host.mjs',
+        ownerRef: 'grading-audit-runtime:exact', evaluatorBuild, bundleSha256: 'b'.repeat(64),
+        expiresAtSec: 4102444800, baseUrl: 'http://127.0.0.1:45188', issueIds: [issueId] },
+      lastProbe: { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' },
+      readiness: { method: 'GET', url: 'http://127.0.0.1:45188/api/health', timeoutMs: 2000 },
+      taskRead: { tool: 'processes:list', args: { taskId: 'runtime-unready' } },
+      recovery: { tool: 'scorecards:repair', args: { targetIds: [issueId] } },
+    };
+    d.ensureRuntime.mockRejectedValue(new GradingAuditRuntimeReadinessError(diagnostic));
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+    expect(JSON.parse(JSON.stringify(result)).receipts[0]).toMatchObject({
+      issueId, state: 'failed', runtimeReadiness: diagnostic,
+      reason: expect.stringContaining('ECONNREFUSED'),
+    });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([
@@ -1799,6 +1854,24 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.generationAncestry).not.toHaveBeenCalled();
     expect(d.launch).toHaveBeenCalledTimes(1);
     expect(d.launch.mock.calls[0]?.[0]).not.toHaveProperty('mcpTarget');
+  });
+
+  it('binds a profile-pinned card without a graded generation to the dispatcher host', async () => {
+    const d = deps();
+    const issueId = 'EI-routine-profile-unbound-generation';
+    d.listScorecards.mockResolvedValue([card(issueId, { rubricRef: 'spec-quality' })]);
+    const profiledCtx = {
+      ...ctx,
+      gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' },
+    } as DispatchPendingGradingAuditsInput['ctx'];
+
+    await dispatchPendingGradingAudits({ targetIds: [issueId], ctx: profiledCtx }, d);
+
+    expect(d.generationAncestry).not.toHaveBeenCalled();
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto', mcpTarget: 'spawn-host',
+    }), expect.anything());
   });
 
   it.each([

@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   releaseSlot: vi.fn(),
   setTransaction: vi.fn(),
   liveMemberIds: vi.fn(),
+  readFleetRoster: vi.fn(),
+  readFleetLaneHealth: vi.fn(),
   executingOwnersSince: vi.fn(),
   buildEnvelope: vi.fn(),
   spawnHeadless: vi.fn(),
@@ -81,6 +83,10 @@ vi.mock('../../console-spawn', () => ({
 }));
 vi.mock('../../fleet/fleet-roster', () => ({
   liveFleetMemberIds: (...args: unknown[]) => mocks.liveMemberIds(...args),
+  listFleetRosterDiagnosed: (...args: unknown[]) => mocks.readFleetRoster(...args),
+}));
+vi.mock('../../fleet/lane-health', () => ({
+  readFleetLaneHealthDiagnosed: (...args: unknown[]) => mocks.readFleetLaneHealth(...args),
 }));
 vi.mock('../../fleet/assignments', () => ({
   executingOwnersSince: (...args: unknown[]) => mocks.executingOwnersSince(...args),
@@ -238,6 +244,26 @@ beforeEach(() => {
   // otherwise the real assignments query returns an empty set and turns a
   // verified late boot into a synthetic refill deficit.
   mocks.executingOwnersSince.mockImplementation(async (ownerIds: string[]) => new Set(ownerIds));
+  mocks.readFleetRoster.mockImplementation(async (args: { leaderOwnerId?: string | null }) => ({
+    entries: [],
+    degradedLegs: [],
+    leaderLiveness: args.leaderOwnerId
+      ? {
+          ownerId: args.leaderOwnerId,
+          presenceRow: true,
+          recordedLive: false,
+          sessionState: 'live',
+          complete: true,
+        }
+      : undefined,
+  }));
+  mocks.readFleetLaneHealth.mockResolvedValue({
+    laneHealth: {
+      effective: { claimable: 1 },
+      spec: { specId: 'current-test-spec', revision: 1 },
+    },
+    unavailable: null,
+  });
   mocks.capacity.mockImplementation(async (args: { headroom?: number }) => ({
     content: [{
       type: 'text',
@@ -286,6 +312,106 @@ describe('deliberate loop-end is a headcount repair admission fence', () => {
       verifierResult(args.expectedOwnerIds[0]!, args.expectedOwnerIds[0] !== owner));
     return transaction;
   };
+
+  it('does not prune or respawn when registered leader liveness is unknown', async () => {
+    const transaction = setup(true);
+    mocks.readFleetRoster.mockResolvedValue({
+      entries: [],
+      degradedLegs: ['presence'],
+      leaderLiveness: {
+        ownerId: 'su-reaped-leader',
+        presenceRow: false,
+        recordedLive: null,
+        sessionState: null,
+        complete: false,
+      },
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait',
+      outcome: 'unverified',
+      reason: expect.stringContaining('leader liveness is unknown'),
+    });
+  });
+
+  it('does not prune or respawn when complete evidence has no current leader presence', async () => {
+    const transaction = setup(true);
+    mocks.readFleetRoster.mockResolvedValue({
+      entries: [],
+      degradedLegs: [],
+      leaderLiveness: {
+        ownerId: 'su-reaped-leader',
+        presenceRow: false,
+        recordedLive: true,
+        sessionState: 'recorded',
+        complete: true,
+      },
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait',
+      outcome: 'unverified',
+      reason: expect.stringContaining('leader is not positively live'),
+    });
+  });
+
+  it('does not prune or respawn into an exactly measured empty fleet lane', async () => {
+    const transaction = setup(true);
+    mocks.readFleetLaneHealth.mockResolvedValue({
+      laneHealth: {
+        effective: { claimable: 0 },
+        spec: { specId: 'stale-byoc-lane', revision: 46 },
+      },
+      unavailable: null,
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait',
+      outcome: 'unverified',
+      reason: expect.stringContaining('has no currently claimable work'),
+    });
+  });
+
+  it('does not prune or respawn when the measured lane count is negative', async () => {
+    const transaction = setup(true);
+    mocks.readFleetLaneHealth.mockResolvedValue({
+      laneHealth: {
+        effective: { claimable: -1 },
+        spec: { specId: 'invalid-byoc-lane', revision: 46 },
+      },
+      unavailable: null,
+    });
+
+    await run();
+
+    expect(mocks.readFleetLaneHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait',
+      outcome: 'unverified',
+      reason: expect.stringContaining('has no currently claimable work'),
+    });
+  });
 
   it.each([true, false])('preserves a settled no-assignment disposition across ticks (member live: %s)', async (live) => {
     const transaction = setup(live);
