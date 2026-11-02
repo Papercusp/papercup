@@ -1152,6 +1152,7 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     const approvalErrors = [
       'acceptance_bar_approval_invalid_receipt',
       'acceptance_bar_approval_stale_or_mismatched: R-10 hash mismatch',
+      'acceptance_bar_approval_patch_mismatched: applied acceptance amendment differs from the complete proposed criteria shown to the outside-lineage reviewer',
       'acceptance_bar_approval_unparseable: the approval post must contain JSON',
       'acceptance_bar_approval_incomplete: the applied amendment changes R-10',
       'acceptance_bar_approval_ambiguous_preview_pointer',

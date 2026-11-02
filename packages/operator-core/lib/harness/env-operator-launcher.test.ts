@@ -700,15 +700,15 @@ describe('sourceChildEnv (WI-3306 source-child contract)', () => {
 });
 
 describe('openEnvOperatorLog (EI-19423766332560955)', () => {
-  const priorHome = process.env.HOME;
+  const priorHome = process.env.PAPERCUSP_HOME;
   afterEach(() => {
-    if (priorHome === undefined) delete process.env.HOME;
-    else process.env.HOME = priorHome;
+    if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = priorHome;
   });
 
   it('routes stdout+stderr to a per-env log instead of discarding them', () => {
     const home = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
-    process.env.HOME = home;
+    process.env.PAPERCUSP_HOME = join(home, '.papercusp');
 
     const log = openEnvOperatorLog('dev');
 
@@ -728,7 +728,7 @@ describe('openEnvOperatorLog (EI-19423766332560955)', () => {
 
   it('opens APPEND-mode so a restart never truncates the previous boot', () => {
     const home = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
-    process.env.HOME = home;
+    process.env.PAPERCUSP_HOME = join(home, '.papercusp');
 
     const first = openEnvOperatorLog('local');
     writeSync(first.fd as number, 'FIRST BOOT\n');
@@ -750,7 +750,7 @@ describe('openEnvOperatorLog (EI-19423766332560955)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
     const notADir = join(dir, 'i-am-a-file');
     writeFileSync(notADir, 'x');
-    process.env.HOME = notADir;
+    process.env.PAPERCUSP_HOME = join(notADir, '.papercusp');
 
     const log = openEnvOperatorLog('dev');
 
