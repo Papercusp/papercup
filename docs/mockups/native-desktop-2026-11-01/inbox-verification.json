@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-11-02T14:57:08.971Z",
+  "capturedAt": "2026-11-02T15:59:44.854Z",
   "purpose": "Visual mockup and sample interaction verification; not native product acceptance.",
   "captures": [
     {
@@ -45,6 +45,20 @@
       }
     },
     {
+      "file": "inbox-b-running.png",
+      "layout": "b",
+      "state": "running"
+    },
+    {
+      "file": "inbox-b-review.png",
+      "layout": "b",
+      "state": "review"
+    },
+    {
+      "file": "inbox-bulk-states.png",
+      "comparison": true
+    },
+    {
       "file": "compare-inbox.png",
       "comparison": true
     }
@@ -63,7 +77,13 @@
     "c: snooze removes one sample question",
     "c: Escape dismisses; browser shortcut summons",
     "b: blocking filter retains only the blocking question",
-    "b: selecting a question changes the reading pane"
+    "b: selecting a question changes the reading pane",
+    "b bulk: starts from exact visible filtered rows; later filter changes do not widen the run",
+    "b bulk: Stop preserves questions and Continue resumes the same run",
+    "b bulk: existing run survives dismiss/summon and page reload; assessment alone sends no answers",
+    "b bulk: grouped reasons and editable replies; owner decision excluded; explicit selection required",
+    "b bulk: empty replies cannot apply; edits and selection survive reload; accepts only selected edited reply",
+    "b bulk: grouped acceptance leaves owner-only question for manual answer; empty queue cannot start a run"
   ],
   "browserErrors": [],
   "externalRequests": []

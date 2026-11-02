@@ -30,7 +30,7 @@ async function fixture(armId = 'stock') {
     referenceSha256: sha(n * 10), scoringFixtureSha256: sha(n * 10 + 1), exampleSha256: [] });
   const manifest = freezeMinecraftManifest({ schemaVersion: 1, revision: 1,
     train: [material('train', 1)], dev: [material('dev', 2)], heldOut: [material('t1', 3)] });
-  const initialState = { worldSha256: sha(90), memorySha256: sha(91) };
+  const initialState = { worldSha256: sha(90), memorySha256: protocol.context.memoryHash };
   const arms = protocol.arms.map(arm => {
     const selection = freezeMinecraftSelection(manifest, { runId: protocol.runId, armId: arm.id, modelId: arm.model,
       promptSha256: arm.runtime.promptHash,
@@ -67,6 +67,7 @@ async function fixture(armId = 'stock') {
     telemetry: { tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0,
       wallClockMs: 0, stopReason: 'done', trajectoryRef: '' } }));
   const ports = { startAssignment: vi.fn(async () => native), startBridge: vi.fn(async () => bridge),
+    readInitialWorld: vi.fn(() => ({ worldSha256: initialState.worldSha256 })),
     createDriver: vi.fn(() => ({ spinRunAndCost })) } as unknown as MinecraftNativeAssignmentPorts;
   return { input: { current, runtime, manifest, selection: selected.selection, participantId: 'alice', pairing: { pair, initialState } },
     root, ports, native, bridge, revoked, spinRunAndCost };
@@ -113,7 +114,12 @@ describe('Minecraft native assignment composition', () => {
       assignment = await startMinecraftNativeAssignment(f.input, f.ports);
       const dir = (await readdir(f.root))[0]!;
       const program = join(f.root, 'program.js'); await writeFile(program, 'return await bot.position()');
-      const result = await promisify(execFile)(process.execPath, [join(f.root, dir, 'play.cjs'), program], { timeout: 10_000 });
+      const startedAt = Date.now();
+      const result = await promisify(execFile)(process.execPath, [join(f.root, dir, 'play.cjs'), program], { timeout: 10_000 })
+        .catch(error => { throw new Error(`Minecraft generated client failed: ${JSON.stringify({
+          elapsedMs: Date.now() - startedAt, code: error.code, signal: error.signal, killed: error.killed,
+          stdout: error.stdout, stderr: error.stderr, requestsReceived: requests.length,
+        })}`, { cause: error }); });
       expect(JSON.parse(result.stdout)).toEqual({ ok: true, value: { x: 1 } });
       expect(requests).toEqual([{ authorization: 'Bearer private-player-token', body: { source: 'return await bot.position()' } }]);
     } finally {
@@ -144,7 +150,7 @@ describe('Minecraft native assignment composition', () => {
     if (field === 'model') f.input.current.options.model = 'different-model';
     if (field === 'task') f.input.current.task.instanceId = 'different-task';
     if (field === 'budget') f.input.current.protocol.aggregateBudgetUsd = 21;
-    if (field === 'reset') f.input.pairing.initialState = { worldSha256: sha(99), memorySha256: sha(91) };
+    if (field === 'reset') f.input.pairing.initialState = { worldSha256: sha(99), memorySha256: f.input.current.protocol.context.memoryHash };
     if (field === 'runtime') f.input.runtime.measurement = { ...f.input.runtime.measurement, worldSeed: '4' };
     if (field === 'selection') f.input.selection = { ...f.input.selection };
     await expect(startMinecraftNativeAssignment(f.input, f.ports)).rejects.toThrow();
@@ -154,6 +160,23 @@ describe('Minecraft native assignment composition', () => {
     const f = await fixture(); vi.mocked(f.ports.startAssignment).mockRejectedValue(Error('gateway unavailable'));
     await expect(startMinecraftNativeAssignment(f.input, f.ports)).rejects.toThrow(/gateway unavailable/);
     expect(f.bridge.stop).toHaveBeenCalledOnce(); expect(await readdir(f.root)).toEqual([]);
+  });
+  it('refuses a declared reset hash when the owned-runtime measurement differs', async () => {
+    const f = await fixture();
+    vi.mocked(f.ports.readInitialWorld).mockReturnValue({ worldSha256: sha(99) });
+    await expect(startMinecraftNativeAssignment(f.input, f.ports)).rejects.toThrow(/measured world/);
+    expect(f.ports.startBridge).not.toHaveBeenCalled(); expect(f.ports.startAssignment).not.toHaveBeenCalled();
+  });
+  it('refuses initial memory that differs from the frozen native context before allocating a bridge', async () => {
+    const f = await fixture();
+    f.input.pairing.initialState = { ...f.input.pairing.initialState, memorySha256: sha(99) };
+    await expect(startMinecraftNativeAssignment(f.input, f.ports)).rejects.toThrow(/frozen memory/);
+    expect(f.ports.startBridge).not.toHaveBeenCalled(); expect(f.ports.startAssignment).not.toHaveBeenCalled();
+  });
+  it('uses the live owned-runtime boundary before any native allocation', async () => {
+    const f = await fixture();
+    await expect(startMinecraftNativeAssignment(f.input)).rejects.toThrow(/no measured frozen world/);
+    expect(await readdir(f.root)).toEqual([]);
   });
   it('requires a fresh host session allowance for repeated native sessions', async () => {
     const f = await fixture('repeated-session'), assignment = await startMinecraftNativeAssignment(f.input, f.ports);

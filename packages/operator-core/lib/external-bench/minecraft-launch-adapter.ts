@@ -10,7 +10,7 @@ import { canonicalJson } from './reproducibility/canonical-json';
 import { currentBenchmarkProtocolSchema } from './reproducibility/schema';
 import { withMinecraftAssignment, type FrozenMinecraftManifest, type FrozenMinecraftPair,
   type FrozenMinecraftSelection } from './minecraft-protocol';
-import { startMinecraftParticipantBridge, type MinecraftRuntime } from './minecraft-runtime';
+import { readMinecraftInitialWorld, startMinecraftParticipantBridge, type MinecraftRuntime } from './minecraft-runtime';
 import { readCurrentBenchRepeatedSessionControl, startCurrentBenchTaskAssignment, type CurrentTaskInput } from './run-launcher';
 import { createCurrentSuBenchHarness, CURRENT_STOCK_CLAUDE_BLUEPRINT, CURRENT_STOCK_CODEX_BLUEPRINT,
   currentBenchAssignmentId, currentBenchSessionUsageDelta, requireCurrentBenchNativeRunCost,
@@ -34,12 +34,14 @@ export interface MinecraftNativeAssignmentInput {
 export interface MinecraftNativeAssignmentPorts {
   startAssignment: typeof startCurrentBenchTaskAssignment;
   startBridge: typeof startMinecraftParticipantBridge;
+  readInitialWorld: typeof readMinecraftInitialWorld;
   createDriver(options: CurrentSuBenchOptions, context: CurrentTaskInput['context'],
     observations: CurrentSuBenchObservations, stock: boolean): BenchHarnessDriver;
 }
 const livePorts: MinecraftNativeAssignmentPorts = {
   startAssignment: startCurrentBenchTaskAssignment,
   startBridge: startMinecraftParticipantBridge,
+  readInitialWorld: readMinecraftInitialWorld,
   createDriver: (options, context, observations, stock) => (stock
     ? createCurrentStockBenchHarness : createCurrentSuBenchHarness)(options, context, observations),
 };
@@ -75,6 +77,13 @@ export async function startMinecraftNativeAssignment(input: MinecraftNativeAssig
   parentSignal.throwIfAborted();
   const checkout = { ...current.checkout, dir: resolve(current.checkout.dir) };
   const task = structuredClone(current.task);
+  // The live port reads the opaque owned-runtime record, measured before Java
+  // starts. A declared/reset hash cannot authorize a fresh native assignment.
+  // The maintained native driver independently restores and re-reads the frozen
+  // memory bytes before generation; its receipt must match this same protocol.
+  const measuredState = { ...ports.readInitialWorld(runtime), memorySha256: protocol.context.memoryHash };
+  if (canonicalJson(pairing.initialState) !== canonicalJson(measuredState))
+    throw Error('Minecraft native assignment reset differs from the measured world or frozen memory');
   return withMinecraftAssignment(manifest, selection, game, runtime.measurement, trial.trialId, participantId,
     async (_trial, assignment) => {
       const bridge = await ports.startBridge(runtime, assignment);
@@ -158,7 +167,7 @@ export async function startMinecraftNativeAssignment(input: MinecraftNativeAssig
         try { await stop(); } catch (cleanup) { throw new AggregateError([error, cleanup], 'Minecraft native startup and cleanup failed'); }
         throw error;
       }
-    }, pairing);
+    }, { pair: pairing.pair, initialState: measuredState });
 }
 
 export interface MinecraftNativeRunPorts extends MinecraftNativeAssignmentPorts {

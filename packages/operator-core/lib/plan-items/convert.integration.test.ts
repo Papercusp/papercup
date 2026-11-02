@@ -121,6 +121,10 @@ beforeAll(async () => {
   await applyMigrationForTest(rootSql, fileURLToPath(new URL(
     '../../../../libs/papercusp/libs/db/sql/832-plan-audits.sql', import.meta.url,
   )));
+  // The draft item-start gate reads the activation audit payload from plan_audits.
+  await applyMigrationForTest(rootSql, fileURLToPath(new URL(
+    '../../../../libs/papercusp/libs/db/sql/938-plan-activation-audits.sql', import.meta.url,
+  )));
   // WI-6993 / EI-19342686955096692 / migration 725: the shared fixture DDL deliberately
   // omits check constraints (see _work-items-schema.ts's doc comment — "add it in the
   // specific test, not here"). This test's whole point is proving the production
