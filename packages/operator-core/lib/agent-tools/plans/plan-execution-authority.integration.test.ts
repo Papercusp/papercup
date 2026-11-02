@@ -38,8 +38,12 @@ vi.mock('./source', async original => ({
   getPlanRow: async () => {
     const rows = await db.sql<{ content: string; content_hash: string }[]>`
       SELECT content,content_hash FROM harness_shared.harness_plans WHERE workspace_id='execution-ws' AND harness_slug='project' AND plan_slug='feature'`;
-    return rows[0] ? { content: rows[0].content, contentHash: rows[0].content_hash,
-      template: null, templateData: null, inputSchema: null, items: [] } : null;
+    if (!rows[0]) return null;
+    const { readPlanLineNodes } = await import('./plan-line-graph');
+    const { renderPlanLines } = await import('./plan-line-render');
+    const items = await readPlanLineNodes(db.sql, { workspaceId: 'execution-ws', harnessSlug: 'project', slug: 'feature' });
+    return { content: renderPlanLines(rows[0].content, items), contentHash: rows[0].content_hash,
+      template: null, templateData: null, inputSchema: null, items };
   },
 }));
 
@@ -69,6 +73,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.harness_plans (workspace_id text, harness_slug text, plan_slug text,
       content text, content_hash text, status text, op_status text, template_data jsonb, input_schema jsonb,
       archived boolean DEFAULT false, version integer DEFAULT 1, now_note jsonb, updated_at timestamptz,
+      _search text GENERATED ALWAYS AS (lower(content)) STORED,
       PRIMARY KEY(workspace_id,harness_slug,plan_slug));
     ALTER TABLE harness_shared.harness_plans
       ADD COLUMN title text, ADD COLUMN created text, ADD COLUMN updated text, ADD COLUMN owner text,
@@ -100,12 +105,55 @@ beforeAll(async () => {
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
   gates.blocker = ''; gates.unavailable = false;
-  await db.sql.unsafe('TRUNCATE harness_shared.harness_plans,harness_shared.plan_revisions,harness_shared.plan_audits,harness_shared.session_briefs RESTART IDENTITY');
+  await db.sql.unsafe('TRUNCATE harness_shared.harness_plans,harness_shared.plan_revisions,harness_shared.plan_audits,harness_shared.session_briefs,harness_shared.work_items,harness_shared.work_item_deps RESTART IDENTITY');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,status)
     VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${body},${hashPlanContent(body)},'ready')`;
 });
 
 describe('canonical successful-start revision authority (real PG)', () => {
+  const seedLine = async (id: string, seq = 0) => db.sql`
+    INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,
+      plan_slug,plan_line_id,plan_line_text,plan_importance,plan_decision_refs,plan_deliverable,plan_seq)
+    VALUES ('execution-ws','project',${id},'feature','open','feature',${id},'Preserve findings','normal','{}','doc',${seq})`;
+
+  it('records rendered work-graph scope, preserves progress, and invalidates a line edit even after revert', async () => {
+    await seedLine('P-001');
+    const receipt = await issue();
+    const [revision] = await db.sql`SELECT content_snapshot FROM harness_shared.plan_revisions WHERE seq=${receipt.seq}`;
+    expect(JSON.parse(revision.content_snapshot).body).toContain('P-001');
+    await db.sql`UPDATE harness_shared.work_items SET status='wip'`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+    await db.sql`UPDATE harness_shared.work_items SET plan_line_text='Discard findings'`;
+    await db.sql`UPDATE harness_shared.work_items SET plan_line_text='Preserve findings'`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
+  it('fences final rendered-line races and invalidates dependency insertion and removal', async () => {
+    await seedLine('P-001'); await seedLine('P-002', 1);
+    const expected = await readExecutionPlanRow(scope);
+    if (!expected) throw new Error('missing plan');
+    await db.sql`UPDATE harness_shared.work_items SET plan_deliverable='decision' WHERE plan_line_id='P-002'`;
+    await expect(recordPlanExecutionStart(scope, identity, expected)).rejects.toThrow('plan_changed');
+    await issue();
+    await db.sql`INSERT INTO harness_shared.work_item_deps VALUES ('default','blocks','feature','project#P-002','feature','project#P-001')`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+    await issue();
+    await db.sql`DELETE FROM harness_shared.work_item_deps`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
+  it('invalidates dropping, restoring, and deleting a line while leaving another plan alone', async () => {
+    await seedLine('P-001');
+    for (const status of ['dropped','open']) {
+      await issue();
+      await db.sql`UPDATE harness_shared.work_items SET status=${status}`;
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+    }
+    await issue();
+    await db.sql`DELETE FROM harness_shared.work_items`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
   it('refuses fully ready never-started plans and permits native write admission only after a strict receipt, without op_status', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${identity.ownerId},${scope.workspaceId},'feature','project',NULL)`;
     const input = { ownerId: identity.ownerId, workspaceId: scope.workspaceId, toolName: 'apply_patch', args: {} };

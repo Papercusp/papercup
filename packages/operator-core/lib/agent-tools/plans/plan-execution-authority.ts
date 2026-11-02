@@ -5,10 +5,12 @@ import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisio
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
 import { planExecutionMeaning } from './plan-execution-meaning';
 import { checkPlanExecutionReadiness, type ExecutionPlanBinding } from './plan-execution-guard';
+import { readPlanLineNodes } from './plan-line-graph';
+import { renderPlanLines } from './plan-line-render';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
 export type ExecutionPlanRow = Record<string, unknown> & { content: string; content_hash: string };
-const progressFields = ['execution_start_revision_seq', 'content', 'content_hash', 'version', 'updated_at',
+const progressFields = ['execution_start_revision_seq', 'rendered_content', 'content', 'content_hash', 'version', 'updated_at',
   'updated', 'status', 'op_status', 'op_updated_at', 'op_started_at', 'items', 'decisions', 'title',
   'now_state', 'now_next', 'now_note', 'now_note_version', 'now_note_updated_at', 'fed_ts', 'fed_hlc', 'origin'];
 
@@ -19,10 +21,21 @@ export function executionPlanInputs(row: ExecutionPlanRow): Record<string, unkno
 
 export async function readExecutionPlanRow(scope: ExecutionStartScope): Promise<ExecutionPlanRow | null> {
   const { sql } = getOrgPg();
+  return readExecutionSnapshot(sql, scope);
+}
+
+async function readExecutionSnapshot(sql: PlanRevisionSql, scope: ExecutionStartScope,
+  lock = false): Promise<ExecutionPlanRow | null> {
   const rows = await sql<{ row: ExecutionPlanRow }[]>`
-    SELECT to_jsonb(p) AS row FROM harness_shared.harness_plans p
-     WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}`;
-  return rows[0]?.row ?? null;
+    SELECT to_jsonb(p) - ARRAY(SELECT attname::text FROM pg_attribute
+      WHERE attrelid='harness_shared.harness_plans'::regclass AND attgenerated<>'' AND NOT attisdropped) AS row
+    FROM harness_shared.harness_plans p
+     WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}
+     ${lock ? sql`FOR UPDATE` : sql``}`;
+  const row = rows[0]?.row;
+  if (!row) return null;
+  const nodes = await readPlanLineNodes(sql as never, { ...scope, slug: scope.planSlug });
+  return { ...row, rendered_content: renderPlanLines(row.content, nodes) };
 }
 
 /** Preserve only equivalent local edits, fenced to the exact old and new body hashes. */
@@ -38,17 +51,13 @@ export async function recordPlanExecutionStart(scope: ExecutionStartScope, ident
   expected: ExecutionPlanRow): Promise<{ seq: number; contentHash: string }> {
   return withWorkspace(scope.workspaceId, async tx => {
     await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(scope.workspaceId, scope.harnessSlug, scope.planSlug));
-    const rows = await tx<{ row: ExecutionPlanRow }[]>`
-      SELECT to_jsonb(p) AS row FROM harness_shared.harness_plans p
-       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}
-       FOR UPDATE`;
-    const row = rows[0]?.row;
+    const row = await readExecutionSnapshot(tx, scope, true);
     if (!row || !isDeepStrictEqual(row, expected)) throw new Error('plan_changed_before_start_proof');
     const blockers = await checkPlanExecutionReadiness({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug }, scope.workspaceId);
     if (blockers.length) throw new Error(`plan_start_proof_refused:${blockers.join(',')}`);
     const revision = await recordPlanRevisionInTransaction(tx, {
       ...scope, identity, contentHash: row.content_hash,
-      content: JSON.stringify({ schema: 'plan-execution-start-v1', scope, body: row.content, inputs: executionPlanInputs(row) }),
+      content: JSON.stringify({ schema: 'plan-execution-start-v1', scope, body: row.rendered_content, inputs: executionPlanInputs(row) }),
       rationale: 'plans:start completed canonical promotion, admission and claim binding',
     });
     await tx`SELECT set_config('papercusp.execution_start',
@@ -58,7 +67,8 @@ export async function recordPlanExecutionStart(scope: ExecutionStartScope, ident
        WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}
          AND content_hash=${row.content_hash}
        RETURNING execution_start_revision_seq AS seq`;
-    if (updated[0]?.seq !== revision.seq) throw new Error('plan_start_proof_not_recorded');
+    if (updated[0]?.seq == null || Number(updated[0].seq) !== revision.seq)
+      throw new Error('plan_start_proof_not_recorded');
     return revision;
   });
 }
@@ -67,7 +77,9 @@ export async function recordPlanExecutionStart(scope: ExecutionStartScope, ident
 export async function readPlanExecutionStart(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
   const { sql } = getOrgPg();
   const rows = await sql<{ row: ExecutionPlanRow; snapshot: string | null }[]>`
-    SELECT to_jsonb(p) AS row, r.content_snapshot AS snapshot
+    SELECT to_jsonb(p) - ARRAY(SELECT attname::text FROM pg_attribute
+      WHERE attrelid='harness_shared.harness_plans'::regclass AND attgenerated<>'' AND NOT attisdropped) AS row,
+      r.content_snapshot AS snapshot
       FROM harness_shared.harness_plans p
       LEFT JOIN harness_shared.plan_revisions r ON r.workspace_id=p.workspace_id
         AND r.harness_slug=p.harness_slug AND r.plan_slug=p.plan_slug AND r.seq=p.execution_start_revision_seq
@@ -83,7 +95,8 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
     const scope = { workspaceId, harnessSlug: row.harness_slug, planSlug: binding.planSlug };
     if (receipt.schema !== 'plan-execution-start-v1' || !isDeepStrictEqual(receipt.scope, scope)
       || typeof receipt.body !== 'string') return ['plan_start_revision_invalid'];
-    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(row.content)
+    const nodes = await readPlanLineNodes(sql, { workspaceId, harnessSlug: String(row.harness_slug), slug: binding.planSlug });
+    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, nodes))
       || !isDeepStrictEqual(receipt.inputs, executionPlanInputs(row))) return ['plan_start_revision_stale'];
     return [];
   } catch { return ['plan_start_revision_invalid']; }

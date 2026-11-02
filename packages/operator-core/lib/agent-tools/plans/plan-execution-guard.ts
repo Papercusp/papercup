@@ -109,7 +109,10 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
          AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`;
     if (rows.length !== 1) return [rows.length ? 'plan_scope_ambiguous' : 'bound_plan_missing'];
     const row = rows[0]!;
-    const parsed = parsePlan(row.content);
+    const opts = { harnessSlug: row.harness_slug, workspaceId };
+    const plan = await getPlanRow(binding.planSlug, opts);
+    if (!plan || plan.contentHash !== row.content_hash) return ['plan_revision_changed'];
+    const parsed = parsePlan(plan.content);
     if (!['ready', 'active', 'awaiting-acceptance'].includes(parsed.frontmatter.status ?? ''))
       return [`plan_status:${parsed.frontmatter.status ?? 'unknown'}`];
     const scope = { workspaceId, harnessSlug: row.harness_slug, planSlug: binding.planSlug };
@@ -128,7 +131,7 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     if (!activation.grandfathered) {
       if (!audit?.audited_plan_content_hash) return ['activation_revision_unmeasured'];
       if (audit.audited_plan_content_hash !== row.content_hash &&
-        (!audit.content_snapshot || planExecutionMeaning(audit.content_snapshot) !== planExecutionMeaning(row.content)))
+        (!audit.content_snapshot || planExecutionMeaning(audit.content_snapshot) !== planExecutionMeaning(plan.content)))
         return ['activation_audit_stale'];
     }
     const [{ evaluatePlanStartReadiness }, { readAndEvaluateAcceptanceBarLifecycle },
@@ -141,9 +144,6 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
       import('./spec-quality'),
       import('./plan-candidate-dependencies'),
     ]);
-    const opts = { harnessSlug: row.harness_slug, workspaceId };
-    const plan = await getPlanRow(binding.planSlug, opts);
-    if (!plan || plan.contentHash !== row.content_hash) return ['plan_revision_changed'];
     const dependencies = validatePlanCandidateDependencies(parsed, 'started');
     if (dependencies.state === 'rejected' || dependencies.state === 'invalid-draft') return ['plan_dependencies_invalid'];
     const gate = await checkPlanStartable(binding.planSlug, opts, null, 'start');
