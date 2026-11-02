@@ -1751,7 +1751,6 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       account: effectiveAccount,
       action,
     });
-    transaction = launchTransaction;
     if (pruneOwnerId) {
       appendGovernorHistory(launchTransaction.governor!, {
         at: now,
@@ -1765,7 +1764,11 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     await persistTransaction(launchTransaction);
 
     const logDir = config.headless ? `${papercuspPathForWorkspace(workspaceId)}/fleet-logs` : null;
+    // Keep the original cohort until this last fence passes. A reserved new
+    // identity has no stop history; switching early would erase a stop by the
+    // departed member and let the following tick refill it again.
     if (await holdForDeliberateStop()) return;
+    transaction = launchTransaction;
     spawnAttempted = true;
     const results = await Promise.all(
       newMemberIds.map((ownerId, i) =>
