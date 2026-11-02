@@ -32,15 +32,15 @@ vi.mock('../../consult/park-prod', () => ({
   makeProdParkSeams: seams.makeSeams,
   readParkOwnerAnswer: vi.fn(),
 }));
-vi.mock('./system-actions', () => ({ registerSystemAction: seams.register }));
+vi.mock('./system-actions', () => ({
+  SYSTEM_TARGET_PREFIX: 'system:',
+  registerSystemAction: seams.register,
+}));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...await original<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => ({ sql: {} }),
 }));
-vi.mock('../../consult/consult-expiry-core', async (original) => ({
-  ...await original<typeof import('../../consult/consult-expiry-core')>(),
-  sweepExpiredConsults: seams.sweep,
-}));
+vi.mock('../../consult/consult-expiry-core', () => ({ sweepExpiredConsults: seams.sweep }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: seams.send }));
 vi.mock('../../task-manager/store', () => ({ listLiveTasks: seams.listLiveTasks, listTasks: seams.listTasks }));
