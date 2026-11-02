@@ -4423,6 +4423,47 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
 });
 
 describe('direct test-files CLI install reader lease (EI-24946572521324679)', () => {
+  it.each([false, true])('dispatches startup-only inside the shared reader boundary, inherited=%s', async inherited => {
+    const lockName = repoLockName();
+    const previous = inherited ? lockName : 'npm-install-aaaaaaaaaaaa';
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: previous };
+    const args = ['--startup-only-child', '--config', 'vitest.config.ts', 'selected.test.ts'];
+    const run = vi.fn(() => { throw new Error('ordinary/list/collection path must not run'); });
+    const acquireReadLease = vi.fn(async (_name, withLease) => withLease());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const diagnoseStartupImpl = vi.fn(async (nativeArgs, emit) => {
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD.split(',')).toContain(lockName);
+      expect(nativeArgs).toEqual(args.slice(1));
+      emit({ event: 'startup-only-outcome', status: 'startup-observed', testVerdict: 'not-measured' });
+      return { status: 'startup-observed' };
+    });
+    try {
+      await expect(runTestFilesCli(args, { env, lockName, acquireReadLease, run, diagnoseStartupImpl })).resolves.toBe(2);
+      expect(run).not.toHaveBeenCalled();
+      expect(diagnoseStartupImpl).toHaveBeenCalledOnce();
+      expect(acquireReadLease).toHaveBeenCalledTimes(inherited ? 0 : 1);
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(previous);
+      expect(errorSpy.mock.calls.flat().join('\n')).toContain('"testVerdict":"not-measured"');
+      expect(errorSpy.mock.calls.flat().join('\n')).not.toContain('status=passed');
+    } finally { errorSpy.mockRestore(); }
+  });
+
+  it('restores the install marker and preserves a diagnostic rejection for common CLI error handling', async () => {
+    const lockName = repoLockName();
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: 'npm-install-aaaaaaaaaaaa' };
+    const expected = new Error('native diagnostic failure');
+    const acquireReadLease = vi.fn(async (_name, withLease) => withLease());
+    const run = vi.fn();
+    const diagnoseStartupImpl = vi.fn(async () => {
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD.split(',')).toContain(lockName);
+      throw expected;
+    });
+    await expect(runTestFilesCli(['--startup-only-child', 'selected.test.ts'],
+      { env, lockName, acquireReadLease, run, diagnoseStartupImpl })).rejects.toBe(expected);
+    expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe('npm-install-aaaaaaaaaaaa');
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('reports reader-admission waits and propagates the marker for an unmarked CLI run', async () => {
     const lockName = repoLockName();
     const otherLockName = 'npm-install-aaaaaaaaaaaa';

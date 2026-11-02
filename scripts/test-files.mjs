@@ -4958,9 +4958,16 @@ export async function runTestFilesCli(
     acquireReadLease = withFsMutexRead,
     lockName = repoLockName(REPO_ROOT),
     run = main,
+    diagnoseStartupImpl = diagnoseVitestStartup,
   } = {},
 ) {
-  if (installMutexIsHeld(lockName, env)) return run(args);
+  const runUnderLease = async () => {
+    if (args[0] !== '--startup-only-child') return run(args);
+    await diagnoseStartupImpl(args.slice(1),
+      row => console.error(`TEST_FILE_STARTUP_ONLY_EVENT ${JSON.stringify(row)}`));
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  };
+  if (installMutexIsHeld(lockName, env)) return runUnderLease();
 
   const previousMarker = env.PAPERCUSP_INSTALL_MUTEX_HELD;
   const inheritedMarker = envWithInstallMutex(lockName, env).PAPERCUSP_INSTALL_MUTEX_HELD;
@@ -4969,7 +4976,7 @@ export async function runTestFilesCli(
     async () => {
       env.PAPERCUSP_INSTALL_MUTEX_HELD = inheritedMarker;
       try {
-        return await run(args);
+        return await runUnderLease();
       } finally {
         if (previousMarker === undefined) delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
         else env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMarker;
@@ -4992,14 +4999,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   // This module is also imported through TypeScript/tsx entrypoints whose dependency graph is
   // transformed to CommonJS (for example apps/operator/scripts/lint-tests.ts). Keep the async
   // exit-code handoff without top-level await, which esbuild correctly rejects in that format.
-  const diagnosticChild = process.argv[2] === '--startup-only-child';
-  const run = diagnosticChild
-    ? runTestFilesCli(process.argv.slice(3), { run: async args => {
-      await diagnoseVitestStartup(args, row => console.error(`TEST_FILE_STARTUP_ONLY_EVENT ${JSON.stringify(row)}`));
-      return TEST_FILE_EXIT_NOT_MEASURED;
-    } })
-    : runTestFilesCli();
-  void run.then(
+  void runTestFilesCli().then(
     (exitCode) => {
       process.exitCode = exitCode;
     },
