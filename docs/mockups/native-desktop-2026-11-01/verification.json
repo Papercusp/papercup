@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-11-02T03:17:02.134Z",
+  "capturedAt": "2026-11-02T03:36:50.027Z",
   "viewport": {
     "width": 1440,
     "height": 880
@@ -244,7 +244,7 @@
       "surface": "overview",
       "file": "b-overview.png",
       "bounds": [],
-      "overviewCards": 5
+      "overviewCards": 6
     },
     {
       "direction": "c",
@@ -362,6 +362,21 @@
       "file": "c-overview.png",
       "bounds": [],
       "overviewCards": 5
+    },
+    {
+      "direction": "b",
+      "surface": "goals",
+      "file": "b-goals.png"
+    },
+    {
+      "direction": "b",
+      "surface": "work-on-everything",
+      "file": "b-work-on-everything.png"
+    },
+    {
+      "direction": "b",
+      "surface": "goal-search",
+      "file": "b-goal-search.png"
     },
     {
       "direction": "b",

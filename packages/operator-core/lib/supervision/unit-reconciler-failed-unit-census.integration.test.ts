@@ -33,7 +33,12 @@ import {
   execSystemctlUser,
 } from '../harness/routines/supervision-reconcile-action';
 import { SUPERVISED_PROCESSES } from '../service-health';
-import { _resetFailedUnitCensusForTests, censusUnregisteredFailedUnits } from './unit-reconciler';
+import {
+  _resetFailedUnitCensusForTests,
+  censusUnregisteredFailedUnits,
+  parseSystemctlListUnits,
+  parseSystemctlShowRecords,
+} from './unit-reconciler';
 
 const RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
 const UNIT_DIR = RUNTIME_DIR ? join(RUNTIME_DIR, 'systemd', 'user') : '';
@@ -135,13 +140,55 @@ describe.skipIf(!userSystemdReachable)('failed-unit census on the real user syst
     expect(systemctl('show', '-p', 'Transient', '--value', unit).stdout.trim()).toBe('no');
 
     const notes: string[] = [];
+    const censusLogs: string[] = [];
+    const listArgs = ['list-units', '--all', '--no-legend', '--plain'];
+    const localList = systemctl(...listArgs);
+    const captureProduction = async (args: string[]) => {
+      try {
+        return { ok: true as const, stdout: await execSystemctlUser(args) };
+      } catch (error) {
+        const stdout =
+          typeof error === 'object' && error !== null && 'stdout' in error
+            ? String(error.stdout ?? '')
+            : '';
+        return { ok: false as const, error: String(error), stdout };
+      }
+    };
+    const productionList = await captureProduction(listArgs);
+    const matchingLines = (output: string) =>
+      output.split(/\r?\n/).filter((line) => line.includes(unit));
+    const parsedList = parseSystemctlListUnits(productionList.stdout).filter((row) => row.unit === unit);
+    const showArgs = ['show', '-p', 'Id', '-p', 'LoadState', '-p', 'Transient', '-p', 'NRestarts', unit];
+    const localShow = systemctl(...showArgs);
+    const productionShow = await captureProduction(showArgs);
+    const parsedShow = parseSystemctlShowRecords(productionShow.stdout).get(unit) ?? null;
     const reported = await censusUnregisteredFailedUnits(
       { execUser: execSystemctlUser, notify: async ({ summary }) => void notes.push(summary) },
       SUPERVISED_PROCESSES,
-      () => {},
+      (message) => void censusLogs.push(message),
     );
 
-    expect(reported).toContain(unit);
+    expect(
+      reported,
+      'census diagnostics: ' +
+        JSON.stringify({
+          localList: { status: localList.status, lines: matchingLines(localList.stdout) },
+          productionList: {
+            ok: productionList.ok,
+            error: productionList.ok ? undefined : productionList.error,
+            lines: matchingLines(productionList.stdout),
+            parsedList,
+          },
+          localShow: { status: localShow.status, stdout: localShow.stdout },
+          productionShow: {
+            ok: productionShow.ok,
+            error: productionShow.ok ? undefined : productionShow.error,
+            stdout: productionShow.stdout,
+            parsedShow,
+          },
+          censusLogs,
+        }),
+    ).toContain(unit);
     expect(notes.join('\n')).toContain(unit);
   }, 30_000);
 
