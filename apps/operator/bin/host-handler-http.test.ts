@@ -1,7 +1,7 @@
 import { request } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { serve } from '@hono/node-server';
-import { handler } from './host-handler';
+import { captureOperatorHttpSecurityPopulation, handler } from './host-handler';
 
 const servers: Array<ReturnType<typeof serve>> = [];
 const ENV_KEYS = [
@@ -88,6 +88,22 @@ function getHealth(port: number): Promise<{ statusCode: number; body: string }> 
 }
 
 describe('host handler HTTP composition', () => {
+  it('captures the actual outer host and delegated API stack without treating declarations as closure', async () => {
+    const captured = await captureOperatorHttpSecurityPopulation();
+    const mounts = new Set(captured.surfaces.filter(s => s.kind === 'mounted-http-handler').map(s => s.attrs?.mountId));
+    expect([...mounts].sort()).toEqual(['operator-api', 'operator-host']);
+    expect(captured.surfaces.some(s => s.attrs?.mountId === 'operator-host' && s.attrs?.routeId === 'ALL /api/*')).toBe(true);
+    expect(captured.surfaces.some(s => s.attrs?.mountId === 'operator-api' && String(s.attrs?.path).endsWith('/health'))).toBe(true);
+    expect(captured.surfaces.some(s => s.attrs?.mountId === 'operator-host' && !String(s.attrs?.path).startsWith('/api/'))).toBe(true);
+    expect(captured.declaredSurfaces.length).toBeGreaterThan(0);
+    expect(captured.unresolved).toEqual(expect.arrayContaining([
+      'http-stack-nested-dispatch-unverified:operator-host',
+      'http-stack-nested-dispatch-unverified:operator-api',
+    ]));
+    expect(captured.closureAccepted).toBe(false);
+    expect((await captureOperatorHttpSecurityPopulation()).surfaces).toEqual(captured.surfaces);
+  });
+
   it('preserves socket context so forged loopback Host headers cannot bypass remote auth', async () => {
     process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = '1';
     process.env.PAPERCUSP_BIND_HOST = '0.0.0.0';

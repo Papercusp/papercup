@@ -150,6 +150,26 @@ if (process.env.PAPERCUSP_SERVE_UI !== '0') {
   host.route('/', spaRoutes);
 }
 
+/** Capture the actual composed dispatch objects without executing requests.
+ * The qualification adapter must bind these bytes to the loaded runtime and
+ * reconcile the explicit gaps before approving a complete population.
+ */
+export async function captureOperatorHttpSecurityPopulation() {
+  const [{ enumerateMountedHonoSurfaces, honoRoutesProvider }, { enumerateMountedPluginHttpSurfaces }] = await Promise.all([
+    import('@papercusp/operator-core/lib/coverage-census/providers/hono-routes'),
+    import('@papercusp/operator-core/lib/plugin-api-mount'),
+  ]);
+  const outer = enumerateMountedHonoSurfaces(host, 'operator-host');
+  const inner = enumerateMountedHonoSurfaces(app, 'operator-api');
+  const plugins = enumerateMountedPluginHttpSurfaces();
+  return {
+    surfaces: [...outer.surfaces, ...inner.surfaces, ...plugins.surfaces],
+    declaredSurfaces: honoRoutesProvider.enumerate(),
+    unresolved: [...outer.unresolved, ...inner.unresolved, ...plugins.unresolved],
+    closureAccepted: false as const,
+  };
+}
+
 export async function handler(
   req: Request,
   env?: HttpBindings | Http2Bindings,
