@@ -1196,7 +1196,7 @@ export default defineTool({
         const result = await trace.run('admission_recovery', () => requestAdmissionRecovery({
           workspaceId: identity.workspaceId!, harnessSlug: dispatchArgs.harness!,
           workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: targetOwnerId,
-          authority: bindAdmissionAuthority(ctx),
+          authority: bindAdmissionAuthority(ctx, dispatchArgs.harness),
           note: dispatchArgs.note, ...(dispatchArgs.body !== undefined ? { body: dispatchArgs.body } : {}),
         }));
         trace.finish('completed');
