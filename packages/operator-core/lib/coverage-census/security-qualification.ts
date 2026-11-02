@@ -3,7 +3,7 @@
  * the runner callback. This is qualification custody, NOT handler confinement.
  * Reuses canonical identity/lineage, operator signing key and text artifacts.
  */
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
@@ -34,6 +34,19 @@ const eventSchema = z.object({
 type Event = z.infer<typeof eventSchema>;
 const signedSchema = z.object({ event: eventSchema, signature: hash }).strict();
 type Signed = z.infer<typeof signedSchema>;
+
+// Discovery custody is distinct from a reconciled manifest or approval. It
+// retains unknown/unavailable populations, and cannot enter the runner chain.
+const discoveryReceiptSchema = z.object({
+  version: z.literal(1), domain: z.literal('security-runtime-discovery'),
+  workspaceId: text, harness: text, eventId: z.string().uuid(),
+  at: z.number().int().nonnegative(), actor: text,
+  snapshotSha256: hash, discoverySha256: hash,
+  populationComplete: z.literal(false), closureAccepted: z.literal(false), executionAdmitted: z.literal(false),
+}).strict();
+const signedDiscoverySchema = z.object({ receipt: discoveryReceiptSchema, signature: hash }).strict();
+const discoveryMac = (receipt: z.infer<typeof discoveryReceiptSchema>, secret: Buffer) =>
+  createHmac('sha256', secret).update(canonicalJson(['security-runtime-discovery-v1', receipt])).digest('hex');
 
 function refuse(reason: string): never { throw new Error(`security_qualification_${reason}`); }
 function actor(ctx: UnifiedToolContext, harness: string): string {
@@ -76,6 +89,56 @@ function event(harness: string, actorId: string, phase: Event['phase'],
     eventId: randomUUID(), at: Date.now(), actor: actorId, phase, ordinal: 0, parent: null,
     ledgerSha256: null, manifestProducerRef: null, ledgerProducerRef: null,
     executor: null, reviewRef: null, result: null, ...values };
+}
+
+/** No caller-supplied population, producer, time or loaded-artifact pin. Capture
+ * all rows directly from the serving host, before applying any result paging. */
+export async function captureAuthenticatedRuntimeSecurityCensus(ctx: UnifiedToolContext, harness: string) {
+  const producer = actor(ctx, text.parse(harness));
+  const secret = await key();
+  const { captureRuntimeSecurityCensus } = await import('../observability/runtime');
+  const snapshot = await captureRuntimeSecurityCensus();
+  const stored = await saveImmutableTextArtifact(harness, canonicalJson(snapshot));
+  const receipt = discoveryReceiptSchema.parse({ version: 1, domain: 'security-runtime-discovery',
+    workspaceId: activeWorkspaceId(), harness, eventId: randomUUID(), at: Date.now(), actor: producer,
+    snapshotSha256: stored.sha256, discoverySha256: snapshot.discoverySha256,
+    populationComplete: false, closureAccepted: false, executionAdmitted: false });
+  const signed = { receipt, signature: discoveryMac(receipt, secret) };
+  const receiptRef = (await saveImmutableTextArtifact(harness, canonicalJson(signed))).sha256;
+  await verifyAuthenticatedRuntimeSecurityCensus(harness, { receiptRef, snapshotRef: stored.sha256 });
+  return { snapshotRef: stored.sha256, receiptRef, discoverySha256: snapshot.discoverySha256,
+    producer, status: snapshot.status, total: snapshot.total, runtimeIdentity: snapshot.runtimeIdentity,
+    readbackVerified: true as const,
+    populationComplete: false as const, closureAccepted: false as const, executionAdmitted: false as const };
+}
+
+/** Readback verifies authenticated custody only, never population closure. */
+export async function verifyAuthenticatedRuntimeSecurityCensus(harness: string, input: {
+  receiptRef: string; snapshotRef: string;
+}) {
+  const bytes = await loadImmutableTextArtifact(harness, hash.parse(input.receiptRef));
+  if (bytes === null) refuse('discovery_receipt_missing');
+  const signed = signedDiscoverySchema.parse(JSON.parse(bytes));
+  const expected = discoveryMac(signed.receipt, await key());
+  if (canonicalJson(signed) !== bytes || !timingSafeEqual(Buffer.from(signed.signature, 'hex'), Buffer.from(expected, 'hex'))) {
+    refuse('host_signature_invalid');
+  }
+  const receipt = signed.receipt;
+  if (receipt.harness !== harness || receipt.workspaceId !== activeWorkspaceId() || receipt.at > Date.now()) {
+    refuse('scope_or_order_mismatch');
+  }
+  if (receipt.snapshotSha256 !== hash.parse(input.snapshotRef)) refuse('discovery_pin_substitution');
+  const snapshotBytes = await loadImmutableTextArtifact(harness, receipt.snapshotSha256);
+  if (snapshotBytes === null) refuse('discovery_snapshot_missing');
+  const snapshot = JSON.parse(snapshotBytes) as Awaited<ReturnType<typeof import('../observability/runtime').captureRuntimeSecurityCensus>>;
+  const discoverySha256 = createHash('sha256').update(canonicalJson({ runtimeIdentity: snapshot.runtimeIdentity,
+    hostCaptureSha256: snapshot.hostCaptureSha256, rows: snapshot.rows, unresolved: snapshot.unresolved })).digest('hex');
+  if (canonicalJson(snapshot) !== snapshotBytes || createHash('sha256').update(snapshotBytes).digest('hex') !== receipt.snapshotSha256 ||
+      discoverySha256 !== receipt.discoverySha256 || snapshot.discoverySha256 !== discoverySha256 ||
+      snapshot.total !== snapshot.rows.length || snapshot.count !== snapshot.total || snapshot.offset !== 0 ||
+      snapshot.truncatedByLimit !== false || snapshot.populationComplete !== false ||
+      snapshot.closureAccepted !== false || snapshot.executionAdmitted !== false) refuse('discovery_snapshot_mismatch');
+  return { receipt, snapshot };
 }
 
 /** Producer identity comes only from authenticated transport, never manifest input. */

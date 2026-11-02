@@ -6,7 +6,8 @@ import { SECURITY_POPULATIONS, securityTupleId, type SecurityTuple } from './sec
 
 const h = vi.hoisted(() => ({ artifacts: new Map<string, string>(), claims: new Map<string, string>(),
   related: vi.fn(async (_a: string, _b: string) => false), keyAvailable: true,
-  secret: Buffer.alloc(32, 7), now: 1000 }));
+  secret: Buffer.alloc(32, 7), now: 1000, captureRuntimeSecurityCensus: vi.fn() }));
+vi.mock('../observability/runtime', () => ({ captureRuntimeSecurityCensus: h.captureRuntimeSecurityCensus }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: async () =>
   h.keyAvailable ? [{ value_b64: h.secret.toString('base64') }] : [] }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-security' }));
@@ -30,7 +31,8 @@ vi.mock('../text-artifacts', () => ({
   },
 }));
 const { captureAuthenticatedSecurityManifest, prepareAuthenticatedSecurityLedger,
-  commitSecurityApplicability, runSecurityQualification, verifySecurityQualificationResult } = await import('./security-qualification');
+  commitSecurityApplicability, runSecurityQualification, verifySecurityQualificationResult,
+  captureAuthenticatedRuntimeSecurityCensus, verifyAuthenticatedRuntimeSecurityCensus } = await import('./security-qualification');
 const ids = { producer: 'su-11111111-1111-4111-8111-111111111111',
   ledger: 'su-22222222-2222-4222-8222-222222222222', reviewer: 'su-33333333-3333-4333-8333-333333333333',
   executor: 'su-44444444-4444-4444-8444-444444444444' };
@@ -84,7 +86,58 @@ function mutation(ref: string, change: (event: Record<string, unknown>) => void,
 beforeEach(() => {
   vi.restoreAllMocks(); h.artifacts.clear(); h.claims.clear();
   h.related.mockReset().mockResolvedValue(false); h.keyAvailable = true; h.now = 1000;
+  h.captureRuntimeSecurityCensus.mockReset();
   vi.spyOn(Date, 'now').mockImplementation(() => h.now);
+});
+
+describe('authenticated host discovery custody', () => {
+  function discovery() {
+    const body = { runtimeIdentity: { artifact: { status: 'unknown', reason: 'fixture' } }, hostCaptureSha256: digest('c'),
+      rows: Array.from({ length: 503 }, (_, i) => ({ surfaceId: `row-${i}` })),
+      unresolved: ['security-population-not-closed:effect'] };
+    return { ...body, discoverySha256: createHash('sha256').update(canonicalJson(body)).digest('hex'),
+      status: 'captured', total: 503, count: 503, offset: 0, truncatedByLimit: false,
+      populationComplete: false, closureAccepted: false, executionAdmitted: false };
+  }
+
+  it('persists all host rows and verifies transport-derived producer, scope, digest and explicit gaps', async () => {
+    h.captureRuntimeSecurityCensus.mockResolvedValue(discovery());
+    const result = await captureAuthenticatedRuntimeSecurityCensus(ctx(ids.producer), 'test');
+    const verified = await verifyAuthenticatedRuntimeSecurityCensus('test', result);
+    expect(verified.receipt).toMatchObject({ actor: ids.producer, at: 1000, workspaceId: 'ws-security',
+      snapshotSha256: result.snapshotRef, discoverySha256: result.discoverySha256 });
+    expect(verified.snapshot.rows).toHaveLength(503);
+    expect(verified.snapshot.unresolved).toEqual(['security-population-not-closed:effect']);
+    expect(verified.snapshot.runtimeIdentity.artifact.status).toBe('unknown');
+    expect(result).toMatchObject({ populationComplete: false, closureAccepted: false, executionAdmitted: false });
+    expect(h.claims.size).toBe(0);
+    await expect(runSecurityQualification(ctx(ids.executor), 'test', { approvalRef: result.receiptRef,
+      manifestSha256: digest(), ledgerSha256: digest('b') }, vi.fn())).rejects.toThrow();
+  });
+
+  it('refuses unauthenticated or cross-harness capture before reading any host state', async () => {
+    const unauthenticated = { ...ctx(ids.producer), principal: undefined };
+    await expect(captureAuthenticatedRuntimeSecurityCensus(unauthenticated, 'test')).rejects.toThrow('authenticated_actor_required');
+    await expect(captureAuthenticatedRuntimeSecurityCensus(ctx(ids.producer), 'other')).rejects.toThrow('authenticated_actor_required');
+    h.keyAvailable = false;
+    await expect(captureAuthenticatedRuntimeSecurityCensus(ctx(ids.producer), 'test')).rejects.toThrow('host_key_unavailable');
+    expect(h.captureRuntimeSecurityCensus).not.toHaveBeenCalled(); expect(h.artifacts.size).toBe(0);
+  });
+
+  it('rejects substituted snapshot pins and tampered custody or snapshot bytes', async () => {
+    h.captureRuntimeSecurityCensus.mockResolvedValue(discovery());
+    const result = await captureAuthenticatedRuntimeSecurityCensus(ctx(ids.producer), 'test');
+    await expect(verifyAuthenticatedRuntimeSecurityCensus('test', { ...result, snapshotRef: digest('f') }))
+      .rejects.toThrow('discovery_pin_substitution');
+    const signed = load(result.receiptRef); signed.receipt.actor = ids.executor;
+    const forged = canonicalJson(signed), forgedRef = createHash('sha256').update(forged).digest('hex');
+    h.artifacts.set(`test:${forgedRef}`, forged);
+    await expect(verifyAuthenticatedRuntimeSecurityCensus('test', { ...result, receiptRef: forgedRef }))
+      .rejects.toThrow('host_signature_invalid');
+    const snapshot = discovery(); snapshot.rows.pop();
+    h.artifacts.set(`test:${result.snapshotRef}`, canonicalJson(snapshot));
+    await expect(verifyAuthenticatedRuntimeSecurityCensus('test', result)).rejects.toThrow('discovery_snapshot_mismatch');
+  });
 });
 
 describe('host-authenticated pre-execution applicability commitment', () => {

@@ -114,6 +114,17 @@ describe.each([
 });
 
 describe('hono-routes population', () => {
+  it('detects loaded handler replacement at the same stable HTTP route', () => {
+    const first = new Hono(), second = new Hono();
+    first.get('/same', c => c.text('first implementation'));
+    second.get('/same', c => c.text('second implementation'));
+    const a = enumerateMountedHonoSurfaces(first, 'same-host').surfaces[0]!;
+    const b = enumerateMountedHonoSurfaces(second, 'same-host').surfaces[0]!;
+    expect(a.surfaceId).toBe(b.surfaceId);
+    expect(a.attrs?.loadedFunctionSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(a.attrs?.loadedFunctionSha256).not.toBe(b.attrs?.loadedFunctionSha256);
+    expect(a.attrs?.functionFingerprintScope).toBe('loaded-function-text-only');
+  });
   it('captures actual raw and nested Hono routes, middleware and duplicate handlers without dispatch', async () => {
     let calls = 0;
     const app = new Hono(), nested = new Hono();
@@ -198,6 +209,9 @@ describe('mcp-tools population', () => {
     });
     try {
       const surfaces = await enumerateProjectedHandlerSurfaces(ctx);
+      expect(surfaces.find(s => s.surfaceId === 'http:/__security_census_fixture')!.attrs).toMatchObject({
+        loadedFunctionSha256: expect.stringMatching(/^[a-f0-9]{64}$/), actualEffectCoverage: 'unknown',
+      });
       expect(surfaces.map(s => s.surfaceId).sort()).toEqual(listAllProjectedTools().map(def =>
         def.expose.mcp ? `mcp:${def.expose.mcp.name}` : `http:${def.expose.http!.path}`).sort());
       expect(surfaces.find(s => s.surfaceId === 'http:/__security_census_fixture')).toMatchObject({

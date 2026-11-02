@@ -2,6 +2,7 @@ import { request } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { serve } from '@hono/node-server';
 import { captureOperatorHttpSecurityPopulation, handler } from './host-handler';
+import { readRuntimeSecurityCensus } from '@papercusp/operator-core/lib/observability/runtime';
 
 const servers: Array<ReturnType<typeof serve>> = [];
 const ENV_KEYS = [
@@ -88,6 +89,20 @@ function getHealth(port: number): Promise<{ statusCode: number; body: string }> 
 }
 
 describe('host handler HTTP composition', () => {
+  it('connects the composed host to runtime discovery with full-set identity before paging', async () => {
+    const captured = await captureOperatorHttpSecurityPopulation();
+    const a = await readRuntimeSecurityCensus(1), b = await readRuntimeSecurityCensus(2);
+    expect(a.status).toBe('captured');
+    expect(a.total).toBe(captured.surfaces.length + captured.declaredSurfaces.length);
+    expect(a.discoverySha256).toBe(b.discoverySha256);
+    expect(a.rows).toHaveLength(1); expect(b.rows).toHaveLength(2);
+    expect(a.truncatedByLimit).toBe(true);
+    expect(a.populationComplete).toBe(false); expect(a.executionAdmitted).toBe(false);
+    expect(captured.surfaces.some(s => s.kind === 'projected-handler')).toBe(true);
+    expect(a.unresolved).toContain('security-population-not-closed:effect');
+    expect(a.unresolved).toContain('plugin-runtime-configured-inputs-unverified');
+    expect(a.unresolved).toContain('plugin-runtime-module-effects-unverified');
+  });
   it('captures the actual outer host and delegated API stack without treating declarations as closure', async () => {
     const captured = await captureOperatorHttpSecurityPopulation();
     const mounts = new Set(captured.surfaces.filter(s => s.kind === 'mounted-http-handler').map(s => s.attrs?.mountId));

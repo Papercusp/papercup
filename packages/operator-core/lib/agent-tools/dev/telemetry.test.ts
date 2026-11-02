@@ -8,6 +8,7 @@ const deps = vi.hoisted(() => ({
   flagPollSuspects: vi.fn(),
   runtimeObservabilityHealth: vi.fn(),
   readRuntimeSecurityCensus: vi.fn(),
+  captureAuthenticatedRuntimeSecurityCensus: vi.fn(),
 }));
 
 vi.mock('../../dev-data', () => ({
@@ -19,6 +20,9 @@ vi.mock('../../observability/runtime', () => ({
   runtimeObservabilityHealth: deps.runtimeObservabilityHealth,
   readRuntimeSecurityCensus: deps.readRuntimeSecurityCensus,
 }));
+vi.mock('../../coverage-census/security-qualification', () => ({
+  captureAuthenticatedRuntimeSecurityCensus: deps.captureAuthenticatedRuntimeSecurityCensus,
+}));
 
 type ToolResponse = { content: Array<{ type: string; text: string }> };
 
@@ -29,6 +33,32 @@ function callTool(args: Record<string, unknown>, phases?: ReturnType<typeof crea
 }
 
 describe('dev:telemetry phase attribution', () => {
+  it('routes authenticated full capture to custody without reading a paged census or SQL rollup', async () => {
+    const receipt = { receiptRef: 'host-receipt', snapshotRef: 'immutable-full-snapshot', closureAccepted: false };
+    deps.captureAuthenticatedRuntimeSecurityCensus.mockResolvedValue(receipt);
+    const result = await callTool({ view: 'security-census', capture: true, harness: 'test' });
+    expect(JSON.parse(result.content[0]!.text)).toEqual(receipt);
+    expect(deps.captureAuthenticatedRuntimeSecurityCensus).toHaveBeenCalledWith(expect.objectContaining({ phases: undefined }), 'test');
+    expect(deps.readRuntimeSecurityCensus).not.toHaveBeenCalled(); expect(deps.telemetryRollup).not.toHaveBeenCalled();
+    expect(telemetryTool.effectForCall?.({ capture: true })).toBe('write');
+    expect(telemetryTool.effectForCall?.({ view: 'security-census' })).toBe('read');
+  });
+
+  it('refuses paged capture or capture on a rollup before custody runs', async () => {
+    for (const args of [{ capture: true }, { view: 'rollup', capture: true },
+      { view: 'security-census', capture: true, limit: 1 },
+      { view: 'security-census', capture: true, offset: 0 },
+      { view: 'security-census', capture: true, discoverySha256: 'a'.repeat(64) }]) {
+      await expect(callTool(args)).rejects.toThrow('capture_requires_full_snapshot');
+    }
+    expect(deps.captureAuthenticatedRuntimeSecurityCensus).not.toHaveBeenCalled();
+  });
+
+  it('refuses capture without a concrete harness before entering custody', async () => {
+    await expect(callTool({ view: 'security-census', capture: true }))
+      .rejects.toThrow('capture_requires_concrete_harness');
+    expect(deps.captureAuthenticatedRuntimeSecurityCensus).not.toHaveBeenCalled();
+  });
   it('routes actual-host discovery without running SQL rollups', async () => {
     const captured = { status: 'unavailable', populationComplete: false, unresolved: ['host-not-registered'] };
     deps.readRuntimeSecurityCensus.mockResolvedValue(captured);

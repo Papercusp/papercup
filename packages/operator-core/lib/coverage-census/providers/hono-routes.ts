@@ -31,6 +31,7 @@ import type { CensusContext, ObservedSurface, SurfaceCensusProvider } from '@pap
 import { routeRegistrationOrder, isCatchAll } from '../../endpoint-route/register';
 import { ALL_ROUTES } from '../../endpoint-route/routes';
 import { assertRegistryNonEmpty } from './_non-empty';
+import { loadedHandlerFingerprint } from '../../observability/runtime';
 
 /** The surface kind this provider owns — and therefore the only kind it may retire. */
 export const HTTP_ROUTE_KIND = 'http-route';
@@ -71,6 +72,8 @@ export function enumerateMountedHonoSurfaces(app: object, mountId: string): {
       sourceFile: null, fidelity: 'observed', attrs: {
         mountId, routeId, mountIndex: index, occurrence, method: method.toUpperCase(), path,
         hasHandler: typeof handler === 'function', nestedDispatchCoverage: 'unknown',
+        loadedFunctionSha256: typeof handler === 'function' ? loadedHandlerFingerprint(handler as (...args: never[]) => unknown) : null,
+        functionFingerprintScope: 'loaded-function-text-only',
       } });
   }
   unresolved.push(`http-stack-nested-dispatch-unverified:${mountId}`);

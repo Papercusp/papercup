@@ -95,6 +95,39 @@ const wsOf = async (slug: string, key: string) =>
   (await rootSql<{ workspace_id: string }[]>`SELECT workspace_id FROM harness_shared.harness_text_artifacts WHERE harness_slug=${slug} AND rel_path=${key}`)[0]?.workspace_id;
 
 describe('text-artifacts (drizzle, PG)', () => {
+  it('captures signed full host discovery through real PG without granting population closure', async () => {
+    const q = await import('./coverage-census/security-qualification');
+    const runtime = await import('./observability/runtime');
+    const context: UnifiedToolContext = { uiClientId: 'su-discovery-producer', workspaceId: WS, harnessSlug: 'web', isSuperuser: true,
+      log: () => {}, signal: new AbortController().signal, progress: async () => {}, emit: async () => {},
+      principal: { kind: 'system', slug: 'system:superuser', workspaceId: WS,
+        authMethod: 'bearer-token', trust: 'trusted', capabilities: new Set() } };
+    const release = runtime.registerRuntimeSecurityCapture(async () => ({
+      surfaces: Array.from({ length: 503 }, (_, i) => ({ kind: 'mounted-http-handler', surfaceId: `fixture:${i}`,
+        fidelity: 'observed' as const, attrs: { actualEffectCoverage: 'unknown' } })),
+      declaredSurfaces: [], unresolved: ['fixture-only-not-production-closure'],
+    }));
+    try {
+      const captured = await q.captureAuthenticatedRuntimeSecurityCensus(context, 'web');
+      const verified = await q.verifyAuthenticatedRuntimeSecurityCensus('web', captured);
+      expect(captured).toMatchObject({ readbackVerified: true, total: 503,
+        populationComplete: false, closureAccepted: false, executionAdmitted: false });
+      expect(verified.snapshot.rows).toHaveLength(503);
+      expect(verified.snapshot.unresolved).toContain('fixture-only-not-production-closure');
+      expect(verified.receipt.actor).toBe('su-discovery-producer');
+      expect(verified.receipt.snapshotSha256).toBe(captured.snapshotRef);
+      expect(await loadImmutableTextArtifact('web', captured.snapshotRef)).toContain('fixture:502');
+      for (const ref of [captured.snapshotRef, captured.receiptRef]) {
+        await expect(saveTextArtifact('web', `immutable/sha256/${ref}.json`, 'replace')).rejects.toThrow('immutable_namespace');
+      }
+      const corrupted = JSON.parse((await loadImmutableTextArtifact('web', captured.snapshotRef))!);
+      corrupted.rows.pop();
+      await rootSql`UPDATE harness_shared.harness_text_artifacts SET content=${JSON.stringify(corrupted)}
+        WHERE harness_slug='web' AND rel_path=${`immutable/sha256/${captured.snapshotRef}.json`}`;
+      await expect(q.verifyAuthenticatedRuntimeSecurityCensus('web', captured)).rejects.toThrow();
+    } finally { release(); }
+  });
+
   it('commits signed review, consumes one execution and verifies exact result custody through real PG', async () => {
     const q = await import('./coverage-census/security-qualification');
     const { SECURITY_POPULATIONS, securityTupleId } = await import('./coverage-census/security-manifest');

@@ -28,6 +28,7 @@ import { listAllProjectedTools, projectedToolProviderVersion, type ProjectedTool
 import type { CensusContext, ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
 import { assertRegistryNonEmpty } from './_non-empty';
 import { resolveToolSourceFile } from '../../tool-source-file';
+import { loadedHandlerFingerprint } from '../../observability/runtime';
 
 /** The surface kind this provider owns — and therefore the only kind it may retire. */
 export const MCP_TOOL_KIND = 'mcp-tool';
@@ -79,7 +80,8 @@ function handlerAttrs(def: ProjectedTool): Record<string, unknown> {
  * from loader/install inputs as well, and must never be inferred absent here.
  */
 export async function enumerateProjectedHandlerSurfaces(ctx: CensusContext): Promise<ObservedSurface[]> {
-  await import('../../agent-tools/index');
+  // Snapshot only. Importing the tool barrel here would change the population.
+  // The declared MCP provider below intentionally initializes its own catalog.
   const surfaces = await Promise.all(listAllProjectedTools().map(async (def): Promise<ObservedSurface> => ({
     kind: 'projected-handler',
     // Same preference as the canonical registry entry key. No registration-order ids.
@@ -88,6 +90,9 @@ export async function enumerateProjectedHandlerSurfaces(ctx: CensusContext): Pro
     schemaRef: def.discoveryInputSchema ?? def.inputSchema,
     attrs: {
       ...handlerAttrs(def),
+      loadedFunctionSha256: loadedHandlerFingerprint(def.fn),
+      functionFingerprintScope: 'loaded-function-text-only',
+      actualEffectCoverage: 'unknown',
       dispatchRoutes: [
         ...(def.expose.mcp ? [{ channel: 'mcp', route: def.expose.mcp.name }] : []),
         ...(def.expose.http ? (def.expose.http.methods ?? [def.expose.http.method ?? 'POST'])

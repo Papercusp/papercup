@@ -25,7 +25,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
-import { fireBuiltinReactionAction, isBuiltinReactionAction } from './builtin-actions';
+import { fireBuiltinReactionAction, isBuiltinReactionAction, builtinReactionControlPurpose } from './builtin-actions';
 import {
   isClassFireTarget,
   resolveClassFireTarget,
@@ -36,6 +36,8 @@ import type { ReactionCause } from './types';
 export interface FireReactionResult {
   ok: boolean;
   error?: string;
+  /** Policy rejected admission BEFORE dispatch; no effect was attempted. */
+  withheld?: boolean;
   /** The reaction's runId (for audit / dedup correlation). */
   runId?: string;
   /**
@@ -142,6 +144,15 @@ async function resolveClassFire(
  * the reaction ctx, and dispatches. Never throws — returns `{ ok:false, error }`
  * so the caller (the engine) can log without breaking anything.
  */
+export async function reactionBackgroundActivityAllowed(workspaceId: string, fire: string): Promise<boolean> {
+  if (!workspaceId.trim() || workspaceId === '*') return false;
+  // An explicit control purpose grants the exemption, never execution mode,
+  // queue priority or caller args. New built-ins are optional until classified.
+  if (builtinReactionControlPurpose(fire)) return true;
+  const { workspaceBackgroundActivityAllowed } = await import('../device-operator-actions');
+  return workspaceBackgroundActivityAllowed(workspaceId);
+}
+
 export async function fireReactionInProcess(opts: {
   fire: string;
   args: Record<string, unknown>;
@@ -152,6 +163,10 @@ export async function fireReactionInProcess(opts: {
 }): Promise<FireReactionResult> {
   const workspaceId =
     opts.parentCtx.workspaceId ?? opts.parentCtx.principal?.workspaceId ?? activeWorkspaceId();
+
+  if (!workspaceId?.trim() || workspaceId === '*') return { ok: false, error: 'no workspace to scope the reaction' };
+  if (!await reactionBackgroundActivityAllowed(workspaceId, opts.fire))
+    return { ok: true, withheld: true };
 
   // Built-in NON-TOOL reaction actions (e.g. `cache.bumpTags`). These are
   // first-party in-process side effects, not projected tools — they never run

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ObservedSurface } from '@papercusp/testing-shell/census';
-import { readRuntimeSecurityCensus, registerRuntimeSecurityCapture } from './runtime';
+import { captureRuntimeSecurityCensus, readRuntimeSecurityCensus, registerRuntimeSecurityCapture } from './runtime';
 
 const releases: Array<() => void> = [];
 afterEach(() => { for (const release of releases.splice(0)) release(); });
@@ -8,6 +8,15 @@ const surface = (id: string): ObservedSurface => ({ kind: 'mounted-http-handler'
   surfaceId: id, fidelity: 'observed', attrs: { actualEffectCoverage: 'unknown' } });
 
 describe('owning-process security discovery', () => {
+  it('captures more than the transport page ceiling without dropping gaps or relabeling closure', async () => {
+    const surfaces = Array.from({ length: 503 }, (_, i) => surface(`row-${i}`));
+    releases.push(registerRuntimeSecurityCapture(async () => ({ surfaces, declaredSurfaces: [], unresolved: ['fixture-gap'] })));
+    const snapshot = await captureRuntimeSecurityCensus(), page = await readRuntimeSecurityCensus(500);
+    expect(snapshot).toMatchObject({ total: 503, count: 503, offset: 0, truncatedByLimit: false,
+      populationComplete: false, closureAccepted: false, executionAdmitted: false });
+    expect(snapshot.rows).toHaveLength(503); expect(snapshot.unresolved).toContain('fixture-gap');
+    expect(page.discoverySha256).toBe(snapshot.discoverySha256); expect(page.rows).toHaveLength(500);
+  });
   it('keeps absent or failed host capture unavailable and unqualified', async () => {
     const absent = await readRuntimeSecurityCensus();
     expect(absent.status).toBe('unavailable');

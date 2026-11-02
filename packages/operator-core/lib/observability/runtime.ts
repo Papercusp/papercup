@@ -112,16 +112,9 @@ export function registerRuntimeSecurityCapture(capture: SecurityCapture): () => 
   return () => { if (state.securityCapture === capture) state.securityCapture = null; };
 }
 
-/** Discovery only. Full-set identity precedes paging; unknown closure remains
- * explicit. Never boot tracing/plugins or relabel old code with checkout bytes. */
-export async function readRuntimeSecurityCensus(limit = 50, {
-  offset = 0, expectedDiscoverySha256,
-}: { offset?: number; expectedDiscoverySha256?: string } = {}) {
-  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw Error('security_census_invalid_limit');
-  if (!Number.isSafeInteger(offset) || offset < 0) throw Error('security_census_invalid_offset');
-  if (expectedDiscoverySha256 !== undefined && !/^[a-f0-9]{64}$/.test(expectedDiscoverySha256)) {
-    throw Error('security_census_invalid_discovery_digest');
-  }
+/** Full host-owned discovery for immutable capture. Unknown coverage remains
+ * explicit; this never boots tracing/plugins or admits qualification. */
+export async function captureRuntimeSecurityCensus() {
   const artifact = state.artifact?.status === 'measured' ? {
     status: 'measured' as const, sourceSha: state.artifact.sourceSha,
     bundleSha256: state.artifact.bundleSha256, manifestSha256: state.artifact.manifestSha256,
@@ -159,18 +152,30 @@ export async function readRuntimeSecurityCensus(limit = 50, {
     unresolved: unresolved.sort() })) as { runtimeIdentity: typeof runtimeIdentity; hostCaptureSha256: string | null;
       rows: typeof rows; unresolved: string[] };
   const discoverySha256 = createHash('sha256').update(canonicalJson(body)).digest('hex');
-  // A later page must refer to the same complete population, including gaps and
-  // loaded artifact identity. Never splice pages from different host states.
-  if (expectedDiscoverySha256 !== undefined && expectedDiscoverySha256 !== discoverySha256) {
-    throw Error('security_census_population_changed');
-  }
-  const page = body.rows.slice(offset, offset + limit);
   return { status: population ? 'captured' as const : 'unavailable' as const,
     evidenceKind: 'runtime-discovery' as const, discoverySha256,
     runtimeIdentity: body.runtimeIdentity, hostCaptureSha256,
     populationComplete: false as const, closureAccepted: false as const, executionAdmitted: false as const,
     schemaCoverage: 'not-included' as const, unresolved: body.unresolved,
-    total: rows.length, offset, count: page.length, truncatedByLimit: offset + page.length < rows.length,
+    total: rows.length, offset: 0, count: rows.length, truncatedByLimit: false,
+    rows: body.rows };
+}
+
+/** A page is a projection of the same full snapshot that custody persists. */
+export async function readRuntimeSecurityCensus(limit = 50, {
+  offset = 0, expectedDiscoverySha256,
+}: { offset?: number; expectedDiscoverySha256?: string } = {}) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw Error('security_census_invalid_limit');
+  if (!Number.isSafeInteger(offset) || offset < 0) throw Error('security_census_invalid_offset');
+  if (expectedDiscoverySha256 !== undefined && !/^[a-f0-9]{64}$/.test(expectedDiscoverySha256)) {
+    throw Error('security_census_invalid_discovery_digest');
+  }
+  const snapshot = await captureRuntimeSecurityCensus();
+  if (expectedDiscoverySha256 !== undefined && expectedDiscoverySha256 !== snapshot.discoverySha256) {
+    throw Error('security_census_population_changed');
+  }
+  const page = snapshot.rows.slice(offset, offset + limit);
+  return { ...snapshot, offset, count: page.length, truncatedByLimit: offset + page.length < snapshot.total,
     rows: page };
 }
 
