@@ -2890,6 +2890,17 @@ export default defineTool({
             await successorPreparation.beforeSpawn?.();
             if (startupReservation && startupReservation.expiresAtMs <= Date.now())
               throw new Error('Ended-source resume startup reservation expired before process start.');
+            // In-place resumes skip bootstrap. Only an explicit admitted launch
+            // by a different known actor reparents inherited work context here.
+            // Internal recovery retains its original mission and identity.
+            if (isResume && !fork && !interruptionRecovery && !neutralLineageRequested &&
+                !blindReviewResumeAuthorized && callerOwnerId && targetOwnerId &&
+                callerOwnerId !== targetOwnerId) {
+              const { resolveGoalContext, setInheritedGoalContext } = await import('../../modes/goal-context');
+              const inheritedGoal = await resolveGoalContext(workspaceId, callerOwnerId, undefined, { requireRead: true });
+              if (!(await setInheritedGoalContext(workspaceId, targetOwnerId, inheritedGoal)))
+                throw new Error('Resume goal context could not be reconciled before process start.');
+            }
             const governedEnv = {
               ...env,
               PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext),

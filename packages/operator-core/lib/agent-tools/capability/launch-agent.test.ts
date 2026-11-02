@@ -2140,6 +2140,15 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(spawnHeadlessMock).not.toHaveBeenCalled();
     });
 
+    it('preserves inherited context during internal wait recovery', async () => {
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+        [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+      } as never, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+    });
+
     it('preserves inherited context on a self resume', async () => {
       callerIdentity.current.ownerId = dead.ownerId;
       const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue own work' }, ctx);
