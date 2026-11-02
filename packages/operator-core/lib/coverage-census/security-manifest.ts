@@ -65,7 +65,7 @@ function verifySnapshot<T>(value: SecuritySnapshot<T>): void {
     throw new Error('security_manifest_snapshot_drift');
   }
 }
-function surfaceKey(population: SecurityPopulation, surface: ObservedSurface): string {
+function surfaceKey(population: SecurityPopulation, surface: Pick<ObservedSurface, 'kind' | 'surfaceId'>): string {
   nonempty(surface.kind, 'surface.kind');
   nonempty(surface.surfaceId, 'surface.surfaceId');
   return canonicalJson([population, surface.kind, surface.surfaceId]);
