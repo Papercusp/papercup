@@ -9,6 +9,7 @@ import type { ManagedStopRequest, ManagedStopStatus } from '@papercusp/scheduled
 import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from './workspace-registry';
 import { readOperatorState } from './operator-state-pg';
+import type { ObservedBackgroundActivity } from './schedule-federation';
 import { z } from 'zod';
 import {
   collectStartupActivity,
@@ -33,6 +34,7 @@ const probe: NativeProbe = (command, args) => new Promise((resolve, reject) => {
 });
 
 const opaque = (values: unknown[]) => createHash('sha256').update(JSON.stringify(values)).digest('hex');
+const nativeDeviceIdentity = (uid = userInfo().uid) => `device-${opaque([hostname(), uid, userInfo().username])}`;
 const linuxEntrypoints = ['linux-user-service', 'linux-package-install'];
 const macEntrypoints = ['mac-boot-install', 'mac-service-template', 'mac-current-service-template'];
 
@@ -123,10 +125,27 @@ export async function recordStartupActivityHistory(
       ${JSON.stringify({ startupActivity: safe })}::text::jsonb, ${workspace})`;
 }
 
+export type NativeStartupTrigger = 'manual' | 'login' | 'boot' | 'supervisor' | 'upgrade' | 'repair' | 'unknown';
+
+/** Called only by the newly listening backend, after singleton reuse returned.
+ * The native launcher's successful spawn alone cannot establish this event.
+ */
+export async function recordNativeStartupActivityStart(trigger: NativeStartupTrigger, at = new Date().toISOString()): Promise<void> {
+  await recordStartupActivityHistory({
+    featureId: `activity-${opaque([nativeDeviceIdentity(), 'server'])}`,
+    operation: 'start', status: 'running', at, actor: 'system', trigger,
+    source: trigger === 'supervisor' ? 'supervisor' : 'native',
+    reason: trigger === 'manual' ? 'user-choice' : trigger === 'supervisor' ? 'service-recovery'
+      : trigger === 'login' || trigger === 'boot' ? 'automatic-start' : 'invocation',
+    previous: null, resulting: null,
+  }, 'native-backend-start', 'system');
+}
+
 type ObservedActivityScope = { workspaceId: string; featureId: string };
 type ObservedInvocation = { settled: Promise<ManagedStopStatus> };
 interface ObservedInvocationGroup {
   active: Set<ObservedInvocation>;
+  scope: { workspaceId: string; featureId: string; source: ObservedBackgroundActivity['source'] };
   stop?: { targets: Set<ObservedInvocation>; settled: Promise<ManagedStopStatus> };
 }
 // The observer is reached through both lazy dispatch imports and settings. Keep
@@ -149,6 +168,14 @@ export function observedBackgroundActivityStatus(scope: ObservedActivityScope): 
   if (!group?.active.size) return null;
   const draining = group.stop && [...group.active].some(invocation => group.stop!.targets.has(invocation));
   return { running: true, stopStatus: draining ? 'draining' : null, cancellable: false };
+}
+
+/** Scoped placement only; callback arguments and credentials never leave here. */
+export function listObservedBackgroundActivities(): ObservedBackgroundActivity[] {
+  return [...observedInvocations.values()].flatMap(group => {
+    const status = observedBackgroundActivityStatus(group.scope);
+    return status ? [{ ...group.scope, ...status }] : [];
+  });
 }
 
 /** Drain the callbacks present at this request, preserving future dispatch and
@@ -174,7 +201,8 @@ export async function runObservedBackgroundActivity<T>(
   invoke: () => T | Promise<T>,
 ): Promise<T> {
   const key = observedActivityKey(scope);
-  const group = observedInvocations.get(key) ?? { active: new Set<ObservedInvocation>() };
+  const group = observedInvocations.get(key) ?? { active: new Set<ObservedInvocation>(),
+    scope: { workspaceId: scope.workspaceId, featureId: scope.featureId, source: scope.source } };
   let resolve!: (status: ManagedStopStatus) => void;
   const invocation = { settled: new Promise<ManagedStopStatus>(done => { resolve = done; }) };
   group.active.add(invocation);
@@ -240,7 +268,7 @@ export async function readNativeStartupActivity(options: {
 } = {}): Promise<{ features: StartupActivityFeature[]; unavailable: string[] }> {
   const platform = options.platform ?? process.platform;
   const uid = options.uid ?? userInfo().uid;
-  const deviceId = options.deviceId ?? `device-${opaque([hostname(), uid, userInfo().username])}`;
+  const deviceId = options.deviceId ?? nativeDeviceIdentity(uid);
   const run = options.probe ?? probe;
   const unavailable: string[] = [];
   const base = (key: string, name: string, purpose: string, trigger: string, entrypointIds: string[]): StartupActivityFeature => ({
@@ -359,7 +387,8 @@ export async function collectCurrentStartupActivity(deps: Partial<ScheduleInvent
     const local = observedBackgroundActivityStatus({ workspaceId: feature.scope.id, featureId: feature.id });
     if (local) {
       feature.observed = 'running';
-      feature.stop ??= { status: local.stopStatus, cancellable: false };
+      if (local.stopStatus === 'draining' || !feature.stop || feature.stop.status === null)
+        feature.stop = { status: local.stopStatus, cancellable: false };
     }
   }
   return snapshot;

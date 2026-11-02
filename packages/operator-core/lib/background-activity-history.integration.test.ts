@@ -8,7 +8,8 @@ const state = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, wor
 vi.mock('@papercusp/db-org', async original => ({ ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: state.sql }) }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => state.workspace }));
 import { readStartupActivityHistory, recordStartupActivityHistory, runObservedBackgroundActivity,
-  observedBackgroundActivityStatus, stopObservedBackgroundActivity, collectCurrentStartupActivity } from './startup-activity';
+  observedBackgroundActivityStatus, stopObservedBackgroundActivity, collectCurrentStartupActivity,
+  readNativeStartupActivity, recordNativeStartupActivityStart } from './startup-activity';
 
 let admin: postgres.Sql;
 let database: string;
@@ -42,6 +43,23 @@ afterAll(async () => {
 beforeEach(async () => { state.workspace = 'startup-a'; await state.sql`TRUNCATE harness_shared.audit_log`; });
 
 describe('scoped startup activity audit history', () => {
+  it.each([
+    ['manual', 'native', 'user-choice'], ['login', 'native', 'automatic-start'],
+    ['boot', 'native', 'automatic-start'], ['supervisor', 'supervisor', 'service-recovery'],
+    ['upgrade', 'native', 'invocation'], ['repair', 'native', 'invocation'], ['unknown', 'native', 'invocation'],
+  ] as const)('records a listening native backend with %s provenance and its inventory identity', async (trigger, source, reason) => {
+    const native = await readNativeStartupActivity({ platform: 'darwin' });
+    const serverId = native.features[0]!.id;
+    const at = new Date(Date.now() - 60_000).toISOString();
+    await recordNativeStartupActivityStart(trigger, at);
+    expect(await readStartupActivityHistory(native.features.map(row => row.id))).toEqual([
+      expect.objectContaining({ featureId: serverId, operation: 'start', status: 'running',
+        trigger, source, reason, at, previous: null, resulting: null, actor: expect.stringMatching(/^system:[a-f0-9]{64}$/) }),
+    ]);
+    state.workspace = 'startup-b';
+    expect(await readStartupActivityHistory([serverId])).toEqual([]);
+  });
+
   it('drains every current callback once without cancelling or waiting for a future invocation', async () => {
     const scope = { workspaceId: 'startup-a', featureId, source: 'routine' as const, trigger: 'timer' as const };
     let finishFirst!: () => void;

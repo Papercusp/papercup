@@ -386,6 +386,7 @@ export async function collectScheduleInventory(
     federated.push({ port: ownHonoPort(), pid: primary.pid, label: `${primary.role}(primary via :${ownHonoPort()})`,
       process: primary.role, ok: fresh, timers: fresh ? primary.timers : [],
       dbosSchedules: fresh ? primary.dbosSchedules : [], stallWaker: null, elapsedMs: 0,
+      backgroundActivities: fresh ? primary.backgroundActivities : [],
       ...(fresh ? {} : { error: 'primary runtime snapshot unavailable or stale' }) });
   }
   const localDbosNames = new Set(dbos.map((d) => d.name));
@@ -554,6 +555,15 @@ export async function collectScheduleInventory(
         },
       });
       continue;
+    }
+    for (const invocation of s.backgroundActivities ?? []) {
+      rows.push({ source: 'external-process', scope: 'operator', tier: 'ephemeral',
+        category: 'background-invocation', name: `${invocation.source} invocation`, installSlug: null,
+        cadence: '(invocation)', armed: null, lastFire: null, nextFire: null, lastError: null, groupSlug: null,
+        detail: { process: s.label, federated: true, reachable: true, pid: s.pid, port: s.port,
+          activity: { kind: 'workspace', workspaceId: invocation.workspaceId, featureId: invocation.featureId },
+          invocationSource: invocation.source, running: true, stopStatus: invocation.stopStatus, cancellable: false },
+      });
     }
     for (const m of s.timers) {
       rows.push({
@@ -852,7 +862,9 @@ export function scheduleStartupFeature(
     ? Object.entries(SYNC_TRIGGERED_SCHEDULES).filter(([, entry]) => entry.name === row.name).map(([key]) => `sync:${key}`)
     : row.source === 'external-process' && !live
       ? Object.entries(EXTERNAL_SCHEDULES).filter(([, entry]) => entry.name === row.name).map(([key]) => `external:${key}`)
-      : [row.source === 'dbos' ? 'dbos-registration' : row.source === 'routines' ? 'routine-dispatch' : 'managed-fire-on-arm'];
+      : [row.detail.invocationSource === 'event' ? 'event-dispatch'
+        : row.detail.invocationSource === 'routine' ? 'routine-dispatch'
+        : row.source === 'dbos' ? 'dbos-registration' : row.source === 'routines' ? 'routine-dispatch' : 'managed-fire-on-arm'];
   if (row.source === 'routines' && row.detail.triggerKind === 'event') entrypointIds.push('event-dispatch');
   const stopStatus = z.enum(['pending', 'draining', 'completed', 'failed', 'unavailable']).safeParse(row.detail.stopStatus);
   return {
@@ -946,14 +958,20 @@ export async function collectStartupActivity(
       byId.set(feature.id, merged);
     }
   }
-  const features = [...byId.values()];
   if (adapters.reactions) {
     try {
       const reactions = await adapters.reactions();
-      features.push(...reactions.filter(feature => feature.scope.kind === 'workspace'
-        && feature.scope.id === context.workspaceId));
+      for (const feature of reactions) {
+        if (feature.scope.kind !== 'workspace' || feature.scope.id !== context.workspaceId) continue;
+        const existing = byId.get(feature.id);
+        byId.set(feature.id, existing ? { ...feature, observed: existing.observed,
+          ...(existing.stop ? { stop: existing.stop } : {}),
+          entrypointIds: [...new Set([...feature.entrypointIds, ...existing.entrypointIds])],
+        } : feature);
+      }
     } catch { unavailable.add('events'); }
   } else unavailable.add('events');
+  const features = [...byId.values()];
   if (adapters.native) {
     try { features.push(...await adapters.native()); }
     catch { unavailable.add('native'); }
@@ -1025,7 +1043,7 @@ export function checkStartupActivityCensus(
 
 /** Version 1: native registration writers plus the actual dynamic dispatch/registry seams. */
 export const STARTUP_ACTIVITY_ENTRYPOINTS = [
-  { id: 'native-login', writer: 'papercusp-desktop/src-tauri/src/main.rs', witness: 'enable_login_autostart' },
+  { id: 'native-login', writer: 'papercusp-desktop/src-tauri/src/startup_policy.rs', witness: 'pub fn startup_policy_set_login' },
   { id: 'native-server', writer: 'papercusp-desktop/src-tauri/src/main.rs', witness: 'start_server_via_systemd_unit' },
   { id: 'linux-user-service', writer: 'papercusp-desktop/src-tauri/systemd/papercusp-server.service', witness: 'ExecStart=' },
   { id: 'linux-boot-opt-in', writer: 'papercusp-desktop/src-tauri/systemd/enable-boot-start.sh', witness: 'enable-linger' },

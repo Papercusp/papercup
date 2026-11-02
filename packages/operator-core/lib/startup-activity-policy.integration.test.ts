@@ -24,9 +24,9 @@ import { setFeatureBackgroundActivityPolicy, setWorkspaceBackgroundActivityPolic
 import { callOwnerProcess, registerOwnerRpcHandler } from './cluster-owner-rpc';
 import { loopbackFetch } from './loopback-fetch';
 import { getSessionUser } from './auth';
-import { ownHonoPort } from './schedule-federation';
+import { ownHonoPort, probeSibling } from './schedule-federation';
 import { readStartupActivityHistory, recordStartupActivityHistory, workspaceBackgroundActivityFeatureId,
-  runObservedBackgroundActivity, observedBackgroundActivityStatus } from './startup-activity';
+  runObservedBackgroundActivity, observedBackgroundActivityStatus, listObservedBackgroundActivities, collectCurrentStartupActivity } from './startup-activity';
 import { readOperatorState, updateOperatorState, writeOperatorState } from './operator-state-pg';
 import { reactionStartupFeature, startupActivityFeatureId } from './schedule-inventory';
 import { notifySyncInvalidate } from './sync-sse';
@@ -81,6 +81,16 @@ describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
     const invocation = runObservedBackgroundActivity({ workspaceId: workspace, featureId: id, source,
       trigger: source === 'event' ? 'event' : 'manual' }, () => new Promise<void>(resolve => { finish = resolve; }));
     try {
+      const route = (await import('./endpoint-route/routes/misc/managed-timers')).default;
+      const snapshot = async () => (await probeSibling({ port: ownHonoPort(), pid: process.pid, startedAt: 0 }, {
+        fetchImpl: async () => route.handler(new Request(`http://127.0.0.1:${ownHonoPort()}/api/internal/managed-timers`), {
+          principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal,
+        }),
+      }))[0].backgroundActivities;
+      expect(listObservedBackgroundActivities()).toContainEqual({ workspaceId: workspace, featureId: id, source,
+        running: true, stopStatus: null, cancellable: false });
+      expect(await snapshot()).toContainEqual({ workspaceId: workspace, featureId: id, source,
+        running: true, stopStatus: null, cancellable: false });
       await expect(stopFeatureBackgroundActivity(id, { ...user, workspace_id: 'other' }))
         .rejects.toMatchObject({ code: 'startup_policy_forbidden' });
       await expect(stopFeatureBackgroundActivity(id, user)).resolves.toMatchObject({
@@ -89,6 +99,8 @@ describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
       expect(observedBackgroundActivityStatus({ workspaceId: workspace, featureId: id })).toMatchObject({
         running: true, stopStatus: 'draining', cancellable: false,
       });
+      expect(await snapshot()).toContainEqual({ workspaceId: workspace, featureId: id, source,
+        running: true, stopStatus: 'draining', cancellable: false });
       expect((await readStartupActivityHistory([id])).filter(entry => entry.operation === 'stop').map(entry => entry.status).sort())
         .toEqual(['draining', 'pending']);
       finish();
@@ -97,6 +109,8 @@ describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
         .some(entry => entry.operation === 'stop' && entry.status === 'completed')).toBe(true));
       expect(await readOperatorState('operator_paused', workspace, { fresh: true })).toEqual(before);
       expect(observedBackgroundActivityStatus({ workspaceId: workspace, featureId: id })).toBeNull();
+      expect(listObservedBackgroundActivities().some(entry => entry.featureId === id)).toBe(false);
+      expect((await snapshot())?.some(entry => entry.featureId === id)).toBe(false);
       await expect(stopFeatureBackgroundActivity(id, user)).resolves.toMatchObject({ status: 'unavailable' });
     } finally {
       finish(); await invocation;
@@ -135,6 +149,54 @@ describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
     expect(await readOperatorState('operator_paused', workspace, { fresh: true })).toEqual(before);
     await expect(workspaceBackgroundActivityAllowed(workspace, featureId)).resolves.toBe(true);
     resetScheduledRegistry();
+  });
+
+  it('drains an actual local callback instead of acknowledging an idle managed registration', async () => {
+    configureScheduledRegistry({ setIntervalImpl: () => ({}), clearIntervalImpl: () => {}, log: () => {} });
+    managedSetInterval('idle-alongside-callback', 1000, () => {}, { category: 'global-sweep',
+      activity: { kind: 'workspace', workspaceId: workspace, featureId } });
+    h.rows = [registration, { ...registration, source: 'managed', name: 'idle-alongside-callback',
+      detail: { activity: { kind: 'workspace', workspaceId: workspace, featureId }, running: false } }];
+    let finish!: () => void;
+    const invocation = runObservedBackgroundActivity({ workspaceId: workspace, featureId, source: 'routine', trigger: 'manual' },
+      () => new Promise<void>(resolve => { finish = resolve; }));
+    try {
+      expect(await stopFeatureBackgroundActivity(featureId, user)).toMatchObject({ status: 'draining' });
+      expect(getManaged('idle-alongside-callback')!.stopStatus).toBeUndefined();
+      expect(listObservedBackgroundActivities()).toContainEqual({ workspaceId: workspace, featureId,
+        source: 'routine', running: true, stopStatus: 'draining', cancellable: false });
+      const current = await collectCurrentStartupActivity({ getDbosSchedules: async () => [], getRoutines: async () => [],
+        getManaged: () => [getManaged('idle-alongside-callback')!], getSiblingManaged: async () => [],
+        getExternalProcess: () => [], getSyncTriggered: () => [], getInProcessChecks: () => ({ checks: [], armed: false }),
+      }, { native: async () => [], reactions: async () => [], history: async () => [], census: async () => [] });
+      expect(current.features.find(feature => feature.id === featureId)).toMatchObject({
+        observed: 'running', stop: { status: 'draining', cancellable: false },
+      });
+      expect((await readStartupActivityHistory([featureId])).some(entry => entry.operation === 'stop' && entry.status === 'completed')).toBe(false);
+      finish(); await invocation;
+      await vi.waitFor(async () => expect((await readStartupActivityHistory([featureId]))
+        .some(entry => entry.operation === 'stop' && entry.status === 'completed')).toBe(true));
+    } finally { finish(); await invocation; }
+  });
+
+  it('keeps required event controls protected through remote placement and rejects removed rules', async () => {
+    const rule = { id: 'remote-required-control', on: 'policy:test', fire: 'cache.bumpTags',
+      when: () => true, args: () => ({}) };
+    registerReactionRule(rule);
+    const id = reactionStartupFeature(rule, workspace).id;
+    h.rows = [{ ...registration, source: 'external-process', name: 'event invocation', detail: {
+      invocationSource: 'event', activity: { kind: 'workspace', workspaceId: workspace, featureId: id },
+      federated: true, reachable: true, pid: 12345, port: ownHonoPort(), running: true,
+    } }];
+    try {
+      await expect(stopFeatureBackgroundActivity(id, user, { headers: new Headers({ cookie: 'papercusp_session=original-session' }) }))
+        .rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+      await expect(setFeatureBackgroundActivityPolicy(id, { action: 'automatic', automatic: false }, 0, user))
+        .rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+      expect(callOwnerProcess).not.toHaveBeenCalled();
+    } finally { unregisterReactionRule(rule.id); }
+    await expect(stopFeatureBackgroundActivity(id, user)).rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+    expect(await readStartupActivityHistory([id])).toEqual([]);
   });
 
   it('does not stop another workspace, required control, or an unsupported runtime', async () => {

@@ -191,14 +191,14 @@ async function resolveBackgroundActivityFeature(featureId: string, workspace: st
     return typeof role === 'string' && role.startsWith(SYSTEM_TARGET_PREFIX)
       && !!getSystemActionEntry(role.slice(SYSTEM_TARGET_PREFIX.length))?.requiredForControl;
   });
-  if (!row) {
+  if (!row || matches.some(candidate => candidate.detail.invocationSource === 'event')) {
     const { listReactionRules } = await import('./events/registry');
     const rule = listReactionRules().find(candidate => reactionStartupFeature(candidate, workspace).id === featureId);
     if (rule) {
       const { builtinReactionControlPurpose } = await import('./events/builtin-actions');
       feature = reactionStartupFeature(rule, workspace);
       requiredForControl = !!builtinReactionControlPurpose(rule.fire);
-    }
+    } else if (row) feature = null; // A stale callback cannot recreate a removed event registration.
   }
   if (!feature || feature.scope.kind !== 'workspace' || feature.scope.id !== workspace
     || requiredForControl)
@@ -248,6 +248,7 @@ export async function stopFeatureBackgroundActivity(featureId: string, principal
   const managed = live && !live.instanced && live.activity?.kind === 'workspace'
     && live.activity.workspaceId === workspace && live.activity.featureId === featureId;
   const scope = { workspaceId: workspace, featureId };
+  const observed = observedBackgroundActivityStatus(scope);
   const unavailable = () => ({ status: 'unavailable' as const, policy, reason: 'runtime-control-unavailable' });
   const placements = matches.filter(candidate => candidate.source === 'external-process'
     && candidate.detail.federated === true && candidate.detail.reachable === true
@@ -258,7 +259,7 @@ export async function stopFeatureBackgroundActivity(featureId: string, principal
   const remote = placements.find(candidate => candidate.detail.running === true) ?? placements[0];
   if ((options.runtimePid !== undefined && options.runtimePid !== process.pid)
     || (options.runtimePid === undefined && !(managed && live.running)
-      && !observedBackgroundActivityStatus(scope) && remote)) {
+      && !observed && remote)) {
     // Placement comes from the existing live inventory, never a caller-supplied
     // port, command, principal or workspace. The receiving process checks its PID
     // and scoped runtime again; stale placement never grants workspace authority.
@@ -287,7 +288,7 @@ export async function stopFeatureBackgroundActivity(featureId: string, principal
       return parsed.success ? parsed.data : unavailable();
     } catch { return unavailable(); }
   }
-  if (!managed && !observedBackgroundActivityStatus(scope))
+  if (!managed && !observed)
     return unavailable();
   const audit = (status: 'pending' | 'draining' | 'completed' | 'failed') => recordStartupActivityHistory({
     featureId, operation: 'stop', status, at: new Date().toISOString(), actor: 'user',
@@ -295,7 +296,8 @@ export async function stopFeatureBackgroundActivity(featureId: string, principal
   }, principal.id, 'user', { sql: getOrgPg().sql, workspaceId: workspace });
   // Persist intent before touching the runtime. An audit outage cannot produce an unaudited stop.
   await audit('pending');
-  const request = managed ? stopManagedInvocation(row!.name) : stopObservedBackgroundActivity(scope);
+  const request = managed && (live.running || !observed)
+    ? stopManagedInvocation(row!.name) : stopObservedBackgroundActivity(scope);
   if (request.status === 'unavailable') {
     await audit('failed');
     return { status: 'unavailable', policy, reason: 'runtime-control-unavailable' };

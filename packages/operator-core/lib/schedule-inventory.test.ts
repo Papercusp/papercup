@@ -11,6 +11,7 @@ import {
   SCHEDULE_SOURCES,
   collectStartupActivity,
   scheduleStartupFeature,
+  startupActivityFeatureId,
   reactionStartupFeature,
   checkStartupActivityCensus,
   STARTUP_ACTIVITY_ENTRYPOINTS,
@@ -72,6 +73,28 @@ const startupRow = (over: Partial<ScheduleInventoryRow> = {}): ScheduleInventory
 });
 
 describe('startup activity disclosure', () => {
+  it.each(['routine', 'event'] as const)('merges remote %s callbacks with their registered identity and excludes foreign workspaces', async source => {
+    const rule = { id: 'remote-follow-up', on: 'work:done', fire: 'activity:report' };
+    const registeredRoutine = routine({ name: 'remote-work' });
+    const registration = startupRow({ source: 'routines', name: registeredRoutine.name, installSlug: registeredRoutine.install_slug });
+    const id = source === 'event' ? reactionStartupFeature(rule, 'workspace-a').id
+      : startupActivityFeatureId(registration, { workspaceId: 'workspace-a' });
+    const invocation = { workspaceId: 'workspace-a', featureId: id, source, running: true as const,
+      stopStatus: 'draining' as const, cancellable: false as const };
+    const snapshot = await runWithWorkspace('workspace-a', () => collectStartupActivity({ ...emptyInventory,
+      getRoutines: async () => source === 'routine' ? [registeredRoutine] : [],
+      getSiblingManaged: async () => [{ port: 3271, pid: 12345, label: 'bg-host:3271', process: 'bg-host', ok: true,
+        timers: [], dbosSchedules: [], stallWaker: null, elapsedMs: 0,
+        backgroundActivities: [invocation, { ...invocation, workspaceId: 'workspace-b', featureId: `activity-${'b'.repeat(64)}` }] }],
+    }, { reactions: async () => source === 'event' ? [reactionStartupFeature(rule, 'workspace-a')] : [],
+      native: async () => [], history: async () => [], census: async () => [], policy: async feature => feature.desired }));
+    expect(snapshot.features).toHaveLength(1);
+    expect(snapshot.features[0]).toMatchObject({ id, origin: source === 'event' ? 'event' : 'routines',
+      observed: 'running', scope: { kind: 'workspace', id: 'workspace-a' },
+      desired: { automatic: true }, stop: { status: 'draining', cancellable: false } });
+    expect(snapshot.features[0].entrypointIds).toContain(source === 'event' ? 'event-dispatch' : 'routine-dispatch');
+  });
+
   it('exposes measured stop state without passing through arbitrary runtime text', () => {
     const pending = scheduleStartupFeature(startupRow({ source: 'managed',
       detail: { running: true, cancellable: true, stopStatus: 'pending' } }));
@@ -260,6 +283,21 @@ describe('startup entrypoint census', () => {
     const features = population.map(id => ({ id, entrypointIds: [id] }));
     expect(checkStartupActivityCensus(population, dispositions, features).complete).toBe(true);
     expect(checkStartupActivityCensus(population, dispositions.slice(1), features).complete).toBe(false);
+  });
+  it('discovers native Rust registration adapters independently of the census', () => {
+    const base = 'papercusp-desktop/src-tauri/src';
+    const writers = new Set(STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => entry.writer));
+    const discovered = readdirSync(resolve(REPO_ROOT, base), { recursive: true, encoding: 'utf8' })
+      .filter(file => file.endsWith('.rs'))
+      .map(file => `${base}/${file.replaceAll('\\', '/')}`)
+      .filter(file => /AutoLaunchBuilder|\.autolaunch\s*\(|impl LoginAdapter for NativeLogin/.test(sourceText(file)));
+    expect(discovered).toContain('papercusp-desktop/src-tauri/src/startup_policy.rs');
+    expect(discovered).toContain('papercusp-desktop/src-tauri/src/main.rs');
+    for (const file of discovered) expect(writers.has(file), `unregistered native startup adapter ${file}`).toBe(true);
+    const login = STARTUP_ACTIVITY_ENTRYPOINTS.find(entry => entry.id === 'native-login')!;
+    // main.rs only observes the current OS choice; this command owns mutation.
+    expect(login.writer).toBe('papercusp-desktop/src-tauri/src/startup_policy.rs');
+    expect(login.witness).toBe('pub fn startup_policy_set_login');
   });
   it('requires the entire independently discovered writer population exactly once', () => {
     const population = ['native-login', 'boot-service', 'event-dispatch', 'managed-fire-on-arm', 'sync-trigger'];
