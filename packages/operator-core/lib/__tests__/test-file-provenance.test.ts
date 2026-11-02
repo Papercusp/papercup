@@ -509,7 +509,9 @@ describe('test-spawned child committed-source substitutions', () => {
       `${base} childSubstituted=0 childNoticeOffsetBytes=0`,
     );
     for (const unreadable of [{ records: [], malformed: 0, unreadable: true }, null]) {
-      expect(provenanceResultFields(snapshot, diff, unreadable)).toBe(`${base} childSubstituted=unknown`);
+      expect(provenanceResultFields(snapshot, diff, unreadable)).toBe(
+        `${base} childSubstituted=unknown childNoticeOffsetBytes=unknown`,
+      );
     }
   });
 
