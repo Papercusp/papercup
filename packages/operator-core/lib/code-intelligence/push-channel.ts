@@ -1525,8 +1525,9 @@ export function pushLegRank(id: PushLegId): number {
 export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps = defaults): Promise<string> {
   // Capture is independent of push flags, snapshot warmth and available text budget.
   if (input.owner && input.workspace && input.calls.length && deps.research) {
-    await withBoundedTimeout(() => deps.research!(input), {
-      timeoutMs: 100, fallback: undefined, label: 'code-intel-research-trail',
+    // Keep this optional write off the response path while retaining a bounded health signal.
+    void withBoundedTimeout(() => deps.research!(input), {
+      timeoutMs: 500, fallback: undefined, label: 'code-intel-research-trail',
     });
   }
   if (!input.owner || !input.workspace || !input.calls.length) return noteEmptyPush('missing-input'), '';
