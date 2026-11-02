@@ -7584,7 +7584,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
     const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
     expect(msg.mode).toBe('recycle');
-    expect(msg.data).toContain('## Next action\\nresume the wiring');
+    expect(msg.data).toContain('## Next action\nresume the wiring');
   });
 
   it('the handle-less always-armed branch forks cold too (both inject sites wired, not just the main one)', async () => {
