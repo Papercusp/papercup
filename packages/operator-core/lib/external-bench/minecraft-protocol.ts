@@ -10,6 +10,7 @@ const id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const exactVersion = z.string().regex(/^\d+\.\d+\.\d+$/);
 const seed = z.string().regex(/^(?:0|-?[1-9]\d*)$/).refine(value => {
+  if (value.length > 20 || !/^(?:0|-?[1-9]\d*)$/.test(value)) return false;
   const n = BigInt(value);
   return n >= -(2n ** 63n) && n < 2n ** 63n;
 }, 'Minecraft seeds must be exact signed 64-bit decimal strings');
@@ -39,7 +40,7 @@ const pins = z.object({
 
 export const minecraftProtocolSchema = z.object({
   schemaVersion: z.literal(1), runId: id, armId: id, taskId: id,
-  manifestHash: digest, worldSeed: seed, objective,
+  manifestHash: digest, selectionHash: digest, worldSeed: seed, objective,
   rules, pins,
   participants: z.array(id).min(1).max(4).refine(unique, 'Participants must be distinct'),
   observations: z.array(z.enum([
@@ -90,7 +91,7 @@ export function assertMinecraftTrialIdentity(expectedTrialId: string, input: unk
 /** Measured by the maintained runtime adapter, never inferred from model text. */
 export const minecraftRuntimeMeasurementSchema = z.object({
   serverInstanceId: id, serverReady: z.literal(true), javaMajor: z.literal(17),
-  rules, pins,
+  trialId: digest, worldSeed: seed, rules, pins,
 }).strict();
 
 export async function withMinecraftPreflight<T>(
@@ -99,7 +100,8 @@ export async function withMinecraftPreflight<T>(
 ): Promise<T> {
   const trial = assertMinecraftTrialIdentity(expectedTrialId, input);
   const actual = minecraftRuntimeMeasurementSchema.parse(runtimeMeasurement);
-  if (canonicalJson(actual.rules) !== canonicalJson(trial.protocol.rules)
+  if (actual.trialId !== trial.trialId || actual.worldSeed !== trial.protocol.worldSeed
+    || canonicalJson(actual.rules) !== canonicalJson(trial.protocol.rules)
     || canonicalJson(actual.pins) !== canonicalJson(trial.protocol.pins)) {
     throw new Error('Minecraft runtime does not match frozen prerequisites');
   }
@@ -143,7 +145,7 @@ export function freezeMinecraftManifest(input: unknown): FrozenMinecraftManifest
   const taskIds = new Set<string>();
   const materialOwners = new Map<string, Partition>();
   for (const partition of ['train', 'dev', 'heldOut'] as const) {
-    parsed[partition].sort((a, b) => a.taskId.localeCompare(b.taskId));
+    parsed[partition].sort((a, b) => a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0);
     for (const task of parsed[partition]) {
       if (taskIds.has(task.taskId)) throw new Error('Minecraft task partitions overlap');
       taskIds.add(task.taskId);
@@ -186,9 +188,15 @@ export function minecraftPublicTaskIds(manifest: FrozenMinecraftManifest): reado
 
 export function assignMinecraftTask(
   manifest: FrozenMinecraftManifest, trial: FrozenMinecraftTrial, participantId: string,
+  selection: FrozenMinecraftSelection,
 ): MinecraftAssignment {
   if (!issuedTrials.has(trial) || trial.protocol.manifestHash !== manifest.manifestHash) {
     throw new Error('Minecraft assignment has a foreign trial/manifest');
+  }
+  if (selections.get(selection) !== manifest
+    || selection.selectionHash !== trial.protocol.selectionHash
+    || selection.runId !== trial.protocol.runId || selection.armId !== trial.protocol.armId) {
+    throw new Error('Minecraft assignment requires its frozen model/prompt/configuration selection');
   }
   const { task } = findTask(manifest, trial.protocol.taskId);
   if (task.worldSeed !== trial.protocol.worldSeed || task.objective !== trial.protocol.objective
@@ -228,11 +236,17 @@ export function readMinecraftTaskMaterial(
 }
 
 const selectionInput = z.object({
+  runId: id, armId: id,
   modelId: id, promptSha256: digest, configurationSha256: digest,
   sources: z.array(z.object({ taskId: id, kind: z.enum(['content', 'outcome']) }).strict()),
 }).strict();
+export type FrozenMinecraftSelection = Readonly<z.infer<typeof selectionInput> & {
+  manifestHash: string; selectionHash: string;
+}>;
+const selections = new WeakMap<FrozenMinecraftSelection, FrozenMinecraftManifest>();
+const runSelections = new WeakMap<FrozenMinecraftManifest, Map<string, FrozenMinecraftSelection>>();
 
-export function freezeMinecraftSelection(manifest: FrozenMinecraftManifest, input: unknown) {
+export function freezeMinecraftSelection(manifest: FrozenMinecraftManifest, input: unknown): FrozenMinecraftSelection {
   const selection = selectionInput.parse(input);
   manifestData(manifest);
   for (const source of selection.sources) {
@@ -241,5 +255,30 @@ export function freezeMinecraftSelection(manifest: FrozenMinecraftManifest, inpu
     }
   }
   const value = { manifestHash: manifest.manifestHash, ...selection };
-  return freeze({ ...value, selectionHash: hash(value) });
+  const frozen = freeze({ ...value, selectionHash: hash(value) });
+  const key = canonicalJson([selection.runId, selection.armId]);
+  let byRun = runSelections.get(manifest);
+  if (!byRun) { byRun = new Map(); runSelections.set(manifest, byRun); }
+  const prior = byRun.get(key);
+  if (prior && prior.selectionHash !== frozen.selectionHash) {
+    throw new Error('Minecraft model/prompt/configuration selection is already frozen for this run/arm');
+  }
+  if (prior) return prior;
+  byRun.set(key, frozen);
+  selections.set(frozen, manifest);
+  return frozen;
+}
+
+/** Assignment admission for maintained launchers. All task access and accounting
+ * allocation occurs after runtime validation and selection/manifest binding. */
+export async function withMinecraftAssignment<T>(
+  manifest: FrozenMinecraftManifest, selection: FrozenMinecraftSelection,
+  input: unknown, runtimeMeasurement: unknown, expectedTrialId: string,
+  participantId: string,
+  dispatch: (trial: FrozenMinecraftTrial, assignment: MinecraftAssignment) => Promise<T>,
+): Promise<T> {
+  return withMinecraftPreflight(input, runtimeMeasurement, expectedTrialId, async trial => {
+    const assignment = assignMinecraftTask(manifest, trial, participantId, selection);
+    return dispatch(trial, assignment);
+  });
 }

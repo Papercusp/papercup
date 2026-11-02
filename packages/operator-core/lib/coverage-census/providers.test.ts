@@ -19,7 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { listAllProjectedTools } from '@papercusp/tooldef';
+import { listAllProjectedTools, projectedToolProviderVersion } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface } from '@papercusp/testing-shell/census';
 import { censusProviders } from './provider-registry';
 import { assertRegistryNonEmpty } from './providers/_non-empty';
@@ -27,6 +27,7 @@ import { honoRoutesProvider, HTTP_ROUTE_KIND } from './providers/hono-routes';
 import { mcpToolsProvider, MCP_TOOL_KIND } from './providers/mcp-tools';
 import { syncQueriesProvider, SYNC_QUERY_KIND } from './providers/sync-queries';
 import { routeRegistrationOrder } from '../endpoint-route/register';
+import { ALL_ROUTES } from '../endpoint-route/routes';
 import { knownQueryNamesV2 } from '../sync-resolver';
 
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
@@ -128,6 +129,24 @@ describe('hono-routes population', () => {
       expect((s.attrs as Record<string, unknown>).hasInputSchema).toBe(true);
     }
   });
+
+  it('retains each mounted route auth, CORS and disabled-versus-default timeout', async () => {
+    const surfaces = await honoRoutesProvider.enumerate(ctx);
+    const definitions = new Map(ALL_ROUTES.map((route) => [`${route.method.toUpperCase()} ${route.path}`, route]));
+    for (const surface of surfaces) {
+      const def = definitions.get(surface.surfaceId);
+      expect(def, surface.surfaceId).toBeDefined();
+      expect(surface.attrs).toMatchObject({
+        auth: def!.auth,
+        hasDefinition: true,
+        cors: def!.cors ?? null,
+        timeoutDeclared: def!.timeoutSec !== undefined,
+        timeoutSec: def!.timeoutSec ?? null,
+      });
+    }
+    expect(ALL_ROUTES.some((route) => route.timeoutSec === null)).toBe(true);
+    expect(ALL_ROUTES.some((route) => route.timeoutSec === undefined)).toBe(true);
+  });
 });
 
 describe('mcp-tools population', () => {
@@ -160,6 +179,35 @@ describe('mcp-tools population', () => {
         fs.existsSync(path.join(repoRoot, s.sourceFile as string)),
         `fabricated sourceFile for ${s.surfaceId}: ${s.sourceFile}`,
       ).toBe(true);
+    }
+  });
+
+  it('attributes a nested registration to its captured module rather than its tool name', async () => {
+    const surfaces = await mcpToolsProvider.enumerate(ctx);
+    expect(surfaces.find((surface) => surface.surfaceId === 'coord:declare-intent')?.sourceFile).toBe(
+      'packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts',
+    );
+  });
+
+  it('retains provider, alternate exposure and authority declarations for every registered handler', async () => {
+    const surfaces = new Map((await mcpToolsProvider.enumerate(ctx)).map((surface) => [surface.surfaceId, surface]));
+    for (const def of listAllProjectedTools().filter((tool) => tool.expose.mcp != null)) {
+      const surface = surfaces.get(def.expose.mcp!.name)!;
+      expect(surface.attrs).toMatchObject({
+        pluginName: def.pluginName,
+        providerVersion: projectedToolProviderVersion(def),
+        builtinProvider: def.builtinProvider ?? null,
+        installationSource: def.pluginInstallation?.source ?? null,
+        expose: def.expose,
+        hasArgumentSensitiveEffect: typeof def.effectForCall === 'function',
+        authorization: {
+          requirePrincipal: def.requirePrincipal ?? null,
+          agentRoles: def.agentRoles ?? null,
+          requireRoles: def.requireRoles ?? null,
+          hasResourceAuthorizer: typeof def.authorize === 'function',
+        },
+      });
+      expect(surface.fidelity).toBe('declared');
     }
   });
 });

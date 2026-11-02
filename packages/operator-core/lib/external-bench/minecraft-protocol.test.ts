@@ -3,7 +3,7 @@ import {
   MINECRAFT_OBJECTIVES, MINECRAFT_TASK_SETS, assertMinecraftTrialIdentity,
   assignMinecraftTask, freezeMinecraftManifest, freezeMinecraftSelection,
   freezeMinecraftTrial, minecraftPublicTaskIds, readMinecraftTaskMaterial,
-  withMinecraftPreflight, type MinecraftProtocol,
+  minecraftProtocolSchema, withMinecraftPreflight, type MinecraftProtocol,
 } from './minecraft-protocol';
 
 const sha = (n: number) => n.toString(16).padStart(64, '0');
@@ -14,7 +14,7 @@ const manifestInput = () => ({ schemaVersion: 1, revision: 1,
   train: [task('train-iron', 1)], dev: [task('dev-iron', 2)], heldOut: [task('held-iron', 3)] });
 const protocol = (manifestHash = sha(9)): MinecraftProtocol => ({
   schemaVersion: 1, runId: 'minecraft-run-1', armId: 'stock', taskId: 'held-iron',
-  manifestHash, worldSeed: '3', objective: 'iron-tools',
+  manifestHash, selectionHash: sha(50), worldSeed: '3', objective: 'iron-tools',
   rules: { version: '1.20.4', difficulty: 'easy', gameMode: 'survival', cheats: false },
   pins: { serverImage: `minecraft/server@sha256:${sha(10)}`, serverJarSha256: sha(11),
     mineflayerVersion: '4.32.0', pathfinderVersion: '2.4.5' },
@@ -22,7 +22,8 @@ const protocol = (manifestHash = sha(9)): MinecraftProtocol => ({
   actions: ['move', 'craft'], limits: { maxUsd: 2, maxWallClockMs: 60_000, maxProgramMs: 1_000 },
 });
 const runtime = (p: MinecraftProtocol) => ({ serverInstanceId: 'isolated-server-1',
-  serverReady: true, javaMajor: 17, rules: structuredClone(p.rules), pins: structuredClone(p.pins) });
+  serverReady: true, javaMajor: 17, trialId: freezeMinecraftTrial(p).trialId,
+  worldSeed: p.worldSeed, rules: structuredClone(p.rules), pins: structuredClone(p.pins) });
 
 describe('Minecraft stable task roster and frozen trial identity', () => {
   it('publishes stable pilot/dragon objectives with authoritative advancement semantics', () => {
@@ -45,6 +46,7 @@ describe('Minecraft stable task roster and frozen trial identity', () => {
     ['seed', p => { p.worldSeed = '4'; }], ['objective', p => { p.objective = 'nether-entry'; }],
     ['run', p => { p.runId = 'other-run'; }], ['arm', p => { p.armId = 'papercusp'; }],
     ['task', p => { p.taskId = 'other-task'; }], ['manifest', p => { p.manifestHash = sha(33); }],
+    ['selection', p => { p.selectionHash = sha(34); }],
     ['team', p => { p.participants = ['alice']; }], ['actions', p => { p.actions = ['move']; }],
     ['observations', p => { p.observations = ['position']; }],
     ['server image', p => { p.pins.serverImage = `minecraft/server@sha256:${sha(77)}`; }],
@@ -67,6 +69,9 @@ describe('Minecraft stable task roster and frozen trial identity', () => {
     'refuses an imprecise or noncanonical seed %s', worldSeed => {
       expect(() => freezeMinecraftTrial({ ...protocol(), worldSeed })).toThrow();
     });
+  it.each(['bad-seed', '1.2', '1'.repeat(1000)])('returns a validation refusal for malformed/oversized seed %s', worldSeed => {
+    expect(minecraftProtocolSchema.safeParse({ ...protocol(), worldSeed }).success).toBe(false);
+  });
 
   it('snapshots and deeply freezes caller inputs', () => {
     const p = protocol(); const frozen = freezeMinecraftTrial(p); p.actions.push('attack');
@@ -105,13 +110,20 @@ describe('Minecraft preflight precedes every inference/accounting side effect', 
     expect(counters).toEqual({ attempts: 0, requests: 0, reservations: 0, dispatches: 0 });
   });
 
-  it.each(['serverReady', 'javaMajor', 'serverInstanceId', 'rules', 'pins'])(
+  it.each(['serverReady', 'javaMajor', 'serverInstanceId', 'trialId', 'worldSeed', 'rules', 'pins'])(
     'refuses missing measured prerequisite %s before launch', async key => {
       const p = protocol(); const measured: any = runtime(p); delete measured[key];
       const launch = vi.fn();
       await expect(withMinecraftPreflight(p, measured, freezeMinecraftTrial(p).trialId, launch)).rejects.toThrow();
       expect(launch).not.toHaveBeenCalled();
     });
+  it.each(['trialId', 'worldSeed'] as const)('refuses a foreign measured %s before launch', async key => {
+    const p = protocol(); const measured = runtime(p);
+    measured[key] = key === 'trialId' ? sha(99) : '99';
+    const launch = vi.fn();
+    await expect(withMinecraftPreflight(p, measured, freezeMinecraftTrial(p).trialId, launch)).rejects.toThrow(/prerequisites/);
+    expect(launch).not.toHaveBeenCalled();
+  });
   it.each(['serverImage', 'serverJarSha256', 'mineflayerVersion', 'pathfinderVersion'] as const)(
     'refuses a measured %s mismatch', async key => {
       const p = protocol(); const measured = runtime(p);
@@ -153,8 +165,10 @@ describe('Minecraft manifest, assignment and configuration-selection boundary', 
     });
   it('grants only the assigned task/player, keeps scoring private and rejects copied/foreign grants', () => {
     const manifest = freezeMinecraftManifest(manifestInput());
-    const trial = freezeMinecraftTrial(protocol(manifest.manifestHash));
-    const assignment = assignMinecraftTask(manifest, trial, 'alice');
+    const selection = freezeMinecraftSelection(manifest, { runId: 'minecraft-run-1', armId: 'stock',
+      modelId: 'frozen-model', promptSha256: sha(50), configurationSha256: sha(51), sources: [] });
+    const trial = freezeMinecraftTrial({ ...protocol(manifest.manifestHash), selectionHash: selection.selectionHash });
+    const assignment = assignMinecraftTask(manifest, trial, 'alice', selection);
     const request = { taskId: 'held-iron', participantId: 'alice', kind: 'objective' as const, assignment };
     expect(readMinecraftTaskMaterial(manifest, request)).toBe('iron-tools');
     expect(readMinecraftTaskMaterial(manifest, { ...request, kind: 'seed' })).toBe('3');
@@ -165,8 +179,9 @@ describe('Minecraft manifest, assignment and configuration-selection boundary', 
     expect(() => readMinecraftTaskMaterial(manifest, { ...request, assignment: { ...assignment } })).toThrow(/before assignment/);
     const other = freezeMinecraftManifest(manifestInput());
     expect(() => readMinecraftTaskMaterial(other, request)).toThrow(/before assignment/);
-    expect(() => assignMinecraftTask(manifest, trial, 'mallory')).toThrow(/participant/);
-    expect(() => assignMinecraftTask(manifest, { ...trial }, 'alice')).toThrow(/foreign/);
+    expect(() => assignMinecraftTask(manifest, trial, 'mallory', selection)).toThrow(/participant/);
+    expect(() => assignMinecraftTask(manifest, { ...trial }, 'alice', selection)).toThrow(/foreign/);
+    expect(() => assignMinecraftTask(manifest, trial, 'alice', { ...selection })).toThrow(/selection/);
     expect(() => minecraftPublicTaskIds({ ...manifest })).toThrow(/Unknown/);
   });
   it.each(['train', 'dev', 'heldOut'] as const)('rejects a missing/empty %s partition', partition => {
@@ -186,9 +201,18 @@ describe('Minecraft manifest, assignment and configuration-selection boundary', 
     expect(readMinecraftTaskMaterial(manifest, { taskId: 'train-iron', participantId: 'alice', kind: 'seed' })).toBe('1');
     expect(freezeMinecraftManifest(input).manifestHash).not.toBe(manifest.manifestHash);
   });
+  it('keeps the manifest identity independent of ambient locale collation', () => {
+    const input = manifestInput(); input.train[0].taskId = 'z-task';
+    input.train.push(task('A-task', 4));
+    const expected = freezeMinecraftManifest(input).manifestHash;
+    const collation = vi.spyOn(String.prototype, 'localeCompare').mockReturnValue(1);
+    try { expect(freezeMinecraftManifest(input).manifestHash).toBe(expected); }
+    finally { collation.mockRestore(); }
+  });
   it.each(['content', 'outcome'] as const)('refuses held-out %s as configuration-selection provenance', kind => {
     const manifest = freezeMinecraftManifest(manifestInput());
-    const selection = { modelId: 'frozen-model', promptSha256: sha(50), configurationSha256: sha(51),
+    const selection = { runId: 'minecraft-run-1', armId: 'stock',
+      modelId: 'frozen-model', promptSha256: sha(50), configurationSha256: sha(51),
       sources: [{ taskId: 'train-iron', kind }] };
     const accepted = freezeMinecraftSelection(manifest, selection);
     expect(accepted.manifestHash).toBe(manifest.manifestHash);
@@ -197,5 +221,19 @@ describe('Minecraft manifest, assignment and configuration-selection boundary', 
       .toThrow(/cannot tune/);
     expect(() => freezeMinecraftSelection(manifest, { ...selection, sources: [{ taskId: 'unknown-task', kind }] }))
       .toThrow(/Unknown/);
+  });
+  it('retains the first selection and rejects tuning after assignment while isolating arms', () => {
+    const manifest = freezeMinecraftManifest(manifestInput());
+    const input = { runId: 'minecraft-run-1', armId: 'stock', modelId: 'frozen-model',
+      promptSha256: sha(50), configurationSha256: sha(51), sources: [] };
+    const selection = freezeMinecraftSelection(manifest, input);
+    const trial = freezeMinecraftTrial({ ...protocol(manifest.manifestHash), selectionHash: selection.selectionHash });
+    assignMinecraftTask(manifest, trial, 'alice', selection);
+    expect(freezeMinecraftSelection(manifest, input)).toBe(selection);
+    for (const changed of [{ modelId: 'tuned-model' }, { promptSha256: sha(52) }, { configurationSha256: sha(53) }]) {
+      expect(() => freezeMinecraftSelection(manifest, { ...input, ...changed })).toThrow(/already frozen/);
+    }
+    const other = freezeMinecraftSelection(manifest, { ...input, armId: 'other' });
+    expect(() => assignMinecraftTask(manifest, trial, 'alice', other)).toThrow(/selection/);
   });
 });

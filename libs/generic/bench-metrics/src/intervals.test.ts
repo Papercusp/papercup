@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact, empiricalQuantile, pairedBlockBootstrapCI, type PairedTimeSeries } from './intervals';
+import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact, empiricalQuantile, baselineAutocorrelationBlocks, pairedBlockBootstrapCI, type PairedTimeSeries } from './intervals';
+
+describe('baselineAutocorrelationBlocks', () => {
+  it('treats a constant baseline as a measured diagnostic, never an independence/power claim', () => {
+    expect(baselineAutocorrelationBlocks(Array(100).fill(4))).toMatchObject({ status: 'measured', blockLength: 1, lastDetectedLag: 0, maximumLag: 25 });
+  });
+  it('requires more baseline data when time dependence remains unresolved', () => {
+    const trend = Array.from({ length: 1000 }, (_, i) => i);
+    expect(baselineAutocorrelationBlocks(trend)).toEqual({ status: 'unknown', reason: 'unresolved-baseline-autocorrelation' });
+    expect(baselineAutocorrelationBlocks(trend, 0.95).status).toBe('unknown');
+    expect(baselineAutocorrelationBlocks([]).status).toBe('unknown');
+    expect(baselineAutocorrelationBlocks(Array(100).fill(NaN)).status).toBe('unknown');
+  });
+});
 
 describe('empiricalQuantile', () => {
   it('uses type-7 interpolation rather than nearest rank, preserving the input', () => {
@@ -11,7 +24,7 @@ describe('empiricalQuantile', () => {
   });
 
   it('keeps missing/nonfinite data unknown instead of deleting it or returning zero', () => {
-    for (const values of [[], [1, NaN], [Infinity]]) expect(empiricalQuantile(values, 0.99)).toBeNull();
+    for (const values of [[], [1, NaN], [Infinity], Array(2), [-1e308, 1e308]]) expect(empiricalQuantile(values, 0.99)).toBeNull();
     expect(empiricalQuantile([0], 0.99)).toBe(0);
     expect(() => empiricalQuantile([1], NaN)).toThrow(RangeError);
     expect(() => empiricalQuantile([1], 1.1)).toThrow(RangeError);
@@ -77,6 +90,7 @@ describe('pairedBlockBootstrapCI', () => {
     const unknown: PairedTimeSeries[][] = [[], repeats.slice(0, 1),
       [{ ...repeats[0], a: [] }, repeats[1]], [{ ...repeats[0], b: [1] }, repeats[1]],
       [{ ...repeats[0], a: [NaN, 2, 3, 4] }, repeats[1]],
+      [{ ...repeats[0], a: Array(4) }, repeats[1]],
       [repeats[0], repeats[0]], [{ ...repeats[0], repeatId: '' }, repeats[1]],
       [{ ...repeats[0], blockLength: 0 }, repeats[1]], [{ ...repeats[0], blockLength: 5 }, repeats[1]],
     ];

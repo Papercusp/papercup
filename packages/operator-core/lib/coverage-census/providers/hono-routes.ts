@@ -84,6 +84,11 @@ export const honoRoutesProvider: SurfaceCensusProvider = {
           // materially different risk from an admin-gated one.
           auth: typeof def?.auth === 'string' ? def.auth : (def?.auth ?? null),
           hasInputSchema: def?.input != null,
+          hasDefinition: def != null,
+          cors: def?.cors ?? null,
+          // null disables the watchdog; undefined selects its default. Preserve both.
+          timeoutDeclared: def?.timeoutSec !== undefined,
+          timeoutSec: def?.timeoutSec ?? null,
         },
         fidelity: 'declared',
       };

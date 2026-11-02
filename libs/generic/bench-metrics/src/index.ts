@@ -41,6 +41,7 @@ export {
   pairedBootstrapCI,
   pairedRepositoryPowerPlan,
   empiricalQuantile,
+  baselineAutocorrelationBlocks,
   pairedBlockBootstrapCI,
   type PairedTimeSeries,
   type PairedBlockInterval,

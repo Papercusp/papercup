@@ -24,50 +24,31 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { listAllProjectedTools } from '@papercusp/tooldef';
+import { listAllProjectedTools, projectedToolProviderVersion } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
 import { assertRegistryNonEmpty } from './_non-empty';
+import { resolveToolSourceFile } from '../../tool-source-file';
 
 /** The surface kind this provider owns — and therefore the only kind it may retire. */
 export const MCP_TOOL_KIND = 'mcp-tool';
 
 /**
- * Directories whose `<group>/<verb>.ts` layout mirrors a tool's `group:verb` name.
- * Used only to CONFIRM a file that already exists — never to assert one that does not.
+ * Reuse registration/bundle provenance, as the schema-staleness reader does.
+ * A name-derived filename can miss nested registrations or name an unrelated
+ * file that happens to exist. Missing, unreadable or external source stays unknown.
+ * This identifies a source file, not the bytes loaded by a running process.
  */
-const TOOL_SOURCE_ROOTS = [
-  'packages/operator-core/lib/agent-tools',
-  'packages/agent-mcp/src/tools',
-] as const;
-
-/**
- * Resolve a tool's implementing file by the `group:verb` → `<root>/<group>/<verb>.ts` convention,
- * returning it ONLY when the file is present on disk.
- *
- * This is a deliberate asymmetry. A confirmed hit is real evidence (the file is there, and the
- * convention is enforced by `defineTool`'s file-path-derived default name). A miss means the tool
- * lives somewhere the convention does not describe — several do — and the honest answer is `null`,
- * not a fabricated path. A fabricated path is worse than an absent one: the reverse map from a
- * plan's changed files would silently attribute coverage to a file that does not exist, and
- * nothing downstream can tell a guessed path from a verified one.
- */
-function resolveToolSourceFile(toolName: string, repoRoot: string): string | null {
-  const sep = toolName.indexOf(':');
-  if (sep <= 0) return null;
-  const group = toolName.slice(0, sep);
-  const verb = toolName.slice(sep + 1);
-  // Reject anything that could escape the roots; tool names are identifiers, not paths.
-  if (!/^[\w.-]+$/.test(group) || !/^[\w.-]+$/.test(verb)) return null;
-
-  for (const root of TOOL_SOURCE_ROOTS) {
-    const rel = `${root}/${group}/${verb}.ts`;
-    try {
-      if (fs.existsSync(path.join(repoRoot, rel))) return rel;
-    } catch {
-      // An unreadable repoRoot is not this provider's problem to fail on — fall through to null.
-    }
+async function censusToolSourceFile(toolName: string, repoRoot: string): Promise<string | null> {
+  const source = await resolveToolSourceFile(toolName);
+  if (!source) return null;
+  try {
+    const actual = fs.realpathSync(source);
+    const relative = path.relative(fs.realpathSync(repoRoot), actual);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+    return fs.statSync(actual).isFile() ? relative.split(path.sep).join('/') : null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 export const mcpToolsProvider: SurfaceCensusProvider = {
@@ -84,20 +65,33 @@ export const mcpToolsProvider: SurfaceCensusProvider = {
     // directly, so this is the only population that matches the MCP transport.
     const catalog = listAllProjectedTools().filter((def) => def.expose.mcp != null);
 
-    const surfaces = catalog.map((def): ObservedSurface => ({
+    const surfaces = await Promise.all(catalog.map(async (def): Promise<ObservedSurface> => ({
       kind: MCP_TOOL_KIND,
       surfaceId: def.expose.mcp!.name,
-      sourceFile: resolveToolSourceFile(def.expose.mcp!.name, ctx.repoRoot),
+      sourceFile: await censusToolSourceFile(def.expose.mcp!.name, ctx.repoRoot),
       schemaRef: def.discoveryInputSchema ?? def.inputSchema,
       attrs: {
         capabilities: def.capabilities,
         effect: def.effect ?? null,
+        hasArgumentSensitiveEffect: typeof def.effectForCall === 'function',
+        // These are declarations from the serving registry, not confinement proof.
+        pluginName: def.pluginName,
+        providerVersion: projectedToolProviderVersion(def),
+        builtinProvider: def.builtinProvider ?? null,
+        installationSource: def.pluginInstallation?.source ?? null,
+        expose: def.expose,
+        authorization: {
+          requirePrincipal: def.requirePrincipal ?? null,
+          agentRoles: def.agentRoles ?? null,
+          requireRoles: def.requireRoles ?? null,
+          hasResourceAuthorizer: typeof def.authorize === 'function',
+        },
         // A composite tool bundles other tools; its coverage question is different from a
         // primitive's, so record it rather than making the census re-derive it.
         replaces: Array.isArray(def.replaces) ? def.replaces : null,
       },
       fidelity: 'declared',
-    }));
+    })));
 
     return assertRegistryNonEmpty(
       surfaces,

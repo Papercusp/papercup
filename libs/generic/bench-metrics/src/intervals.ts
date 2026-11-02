@@ -388,8 +388,9 @@ export function pairedBootstrapCI(
 /** Type-7 empirical quantile. Missing/non-finite observations are never deleted. */
 export function empiricalQuantile(values: readonly number[], q: number): number | null {
   if (!Number.isFinite(q) || q < 0 || q > 1) throw new RangeError('empiricalQuantile: q must be in [0,1]');
-  if (!values.length || values.some(value => !Number.isFinite(value))) return null;
-  return percentile(Float64Array.from(values).sort(), q);
+  if (!values.length || Array.from(values).some(value => !Number.isFinite(value))) return null;
+  const result = percentile(Float64Array.from(values).sort(), q);
+  return Number.isFinite(result) ? result : null;
 }
 
 export interface PairedTimeSeries {
@@ -399,6 +400,39 @@ export interface PairedTimeSeries {
   b: readonly number[];
   /** Fixed from BASELINE autocorrelation before candidate outcomes are observed. */
   blockLength: number;
+}
+
+/**
+ * Deterministic BASELINE-only ACF diagnostic for preregistering block lengths.
+ * Inspect every lag through n/4, using a multiplicity-adjusted Gaussian noise
+ * band; choose twice the last detectable lag plus one. At least twenty blocks
+ * must fit. For quantiles, inspect the empirical CDF indicator (the quantile
+ * influence series), so tail dependence cannot hide behind the raw mean ACF.
+ * This diagnostic does not prove stationarity, independence or pretrial power.
+ * Those need their own evidence. Unresolved long correlation requires more data.
+ */
+export function baselineAutocorrelationBlocks(values: readonly number[], q?: number):
+  { status: 'measured'; method: 'baseline-acf-noise-band-v1'; blockLength: number; lastDetectedLag: number; maximumLag: number; noiseBand: number }
+  | { status: 'unknown'; reason: string } {
+  if (values.length < 80 || Array.from(values).some(value => !Number.isFinite(value))) return { status: 'unknown', reason: 'insufficient-or-missing-baseline' };
+  const cut = q === undefined ? null : empiricalQuantile(values, q);
+  const series = cut === null ? values : values.map(value => value <= cut ? 1 : 0);
+  const n = series.length;
+  const mean = series.reduce((sum, value) => sum + value, 0) / n;
+  const centered = series.map(value => value - mean);
+  const varianceSum = centered.reduce((sum, value) => sum + value * value, 0);
+  if (!Number.isFinite(varianceSum)) return { status: 'unknown', reason: 'unrepresentable-baseline-variance' };
+  const maximumLag = Math.floor(n / 4);
+  const noiseBand = Math.sqrt(2 * Math.log(2 * maximumLag / 0.05) / n);
+  let lastDetectedLag = 0;
+  if (varianceSum > 0) for (let lag = 1; lag <= maximumLag; lag++) {
+    let covariance = 0;
+    for (let i = lag; i < n; i++) covariance += centered[i] * centered[i - lag];
+    if (Math.abs(covariance / varianceSum) > noiseBand) lastDetectedLag = lag;
+  }
+  const blockLength = 2 * lastDetectedLag + 1;
+  if (Math.floor(n / blockLength) < 20) return { status: 'unknown', reason: 'unresolved-baseline-autocorrelation' };
+  return { status: 'measured', method: 'baseline-acf-noise-band-v1', blockLength, lastDetectedLag, maximumLag, noiseBand };
 }
 
 export type PairedBlockInterval = {
@@ -455,7 +489,7 @@ export function pairedBlockBootstrapCI(
     if (!repeat.repeatId.trim() || ids.has(repeat.repeatId)) return { status: 'unknown', reason: 'repeat-identity' };
     ids.add(repeat.repeatId);
     if (!repeat.a.length || repeat.a.length !== repeat.b.length ||
-        repeat.a.some(value => !Number.isFinite(value)) || repeat.b.some(value => !Number.isFinite(value))) {
+        Array.from(repeat.a).some(value => !Number.isFinite(value)) || Array.from(repeat.b).some(value => !Number.isFinite(value))) {
       return { status: 'unknown', reason: 'missing-nonfinite-or-unpaired-observations' };
     }
     if (!Number.isSafeInteger(repeat.blockLength) || repeat.blockLength < 1 || repeat.blockLength > repeat.a.length) {
