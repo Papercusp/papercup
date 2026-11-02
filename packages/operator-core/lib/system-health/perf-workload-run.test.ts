@@ -11,7 +11,21 @@ const manifest: PerfWorkloadManifest = { source: { file: 'source-sha' }, configu
   runtime: { build: 'test-server' }, host: { boot: 'test-boot' }, workload: { method: 'GET' }, fixture: { response: digest('ok') } };
 beforeAll(async () => {
   server = createServer((request, response) => {
-    if (request.url === '/slow') {
+    if (request.url === '/mcp-fixture') {
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', chunk => { body += chunk; });
+      request.on('end', () => {
+        if (request.method !== 'POST' || body !== '{"jsonrpc":"2.0","id":1,"method":"ping"}' ||
+            request.headers.authorization !== 'Bearer runtime-only-test' || request.headers['content-type'] !== 'application/json' ||
+            request.headers.accept !== 'application/json, text/event-stream') {
+          response.writeHead(400); response.end('bad fixture'); return;
+        }
+        response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' });
+        response.write('event: message\n');
+        setTimeout(() => response.end('data: {"jsonrpc":"2.0","id":1,"result":{}}\n\n'), 5);
+      });
+    } else if (request.url === '/slow') {
       const timer = setTimeout(() => response.end('ok'), 500);
       response.on('close', () => clearTimeout(timer));
     } else if (request.url === '/disconnect') { response.writeHead(200); response.write('o'); setTimeout(() => response.destroy(), 10); }
@@ -33,6 +47,47 @@ function plan(path = '/ok'): PerfWorkloadRunPlan {
 const deps = () => ({ captureManifest: async () => structuredClone(manifest), prepare: async () => ({ evidenceRef: 'synthetic-preparation-fixture' }) });
 
 describe('scheduled real HTTP workload collection', () => {
+  function mcpPlan() {
+    const input = plan('/mcp-fixture');
+    input.groups[0].exposureMs = 300;
+    Object.assign(input.groups[0].requests[0], { method: 'POST',
+      body: '{"jsonrpc":"2.0","id":1,"method":"ping"}', contentType: 'application/json',
+      accept: 'application/json, text/event-stream', expectedContentType: 'text/event-stream',
+      expectedBodySha256: digest('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n') });
+    return input;
+  }
+  it('sends pinned MCP POST bytes, retains the complete finite SSE oracle and excludes runtime credentials', async () => {
+    const input = mcpPlan();
+    const runtimeHeaders = { a: { authorization: 'Bearer runtime-only-test' }, b: { authorization: 'Bearer runtime-only-test' } };
+    const run = await collectPerfWorkloadRun(input, { ...deps(), transportHeaders: runtimeHeaders,
+      captureManifest: async () => {
+        input.groups[0].requests[0].body = 'changed after start';
+        runtimeHeaders.a.authorization = 'changed after start';
+        return manifest;
+      } });
+    expect(run.status).toBe('collected');
+    expect(run.groups[0].arms.every(arm => arm.requests[0].outcome === 'success')).toBe(true);
+    expect(run.groups[0].arms[0].requests[0]).toMatchObject({ responseContentType: 'text/event-stream', oracleMatched: true });
+    expect(run.plan.groups[0].requests[0].body).toBe('{"jsonrpc":"2.0","id":1,"method":"ping"}');
+    expect(JSON.stringify(run)).not.toContain('runtime-only-test');
+    expect(perfWorkloadRunSeries(run)![0].a.failures).toBe(0);
+  });
+  it.each(['body', 'expectedContentType', 'expectedBodySha256'] as const)('retains a failed MCP %s oracle in both paired series', async field => {
+    const input = mcpPlan();
+    input.groups[0].requests[0][field] = field === 'expectedBodySha256' ? digest('truncated stream') : field === 'expectedContentType' ? 'application/json' : '{}';
+    const run = await collectPerfWorkloadRun(input, { ...deps(), transportHeaders: {
+      a: { authorization: 'Bearer runtime-only-test' }, b: { authorization: 'Bearer runtime-only-test' } } });
+    const series = perfWorkloadRunSeries(run)!;
+    expect(series[0].a.failures).toBe(1);
+    expect(series[0].b.throughput).toEqual([0]);
+  });
+  it('rejects unsupported methods, GET bodies and unpinned header syntax before I/O', async () => {
+    for (const change of [{ method: 'DELETE' }, { body: '{}' }, { contentType: 'text/plain' },
+      { accept: 'application/json\r\nx-header: injected' }, { expectedContentType: 'text/event-stream; charset=utf-8' }]) {
+      const input = plan(); Object.assign(input.groups[0].requests[0], change);
+      await expect(collectPerfWorkloadRun(input, deps())).rejects.toThrow('invalid workload request');
+    }
+  });
   it('retains paired schedule, full manifests and exact body oracle; mean rate uses fixed exposure', async () => {
     const run = await collectPerfWorkloadRun(plan(), deps());
     expect(run.status).toBe('collected');

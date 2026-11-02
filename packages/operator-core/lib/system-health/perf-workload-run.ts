@@ -19,13 +19,20 @@ export interface PerfWorkloadManifest {
 }
 export interface PerfScheduledRequest {
   id: string;
-  /** Relative GET fixture; the exact status and full response bytes are the oracle. */
+  /** Relative fixture; method/body and the full response oracle are preregistered. */
   path: string;
+  method?: 'GET' | 'POST';
+  /** Fixture bytes only. Credentials belong in runtime-only transportHeaders. */
+  body?: string;
+  contentType?: 'application/json';
+  accept?: 'application/json' | 'text/event-stream' | 'application/json, text/event-stream';
   atMs: number;
   timeoutMs: number;
   maximumResponseBytes: number;
   expectedStatus: number;
   expectedBodySha256: string;
+  /** Media type without parameters, e.g. text/event-stream. */
+  expectedContentType?: string;
 }
 export interface PerfWorkloadRunPlan {
   independentRepeatId: string;
@@ -52,6 +59,7 @@ export interface PerfCollectedRequest {
   responseStatus: number | null;
   responseBytes: number;
   responseSha256: string | null;
+  responseContentType?: string | null;
   oracleMatched: boolean;
   diagnostic: string | null;
   /** Cold preparation is per request; warm/burst preparation is per arm. */
@@ -80,6 +88,8 @@ export interface PerfWorkloadRun {
   hash: string;
 }
 export interface PerfWorkloadRunDependencies {
+  /** Authentication/session headers, frozen at start and NEVER retained in a run. */
+  transportHeaders?: Partial<Record<PerfWorkloadArm, Readonly<Record<string, string>>>>;
   /** Must capture actual loaded runtime, config, host, fixtures and source bytes. */
   captureManifest: (arm: PerfWorkloadArm) => Promise<PerfWorkloadManifest>;
   /** Retain reset/warmup evidence. A label alone does not prove a cold/warm state. */
@@ -111,6 +121,11 @@ function validatePlan(plan: PerfWorkloadRunPlan): void {
     for (const request of group.requests) {
       const url = new URL(request.path, plan.origins.a);
       if (!request.id.trim() || !request.path.startsWith('/') || request.path.startsWith('//') || url.origin !== plan.origins.a || url.hash ||
+          !['GET', 'POST'].includes(request.method ?? 'GET') ||
+          (request.body !== undefined && (request.method !== 'POST' || typeof request.body !== 'string')) ||
+          (request.contentType !== undefined && (request.method !== 'POST' || request.contentType !== 'application/json')) ||
+          (request.accept !== undefined && !['application/json', 'text/event-stream', 'application/json, text/event-stream'].includes(request.accept)) ||
+          (request.expectedContentType !== undefined && !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(request.expectedContentType)) ||
           !finite(request.atMs) || !finite(request.timeoutMs) || request.timeoutMs <= 0 || request.timeoutMs > 2_147_483_647 ||
           request.atMs + request.timeoutMs > group.exposureMs || !Number.isSafeInteger(request.maximumResponseBytes) || request.maximumResponseBytes < 1 ||
           !Number.isSafeInteger(request.expectedStatus) || request.expectedStatus < 100 || request.expectedStatus > 599 || !sha(request.expectedBodySha256)) throw new Error('invalid workload request');
@@ -127,7 +142,8 @@ function validManifest(manifest: PerfWorkloadManifest): boolean {
   });
 }
 
-async function executeRequest(origin: string, request: PerfScheduledRequest, startedAtMs: number): Promise<PerfCollectedRequest> {
+async function executeRequest(origin: string, request: PerfScheduledRequest, startedAtMs: number,
+  transportHeaders?: Readonly<Record<string, string>>): Promise<PerfCollectedRequest> {
   const start = performance.now();
   const controller = new AbortController();
   let timedOut = false;
@@ -136,8 +152,14 @@ async function executeRequest(origin: string, request: PerfScheduledRequest, sta
     elapsedMs: null, outcome: 'error', censored: false, responseStatus: null, responseBytes: 0,
     responseSha256: null, oracleMatched: false, diagnostic: null, preparation: null };
   try {
-    const response = await fetch(new URL(request.path, origin), { signal: controller.signal, redirect: 'error' });
+    const headers = new Headers(transportHeaders);
+    // Fixture headers take precedence over runtime credentials/session headers.
+    if (request.contentType) headers.set('content-type', request.contentType);
+    if (request.accept) headers.set('accept', request.accept);
+    const response = await fetch(new URL(request.path, origin), { signal: controller.signal, redirect: 'error',
+      method: request.method ?? 'GET', body: request.body, headers });
     row.responseStatus = response.status;
+    row.responseContentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? null;
     const hash = createHash('sha256');
     if (response.body) {
       const reader = response.body.getReader();
@@ -155,7 +177,8 @@ async function executeRequest(origin: string, request: PerfScheduledRequest, sta
       } finally { reader.releaseLock(); }
     }
     row.responseSha256 = hash.digest('hex');
-    row.oracleMatched = response.status === request.expectedStatus && row.responseSha256 === request.expectedBodySha256;
+    row.oracleMatched = response.status === request.expectedStatus && row.responseSha256 === request.expectedBodySha256 &&
+      (request.expectedContentType === undefined || request.expectedContentType === row.responseContentType);
     row.outcome = row.oracleMatched ? 'success' : 'error';
     row.diagnostic = row.oracleMatched ? null : 'response-oracle-mismatch';
   } catch (error) {
@@ -176,6 +199,7 @@ async function executeRequest(origin: string, request: PerfScheduledRequest, sta
  */
 export async function collectPerfWorkloadRun(plan: PerfWorkloadRunPlan, deps: PerfWorkloadRunDependencies): Promise<PerfWorkloadRun> {
   const pinned = structuredClone(plan);
+  const transportHeaders = structuredClone(deps.transportHeaders ?? {});
   validatePlan(pinned);
   const startedAtMs = Date.now();
   if (pinned.phase === 'candidate') {
@@ -233,7 +257,7 @@ export async function collectPerfWorkloadRun(plan: PerfWorkloadRunPlan, deps: Pe
         }
         active++;
         try {
-          const row = await executeRequest(pinned.origins[arm], request, actualStart);
+          const row = await executeRequest(pinned.origins[arm], request, actualStart, transportHeaders[arm]);
           row.preparation = cold;
           if (actualStart + row.elapsedMs! > group.exposureMs) reasons.add(`response-outside-exposure:${group.journey}:${group.stratum}:${arm}`);
           return row;

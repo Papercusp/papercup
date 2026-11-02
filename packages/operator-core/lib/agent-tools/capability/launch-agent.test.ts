@@ -2054,6 +2054,117 @@ describe('resume + fork (D-004/D-007)', () => {
     },
   };
 
+  describe('explicit resume inherited goal context', () => {
+    let inheritedGoal: string | null;
+    let callerGoal: string | null;
+    let readFailure: boolean;
+    let writeFailure: boolean;
+    let writtenGoals: Array<string | null>;
+
+    beforeEach(() => {
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValue(dead);
+      // Policy admission is separate; use the real context resolver and writer
+      // to check the governed process-start boundary.
+      goalLaunchResolveMock.mockResolvedValue({ goalId: null, effective: {} });
+      inheritedGoal = 'goal-paused';
+      callerGoal = null;
+      readFailure = false;
+      writeFailure = false;
+      writtenGoals = [];
+      goalContextSqlMock.mockImplementation(async (...args: unknown[]) => {
+        const [strings, ...values] = args;
+        const query = Array.isArray(strings) ? strings.join(' ') : '';
+        if (query.includes('SELECT goal_id FROM harness_shared.session_briefs')) {
+          if (values[0] === 'su-caller' && readFailure) throw new Error('launcher context unavailable');
+          return [{ goal_id: values[0] === 'su-caller' ? callerGoal : inheritedGoal }];
+        }
+        if (query.includes('INSERT INTO harness_shared.session_briefs')) {
+          if (writeFailure) throw new Error('inherited context write unavailable');
+          if (values[0] === dead.ownerId) {
+            inheritedGoal = values[2] as string | null;
+            writtenGoals.push(inheritedGoal);
+          }
+        }
+        return [];
+      });
+    });
+
+    afterEach(() => {
+      goalContextSqlMock.mockImplementation(async () => []);
+    });
+
+    it.each([null, 'goal-new', 'goal-paused'])('reconciles an admitted different launcher goal %s before spawning', async (goal) => {
+      callerGoal = goal;
+      const spawn = spawnConsoleMock.getMockImplementation()!;
+      spawnConsoleMock.mockImplementationOnce(async (opts) => {
+        expect(inheritedGoal).toBe(goal);
+        return spawn(opts);
+      });
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+        brief: 'continue the explicitly assigned work' }, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([goal]);
+      expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({ owner: dead.ownerId }), expect.any(Function));
+      expect(spawnedCommand()).toContain('--resume=sid-dead');
+      expect(spawnedCommand()).not.toContain('--fork');
+    });
+
+    it('does not reparent before governor admission succeeds', async () => {
+      spawnGovernedAgentProcessMock.mockResolvedValueOnce({ status: 'error', code: 409, error: 'admission refused' });
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses process start when the launcher context cannot be read', async () => {
+      readFailure = true;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('launcher context unavailable');
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses process start when the inherited-only write fails', async () => {
+      writeFailure = true;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('goal context');
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it('preserves inherited context on a self resume', async () => {
+      callerIdentity.current.ownerId = dead.ownerId;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue own work' }, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+    });
+
+    it('preserves the source inherited context when forking', async () => {
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: true, brief: 'independent fork' }, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+    });
+
+    it('does not clear context on an unattributed resume', async () => {
+      callerIdentity.current.ownerId = null;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('reserves an ended source before governed admission and passes the same key to its exact child', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);
