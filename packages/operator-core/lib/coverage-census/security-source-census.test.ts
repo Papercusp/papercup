@@ -1,14 +1,90 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { enumerateSecuritySourcePopulation, type PinnedSecuritySource, type SecuritySourceSnapshot } from './security-source-census';
+import { advanceSecuritySourceProgress, captureSecuritySourceShard, enumerateSecuritySourcePopulation,
+  prepareSecuritySourceShard, validateSecuritySourceProgress,
+  type PinnedSecuritySource, type SecuritySourceProgress, type SecuritySourceSnapshot } from './security-source-census';
 
 const commit = 'a'.repeat(40);
 const blobHash = (bytes: Uint8Array) => createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 const source = (path: string, text: string): PinnedSecuritySource => ({ path, repository: '.', commit,
   blobOid: blobHash(Buffer.from(text)), bytes: Buffer.from(text) });
 const snapshot = (sources: PinnedSecuritySource[]): SecuritySourceSnapshot => ({ sources, repositories: [{ path: '.', commit }], unresolved: [] });
+const progress = (sources: PinnedSecuritySource[]): SecuritySourceProgress => ({ schema: 'security-source-discovery-progress-v1',
+  parentArchive: '1'.repeat(64), parentRawSha256: '2'.repeat(64), repositories: [{ path: '.', commit }],
+  pending: sources.map(file => ({ path: file.path, commit: file.commit, blobOid: file.blobOid,
+    bytes: file.bytes.length, reason: 'source-byte-budget' })), capturedShards: [], populationComplete: false, closureAccepted: false });
+const selectedSnapshot = (sources: PinnedSecuritySource[], paths: string[]): SecuritySourceSnapshot => ({ ...snapshot(sources),
+  selection: { paths: [...paths].sort(), maxBytes: 1000, maxFiles: paths.length,
+    filesRead: sources.length, bytesRead: sources.reduce((sum, file) => sum + file.bytes.length, 0), populationComplete: false } });
+const receipt = (censusFingerprint: string) => ({ sha256: '3'.repeat(64), censusFingerprint });
 
 describe('pinned security source discovery', () => {
+  it('advances only archived inputs and retains unrequested, reader-refused and parser-budget inputs byte for byte', () => {
+    const files = [source('a.ts', 'run();'), source('b.rs', 'fn main() {}'), source('c.sh', 'echo hello'), source('d.ts', 'large();')];
+    const queue = progress(files), before = structuredClone(queue);
+    const input = selectedSnapshot([files[0], files[3]], ['a.ts', 'b.rs', 'd.ts']);
+    input.unresolved = [{ path: 'b.rs', reason: 'source-reader-byte-budget' }];
+    const shard = prepareSecuritySourceShard(queue, ['d.ts', 'b.rs', 'a.ts'], input, { maxFiles: 1 });
+    const next = advanceSecuritySourceProgress(queue, shard, receipt(shard.discovery.fingerprint));
+    expect(next.pending).toEqual(before.pending.slice(1));
+    expect(next.capturedShards[0].consumedPaths).toEqual(['a.ts']);
+    expect(shard.discovery.inventory.unresolved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'b.rs', reason: 'source-reader-byte-budget' }),
+      expect.objectContaining({ path: 'd.ts', reason: 'source-file-budget' }),
+    ]));
+    expect(queue).toEqual(before);
+    next.pending[0].reason = 'changed';
+    expect(queue).toEqual(before);
+  });
+
+  it('refuses repository, blob, byte-count, repository-owner and selection substitutions', () => {
+    const file = source('lib/a.ts', 'run();'), queue = progress([file]);
+    const prepare = (input: SecuritySourceSnapshot) => prepareSecuritySourceShard(queue, ['lib/a.ts'], input);
+    const input = () => selectedSnapshot([file], ['lib/a.ts']);
+    expect(() => prepare({ ...input(), repositories: [{ path: '.', commit: 'b'.repeat(40) }] })).toThrow('repository_substitution');
+    for (const changed of [{ ...file, blobOid: 'c'.repeat(40) }, { ...file, bytes: Buffer.from('longer();') },
+      { ...file, repository: 'lib' }]) expect(() => prepare({ ...input(), sources: [changed] })).toThrow('input_substitution');
+    expect(() => prepare({ ...input(), selection: undefined })).toThrow('selection_mismatch');
+    expect(() => prepare({ ...input(), sources: [{ ...file, bytes: Buffer.from('bad();') }] })).toThrow('blob_mismatch');
+    const nested = { ...queue, repositories: [...queue.repositories, { path: 'lib', commit: 'd'.repeat(40) }] };
+    expect(() => validateSecuritySourceProgress(nested)).toThrow('invalid_pending_input');
+  });
+
+  it('refuses replay, stale queues and archive identity mutations before discarding inputs', () => {
+    const files = [source('a.ts', 'run();'), source('b.ts', 'next();')], queue = progress(files);
+    const shard = prepareSecuritySourceShard(queue, ['a.ts'], selectedSnapshot([files[0]], ['a.ts']));
+    const next = advanceSecuritySourceProgress(queue, shard, receipt(shard.discovery.fingerprint));
+    expect(() => advanceSecuritySourceProgress(next, shard, receipt(shard.discovery.fingerprint))).toThrow('stale_progress');
+    expect(() => captureSecuritySourceShard('/must-not-read-git', next, ['a.ts'])).toThrow('not_pending');
+    expect(() => prepareSecuritySourceShard(queue, ['a.ts', 'a.ts'], selectedSnapshot([files[0]], ['a.ts']))).toThrow('not_pending');
+    const altered = structuredClone(shard); altered.discovery.sites = [];
+    expect(() => advanceSecuritySourceProgress(queue, altered, receipt(shard.discovery.fingerprint))).toThrow('identity_mismatch');
+    expect(() => advanceSecuritySourceProgress(queue, shard, receipt('4'.repeat(64)))).toThrow('identity_mismatch');
+  });
+
+  it('keeps parser gaps after archival and never turns an exhausted input queue into a closure claim', () => {
+    const file = source('broken.ts', 'function broken( {'), queue = progress([file]);
+    const shard = prepareSecuritySourceShard(queue, [file.path], selectedSnapshot([file], [file.path]));
+    const next = advanceSecuritySourceProgress(queue, shard, receipt(shard.discovery.fingerprint));
+    expect(next.pending).toEqual([]);
+    expect(shard.discovery.inventory.unresolved).toContainEqual(expect.objectContaining({ reason: 'source-site-parser-failed' }));
+    expect(next.populationComplete).toBe(false); expect(next.closureAccepted).toBe(false);
+    expect(shard.discovery.executionAdmitted).toBe(false);
+    const unavailable = prepareSecuritySourceShard(queue, [file.path], selectedSnapshot([], [file.path]));
+    expect(() => advanceSecuritySourceProgress(queue, unavailable, receipt(unavailable.discovery.fingerprint))).toThrow('no_progress');
+  });
+
+  it('preserves selected reader scope in the archived discovery and its content identity', () => {
+    const input = snapshot([source('a.ts', 'run();')]);
+    input.selection = { paths: ['a.ts'], maxBytes: 100, maxFiles: 1, bytesRead: 6, filesRead: 1, populationComplete: false };
+    const result = enumerateSecuritySourcePopulation(input);
+    expect(result.inventory.selection).toEqual(input.selection);
+    input.selection.maxBytes = 200;
+    expect(result.inventory.selection.maxBytes).toBe(100);
+    expect(enumerateSecuritySourcePopulation(input).fingerprint).not.toBe(result.fingerprint);
+    expect(result.closureAccepted).toBe(false);
+  });
+
   it('retains every call/import occurrence and alias, dynamic and test leads without claiming runtime closure', () => {
     const text = `import { spawn as launch } from 'node:child_process';
       export async function handler(){ launch('one'); launch('one'); await import(which); operations[name](); }`;

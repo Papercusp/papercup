@@ -17,6 +17,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
+import type { SecuritySourceProgress } from './coverage-census/security-source-census';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -198,6 +199,33 @@ describe('text-artifacts (drizzle, PG)', () => {
     await saveSecurityManifest('web', changed);
     expect(await loadSecurityManifest('web', manifest.sha256)).toEqual(manifest);
     expect(await loadSecurityManifest('web', changed.sha256)).toEqual(changed);
+  });
+
+  it('archives a source shard with verified readback before persisting its lossless successor queue', async () => {
+    const { createHash } = await import('node:crypto');
+    const { gunzipSync } = await import('node:zlib');
+    const { canonicalJson } = await import('@papercusp/hash-chain');
+    const { prepareSecuritySourceShard } = await import('./coverage-census/security-source-census');
+    const { saveSecuritySourceShard } = await import('./coverage-census/security-manifest-store');
+    const bytes = Buffer.from('run();'), commit = 'a'.repeat(40);
+    const file = { path: 'a.ts', repository: '.', commit, bytes,
+      blobOid: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+    const progress: SecuritySourceProgress = { schema: 'security-source-discovery-progress-v1', parentArchive: '1'.repeat(64),
+      parentRawSha256: '2'.repeat(64), repositories: [{ path: '.', commit }], capturedShards: [],
+      pending: ['a.ts', 'b.ts'].map(path => ({ path, commit, blobOid: file.blobOid, bytes: bytes.length, reason: 'source-byte-budget' })),
+      closureAccepted: false, populationComplete: false };
+    const shard = prepareSecuritySourceShard(progress, ['a.ts'], { sources: [file], repositories: progress.repositories, unresolved: [],
+      selection: { paths: ['a.ts'], maxBytes: 1000, maxFiles: 1, bytesRead: bytes.length, filesRead: 1, populationComplete: false } });
+    const saved = await saveSecuritySourceShard('web', progress, shard);
+    const archive = JSON.parse((await loadImmutableTextArtifact('web', saved.archive.sha256))!);
+    expect(JSON.parse(gunzipSync(Buffer.from(archive.data, 'base64')).toString())).toEqual(shard.discovery);
+    expect(saved.receipt).toMatchObject({ readbackVerified: true, decodedVerified: true, files: 1 });
+    expect(saved.progress.pending).toEqual([progress.pending[1]]);
+    expect(await loadImmutableTextArtifact('web', saved.progressArchive.sha256)).toBe(canonicalJson(saved.progress));
+    expect((await saveSecuritySourceShard('web', progress, shard)).archive).toEqual(saved.archive);
+    await expect(saveSecuritySourceShard('web', saved.progress, shard)).rejects.toThrow('stale_progress');
+    const corrupted = structuredClone(shard); corrupted.discovery.sites = [];
+    await expect(saveSecuritySourceShard('web', progress, corrupted)).rejects.toThrow('identity_mismatch');
   });
 
   it('save → load round-trips, null when absent', async () => {
