@@ -3733,7 +3733,8 @@ export async function main(
   const preemptMarkerPaths = consumePreemptMarkerEnv(process.env);
   // One native command retains one identity across all workspace groups.
   // Preserve a caller/CI-owned group, including across nested router calls.
-  if (process.env.PAPERCUSP_TEST_RUN_WORK_ITEM?.trim()
+  if ((process.env.PAPERCUSP_TEST_RUN_WORK_ITEM?.trim()
+      || process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim())
     && !process.env.PAPERCUSP_TEST_RUN_GROUP?.trim())
     process.env.PAPERCUSP_TEST_RUN_GROUP = randomUUID();
   // An explicit receipt sink marks a proof-consuming run. Snapshot its current
@@ -3948,7 +3949,7 @@ export async function main(
   if (!dry && receiptFile && groups.some(group => group.runner !== 'node')) {
     try {
       receiptReporter = await loadVitestReceiptReporterImpl();
-      const missing = ['shouldRecordTestRunPath', 'missingTestRunReceiptPaths']
+      const missing = ['shouldRecordTestRunPath', 'missingTestRunReceiptPaths', 'reconcileTimedOutTestRunReceipts']
         .filter(name => typeof receiptReporter?.[name] !== 'function');
       if (missing.length > 0) throw new Error(`reporter lacks required function exports: ${missing.join(', ')}`);
       testConfigExportPreflightImpl(repoRoot);
@@ -4765,6 +4766,7 @@ export async function main(
     let expectedPaths = [...expectedVitestReceiptPaths];
     let missingPaths = [];
     let receiptDiagnostics = [];
+    let receiptLog = '';
     let receiptWaitEligible = false;
     let receiptIssue = receiptStartError
       ? `could not inspect receipt file before run: ${receiptStartError instanceof Error ? receiptStartError.message : String(receiptStartError)}`
@@ -4788,7 +4790,7 @@ export async function main(
               receiptWaitEligible = false;
               return { complete: false, retryable: false };
             }
-            const receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
+            receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
             missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths, repoRoot);
           // Preserve the reporter's failure evidence before a mutation probe
           // removes its receipt sink. Never echo serialized test rows or config.
@@ -4835,6 +4837,25 @@ export async function main(
             receiptIssue = `could not observe late test-run receipt updates: ${receiptState.watchError instanceof Error ? receiptState.watchError.message : String(receiptState.watchError)}`;
           } else if (receiptState.retryable) {
             receiptIssue = `one or more recordable Vitest files still lack an inserted ledger receipt after the bounded ${receiptWaitMs}ms reconciliation window`;
+            // The original INSERT may have committed after its receipt waiter expired. Give its
+            // canonical same-run row one bounded readback only after the receipt-file grace period.
+            if (receiptLog && missingPaths.length > 0) {
+              const recovered = await reporter.reconcileTimedOutTestRunReceipts(receiptLog, {
+                expectedPaths: missingPaths,
+                expectedRoot: repoRoot,
+                runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP,
+                env: process.env,
+              });
+              if (recovered.length > 0) {
+                receiptState = inspectReceiptFile();
+                if (receiptState.complete) receiptIssue = null;
+                else if (receiptState.watchError) {
+                  receiptIssue = `could not observe recovered test-run receipts: ${receiptState.watchError instanceof Error ? receiptState.watchError.message : String(receiptState.watchError)}`;
+                } else if (receiptState.retryable) {
+                  receiptIssue = `one or more recordable Vitest files still lack an inserted ledger receipt after exact same-run readback`;
+                }
+              }
+            }
           }
         }
       }
