@@ -22,6 +22,7 @@ import {
   type EnvOperatorSpec,
   type LaunchEnvOperatorsDeps,
   defaultDetectSourceRoot,
+  defaultDetectSourceRootAsync,
   sourceChildEnv,
   openEnvOperatorLog,
   viteChildArgv,
@@ -404,6 +405,19 @@ function fakeLaunchDeps(over: Partial<LaunchEnvOperatorsDeps> = {}): {
 }
 
 describe('launchEnvOperators (effectful, fully faked)', () => {
+  it('waits for async source detection before passing the root to child preparation', async () => {
+    let release!: (root: string | null) => void;
+    const pending = new Promise<string | null>((resolve) => { release = resolve; });
+    const { deps, spawnedCalls } = fakeLaunchDeps({ detectSourceRoot: () => pending });
+    const result = launchEnvOperators(deps);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(spawnedCalls).toHaveLength(0);
+    release('/src/ready');
+    await result;
+    expect(spawnedCalls).toHaveLength(3);
+    expect(spawnedCalls.every((call) => call.treePath === '/src/ready')).toBe(true);
+  });
+
   it('spawns every enabled env when none are up and a toolchain + tree exist', async () => {
     const { deps, spawnedCalls } = fakeLaunchDeps();
     const res = await launchEnvOperators(deps);
@@ -637,6 +651,22 @@ describe('defaultDetectSourceRoot (WI-3306/WI-3308 extraction contract)', () => 
     // Falls back to the dev-box walk — whatever it returns, it is NOT the empty dir.
     expect(defaultDetectSourceRoot()).not.toBe(resolve(root));
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('async runtime detection rechecks extracted markers after replacement', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-devsrc-async-'));
+    try {
+      mkdirSync(join(root, 'apps', 'operator'), { recursive: true });
+      mkdirSync(join(root, 'libs', 'papercusp'), { recursive: true });
+      writeFileSync(join(root, 'apps', 'operator', 'package.json'), '{}');
+      writeFileSync(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+      process.env.PAPERCUSP_DEV_SOURCE_ROOT = root;
+      expect(await defaultDetectSourceRootAsync()).toBe(resolve(root));
+      rmSync(join(root, 'libs', 'papercusp', 'package.json'));
+      expect(await defaultDetectSourceRootAsync()).not.toBe(resolve(root));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
