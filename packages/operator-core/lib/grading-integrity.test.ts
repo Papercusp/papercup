@@ -3986,7 +3986,7 @@ describe('dispatchPendingGradingAudits', () => {
     },
     {
       screen: 'account-paced gateway 429',
-      terminalCode: 'model_quota_exhausted',
+      terminalCode: 'inference_gateway_error',
       gatewayLog:
         "\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: account 'aviynw4' " +
         'paced/paused; retry after 60s\u001b[0m\r\n\r\n✻ Cooked for 13m 41s · done 9:33 AM\r\n❯',
@@ -4379,6 +4379,38 @@ describe('dispatchPendingGradingAudits', () => {
       },
     });
     expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('uses bounded dispatch backoff for paced admission timeouts without reading unrelated quota resets', async () => {
+    const d = deps();
+    const issueId = 'EI-paced-admission';
+    const nowMs = Date.parse('2026-11-02T12:00:00.000Z');
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.launch
+      .mockResolvedValueOnce(launchResult({ deduped: false, launch: {
+        tasks: [{ taskId: 'task-primary', logPath: '/tmp/primary.log' }],
+      } }))
+      .mockResolvedValueOnce(launchResult({ deduped: false, launch: {
+        tasks: [{ taskId: 'task-fallback', logPath: '/tmp/fallback.log' }],
+      } }));
+    const readProviderResets = vi.fn(async () => [nowMs + 6 * 60 * 60_000]);
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, {
+      ...d,
+      killTask: async (taskId) => ({ ok: true, taskId, action: 'kill' }),
+      providerCanServe: async () => true,
+      readProviderResets,
+      now: () => nowMs,
+      readLogTail: () => "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s",
+      terminalLogMaxRechecks: 0,
+    });
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(result.receipts[0]).toMatchObject({ state: 'failed', terminalRecovery: {
+      codes: ['inference_gateway_error', 'inference_gateway_error'],
+    } });
+    expect(readProviderResets).not.toHaveBeenCalled();
+    expect(d.release).toHaveBeenLastCalledWith(issueId, `grading-audit:${issueId}`, expect.objectContaining({
+      backoff: expect.objectContaining({ code: 'inference_gateway_error', source: 'retry-window' }),
+    }));
   });
 
   it('stops after one recovery when the fallback is quota-terminal too', async () => {
