@@ -7581,7 +7581,8 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
 
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
     const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
-    const annotated = 'complete WI-6054, then continue the drain   ⚠ LIVE: WI-6054 status=done';
+    const annotated =
+      'complete WI-6054, then continue the drain   ⚠ STATUS SNAPSHOT: WI-6054 status=done source=unknown lookup_completed_at=unknown';
     expect(data).toContain(annotated);
     expect(data).toContain('STALE-NOTE CONTRADICTION');
     expect(data).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');
