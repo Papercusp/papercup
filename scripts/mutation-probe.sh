@@ -3305,6 +3305,8 @@ for i in "${!levels[@]}"; do
   s="$work/s$i"
   mkdir -p "$s" || contain_abort "could not stage split directory $p"
   k=0
+  files=()
+  file_count=0
   for e in "$p"/* "$p"/.[!.]* "$p"/..?*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     if [ -d "$e" ] && [ ! -L "$e" ]; then
@@ -3322,11 +3324,26 @@ for i in "${!levels[@]}"; do
       [ "$known" -eq 1 ] || unplanned+=("$e")
       k=$((k + 1))
     elif [ -f "$e" ] || [ -L "$e" ]; then
-      cp -Pp -- "$e" "$s/" || contain_abort "could not copy split-directory entry $e"
+      # Console sentinels are transient process state, not checkout inputs.
+      # Exclude them and copy ordinary files in bounded batches instead of
+      # spawning one cp process per root entry on every contained leg.
+      case "$e" in
+        */.papercup-console-active.*) continue ;;
+      esac
+      files+=("$e")
+      file_count=$((file_count + 1))
+      if [ "$file_count" -ge 128 ]; then
+        cp -Pp -- "${files[@]}" "$s/" || contain_abort "could not copy split-directory files under $p"
+        files=()
+        file_count=0
+      fi
     else
       contain_abort "unsupported split-directory entry $e"
     fi
   done
+  if [ "$file_count" -gt 0 ]; then
+    cp -Pp -- "${files[@]}" "$s/" || contain_abort "could not copy split-directory files under $p"
+  fi
   chown --reference="$p" "$s" && chmod --reference="$p" "$s" \
     || contain_abort "could not preserve split-directory permissions for $p"
 done
