@@ -2714,7 +2714,18 @@ describe('template_data persistence boundary — the set-template-data door', ()
         requiredTestLayers: ['unit'],
       })),
     };
-    expect((await rubrics.previewAcceptanceBarAmendment(withUnitLayer))?.changedBars).toEqual(['R-1', 'R-2']);
+    const preview = await rubrics.previewAcceptanceBarAmendment(withUnitLayer);
+    expect(preview?.changedBars).toEqual(['R-1', 'R-2']);
+    expect(preview?.criterionChanges).toHaveLength(2);
+    for (const change of preview!.criterionChanges!) {
+      expect(change.before).toEqual(before.criteria.find((criterion) => criterion.barKey === change.barKey));
+      expect(change.after).toMatchObject({
+        barKey: change.barKey,
+        method: 'Run the focused unit test.',
+        requiredTestLayers: ['unit'],
+        check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      });
+    }
 
     // WI-10006536: 'component' is not a layer the run ledger records, so it can never pass
     // correct-layer — refused at the amendment door, before approval or any revision write.

@@ -1067,6 +1067,13 @@ async function routeConsultCore(
   const subjectRefs = [...new Set((params.subjectRefs !== undefined ? params.subjectRefs : [inferredSubject ?? params.question])
     .map(ref => ref.trim()).filter(Boolean))];
   const unresolvedSubjectRefs = [...new Set((params.unresolvedSubjectRefs ?? []).map(ref => ref.trim()).filter(Boolean))];
+  // Explicit anchors constrain retrieval before the turn and owner bounds.
+  // Otherwise unrelated semantic matches can exhaust both budgets before the
+  // evidence scorer ever sees a relevant transcript. Use a union here: an
+  // owner's evidence for different anchors may live in separate turns. The
+  // existing coverage check still requires support for every requested ref.
+  const explicitSubjectPattern = explicitSubjectRefs && subjectRefs.length
+    ? subjectRefs.map(exactSubjectMentionPattern).join('|') : null;
 
   const base: Omit<RoutingSnapshot, 'candidates'> = {
     query: params.question,
@@ -1127,6 +1134,7 @@ async function routeConsultCore(
            AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
            AND ${leg.match}
            AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
+           AND (${explicitSubjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${explicitSubjectPattern})
            AND ${notRestricted}
            AND ${nativePopulation}
       ORDER BY ${leg.order}, COALESCE(ts, ingested_at) DESC
@@ -1256,6 +1264,7 @@ async function routeConsultCore(
        ]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
        AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
+       AND (${explicitSubjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${explicitSubjectPattern})
        AND ${notRestricted}
        AND ${nativePopulation}`;
     const columns = tx`owner, session_id, turn_idx, COALESCE(ts, ingested_at) AS ts,

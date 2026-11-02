@@ -794,11 +794,7 @@ describe('routeConsult — routing + blend', () => {
             { subject: 'src/backup.ts', status: 'unmeasured', score: null },
           ],
         });
-      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-unrelated')?.subjectEvidenceCoverage)
-        .toMatchObject({
-          status: 'unmeasured',
-          evidence: subjectRefs.map(subject => ({ subject, status: 'unmeasured', score: null })),
-        });
+      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-unrelated')).toBeUndefined();
       expect(scoredTexts.some(text => text.includes('scorecards emit'))).toBe(false);
 
       const incomplete = await routeConsult({
@@ -818,6 +814,42 @@ describe('routeConsult — routing + blend', () => {
       const checked = incomplete.snapshot.candidates.filter(candidate => candidate.subjectEvidenceCoverage);
       expect(checked.length).toBeGreaterThanOrEqual(2);
       expect(checked.every(candidate => candidate.subjectEvidenceCoverage?.status === 'unmeasured')).toBe(true);
+    } finally {
+      await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${owners}::text[])`;
+    }
+  });
+
+  it('retrieves explicit anchors before turn and subject-owner bounds without requiring every anchor in one turn', async () => {
+    const subjectRefs = ['plan-census-license', 'src/census-license.ts'];
+    const owners = Array.from({ length: SUBJECT_EVIDENCE_OWNER_LIMIT + 1 }, (_, i) => `anchor-crowd-${i}`);
+    owners.push('anchor-complete', 'anchor-partial', 'anchor-near');
+    try {
+      for (const owner of owners.slice(0, SUBJECT_EVIDENCE_OWNER_LIMIT + 1)) {
+        await insertTurn(owner, 0, DAY, { text: 'subjectcensus unrelated review of a different license plan.' });
+      }
+      await insertTurn('anchor-near', 0, DAY, {
+        text: 'subjectcensus plan-census-license-followup src/census-license.ts.backup',
+      });
+      await insertTurn('anchor-partial', 0.1, DAY, { text: 'subjectcensus reviewed plan-census-license behavior.' });
+      await insertTurn('anchor-complete', 0.2, DAY, { text: 'subjectcensus reviewed plan-census-license behavior.' });
+      await insertTurn('anchor-complete', 0.3, DAY, { text: 'subjectcensus reviewed src/census-license.ts behavior.' });
+      const score = vi.fn(async (_subject: string, texts: string[]) => texts.map(() => 0.95));
+      const request = { ...baseParams, question: 'subjectcensus', subjectRefs, turnLimit: 3 };
+      const result = await routeConsult(request, deps(0, { scoreSubjectEvidence: score }));
+      expect(result.qualified.map(candidate => candidate.ownerId)).toEqual(['anchor-complete']);
+      expect(result.snapshot.candidates.map(candidate => candidate.ownerId).sort()).toEqual(['anchor-complete', 'anchor-partial']);
+      expect(score).toHaveBeenCalledTimes(2);
+      expect(result.qualified[0]?.subjectEvidenceCoverage).toMatchObject({
+        status: 'supported', required: subjectRefs,
+        evidence: subjectRefs.map(subject => ({ subject, status: 'supported', anchor: { exact: true } })),
+      });
+      expect(result.snapshot.candidates.find(candidate => candidate.ownerId === 'anchor-partial')?.subjectEvidenceCoverage)
+        .toMatchObject({ status: 'unmeasured' });
+      // The lexical fallback uses the same population filter and remains unqualified.
+      const lexical = await routeConsult(request, deps(null));
+      expect(lexical.qualified).toEqual([]);
+      expect(lexical.snapshot).toMatchObject({ degraded: 'embed-unavailable', fallback: 'lexical' });
+      expect(lexical.snapshot.candidates.map(candidate => candidate.ownerId).sort()).toEqual(['anchor-complete', 'anchor-partial']);
     } finally {
       await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${owners}::text[])`;
     }
