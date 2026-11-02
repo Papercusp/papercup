@@ -412,6 +412,16 @@ async function main() {
     }));
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'testing-background') {
+    const receipt = await (await import('./testing-background-http-scenario')).measureTestingBackgroundScenario({
+      workspace, harness, base, headers, evidenceDir, root,
+    });
+    await stopHost();
+    console.log('TESTING_BACKGROUND_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-read-deadline') {
     const receipt = await (await import('./private-read-deadline-http-scenario')).measurePrivateReadDeadlineScenario({
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
