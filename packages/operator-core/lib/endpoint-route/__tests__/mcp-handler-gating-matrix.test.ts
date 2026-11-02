@@ -2113,7 +2113,11 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
             requestedStructured: context.requestedStructured,
             payloadTierOverride: context.payloadTierOverride,
           });
-          return { content: [{ type: 'text' as const, text: JSON.stringify(source) }] };
+          // fleet:status's production handler returns a ToolResponse `{ data }`
+          // envelope. Exercise that real registration path here: a raw JSON
+          // ToolResult takes a separate MCP-only re-encoding branch and can
+          // pass this boundary without proving the production data shaper ran.
+          return { data: source };
         };
 
         try {
@@ -2141,6 +2145,19 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
             _meta: { format: 'json' },
           }) as CallResult;
           assertTier(directTrimmed, 'trimmed');
+
+          const directFull = await client.callTool({
+            name: 'fleet:status',
+            arguments: { fleet: 'rocket', payloadTier: 'full' },
+            _meta: { format: 'json' },
+          }) as CallResult;
+          expect(directFull.isError).not.toBe(true);
+          const full = findStatusPayload(directFull);
+          expect(full).not.toBeNull();
+          expect(full!.members).toHaveLength(20);
+          expect(full!.members_note).toBeUndefined();
+          expect((full!.launchTransaction as { governor: { history: unknown[] } }).governor.history)
+            .toHaveLength(32);
         } finally {
           mutableStatus.handler = originalHandler;
         }
@@ -2152,6 +2169,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'standard' },
       { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'standard' },
       { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'trimmed' },
+      { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'full' },
     ]);
   });
 
