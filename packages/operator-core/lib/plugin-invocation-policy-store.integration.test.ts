@@ -101,6 +101,60 @@ describe('production signed plugin invocation policy', () => {
     expect(existsSync(f.marker)).toBe(false);
   });
 
+  it.each(['declaration', 'caller', 'approval', 'allowlist', 'identity'] as const)
+  ('attenuates a separately signed production child by its parent %s across awaits', async axis => {
+    const f = fixture(), caps = ['tasks:write', 'tasks:read'] as const;
+    const childName = 'fixture:child', childMarker = join(directory, 'child-effect');
+    host.loaded = [{ plugin: { name: 'fixture', version: '1.0.0', capabilities: [...caps] },
+      path: directory, source: 'global' }];
+    await db.sql`INSERT INTO harness_shared.plugin_capability_grants VALUES
+      ('fixture', '1.0.0', 'fixture-harness', 'tasks:read')`;
+    f.tool.capabilities = [...caps];
+    f.principal.capabilities = new Set(caps);
+    f.principal.allowedTools = new Set([...f.principal.allowedTools!, childName]);
+    const childPrincipal: Principal = { ...f.principal, capabilities: new Set(caps),
+      allowedTools: new Set(f.principal.allowedTools) };
+    const service = wrapServiceWithCaps({ pluginName: 'fixture', capabilities: caps, granted: caps },
+      { perform: () => writeFileSync(childMarker, 'authorized child') },
+      { name: 'child-marker', methods: { perform: { capability: 'tasks:read' } } });
+    const child: Request['tool'] = { ...f.tool, capabilities: [...caps], expose: { mcp: { name: childName } },
+      fn: async () => { await Promise.resolve(); service.perform(); return { content: [] }; } };
+    const childCtx: Request['ctx'] = { ...f.ctx, principal: childPrincipal };
+    const childApproval = { ...approval, toolName: childName, capabilities: [...caps] };
+    const parentApproval = { ...approval, capabilities: [...caps] };
+    await writePolicy({ pluginInvocations: { approvals: [parentApproval, childApproval] } });
+    const runChild = () => dispatchProjectedTool(child, childName, { resource: 'approved' }, childCtx,
+      { aroundInvoke: pluginInvocationChokepoint });
+    f.tool.fn = async () => {
+      await Promise.resolve();
+      const result = await runChild();
+      return result.result ?? { isError: true, content: [] };
+    };
+
+    const positive = await f.runProduction();
+    expect(positive.ok).toBe(true); expect(positive.result?.isError).not.toBe(true);
+    expect(readFileSync(childMarker, 'utf8')).toBe('authorized child'); rmSync(childMarker);
+
+    if (axis === 'declaration') f.tool.capabilities = ['tasks:write'];
+    if (axis === 'caller') f.principal.capabilities = new Set(['tasks:write']);
+    if (axis === 'approval') parentApproval.capabilities = ['tasks:write'];
+    if (axis === 'allowlist') f.principal.allowedTools = new Set(['fixture:write']);
+    if (axis === 'identity') {
+      childPrincipal.slug = 'separately-approved-caller';
+      childApproval.principalSlug = childPrincipal.slug;
+    }
+    await writePolicy({ pluginInvocations: { approvals: [parentApproval, childApproval] } });
+
+    // Its own signed approval still permits the child outside the parent.
+    // A nested denial must therefore come from attenuation, not a broken PDP.
+    const standalone = await runChild();
+    expect(standalone.ok).toBe(true); expect(standalone.result?.isError).not.toBe(true);
+    expect(readFileSync(childMarker, 'utf8')).toBe('authorized child'); rmSync(childMarker);
+    const denied = await f.runProduction();
+    expect(denied.ok === false || denied.result?.isError === true).toBe(true);
+    expect(existsSync(childMarker)).toBe(false);
+  });
+
   it('expires a pinned decision before a later checked effect', async () => {
     const f = fixture();
     f.tool.fn = async () => {
