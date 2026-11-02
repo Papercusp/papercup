@@ -64,6 +64,7 @@ import {
   formatRouteError,
   failedAssertionsFromReport,
   groupRoutes,
+  hasVitestCloseTimeoutWarning,
   hasVitestWorkerTerminationWarning,
   isTestFilePath,
   listedFiles,
@@ -1436,6 +1437,23 @@ describe('Vitest worker termination warning is a finalization error', () => {
   });
 });
 
+describe('Vitest main-process close timeout is a finalization error', () => {
+  it.each(['Vite server', '2 Vite servers', 'the main process'])(
+    'recognizes the exact timeout diagnostic for %s, including ANSI and CRLF output', (resource) => {
+      expect(hasVitestCloseTimeoutWarning(
+        `\u001b[33mclose timed out after 10000ms\u001b[39m\r\nTests closed successfully but something prevents ${resource} from exiting\r\n`,
+      )).toBe(true);
+    },
+  );
+
+  it('ignores clean output, quoted diagnostics, and prose mentioning a timeout', () => {
+    expect(hasVitestCloseTimeoutWarning('Tests 1 passed (1)\n')).toBe(false);
+    expect(hasVitestCloseTimeoutWarning('a test title mentions close timed out after 10000ms\n')).toBe(false);
+    expect(hasVitestCloseTimeoutWarning('"close timed out after 10000ms"\n')).toBe(false);
+    expect(hasVitestCloseTimeoutWarning('close timed out after 10000ms was expected\n')).toBe(false);
+  });
+});
+
 describe('collection child identity evidence (WI-10007991)', () => {
   it('retains only bounded identities from the owned tree without reading argv or scanning the host', () => {
     const readFileImpl = vi.fn((path: string) => {
@@ -1500,6 +1518,30 @@ describe('collection child identity evidence (WI-10007991)', () => {
           { fd: 8, path: null, kind: 'pipe' }], unavailable: [], truncated: false } }] });
     expect(readlinkImpl.mock.calls.map(([path]) => path)).toEqual(['/proc/4310/fd/7', '/proc/4310/fd/8']);
     expect(readFileImpl.mock.calls.every(([path]) => /^\/proc\/4310\/(task\/4310\/children|status|wchan|io|syscall|stack)$/.test(path))).toBe(true);
+  });
+
+  it.each(['0x16', '22'])('retains the syscall-argument descriptor %s beyond the low-fd cap', (argument) => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'iterate_dir\n';
+      if (path.endsWith('/io')) return 'rchar: 78195\nwchar: 10\nsyscr: 39\nsyscw: 3\nread_bytes: 0\nwrite_bytes: 0\n';
+      if (path.endsWith('/syscall')) return `217 ${argument} 0xabcd 0x8000 0x1 0x0 0x0 0xffff 0xeeee\n`;
+      if (path.endsWith('/stack')) return '[<0>] iterate_dir+0x10/0x20\n';
+      throw new Error('must not open descriptors or process credentials');
+    });
+    const readdirImpl = vi.fn((path: string) => path.endsWith('/task') ? ['4311']
+      : Array.from({ length: 32 }, (_, fd) => String(fd)));
+    const readlinkImpl = vi.fn((path: string) => path.endsWith('/22') ? '/repo/.git' : 'socket:[123]');
+    const snapshot = readTestChildDiagnostic(4311, { readFileImpl, readdirImpl, readlinkImpl });
+    expect(snapshot).toMatchObject({ status: 'measured', truncated: true, unreadableFields: 0 });
+    expect(snapshot.processes[0].blockedIo.files).toEqual([
+      ...Array.from({ length: 7 }, (_, fd) => ({ fd, path: null, kind: 'socket' })),
+      { fd: 22, path: '/repo/.git', kind: 'path' },
+    ]);
+    expect(readlinkImpl).toHaveBeenCalledTimes(8);
+    expect(readFileImpl.mock.calls.some(([path]) => /cmdline|environ|\/fd\//.test(path))).toBe(false);
+    expect(readdirImpl).not.toHaveBeenCalledWith('/proc');
   });
 
   it('keeps denied blocked-child evidence explicitly unknown', () => {
@@ -3899,7 +3941,18 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     }
   });
 
-  it('refuses an overall green when Vitest reports a timed-out fork worker after passing tests', async () => {
+  it.each([
+    {
+      label: 'a timed-out fork worker',
+      warning: '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+      diagnostic: 'TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR',
+    },
+    {
+      label: 'a main-process close timeout',
+      warning: 'close timed out after 10000ms\nTests closed successfully but something prevents Vite server from exiting\n',
+      diagnostic: 'TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR',
+    },
+  ])('refuses an overall green when Vitest reports $label after passing tests', async ({ warning, diagnostic }) => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
     delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
@@ -3921,7 +3974,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
           status: 0,
           signal: null,
           stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
-          stderr: '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+          stderr: warning,
           error: null,
           timedOut: false,
         }),
@@ -3941,9 +3994,8 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(code, errors).toBe(3);
     expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
     expect(output).toContain('finalizationError=true');
-    expect(errors).toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
-    expect(capturedStderr)
-      .toContain('[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.');
+    expect(errors).toContain(diagnostic);
+    expect(capturedStderr).toContain(warning);
   });
 
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {
