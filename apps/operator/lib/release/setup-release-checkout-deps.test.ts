@@ -61,6 +61,50 @@ const DEPENDENCY_GENERATION_SCRIPT = join(
 );
 const REPO_ROOT = resolve(__dirname, '../../../..');
 
+describe('frozen dependency-only generation selection', () => {
+  it.each(['matching', 'missing', 'wrong-input', 'explicit', 'ordinary'])(
+    'selects target inputs before publication: %s', (mode) => {
+      const fixture = mkdtempSync(join(tmpdir(), 'frozen-dependency-selector-'));
+      try {
+        const input = 'a'.repeat(64);
+        const identity = `v1-${'b'.repeat(64)}`;
+        const token = `v3:${'c'.repeat(64)}`;
+        mkdirSync(join(fixture, '.inputs'));
+        if (mode !== 'missing') writeFileSync(join(fixture, '.inputs', input),
+          `input=${mode === 'wrong-input' ? 'd'.repeat(64) : input}\nidentity=${identity}\ntoken=${token}\n`);
+        const result = spawnSync('bash', ['-c', [
+          'set -euo pipefail',
+          'source "$GENERATION_SCRIPT"',
+          'source <(sed -n "/^select_dependencies_only_generation()/,/^}/p" "$SETUP_SCRIPT")',
+          'log() { printf "%s\\n" "$*"; }',
+          'dependency_generation_input_fingerprint_ref() { printf "%s\\n" "$TARGET_INPUT"; }',
+          'select_dependencies_only_generation',
+          'printf "selected=%s token=%s\\n" "$NODE_MODULES_GENERATION_ID" "$NODE_MODULES_GENERATION_TOKEN"',
+        ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
+          GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT, SETUP_SCRIPT: SCRIPT_PATH,
+          DEPENDENCIES_ONLY: mode === 'ordinary' ? '0' : '1',
+          DEPENDENCY_GENERATION_ROOT: fixture, RELEASE_ROOT: fixture, TARGET_SHA: 'HEAD', TARGET_INPUT: input,
+          NODE_MODULES_GENERATION_ID: mode === 'explicit' ? 'explicit-id' : '',
+          NODE_MODULES_GENERATION_TOKEN: mode === 'explicit' ? 'explicit-token' : '',
+        } });
+        if (mode === 'missing' || mode === 'wrong-input') {
+          expect(result.status, result.stdout + result.stderr).not.toBe(0);
+          expect(result.stdout).toContain('dependencies-only needs a published generation for target inputs');
+          expect(result.stdout).not.toContain('selected=');
+        } else {
+          expect(result.status, result.stdout + result.stderr).toBe(0);
+          expect(result.stdout).toContain(mode === 'matching' ? `selected=${identity} token=${token}`
+            : mode === 'explicit' ? 'selected=explicit-id token=explicit-token' : 'selected= token=');
+        }
+        const source = readFileSync(SCRIPT_PATH, 'utf8');
+        const selection = source.indexOf('\n    select_dependencies_only_generation\n');
+        expect(selection).toBeGreaterThan(0);
+        expect(selection).toBeLessThan(source.indexOf('\n      dependency_generation_ensure', selection));
+      } finally { rmSync(fixture, { recursive: true, force: true }); }
+    },
+  );
+});
+
 function spawnFailureDetails(
   phase: string,
   elapsedMs: number,
