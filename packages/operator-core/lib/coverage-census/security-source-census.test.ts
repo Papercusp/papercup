@@ -19,6 +19,21 @@ const selectedSnapshot = (sources: PinnedSecuritySource[], paths: string[]): Sec
 const receipt = (censusFingerprint: string) => ({ sha256: '3'.repeat(64), censusFingerprint });
 
 describe('pinned security source discovery', () => {
+  it('bounds serialized evidence independently of call count and retains exact omission gaps', () => {
+    const text = `if ("${'x'.repeat(6000)}") { ${'run();'.repeat(100)} }`;
+    const input = snapshot([source('minified.ts', text)]);
+    const discovery = enumerateSecuritySourcePopulation(input, { maxSites: 1000, maxEvidenceBytes: 4096 });
+    expect(Buffer.byteLength(JSON.stringify(discovery))).toBeLessThan(4096);
+    expect(discovery.sites).toHaveLength(0);
+    expect(discovery.inventory.files.map(file => file.path)).toEqual(['minified.ts']);
+    expect(discovery.inventory.unresolved).toContainEqual(expect.objectContaining({ path: 'minified.ts',
+      reason: 'source-site-evidence-budget', omittedSites: 100, firstOmittedByte: text.indexOf('run()') }));
+    expect(discovery.closureAccepted).toBe(false); expect(discovery.executionAdmitted).toBe(false);
+    expect(enumerateSecuritySourcePopulation(input).sites).toHaveLength(100);
+    expect(() => enumerateSecuritySourcePopulation(input, { maxEvidenceBytes: 100 })).toThrow('security_source_evidence_budget');
+    expect(() => enumerateSecuritySourcePopulation(input, { maxEvidenceBytes: 0 })).toThrow('positive_budget');
+  });
+
   it('advances only archived inputs and retains unrequested, reader-refused and parser-budget inputs byte for byte', () => {
     const files = [source('a.ts', 'run();'), source('b.rs', 'fn main() {}'), source('c.sh', 'echo hello'), source('d.ts', 'large();')];
     const queue = progress(files), before = structuredClone(queue);

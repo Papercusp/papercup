@@ -203,10 +203,10 @@ describe('text-artifacts (drizzle, PG)', () => {
 
   it('archives a source shard with verified readback before persisting its lossless successor queue', async () => {
     const { createHash } = await import('node:crypto');
-    const { gunzipSync } = await import('node:zlib');
+    const { gzipSync, gunzipSync } = await import('node:zlib');
     const { canonicalJson } = await import('@papercusp/hash-chain');
     const { prepareSecuritySourceShard } = await import('./coverage-census/security-source-census');
-    const { saveSecuritySourceShard } = await import('./coverage-census/security-manifest-store');
+    const { loadSecuritySourceShard, saveSecuritySourceShard } = await import('./coverage-census/security-manifest-store');
     const bytes = Buffer.from('run();'), commit = 'a'.repeat(40);
     const file = { path: 'a.ts', repository: '.', commit, bytes,
       blobOid: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
@@ -222,6 +222,48 @@ describe('text-artifacts (drizzle, PG)', () => {
     expect(saved.receipt).toMatchObject({ readbackVerified: true, decodedVerified: true, files: 1 });
     expect(saved.progress.pending).toEqual([progress.pending[1]]);
     expect(await loadImmutableTextArtifact('web', saved.progressArchive.sha256)).toBe(canonicalJson(saved.progress));
+    expect(await loadSecuritySourceShard('web', saved.progress, saved.archive.sha256)).toEqual(shard.discovery);
+    // Historical archives used JSON.stringify and omitted progressSha256.
+    // Verify exact byte hashes independently from canonical census identity.
+    const legacyRaw = JSON.stringify(shard.discovery);
+    const legacy = { ...archive, censusFingerprint: shard.discovery.fingerprint,
+      parentRawSha256: progress.parentRawSha256, closureAccepted: false, executionAdmitted: false,
+      rawSha256: createHash('sha256').update(legacyRaw).digest('hex'), rawBytes: Buffer.byteLength(legacyRaw),
+      data: gzipSync(legacyRaw).toString('base64') };
+    delete legacy.progressSha256;
+    const legacySaved = await saveImmutableTextArtifact('web', JSON.stringify(legacy));
+    const legacyProgress = structuredClone(saved.progress);
+    legacyProgress.capturedShards[0] = { ...legacyProgress.capturedShards[0], sha256: legacySaved.sha256,
+      rawSha256: legacy.rawSha256, rawBytes: legacy.rawBytes };
+    expect(await loadSecuritySourceShard('web', legacyProgress, legacySaved.sha256)).toEqual(shard.discovery);
+    delete legacyProgress.capturedShards[0].consumedPaths;
+    await expect(loadSecuritySourceShard('web', legacyProgress, legacySaved.sha256)).rejects.toThrow('selection_mismatch');
+    expect(await loadSecuritySourceShard('web', legacyProgress, legacySaved.sha256, { expectedPaths: ['a.ts'] }))
+      .toEqual(shard.discovery);
+    await expect(loadSecuritySourceShard('web', legacyProgress, legacySaved.sha256, { expectedPaths: ['b.ts'] }))
+      .rejects.toThrow('selection_mismatch');
+    expect(await loadSecuritySourceShard('absent-harness', saved.progress, saved.archive.sha256)).toBeNull();
+    await expect(loadSecuritySourceShard('web', progress, saved.archive.sha256)).rejects.toThrow('not_in_progress');
+    await expect(loadSecuritySourceShard('web', saved.progress, saved.archive.sha256, { maxRawBytes: 1 }))
+      .rejects.toThrow('read_budget');
+    const changedParent = structuredClone(saved.progress); changedParent.parentArchive = '4'.repeat(64);
+    await expect(loadSecuritySourceShard('web', changedParent, saved.archive.sha256)).rejects.toThrow('identity_mismatch');
+    const changedPins = structuredClone(saved.progress); changedPins.repositories.push({ path: 'new-repo', commit });
+    await expect(loadSecuritySourceShard('web', changedPins, saved.archive.sha256)).rejects.toThrow('repository_substitution');
+    const changedPaths = structuredClone(saved.progress); changedPaths.capturedShards[0].consumedPaths = ['b.ts'];
+    await expect(loadSecuritySourceShard('web', changedPaths, saved.archive.sha256)).rejects.toThrow('selection_mismatch');
+    const changedFingerprint = structuredClone(saved.progress); changedFingerprint.capturedShards[0].censusFingerprint = '5'.repeat(64);
+    await expect(loadSecuritySourceShard('web', changedFingerprint, saved.archive.sha256)).rejects.toThrow('identity_mismatch');
+    // Even a newly content-addressed outer envelope cannot substitute its
+    // compressed bytes or inner digest under a retained census identity.
+    for (const mutation of [{ rawSha256: '6'.repeat(64) }, { data: archive.data + '\n' }]) {
+      const altered = { ...archive, ...mutation };
+      const stored = await saveImmutableTextArtifact('web', canonicalJson(altered));
+      const substituted = structuredClone(saved.progress);
+      substituted.capturedShards[0] = { ...substituted.capturedShards[0], sha256: stored.sha256,
+        rawSha256: altered.rawSha256 };
+      await expect(loadSecuritySourceShard('web', substituted, stored.sha256)).rejects.toThrow();
+    }
     expect((await saveSecuritySourceShard('web', progress, shard)).archive).toEqual(saved.archive);
     await expect(saveSecuritySourceShard('web', saved.progress, shard)).rejects.toThrow('stale_progress');
     const corrupted = structuredClone(shard); corrupted.discovery.sites = [];

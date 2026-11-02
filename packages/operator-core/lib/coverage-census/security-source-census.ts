@@ -23,11 +23,30 @@ const canonicalPath = (path: string) => !!path && !path.startsWith('/') && !path
   && path.split('/').every(part => !!part && part !== '.' && part !== '..');
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
+/** Count JSON bytes without joining an unbounded array into one V8 string.
+ * Evidence strings come from individually bounded source blobs. Stop traversing
+ * as soon as the budget is exceeded, including repeated predicate annotations. */
+function jsonBytesWithin(value: unknown, limit: number): number {
+  if (value === undefined) return 0;
+  if (value === null || typeof value !== 'object') return Buffer.byteLength(JSON.stringify(value));
+  let bytes = 2, count = 0;
+  const members: Iterable<[string | null, unknown]> = Array.isArray(value)
+    ? value.map(member => [null, member] as const) : Object.entries(value);
+  for (const [key, member] of members) {
+    if (member === undefined) continue;
+    bytes += (count++ ? 1 : 0) + (key === null ? 0 : Buffer.byteLength(JSON.stringify(key)) + 1);
+    if (bytes > limit) return limit + 1;
+    bytes += jsonBytesWithin(member, limit - bytes);
+    if (bytes > limit) return limit + 1;
+  }
+  return bytes;
+}
+
 export function enumerateSecuritySourcePopulation(snapshot: SecuritySourceSnapshot, limits: {
-  maxFiles?: number; maxBytes?: number; maxInputBytes?: number; maxSites?: number;
+  maxFiles?: number; maxBytes?: number; maxInputBytes?: number; maxSites?: number; maxEvidenceBytes?: number;
 } = {}) {
   const budget = { maxFiles: 50_000, maxBytes: 128 * 1024 * 1024,
-    maxInputBytes: 2 * 1024 * 1024, maxSites: 500_000, ...limits };
+    maxInputBytes: 2 * 1024 * 1024, maxSites: 500_000, maxEvidenceBytes: 64 * 1024 * 1024, ...limits };
   if (Object.values(budget).some(value => !Number.isSafeInteger(value) || value < 1)) {
     throw new Error('security_source_positive_budget_required');
   }
@@ -69,17 +88,25 @@ export function enumerateSecuritySourcePopulation(snapshot: SecuritySourceSnapsh
     ...(snapshot.selection ? { selection: snapshot.selection } : {}) });
   const fileKinds = new Map(inventory.files.map(file => [file.path, file.sourceKind]));
   const sites: Array<ReturnType<typeof siteEvidence> & { fileSha256: string; sourceKind: string }> = [];
+  let siteBytes = 2;
+  // Leave room for file metadata, discovery groups and explicit omission gaps.
+  const siteByteLimit = Math.floor(budget.maxEvidenceBytes / 2);
   for (const source of selected) {
     if (!/\.[cm]?[jt]sx?$/.test(source.path)) continue;
     try {
       const unit = censusSites(source.path, source.bytes.toString('utf8'));
       const sourceKind = fileKinds.get(source.path)!;
-      const remaining = Math.max(0, budget.maxSites - sites.length);
-      for (const site of unit.sites.slice(0, remaining)) {
-        sites.push({ ...siteEvidence(site), fileSha256: unit.sha256, sourceKind });
+      let captured = 0, byteLimited = false;
+      for (const site of unit.sites) {
+        if (sites.length >= budget.maxSites) break;
+        const evidence = { ...siteEvidence(site), fileSha256: unit.sha256, sourceKind };
+        const size = jsonBytesWithin(evidence, siteByteLimit - siteBytes);
+        if (siteBytes + size + 1 > siteByteLimit) { byteLimited = true; break; }
+        sites.push(evidence); siteBytes += size + 1; captured++;
       }
-      if (unit.sites.length > remaining) inventory.unresolved.push({ path: source.path, reason: 'source-site-budget',
-        omittedSites: unit.sites.length - remaining, firstOmittedByte: unit.sites[remaining].byteStart });
+      if (unit.sites.length > captured) inventory.unresolved.push({ path: source.path,
+        reason: byteLimited ? 'source-site-evidence-budget' : 'source-site-budget',
+        omittedSites: unit.sites.length - captured, firstOmittedByte: unit.sites[captured].byteStart });
     } catch (error) {
       inventory.unresolved.push({ path: source.path, reason: 'source-site-parser-failed',
         error: error instanceof Error ? error.message : String(error) });
@@ -87,6 +114,11 @@ export function enumerateSecuritySourcePopulation(snapshot: SecuritySourceSnapsh
   }
   const body = { schema: 'papercusp-security-source-discovery-v1', budget, bytesRead,
     inventory, sites, closureAccepted: false as const, executionAdmitted: false as const };
+  // An inventory too large for this shard must be split, never hashed through
+  // a RangeError or silently reduced to a smaller population.
+  if (jsonBytesWithin(body, budget.maxEvidenceBytes) > budget.maxEvidenceBytes) {
+    throw new Error('security_source_evidence_budget');
+  }
   return { ...body, fingerprint: hash(canonicalJson(body)) };
 }
 
