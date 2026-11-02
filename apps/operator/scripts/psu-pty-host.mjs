@@ -2289,6 +2289,10 @@ export function nativeLatestExecution({ agent, env = process.env, receivedAtMs =
       : { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0,
           pendingToolIds: [], completedToolIds: [], pendingGateTools: 0,
           pendingGateToolIds: [], completedGateToolIds: [] }),
+    // Identity comes from the same isolated transcript as the execution proof,
+    // including Claude/OMP children replaced by a carry. Requested argv is stale.
+    nativeSessionId: rows && transcriptPath
+      ? /([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(transcriptPath)?.[1] ?? null : null,
     observedAt: nowMs,
   };
 }
@@ -12339,9 +12343,7 @@ export function hostThroughPty(o) {
   });
   let recoveryObservationKey = null;
   const publishRecoveryObservation = (execution) => {
-    const nativeSessionId = env.PAPERCUSP_AGENT === 'codex'
-      ? currentNativeSessionId(child.pid, resolveRespawnNativeId)
-      : env.PAPERCUSP_NATIVE_SESSION_ID;
+    const nativeSessionId = execution.nativeSessionId;
     if (!nativeSessionId) return;
     const key = JSON.stringify([nativeSessionId, childGeneration, execution.phase,
       execution.turnStartedAt, execution.ownerInputPending, execution.ownerStopRequested]);
@@ -12674,8 +12676,9 @@ export function hostThroughPty(o) {
       ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : undefined;
     const fence = `${childGeneration}:${receivedAtMs}:${nativeSessionId ?? ''}`;
     const observed = nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs, nativeSessionId });
+    const observedSessionId = nativeSessionId ?? observed.nativeSessionId ?? null;
     const sameNativeChild = lastNativeExecution?.childGeneration === childGeneration &&
-      (lastNativeExecution?.nativeSessionId ?? null) === (nativeSessionId ?? null);
+      (lastNativeExecution?.nativeSessionId ?? null) === observedSessionId;
     const execution = retainNativeExecutionObservation(lastNativeExecution, observed, {
       sameChild: sameNativeChild,
       sameFence: nativeExecutionFence === fence,
@@ -12684,12 +12687,12 @@ export function hostThroughPty(o) {
     lastNativeExecution = {
       ...execution,
       childGeneration,
-      nativeSessionId: nativeSessionId ?? null,
+      nativeSessionId: observedSessionId,
     };
     return {
       ...execution,
       ownerId, hostPid: process.pid, childPid: child.pid ?? null,
-      childGeneration, nativeSessionId: nativeSessionId ?? null, receivedAtMs,
+      childGeneration, nativeSessionId: observedSessionId, receivedAtMs,
       ownerInputPending: Boolean(ownerComposerGate?.hasPending()),
       // Loop reconciliation must not treat an idle/menu Escape as a standing
       // owner stop. Execution remains explicitly unknown when no native record

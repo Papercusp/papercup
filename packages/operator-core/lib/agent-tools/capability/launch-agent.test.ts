@@ -363,7 +363,7 @@ vi.mock('../../agent-launch-core', async (orig) => ({
 const launchAgentModule = await import('./launch-agent');
 const launchAgent = launchAgentModule.default;
 const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY, INTERNAL_SCOPED_SESSION_CONFINEMENT,
-  INTERNAL_BACKEND_BIN_OVERRIDE } = launchAgentModule;
+  INTERNAL_BACKEND_BIN_OVERRIDE, INTERNAL_INTERRUPTION_RECOVERY } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -3477,6 +3477,30 @@ describe('resume + fork (D-004/D-007)', () => {
         reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
       },
     });
+  });
+
+  it('internal wait recovery opens the exact host without kickoff or retirement override', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(res), textOf(res)).toBe(false);
+    const spawn = spawnConsoleMock.mock.calls[0]?.[0] ?? spawnHeadlessMock.mock.calls[0]?.[0];
+    expect(spawn).toBeDefined();
+    const env = (spawn as { envelope: { env: Record<string, string> } }).envelope.env;
+    expect(env).not.toHaveProperty('PAPERCUSP_KICKOFF_PROMPT');
+    expect(env).not.toHaveProperty('PSU_ALLOW_RETIRED_RESUME');
+  });
+
+  it.each(['live', 'identity'])('internal recovery refuses a changed %s source without launching', async kind => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, ...(kind === 'live' ? { live: true } : { sessionId: 'changed' }) });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(res)).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('leader recovery uses the ended owner launch record and restores the leader role', async () => {

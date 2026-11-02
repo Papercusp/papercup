@@ -1325,13 +1325,14 @@ export default defineTool({
           return err('Cannot start successor: the resolved source no longer matches the expected workspace, harness, and incarnation binding. No process was opened.');
         }
       }
-      resumeSessionId = target.sessionId;
+      resumeSessionId = target.sessionId ?? (interruptionRecovery ? target.ompThreadId : null);
       // Native UUID verification remains nullable for tracked Codex rows that
       // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
       if (interruptionRecovery && (target.live || args.fork !== false ||
-          target.ownerId !== interruptionRecovery.ownerId || target.sessionId !== interruptionRecovery.nativeSessionId)) {
+          target.ownerId !== interruptionRecovery.ownerId ||
+          (target.sessionId ?? target.ompThreadId) !== interruptionRecovery.nativeSessionId)) {
         return err('Interruption recovery refused: source must remain dead, non-retired and exactly identity-bound.');
       }
       if (neutralLineageRequested && resumeOwnerId) {
