@@ -1,6 +1,7 @@
 import type { Sql } from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import { routeGoalTenureGrading } from './grading-audit-routing';
+import { mockResolvedTyped } from './testing/typed-mock';
 import type { getFeedbackProd } from './consult/get-feedback-prod';
 import { getFeedbackCore, type GetFeedbackDeps } from './consult/get-feedback-core';
 import type { RouteResult } from './consult/relevance-router';
@@ -26,7 +27,9 @@ function fixture(options: { status?: string; prior?: Record<string, unknown>; pi
       responder: { ownerId: 'su-ended-archive-source' },
       wake: { queued: 1, woke: options.pickup ? 1 : 0, pickupConfirmed: options.pickup ?? false } };
   }) as unknown as typeof getFeedbackProd;
-  const resolveResponderLiveness = vi.fn(async () => ({ sessionState: 'live' as const }));
+  const resolveResponderLiveness = vi.fn<
+    NonNullable<Parameters<typeof routeGoalTenureGrading>[1]['resolveResponderLiveness']>
+  >(async () => ({ sessionState: 'live' }));
   return { sql, feedback, resolveResponderLiveness, now: () => NOW, queries };
 }
 
@@ -53,7 +56,7 @@ describe('goal tenure grading recovery through the shared dispatcher', () => {
   it.each(['ended', 'recorded'] as const)('replaces a %s answering session while the alert stays open', async state => {
     const d = fixture({ pickup: true, prior: { conversation_id: 'old', state: 'active',
       answering_owner_id: 'su-dead-answer', created_at: new Date(NOW - 60_000), expires_at: new Date(NOW + 60_000) } });
-    d.resolveResponderLiveness.mockResolvedValue({ sessionState: state } as never);
+    mockResolvedTyped(d.resolveResponderLiveness, { sessionState: state });
     expect(await routeGoalTenureGrading(goal, d)).toMatchObject({ state: 'routed' });
     expect(d.queries.some(query => query.includes("SET state = 'expired'"))).toBe(true);
     expect(d.feedback).toHaveBeenCalledTimes(1);

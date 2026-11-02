@@ -604,15 +604,22 @@ describe('plans:start commit-time readiness', () => {
   });
 
   it('refuses policy/evidence invalidation between preflight and approval', async () => {
-    const writes = locked({}, () => {
+    const writes = locked({});
+    const { evaluatePlanSpecQualityGate } = await import('../plan-spec-quality-gate');
+    // Invalidate after the first verdict was measured, before the independent
+    // approval recheck. The writer must stay unopened while those readers run.
+    vi.mocked(evaluatePlanSpecQualityGate).mockImplementationOnce(async () => {
+      const preflight = H.state.specQuality;
       H.state.specQuality = {
         satisfied: false, applicable: true, mode: 'enforced', planSlug: 'mock', specSetHash: 'changed',
         code: 'spec_quality_scorecard_missing', wouldBlock: ['current-policy-scorecard-missing'],
       };
+      return preflight as Awaited<ReturnType<typeof evaluatePlanSpecQualityGate>>;
     });
     const result = await run({ slug: 'mock', consulted: true });
     expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'spec_quality_scorecard_missing' });
     expect(writes).toEqual([]);
+    expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 
