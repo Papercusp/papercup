@@ -42,7 +42,7 @@ function compact(items: readonly { id: string; text: string; blockedBy: string[]
 
 async function seedPlan(slug: string, content: string, items: unknown): Promise<void> {
   await db.sql.unsafe(
-    'INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, items) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8::jsonb)',
+    'INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, items) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8::text::jsonb)',
     [workspaceId, harnessSlug, slug, content, hashPlanContent(content), 'Compatibility fixture', 'draft', JSON.stringify(items)],
   );
 }
