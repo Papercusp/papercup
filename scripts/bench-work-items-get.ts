@@ -564,7 +564,9 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
   console.error('IDENTITY_PRIVATE_PHASE build');
   const bundle = await buildPrivateOperatorApiBundle(ROOT, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
   const traceOut = resolve(evidenceDir, 'identity-host-source.json');
-  const hostEnv = privateBundleRuntimeEnv(process.env, { traceOut });
+  const hostEnv = privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: [{
+    path: bundle.path, sha256: bundle.sha256, byteLength: (await stat(bundle.path)).size,
+  }] });
   // Allocate the retained log before the process: an existing/unwritable path
   // must never strand a host outside the try/finally cleanup boundary.
   const log = await open(resolve(evidenceDir, 'host.log'), 'wx', 0o600);

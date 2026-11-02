@@ -53,6 +53,24 @@ export function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead 
   });
 }
 
+/** Authenticate a retained large source with the same descriptor and directory
+ * race guards as readNativeArtifactBytes, without allocating its full length. */
+export function hashNativeArtifactBytes(file, byteLength, byteLimit, recordRead = () => {}) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0 ||
+      !Number.isSafeInteger(byteLimit) || byteLimit < byteLength)
+    throw new Error('native artifact byte limit');
+  return withNativeArtifactFile(file, byteLength, fd => {
+    const hash = createHash('sha256'), buffer = Buffer.alloc(64 * 1024);
+    let length = 0;
+    while (length < byteLength) {
+      const count = readSync(fd, buffer, 0, Math.min(buffer.length, byteLength - length), null);
+      if (!count) throw new Error('native artifact changed during capture');
+      length += count; recordRead(count); hash.update(buffer.subarray(0, count));
+    }
+    return hash.digest('hex');
+  });
+}
+
 function withNativeArtifactFile(file, byteLength, consume) {
   const directory = dirname(file), root = lstatSync(directory);
   if (!root.isDirectory() || root.isSymbolicLink() || realpathSync(directory) !== resolve(directory))

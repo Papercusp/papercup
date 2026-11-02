@@ -11,7 +11,7 @@ import * as ts from 'typescript';
 import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
-import { readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
@@ -186,6 +186,56 @@ it('observes a real private Node host through an explicitly fresh trace after re
   const occupied = join(root, 'occupied.json');
   writeFileSync(occupied, 'existing evidence');
   expect(() => privateBundleRuntimeEnv(inherited, { traceOut: occupied })).toThrow('fresh channel');
+});
+
+it.each(['matched', 'wrong-digest', 'wrong-size', 'unrelated'] as const)(
+  'streams only independently admitted large loader bytes (%s)', control => {
+    const root = mkdtempSync(join(tmpdir(), 'private-large-loader-')); dirs.push(root);
+    const bundle = join(root, 'host.mjs'), traceOut = join(root, 'source.json');
+    // A surrogate pair crosses the producer chunk boundary. Its UTF-8 bytes
+    // must remain identical to the loader return, including in retained data.
+    const source = '/*' + ' '.repeat(16 * 1024 - 3) + '😀' + ' '.repeat(16 * 1024 ** 2)
+      + '*/console.log("loaded");';
+    const byteLength = Buffer.byteLength(source), sha256 = createHash('sha256').update(source).digest('hex');
+    writeFileSync(bundle, source);
+    const env = privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: [{
+      path: control === 'unrelated' ? join(root, 'different.mjs') : bundle,
+      sha256: control === 'wrong-digest' ? '0'.repeat(64) : sha256,
+      byteLength: control === 'wrong-size' ? byteLength - 1 : byteLength,
+    }] });
+    const started = Date.now();
+    expect(execFileSync(process.execPath, [bundle], { cwd: root, env, encoding: 'utf8', timeout: 15_000 })).toBe('loaded\n');
+    const trace = readNativeProcessTraceArtifacts(traceOut, started, Date.now());
+    expect(trace.population.complete).toBe(true);
+    const retained = trace.rows.find(({ row }) => row.event === 'module-load-return')!.row.source;
+    if (control === 'matched') {
+      expect(retained).toMatchObject({ status: 'hashed', sha256, byteLength,
+        admission: 'independently-pinned-large-source-v1' });
+      let bytesRead = 0;
+      expect(hashNativeArtifactBytes(join(trace.sourceRoot, retained.ref), byteLength, byteLength,
+        count => { bytesRead += count; })).toBe(sha256);
+      expect(bytesRead).toBe(byteLength);
+      expect(() => hashNativeArtifactBytes(join(trace.sourceRoot, retained.ref), byteLength, byteLength - 1))
+        .toThrow('native artifact byte limit');
+    } else {
+      expect(retained.status).toBe(control === 'unrelated' ? 'limit' : 'unavailable');
+      expect(retained.ref).toBeUndefined();
+      expect(readdirSync(trace.sourceRoot).filter(name => name.endsWith('.source'))).toEqual([]);
+    }
+  });
+
+it('refuses malformed or unbounded source admissions before allocating the host trace', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-source-admission-')); dirs.push(root);
+  const traceOut = join(root, 'source.json');
+  const pin = { path: join(root, 'host.mjs'), sha256: 'a'.repeat(64), byteLength: 81_830_447 };
+  for (const pins of [[{ ...pin, byteLength: 128 * 1024 ** 2 + 1 }],
+    [pin, pin], [pin, { ...pin, path: join(root, 'b') }, { ...pin, path: join(root, 'c') },
+      { ...pin, path: join(root, 'd') }], [{ ...pin, path: 'relative.mjs' }],
+    [{ ...pin, sha256: 'invalid' }]]) {
+    expect(() => privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: pins }))
+      .toThrow('Invalid bounded native loader source pins');
+    expect(existsSync(traceOut + '.native-processes')).toBe(false);
+  }
 });
 
 it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
