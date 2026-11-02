@@ -2366,6 +2366,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Keep direct and tools:invoke-wrapped reads beyond that cap instead of
   // letting ptool's ordinary 30s cutoff hide the signature response.
   ['code:tools', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // WI-6554700010044954: spec-quality preflight may settle after 30s.
+  // Preserve the server's structured verdict through MCP's 55s foreground
+  // window, including deferred tools:invoke calls unwrapped below.
+  ['plans:evaluate-spec-quality', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['documents:read', PTOOL_CONTENT_SUMMARY_TIMEOUT_MS],
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
@@ -2431,6 +2435,14 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // clause cards through the same 900s server budget as `scorecards:emit`.
   // Keep the client outside that budget on both direct and tools:invoke paths.
   ['plans:certify-spec-clauses', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
+  // EI-26721038799492564: compound grading, rubric, fact and conversation
+  // reads share the MCP foreground deadline. The flat 30s client cutoff
+  // discards valid results before that deadline; use the maintained contract
+  // on direct and tools:invoke routes (unwrapped by timeoutForTool).
+  ['scorecards:evaluate', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['rubrics:get', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['facts:list', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['conversations:get', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['scorecards:emit', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
   ['scorecards:repair', PTOOL_SCORECARD_REPAIR_TIMEOUT_MS],
   ['release:checkpoint-run', PTOOL_CHECKPOINT_RUN_TIMEOUT_MS],

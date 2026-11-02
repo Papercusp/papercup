@@ -2771,13 +2771,34 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     expect(isTransportFailure(new Error('tool failed after dispatch'))).toBe(false);
   });
 
-  it.each(['docs:search', 'tools:invoke'])('delivers a valid docs search after 35 seconds through %s without replay', async (route) => {
+  it.each([
+    ['docs:search', 'docs:search'],
+    ['docs:search', 'tools:invoke'],
+    ['plans:evaluate-spec-quality', 'plans:evaluate-spec-quality'],
+    ['plans:evaluate-spec-quality', 'tools:invoke'],
+    ['scorecards:evaluate', 'scorecards:evaluate'],
+    ['scorecards:evaluate', 'tools:invoke'],
+    ['rubrics:get', 'rubrics:get'],
+    ['rubrics:get', 'tools:invoke'],
+    ['facts:list', 'facts:list'],
+    ['facts:list', 'tools:invoke'],
+    ['conversations:get', 'conversations:get'],
+    ['conversations:get', 'tools:invoke'],
+  ])('delivers a valid %s after 35 seconds through %s without replay', async (toolName, route) => {
     vi.useFakeTimers();
     try {
-      const searchArgs = { query: 'disk consumer census', harness: 'engineering', limit: 3, semantic: false };
-      const args = route === 'tools:invoke' ? { name: 'docs:search', args: searchArgs } : searchArgs;
-      const params = buildCallToolParams(route, args, { idempotencyKey: 'docs-search-delayed' });
-      const result = { content: [{ type: 'text', text: 'retained keyword result' }] };
+      const inputs: Record<string, Record<string, unknown>> = {
+        'docs:search': { query: 'disk consumer census', harness: 'engineering', limit: 3, semantic: false },
+        'plans:evaluate-spec-quality': { slug: 'quality-plan', harness: 'engineering' },
+        'scorecards:evaluate': { rubricRef: 'papercusp-app-performance', eligibilityOnly: true },
+        'rubrics:get': { rubricRef: 'papercusp-app-performance' },
+        'facts:list': { scope: 'workspace' },
+        'conversations:get': { id: 'conversation-1' },
+      };
+      const toolArgs = inputs[toolName];
+      const args = route === 'tools:invoke' ? { name: toolName, args: toolArgs } : toolArgs;
+      const params = buildCallToolParams(route, args, { idempotencyKey: 'bounded-read-delayed' });
+      const result = { content: [{ type: 'text', text: 'retained structured result' }] };
       const delayedClient = () => ({
         callTool: vi.fn((_params: unknown, _schema: unknown, options: { timeout: number; maxTotalTimeout: number }) =>
           new Promise((resolve, reject) => {
