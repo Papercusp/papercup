@@ -2166,10 +2166,15 @@ export default defineTool({
           // so any re-confirm resumes them; it needs no retryPrecheck opt-in.
           const deferredTreeBusy = matchingPrecheck?.status === 'deferred' &&
             matchingPrecheck.verdict?.ran === false && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy';
-          const resume = matchingPrecheck?.measurement && (deferredTreeBusy || (args.retryPrecheck === true &&
-            (matchingPrecheck.status === 'running' ||
-              (matchingPrecheck.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
-                matchingPrecheck.verdict.reason === 'runner-failed'))))
+          const failedWithUnmeasuredRows = matchingPrecheck?.status === 'failed' &&
+            matchingPrecheck.verdict?.ran === true && matchingPrecheck.verdict.unmeasured.length > 0 &&
+            matchingPrecheck.measurement?.results.some(result => result.status === 'unmeasured') === true;
+          const retryRequested = args.retryPrecheck === true && (
+            matchingPrecheck?.status === 'running' ||
+            failedWithUnmeasuredRows ||
+            (matchingPrecheck?.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
+              matchingPrecheck.verdict.reason === 'runner-failed'));
+          const resume = matchingPrecheck?.measurement && (deferredTreeBusy || retryRequested)
             ? matchingPrecheck : undefined;
           const operationId =
             resume?.operationId ??
@@ -2209,7 +2214,8 @@ export default defineTool({
             ...resume, status: 'running', verdict: undefined, runnerPid: process.pid,
             runnerPidIdentity: runnerPidIdentity ?? undefined, runnerTaskId, updatedAtMs: startedAtMs,
             expiresAtMs: admissionPrecheckDeadline(startedAtMs,
-              resume.files.filter(file => !resume.measurement!.results.some(result => result.path === file))),
+              resume.files.filter(file => !resume.measurement!.results.some(result =>
+                result.path === file && result.status !== 'unmeasured'))),
             heartbeatAtMs: startedAtMs,
           } : freshOperation;
           const pendingQueue: FrozenCandidateRepairQueue = {

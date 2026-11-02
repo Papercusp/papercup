@@ -7,7 +7,7 @@ import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-
 import type { FrozenRepairEditLedgerRow } from '../../release/frozen-repair-edit-ledger';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
 import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
-import { ADMISSION_PRECHECK_MAX_FILES, precheckPopulation } from '../../release/admission-fix-precheck';
+import { ADMISSION_PRECHECK_MAX_FILES, evaluateFixPrecheck, precheckPopulation } from '../../release/admission-fix-precheck';
 import {
   admissionPrecheckMeasurementIdentity,
   ADMISSION_TEST_ENVIRONMENT,
@@ -1679,6 +1679,32 @@ describe('release:repair-queue', () => {
       expect(persisted.admissionPrecheck!.measurement!.previousHead).toMatchObject({ commit: fixture.operation.repairHead,
         results: [{ path: fixture.files[1], status: 'pass' }] });
       expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe('fail');
+      expect(dryRuns()).toEqual([true]);
+    });
+
+    it('retryPrecheck resumes a failed measured aggregate with unmeasured rows on the same operation', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const unavailableFile = fixture.files.at(-1)!;
+      const results = fixture.files.map(path => ({
+        path, status: path === unavailableFile ? 'unmeasured' as const : 'pass' as const,
+      }));
+      const population = precheckPopulation({ signature: queue.signature, admittedPaths: fixture.files, radius: fixture.radius });
+      const verdict = evaluateFixPrecheck(population, { ran: true, commit: fixture.operation.builtCommit, results });
+      expect(verdict).toMatchObject({ ok: false, ran: true, unmeasured: [unavailableFile] });
+      const failed = { ...fixture.operation, status: 'failed' as const, verdict,
+        runnerTaskId: 'expired-task', completedCount: fixture.files.length,
+        measurement: { ...fixture.measurement, results } };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: failed } });
+      mocks.startPrecheckWorker.mockResolvedValue({ taskId: 'replacement-task', confined: true });
+      const started = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        retryPrecheck: true } as never, { role: 'su' } as never));
+      expect(started).toMatchObject({ verdict: 'precheck-running', precheckOperation: {
+        operationId: fixture.operation.operationId, status: 'running', measurement: { results },
+      } });
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledWith(expect.objectContaining({
+        operationId: fixture.operation.operationId,
+      }));
       expect(dryRuns()).toEqual([true]);
     });
 
