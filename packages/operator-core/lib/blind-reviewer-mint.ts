@@ -18,6 +18,7 @@
  * `cat` of a plan file). The ceiling closes the MCP half only.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   SCRATCH_PLAN_TOOLS,
   validProductReadBoundary,
@@ -293,6 +294,8 @@ export interface MintBlindGapReviewerDeps {
   knownTools?: () => Promise<ReadonlySet<string>>;
   /** Re-read the original launch cohort when its verifier returned no identity receipt. */
   probeLaunchSessions?: typeof import('./agent-launch-core').probeFreshLaunchSessions;
+  /** Authoritative ceiling for the exact reconciled native reviewer, never a caller override. */
+  readConfinement?: (ownerId: string, workspaceId: string) => Promise<SessionToolConfinement | null>;
 }
 
 export type MintBlindGapReviewerResult =
@@ -342,15 +345,15 @@ export async function mintBlindGapReviewer(
   // the boundary cannot represent leaves the plan verbs refused, as before D-050.
   const scratchCandidate: ScratchPlanBoundary = { scratchPrefix: blindReviewScratchPrefix(),
     reviewedSlug: input.slug, harness: input.harness };
-  const scratchPlans = validScratchPlanBoundary(scratchCandidate) ? scratchCandidate : undefined;
-  const confinement = blindReviewerConfinement(input.slug, productReads, scratchPlans);
+  let scratchPlans = validScratchPlanBoundary(scratchCandidate) ? scratchCandidate : undefined;
+  let confinement = blindReviewerConfinement(input.slug, productReads, scratchPlans);
   const refusedTools = howToRunToolsOutsideCeiling(input.howToRun, confinement,
     await (deps.knownTools ?? defaultKnownToolNames)());
   if (refusedTools.length > 0) {
     return { ok: false, code: 'how_to_run_outside_ceiling', refusedTools,
       message: howToRunOutsideCeilingMessage(refusedTools, confinement) };
   }
-  const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
+  let kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
   let existingBinding: BlindReviewSessionBinding | null;
   try {
     existingBinding = await (deps.findSessionBinding ?? findBlindReviewSessionBinding)({
@@ -362,14 +365,15 @@ export async function mintBlindGapReviewer(
         (error instanceof Error ? error.message : String(error)) };
   }
   if (existingBinding && (existingBinding.status === 'ready' || existingBinding.status === 'resuming')) {
+    const boundScratch = existingBinding.confinementSnapshot.denyPlansOutside;
     return {
       ok: true,
       launch: { data: { deduped: true, launch: {
         deduped: true, opened: 0, failed: 0, mode: 'deduped', ownerIds: [existingBinding.reviewerOwnerId], tasks: [],
       } } },
-      kickoff,
+      kickoff: buildBlindReviewerKickoff(brief, input.howToRun, productReads, boundScratch),
       activationAuditSeq: brief.activationAuditSeq,
-      scratchPrefix: scratchPlans?.scratchPrefix ?? null,
+      scratchPrefix: boundScratch?.scratchPrefix ?? null,
       binding: existingBinding,
       launchStatus: 'bound',
     };
@@ -448,6 +452,23 @@ export async function mintBlindGapReviewer(
         const session = sessions.length === 1 ? sessions[0] : null;
         if (session?.ownerId === owners[0] && Number.isSafeInteger(session.advSessionId)
             && session.advSessionId > 0 && typeof session.sessionId === 'string' && session.sessionId.trim()) {
+          // Replay creates a new candidate prefix, but the original process retains its
+          // immutable launch ceiling. Recover only that prefix from the exact owner's
+          // authoritative ceiling; any other scope, tool, product or attribution change
+          // still fails closed, and binding independently rechecks the effective ceiling.
+          const read = deps.readConfinement ?? (async (ownerId: string, scope: string) =>
+            (await import('./capability-envelope/session-confinement-store')).readSessionConfinement(ownerId, scope));
+          const actual = await read(owners[0], workspaceId);
+          const originalScratch = actual?.denyPlansOutside;
+          const recoveredScratch = scratchPlans && originalScratch && validScratchPlanBoundary(originalScratch)
+            ? { ...scratchPlans, scratchPrefix: originalScratch.scratchPrefix } : scratchPlans;
+          if (!actual || !isDeepStrictEqual(actual, blindReviewerConfinement(input.slug, productReads, recoveredScratch))) {
+            return { ok: false, code: 'session_binding_failed',
+              message: 'The original reviewer confinement does not match this request; no ceiling was changed or second reviewer launched.' };
+          }
+          scratchPlans = recoveredScratch;
+          confinement = actual;
+          kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
           receipt = { kind: 'native', ownerId: owners[0], advSessionId: session.advSessionId,
             sessionId: session.sessionId };
         }

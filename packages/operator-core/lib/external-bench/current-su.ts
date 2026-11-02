@@ -34,6 +34,7 @@ import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
 import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
+import { BENCHMARK_SCRATCH_PLAN_TOOLS, type ScratchPlanBoundary } from '../capability-envelope/session-confinement';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; terminal: boolean;
@@ -1981,7 +1982,7 @@ export function currentBenchSoloCapabilityControl(arm: CurrentBenchmarkProtocol[
   if (arm.control?.topology !== 'solo' || arm.agent !== 'codex')
     throw new Error('Native capability control requires a frozen Codex solo arm.');
   const unsupported = Object.entries(arm.control.capabilities)
-    .filter(([capability, toggle]) => toggle === 'on' && capability !== 'work-item-ledger')
+    .filter(([capability, toggle]) => toggle === 'on' && capability !== 'work-item-ledger' && capability !== 'planning')
     .map(([capability]) => capability);
   if (unsupported.length)
     throw new Error(`Native capability control is unavailable for: ${unsupported.join(', ')}.`);
@@ -1989,16 +1990,27 @@ export function currentBenchSoloCapabilityControl(arm: CurrentBenchmarkProtocol[
     capabilities: Object.freeze({ ...arm.control.capabilities }),
     // No managed carry, recall, dispatch, consult or ambient context in this
     // control. Observer ownership remains outside the experimental ceiling.
-    toolNames: Object.freeze(currentBenchLedgerEnabled(arm)
-      ? ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']
-      : ['coord:whoami']),
+    toolNames: Object.freeze(['coord:whoami',
+      ...(currentBenchLedgerEnabled(arm) ? ['work_items:get', 'work_items:checkpoint', 'work_items:complete'] : []),
+      ...(arm.control.capabilities.planning === 'on' ? BENCHMARK_SCRATCH_PLAN_TOOLS : [])]),
   });
 }
-function currentBenchTaskInstruction(handle: BenchHarnessHandle, ledger: boolean): string {
+function currentBenchPlanningBoundary(opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>,
+  handle: BenchHarnessHandle): ScratchPlanBoundary | undefined {
+  const arm = currentBenchmarkProtocolSchema.parse(opts.preregistration.config).arms.find(arm => arm.id === opts.armId);
+  if (arm?.control?.capabilities.planning !== 'on') return undefined;
+  currentBenchSoloCapabilityControl(arm);
+  const assignment = hash(canonicalJson([opts.workspaceId, opts.runId, opts.preregistration.preregHash,
+    opts.armId, opts.seed, handle.slug, handle.featureId]));
+  return Object.freeze({ scratchPrefix: `benchmark-scratch-${assignment.slice(0, 24)}-`,
+    reviewedSlug: `benchmark-observer-${assignment}`, harness: handle.slug });
+}
+function currentBenchTaskInstruction(handle: BenchHarnessHandle, ledger: boolean, planning?: ScratchPlanBoundary): string {
   const task = 'Resolve the assigned benchmark task in this repository. Preserve your work in the checkout.';
-  return ledger
+  const instruction = ledger
     ? `${task} Use work_items:get or work_items:checkpoint with id=${handle.featureId} and harness=${handle.slug}. When finished, use work_items:complete with that exact id/harness, state="done", assumptions="none", and completion:{summary,testsRun,testResult,verifiedHow,filesChanged}. Name checkout-relative files.`
     : `${task} When finished, report your changes and verification in your final response. Name checkout-relative files.`;
+  return planning ? `${instruction} For structured planning, use plans:new with harness=${planning.harness}, a slug starting ${planning.scratchPrefix}, status="draft" and force=true; use plans:add-item and plans:get in that same harness and namespace. These private draft plans cannot activate or launch work.` : instruction;
 }
 
 export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: BenchHarnessHandle, problem: string, context?: BenchmarkContextReceipt): LaunchArgs {
@@ -2008,7 +2020,7 @@ export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: B
   if (!arm) throw new Error('Current benchmark launch arm is not in the frozen protocol.');
   return {
     harness: handle.slug, cwd: handle.worktreePath, feature: handle.featureId, workItem: handle.featureId,
-    brief: `${currentBenchTaskInstruction(handle, currentBenchLedgerEnabled(arm))}\n\n${problem}${context?.contextText ?? ''}`,
+    brief: `${currentBenchTaskInstruction(handle, currentBenchLedgerEnabled(arm), currentBenchPlanningBoundary(opts, handle))}\n\n${problem}${context?.contextText ?? ''}`,
     independent: true, headless: true, count: 1, mcpTarget: 'spawn-host',
     // No human is present at this bounded assignment's console. Independent
     // launches have no fleet AUTO default; register it explicitly at bootstrap.
@@ -3247,10 +3259,19 @@ export function liveCurrentSuBenchPorts(
   const restored = new Map<string, BenchmarkContextInput & { workItemId: string }>();
   return {
     releaseGateway: async () => {
-      if (observations.sessionBudget) {
-        // The assignment owns the shared gateway; one session owns only its grant.
-        if (host?.session?.receipt === observations.sessionBudget) host.session.phase = 'retired';
-      } else await host?.stop();
+      try {
+        for (const input of restored.values()) {
+          const boundary = currentBenchPlanningBoundary(opts, { slug: input.binding.harnessSlug,
+            featureId: input.workItemId, worktreePath: input.checkout });
+          if (boundary) await (await import('../blind-review-scratch-plans'))
+            .archiveScratchPlansByPrefix(workspaceId, boundary.scratchPrefix);
+        }
+      } finally {
+        if (observations.sessionBudget) {
+          // The assignment owns the shared gateway; one session owns only its grant.
+          if (host?.session?.receipt === observations.sessionBudget) host.session.phase = 'retired';
+        } else await host?.stop();
+      }
     },
     verifyGenerationBudget: (budget, taskId) => {
       const host = requireBinding();
@@ -3329,8 +3350,10 @@ export function liveCurrentSuBenchPorts(
       const ledger = currentBenchLedgerEnabled(requireBinding().arm);
       const control = requireBinding().arm.control
         ? currentBenchSoloCapabilityControl(requireBinding().arm) : undefined;
+      const planning = currentBenchPlanningBoundary(opts, { slug: input.binding.harnessSlug,
+        featureId: input.workItemId, worktreePath: input.checkout });
       const instruction = currentBenchTaskInstruction({ slug: input.binding.harnessSlug,
-        featureId: input.workItemId, worktreePath: input.checkout }, ledger);
+        featureId: input.workItemId, worktreePath: input.checkout }, ledger, planning);
       if (!args.brief.startsWith(`${instruction}\n\n`))
         throw new Error('Benchmark native launch ledger exposure differs from its frozen host arm.');
       const module = await import('../agent-tools/capability/launch-agent');
@@ -3348,6 +3371,7 @@ export function liveCurrentSuBenchPorts(
           ? ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']
           : ['coord:whoami', 'session:request-compaction']),
         denyAmbientContext: true as const,
+        ...(planning ? { denyPlansOutside: planning } : {}),
         // Observer ownership/authorization is identical in both arms; the
         // experimental tool ceiling cannot widen this exact-item boundary.
         denyWorkItemsOutside: Object.freeze({ id: input.workItemId, harness: input.binding.harnessSlug, checkout: input.checkout }),
