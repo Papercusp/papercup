@@ -1292,6 +1292,8 @@ export async function carryUnchangedBarEvidenceBindings(
   if (args.nextRevision === args.priorRevision) return 0;
   const rows = await sql<
     Array<{
+      id: number | string;
+      verifies_binding_id: number | string | null;
       work_item_id: string;
       evidence_kind: string;
       evidence_ref: string;
@@ -1307,7 +1309,7 @@ export async function carryUnchangedBarEvidenceBindings(
       created_by: string;
     }>
   >`
-    SELECT b.work_item_id, b.evidence_kind, b.evidence_ref, b.source_fingerprint,
+    SELECT b.id, b.verifies_binding_id, b.work_item_id, b.evidence_kind, b.evidence_ref, b.source_fingerprint,
            b.test_fingerprint, b.fixture_fingerprint, b.rubric_fingerprint,
            b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
            b.details, b.observed_at, b.created_by
@@ -1334,7 +1336,8 @@ export async function carryUnchangedBarEvidenceBindings(
   if (!rows.length) return 0;
   const { specEvidenceBindingFingerprint } = await import('./agent-tools/plans/spec-evidence-store');
   let carried = 0;
-  for (const row of rows) {
+  const copiedIds = new Map<number, number>();
+  const copy = async (row: typeof rows[number], verifiesBindingId?: number): Promise<void> => {
     const coverageEvidenceRef = row.coverage_evidence_ref == null ? null : Number(row.coverage_evidence_ref);
     const testRunId = row.test_run_id == null ? null : Number(row.test_run_id);
     const bindingFingerprint = specEvidenceBindingFingerprint({
@@ -1354,14 +1357,15 @@ export async function carryUnchangedBarEvidenceBindings(
       environmentFingerprint: row.environment_fingerprint,
       coverageEvidenceRef,
       testRunId,
+      ...(verifiesBindingId === undefined ? {} : { verifiesBindingId }),
       details: row.details ?? {},
     });
-    await sql`
+    const inserted = await sql<Array<{ id: number | string }>>`
       INSERT INTO harness_shared.spec_evidence_bindings (
         workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision,
         spec_fingerprint, evidence_kind, evidence_ref, source_fingerprint, test_fingerprint,
         fixture_fingerprint, rubric_fingerprint, environment_fingerprint, coverage_evidence_ref,
-        test_run_id, details, observed_at, binding_fingerprint, created_by
+        test_run_id, details, observed_at, binding_fingerprint, created_by, verifies_binding_id
       ) VALUES (
         ${args.workspaceId}, ${args.harnessSlug}, ${row.work_item_id}, ${args.planSlug},
         ${args.specId}, ${args.nextRevision}, ${args.nextSpecFingerprint}, ${row.evidence_kind},
@@ -1378,9 +1382,30 @@ export async function carryUnchangedBarEvidenceBindings(
         -- turns the wrong form into a loud failure rather than silent corruption. See
         -- /internal/docs/agent-insights/postgres-js-jsonb-binding.
         ${coverageEvidenceRef}, ${testRunId}, ${JSON.stringify(row.details ?? {})}::text::jsonb,
-        ${row.observed_at}, ${bindingFingerprint}, ${row.created_by}
-      ) ON CONFLICT DO NOTHING`;
+        ${row.observed_at}, ${bindingFingerprint}, ${row.created_by}, ${verifiesBindingId ?? null}
+      ) ON CONFLICT DO NOTHING RETURNING id`;
+    // A repeated carry must remap citations to the already-carried row too.
+    const existing = inserted.length ? inserted : await sql<Array<{ id: number | string }>>`
+      SELECT id FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+         AND work_item_id = ${row.work_item_id} AND plan_slug = ${args.planSlug}
+         AND spec_id = ${args.specId} AND spec_revision = ${args.nextRevision}
+         AND binding_fingerprint = ${bindingFingerprint} AND retracted_at IS NULL`;
+    if (!existing[0]) throw new Error('acceptance_bar_amendment_evidence_carry_target_missing');
+    copiedIds.set(Number(row.id), Number(existing[0].id));
     carried += 1;
+  };
+  // Match canonical work-item evidence transfer: copy observations first, then
+  // reference their new same-revision identities from independent verifications.
+  for (const row of rows) {
+    if (row.evidence_kind !== 'independent-verification') await copy(row);
+  }
+  for (const row of rows) {
+    if (row.evidence_kind !== 'independent-verification' || row.verifies_binding_id == null) continue;
+    const targetId = copiedIds.get(Number(row.verifies_binding_id));
+    // A withdrawn or otherwise ineligible observation cannot regain a verifier
+    // through carry-forward; retain both historical rows without resurrecting it.
+    if (targetId !== undefined) await copy(row, targetId);
   }
   return carried;
 }
