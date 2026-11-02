@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { perfEvidenceRepository, sealPerfEvidence } from './perf-workload-evidence';
 import { perfProtocolHash } from './perf-workload-protocol';
+import type { PerfWorkloadRun } from './perf-workload-run';
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
@@ -38,6 +39,40 @@ describe('perf artifact/results-ledger integrity', () => {
     const receipt = await f.repository.publish({ kind: 'power', endedAtMs: 1000, protocolInputHash: perfProtocolHash('design'),
       journey: 'http', stratum: 'cold', metric: 'p95', lowerPowerBound: 0.9, comparisonAlpha: 0.05 / 9, margin: 1.05 });
     expect(receipt.evidence).toMatchObject({ kind: 'power', endedAtMs: 1000, publishedAtMs: 2000 });
+  });
+  it('retains ordered baseline series and complete joint power results without scalar substitution', async () => {
+    const f = await fixture();
+    const bodies = [
+      { kind: 'baseline' as const, endedAtMs: 1000, sourceManifestHash: perfProtocolHash('source'),
+        fixtureHash: perfProtocolHash('fixture'), independentRepeatId: 'r1', independenceEvidenceRef: 'independence',
+        observations: [{ journey: 'http', stratum: 'cold' as const, completedPerArm: 3, allObservationsRetained: true }],
+        series: [{ journey: 'http', stratum: 'cold' as const, metric: 'p99' as const, a: [12, 9, 3000], b: [10, 11, 3000] }] },
+      // Synthetic storage fixture: an integrity pass does not qualify its power.
+      { kind: 'power-computation' as const, endedAtMs: 1000, protocolInputHash: perfProtocolHash('design'),
+        result: { status: 'estimated' as const, method: 'nested-paired-block-production-ci-fixed-monte-carlo-v1' as const,
+          assumption: 'conditional-on-preregistered-empirical-baseline-generator' as const,
+          simulations: 200, iterations: 10_000, seed: 4, familySize: 9, comparisonAlpha: (1 - 0.95) / 9,
+          monteCarloFamilyAlpha: 0.05, scenarios: [{ id: 'unchanged', jointPasses: 196, lowerPowerBound: 0.88 }], lowerPowerBound: 0.88 } },
+    ];
+    for (const body of bodies) {
+      const receipt = await f.repository.publish(body);
+      expect(await f.repository.read(receipt.ref)).toEqual({ ...sealPerfEvidence(body), publishedAtMs: 2000 });
+      expect(JSON.parse(await readFile(receipt.artifactPath, 'utf8'))).toEqual(sealPerfEvidence(body));
+    }
+  });
+  it('retains full unknown collection artifacts, without treating their integrity as qualification', async () => {
+    const f = await fixture();
+    // Storage-only fixture deliberately has no qualifying observations.
+    const plan = { independentRepeatId: 'storage-only', phase: 'baseline' as const,
+      origins: { a: 'http://127.0.0.1', b: 'http://127.0.0.1' },
+      expectedManifestHashes: { a: perfProtocolHash('a'), b: perfProtocolHash('b') }, groups: [] };
+    const body = { schemaVersion: 1 as const, plan, planHash: perfProtocolHash(plan), startedAtMs: 900, endedAtMs: 1000,
+      status: 'unknown' as const, reasons: ['missing-observations'], groups: [] };
+    const capture: PerfWorkloadRun = { ...body, hash: perfProtocolHash(body) };
+    const receipt = await f.repository.publish({ kind: 'matched-run', endedAtMs: 1000, capture });
+    expect(await f.repository.read(receipt.ref)).toMatchObject({ kind: 'matched-run', capture });
+    capture.reasons = [];
+    await expect(f.repository.publish({ kind: 'matched-run', endedAtMs: 1000, capture })).rejects.toThrow('invalid perf evidence');
   });
   it.each(['workspace_id', 'harness_slug', 'framework', 'status', 'file_path', 'id'])('rejects mismatched ledger %s', async field => {
     const f = await fixture(); const receipt = await f.repository.publish(f.body);

@@ -69,6 +69,8 @@ apps/operator/scripts/hooks/cc/*.tmp*
 # ignoring it meant CI had no lockfile and `npm ci` could never run.
 package-lock.json
 !/package-lock.json
+# The isolated Minecraft image is a standalone npm project built with npm ci.
+!/packages/operator-core/vendor/minecraft-runtime/package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log

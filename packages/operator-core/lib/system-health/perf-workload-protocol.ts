@@ -7,6 +7,8 @@
 import { createHash } from 'node:crypto';
 import type { PairedBlockPower, PairedPowerScenario } from '@papercusp/bench-metrics';
 import { reproducePerfWorkloadPower } from './perf-workload-power';
+import type { PerfWorkloadRun } from './perf-workload-run';
+import type { PerfWorkloadEvaluation } from './perf-workload-evaluate';
 
 function freeze<T>(value: T): Readonly<T> {
   if (value && typeof value === 'object') {
@@ -124,6 +126,8 @@ export interface PerfWorkloadProtocolInput {
   rubricContentHash: string;
   sourceManifestHash: string;
   fixtureHash: string;
+  /** Full manifests for both trial arms, sealed before candidate collection. */
+  trialManifestHashes?: { a: string; b: string };
   /** Include the executable operation mix, concurrency, timeout and oracle pins. */
   workload: Array<{ journey: string; operationMix: string; concurrency: number; timeoutMs: number; oracleRef: string }>;
   baselineEvidenceRefs: string[];
@@ -148,8 +152,14 @@ export function sealPerfWorkloadProtocol(input: PerfWorkloadProtocolInput): Perf
 }
 
 export type PerfProtocolEvidence = ({
+  kind: 'evaluation'; hash: string; endedAtMs: number; evaluation: PerfWorkloadEvaluation;
+} | {
+  kind: 'matched-run'; hash: string; endedAtMs: number; capture: PerfWorkloadRun;
+} | {
   kind: 'baseline'; hash: string; endedAtMs: number; sourceManifestHash: string; fixtureHash: string;
   independentRepeatId: string; independenceEvidenceRef: string;
+  /** Exact retained raw collection from which observations/series were derived. */
+  runEvidenceRef?: string;
   observations: Array<{ journey: string; stratum: PerfWorkloadStratum; completedPerArm: number; allObservationsRetained: boolean }>;
   series?: PerfWorkloadBaselineSeries[];
 } | {

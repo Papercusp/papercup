@@ -40,3 +40,23 @@ it('retains evidence through real Postgres and files, without making integrity a
   await writeFile(receipt.artifactPath, '{}');
   expect(await repository.read(receipt.ref)).toBeNull();
 }, 30_000);
+
+it('round-trips the new raw series and joint computation variants through real ledger rows', async () => {
+  const repository = perfEvidenceRepository({ directory, sql: db.adminSql,
+    scope: { workspaceId: 'perf-evidence-fixture', harnessSlug: 'papercusp' } });
+  const baseline = await repository.publish({ kind: 'baseline', endedAtMs: Date.now() - 60_000,
+    sourceManifestHash: perfProtocolHash('source'), fixtureHash: perfProtocolHash('fixture'),
+    independentRepeatId: 'storage-fixture', independenceEvidenceRef: 'unqualified-fixture',
+    observations: [{ journey: 'http', stratum: 'burst', completedPerArm: 3, allObservationsRetained: true }],
+    series: [{ journey: 'http', stratum: 'burst', metric: 'p95', a: [1, 3000, 2], b: [2, 3000, 1] }] });
+  const computation = await repository.publish({ kind: 'power-computation', endedAtMs: Date.now() - 60_000,
+    protocolInputHash: perfProtocolHash('unqualified-storage-fixture'),
+    result: { status: 'unknown', reason: 'prospective-computation-budget' } });
+  expect(await repository.read(baseline.ref)).toEqual(baseline.evidence);
+  expect(await repository.read(computation.ref)).toEqual(computation.evidence);
+  if (baseline.evidence.kind !== 'baseline') throw new Error('fixture kind');
+  expect(baseline.evidence.series?.[0].a).toEqual([1, 3000, 2]);
+  const unscoped = await readLatestRubricCheckResults({ rubricRef: 'acceptance-host-memory-right-sizing-2026-10-31',
+    workspaceId: 'perf-evidence-fixture' }, db.adminSql);
+  expect(unscoped.size).toBe(0);
+}, 30_000);

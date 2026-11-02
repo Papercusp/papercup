@@ -23,13 +23,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createArtifactPreparationStore, openBoundPreparationLedger } from '../../../scripts/lib/source-path-census.mjs';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 const WS = 'ws-art';
-const h = vi.hoisted(() => ({ db: undefined as unknown }));
+const h = vi.hoisted(() => ({ db: undefined as unknown, sql: undefined as unknown }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ db: h.db }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ db: h.db, sql: h.sql }) };
 });
+// This storage integration tests custody/SQL, not reviewer routing eligibility.
+// Canonical lineage and its rejecting cases have their own maintained tests.
+vi.mock('./acceptance-author-identity', () => ({ areAcceptanceLineageRelated: async () => false }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) };
@@ -42,7 +46,8 @@ vi.mock('./workspace-registry', async () => {
 });
 
 const { loadTextArtifact, saveTextArtifact, compareAndSwapTextArtifact, appendTextArtifact, deleteTextArtifact,
-  saveImmutableTextArtifact, loadImmutableTextArtifact } = await import('./text-artifacts');
+  saveImmutableTextArtifact, loadImmutableTextArtifact,
+  claimImmutableTextArtifact, loadImmutableTextArtifactClaim } = await import('./text-artifacts');
 const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 
 let rootSql: postgres.Sql;
@@ -72,6 +77,9 @@ beforeAll(async () => {
       CONSTRAINT harness_text_artifacts_pkey PRIMARY KEY (harness_slug, rel_path)
     )`);
   h.db = drizzle(rootSql);
+  h.sql = rootSql;
+  await rootSql.unsafe(`CREATE TABLE harness_shared.operator_secrets (name text PRIMARY KEY, value_b64 text NOT NULL)`);
+  await rootSql`INSERT INTO harness_shared.operator_secrets VALUES ('spawn-signing-key', ${randomBytes(32).toString('base64')})`;
 }, 90_000);
 
 afterAll(async () => {
@@ -86,6 +94,59 @@ const wsOf = async (slug: string, key: string) =>
   (await rootSql<{ workspace_id: string }[]>`SELECT workspace_id FROM harness_shared.harness_text_artifacts WHERE harness_slug=${slug} AND rel_path=${key}`)[0]?.workspace_id;
 
 describe('text-artifacts (drizzle, PG)', () => {
+  it('commits signed review, consumes one execution and verifies exact result custody through real PG', async () => {
+    const q = await import('./coverage-census/security-qualification');
+    const { SECURITY_POPULATIONS, securityTupleId } = await import('./coverage-census/security-manifest');
+    const context = (owner: string): UnifiedToolContext => ({ uiClientId: `su-${owner}`, workspaceId: WS, harnessSlug: 'web', isSuperuser: true,
+      log: () => {}, signal: new AbortController().signal, progress: async () => {}, emit: async () => {},
+      principal: { kind: 'system', slug: 'system:superuser', workspaceId: WS,
+        authMethod: 'bearer-token', trust: 'trusted', capabilities: new Set() } });
+    const source = { revision: 'storage-fixture-source', sha256: 'a'.repeat(64) };
+    const produced = await q.captureAuthenticatedSecurityManifest(context('producer'), 'web', { source, runtime: source,
+      inputs: SECURITY_POPULATIONS.map(population => ({ id: population, population, source,
+        surfaces: [{ kind: population, surfaceId: population, fidelity: 'declared' }] })) });
+    const tuples = SECURITY_POPULATIONS.map(population => ({ population, kind: population, surfaceId: population,
+      distribution: 'fixture-installed', platform: 'linux', runtime: 'node', enforcementMode: 'strict', effect: 'fs', channel: 'mcp' }));
+    const planned = await q.prepareAuthenticatedSecurityLedger(context('ledger-producer'), 'web', {
+      manifestSha256: produced.manifest.sha256, tuples, dispositions: tuples.map(tuple => ({
+        rowId: securityTupleId(tuple), applicability: 'notApplicable', reason: 'Storage fixture only, no qualification claim',
+        sourceRefs: ['fixture:storage'] })),
+    });
+    const input = await q.commitSecurityApplicability(context('reviewer'), 'web', {
+      manifestSha256: produced.manifest.sha256, ledgerSha256: planned.ledger.sha256,
+      manifestProducerRef: produced.producerRef, ledgerProducerRef: planned.producerRef,
+      executor: 'su-executor', reviewRef: 'fixture:independent-storage-check' });
+    const execute = vi.fn(async (pins: { startRef: string }) => {
+      expect(await loadImmutableTextArtifactClaim('web', `security-qualification:start:${input.approvalRef}`)).toBe(pins.startRef);
+      return 'storage-control';
+    });
+    const attempts = await Promise.allSettled(Array.from({ length: 3 }, () =>
+      q.runSecurityQualification(context('executor'), 'web', input, execute)));
+    expect(attempts.filter(a => a.status === 'fulfilled')).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const success = attempts.find(a => a.status === 'fulfilled');
+    if (!success || success.status !== 'fulfilled') throw new Error('no successful control');
+    const verified = await q.verifySecurityQualificationResult('web', success.value);
+    expect(verified.ledger.body.rows.map(r => r.rowId)).toEqual(planned.ledger.body.rows.map(r => r.rowId));
+    await expect(q.runSecurityQualification(context('executor'), 'web', input, execute)).rejects.toThrow('already_consumed');
+    await expect(q.verifySecurityQualificationResult('web', { ...success.value, ledgerSha256: 'f'.repeat(64) }))
+      .rejects.toThrow('result_pin_substitution');
+  });
+
+  it('permanently consumes an immutable execution slot exactly once under concurrency', async () => {
+    const slot = 'security-qualification:start:approval';
+    const results = await Promise.all(Array.from({ length: 5 }, () => claimImmutableTextArtifact('web', slot, 'start')));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await loadImmutableTextArtifactClaim('web', slot)).toBe('start');
+    await expect(claimImmutableTextArtifact('web', slot, 'replay')).rejects.toThrow('claim_conflict');
+    const [row] = await rootSql<{ rel_path: string }[]>`SELECT rel_path FROM harness_shared.harness_text_artifacts`;
+    await expect(saveTextArtifact('web', row.rel_path, 'reopen')).rejects.toThrow('immutable_namespace');
+    await expect(deleteTextArtifact('web', row.rel_path)).rejects.toThrow('immutable_namespace');
+    await rootSql`UPDATE harness_shared.harness_text_artifacts SET workspace_id='foreign'`;
+    expect(await loadImmutableTextArtifactClaim('web', slot)).toBeNull();
+    await expect(claimImmutableTextArtifact('web', slot, 'start')).rejects.toThrow('claim_conflict');
+  });
+
   it('preserves concurrent immutable revisions and refuses every ordinary write path', async () => {
     const first = await saveImmutableTextArtifact('web', '{"revision":1}');
     const same = await Promise.all(Array.from({ length: 3 }, () => saveImmutableTextArtifact('web', '{"revision":1}')));

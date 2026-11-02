@@ -7,6 +7,19 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 const exec = promisify(execFile);
 
+async function screenshot(tool: string, pid: string, output: string) {
+  // Pin the visible X11 window as the maintained Quick Access journey does.
+  // --pid selects a bridge; screenshot also requires a capture target.
+  const env = { ...process.env, DISPLAY: process.env.VERIFY_TAURI_DISPLAY! };
+  expect(env.DISPLAY).toBeTruthy();
+  const { stdout } = await exec('xdotool', ['search', '--onlyvisible', '--all',
+    '--pid', pid, '--name', '^Papercusp Operator$'], { env, timeout: 10_000 });
+  const windows = stdout.trim().split('\n').filter(Boolean);
+  expect(windows).toHaveLength(1);
+  await exec(tool, ['screenshot', '--pid', pid, '--window-id', windows[0],
+    '--output', output], { env, timeout: 30_000 });
+}
+
 test('rubric unknown reasons match the current native trend window', async ({}, info) => {
   test.setTimeout(180_000);
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
@@ -59,7 +72,13 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
   const evaluate = (expression: string) => native('eval', expression);
   const wait = (expression: string) => expect.poll(() => evaluate(expression), { timeout: 60_000 }).toBe(true);
   const origin = await evaluate('location.origin');
-  const target = new URL('/rubrics', origin);
+  // Rubrics lives in the maintained Learning pane; /rubrics is a retired
+  // Next page and is not registered by the live SPA. Deep selection also
+  // reaches an unscored rubric whose overview list starts collapsed.
+  const target = new URL('/adv', origin);
+  target.searchParams.set('tab', 'learning');
+  target.searchParams.set('lview', 'rubrics');
+  target.searchParams.set('rrubric', rubricRef);
   target.searchParams.set('ws', workspace);
   target.searchParams.set('verify-tauri-isolated', '1');
   await native('navigate', target.href);
@@ -69,17 +88,23 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
     workspace: window.__PAPERCUSP_WS__ || new URL(location.href).searchParams.get('ws'),
     origin: location.origin
   })`), { timeout: 30_000 }).toEqual({ workspace, origin });
-  const list = await evaluate(`fetch('/api/zero-harness/rest-query?name=rubrics.list&args=%7B%7D', {
-    headers: {'x-papercusp-workspace': ${JSON.stringify(workspace)}}
-  }).then(async response => ({status: response.status, body: await response.json(), url: location.href}))`);
+  let list: { status: number; body: { rows: { rubricId: string }[] } } | undefined;
   const listPath = info.outputPath('rubric-list-precondition.json');
-  await writeFile(listPath, JSON.stringify(list, null, 2));
-  await info.attach('native rubric list precondition', { path: listPath, contentType: 'application/json' });
-  expect(list.status).toBe(200);
-  expect(list.body.rows.some((row: { rubricId: string }) => row.rubricId === rubricRef),
-    'The isolated rubric list must contain the selected fixture before waiting for its DOM row').toBe(true);
-  await wait(`Array.from(document.querySelectorAll('.pc-rubrics tbody tr')).some(row => row.textContent.includes(${JSON.stringify(rubricRef)}))`);
-  await evaluate(`Array.from(document.querySelectorAll('.pc-rubrics tbody tr')).find(row => row.textContent.includes(${JSON.stringify(rubricRef)})).click()`);
+  try {
+    // A cold derived read intentionally returns [] while its real producer
+    // fills the snapshot. Wait for that convergence before judging the fixture.
+    await expect.poll(async () => {
+      list = await evaluate(`fetch('/api/zero-harness/rest-query?name=rubrics.list&args=%7B%7D', {
+        headers: {'x-papercusp-workspace': ${JSON.stringify(workspace)}}
+      }).then(async response => ({status: response.status, body: await response.json(), url: location.href}))`);
+      return list?.status === 200 && list.body.rows.some(row => row.rubricId === rubricRef);
+    }, { timeout: 60_000, message: 'The real rubric producer must expose the inserted fixture' }).toBe(true);
+  } finally {
+    await writeFile(listPath, JSON.stringify(list ?? null, null, 2));
+    await info.attach('native rubric list precondition', { path: listPath, contentType: 'application/json' });
+  }
+  expect(list).toBeDefined();
+  await wait(`!!document.querySelector('[aria-label="Rubric evidence"]')`);
   const selector = '[aria-label="Unknown rating breakdown"]';
   await wait(`document.querySelector(${JSON.stringify(selector)})?.getAttribute('data-evidence') === 'window'`);
 
@@ -115,9 +140,9 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
   expect(source).toBeTruthy();
   await writeFile(receipt, JSON.stringify({ current, dom, source: JSON.parse(await readFile(source!, 'utf8')) }, null, 2));
   await info.attach('native rubric unknown breakdown', { path: receipt, contentType: 'application/json' });
-  const screenshot = info.outputPath('rubric-unknown-breakdown.png');
-  await exec(tool, ['screenshot', '--pid', pid, '--output', screenshot], { timeout: 30_000 });
-  await info.attach('native rubric unknown breakdown screenshot', { path: screenshot, contentType: 'image/png' });
+  const screenshotPath = info.outputPath('rubric-unknown-breakdown.png');
+  await screenshot(tool, pid, screenshotPath);
+  await info.attach('native rubric unknown breakdown screenshot', { path: screenshotPath, contentType: 'image/png' });
 });
 
 test.afterEach(async ({}, info) => {
@@ -138,7 +163,7 @@ test.afterEach(async ({}, info) => {
     })(),
     (async () => {
       const path = info.outputPath('rubric-unknown-breakdown-failure.png');
-      await exec(tool, ['screenshot', '--pid', pid, '--output', path], { timeout: 30_000 });
+      await screenshot(tool, pid, path);
       await info.attach('failed native rubric screenshot', { path, contentType: 'image/png' });
     })(),
   ]);

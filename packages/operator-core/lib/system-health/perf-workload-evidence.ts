@@ -10,6 +10,8 @@ import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-d
 import { recordRubricCheckResults, rubricCheckLedgerPath, type RubricCheckLedgerScope } from '../check-results-ledger';
 import { retainMeasurementProvenance } from '../measurement-provenance';
 import { perfProtocolHash, type PerfProtocolEvidence } from './perf-workload-protocol';
+import { intactPerfWorkloadRun } from './perf-workload-run';
+import { intactPerfWorkloadEvaluation } from './perf-workload-evaluate';
 
 const RUBRIC = 'acceptance-host-memory-right-sizing-2026-10-31';
 const CHECK = 'P-001:artifact-integrity';
@@ -33,6 +35,12 @@ function parseEvidence(value: unknown): PerfProtocolEvidence | null {
   const comparison = () => text(body.journey) && ['cold', 'warm', 'burst'].includes(String(body.stratum)) &&
     ['p95', 'p99', 'throughput'].includes(String(body.metric));
   switch (body.kind) {
+    case 'evaluation':
+      if (!finite(body.endedAtMs) || !intactPerfWorkloadEvaluation(body.evaluation)) return null;
+      break;
+    case 'matched-run':
+      if (!finite(body.endedAtMs) || !intactPerfWorkloadRun(body.capture) || body.endedAtMs !== body.capture.endedAtMs) return null;
+      break;
     case 'registration':
       if (!isHexSha256(body.protocolHash) || !finite(body.registeredAtMs)) return null;
       break;
@@ -45,6 +53,12 @@ function parseEvidence(value: unknown): PerfProtocolEvidence | null {
           !body.observations.length || !body.observations.every(row => row && typeof row === 'object' &&
             text(row.journey) && ['cold', 'warm', 'burst'].includes(row.stratum) &&
             Number.isSafeInteger(row.completedPerArm) && row.completedPerArm >= 0 && typeof row.allObservationsRetained === 'boolean')) return null;
+      if (body.series !== undefined && (!Array.isArray(body.series) || !body.series.every(row => row && typeof row === 'object' &&
+          text(row.journey) && ['cold', 'warm', 'burst'].includes(row.stratum) && ['p95', 'p99', 'throughput'].includes(row.metric) &&
+          Array.isArray(row.a) && Array.isArray(row.b) && row.a.every(finite) && row.b.every(finite)))) return null;
+      break;
+    case 'power-computation':
+      if (!finite(body.endedAtMs) || !isHexSha256(body.protocolInputHash) || !body.result || typeof body.result !== 'object') return null;
       break;
     case 'power':
       if (!comparison() || !finite(body.endedAtMs) || !isHexSha256(body.protocolInputHash) ||

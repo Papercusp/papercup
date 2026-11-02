@@ -53,7 +53,7 @@ function normalizeRelPath(rel: string): string {
  */
 const IMMUTABLE_PREFIX = 'immutable/sha256/';
 function assertMutableKey(key: string): void {
-  if (key.startsWith(IMMUTABLE_PREFIX)) throw new Error('text_artifact_immutable_namespace');
+  if (key.startsWith('immutable/')) throw new Error('text_artifact_immutable_namespace');
 }
 function immutableKey(sha256: string): string {
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('text_artifact_invalid_digest');
@@ -79,6 +79,37 @@ export async function saveImmutableTextArtifact(slug: string, content: string): 
     updatedAt: Date.now(), workspaceId: activeWorkspaceId() }).onConflictDoNothing();
   if (await loadImmutableTextArtifact(slug, sha256) !== content) throw new Error('text_artifact_immutable_conflict');
   return { sha256, relPath };
+}
+
+/** Permanent first-writer slots in the SAME canonical store. Used for execution
+ * consumption, where content addressing alone cannot exclude a second start.
+ * A crash after claiming deliberately leaves an uncertain/consumed execution;
+ * callers must inspect it, never silently retry a potentially effected run.
+ */
+function immutableClaimKey(slot: string): string {
+  if (!slot.trim()) throw new Error('text_artifact_empty_claim');
+  return `immutable/claims/${contentSha256(slot)}.json`;
+}
+export async function loadImmutableTextArtifactClaim(slug: string, slot: string): Promise<string | null> {
+  const { db } = getOrgPg();
+  const rows = await db.select({ content: t.content }).from(t).where(and(
+    eq(t.harnessSlug, slug), eq(t.relPath, immutableClaimKey(slot)), eq(t.workspaceId, activeWorkspaceId()),
+  )).limit(1);
+  if (!rows.length) return null;
+  const value = JSON.parse(rows[0].content) as { sha256: string; content: string };
+  if (typeof value.content !== 'string' || contentSha256(value.content) !== value.sha256) {
+    throw new Error('text_artifact_immutable_corrupt');
+  }
+  return value.content;
+}
+export async function claimImmutableTextArtifact(slug: string, slot: string, content: string): Promise<boolean> {
+  const { db } = getOrgPg();
+  const rows = await db.insert(t).values({ harnessSlug: slug, relPath: immutableClaimKey(slot),
+    content: JSON.stringify({ sha256: contentSha256(content), content }),
+    updatedAt: Date.now(), workspaceId: activeWorkspaceId(),
+  }).onConflictDoNothing().returning({ relPath: t.relPath });
+  if (await loadImmutableTextArtifactClaim(slug, slot) !== content) throw new Error('text_artifact_immutable_claim_conflict');
+  return rows.length === 1;
 }
 
 async function notifyTextArtifactChange(slug: string, _key: string): Promise<void> {

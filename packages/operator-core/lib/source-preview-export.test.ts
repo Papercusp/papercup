@@ -1002,6 +1002,64 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
+  it('reuses dependency hashes only while full source records and manifests remain unchanged', async () => {
+    const root = join(tmp, 'dependency-census-cache-fingerprint');
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(root, helper, '#!/bin/bash\nset -eu\ntest "$1" = trees\necho node_modules\n');
+    write(root, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    write(root, 'node_modules/example/index.mjs', 'export default 1;\n');
+    write(root, 'app/index.mjs', 'workspace app');
+    write(root, 'lib/index.mjs', 'workspace lib');
+    symlinkSync('../app', join(root, 'node_modules/workspace'));
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+      testedInputs: [{ path: 'input.mjs', sha256: 'b'.repeat(64) }], files: [], submodules: [] };
+    const capture = (currentReceipt = receipt) => {
+      const progress: Array<{ cacheHit?: boolean }> = [];
+      const result = captureVerifierDependencies({ dest: root, receipt: currentReceipt,
+        onProgress: event => progress.push(event) });
+      return { result, progress: progress[0] };
+    };
+
+    const first = capture();
+    expect(first.progress).toMatchObject({ cacheHit: false });
+    const unchanged = capture();
+    expect(unchanged.progress).toMatchObject({ cacheHit: true });
+    expect(unchanged.result).toEqual(first.result);
+
+    const dependency = join(root, 'node_modules/example/index.mjs');
+    const originalMtime = statSync(dependency).mtime;
+    writeFileSync(dependency, 'export default 2;\n');
+    await fsPromises.utimes(dependency, originalMtime, originalMtime);
+    const sameSizeEdit = capture();
+    expect(sameSizeEdit.progress).toMatchObject({ cacheHit: false });
+    expect(sameSizeEdit.result.trees[0]!.files.find(file => file.path === 'example/index.mjs')!.sha256)
+      .not.toBe(first.result.trees[0]!.files.find(file => file.path === 'example/index.mjs')!.sha256);
+    expect(capture().progress).toMatchObject({ cacheHit: true });
+
+    chmodSync(dependency, 0o755);
+    const modeEdit = capture();
+    expect(modeEdit.progress).toMatchObject({ cacheHit: false });
+    expect(modeEdit.result.trees[0]!.files.find(file => file.path === 'example/index.mjs')!.executable).toBe(true);
+    expect(capture().progress).toMatchObject({ cacheHit: true });
+
+    const link = join(root, 'node_modules/workspace');
+    rmSync(link);
+    symlinkSync('../lib', link);
+    const targetEdit = capture();
+    expect(targetEdit.progress).toMatchObject({ cacheHit: false });
+    expect(targetEdit.result.trees[0]!.files.find(file => file.path === 'workspace')!.sha256)
+      .not.toBe(modeEdit.result.trees[0]!.files.find(file => file.path === 'workspace')!.sha256);
+
+    const policyPath = join(root, DEPENDENCY_POLICY_PATH);
+    writeFileSync(policyPath, DEPENDENCY_POLICY + '\n# census policy revision\n');
+    const policyEdit = capture();
+    expect(policyEdit.progress).toMatchObject({ cacheHit: false });
+    expect(policyEdit.result.policy.sha256).not.toBe(targetEdit.result.policy.sha256);
+    const receiptEdit = capture({ ...receipt, sourceCommit: 'c'.repeat(40) });
+    expect(receiptEdit.progress).toMatchObject({ cacheHit: false });
+    expect(receiptEdit.result.sourceReceiptSha256).not.toBe(policyEdit.result.sourceReceiptSha256);
+  });
+
   it.each(['shadow-path', 'inherited-override'] as const)(
     'pins the dependency census interpreter under %s', mode => {
       const root = join(tmp, 'dependency-census-interpreter-' + mode);
