@@ -6108,8 +6108,20 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     const res = await callTool('gatingtest:scoped', {}, extra, meta);
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('superuser_native_session_unverified');
+    expect(textOf(res)).toContain('Reconnect the MCP client so it resends the active thread ID.');
     expect(h.nativeSessionCalls).toHaveLength(0);
     expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_native_session_unverified',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_native_session_unverified',
+          contextVerified: false,
+        },
+      },
+    });
   });
 
   it('fails closed with a retryable verifier reason when per-call verification throws despite a matching inherited SID', async () => {
