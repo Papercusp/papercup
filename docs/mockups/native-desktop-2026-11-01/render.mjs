@@ -27,7 +27,9 @@ try {
         const rect = element.getBoundingClientRect();
         return { title: element.querySelector('.titlebar,.wing-title')?.textContent?.trim() || 'Panel', left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
       }));
-      captures.push({ direction, surface, file: `${direction}-${surface}.png`, bounds });
+      const overviewCards = surface === 'overview' ? await page.locator('.overview-card > .overview-inner').count() : null;
+      if (surface === 'overview' && overviewCards !== 5) errors.push(`Overview ${direction} must contain five intact preview cards; found ${overviewCards}`);
+      captures.push({ direction, surface, file: `${direction}-${surface}.png`, bounds, overviewCards });
     }
   }
   for (const platform of ['ubuntu', 'mac', 'windows']) {
