@@ -272,6 +272,7 @@ export function summarizeProofHistory(history: unknown[]): Record<string, unknow
     byCurrentness,
     reasons: ranked.slice(0, PROOF_REASONS_PER_BAR),
     ...(ranked.length > PROOF_REASONS_PER_BAR ? { reasonsOmitted: ranked.length - PROOF_REASONS_PER_BAR } : {}),
+    rowsTruncated: true,
     rowsCut: `[TRUNCATED ${history.length} proof rows summarized — recover: ${SHAPE_RECOVER_HINT}]`,
   };
 }
@@ -342,6 +343,7 @@ function shapeShipReadiness(value: unknown): unknown {
       bars,
       ...(proseClipped > 0
         ? {
+            textTruncated: true,
             proseCut: `TRUNCATED ${proseClipped} bar prose field(s) (requirement/method/falsifier) to ${BAR_PROSE_HEAD_CHARS} chars; <key>_full_chars is the length — ${SHIP_READINESS_FULL} for the contract text`,
           }
         : {}),
@@ -361,6 +363,7 @@ function summarizeSourceRevisions(value: unknown): unknown {
   const out: Record<string, unknown> = { ...rev };
   for (const k of lists) out[k] = { count: (rev[k] as unknown[]).length };
   out.rowsCut = `TRUNCATED ${lists.join(", ")} revision rows to counts — ${SHIP_READINESS_FULL} for the pins`;
+  out.sourceRevisionsTruncated = true;
   return out;
 }
 
