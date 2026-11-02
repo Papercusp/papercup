@@ -313,10 +313,10 @@ describe('setInheritedGoalContext', () => {
     await expect(setInheritedGoalContext(WS, 'member-1', 'goal-42', sql)).resolves.toBe(false);
   });
 
-  it('refuses an empty goal id rather than writing a blank stamp', async () => {
-    const { sql, briefs } = mockSql();
-    expect(await setInheritedGoalContext(WS, 'member-1', '', sql)).toBe(false);
-    expect(briefs).toEqual([]);
+  it.each(['', '   ', undefined])('refuses a missing or blank goal id %s without clearing context', async (goal) => {
+    const { sql, briefs } = mockSql({ briefs: [{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-paused' }] });
+    expect(await setInheritedGoalContext(WS, 'member-1', goal as never, sql)).toBe(false);
+    expect(briefs).toEqual([{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-paused' }]);
   });
 });
 
