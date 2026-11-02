@@ -171,7 +171,8 @@ async function main() {
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
-  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools;
+  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools
+    || e.STAGING_FIRST_HTTP_SCENARIO === 'testing-background';
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,

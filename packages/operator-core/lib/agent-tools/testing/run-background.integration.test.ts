@@ -3,11 +3,13 @@ import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(480_000);
 
 it('accepts one dirty background test over current-build HTTP and retains its terminal source custody', async context => {
+  let prepared: { sha256: string; receiptSha256: string };
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/testing/run-background.integration.test.ts',
     sourcePaths: ['packages/operator-core/lib/agent-tools/testing/run.ts',
@@ -17,7 +19,13 @@ it('accepts one dirty background test over current-build HTTP and retains its te
       'packages/operator-core/test/testing-background-http-scenario.ts',
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/isolated-integration-proof.ts', 'scripts/with-test-pg.mjs'],
-    retainedArtifacts: ['phases/execute/background-http-receipt.json'],
+    retainedArtifacts: ['phases/execute/background-http-receipt.json',
+      'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+      'phases/prepare/hono-host.mjs.build-steps.jsonl'],
+    prepare: async evidenceDir => {
+      prepared = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } });
+    },
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
@@ -27,7 +35,8 @@ it('accepts one dirty background test over current-build HTTP and retains its te
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--prepared-api-sha=' + prepared.sha256, '--prepared-receipt-sha=' + prepared.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;

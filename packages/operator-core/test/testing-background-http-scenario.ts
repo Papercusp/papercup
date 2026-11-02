@@ -1,7 +1,7 @@
 /** Real private HTTP/PG journey for one directly detached dirty test. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
@@ -45,7 +45,7 @@ export async function measureTestingBackgroundScenario(o: Options) {
     return JSON.parse(text[0].text);
   };
   const accepted = await call('testing:run', { harness: o.harness, rootHarnessSlug, files: [file],
-    background: true, timeoutMs: 120_000, cleanupReserveMs: 10_000, testNamePattern: 'dirty fixture' });
+    background: true, cleanupReserveMs: 10_000, testNamePattern: 'dirty fixture' });
   assert.equal(accepted.ok, true, JSON.stringify(accepted));
   assert.equal(accepted.mode, 'background');
   assert.equal(accepted.status, 'pending');
@@ -53,17 +53,25 @@ export async function measureTestingBackgroundScenario(o: Options) {
   assert.equal(accepted.detachedDurable, true);
   assert.equal(accepted.passed, undefined, 'launch acceptance must not report a test verdict');
   let terminal: any;
-  const end = Date.now() + 130_000;
+  // The product's ordinary task budget includes the detached core's startup.
+  // Derive observation from that anchored deadline rather than a second clock.
+  const end = accepted.deadline.taskDeadlineAtMs + 15_000;
   while (Date.now() < end) {
     const status = await call('testing:run-status', { runId: accepted.detachedRunId });
     if (status.snapshot && status.snapshot.status !== 'running') { terminal = status.snapshot; break; }
     await delay(500);
   }
-  assert.equal(terminal?.status, 'pass', JSON.stringify(terminal));
-  assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['once'], 'one request must execute exactly once');
-  const result = terminal.output.split('\n').map((line: string) => {
+  await writeFile(join(o.evidenceDir, 'background-terminal.json'), JSON.stringify(terminal ?? null));
+  const result = (terminal?.output ?? '').split('\n').map((line: string) => {
     try { return JSON.parse(line); } catch { return null; }
   }).find((value: any) => value?.artifacts?.directory);
+  if (result?.artifacts?.directory) {
+    // The private runtime removes its HOME even when an assertion fails. Keep
+    // original router logs and phase receipts before that cleanup can erase them.
+    await cp(result.artifacts.directory, join(o.evidenceDir, 'background-core-artifacts'), { recursive: true });
+  }
+  assert.equal(terminal?.status, 'pass', JSON.stringify(terminal));
+  assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['once'], 'one request must execute exactly once');
   assert.equal(result?.ok, true, terminal.output);
   const sourcePacket = JSON.parse(await readFile(join(result.artifacts.directory, 'source.json'), 'utf8'));
   const sourceSha256 = createHash('sha256').update(source).digest('hex');
