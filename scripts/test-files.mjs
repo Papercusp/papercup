@@ -427,7 +427,7 @@ function registeredVitestFileRoute(rootRelative, absolute, root) {
   );
   if (!project) return null;
   const cwd = resolve(root, project.root);
-  const config = 'vitest.config.ts';
+  const config = 'config' in project ? project.config : 'vitest.config.ts';
   if (!existsSync(resolve(cwd, config))) return null;
   return { cwd, config, absolute, requested: relative(cwd, absolute) };
 }

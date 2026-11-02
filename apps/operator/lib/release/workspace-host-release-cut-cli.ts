@@ -1104,6 +1104,8 @@ export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
         // Effects use the writer's uid, so census must retain foreign ownership
         // boundaries under that same authority before any marker is removed.
         includeRecent: true, retainAfterMs: -Infinity, timeoutMs: remaining(), requirePrivilege: false, sudo: null,
+        // This cutter removes atomic top-level groups; treat nested symlinks as group boundaries.
+        retainSymlinkDescendants: true,
         coversPinnedPath: isPinned.coversPath,
       });
       receipt.capsMeasurement = 'unavailable';
