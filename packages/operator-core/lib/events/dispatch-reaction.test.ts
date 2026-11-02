@@ -1,8 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+const deps = vi.hoisted(() => ({ loads: 0 }));
+vi.mock('../projected-tool-deps', () => {
+  deps.loads++;
+  return { PROJECTED_DEPS: {} };
+});
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { buildReactionCtx } from './dispatch-reaction';
 import type { ReactionCause } from './types';
+
+it('builds reaction context without loading the product dispatcher', () => {
+  expect(deps.loads).toBe(0);
+});
 
 const parent = {
   workspaceId: 'w1',

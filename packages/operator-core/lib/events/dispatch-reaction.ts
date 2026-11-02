@@ -24,7 +24,6 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { activeWorkspaceId } from '../workspace-registry';
 import { fireBuiltinReactionAction, isBuiltinReactionAction } from './builtin-actions';
 import {
@@ -189,6 +188,9 @@ export async function fireReactionInProcess(opts: {
   }
 
   try {
+    // Context and liveness helpers import reactions without firing a tool.
+    // Keep the product graph behind the actual dispatch boundary.
+    const { PROJECTED_DEPS } = await import('../projected-tool-deps');
     const result = await withWorkspace(workspaceId, async (tx) => {
       const ctx: UnifiedToolContext = {
         ...buildReactionCtx(opts.parentCtx, workspaceId, opts.cause, opts.capability),

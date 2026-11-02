@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { freezeMinecraftTrial } from './minecraft-protocol';
 import { startMinecraftRuntime, type MinecraftRuntime } from './minecraft-runtime';
-import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEvidence } from './minecraft-evidence';
+import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEvidence,
+  readMinecraftEvidenceExport } from './minecraft-evidence';
 import { liveProcExec } from './grader/index';
 
 const assets = fileURLToPath(new URL('../../vendor/minecraft-runtime/', import.meta.url));
@@ -62,9 +63,27 @@ describe('real Minecraft/Mineflayer isolation and cancellation (scripted, no mod
     await expect(program).rejects.toThrow(/cancelled|timed out/);
     expect(await runtime.stop()).toMatchObject({ removed: true, errors: [] });
     const evidence = await collectMinecraftEvidence(runtime);
-    expect(gradeMinecraftEvidence(runtime.trial, evidence).resolved).toBe(false);
-    const replay = JSON.parse(exportMinecraftEvidence(evidence));
+    const grade = gradeMinecraftEvidence(runtime.trial, evidence);
+    // A trustworthy no-progress result is a scored trial, rather than a missing-evidence error.
+    expect(grade).toMatchObject({ score: 0, resolved: false,
+      rawGraderOutput: { trialId: runtime.trial.trialId, runtimeId: runtime.runtimeId } });
+    expect(grade.graderError).toBeUndefined();
+    for (const changed of [
+      { taskId: 'foreign-trial' },
+      { runId: 'foreign-run' },
+      { participants: ['mallory'] },
+    ]) {
+      const foreign = freezeMinecraftTrial({ ...runtime.trial.protocol, ...changed });
+      expect(gradeMinecraftEvidence(foreign, evidence)).toMatchObject({ score: null,
+        resolved: false, graderError: 'Foreign Minecraft trial evidence' });
+    }
+    const serialized = exportMinecraftEvidence(evidence);
+    const retainedHostDigest = createHash('sha256').update(serialized).digest('hex');
+    expect(gradeMinecraftEvidence(runtime.trial,
+      readMinecraftEvidenceExport(serialized, retainedHostDigest))).toEqual(grade);
+    const replay = JSON.parse(serialized);
     expect(replay.trialId).toBe(runtime.trial.trialId);
+    expect(replay.runtimeId).toBe(runtime.runtimeId);
     expect(replay.snapshot.files['server.log']).toContain('Done (');
     const events = (replay.snapshot.files['programs.jsonl'] as string).trim().split('\n').map(line => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({ event: 'program-error', participant: 'alice' }));
