@@ -2450,9 +2450,46 @@ describe('BG inherited manifest and original source boundaries', () => {
   }
 
   function expectBgChild(child: SpawnSyncReturns<string>, phases = '') {
-    expect({ status: child.status, signal: child.signal, error: child.error ?? null, stderr: child.stderr }, phases)
+    const childError = child.error as NodeJS.ErrnoException | undefined;
+    const diagnostics = {
+      status: child.status,
+      signal: child.signal,
+      error: childError ? {
+        name: childError.name,
+        message: childError.message,
+        code: childError.code ?? null,
+        errno: childError.errno ?? null,
+        syscall: childError.syscall ?? null,
+        path: childError.path ?? null,
+      } : null,
+      stderr: child.stderr,
+      phases,
+    };
+    expect({ status: child.status, signal: child.signal, error: child.error ?? null, stderr: child.stderr },
+      `BG child failure diagnostics:\n${JSON.stringify(diagnostics, null, 2)}`)
       .toEqual({ status: 0, signal: null, error: null, stderr: '' });
   }
+
+  it('BG recipe child assertion preserves spawnSync error, signal, and phase evidence', () => {
+    const phases = 'phase=bg.compiler.build event=failed';
+    const child = {
+      pid: 123,
+      output: [],
+      stdout: '',
+      stderr: '',
+      status: null,
+      signal: 'SIGTERM',
+      error: Object.assign(new Error('spawnSync bash ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    } satisfies SpawnSyncReturns<string>;
+    let failure: unknown;
+    try { expectBgChild(child, phases); } catch (error) { failure = error; }
+    const message = String(failure);
+    expect(message).toContain('"status": null');
+    expect(message).toContain('"signal": "SIGTERM"');
+    expect(message).toContain('"code": "ETIMEDOUT"');
+    expect(message).toContain('"message": "spawnSync bash ETIMEDOUT"');
+    expect(message).toContain(phases);
+  });
 
   function bgRecipePhaseRunner(label: string) {
     const traceEnabled = Boolean(process.env.PAPERCUSP_BG_LOGICAL_TRACE);
