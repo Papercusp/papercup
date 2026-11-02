@@ -61,6 +61,7 @@ import {
 import { readFile } from 'node:fs/promises';
 import { homedir as osHomedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { papercuspHome } from '@papercusp/host-platform/home';
 import { parse as parseToml } from '@iarna/toml';
 import { CODEX_CAPABILITY_CONTROLS } from '@papercusp/orchestrator/managed-capability-policy';
 import {
@@ -107,7 +108,7 @@ function homedir(): string {
 // data root in PAPERCUSP_HOME. Reuse this path for enrollment AND repair checks
 // so a missing workspace copy cannot hide an installed journal or guard.
 function installedHookPath(...parts: string[]): string {
-  return join(homedir(), '.papercusp', 'hooks', ...parts);
+  return join(papercuspHome({}, homedir()), 'hooks', ...parts);
 }
 
 import { dirname as __esmDirname } from 'node:path';

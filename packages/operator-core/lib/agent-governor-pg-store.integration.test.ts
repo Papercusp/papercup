@@ -74,6 +74,16 @@ function sharedPair(key: string, limits: { maxConcurrent: number; rpm?: number }
 }
 
 describe('PgGovernorStore (RB-007)', () => {
+  it('serializes concurrent feedback on a bucket that has never existed', async () => {
+    const key = 'openai:default@first-use-feedback';
+    const limits = { maxConcurrent: 32, rpm: 45 };
+    await Promise.all(Array.from({ length: 16 }, () => store.transact(key, limits, s => {
+      s.rpmFactor = (s.rpmFactor ?? 1) + 1;
+    })));
+    const state = await store.transact(key, limits, () => {});
+    expect(state.rpmFactor).toBe(17);
+  });
+
   it.each(['openai', 'anthropic'])('persists %s growth above the seed and provider-limit evidence across instances', async provider => {
     const key = `${provider}:default@adaptive-rpm`;
     const { a, b, clock } = sharedPair(key, { maxConcurrent: 10, rpm: 45 });
@@ -93,9 +103,13 @@ describe('PgGovernorStore (RB-007)', () => {
       const state = await store.transact(key, { maxConcurrent: 10 }, () => {});
       return state.limits.rpmFromHeaders;
     }).toBe(true);
-    const c = new RateLimitGovernor({ maxConcurrent: 10, rpm: 45 }, { now: () => clock.t, store, storeKey: key });
+    const c = new RateLimitGovernor({ maxConcurrent: 10, rpm: 45 }, {
+      now: () => clock.t, sleep: async ms => { clock.t += ms; }, store, storeKey: key,
+    });
     c.state.smoothRpm = true;
-    (await c.acquire())?.();
+    const inherited = await c.acquire({}, { maxWaitMs: 2_000 });
+    expect(inherited).not.toBeNull();
+    inherited?.();
     c.recordResponse({}, 200);
     expect(effectiveRpm(c.state, clock.t)).toBe(120);
     expect(c.state.limits.rpmFromHeaders).toBe(true);

@@ -456,12 +456,7 @@ export interface CheckpointEvidence {
 export type CheckpointTypecheckDiagnostic = TscDiagnostic;
 
 /** Structured evidence for a completed early changed-file typecheck failure. */
-export interface CheckpointTypecheckPreflight {
-  status: "failed";
-  checkedFiles: string[];
-  failingFiles: string[];
-  diagnostics: CheckpointTypecheckDiagnostic[];
-}
+export type { CheckpointTypecheckPreflight } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 
 const EARLY_TYPECHECK_DIAGNOSTIC_MAX = 100;
 
@@ -22278,7 +22273,20 @@ export function realCheckpointDeps(
     execution: createCheckpointQualificationExecution,
   },
 ): CheckpointDeps {
+  const progressLockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
   const notifyProgress = (detail?: string) => {
+    // Child stdout is buffered until completion, so readers cannot use its log
+    // mtime as progress during a long repair verification. Publish actual command
+    // activity through the existing marker, retaining its phase/activity/leg.
+    // Selection helpers also construct real deps before acquiring the run lock;
+    // they must never refresh another process's marker or create a new one.
+    try {
+      const owner = JSON.parse(readFileSync(path.join(progressLockDir, "owner.json"), "utf8"));
+      if (owner.pid === process.pid) {
+        const marker = readCheckpointRunPhaseMarker(progressLockDir);
+        if (marker) writeCheckpointRunPhase(progressLockDir, marker.phase, marker);
+      }
+    } catch { /* diagnostic-only: an absent/unreadable marker stays unmeasured */ }
     try {
       reportProgress?.(detail);
     } catch {
@@ -22393,7 +22401,6 @@ export function realCheckpointDeps(
    */
   const exec: CheckpointExec = async (cmd, args, opts) => {
     notifyProgress(`command:start:${cmd}`);
-    if (!reportProgress) return execRaw(cmd, args, opts);
     const forwarded = {
       ...opts,
       onProgress: () => {

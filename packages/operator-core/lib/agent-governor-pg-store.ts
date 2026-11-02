@@ -78,6 +78,14 @@ export class PgGovernorStore implements GovernorStore {
   async transact(key: string, floor: GovernorLimits, mutate: (s: GovernorState) => void): Promise<GovernorState> {
     const sql = this.sqlClient ?? getOrgPg().sql;
     return (await sql.begin(async (tx) => {
+      // FOR UPDATE cannot lock an absent row. Establish the bucket first so
+      // simultaneous first requests serialize instead of overwriting counters
+      // or learned feedback with independently initialized state.
+      await tx`
+        INSERT INTO harness_shared.agent_rate_budget (bucket_key)
+        VALUES (${key})
+        ON CONFLICT (bucket_key) DO NOTHING
+      `;
       const rows = (await tx`
         SELECT window_start, req_in_window, in_tok_in_window, out_tok_in_window,
                paused_until, pace_delay_ms, last_acquire_at, limits, rpm_factor, rpm_factor_at

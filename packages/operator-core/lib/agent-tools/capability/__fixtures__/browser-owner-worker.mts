@@ -86,4 +86,4 @@ process.on('message', async (message: any) => {
   } catch (error) { controllers.delete(seq); process.send!({ type: 'fixture:result', seq, error: String(error) }); }
 });
 process.on('disconnect', () => process.exit(0));
-process.send!({ type: 'fixture:ready', pid: process.pid });
+process.send!({ type: 'fixture:ready', pid: process.pid, startupAtNs: process.hrtime.bigint().toString() });
