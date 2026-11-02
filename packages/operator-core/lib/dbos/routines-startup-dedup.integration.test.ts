@@ -219,6 +219,51 @@ describe('startup routine duplicate admission (real DBOS and PostgreSQL)', () =>
       ORDER BY ts, id`;
     expect(starts.map(start => start.trigger).sort()).toEqual(['manual', 'timer']);
   }, 120_000);
+
+  it('keeps disabled work due across real scheduler passes and runs that occurrence after re-enable', async () => {
+    const { setWorkspaceBackgroundActivityPolicy } = await import('../device-operator-actions');
+    const { startupActivityFeatureId } = await import('../schedule-inventory');
+    const row = await routine();
+    const featureId = startupActivityFeatureId({ source: 'routines', installSlug: row.installSlug,
+      name: row.name, detail: {} }, { workspaceId: workspace });
+    await setWorkspaceBackgroundActivityPolicy({ action: 'automatic', automatic: false }, 0, user);
+    const [due] = await db.adminSql<{ next_fire_at: Date }[]>`
+      UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second'
+      WHERE id = ${row.id} RETURNING next_fire_at`;
+    const knownTicks = new Set((await db.adminSql<{ workflow_uuid: string }[]>`
+      SELECT workflow_uuid FROM dbos.workflow_status WHERE name = 'routinesTick'`)
+      .map(tick => tick.workflow_uuid));
+    // Observe completed scheduler opportunities, rather than a sleep that could
+    // pass with a stopped executor. Neither claim nor admission is mocked.
+    await expect.poll(async () => {
+      const ticks = await db.adminSql<{ workflow_uuid: string }[]>`
+        SELECT workflow_uuid FROM dbos.workflow_status
+        WHERE name = 'routinesTick' AND status = 'SUCCESS'`;
+      return ticks.filter(tick => !knownTicks.has(tick.workflow_uuid)).length;
+    }, { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
+    expect(await db.adminSql`SELECT active, last_fired_at, next_fire_at
+      FROM harness_shared.routines WHERE id = ${row.id}`)
+      .toEqual([{ active: true, last_fired_at: null, next_fire_at: due.next_fire_at }]);
+    expect(executions.get(row.id)).toBeUndefined();
+    expect(await db.adminSql`SELECT workflow_uuid FROM dbos.workflow_status
+      WHERE deduplication_id = ${`routine:${row.id}`}`).toHaveLength(0);
+    expect(await db.adminSql`SELECT id FROM harness_shared.audit_log
+      WHERE workspace_id = ${workspace} AND action = 'background-activity' AND subject = ${featureId}`)
+      .toHaveLength(0);
+
+    // Re-enable the original due row: no new occurrence, manual enqueue, or
+    // timestamp rewrite is allowed to manufacture the positive control.
+    await setWorkspaceBackgroundActivityPolicy({ action: 'automatic', automatic: true }, 1, user);
+    await expect.poll(() => executions.get(row.id)?.length ?? 0, { timeout: 30_000 }).toBe(1);
+    await complete(row.id);
+    expect(await db.adminSql`SELECT last_fired_at IS NOT NULL AND next_fire_at > now() AS claimed
+      FROM harness_shared.routines WHERE id = ${row.id}`).toEqual([{ claimed: true }]);
+    expect(await db.adminSql`SELECT details->'startupActivity'->>'trigger' AS trigger
+      FROM harness_shared.audit_log
+      WHERE workspace_id = ${workspace} AND action = 'background-activity' AND subject = ${featureId}`)
+      .toEqual([{ trigger: 'timer' }]);
+    expect(executions.get(row.id)).toHaveLength(1);
+  }, 90_000);
 });
 
 function eventInput(rule: ReactionRule = { id: `startup-event-${randomUUID()}`,

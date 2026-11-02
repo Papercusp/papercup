@@ -60,6 +60,8 @@
 /** The curated set of named interactions we budget + measure. Keep this small
  *  and intentional — one entry per user-perceived interaction worth a budget. */
 export const PERF_INTERACTIONS = {
+  /** Work-tab gesture → the selected harness's rows and summary have rendered. */
+  workListOpen: "work-list-open",
   /** Work grid selection → the matching detail has committed usable content. */
   workItemOpen: "work-item-open",
   /** Human-work claim click → the authoritative claimed state has rendered. */

@@ -32,6 +32,10 @@ export function HumanWorkSection({ slug, id, refreshKey }: { slug: string; id: s
   const [error, setError] = useState<string | null>(null);
   const requestSeq = useRef(0);
   const claimTiming = useRef<string | null>(null);
+  const cancelClaimTiming = () => {
+    if (claimTiming.current) clearInteraction(PERF_INTERACTIONS.workItemClaim, claimTiming.current);
+    claimTiming.current = null;
+  };
   const currentEndpoint = useRef(endpoint);
   currentEndpoint.current = endpoint;
 
@@ -90,10 +94,16 @@ export function HumanWorkSection({ slug, id, refreshKey }: { slug: string; id: s
         body: JSON.stringify({ action, version: view.version, ...(action === 'submit' ? { result: result.trim() } : {}) }) });
       const data = await response.json();
       if (seq !== requestSeq.current || currentEndpoint.current !== endpoint) return;
-      if (!response.ok) { setView(null); setError(errorCopy(response.status, data.error)); return; }
+      if (!response.ok) {
+        cancelClaimTiming();
+        setView(null);
+        setError(errorCopy(response.status, data.error));
+        return;
+      }
       setView(data as HumanWorkView);
     } catch {
       if (seq === requestSeq.current) {
+        cancelClaimTiming();
         setView(null);
         setError('The action could not be confirmed. Refresh to check before trying again.');
       }
