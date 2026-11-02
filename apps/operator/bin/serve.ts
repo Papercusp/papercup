@@ -1512,6 +1512,7 @@ async function main(): Promise<void> {
   // adopt an already-running process. Non-vm-release profiles no-op here.
   await assertVmReleaseApplicationRuntime({
     env: process.env,
+    allowRuntimeHandoff: true,
     sidecarDir: dirname(fileURLToPath(import.meta.url)),
     hostname,
     port: honoPortHint,

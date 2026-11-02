@@ -4013,13 +4013,19 @@ async function injectPsuHostWake(
             noteUpdatedAtMs = meta.updatedAtMs;
           }
         }
-        decision = decideColdWake({
+        const coldDecision = decideColdWake({
           payload: d.payload,
           coldEnabled,
           carryNote,
           classDefaultCold,
           activeInteractiveExchange,
         });
+        decision =
+          coldDecision.cold &&
+          coldDecision.mode === 'reset' &&
+          !hostSupports(host as PsuPtyHost, 'reset-reanchor-v1')
+            ? { ...coldDecision, mode: 'recycle' }
+            : coldDecision;
       }
     }
   } catch {

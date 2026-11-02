@@ -3741,6 +3741,9 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
     expect(textOf(res)).toContain('still LIVE');
     expect(textOf(res)).toContain('FRESH identity');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('LIVE SOURCE SAFETY');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('inherits no work-item claims');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('confirm this fork holds the claim');
   });
 
   it.each([5, 31])('fails closed for an explicit in-place resume when the source is LIVE (idle %s minutes)', async (idleMinutes) => {

@@ -2785,11 +2785,14 @@ export default defineTool({
           intendedParallelPlanFleets: goalLaunch.settings?.intendedParallelPlanFleets ?? null,
         })
       : null;
+    const liveForkSafetyBrief = fork && sourceStillLive
+      ? 'LIVE SOURCE SAFETY: the source identity is still active. This fork has a fresh identity and inherits no work-item claims. Before continuing any task described in the source transcript, read its current work item and confirm this fork holds the claim; otherwise take distinct work through scheduler:get_next.'
+      : null;
     const memberBriefs = memberCommands.map((_, i) => {
       const custom = isSuccessor
         ? successorBrief
         : (memberSpecs[i]?.brief?.trim() || args.brief);
-      return [custom, goalAllocationBrief].filter(Boolean).join('\n\n') || undefined;
+      return [liveForkSafetyBrief, custom, goalAllocationBrief].filter(Boolean).join('\n\n') || undefined;
     });
     const kickoffProofRequired = memberBriefs.map((brief) => Boolean(brief || args.plan));
     const results = await Promise.all(

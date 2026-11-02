@@ -83,7 +83,8 @@ const vmEnv = {
 };
 
 function runPackagedRuntime(options: { foreignNode?: boolean; gitHead?: string; corruptNode?: boolean;
-  bun?: string; accepted?: boolean; missingReader?: boolean; mutateManifest?: boolean; corruptBun?: boolean } = {}) {
+  bun?: string; accepted?: boolean; missingReader?: boolean; mutateManifest?: boolean; corruptBun?: boolean;
+  handoff?: boolean; noExecve?: boolean; corruptPreload?: boolean } = {}) {
   const root = fixture({ gitHead: options.gitHead ?? 'a'.repeat(40), ...(options.bun ? {
     applicationRuntime: { name: 'bun', acceptanceRef: 'docs/evidence/candidate.json', harnessSlug: 'papercusp' },
   } : {}) });
@@ -91,6 +92,14 @@ function runPackagedRuntime(options: { foreignNode?: boolean; gitHead?: string; 
   copyFileSync(process.execPath, nodePath);
   const manifestPath = join(root, 'build-provenance.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  if (options.handoff) {
+    writeFileSync(join(root, 'serve.mjs'), `process.stdout.write(JSON.stringify({runtime:process.versions.bun?'bun':'node',pid:process.pid,ppid:process.ppid,args:process.argv.slice(2),preloaded:globalThis.packagePreloaded,nodeOptions:process.env.NODE_OPTIONS}));`);
+    manifest.artifacts.find((artifact: { name: string }) => artifact.name === 'serve.mjs').sha256 =
+      createHash('sha256').update(readFileSync(join(root, 'serve.mjs'))).digest('hex');
+    writeFileSync(join(root, 'sidecar-preload.js'), 'globalThis.packagePreloaded = "verified";');
+    manifest.artifacts.push({ name: 'sidecar-preload.js', sha256: createHash('sha256')
+      .update(readFileSync(join(root, 'sidecar-preload.js'))).digest('hex') });
+  }
   manifest.artifacts.find((artifact: { name: string }) => artifact.name === 'bin/node').sha256 =
     createHash('sha256').update(readFileSync(nodePath)).digest('hex');
   if (options.bun) {
@@ -101,13 +110,16 @@ function runPackagedRuntime(options: { foreignNode?: boolean; gitHead?: string; 
   writeFileSync(manifestPath, JSON.stringify(manifest));
   if (options.corruptNode) writeFileSync(nodePath, 'changed runtime bytes');
   if (options.corruptBun) writeFileSync(join(root, 'bin/bun'), 'changed Bun bytes');
+  if (options.corruptPreload) writeFileSync(join(root, 'sidecar-preload.js'), 'throw new Error("bad preload ran")');
   const subject = fileURLToPath(new URL('./vm-release-runtime-policy.ts', import.meta.url));
   const runner = join(root, 'check-host.mjs');
   buildSync({ stdin: { resolveDir: root, loader: 'ts', contents: `
 import { assertVmReleaseApplicationRuntime } from ${JSON.stringify(subject)};
 try {
+  ${options.noExecve ? 'process.execve = undefined;' : ''}
   const launch = await assertVmReleaseApplicationRuntime({ sidecarDir: process.argv[2],
     hostname: '127.0.0.1', port: 45821,
+    allowRuntimeHandoff: ${options.handoff === true},
     ${options.missingReader ? '' : `verifyApplicationRuntimeAcceptance: async ({ candidate, evidenceRef, role }) => {
       ${options.mutateManifest ? `const fs = await import('node:fs'); fs.appendFileSync(process.argv[2] + '/build-provenance.json', ' ');` : ''}
       return ${options.accepted ? `{ verdict: 'accepted', evidenceRef, role,
@@ -123,8 +135,8 @@ try {
   // Run the verifier under the actual package path, or a byte-identical foreign
   // Node for the negative control. No database or host service is started.
   const executable = options.foreignNode || options.corruptNode || options.corruptBun ? process.execPath
-    : options.bun ? join(root, 'bin/bun') : nodePath;
-  return { root, nodePath, result: spawnSync(executable, [runner, root], {
+    : options.bun && !options.handoff ? join(root, 'bin/bun') : nodePath;
+  return { root, nodePath, result: spawnSync(executable, [runner, root, 'literal arg', '--eval', '$(never-a-shell)'], {
     env: { ...vmEnv }, encoding: 'utf8', timeout: 20_000,
   }) };
 }
@@ -179,6 +191,27 @@ describe('ordinary package host runtime selection', () => {
   ] as const)('rejects real packaged Bun %s', (_label, options, message) => {
     const { result } = runPackagedRuntime({ bun: nativeBun, ...options });
     expect(result.status, result.stderr).toBe(42);
+    expect(result.stderr).toContain(message);
+  }, 30_000);
+
+  it.skipIf(!nativeBun)('replaces the verified Node bootstrap with accepted Bun, retaining PID, parent, stdio and literal argv', () => {
+    const { root, result } = runPackagedRuntime({ bun: nativeBun, accepted: true, handoff: true });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ runtime: 'bun', pid: result.pid, ppid: process.pid,
+      preloaded: 'verified', args: [root, 'literal arg', '--eval', '$(never-a-shell)'] });
+  }, 30_000);
+
+  it.skipIf(!nativeBun).each([
+    ['unaccepted candidate', { accepted: false }, 'Matching current candidate acceptance'],
+    ['missing authority', { missingReader: true }, 'canonical Bun acceptance reader'],
+    ['foreign Node bootstrap', { foreignNode: true, accepted: true }, 'package-pinned Bun'],
+    ['unsupported replacement', { noExecve: true, accepted: true }, 'requires process.execve'],
+    ['corrupt preload', { corruptPreload: true, accepted: true }, 'artifact sidecar-preload.js hash mismatch'],
+    ['mutated provenance', { mutateManifest: true, accepted: true }, 'build provenance changed'],
+  ] as const)('refuses Node-to-Bun handoff for %s before running application code', (_label, options, message) => {
+    const { result } = runPackagedRuntime({ bun: nativeBun, handoff: true, ...options });
+    expect(result.status, result.stderr).toBe(42);
+    expect(result.stdout).toBe('');
     expect(result.stderr).toContain(message);
   }, 30_000);
 });

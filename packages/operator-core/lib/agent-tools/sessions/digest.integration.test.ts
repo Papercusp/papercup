@@ -300,6 +300,49 @@ describe('sessions:digest narrow CTE + primary-key text join (WI-6843)', () => {
     }
   });
 
+  it.each([
+    '⟦turn-origin:wake-pump nonce:986d2592ba99a364⟧\n[await-event] work-item:claimable fired — a task is available',
+    '⟦turn-origin:wake-pump nonce:truncated',
+    '⟦turn-origin:coord-inject nonce:986d2592ba99a364⟧\nPeer status update',
+  ])('keeps the as-of task before control traffic: %s', async (wake) => {
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      VALUES (${WORKSPACE}, 'codex', 'wake-task', 0, '2026-02-03T00:00Z', 'user', 'Recover interrupted account work'),
+        (${WORKSPACE}, 'codex', 'wake-task', 1, '2026-02-03T00:01Z', 'user', ${wake}),
+        (${WORKSPACE}, 'codex', 'wake-task', 2, '2026-02-03T00:02Z', 'assistant', 'API Error: 429 rate_limit_error: Rate limit reached')`;
+    try {
+      const result = await callDigest({ session: 'wake-task', taskMode: 'as-of' });
+      expect(result.digests[0]).toMatchObject({ kickoff: 'Recover interrupted account work',
+        kickoffRef: 'session_turn:codex:wake-task:0', kickoffProvenance: 'transcript-candidate' });
+      const incidents = await callDigest({ session: 'wake-task', stopKinds: ['rate_limit'] });
+      expect(incidents.digests[0]).toMatchObject({ kickoffRef: 'session_turn:codex:wake-task:0',
+        stopRef: 'session_turn:codex:wake-task:2' });
+    } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'wake-task'`; }
+  });
+
+  it('reports an unknown task when only control traffic was retained', async () => {
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      VALUES (${WORKSPACE}, 'codex', 'control-only', 0, '2026-02-03T00:00Z', 'user',
+        '⟦turn-origin:wake-pump nonce:986d2592ba99a364⟧\n[await-event] work-item:claimable fired — a task is available')`;
+    try {
+      const result = await callDigest({ session: 'control-only' });
+      expect(result.digests[0]).toMatchObject({ kickoff: null, kickoffRef: null, kickoffProvenance: 'unknown' });
+    } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'control-only'`; }
+  });
+
+  it('retains actionable autonomous launch instructions', async () => {
+    const launch = '⟦turn-origin:fleet-kickoff nonce:986d2592ba99a364⟧\nRepair interrupted account recovery';
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      VALUES (${WORKSPACE}, 'codex', 'launch-task', 0, '2026-02-03T00:00Z', 'user', ${launch})`;
+    try {
+      const result = await callDigest({ session: 'launch-task' });
+      expect(result.digests[0]).toMatchObject({ kickoff: launch.replace(/\s+/g, ' '),
+        kickoffRef: 'session_turn:codex:launch-task:0', kickoffProvenance: 'transcript-candidate' });
+    } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'launch-task'`; }
+  });
+
   it('keeps an autonomous wake goal instead of dropping the whole machine envelope', async () => {
     await sql`
       INSERT INTO harness_shared.session_turns
