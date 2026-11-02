@@ -1,12 +1,16 @@
-# Native Papercup desktop studies
+# Papercup Workbench — OS sidebars
 
-Three design directions cover five interfaces: Quick Access, terminal HUD panels, window organization, Papercup chat, and accounts. Open `index.html` directly; it has no external dependencies and performs no network requests.
+Workbench is now the selected, revised direction. It represents a resident desktop integration: direct global shortcuts summon OS sidebars and overlays without first opening a foreground app. Five interfaces are covered: Quick Access, terminal HUD panels, window organization, Papercup chat, and accounts. Open `index.html` directly; it has no external dependencies and performs no network requests.
 
 - **A · Focus:** compact floating windows, full terminal side panels when useful, and a small account popover.
-- **B · Workbench:** persistent detail panes, a visible fleet rail, conversation history, and expanded account routing details.
+- **B · Workbench (current):** edge-anchored OS sidebars, an OS workspace overview, attached terminal context, direct shortcuts, Escape dismissal, and optional pinning. There is no app dock or panel minimize/maximize chrome. Only the ordinary terminal remains an application window.
 - **C · Orbit:** edge controls, drawers, and a docked Papercup conversation beside the terminal.
 
 Use the direction buttons or keys 1–3, the five interface tabs, and the Ubuntu/macOS/Windows chrome selector. Search, agent selection, plan/report previews, layout selection, panel collapse, and account Default/Force/Exclude controls work as simulations. Every action is a preview; nothing is sent to an agent or account service.
+
+Focus and Orbit remain earlier comparison studies; Workbench is the current iteration and opens by default. Suggested shortcuts are Ctrl+Alt+Space (Quick Access), Ctrl+Alt+P (Papercup), Ctrl+Alt+A (Accounts), Ctrl+Alt+W (window organization), and Ctrl+Alt+H (terminal HUD). In the mockup these work only while the browser has focus. Repeat the shortcut to toggle; Escape dismisses; unpinned sidebars dismiss on outside click. The chat draft is retained when the sidebar is dismissed and summoned again.
+
+The production requirement is availability from desktop login, with no separate Dock/taskbar/Alt-Tab entries for panels. This is specified by plan decision `quick-access-search-launcher-2026-10-26#D-009`. This mockup does not install a startup helper or register actual OS shortcuts.
 
 Remote connections reuse psu's saved profile and connection mechanism. Sources checked: `apps/operator/scripts/psu-connection-front-controller.mjs`, `apps/tui/src/remote_connect.rs`, and `packages/operator-ui/src/accounts/AccountsTab.tsx`. Sample identities, counts, usage, and reset times are illustrative.
 

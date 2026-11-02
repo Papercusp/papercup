@@ -23,7 +23,7 @@ try {
     for (const surface of ['launcher', 'terminal', 'organizer', 'chat', 'accounts', 'overview']) {
       await page.evaluate(({ direction, surface }) => window.__mockup.set(direction, surface), { direction, surface });
       await page.screenshot({ path: join(directory, `${direction}-${surface}.png`), animations: 'disabled' });
-      const bounds = await page.evaluate(() => [...document.querySelectorAll('#stage > .window, #stage > .wing')].map(element => {
+      const bounds = await page.evaluate(() => [...document.querySelectorAll('#stage > .window, #stage > .wing, #stage > .os-panel, #stage > .os-wing, #stage > .os-overview')].map(element => {
         const rect = element.getBoundingClientRect();
         return { title: element.querySelector('.titlebar,.wing-title')?.textContent?.trim() || 'Panel', left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
       }));
@@ -33,14 +33,14 @@ try {
     }
   }
   for (const platform of ['ubuntu', 'mac', 'windows']) {
-    await page.evaluate(platform => window.__mockup.set('a', 'chat', platform), platform);
+    await page.evaluate(platform => window.__mockup.set('b', 'chat', platform), platform);
     await page.screenshot({ path: join(directory, `platform-${platform}.png`), animations: 'disabled' });
     captures.push({ platform, surface: 'chat', file: `platform-${platform}.png` });
   }
   const comparisonPage = await browser.newPage({ viewport: { width: 2520, height: 665 }, deviceScaleFactor: 1 });
   for (const [surface, label] of Object.entries({ launcher: 'Quick Access', terminal: 'Terminal HUD', organizer: 'Window organizer', chat: 'Papercup chat', accounts: 'Accounts' })) {
     const tiles = [];
-    for (const [direction, name, subtitle] of [['a', 'Focus', 'Compact floating windows'], ['b', 'Workbench', 'Persistent context panes'], ['c', 'Orbit', 'Edge controls and drawers']]) {
+    for (const [direction, name, subtitle] of [['a', 'Focus · earlier study', 'Compact floating windows'], ['b', 'Workbench · revised', 'Shortcut-summoned OS sidebars'], ['c', 'Orbit · earlier study', 'Edge controls and drawers']]) {
       const base64 = (await readFile(join(directory, `${direction}-${surface}.png`))).toString('base64');
       tiles.push(`<section><h2>${direction.toUpperCase()} / ${name}</h2><p>${subtitle}</p><img alt="${name}: ${label}" src="data:image/png;base64,${base64}"></section>`);
     }
