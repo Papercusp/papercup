@@ -51,6 +51,11 @@ export interface MinecraftRuntimeSnapshot {
   startedAtMs: number;
   stoppedAtMs: number;
   files: Record<string, string | null>;
+  provenance: {
+    source: 'host-collected-server-files';
+    deterministicReplay: false;
+    nondeterministicInputs: string[];
+  };
 }
 const ownedRuntimes = new WeakMap<MinecraftRuntime, () => Promise<MinecraftRuntimeSnapshot>>();
 /** Host-only: a caller-supplied object or path can never stand in for a runtime. */
@@ -261,7 +266,10 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
           files[path] = null;
         } finally { await file?.close(); }
       }
-      return { runtimeId, trial, startedAtMs: startedAt, stoppedAtMs, files };
+      return { runtimeId, trial, startedAtMs: startedAt, stoppedAtMs, files,
+        provenance: { source: 'host-collected-server-files', deterministicReplay: false,
+          nondeterministicInputs: ['server-tick-and-process-scheduling', 'entity-behaviour-and-game-randomness',
+            'bot-network-and-action-timing'] } };
     });
     return runtime;
   } catch (error) {

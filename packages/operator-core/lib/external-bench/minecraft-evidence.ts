@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from './reproducibility/canonical-json';
-import { assertMinecraftTrialIdentity, MINECRAFT_OBJECTIVES, type FrozenMinecraftTrial } from './minecraft-protocol';
+import { assertMinecraftTrialIdentity, minecraftProtocolSchema, MINECRAFT_OBJECTIVES, type FrozenMinecraftTrial } from './minecraft-protocol';
 import { minecraftOfflinePlayerUuid, readMinecraftRuntimeSnapshot,
   type MinecraftRuntime, type MinecraftRuntimeSnapshot } from './minecraft-runtime';
 import type { GradeResult } from './types';
@@ -37,6 +37,38 @@ export async function collectMinecraftEvidence(runtime: MinecraftRuntime): Promi
 export function exportMinecraftEvidence(evidence: MinecraftEvidence): string {
   if (!issued.has(evidence)) throw Error('Untrusted Minecraft evidence');
   return canonicalJson(evidence);
+}
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const archivedEvidence = z.object({
+  schemaVersion: z.literal(1), trialId: digest, runtimeId: z.string().min(1).max(200), sha256: digest,
+  snapshot: z.object({
+    runtimeId: z.string().min(1).max(200),
+    trial: z.object({ trialId: digest, protocol: minecraftProtocolSchema }).strict(),
+    startedAtMs: z.number().int().nonnegative().safe(), stoppedAtMs: z.number().int().nonnegative().safe(),
+    files: z.record(z.string().min(1).max(400), z.string().nullable()).refine(files =>
+      Object.keys(files).length <= 100 && Object.values(files).reduce((bytes, file) =>
+        bytes + (file == null ? 0 : Buffer.byteLength(file)), 0) <= 32 * 1024 * 1024),
+    provenance: z.object({ source: z.literal('host-collected-server-files'), deterministicReplay: z.literal(false),
+      nondeterministicInputs: z.array(z.string().min(1).max(200)).min(1).max(20) }).strict(),
+  }).strict(),
+}).strict();
+/** Host-only archive reader. The expected SHA must come from the retained host
+ * result/artifact record, never from the submitted bundle or participant text.
+ * Re-scoring is deterministic; re-running the game is explicitly not claimed. */
+export function readMinecraftEvidenceExport(serialized: string, expectedArchiveSha256: string): MinecraftEvidence {
+  digest.parse(expectedArchiveSha256);
+  if (Buffer.byteLength(serialized) > 64 * 1024 * 1024
+    || createHash('sha256').update(serialized).digest('hex') !== expectedArchiveSha256) {
+    throw Error('Minecraft archive does not match retained host digest');
+  }
+  const evidence = archivedEvidence.parse(JSON.parse(serialized));
+  assertMinecraftTrialIdentity(evidence.trialId, evidence.snapshot.trial.protocol);
+  if (evidence.snapshot.trial.trialId !== evidence.trialId || evidence.runtimeId !== evidence.snapshot.runtimeId
+    || createHash('sha256').update(canonicalJson(evidence.snapshot)).digest('hex') !== evidence.sha256) {
+    throw Error('Minecraft archive trial, runtime or snapshot digest changed');
+  }
+  freeze(evidence); issued.add(evidence);
+  return evidence;
 }
 function completionTime(text: string, start: number, end: number): number {
   const match = /^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) ([+-])(\d\d)(\d\d)$/.exec(text);

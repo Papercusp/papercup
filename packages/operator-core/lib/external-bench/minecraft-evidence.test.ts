@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -73,6 +73,36 @@ describe('Minecraft trusted server evidence and replay', () => {
     expect(exported.snapshot.files['bot.log']).toContain('team-chat');
     expect(exported.snapshot.files['bot.log']).toContain('death');
     expect(exported.sha256).toBe(proof.sha256);
+    expect(exported.snapshot.provenance).toEqual({ source: 'host-collected-server-files', deterministicReplay: false,
+      nondeterministicInputs: ['server-tick-and-process-scheduling', 'entity-behaviour-and-game-randomness',
+        'bot-network-and-action-timing'] });
+  });
+  it('re-scores an immutable host export in a fresh reader and rejects altered trial/player/time/scoring observations', async () => {
+    const f = await fixture(); const proof = await collectMinecraftEvidence(f.runtime);
+    const terminal = gradeMinecraftEvidence(f.trial, proof);
+    const serialized = exportMinecraftEvidence(proof);
+    const retainedHostDigest = createHash('sha256').update(serialized).digest('hex');
+    vi.resetModules();
+    const fresh = await import('./minecraft-evidence');
+    expect(fresh.gradeMinecraftEvidence(f.trial, proof)).toMatchObject({ score: null, resolved: false });
+    const restored = fresh.readMinecraftEvidenceExport(serialized, retainedHostDigest);
+    expect(fresh.gradeMinecraftEvidence(f.trial, restored)).toEqual(terminal);
+    expect(Object.isFrozen(restored.snapshot.files)).toBe(true);
+    const player = `world/world/advancements/${minecraftOfflinePlayerUuid('alice')}.json`;
+    const changes: Array<(archive: any) => void> = [
+      archive => { archive.trialId = 'b'.repeat(64); },
+      archive => { archive.snapshot.trial.protocol.participants = ['mallory']; },
+      archive => { archive.snapshot.stoppedAtMs += 60_000; },
+      archive => { archive.snapshot.files[player] = JSON.stringify(progress('iron-tools', stamp(Date.now() - 3_600_000))); },
+      archive => { delete archive.snapshot.files[player]; },
+      archive => { archive.snapshot.files[player] = '{"DataVersion":3700}'; },
+    ];
+    for (const change of changes) {
+      const altered = JSON.parse(serialized); change(altered);
+      expect(() => fresh.readMinecraftEvidenceExport(JSON.stringify(altered), retainedHostDigest)).toThrow(/retained host digest/);
+    }
+    expect(() => fresh.readMinecraftEvidenceExport(serialized, 'b'.repeat(64))).toThrow(/retained host digest/);
+    expect(() => fresh.readMinecraftEvidenceExport(serialized, '')).toThrow();
   });
   it.each(['', '{', '{}', 'null', '{"DataVersion":3700,"minecraft:story/iron_tools":{"done":true,"criteria":{}}}',
     '{"DataVersion":3700,"minecraft:story/iron_tools":{"done":"true","criteria":{"iron_pickaxe":"2026-01-01 00:00:00 +0000"}}}'])('refuses malformed or incomplete server evidence %s', async raw => {
