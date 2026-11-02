@@ -121,10 +121,13 @@ vi.mock('./modes/goal-context', async (importOriginal) => {
 
 vi.mock('./work-items', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./work-items')>();
-  return {
-    ...actual,
-    createWorkItem: async (...args: Parameters<typeof actual.createWorkItem>) => {
-      const created = await actual.createWorkItem(...args);
+  const createWorkItem = actual.createWorkItem;
+  const setWorkItemState = actual.setWorkItemState;
+  // A consumer entered while importOriginal resolves a cycle can already hold
+  // the original namespace. Spy on it too, rather than instrumenting only the
+  // replacement object returned by this factory.
+  vi.spyOn(actual, 'createWorkItem').mockImplementation(async (...args) => {
+      const created = await createWorkItem(...args);
       const barrier = h.mintBarrier;
       const payload = (args[0]?.payload ?? {}) as Record<string, unknown>;
       if (barrier && '_conditionUpsert' in payload) {
@@ -133,8 +136,8 @@ vi.mock('./work-items', async (importOriginal) => {
         await barrier.release;
       }
       return created;
-    },
-    setWorkItemState: async (...args: Parameters<typeof actual.setWorkItemState>) => {
+    });
+  vi.spyOn(actual, 'setWorkItemState').mockImplementation(async (...args) => {
       const faults = h.standDownFaults;
       const [, state, opts] = args;
       if (faults && faults.remaining > 0 && state === 'dropped' && opts?.by === 'system:condition-upsert') {
@@ -142,9 +145,9 @@ vi.mock('./work-items', async (importOriginal) => {
         faults.injected++;
         throw new Error('injected: stand-down write failed (CONNECTION_ENDED)');
       }
-      return actual.setWorkItemState(...args);
-    },
-  };
+      return setWorkItemState(...args);
+    });
+  return actual;
 });
 
 vi.mock('./dbos/feature-blockers-edges', async (importOriginal) => {
@@ -1154,7 +1157,9 @@ created: 2026-08-21
     });
     h.mintBarrier = { arrivals: 0, release: mintRelease, open: openMint };
     try {
-      return await Promise.allSettled([run.promotePlanItems(base), run.promotePlanItems(base)]);
+      const settled = await Promise.allSettled([run.promotePlanItems(base), run.promotePlanItems(base)]);
+      expect(h.mintBarrier.arrivals, 'both callers must traverse the instrumented mint seam').toBe(2);
+      return settled;
     } finally {
       h.coverageBarrier = null;
       h.mintBarrier = null;
