@@ -93,6 +93,8 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
   let stopping: Promise<MinecraftStopReport> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
+  let starting = true;
+  const startupLogTails: Record<string, string> = {};
   let stoppedAtMs = 0;
   let replayBytes = 0;
   let programDrained: Promise<void> = Promise.resolve();
@@ -123,10 +125,15 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
       await Promise.allSettled([...pending]);
       const captureLog = async (name: string, file: string) => {
         try {
-          const result = await exec('docker', ['logs', '--timestamps', name], { timeoutMs: 15_000 });
+          const result = await exec('docker', ['logs', ...(starting ? ['--tail', '30'] : []), '--timestamps', name], { timeoutMs: 15_000 });
+          if (starting) startupLogTails[file] = (result.stdout + result.stderr).slice(-2000);
           if (result.code !== 0) errors.push(`Minecraft log capture failed: ${name}`);
           await writeFile(join(root, file), result.stdout + result.stderr);
-        } catch (error) { errors.push(`Minecraft log capture failed: ${String(error).slice(0, 1000)}`); }
+        } catch (error) {
+          const detail = String(error).slice(0, 1000);
+          if (starting) startupLogTails[file] = `Log capture unavailable: ${detail}`;
+          errors.push(`Minecraft log capture failed: ${detail}`);
+        }
       };
       await captureLog(bot, 'bot.log');
       // Stop all participants first, then let Java save the trusted world.
@@ -148,10 +155,18 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
   };
   const onAbort = () => { void stop(); };
   const budget = () => {
-    if (stopped || config.signal?.aborted || Date.now() >= deadline) throw Error('Minecraft trial cancelled or deadline reached');
-    return Math.max(1, Math.min(deadline, startedAt + readyMs) - Date.now());
+    const now = Date.now();
+    if (stopped || config.signal?.aborted || now >= deadline) throw Error('Minecraft trial cancelled or deadline reached');
+    const remaining = startedAt + readyMs - now;
+    if (remaining <= 0) throw Error('Minecraft startup readiness deadline reached');
+    return Math.min(deadline - now, remaining);
   };
-  const startupCommand = (args: string[]) => command(args, budget(), config.signal);
+  const startupCommand = async (args: string[]) => {
+    const output = await command(args, budget(), config.signal);
+    // A successful subprocess receipt cannot admit work after its deadline.
+    budget();
+    return output;
+  };
   const labels = ['--label', `${MINECRAFT_RUNTIME_LABEL}=${runtimeId}`, '--label', `papercusp.minecraft-trial=${trial.trialId}`];
   const user = `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`;
   const secure = ['--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
@@ -184,6 +199,7 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
       '--workdir', '/data', '--entrypoint', 'java', trial.protocol.pins.serverImage,
       '-Xms256M', '-Xmx1G', '-jar', '/opt/server.jar', 'nogui']);
     const javaVersion = await run('docker', ['exec', server, 'java', '-version'], { timeoutMs: budget(), signal: config.signal });
+    budget();
     if (javaVersion.code !== 0 || !/version "17[.\"]/.test(javaVersion.stderr + javaVersion.stdout)) throw Error('Minecraft requires measured Java 17');
     while (true) {
       const logs = await startupCommand(['logs', '--tail', '30', server]);
@@ -271,10 +287,11 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
           nondeterministicInputs: ['server-tick-and-process-scheduling', 'entity-behaviour-and-game-randomness',
             'bot-network-and-action-timing'] } };
     });
+    starting = false;
     return runtime;
   } catch (error) {
     const report = await stop();
     if (report.removed) await rm(root, { recursive: true, force: true });
-    throw new Error(`${error instanceof Error ? error.message : String(error)}; cleanup=${JSON.stringify(report)}`);
+    throw new Error(`${error instanceof Error ? error.message : String(error)}; runtime=${runtimeId}; startupLogs=${JSON.stringify(startupLogTails)}; cleanup=${JSON.stringify(report)}`);
   }
 }

@@ -49,21 +49,37 @@ export const savedBackgroundActivitySchema = z.object({
   revision: z.number().int().nonnegative(),
   automatic: z.boolean(),
   pausedUntil: z.string().datetime({ offset: true }).nullable(),
-  features: z.record(z.string().regex(validFeatureId), startupPolicySchema).default({}),
-});
+  features: z.record(z.string().regex(validFeatureId), startupPolicySchema.passthrough()).default({}),
+}).passthrough();
+
+export const savedStartupActivityStateSchema = z.object({
+  paused: z.boolean().optional(),
+  backgroundActivity: savedBackgroundActivitySchema.optional(),
+}).passthrough();
+
+/** Expiry is evaluated at admission/read time, including the first read after an offline restart. */
+export function startupPauseIsActive(paused: boolean | undefined, until: string | null, now = Date.now()): boolean {
+  return until !== null ? Date.parse(until) > now : paused === true;
+}
 
 /** Project saved preference only: this read never asserts that dispatch obeyed it. */
-export function savedStartupActivityPolicy(feature: Readonly<StartupActivityFeature>, state: unknown, workspace: string): StartupActivityPolicy {
+export function savedStartupActivityPolicy(feature: Readonly<StartupActivityFeature>, state: unknown, workspace: string, now = Date.now()): StartupActivityPolicy {
   if (feature.scope.kind === 'device') return { ...feature.desired };
   if (feature.scope.kind !== 'workspace') return { ...feature.desired };
   if (!workspace.trim() || feature.scope.id !== workspace) throw new Error('Startup policy scope unavailable');
-  const row = state == null ? {} : z.object({ paused: z.boolean().optional(), backgroundActivity: savedBackgroundActivitySchema.optional() }).parse(state);
+  const row = savedStartupActivityStateSchema.parse(state ?? {});
   const saved = row.backgroundActivity;
   const override = saved?.features[feature.id];
+  const workspacePause = startupPauseIsActive(row.paused, saved?.pausedUntil ?? null, now);
+  const featurePause = startupPauseIsActive(override?.paused, override?.pausedUntil ?? null, now);
+  const deadlines = [workspacePause ? saved?.pausedUntil ?? null : undefined,
+    featurePause ? override?.pausedUntil ?? null : undefined].filter(deadline => deadline !== undefined);
+  const pausedUntil = deadlines.includes(null) ? null
+    : deadlines.length ? deadlines.reduce((latest, deadline) => Date.parse(deadline!) > Date.parse(latest!) ? deadline : latest)! : null;
   return {
     automatic: saved?.automatic === false ? false : override?.automatic ?? feature.desired.automatic,
-    paused: row.paused === true || override?.paused === true,
-    pausedUntil: override?.pausedUntil ?? saved?.pausedUntil ?? null,
+    paused: workspacePause || featurePause,
+    pausedUntil,
     revision: saved?.revision ?? null,
   };
 }

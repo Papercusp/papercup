@@ -88,4 +88,22 @@ describe('native startup activity observations', () => {
       features: { [feature.id]: { automatic: false, paused: false, pausedUntil: null, revision: 7 } } } };
     expect(savedStartupActivityPolicy(feature, row, 'workspace-a')).toMatchObject({ automatic: false, paused: false, revision: 9 });
   });
+
+  it('expires only the elapsed pause and preserves an independent feature pause and disable', async () => {
+    const { features } = await linux(state('enabled', 'active'));
+    const feature: StartupActivityFeature = { ...features[0]!, scope: { kind: 'workspace', id: 'workspace-a' } };
+    const now = Date.parse('2026-11-02T12:00:00Z');
+    const row = { paused: true, backgroundActivity: { version: 1, revision: 11, automatic: true,
+      pausedUntil: '2026-11-02T11:00:00Z', features: {
+        [feature.id]: { automatic: false, paused: true, pausedUntil: '2026-11-02T13:00:00Z', revision: 10 },
+      } } };
+    expect(savedStartupActivityPolicy(feature, row, 'workspace-a', now)).toEqual({
+      automatic: false, paused: true, pausedUntil: '2026-11-02T13:00:00Z', revision: 11,
+    });
+    expect(savedStartupActivityPolicy(feature, row, 'workspace-a', now + 3_600_000)).toEqual({
+      automatic: false, paused: false, pausedUntil: null, revision: 11,
+    });
+    const indefinite = { ...row, backgroundActivity: { ...row.backgroundActivity, pausedUntil: null } };
+    expect(savedStartupActivityPolicy(feature, indefinite, 'workspace-a', now)).toMatchObject({ paused: true, pausedUntil: null });
+  });
 });

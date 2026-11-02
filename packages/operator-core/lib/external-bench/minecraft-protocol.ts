@@ -282,3 +282,93 @@ export async function withMinecraftAssignment<T>(
     return dispatch(trial, assignment);
   });
 }
+
+/** Host-frozen baseline identities. Runtime admission must measure these again;
+ * declaring a digest here is not proof that a world or memory was reset. */
+const initialStateSchema = z.object({ worldSha256: digest, memorySha256: digest }).strict();
+export type MinecraftInitialState = z.infer<typeof initialStateSchema>;
+export interface MinecraftPairArm {
+  trial: FrozenMinecraftTrial;
+  selection: FrozenMinecraftSelection;
+  initialState: MinecraftInitialState;
+}
+export interface FrozenMinecraftPair {
+  readonly pairId: string;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly orderSeed: string;
+  readonly armOrder: readonly string[];
+  readonly assignments: readonly { armId: string; trialId: string }[];
+}
+const pairedArms = new WeakMap<FrozenMinecraftPair, ReadonlyMap<string, {
+  trial: FrozenMinecraftTrial; initialState: Readonly<MinecraftInitialState>;
+}>>();
+
+function pairInputs(arm: MinecraftPairArm) {
+  const { protocol } = arm.trial;
+  return {
+    runId: protocol.runId, taskId: protocol.taskId, manifestHash: protocol.manifestHash,
+    worldSeed: protocol.worldSeed, objective: protocol.objective, rules: protocol.rules,
+    pins: protocol.pins, observations: protocol.observations, actions: protocol.actions,
+    limits: protocol.limits, modelId: arm.selection.modelId,
+    promptSha256: arm.selection.promptSha256, initialState: initialStateSchema.parse(arm.initialState),
+  };
+}
+
+/** Freeze pairing before runtime/provider allocation. Arm-specific participant
+ * counts and coordination configuration remain in each exact trial identity;
+ * the model, gameplay surface, baseline and TOTAL trial limits must match.
+ * The seeded permutation is retained, independent of caller array ordering. */
+export function freezeMinecraftPair(manifest: FrozenMinecraftManifest, input: {
+  arms: readonly MinecraftPairArm[]; orderSeed: string;
+}): FrozenMinecraftPair {
+  manifestData(manifest);
+  digest.parse(input.orderSeed);
+  if (input.arms.length < 2 || input.arms.length > 8) throw Error('Minecraft pair needs 2–8 arms');
+  const arms = [...input.arms].sort((a, b) => a.trial.protocol.armId < b.trial.protocol.armId ? -1 : 1);
+  const byId = new Map<string, { trial: FrozenMinecraftTrial; initialState: Readonly<MinecraftInitialState> }>();
+  let common: string | undefined;
+  for (const arm of arms) {
+    const { trial, selection } = arm;
+    if (!issuedTrials.has(trial)) throw Error('Minecraft pair requires an issued trial');
+    // Reuse the existing private material/selection boundary, including seed,
+    // objective and run/arm identity, without allocating inference authority.
+    assignMinecraftTask(manifest, trial, trial.protocol.participants[0]!, selection);
+    if (byId.has(trial.protocol.armId)) throw Error('Duplicate Minecraft pair arm');
+    const inputs = pairInputs(arm), encoded = canonicalJson(inputs);
+    if (common !== undefined && common !== encoded) throw Error('Minecraft pair inputs differ');
+    common = encoded;
+    byId.set(trial.protocol.armId, { trial, initialState: freeze(inputs.initialState) });
+  }
+  const commonHash = hash(JSON.parse(common!));
+  const armOrder = [...byId.keys()].sort((a, b) => {
+    const left = hash([input.orderSeed, commonHash, a]), right = hash([input.orderSeed, commonHash, b]);
+    return left < right ? -1 : left > right ? 1 : a < b ? -1 : 1;
+  });
+  const assignments = [...byId].map(([armId, { trial }]) => ({ armId, trialId: trial.trialId }));
+  const identity = { runId: arms[0].trial.protocol.runId, taskId: arms[0].trial.protocol.taskId,
+    commonHash, orderSeed: input.orderSeed, armOrder, assignments };
+  const pair = freeze({ pairId: hash(identity), runId: identity.runId, taskId: identity.taskId,
+    orderSeed: input.orderSeed, armOrder, assignments });
+  pairedArms.set(pair, byId);
+  return pair;
+}
+
+/** Return an explicit unpaired disposition for every measured deviation. The
+ * launcher must retain this assignment in its denominator and refuse inference;
+ * it must never silently drop it or present it as a valid paired result. */
+export function inspectMinecraftPairAssignment(pair: FrozenMinecraftPair, armId: string, measurement: {
+  trialId: string; protocol: unknown; initialState: unknown;
+}): { pairId: string; armId: string; trialId: string; paired: boolean; deviations: string[] } {
+  const arms = pairedArms.get(pair);
+  if (!arms) throw Error('Unknown Minecraft pair handle');
+  const arm = arms.get(armId);
+  if (!arm) throw Error('Unknown Minecraft pair arm');
+  const deviations: string[] = [];
+  if (measurement.trialId !== arm.trial.trialId) deviations.push('trialId');
+  try { assertMinecraftTrialIdentity(arm.trial.trialId, measurement.protocol); }
+  catch { deviations.push('protocol'); }
+  const state = initialStateSchema.safeParse(measurement.initialState);
+  if (!state.success || canonicalJson(state.data) !== canonicalJson(arm.initialState)) deviations.push('initialState');
+  return { pairId: pair.pairId, armId, trialId: arm.trial.trialId, paired: deviations.length === 0, deviations };
+}

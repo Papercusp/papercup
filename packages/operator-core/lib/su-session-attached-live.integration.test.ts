@@ -18,6 +18,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA, type SuSessionEvent } from '@papercusp/chat-protocol';
+import { parseSseStream, type ParsedSseEvent } from '@papercusp/sse';
 import { confirmedProviderRateLimit } from './su-session-attached-live-rate-limit';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
@@ -540,7 +541,9 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     const model = backend === 'claude' ? 'sonnet' : 'gpt-5.5';
     let host: ReturnType<typeof getRegisteredSuSessionHost>;
     let taskId: string | undefined;
-    let subscription: AsyncIterator<{ id: number; event: SuSessionEvent }> | undefined;
+    let subscription: AsyncGenerator<ParsedSseEvent, void, unknown> | undefined;
+    let client: AbortController | undefined;
+    let lastSequence = 0;
     const observed: SuSessionEvent[] = [];
     try {
       const response = await launchRoutes.find(route => route.method === 'POST')!.handler(new Request(
@@ -570,35 +573,69 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       expect(saved).toMatchObject({ advSessionId: identity.advSessionId, nativeSessionId: identity.nativeSessionId,
         runtimeGeneration: 1, descriptor: { executionKind: 'programmatic' } });
       const route = suSessionRoutes.find(item => item.method === 'POST')!;
+      const eventsRoute = suSessionRoutes.find(item => item.path.endsWith('/events'))!;
+      const connectClient = async () => {
+        client = new AbortController();
+        const response = await eventsRoute.handler(new Request('http://localhost/events', {
+          headers: { ...headers, 'last-event-id': String(lastSequence) }, signal: client.signal,
+        }), context);
+        expect(response.status).toBe(200);
+        expect(response.body, 'the real SSE route must track the client lease').not.toBeNull();
+        subscription = parseSseStream(response.body);
+      };
       const nonce = `R8-${randomUUID()}`;
       const command = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
         type: 'owner_turn', commandId: `r8-${randomUUID()}`, turnId: `turn-${randomUUID()}`,
         issuedAt: new Date().toISOString(), target: identity, expectedRuntimeGeneration: 1,
         content: `This is a bounded read-only transport acceptance test. Call Papercusp coord:whoami exactly once (tools:invoke if deferred), then reply with ${nonce}. Do nothing else.` };
-      subscription = host.subscribe()[Symbol.asyncIterator]();
-      const consume = (async () => {
-        for (;;) {
-          const next = await subscription!.next();
-          if (next.done) return;
-          observed.push(next.value.event);
-        }
-      })();
+      await connectClient();
       const post = () => route.handler(new Request('http://localhost/commands', { method: 'POST', headers,
         body: JSON.stringify(command) }), context);
       expect((await post()).status).toBe(202);
-      await vi.waitFor(() => {
-        const errors = observed.flatMap(event => event.type === 'error' ? [event.message] : []);
-        expect(errors).toEqual([]);
-        expect(observed.some(event => event.type === 'tool' && event.phase === 'completed' && !event.isError
-          && JSON.stringify(event.output).includes(identity.ownerId))).toBe(true);
-        expect(observed.some(event => event.type === 'transcript' && 'content' in event
-          && event.role === 'assistant' && event.content?.includes(nonce))).toBe(true);
-      }, { timeout: 120_000, interval: 100 });
+      let toolIdentity = false;
+      let reply = false;
+      const deadline = Date.now() + 120_000;
+      while (!toolIdentity || !reply || host.descriptor().lifecycle !== 'waiting-for-owner') {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let next: IteratorResult<ParsedSseEvent, void>;
+        try {
+          next = await Promise.race([subscription!.next(), new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error(`R8 native supervision timed out: ${JSON.stringify({
+              backend, toolIdentity, reply, lifecycle: host!.descriptor().lifecycle,
+              recentTypes: observed.slice(-8).map(event => event.type),
+            })}`)), Math.max(1, deadline - Date.now()));
+          })]);
+        } finally { clearTimeout(timer); }
+        if (next.done) throw new Error('R8 native stream ended before the scoped tool and reply completed');
+        if (next.value.event !== 'session_event') continue;
+        const event = JSON.parse(next.value.data) as SuSessionEvent;
+        expect(event.sequence).toBeGreaterThan(lastSequence);
+        lastSequence = event.sequence;
+        observed.push(event);
+        if (event.type === 'error') throw new Error(`${event.code}: ${event.message}`);
+        if (event.type === 'card' && event.phase === 'opened') {
+          const call = observed.slice().reverse().find((entry): entry is StartedTool & SuSessionEvent =>
+            entry.type === 'tool' && entry.phase === 'started' && entry.turnId === event.turnId);
+          assertIdentityApproval(event, call, command.turnId);
+          const answered = await fetch(`${process.env.PAPERCUSP_OPERATOR_URL}/api/operator/conversations/${encodeURIComponent(chatId)}/card-response`, {
+            method: 'POST', headers, body: JSON.stringify({ correlationId: event.card.correlationId,
+              workspaceId, action: 'submit', payload: { picks: ['yes'] } }),
+          });
+          expect(answered.status, await answered.text()).toBe(200);
+        }
+        if (event.type === 'tool' && event.phase === 'completed' && !event.isError && event.turnId === command.turnId) {
+          const output = JSON.stringify(event.output);
+          toolIdentity ||= output.includes(identity.ownerId) && output.includes(workspaceId);
+        }
+        if (event.type === 'transcript' && 'content' in event && event.role === 'assistant'
+          && event.turnId === command.turnId && event.content?.includes(nonce)) reply = true;
+      }
       // Reconnecting a consumer must keep the native process, generation and
       // durable command identity. A retry returns the receipt, never inference.
-      await subscription.return?.();
-      await consume;
+      client!.abort();
+      await subscription!.return();
       subscription = undefined;
+      await connectClient();
       expect(getRegisteredSuSessionHost(key)).toBe(host);
       expect(host.descriptor().runtimeGeneration).toBe(1);
       expect(await (await post()).json()).toMatchObject({ ok: true, replayed: true });
@@ -628,7 +665,8 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         protocolVersion: SU_SESSION_PROTOCOL_VERSION, type: 'end', commandId: `cleanup-${randomUUID()}`,
         issuedAt: new Date().toISOString(), target: host.descriptor().identity }).terminal;
       host?.dispose('R8 native supervision acceptance finished');
-      await subscription?.return?.();
+      client?.abort();
+      await subscription?.return();
       if (taskId) await vi.waitFor(async () => expect((await getTask(taskId!))?.endedAt).toBeTruthy(), { timeout: 10_000 });
       expect((await archiveChat({ slug: harness, chatId })).ok).toBe(true);
     }

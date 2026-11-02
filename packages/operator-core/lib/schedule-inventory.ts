@@ -761,6 +761,17 @@ export interface StartupActivityAdapters {
 const unknownPolicy = (): StartupActivityPolicy => ({ automatic: null, pausedUntil: null, revision: null });
 const unknownPurpose = 'Purpose has not been described for this feature.';
 
+/** Shared by inventory and execution admission: never derive a second policy key. */
+export function startupActivityFeatureId(
+  row: Pick<ScheduleInventoryRow, 'source' | 'installSlug' | 'name'> & { detail: { process?: unknown } },
+  context: { workspaceId?: string; deviceId?: string } = {},
+): string {
+  return `activity-${createHash('sha256').update(JSON.stringify([
+    context.workspaceId ?? null, row.source === 'routines' ? null : context.deviceId ?? null,
+    row.source, row.installSlug, row.detail.process ?? null, row.name,
+  ])).digest('hex')}`;
+}
+
 export function scheduleStartupFeature(
   row: ScheduleInventoryRow,
   context: { workspaceId?: string; deviceId?: string } = {},
@@ -785,10 +796,7 @@ export function scheduleStartupFeature(
       : [row.source === 'dbos' ? 'dbos-registration' : row.source === 'routines' ? 'routine-dispatch' : 'managed-fire-on-arm'];
   if (row.source === 'routines' && row.detail.triggerKind === 'event') entrypointIds.push('event-dispatch');
   return {
-    id: `activity-${createHash('sha256').update(JSON.stringify([
-      context.workspaceId ?? null, context.deviceId ?? null,
-      row.source, row.installSlug, row.detail.process ?? null, row.name,
-    ])).digest('hex')}`,
+    id: startupActivityFeatureId(row, context),
     name: label,
     purpose: sync && typeof row.detail.note === 'string' ? row.detail.note
       : row.source === 'routines' ? spendReasonForTargetRole(targetRole) ?? unknownPurpose : unknownPurpose,

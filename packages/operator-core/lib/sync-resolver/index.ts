@@ -1591,6 +1591,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({
       workspaceId: z.string().default('default'),
       status: z.string().nullish(),
+      query: z.string().max(500).optional(),
       limit: clampedLimit(500, 100),
       harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
     }),
@@ -1599,6 +1600,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         args as {
           workspaceId: string;
           status?: string | null;
+          query?: string;
           limit?: number;
           harnessSlugs?: string[];
         },

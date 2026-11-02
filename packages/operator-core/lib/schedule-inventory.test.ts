@@ -96,6 +96,11 @@ describe('startup activity disclosure', () => {
     expect(feature.purpose).toContain('not been described');
     expect(feature.id).not.toBe(scheduleStartupFeature(startupRow({ source: 'routines', installSlug: 'harness-a', name: 'doc-refresh' }), { workspaceId: 'workspace-b' }).id);
     expect(feature.id).not.toContain('doc-refresh');
+    const row = startupRow({ source: 'routines', installSlug: 'harness-a', name: 'doc-refresh' });
+    expect(scheduleStartupFeature(row, { workspaceId: 'workspace-a', deviceId: 'desktop-a' }).id)
+      .toBe(scheduleStartupFeature(row, { workspaceId: 'workspace-a', deviceId: 'desktop-b' }).id);
+    expect(scheduleStartupFeature({ ...row, source: 'managed' }, { workspaceId: 'workspace-a', deviceId: 'desktop-a' }).id)
+      .not.toBe(scheduleStartupFeature({ ...row, source: 'managed' }, { workspaceId: 'workspace-a', deviceId: 'desktop-b' }).id);
   });
 
   it('retains failed sources as unavailable without leaking their errors or asserting an empty complete inventory', async () => {

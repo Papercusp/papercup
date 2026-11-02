@@ -15,6 +15,9 @@ const pins = JSON.parse(await readFile(join(assets, 'runtime-pins.json'), 'utf8'
 let root: string, jar: string, botImage: string;
 const runtimes: MinecraftRuntime[] = [];
 beforeAll(async () => {
+  // Fail the expensive setup at its actual prerequisite, with bounded diagnostics.
+  const daemon = await liveProcExec('docker', ['version', '--format', '{{.Server.Version}}'], { timeoutMs: 15_000 });
+  if (daemon.code !== 0 || !daemon.stdout.trim()) throw Error(`Minecraft Docker preflight failed (${daemon.code}): ${daemon.stderr.slice(-2000)}`);
   root = await mkdtemp(join(tmpdir(), 'mc-runtime-real-')); jar = join(root, 'server.jar');
   const response = await fetch(pins.serverUrl, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw Error(`Minecraft download HTTP ${response.status}`);

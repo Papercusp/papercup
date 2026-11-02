@@ -8,7 +8,10 @@ import { startMinecraftRuntime } from './minecraft-runtime';
 import type { ProcExec } from './grader/swe-bench-pro';
 
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+});
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'mc-runtime-test-')); roots.push(root);
   const serverJar = join(root, 'server.jar'); await writeFile(serverJar, 'jar-fixture');
@@ -77,6 +80,51 @@ describe('Minecraft owned runtime lifecycle', () => {
     await expect(startMinecraftRuntime(f)).rejects.toThrow(/cleanup=/);
     expect(f.commands.some(args => args[0] === 'rm' && args.at(-1)?.endsWith('-server'))).toBe(true);
     expect(f.commands.some(args => args[0] === 'ps' && args.includes('--filter'))).toBe(true);
+  });
+  it.each(['dependencies', 'server', 'java', 'server-ready', 'bot', 'bot-ready'])(
+    'refuses a successful %s receipt at the startup deadline before admitting more work', async phase => {
+      const f = await fixture(); const base = f.exec;
+      let now = 1000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const admitted: { args: string[]; at: number; timeoutMs: number }[] = [];
+      f.exec = vi.fn(async (cmd, args, opts) => {
+        admitted.push({ args, at: now, timeoutMs: opts.timeoutMs });
+        const result = await base(cmd, args, opts);
+        const match = phase === 'dependencies' ? args[0] === 'run' && args.includes('-p')
+          : phase === 'server' ? args[0] === 'run' && args.includes('/opt/server.jar')
+          : phase === 'java' ? args[0] === 'exec'
+          : phase === 'server-ready' ? args[0] === 'logs' && !args.includes('--timestamps') && args.at(-1)?.endsWith('-server')
+          : phase === 'bot' ? args[0] === 'run' && args.includes('/app/bot.cjs')
+          : args[0] === 'logs' && !args.includes('--timestamps') && args.at(-1)?.endsWith('-bot');
+        if (match) now = 1010;
+        return result;
+      });
+      await expect(startMinecraftRuntime({ ...f, readyTimeoutMs: 10 })).rejects.toThrow(/startup readiness deadline/);
+      const startup = admitted.filter(({ args }) => ['run', 'exec', 'inspect'].includes(args[0]!)
+        || args[0] === 'logs' && !args.includes('--timestamps'));
+      expect(startup.every(({ at, timeoutMs }) => at < 1010 && timeoutMs <= 1010 - at)).toBe(true);
+      if (phase === 'dependencies') expect(f.commands.some(args => args[0] === 'run' && args.includes('-d'))).toBe(false);
+      expect(f.commands.some(args => args[0] === 'ps')).toBe(true);
+    });
+  it('retains bounded server and bot startup diagnostics after verified cleanup removes their files', async () => {
+    const f = await fixture(); const base = f.exec;
+    f.exec = vi.fn(async (cmd, args, opts) => {
+      if (args[0] === 'logs' && !args.includes('--timestamps')) return { code: 124, stdout: '', stderr: 'readiness probe timed out' };
+      const result = await base(cmd, args, opts);
+      if (args[0] === 'logs') return { ...result, stdout: 'x'.repeat(5000) + (args.at(-1)?.endsWith('-bot') ? 'BOT-TAIL' : 'SERVER-TAIL') };
+      return result;
+    });
+    const error = await startMinecraftRuntime(f).catch(error => error as Error);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain('readiness probe timed out');
+    expect(message).toContain('SERVER-TAIL'); expect(message).toContain('BOT-TAIL');
+    expect(message.length).toBeLessThan(5000);
+    expect(message).toContain('"removed":true');
+    expect(f.commands.filter(args => args[0] === 'logs' && args.includes('--timestamps'))
+      .every(args => args.includes('--tail') && args.includes('30'))).toBe(true);
+    const report = JSON.parse(message.split('; cleanup=')[1]!);
+    await expect(readFile(join(report.evidenceDir, 'server.properties'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('drains a cancelled active program before verifying container cleanup', async () => {
     const f = await fixture(); const controller = new AbortController(); const base = f.exec;
