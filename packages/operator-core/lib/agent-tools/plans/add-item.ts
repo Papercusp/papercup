@@ -47,6 +47,7 @@ import { resolvePlanScope } from './source';
 import { effectivePlanProfile } from '../../plan-verification-escape';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { authoringReuse } from '../../code-intelligence/reuse-authoring';
+import { suggestResearchAnchors } from '../../code-intelligence/research-trail';
 import { notifySyncInvalidate } from '../../sync-sse';
 
 /**
@@ -547,8 +548,11 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   const reuseAdvice = await authoringReuse(ctx, { workspaceId: adviceScope.workspaceId,
     harness: adviceScope.harnessSlug, plan: it.slug, item: result.value.itemId, text: it.text,
     paths: anchors?.flatMap(anchor => anchor.path ? [anchor.path] : []) });
+  const suggestedAnchors = await suggestResearchAnchors(adviceScope.workspaceId,
+    resolveAgentIdentity(ctx).ownerId, harnessSlug ?? adviceScope.harnessSlug);
   return {
     ...result.value,
+    suggestedAnchors,
     ...(anchors !== undefined ? { anchors } : {}),
     ...(reuseAdvice ? { reuseAdvice } : {}),
     ...(warnNoLinks ? { warnings: ['This code plan item has no code links; add symbols or paths as anchors.'] } : {}),
@@ -567,7 +571,7 @@ export default defineTool({
   description:
     "Append one OR many new items to a phase. Allocates the next P-NNN id inside a lock. Creates the phase section if it doesn't exist. Auto-bumps frontmatter updated:. Single: { slug, phase, text, importance }. Many to one phase: { slug, phase, importance, items:[{ text, blockedBy? }] }. Heterogeneous: items:[{ slug, phase, text, importance }]. Returns { ok, results:[{ ok, slug, itemId, createdPhase | error }], counts } — each result embeds the NEW itemId; correlate by { slug, itemId }, not position; one failure never fails the rest.",
   guidance: {
-    when: 'New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).',
+    when: 'Append new work to a phase; batch with items. suggestedAnchors are caller-session suggestions; only explicit anchors are stored. Manual anchors remain available.',
     notWhen:
       "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:

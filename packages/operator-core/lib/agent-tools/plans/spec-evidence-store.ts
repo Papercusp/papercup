@@ -3205,6 +3205,8 @@ export interface ListSpecEvidenceOptions {
   limit?: number;
   /** Optional internal timing sink for the plans:get-spec-evidence slow-read diagnosis. */
   diagnostics?: ListSpecEvidenceDiagnostics;
+  /** Internal contract inspection only. Rows remain unmeasured and cannot prove freshness. */
+  measurementMode?: 'metadata';
 }
 
 export interface WorkItemSpecRevisionEdge {
