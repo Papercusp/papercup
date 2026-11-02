@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { freezeMinecraftTrial, MINECRAFT_OBJECTIVES } from './minecraft-protocol';
 import { startMinecraftRuntime, minecraftOfflinePlayerUuid, type MinecraftRuntime } from './minecraft-runtime';
 import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEvidence } from './minecraft-evidence';
+import { canonicalJson } from './reproducibility/canonical-json';
 import type { ProcExec } from './grader/swe-bench-pro';
 
 const roots: string[] = [], runtimes: MinecraftRuntime[] = [];
@@ -103,6 +104,19 @@ describe('Minecraft trusted server evidence and replay', () => {
     }
     expect(() => fresh.readMinecraftEvidenceExport(serialized, 'b'.repeat(64))).toThrow(/retained host digest/);
     expect(() => fresh.readMinecraftEvidenceExport(serialized, '')).toThrow();
+  });
+  it('rejects a self-consistent forged archive against the independently retained host digest', async () => {
+    const f = await fixture(); const proof = await collectMinecraftEvidence(f.runtime);
+    const serialized = exportMinecraftEvidence(proof);
+    const retainedHostDigest = createHash('sha256').update(serialized).digest('hex');
+    const fresh = await import('./minecraft-evidence');
+    expect(fresh.gradeMinecraftEvidence(f.trial,
+      fresh.readMinecraftEvidenceExport(serialized, retainedHostDigest))).toMatchObject({ score: 1 });
+    const forged = JSON.parse(serialized);
+    forged.snapshot.files[`world/world/advancements/${minecraftOfflinePlayerUuid('alice')}.json`] = '{"DataVersion":3700}';
+    // Recompute the bundle's own snapshot hash so only the independent host anchor can reject it.
+    forged.sha256 = createHash('sha256').update(canonicalJson(forged.snapshot)).digest('hex');
+    expect(() => fresh.readMinecraftEvidenceExport(canonicalJson(forged), retainedHostDigest)).toThrow();
   });
   it.each(['', '{', '{}', 'null', '{"DataVersion":3700,"minecraft:story/iron_tools":{"done":true,"criteria":{}}}',
     '{"DataVersion":3700,"minecraft:story/iron_tools":{"done":"true","criteria":{"iron_pickaxe":"2026-01-01 00:00:00 +0000"}}}'])('refuses malformed or incomplete server evidence %s', async raw => {
