@@ -8,6 +8,18 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 const exec = promisify(execFile);
 
+function breakdownVisible(selector: string) {
+  return `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0
+      && rect.right <= innerWidth && rect.bottom <= innerHeight
+      && !!hit && (hit === element || element.contains(hit));
+  })()`;
+}
+
 async function screenshot(tool: string, pid: string, output: string, display = process.env.VERIFY_TAURI_DISPLAY) {
   // Reuse the native collection journey's process-scoped X11 targeting.
   // Document and OS titles differ; neither identifies the owned native window.
@@ -53,6 +65,18 @@ test('rubric screenshot captures an owned X11 window without assuming its title'
     window?.kill();
     server.kill();
   }
+});
+
+test('rubric capture rejects a count row clipped below a scroll container', async ({ page }) => {
+  await page.setContent(`<div style="height:100px;overflow:auto">
+    <div style="height:300px"></div>
+    <p aria-label="Unknown rating breakdown">Grader incomplete: 0 · Instrument unavailable: 0.</p>
+  </div>`);
+  const selector = '[aria-label="Unknown rating breakdown"]';
+  // Positive DOM dimensions do not establish that the screenshot contains it.
+  expect(await page.evaluate(breakdownVisible(selector))).toBe(false);
+  await page.locator(selector).evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  expect(await page.evaluate(breakdownVisible(selector))).toBe(true);
 });
 
 test('rubric unknown reasons match the current native trend window', async ({}, info) => {
@@ -153,11 +177,14 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
   const breakdown = current.body.rows[0].unknownBreakdown;
   expect(Number.isInteger(breakdown.graderIncomplete)).toBe(true);
   expect(Number.isInteger(breakdown.instrumentUnavailable)).toBe(true);
+  await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'center', inline: 'nearest' })`);
+  await wait(breakdownVisible(selector));
   const dom = await evaluate(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
     const rect = element.getBoundingClientRect();
     return {text: element.textContent, evidence: element.dataset.evidence,
-      width: rect.width, height: rect.height, url: location.href,
+      width: rect.width, height: rect.height, top: rect.top, bottom: rect.bottom,
+      left: rect.left, right: rect.right, viewport: { width: innerWidth, height: innerHeight }, url: location.href,
       browserWorkspace: window.__PAPERCUSP_WS__ || null};
   })()`);
   expect(dom.text).toContain(`Grader incomplete: ${breakdown.graderIncomplete}`);
@@ -176,6 +203,7 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
   await writeFile(receipt, JSON.stringify({ current, dom, source: JSON.parse(await readFile(source!, 'utf8')) }, null, 2));
   await info.attach('native rubric unknown breakdown', { path: receipt, contentType: 'application/json' });
   const screenshotPath = info.outputPath('rubric-unknown-breakdown.png');
+  await wait(breakdownVisible(selector));
   await screenshot(tool, pid, screenshotPath);
   await info.attach('native rubric unknown breakdown screenshot', { path: screenshotPath, contentType: 'image/png' });
 });
