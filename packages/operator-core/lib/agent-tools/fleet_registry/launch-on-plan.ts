@@ -2075,7 +2075,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'R5 per-fleet governor grant: true opts THIS fleet into fleet-headcount auto-top-up by persisting `supervise: true` on its durable launch recipe (the governor acts only on granting fleets, and only while FLEET_HEADCOUNT_GOVERNOR is ON); false revokes; omit leaves the stored grant untouched. An undeliverable grant (paired/heterogeneous launch, or an existing fleet with no ENABLED headcount row) is reported on the result as `superviseGrant`, never silently dropped.',
+        'Per-fleet governor grant: new homogeneous fleets default to supervise:true, so missing members are automatically replaced from the saved launch recipe while FLEET_HEADCOUNT_GOVERNOR is ON. Pass false to opt out. On an existing fleet, omission preserves its stored grant. An explicit undeliverable grant (paired/heterogeneous launch, or an existing fleet with no ENABLED headcount row) is reported on the result as `superviseGrant`, never silently dropped.',
       ),
     overrideCapacityClamp: z
       .boolean()
@@ -4876,8 +4876,10 @@ export default defineTool({
         ...(args.compactionLimit != null ? { compactionLimit: args.compactionLimit } : {}),
         carry: args.carry ?? 'warm',
         ...(args.extraArgs ? { extraArgs: [...args.extraArgs] } : {}),
-        // R5: an explicit supervise grant/revoke rides the fresh-recipe persist.
-        ...(args.supervise != null ? { supervise: args.supervise } : {}),
+        // New fleets recover missing members by default. Keep this default at
+        // fresh-recipe creation: schema-level defaulting would overwrite an
+        // existing fleet's explicit opt-out on an otherwise ordinary top-up.
+        supervise: args.supervise ?? true,
         // The fleet's mode outlives the founding caller (WI-6554700010029298).
         ...recipeModeField(launchMode),
       });
