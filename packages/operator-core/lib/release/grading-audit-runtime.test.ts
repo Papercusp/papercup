@@ -280,6 +280,49 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'EI-b', 'EI-c']);
   });
 
+  it('waits for a retained supervisor to restore readiness without replacing its task or references', async () => {
+    const f = fixture();
+    const old = await ensureGradingAuditRuntime(f.input, f.deps);
+    f.deps.sleep = vi.fn(async () => {});
+    f.deps.probe = vi.fn()
+      .mockResolvedValueOnce({ status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' })
+      .mockResolvedValueOnce({ status: 'unready', reason: 'timeout' })
+      .mockResolvedValue({ status: 'ready', build: f.input.evaluatorBuild });
+    const recovered = await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b', acceptanceRef: 'WI-source' }, f.deps);
+    expect(recovered).toEqual(old);
+    expect(f.deps.probe).toHaveBeenCalledTimes(3);
+    expect(f.deps.sleep).toHaveBeenCalledTimes(2);
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+    expect(f.rows[0].detail.gradingAuditRuntime).toMatchObject({
+      issueIds: ['EI-a', 'EI-b'], acceptanceRefs: ['WI-source'], baseUrl: old.baseUrl,
+    });
+  });
+
+  it('does not accept another evaluator reached while a retained supervisor is recovering', async () => {
+    const f = fixture();
+    await ensureGradingAuditRuntime(f.input, f.deps);
+    f.deps.probe = vi.fn()
+      .mockResolvedValueOnce({ status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' })
+      .mockResolvedValue({ status: 'ready', build: { ...f.input.evaluatorBuild, sha: 'wrong' } });
+    await expect(ensureGradingAuditRuntime(f.input, f.deps)).rejects.toThrow('identity mismatch');
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+    expect(f.stop).not.toHaveBeenCalled();
+  });
+
+  it('stops recovery probing when the retained runtime absolute lifetime expires', async () => {
+    const f = fixture();
+    const old = await ensureGradingAuditRuntime(f.input, f.deps);
+    f.deps.probe = vi.fn().mockResolvedValue({ status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' });
+    f.deps.sleep = vi.fn(async () => { f.deps.now = () => old.expiresAtSec * 1000; });
+    const error = await ensureGradingAuditRuntime(f.input, f.deps).catch(error => error);
+    expect(error).toBeInstanceOf(GradingAuditRuntimeReadinessError);
+    expect(f.deps.sleep).toHaveBeenCalledTimes(1);
+    expect(f.deps.probe).toHaveBeenCalledTimes(1);
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it.each<{
     label: string;
     response: () => Promise<Response>;
@@ -312,7 +355,8 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(error.diagnostic).toEqual({
       taskId: runtime.taskId, locator: { ...f.source, baseUrl: runtime.baseUrl, expiresAtSec: runtime.expiresAtSec,
         issueIds: ['EI-a', 'EI-b'], acceptanceRefs: ['WI-source'] },
-      logPath: f.rows[0].logPath, lastProbe: { status: 'unready', ...failure }, attempts: 1,
+      logPath: f.rows[0].logPath, lastProbe: { status: 'unready', ...failure },
+      attempts: ['connection-error', 'timeout'].includes(String(failure.reason)) || failure.httpStatus === 503 ? 30 : 1,
       readiness: { method: 'GET', url: runtime.baseUrl + '/api/health', timeoutMs: 2000 },
       taskRead: { tool: 'processes:list', args: { taskId: runtime.taskId } },
       recovery: { tool: 'scorecards:repair', args: { targetIds: ['EI-b'] } },
