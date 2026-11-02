@@ -137,6 +137,41 @@ Compared with baseline commit `af52a46a8a`, the inspected deadline/search source
 files were unchanged. The inspected `core.mjs` changes concerned shell-command
 classification and its parser import; its injection timeout policy was unchanged.
 
+## Caller migration and partial-result design boundaries
+
+The following is preparation for P-002, based on the November 2 source reads.
+It describes the required migration boundary, not an implemented policy.
+
+| Existing seam | Current behavior to reuse | Required migration boundary |
+| --- | --- | --- |
+| `postInjection` in `hooks/inject/core.mjs` | One abort controller covers local mid-turn collection, operator-base fallback, HTTP and JSON body reading. The request's `wallMs` subtracts collection time. | Keep one caller lifetime. Fallback attempts and server stages must consume its remaining time; none receives a renewed 10-second allowance. |
+| `turnStartRespondBy` in `turn-start-memory.ts` | Converts the declared remaining wall to a response deadline, reserving up to 300 ms for staging and delivery. The mid-turn endpoint reuses it and binds a memory deadline to `req.signal`. | Preserve the response reserve and caller cancellation. Increasing an inner budget alone cannot deliver a late result after the client has stopped listening. |
+| `getMemoryBlockBoundedResult` | A single-flight builder owns its deadline; stale responses and coalesced waiters retain separate caller-wait semantics. | A cancelled waiter must not abort another consumer's useful shared work. A stale cached answer must not stand in for current-query late success. |
+| `runHybridSearch` | Embedding starts alongside lexical work; source calls have bounded cancellation, and completed ranker lists pass through score floors before fusion. Caller abort explicitly rejects. | Add deadline-driven completion at the existing engine seam while preserving explicit cancellation as rejection. Capture completed ranker work without changing unrelated callers' existing opt-in budgets. |
+| `recallCorpusContextInner` | Stage-specific `selectCorpusLines` applies exclusions, scope, overlap, known references and output limits. Stage 2 spends the remaining item/character budget after stage 1. | Retain only snapshots that have passed these normal selection checks. Deadline during widening or reranking must retain the last safe completed snapshot; raw engine candidates are not deliverable partial context. |
+| Existing embed latency and leg accounting | Query embedding already records caller and budget, and search records per-source/ranker outcomes. | Keep 1,200 ms observable as a performance target while separating slow success, genuine failure, explicit cancellation and hard deadline. |
+
+`PORTS['pre-tool']` is a separate authorization guard with a 1,500 ms wall.
+It does not retrieve context and is outside this policy migration. Its observed
+read/decline availability fault is tracked separately as EI-27697470834897410;
+extending retrieval waits must not weaken its refusal semantics. Stop and
+compaction ports likewise retain their existing contracts unless separately
+approved. The OMP turn-start/mid-turn subprocess wrapper must follow the shared
+context-port policy so its termination deadline cannot cut off an otherwise
+valid response.
+
+At the hard deadline, unfinished request-owned stages must be cancelled and
+late completions must not replace a completed response or mutate its snapshot.
+If scope/exclusion checks have not completed, their raw input is not a safe
+partial result. Keep shared-cache build ownership separate from each consumer's
+delivery/cancellation state, and test both independently.
+
+The focused acceptance population must exercise the existing `wallMs` hook
+tests, response-reserve endpoint tests, cache/coalescing tests, hybrid-search
+tests and corpus selection/cascade tests together. Existing short-budget tests
+for non-migrated callers remain required. A passing core deadline helper alone
+does not establish end-to-end delivery.
+
 ## Historical recommendation authority
 
 The original comparison is
