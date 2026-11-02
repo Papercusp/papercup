@@ -24,6 +24,14 @@ function execute(
       repeat: 1,
     }],
   },
+  processResult: Record<string, unknown> = {
+    taskPage: { limit: 200, returned: 2, total: 2, truncated: false },
+    live: { degraded: false, ownedTruncated: false, foreignTruncated: false },
+    tasks: [
+      { taskId: 'count-only', rootTaskId: 'count-only-root', class: 'runner', state: 'running', livePids: [], pids: ownerPid },
+      { taskId: workflowId, rootTaskId: 'root-' + ownerPid, class: 'git-sync', state: 'running', livePids: [ownerPid], pids: 1 },
+    ],
+  },
 ) {
   const routinesList = vi.fn(async (_args: Record<string, unknown>) => ({
     count: 1,
@@ -42,27 +50,7 @@ function execute(
     }],
   }));
   const logsRead = vi.fn(async (_args: Record<string, unknown>) => logsResult);
-  const processesList = vi.fn(async (_args: Record<string, unknown>) => ({
-    taskPage: { limit: 200, returned: 2, total: 2, truncated: false },
-    tasks: [
-      {
-        taskId: 'count-only',
-        rootTaskId: 'count-only-root',
-        class: 'runner',
-        state: 'running',
-        livePids: [],
-        pids: ownerPid,
-      },
-      {
-        taskId: workflowId,
-        rootTaskId: 'root-' + ownerPid,
-        class: 'git-sync',
-        state: 'running',
-        livePids: [ownerPid],
-        pids: 1,
-      },
-    ],
-  }));
+  const processesList = vi.fn(async (_args: Record<string, unknown>) => processResult);
   const facade = {
     routines: { list: routinesList },
     logs: { read: logsRead },
@@ -87,7 +75,10 @@ describe('saved git-sync liveness recipe', () => {
     const summary = result.result as {
       pidDriftGuard: { passed: boolean };
       routine: { owner_pid: number | null; workflow_id: string | null; activity_active: boolean; phase: string | null };
-      processInventory: { matches: Array<{ taskId: string; livePids: number[] | null; pidsCount: number | null }> };
+      processInventory: {
+        matchCoverage: { status: string; complete: boolean; unknownReasons: string[] };
+        matches: Array<{ taskId: string; livePids: number[] | null; pidsCount: number | null }>;
+      };
     };
     expect(summary.pidDriftGuard.passed).toBe(true);
     expect(summary.routine).toMatchObject({
@@ -99,6 +90,11 @@ describe('saved git-sync liveness recipe', () => {
     expect(summary.processInventory.matches).toEqual([
       expect.objectContaining({ taskId: workflowId, livePids: [ownerPid], pidsCount: 1 }),
     ]);
+    expect(summary.processInventory.matchCoverage).toMatchObject({
+      status: 'match-found',
+      complete: true,
+      unknownReasons: [],
+    });
     expect(run.routinesList).toHaveBeenCalledWith({
       installSlug: 'papercusp',
       name: 'git-sync',
@@ -124,6 +120,75 @@ describe('saved git-sync liveness recipe', () => {
       collapsed: null,
       truncated: null,
       signalRows: [],
+    });
+  });
+
+  it.each([
+    {
+      name: 'task page is truncated',
+      expectedReason: 'task-page-truncated',
+      processResult: {
+        taskPage: { limit: 1, returned: 1, total: 2, truncated: true },
+        live: { degraded: false, ownedTruncated: false, foreignTruncated: false },
+        tasks: [],
+      },
+    },
+    {
+      name: 'live scan is degraded',
+      expectedReason: 'live-scan-degraded',
+      processResult: {
+        taskPage: { limit: 200, returned: 0, total: 0, truncated: false },
+        live: { degraded: true, ownedTruncated: false, foreignTruncated: false },
+        tasks: [],
+      },
+    },
+    {
+      name: 'owned process scan is truncated',
+      expectedReason: 'owned-scan-truncated',
+      processResult: {
+        taskPage: { limit: 200, returned: 0, total: 0, truncated: false },
+        live: { degraded: false, ownedTruncated: true, foreignTruncated: false },
+        tasks: [],
+      },
+    },
+    {
+      name: 'foreign process scan is truncated',
+      expectedReason: 'foreign-scan-truncated',
+      processResult: {
+        taskPage: { limit: 200, returned: 0, total: 0, truncated: false },
+        live: { degraded: false, ownedTruncated: false, foreignTruncated: true },
+        tasks: [],
+      },
+    },
+  ])('reports no-match as unknown when the $name', async ({ expectedReason, processResult }) => {
+    const run = execute(31001, 'workflow-run-incomplete-coverage', undefined, processResult);
+    const result = await run.result;
+    expect(result.ok).toBe(true);
+    const summary = result.result as {
+      processInventory: { matchCoverage: { status: string; complete: boolean; unknownReasons: string[] } };
+    };
+    expect(summary.processInventory.matchCoverage.status).toBe('unknown');
+    expect(summary.processInventory.matchCoverage.complete).toBe(false);
+    expect(summary.processInventory.matchCoverage.unknownReasons).toContain(expectedReason);
+  });
+
+  it('reports complete no-match only when the task page and process scan are complete', async () => {
+    const run = execute(31001, 'workflow-run-complete-no-match', undefined, {
+      taskPage: { limit: 200, returned: 0, total: 0, truncated: false },
+      live: { degraded: false, ownedTruncated: false, foreignTruncated: false },
+      tasks: [],
+    });
+    const result = await run.result;
+    expect(result.ok).toBe(true);
+    const summary = result.result as {
+      processInventory: { matchCoverage: { status: string; complete: boolean; unknownReasons: string[] } };
+    };
+    expect(summary.processInventory.matchCoverage).toEqual({
+      status: 'complete-no-match',
+      complete: true,
+      unknownReasons: [],
+      taskPageTruncated: false,
+      liveScan: { degraded: false, ownedTruncated: false, foreignTruncated: false },
     });
   });
 });
