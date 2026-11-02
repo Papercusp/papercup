@@ -107,7 +107,26 @@ describe('retained matched-workload performance evaluation', () => {
     if (c.kind !== 'matched-run') throw new Error('fixture');
     c.capture.groups[0].arms[1].requests[0].outcome = 'error';
     c.capture.groups[0].arms[1].requests[0].oracleMatched = false;
+    const { hash: _hash, ...body } = c.capture;
+    c.capture.hash = hash(body);
     expect((await evaluatePerfWorkloadRuns(sealPerfWorkloadProtocol(f.input), 'registration', f.repeats, f.read)).status).toBe('performance-regressed');
+  });
+  it('rejects a ratio outside the fixed simultaneous bounds', async () => {
+    const f = fixture(); const measured = vi.mocked(pairedBlockBootstrapCI).getMockImplementation()!;
+    // Use the exact returned interval shape, changing only its bounds.
+    const interval = measured([], () => 1, { familySize: 9 });
+    if (interval.status !== 'measured') throw new Error('fixture');
+    vi.mocked(pairedBlockBootstrapCI).mockReturnValue({ ...interval, interval: { ...interval.interval, lower: 0.949, upper: 1.051 } });
+    expect((await evaluatePerfWorkloadRuns(sealPerfWorkloadProtocol(f.input), 'registration', f.repeats, f.read)).status).toBe('performance-regressed');
+  });
+  it('keeps a sparse candidate unknown without lowering the required sample size', async () => {
+    const f = fixture();
+    vi.mocked(perfWorkloadRunSeries).mockImplementation(run => run.plan.phase === 'baseline' ? derived() : derived().map(group => ({ ...group,
+      a: { ...group.a, latencyMs: values.slice(1), throughput: values.slice(1) },
+      b: { ...group.b, latencyMs: values.slice(1), throughput: values.slice(1) } })));
+    const result = await evaluatePerfWorkloadRuns(sealPerfWorkloadProtocol(f.input), 'registration', f.repeats, f.read);
+    expect(result.status).toBe('unknown'); expect(result.reasons).toContain('insufficient-candidate-count');
+    expect(pairedBlockBootstrapCI).not.toHaveBeenCalled();
   });
   it('cannot derive a baseline from missing raw series or a candidate run', () => {
     vi.mocked(perfWorkloadRunSeries).mockReturnValue(null);

@@ -31,7 +31,8 @@ if (isWorker) {
   let dbosStopped = false;
 
   beforeAll(async () => {
-    org = await createOrgTestDb();
+    // The cancellation drill uses a locker, its blocked victim, and a separate observer.
+    org = await createOrgTestDb({ adminPoolMax: 3 });
     sql = org.adminSql;
     for (const key of ['HARNESS_DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL']) vi.stubEnv(key, org.adminDsn);
     vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '1');

@@ -2,7 +2,7 @@
 import { empiricalQuantile, pairedBlockBootstrapCI, type PairedBlockInterval } from '@papercusp/bench-metrics';
 import {
   PERF_WORKLOAD_POLICY, perfProtocolHash, verifyPerfWorkloadPrerequisites,
-  type PerfProtocolEvidence, type PerfWorkloadProtocol, type PerfWorkloadBaselineSeries,
+  type PerfProtocolEvidence, type PerfWorkloadProtocol,
 } from './perf-workload-protocol';
 import { perfWorkloadRunSeries, type PerfWorkloadRun } from './perf-workload-run';
 
@@ -52,7 +52,7 @@ export async function evaluatePerfWorkloadRuns(protocol: PerfWorkloadProtocol, r
   repeats: readonly PerfWorkloadTrialRepeat[], readEvidence: ReadEvidence): Promise<PerfWorkloadEvaluation> {
   // Freeze the inputs before the first asynchronous read, including the reader's objects.
   const pinned = structuredClone(protocol);
-  const trial = structuredClone(repeats);
+  const trial = structuredClone([...repeats]);
   const reasons = new Set<string>();
   const comparisons: PerfWorkloadEvaluation['comparisons'] = [];
   const cache = new Map<string, Promise<PerfProtocolEvidence | null>>();
@@ -145,7 +145,7 @@ export async function evaluatePerfWorkloadRuns(protocol: PerfWorkloadProtocol, r
         return { repeatId: trial[i].baselineRepeatId, a: isRate ? group.a.throughput : group.a.latencyMs,
           b: isRate ? group.b.throughput : group.b.latencyMs, blockLength: comparison.blockLengths[trial[i].baselineRepeatId] };
       });
-      if (reasons.size) continue;
+      if (samples.some(sample => sample.a.length < PERF_WORKLOAD_POLICY.minimumCompletedPerArm || sample.b.length < PERF_WORKLOAD_POLICY.minimumCompletedPerArm)) continue;
       const interval = pairedBlockBootstrapCI(samples, (a, b) => {
         const statistic = (values: readonly number[]) => isRate ? values.reduce((sum, x) => sum + x, 0) / values.length : empiricalQuantile(values, quantile);
         const av = statistic(a); const bv = statistic(b);

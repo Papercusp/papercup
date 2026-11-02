@@ -60,3 +60,16 @@ it('round-trips the new raw series and joint computation variants through real l
     workspaceId: 'perf-evidence-fixture' }, db.adminSql);
   expect(unscoped.size).toBe(0);
 }, 30_000);
+
+it('retains an unknown performance evaluation without turning artifact integrity into acceptance', async () => {
+  const repository = perfEvidenceRepository({ directory, sql: db.adminSql,
+    scope: { workspaceId: 'perf-evidence-fixture', harnessSlug: 'papercusp' } });
+  const body = { schemaVersion: 1 as const, protocolHash: perfProtocolHash('fixture-protocol'), registrationRef: 'unqualified-fixture',
+    repeats: [], status: 'unknown' as const, reasons: ['missing-pretrial-manifest-pins'], comparisons: [] };
+  const receipt = await repository.publish({ kind: 'evaluation', endedAtMs: Date.now() - 1000,
+    evaluation: { ...body, hash: perfProtocolHash(body) } });
+  expect(await repository.read(receipt.ref)).toEqual(receipt.evidence);
+  const unscoped = await readLatestRubricCheckResults({ rubricRef: 'acceptance-host-memory-right-sizing-2026-10-31',
+    workspaceId: 'perf-evidence-fixture' }, db.adminSql);
+  expect(unscoped.size).toBe(0);
+}, 30_000);

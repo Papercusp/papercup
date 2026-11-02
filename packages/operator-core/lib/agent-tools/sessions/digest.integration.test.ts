@@ -449,7 +449,7 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       .toBe('55d490b5049d30f5c6d502777b9196f925185360616e3849a636454031bc5ec0');
 
     const { buildMcpUrl, buildCallToolParams, resolveTokenPaths, requireServingGeneration,
-      listAllTools, callToolWithPressureRetry } = await import('../../../../../apps/operator/scripts/ptool.mjs');
+      listAllTools, callToolWithPressureRetry, resultToText, unwrapOutputEnvelope } = await import('../../../../../apps/operator/scripts/ptool.mjs');
     const { connectAgentMcp } = await import('../../agent-mcp-client');
     const { CallToolResultSchema } = await import('@modelcontextprotocol/sdk/types.js');
     const bearer = resolveTokenPaths().map((path: string) => {
@@ -463,11 +463,26 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       return Math.ceil(ms);
     };
     const measuredCalls: Array<{ tool: string; args: unknown; elapsedMs: number }> = [];
+    const health = async () => {
+      const response = await fetch(new URL('/api/health', selected.url), { signal: AbortSignal.timeout(remaining()) });
+      expect(response.ok).toBe(true);
+      const body = await response.json() as { ok?: boolean; sha?: string };
+      expect(body.ok).toBe(true);
+      expect(body.sha).toMatch(/^[a-f0-9]{7,64}$/);
+      return body.sha!;
+    };
+    const buildSha = await health();
     const { client } = await connectAgentMcp({
       url: buildMcpUrl(selected.url, { workspace: process.env.PAPERCUSP_TEST_RUN_WORKSPACE,
         harness: 'papercusp', client: process.env.PAPERCUSP_SID, contextTier: 'full' }).href,
       headers: { Authorization: `Bearer ${bearer}` }, timeoutMs: remaining(),
       name: 'session-recovery-acceptance',
+    }).catch(error => {
+      process.stdout.write('SESSION_RECOVERY_CONNECTION_FAILURE ' + JSON.stringify({
+        url: selected.url, buildSha, diagnostic: error.diagnostic ?? { category: 'unknown' },
+        elapsedMs: performance.now() - started,
+      }) + '\n');
+      throw error;
     });
     try {
       const catalog = await listAllTools(client, { timeoutMs: remaining(), totalTimeoutMs: remaining() });
@@ -481,24 +496,17 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
         CallToolResultSchema.parse(wire);
         measuredCalls.push({ tool, args, elapsedMs: performance.now() - before });
         expect(wire.isError, `${tool} returned an MCP error`).not.toBe(true);
-        if (wire.structuredContent) return wire.structuredContent;
-        for (const part of wire.content) {
-          if (part.type !== 'text') continue;
-          try { return JSON.parse(part.text); } catch { /* advisory text */ }
-        }
-        throw new Error(`${tool} returned no complete JSON result`);
+        const payload = JSON.parse(resultToText(wire, { raw: true }));
+        const decoded = await unwrapOutputEnvelope(payload, {
+          readReference: (args: Record<string, unknown>) => call('capability:read', args),
+        });
+        expect(decoded?.schemaVersion, `${tool} result remained an unreadable output envelope`)
+          .not.toBe('papercusp.output-envelope/v1');
+        return decoded;
       };
-      const health = async () => {
-        const response = await fetch(new URL('/api/health', selected.url), { signal: AbortSignal.timeout(remaining()) });
-        expect(response.ok).toBe(true);
-        const body = await response.json() as { ok?: boolean; sha?: string };
-        expect(body.ok).toBe(true);
-        expect(body.sha).toMatch(/^[a-f0-9]{7,64}$/);
-        return body.sha!;
-      };
-      const buildSha = await health();
       const query = 'what were agents working on before their accounts hit usage limits?';
-      const discovery = await call('tools:find', { query });
+      const discovery = await call('tools:find', { query, limit: 3 });
+      expect(Array.isArray(discovery.hits), `discovery response: ${JSON.stringify(discovery)}`).toBe(true);
       expect(discovery.hits.slice(0, 3).map((hit: { tool: string }) => hit.tool)).toContain('sessions:digest');
       const inputs = { since: '2026-10-30T00:00:00.000Z', until: '2026-10-31T23:59:59.000Z',
         stopKinds: ['quota', 'authentication', 'billing', 'rate_limit'], taskMode: 'as-of', limit: 3 };
@@ -507,7 +515,7 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       let cursor: string | undefined;
       let snapshotAt: string | undefined;
       for (let page = 0; page < 168; page++) {
-        const result = await call('sessions:digest', cursor ? { cursor, limit: 3 } : inputs);
+        const result = await call('sessions:digest', { ...inputs, ...(cursor ? { cursor } : {}) });
         expect(result.ok, `digest failure: ${JSON.stringify(result)}`).toBe(true);
         expect(Array.isArray(result.digests)).toBe(true);
         expect(result.coverage, 'unknown indexed coverage').toBeTruthy();
@@ -563,6 +571,11 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
         discovery: { query, hits: discovery.hits.map((hit: any) => hit.tool), servingGeneration: discovery.servingGeneration },
         pages, resolvedReferences: refs, measuredCalls, elapsedMs,
       }) + '\n');
-    } finally { await client.close(); }
+    } finally {
+      process.stdout.write('SESSION_RECOVERY_CALL_TIMINGS ' + JSON.stringify({
+        url: selected.url, elapsedMs: performance.now() - started, measuredCalls,
+      }) + '\n');
+      await client.close();
+    }
   }, 130_000);
 });

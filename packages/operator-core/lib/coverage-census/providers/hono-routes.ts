@@ -27,7 +27,7 @@
  */
 
 import { toJsonSchema } from '@papercusp/tooldef';
-import type { ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
+import type { CensusContext, ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
 import { routeRegistrationOrder, isCatchAll } from '../../endpoint-route/register';
 import { ALL_ROUTES } from '../../endpoint-route/routes';
 import { assertRegistryNonEmpty } from './_non-empty';
@@ -95,11 +95,11 @@ function schemaOf(input: unknown): unknown {
   }
 }
 
-export const honoRoutesProvider: SurfaceCensusProvider = {
+export const honoRoutesProvider = {
   provider: 'hono-routes',
   kinds: [HTTP_ROUTE_KIND],
 
-  enumerate(): ObservedSurface[] {
+  enumerate(_ctx?: CensusContext): ObservedSurface[] {
     // Join table for per-route detail. Built from ALL_ROUTES — the same array the seam projects.
     const detail = new Map<string, (typeof ALL_ROUTES)[number]>();
     for (const def of ALL_ROUTES) detail.set(identity(def.method, def.path), def);
@@ -142,4 +142,4 @@ export const honoRoutesProvider: SurfaceCensusProvider = {
       'Check that lib/endpoint-route/routes/index.ts loaded and ALL_ROUTES is populated.',
     ) as ObservedSurface[];
   },
-};
+} satisfies SurfaceCensusProvider;
