@@ -6,9 +6,10 @@ import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMinecraftNativeParticipant, runMinecraftNativeTrial, runMinecraftStoredTrial, startMinecraftNativeAssignment,
+import { runMinecraftNativeParticipant, runMinecraftNativeTrial, runMinecraftStoredTrial, runMinecraftProvisionedTrial,
+  prepareMinecraftTaskLaunch, startMinecraftNativeAssignment,
   type MinecraftNativeAssignmentPorts, type MinecraftNativeRunPorts, type MinecraftNativeTrialPorts,
-  type MinecraftStoredTrialPorts } from './minecraft-launch-adapter';
+  type MinecraftStoredTrialPorts, type MinecraftTaskLaunch, type MinecraftProvisionedTrialPorts } from './minecraft-launch-adapter';
 import { rolloutIdFor } from './reproducibility/emit';
 import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial } from './minecraft-protocol';
 import { controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
@@ -442,5 +443,86 @@ describe('Minecraft canonical rollout persistence', () => {
     expect(f.ports.startAssignment).not.toHaveBeenCalled();
     expect(f.ports.emitRollout).not.toHaveBeenCalled();
     expect(f.input.runtime.dispose).not.toHaveBeenCalled();
+  });
+});
+
+async function provisionedFixture() {
+  const f = await storedTrialFixture();
+  const { runtime, current, ...assignment } = f.input;
+  const launch: MinecraftTaskLaunch = { ...assignment, trial: runtime.trial,
+    runtime: { serverJar: '/host/pinned-server.jar', botImage: `sha256:${sha(72)}`, acceptEula: true,
+      worldBaseline: { worldSha256: sha(90), dispose: vi.fn(async () => {}) } } };
+  const startRuntime = vi.fn<MinecraftProvisionedTrialPorts['startRuntime']>(async () => runtime);
+  return { ...f, launch, host: current, ports: { ...f.ports, startRuntime } };
+}
+describe('Minecraft host provisioning', () => {
+  it('restores the frozen world and uses a fresh private workspace through canonical storage', async () => {
+    const f = await provisionedFixture();
+    const result = await runMinecraftProvisionedTrial(f.host, f.launch, f.ports);
+    expect(result.rows[0]).toMatchObject({ taskId: 't1', resolved: false, score: 0 });
+    expect(f.ports.startRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      trial: f.launch.trial, worldBaseline: f.launch.runtime.worldBaseline, signal: expect.any(AbortSignal) }));
+    const current = vi.mocked(f.ports.startAssignment).mock.calls[0]![0];
+    expect(current.checkout.dir).not.toBe(f.root);
+    expect(current.task.problemStatement).toContain('Obtain an iron pickaxe');
+    expect(current.task.problemStatement).not.toContain('pinned-server.jar');
+    await expect(readdir(current.checkout.dir)).rejects.toThrow(/ENOENT/);
+    expect(f.launch.runtime.worldBaseline.dispose).not.toHaveBeenCalled();
+    expect(f.ports.emitRollout).toHaveBeenCalledOnce();
+  });
+  it.each(['pair', 'baseline', 'model', 'workspace'])('refuses %s drift before provisioning or persistence', async drift => {
+    const f = await provisionedFixture();
+    if (drift === 'pair') f.launch.pairing.pair = { ...f.launch.pairing.pair };
+    if (drift === 'baseline') f.launch.runtime.worldBaseline = { ...f.launch.runtime.worldBaseline, worldSha256: sha(99) };
+    if (drift === 'model') f.host.protocol.arms.find(arm => arm.id === 'stock')!.model = 'foreign';
+    if (drift === 'workspace') f.host.context.workspaceId = 'foreign';
+    await expect(runMinecraftProvisionedTrial(f.host, f.launch, f.ports)).rejects.toThrow();
+    expect(f.ports.startRuntime).not.toHaveBeenCalled(); expect(f.ports.startAssignment).not.toHaveBeenCalled();
+    expect(f.ports.emitRollout).not.toHaveBeenCalled();
+  });
+  it('retains provisioning failure as a known-zero infrastructure outcome', async () => {
+    const f = await provisionedFixture();
+    f.ports.startRuntime.mockRejectedValue(Error('server unavailable'));
+    await expect(runMinecraftProvisionedTrial(f.host, f.launch, f.ports)).rejects.toThrow('server unavailable');
+    expect(f.ports.emitRollout).toHaveBeenCalledOnce();
+    expect(f.ports.emitRollout.mock.calls[0]![0]).toMatchObject({ taskId: 't1',
+      generation: { status: 'error', tokensTotal: 0, armMeta: { minecraftProvisioning: 'failed-before-native-assignment' } },
+      grading: { resolved: null, status: 'error' } });
+    expect(f.ports.startAssignment).not.toHaveBeenCalled();
+  });
+  it('drains a late runtime after cancellation before native allocation', async () => {
+    const f = await provisionedFixture(), abort = new AbortController();
+    f.host.options.signal = abort.signal;
+    f.ports.startRuntime.mockImplementationOnce(async () => { abort.abort(); return f.input.runtime; });
+    await expect(runMinecraftProvisionedTrial(f.host, f.launch, f.ports)).rejects.toThrow();
+    expect(f.input.runtime.dispose).toHaveBeenCalledOnce();
+    expect(f.ports.startAssignment).not.toHaveBeenCalled();
+    expect(f.ports.emitRollout).toHaveBeenCalledOnce();
+  });
+  it('retains both provisioning and persistence failures', async () => {
+    const f = await provisionedFixture();
+    f.ports.startRuntime.mockRejectedValue(Error('server unavailable'));
+    f.ports.emitRollout.mockRejectedValue(Error('store unavailable'));
+    const error = await runMinecraftProvisionedTrial(f.host, f.launch, f.ports).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors.map((value: Error) => value.message)).toEqual(['server unavailable', 'store unavailable']);
+  });
+  it('copies mutable launch settings before asynchronous runtime startup', async () => {
+    const f = await provisionedFixture();
+    f.ports.startRuntime.mockImplementationOnce(async () => {
+      f.launch.pairing.initialState = { worldSha256: sha(99), memorySha256: sha(99) };
+      f.launch.runtime.serverJar = '/foreign/server.jar';
+      return f.input.runtime;
+    });
+    await runMinecraftProvisionedTrial(f.host, f.launch, f.ports);
+    expect(f.ports.startRuntime.mock.calls[0]![0].serverJar).toBe('/host/pinned-server.jar');
+    expect(f.ports.emitRollout.mock.calls[0]![0].provenance).toMatchObject({
+      configSnapshot: { minecraft: { initialState: { worldSha256: sha(90) } } } });
+  });
+  it('does not admit a solo or coordinated treatment as a native reference', async () => {
+    const f = await provisionedFixture();
+    f.host.protocol.arms.find(arm => arm.id === 'stock')!.control!.topology = 'solo';
+    expect(() => prepareMinecraftTaskLaunch(f.host.protocol, 'stock', f.launch)).toThrow(/frozen native reference/);
+    expect(f.ports.startRuntime).not.toHaveBeenCalled();
   });
 });
