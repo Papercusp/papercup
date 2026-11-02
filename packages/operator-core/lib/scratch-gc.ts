@@ -186,7 +186,12 @@ function sharedScratchQuotaStatePath(workspaceId: string): string {
   return path;
 }
 
-function withScratchWorkspaceMutex<T>(
+async function ensureScratchQuotaStateParent(workspaceId: string): Promise<void> {
+  const parent = dirname(sharedScratchQuotaStatePath(workspaceId));
+  await mkdirAsync(parent, { recursive: true, mode: 0o700 });
+}
+
+async function withScratchWorkspaceMutex<T>(
   workspaceId: string,
   operation: string,
   run: () => Promise<T>,
@@ -206,6 +211,9 @@ function withScratchWorkspaceMutex<T>(
     admissionSubphaseTimingsMs?: Record<string, number>;
   }) => void,
 ): Promise<T> {
+  // Directory creation is idempotent but can touch the filesystem. Prepare it before
+  // joining the serialized quota-mutex queue so that work is not charged to lock holders.
+  await ensureScratchQuotaStateParent(workspaceId);
   const mutexName = scratchWorkspaceMutexName(workspaceId);
   const intent = {
     subsystem: 'scratch-quota',
@@ -504,11 +512,9 @@ async function writeSharedScratchQuotaState(
   currentState?: SharedScratchQuotaState | null,
 ): Promise<number> {
   const path = sharedScratchQuotaStatePath(workspaceId);
-  const parent = dirname(path);
   const publishAwait = <T>(subphase: string, operation: () => Promise<T>) => observeAwait
     ? observeAwait('quota-state-publish', subphase, operation)
     : operation();
-  await publishAwait('ensure-parent', () => mkdirAsync(parent, { recursive: true, mode: 0o700 }));
   // Reservation callers already read this state while holding the same workspace mutex.
   // Reuse that validated snapshot instead of reading the shared file twice in one critical
   // section. Other callers pass no snapshot and read the latest revision under the mutex.

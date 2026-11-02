@@ -16,12 +16,14 @@ vi.mock('./schedule-inventory', async orig => ({
 
 import { createOrgTestDb } from '../test/_org-test-db';
 import { setFeatureBackgroundActivityPolicy, setWorkspaceBackgroundActivityPolicy,
-  setPaused, setResumed, setBackgroundActivityAutomatic, workspaceBackgroundActivityAllowed } from './device-operator-actions';
+  setPaused, setResumed, setBackgroundActivityAutomatic, workspaceBackgroundActivityAllowed, stopFeatureBackgroundActivity } from './device-operator-actions';
 import { readStartupActivityHistory, recordStartupActivityHistory, workspaceBackgroundActivityFeatureId } from './startup-activity';
 import { readOperatorState, updateOperatorState, writeOperatorState } from './operator-state-pg';
-import { startupActivityFeatureId } from './schedule-inventory';
+import { reactionStartupFeature, startupActivityFeatureId } from './schedule-inventory';
 import { notifySyncInvalidate } from './sync-sse';
 import { registerSystemAction } from './harness/routines/system-actions';
+import { registerReactionRule, unregisterReactionRule } from './events/registry';
+import { configureScheduledRegistry, managedSetInterval, getManaged, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 
 const workspace = 'startup-policy-test';
 const user: SessionUser = { id: '03ffddab-83cb-44a2-93e5-d16429c72a2f', username: 'private-user',
@@ -38,6 +40,7 @@ let db: OrgTestDb;
 beforeAll(async () => { db = await createOrgTestDb(); h.sql = db.adminSql; }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
+  resetScheduledRegistry();
   await db.adminSql`DELETE FROM harness_shared.operator_paused`;
   await db.adminSql`DELETE FROM harness_shared.audit_log WHERE action = 'background-activity'`;
   h.rows = [registration];
@@ -45,6 +48,48 @@ beforeEach(async () => {
 });
 
 describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
+  it.each([false, true])('stops only the current managed invocation with acknowledged cancellation=%s and unchanged policy', async cancellable => {
+    const tick: { fire?: () => void } = {};
+    let finish!: () => void;
+    let signal!: AbortSignal;
+    configureScheduledRegistry({ setIntervalImpl: cb => { tick.fire = cb; return {}; }, clearIntervalImpl: () => {},
+      setTimeoutImpl: () => ({}), log: () => {} });
+    managedSetInterval('local-optional', 100, context => {
+      signal = context.signal;
+      return new Promise<void>(resolve => { finish = resolve; });
+    }, { category: 'global-sweep', cancellable, activity: { kind: 'workspace', workspaceId: workspace, featureId } });
+    // Inventory order must not hide a local invocation behind its durable registration.
+    h.rows = [registration, { ...registration, source: 'managed', name: 'local-optional', detail: {
+      activity: { kind: 'workspace', workspaceId: workspace, featureId }, running: true,
+    } }];
+    await writeOperatorState('operator_paused', { paused: false, backgroundActivity: {
+      version: 1, revision: 9, automatic: true, pausedUntil: null, features: {},
+    } }, workspace);
+    const before = await readOperatorState('operator_paused', workspace, { fresh: true });
+    tick.fire!();
+    const result = await stopFeatureBackgroundActivity(featureId, user);
+    expect(result.status).toBe(cancellable ? 'pending' : 'draining');
+    expect(signal.aborted).toBe(cancellable);
+    expect(getManaged('local-optional')!.running).toBe(true);
+    expect((await readStartupActivityHistory([featureId])).some(entry => entry.operation === 'stop' && entry.status === 'completed')).toBe(false);
+    finish();
+    await vi.waitFor(async () => expect((await readStartupActivityHistory([featureId]))
+      .some(entry => entry.operation === 'stop' && entry.status === 'completed')).toBe(true));
+    expect(getManaged('local-optional')!.running).toBe(false);
+    expect(await readOperatorState('operator_paused', workspace, { fresh: true })).toEqual(before);
+    await expect(workspaceBackgroundActivityAllowed(workspace, featureId)).resolves.toBe(true);
+    resetScheduledRegistry();
+  });
+
+  it('does not stop another workspace, required control, or an unsupported runtime', async () => {
+    await expect(stopFeatureBackgroundActivity(featureId, { ...user, workspace_id: 'other' }))
+      .rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+    expect(await stopFeatureBackgroundActivity(featureId, user)).toMatchObject({ status: 'unavailable' });
+    expect(await readStartupActivityHistory([featureId])).toEqual([]);
+    registerSystemAction('startup-stop-recovery', async () => {}, { requiredForControl: 'Keeps settings available' });
+    h.rows = [{ ...registration, detail: { targetRole: 'system:startup-stop-recovery' } }];
+    await expect(stopFeatureBackgroundActivity(featureId, user)).rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+  });
   it('commits a feature disable and redacted before/after history together', async () => {
     const policy = await change();
     expect(policy).toMatchObject({ automatic: false, revision: 1 });
@@ -64,7 +109,7 @@ describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
     } }, workspace);
     await expect(change(false, 3)).resolves.toMatchObject({ automatic: false, revision: 4 });
     expect(await readStartupActivityHistory([featureId])).toMatchObject([{
-      previous: { automatic: true, revision: 3 }, resulting: { automatic: false, revision: 4 },
+      previous: { automatic: false, revision: 3 }, resulting: { automatic: false, revision: 4 },
     }]);
     expect(await readOperatorState('operator_paused', workspace, { fresh: true })).toMatchObject({
       backgroundActivity: { automatic: false, revision: 4, features: { [featureId]: { automatic: false } } },
@@ -114,6 +159,22 @@ describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
     expect(await readStartupActivityHistory([featureId])).toHaveLength(3);
   });
 
+  it('records effective feature policy while preserving its independent choice under workspace controls', async () => {
+    await setWorkspaceBackgroundActivityPolicy({ action: 'automatic', automatic: false }, 0, user);
+    await setWorkspaceBackgroundActivityPolicy({ action: 'pause', until: null }, 1, user);
+    await expect(change(true, 2)).resolves.toMatchObject({ automatic: false, paused: true, revision: 3 });
+    expect(await readStartupActivityHistory([featureId])).toMatchObject([{
+      previous: { automatic: false, paused: true, revision: 2 },
+      resulting: { automatic: false, paused: true, revision: 3 },
+    }]);
+    expect(await readOperatorState('operator_paused', workspace, { fresh: true })).toMatchObject({
+      backgroundActivity: { features: { [featureId]: { automatic: true } } },
+    });
+    await setWorkspaceBackgroundActivityPolicy({ action: 'resume' }, 3, user);
+    await setWorkspaceBackgroundActivityPolicy({ action: 'automatic', automatic: true }, 4, user);
+    await expect(workspaceBackgroundActivityAllowed(workspace, featureId)).resolves.toBe(true);
+  });
+
   it('preserves unknown stored fields while stripping them from responses and audit', async () => {
     const root = { paused: true, privateRoot: 'secret-root', backgroundActivity: {
       version: 1, revision: 4, automatic: false, pausedUntil: null, futurePolicy: 'secret-policy', features: {
@@ -142,6 +203,42 @@ describe('scoped startup policy and atomic history (real PostgreSQL)', () => {
 
   it('accepts existing workspace:operate authority without the local wildcard', async () => {
     await expect(change(false, 0, { ...user, capabilities: ['workspace:operate'] })).resolves.toMatchObject({ revision: 1 });
+  });
+
+  it('controls a registered event rule using its inventory and admission identity with atomic history', async () => {
+    const rule = { id: 'startup-policy-event-test', on: 'policy:test', fire: 'test:optional',
+      when: () => true, args: () => ({}) };
+    registerReactionRule(rule);
+    const id = reactionStartupFeature(rule, workspace).id;
+    try {
+      await expect(setFeatureBackgroundActivityPolicy(id, { action: 'automatic', automatic: false }, 0, user))
+        .resolves.toMatchObject({ automatic: false, revision: 1 });
+      await expect(workspaceBackgroundActivityAllowed(workspace, id)).resolves.toBe(false);
+      await expect(workspaceBackgroundActivityAllowed('another-workspace', reactionStartupFeature(rule, 'another-workspace').id))
+        .resolves.toBe(true);
+      expect(await readStartupActivityHistory([id])).toMatchObject([{
+        previous: { automatic: true, revision: 0 }, resulting: { automatic: false, revision: 1 },
+      }]);
+      await expect(setFeatureBackgroundActivityPolicy(reactionStartupFeature(rule, 'another-workspace').id,
+        { action: 'resume' }, 1, user)).rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+      unregisterReactionRule(rule.id);
+      await expect(setFeatureBackgroundActivityPolicy(id, { action: 'resume' }, 1, user))
+        .rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+      expect(await readStartupActivityHistory([id])).toHaveLength(1);
+    } finally { unregisterReactionRule(rule.id); }
+  });
+
+  it('keeps required event control actions available without writing an ineffective preference', async () => {
+    const rule = { id: 'startup-policy-control-event-test', on: 'policy:test', fire: 'cache.bumpTags',
+      when: () => true, args: () => ({}) };
+    registerReactionRule(rule);
+    const id = reactionStartupFeature(rule, workspace).id;
+    try {
+      await expect(setFeatureBackgroundActivityPolicy(id, { action: 'automatic', automatic: false }, 0, user))
+        .rejects.toMatchObject({ code: 'startup_policy_forbidden' });
+      expect(await readStartupActivityHistory([id])).toEqual([]);
+      expect(await db.adminSql`SELECT payload FROM harness_shared.operator_paused`).toHaveLength(0);
+    } finally { unregisterReactionRule(rule.id); }
   });
 
   it('refuses an orphan, a required recovery action, a device, and a foreign managed binding', async () => {

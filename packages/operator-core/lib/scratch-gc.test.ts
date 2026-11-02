@@ -3211,6 +3211,8 @@ describe('deferred scratch quota recovery', () => {
 
   it('bounds a scratch quota write when filesystem mutex admission stalls', async () => {
     const workspaceId = 'ws-Q';
+    const stateRoot = resolveScratchQuotaStateRoot();
+    rmSync(stateRoot, { recursive: true, force: true });
     const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
     const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
     const mutexName = `papercusp-scratch-quota-${mutexDigest}`;
@@ -3228,23 +3230,27 @@ describe('deferred scratch quota recovery', () => {
     try {
       await holderStarted;
       const startedAt = performance.now();
-      await expect(writeWithScratchQuota({
+      let writeSettled = false;
+      const writePromise = writeWithScratchQuota({
         workspaceId,
         filePath: join(scratchRootForWorkspace(workspaceId), 'mutex-timeout', 'spill'),
         bytes: 1,
         captureSubphaseTimings: true,
-        mutexTimeoutMs: 40,
+        mutexTimeoutMs: 500,
         onTiming: (row) => timings.push(row),
       }, async () => {
         throw new Error('payload writer must not run after admission timeout');
-      })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      }).finally(() => { writeSettled = true; });
+      await vi.waitFor(() => expect(existsSync(stateRoot)).toBe(true), { timeout: 1_000 });
+      expect(writeSettled).toBe(false);
+      await expect(writePromise).rejects.toMatchObject({ code: 'ETIMEDOUT' });
       expect(performance.now() - startedAt).toBeLessThan(1_000);
       const settled = timings.find((row) => !row.progress);
       expect(settled).toMatchObject({
         fsMutexAdmissionMs: expect.any(Number),
         quotaWaitMs: expect.any(Number),
       });
-      expect(settled?.fsMutexAdmissionMs).toBeGreaterThanOrEqual(40);
+      expect(settled?.fsMutexAdmissionMs).toBeGreaterThanOrEqual(500);
       expect(settled?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
         'fs-mutex-admission.abandoned-lock-reclaim': expect.any(Number),
         'fs-mutex-admission.abandoned-lock.owner-read': expect.any(Number),

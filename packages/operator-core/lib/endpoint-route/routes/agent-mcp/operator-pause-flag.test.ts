@@ -7,10 +7,11 @@ vi.mock('../../../device-operator-actions', async orig => ({
   ...await orig<typeof import('../../../device-operator-actions')>(),
   assertBackgroundActivityAuthority: vi.fn(), setFeatureBackgroundActivityPolicy: vi.fn(),
   setWorkspaceBackgroundActivityPolicy: vi.fn(),
+  stopFeatureBackgroundActivity: vi.fn(),
 }));
 import routes from './operator-pause-flag';
 import { getSessionUser } from '../../../auth';
-import { assertBackgroundActivityAuthority, setFeatureBackgroundActivityPolicy, setWorkspaceBackgroundActivityPolicy } from '../../../device-operator-actions';
+import { assertBackgroundActivityAuthority, setFeatureBackgroundActivityPolicy, setWorkspaceBackgroundActivityPolicy, stopFeatureBackgroundActivity } from '../../../device-operator-actions';
 
 const featureId = `activity-${'a'.repeat(64)}`;
 const body = { featureId, revision: 2, change: { action: 'automatic', automatic: false } };
@@ -28,6 +29,21 @@ beforeEach(() => {
   vi.mocked(setWorkspaceBackgroundActivityPolicy).mockResolvedValue({ automatic: false, pausedUntil: null, revision: 3 });
 });
 describe('existing pause endpoint feature controls', () => {
+  it('routes a one-time stop separately from durable preferences and preserves pending acknowledgment', async () => {
+    vi.mocked(stopFeatureBackgroundActivity).mockResolvedValueOnce({ status: 'pending',
+      policy: { automatic: true, pausedUntil: null, revision: 2 } });
+    const response = await handle(request('PATCH', { featureId, action: 'stop' }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'pending', policy: { automatic: true } });
+    expect(stopFeatureBackgroundActivity).toHaveBeenCalledWith(featureId, user);
+    expect(setFeatureBackgroundActivityPolicy).not.toHaveBeenCalled();
+    expect(setWorkspaceBackgroundActivityPolicy).not.toHaveBeenCalled();
+    vi.mocked(stopFeatureBackgroundActivity).mockResolvedValueOnce({ status: 'unavailable',
+      reason: 'runtime-control-unavailable', policy: { automatic: true, pausedUntil: null, revision: 2 } });
+    const unsupported = await handle(request('PATCH', { featureId, action: 'stop' }));
+    expect(unsupported.status).toBe(503);
+    expect(await unsupported.json()).toMatchObject({ ok: false, status: 'unavailable' });
+  });
   it('binds an authenticated identity to the strict feature request and returns the saved revision', async () => {
     const response = await handle(request());
     expect(response.status).toBe(200);

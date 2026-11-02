@@ -6,7 +6,7 @@
  */
 import { getSessionUser } from '../../../auth';
 import { assertBackgroundActivityAuthority, featureBackgroundActivityChangeSchema, setFeatureBackgroundActivityPolicy,
-  setWorkspaceBackgroundActivityPolicy, isPaused } from '../../../device-operator-actions';
+  setWorkspaceBackgroundActivityPolicy, stopFeatureBackgroundActivity, isPaused } from '../../../device-operator-actions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 
@@ -69,7 +69,7 @@ const policyChange = z.union([featureChange, z.object({
   scope: z.literal('workspace'),
   revision: featureChange.shape.revision,
   change: featureBackgroundActivityChangeSchema,
-}).strict()]);
+}).strict(), z.object({ featureId: featureChange.shape.featureId, action: z.literal('stop') }).strict()]);
 
 const patch = defineTool({
   method: 'PATCH', path: '/agent-mcp/operator-pause-flag', auth: 'loopback',
@@ -80,6 +80,11 @@ const patch = defineTool({
     const parsed = policyChange.safeParse(await req.json().catch(() => null));
     if (!parsed.success) return Response.json({ ok: false, error: 'startup_policy_invalid' }, { status: 400 });
     try {
+      if ('action' in parsed.data) {
+        const result = await stopFeatureBackgroundActivity(parsed.data.featureId, user);
+        return Response.json({ ok: result.status !== 'unavailable', ...result },
+          { status: result.status === 'unavailable' ? 503 : 200 });
+      }
       const { change, revision } = parsed.data;
       const policy = 'featureId' in parsed.data
         ? await setFeatureBackgroundActivityPolicy(parsed.data.featureId, change, revision, user)

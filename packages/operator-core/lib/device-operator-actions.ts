@@ -10,13 +10,15 @@
  */
 import { notifySyncInvalidate } from './sync-sse';
 import { readOperatorState, updateOperatorState } from './operator-state-pg';
-import { recordStartupActivityHistory, savedBackgroundActivitySchema, savedStartupActivityStateSchema, startupPauseIsActive,
+import { recordStartupActivityHistory, savedBackgroundActivitySchema, savedStartupActivityPolicy, savedStartupActivityStateSchema, startupPauseIsActive,
   workspaceBackgroundActivityFeatureId, workspaceBackgroundActivityPolicy } from './startup-activity';
-import { collectScheduleInventory, scheduleStartupFeature, startupActivityFeatureId, startupPolicySchema, type StartupActivityPolicy } from './schedule-inventory';
+import { collectScheduleInventory, reactionStartupFeature, scheduleStartupFeature, startupActivityFeatureId, startupPolicySchema, type StartupActivityPolicy } from './schedule-inventory';
 import { getSystemActionEntry, SYSTEM_TARGET_PREFIX } from './harness/routines/system-actions';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SessionUser } from './auth';
 import { z } from 'zod';
+import { getOrgPg } from '@papercusp/db-org';
+import { getManaged, stopManagedInvocation, type ManagedStopStatus } from '@papercusp/scheduled-registry';
 
 // ── Pause / resume sentinel (PG-backed, migration 029) ─────────────────
 //
@@ -157,16 +159,10 @@ export async function setFeatureBackgroundActivityPolicy(
     throw Object.assign(new Error('Pause must end at a future time'), { code: 'startup_policy_invalid' });
   // Resolve the current registration under authenticated workspace scope. A saved
   // orphan, caller-supplied descriptor, or other device is not a control target.
-  const rows = await collectScheduleInventory();
-  const row = rows.find(candidate => startupActivityFeatureId(candidate, { workspaceId: workspace }) === featureId);
-  const feature = row ? scheduleStartupFeature(row, { workspaceId: workspace }) : null;
-  const role = row?.detail.targetRole;
-  if (!feature || feature.scope.kind !== 'workspace' || feature.scope.id !== workspace
-    || (typeof role === 'string' && role.startsWith(SYSTEM_TARGET_PREFIX)
-      && getSystemActionEntry(role.slice(SYSTEM_TARGET_PREFIX.length))?.requiredForControl))
-    throw Object.assign(new Error('Startup feature cannot be controlled here'), { code: 'startup_policy_forbidden' });
+  const { feature: controlledFeature } = await resolveBackgroundActivityFeature(featureId, workspace);
+  const historyAt = Date.now();
   const state = await changePauseState((current, policy) => {
-    const previous = policy.features[featureId] ?? { ...feature.desired, paused: false };
+    const previous = policy.features[featureId] ?? { ...controlledFeature.desired, paused: false };
     const override = action.action === 'automatic' ? { automatic: action.automatic }
       : action.action === 'pause' ? { paused: true, pausedUntil: action.until }
         : { paused: false, pausedUntil: null };
@@ -175,9 +171,68 @@ export async function setFeatureBackgroundActivityPolicy(
     } } };
   }, expectedRevision, { featureId, actorId: principal.id, actorKind: 'user',
     operation: action.action === 'automatic' ? 'policy-change' : action.action,
-    project: state => ({ ...feature.desired, ...state.backgroundActivity?.features?.[featureId],
+    project: state => ({ ...savedStartupActivityPolicy(controlledFeature, state, workspace, historyAt),
       revision: state.backgroundActivity?.revision ?? 0 }) }, workspace);
-  return startupPolicySchema.parse({ ...state.backgroundActivity!.features[featureId]!, revision: state.backgroundActivity!.revision });
+  return startupPolicySchema.parse(savedStartupActivityPolicy(controlledFeature, state, workspace));
+}
+
+/** Resolve both preference and one-time controls against the same current registration. */
+async function resolveBackgroundActivityFeature(featureId: string, workspace: string) {
+  const rows = await collectScheduleInventory();
+  const matches = rows.filter(candidate => startupActivityFeatureId(candidate, { workspaceId: workspace }) === featureId);
+  const row = matches.find(candidate => candidate.source === 'managed') ?? matches[0];
+  let feature = row ? scheduleStartupFeature(row, { workspaceId: workspace }) : null;
+  let requiredForControl = matches.some(candidate => {
+    const role = candidate.detail.targetRole;
+    return typeof role === 'string' && role.startsWith(SYSTEM_TARGET_PREFIX)
+      && !!getSystemActionEntry(role.slice(SYSTEM_TARGET_PREFIX.length))?.requiredForControl;
+  });
+  if (!row) {
+    const { listReactionRules } = await import('./events/registry');
+    const rule = listReactionRules().find(candidate => reactionStartupFeature(candidate, workspace).id === featureId);
+    if (rule) {
+      const { builtinReactionControlPurpose } = await import('./events/builtin-actions');
+      feature = reactionStartupFeature(rule, workspace);
+      requiredForControl = !!builtinReactionControlPurpose(rule.fire);
+    }
+  }
+  if (!feature || feature.scope.kind !== 'workspace' || feature.scope.id !== workspace
+    || requiredForControl)
+    throw Object.assign(new Error('Startup feature cannot be controlled here'), { code: 'startup_policy_forbidden' });
+  return { feature, row };
+}
+
+/** Stop the current local invocation. This never writes the saved automatic-start policy. */
+export async function stopFeatureBackgroundActivity(featureId: string, principal: SessionUser): Promise<{
+  status: ManagedStopStatus; policy: StartupActivityPolicy; reason?: string;
+}> {
+  const workspace = assertBackgroundActivityAuthority(principal);
+  if (!/^activity-[a-f0-9]{64}$/.test(featureId))
+    throw Object.assign(new Error('Invalid startup policy request'), { code: 'startup_policy_invalid' });
+  const { feature, row } = await resolveBackgroundActivityFeature(featureId, workspace);
+  const policy = savedStartupActivityPolicy(feature,
+    await readOperatorState('operator_paused', workspace, { fresh: true }) ?? {}, workspace);
+  const live = row?.source === 'managed' ? getManaged(row.name) : undefined;
+  if (!live || live.instanced || live.activity?.kind !== 'workspace'
+    || live.activity.workspaceId !== workspace || live.activity.featureId !== featureId)
+    return { status: 'unavailable', policy, reason: 'runtime-control-unavailable' };
+  const audit = (status: 'pending' | 'draining' | 'completed' | 'failed') => recordStartupActivityHistory({
+    featureId, operation: 'stop', status, at: new Date().toISOString(), actor: 'user',
+    trigger: 'settings', source: 'settings', reason: 'user-choice', previous: policy, resulting: policy,
+  }, principal.id, 'user', { sql: getOrgPg().sql, workspaceId: workspace });
+  // Persist intent before touching the runtime. An audit outage cannot produce an unaudited stop.
+  await audit('pending');
+  const request = stopManagedInvocation(row!.name);
+  if (request.status === 'unavailable') {
+    await audit('failed');
+    return { status: 'unavailable', policy, reason: 'runtime-control-unavailable' };
+  }
+  await audit(request.status);
+  if (request.status === 'pending' || request.status === 'draining') {
+    void request.settled.then(status => audit(status === 'completed' ? 'completed' : 'failed'))
+      .catch(() => { console.warn('[background-activity] stop completion history unavailable'); });
+  }
+  return { status: request.status, policy };
 }
 
 export async function isPaused(): Promise<boolean> {

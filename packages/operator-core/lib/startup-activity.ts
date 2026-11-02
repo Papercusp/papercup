@@ -10,6 +10,7 @@ import { readOperatorState } from './operator-state-pg';
 import { z } from 'zod';
 import {
   collectStartupActivity,
+  reactionStartupFeature,
   STARTUP_ACTIVITY_ENTRYPOINTS,
   startupHistorySchema,
   startupPolicySchema,
@@ -255,6 +256,10 @@ export async function collectCurrentStartupActivity(deps: Partial<ScheduleInvent
     ...adapters,
     deviceId: adapters.deviceId ?? native?.features[0]?.scope.id ?? undefined,
     native: adapters.native ?? (async () => native!.features),
+    reactions: adapters.reactions ?? (async () => {
+      const { listReactionRules } = await import('./events/registry');
+      return listReactionRules().map(rule => reactionStartupFeature(rule, activeWorkspaceId()));
+    }),
     census: adapters.census ?? (async features => startupActivityCensus(features)),
     history: adapters.history ?? readStartupActivityHistory,
     policy,
