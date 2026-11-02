@@ -45,6 +45,7 @@ import {
   gradingAuditFallbackModelCanServe,
   gradingAuditFallbackVerdictCanServe,
   gradingAuditProviderCanServe,
+  gradingAuditQuotaRouteCanServe,
   gradingAuditorLaunchCtx,
   readGradingAuditDispatchSuppression,
   reconcilePendingGradingAudits,
@@ -533,6 +534,34 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
 });
 
 describe('dispatchPendingGradingAudits', () => {
+  it.each([
+    { explicit: true, targeted: true, serving: true, launches: 1 },
+    { explicit: true, targeted: true, serving: false, launches: 0 },
+    { explicit: false, targeted: true, serving: true, launches: 0 },
+    { explicit: true, targeted: false, serving: true, launches: 0 },
+  ])('rechecks a quota wall only for a serving explicit repair: %j', async ({ explicit, targeted, serving, launches }) => {
+    const d = deps();
+    const issueId = 'EI-recovered-quota-route';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.reserve.mockResolvedValueOnce({ status: 'quota-backoff', backoff: {
+      until: '2099-01-01T00:00:00.000Z', source: 'account-ledger',
+      code: 'model_quota_exhausted', recordedAt: '2026-09-08T00:00:00.000Z', reason: 'old route quota',
+    } });
+    const quotaRouteCanServe = vi.fn(async () => serving);
+    const gradingLaunch = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' } as const;
+    await dispatchPendingGradingAudits({
+      ...(targeted ? { targetIds: [issueId] } : {}),
+      ctx: { ...ctx, ...(explicit ? { gradingLaunch } : {}) },
+    }, { ...d, quotaRouteCanServe });
+    expect(d.launch).toHaveBeenCalledTimes(launches);
+    expect(d.reserve).toHaveBeenCalledTimes(launches + 1);
+    expect(quotaRouteCanServe).toHaveBeenCalledTimes(explicit && targeted ? 1 : 0);
+    if (launches) {
+      expect(d.reserve).toHaveBeenLastCalledWith(issueId, `grading-audit:${issueId}`,
+        expect.objectContaining({ allowRecoveredQuotaBackoff: true }));
+    }
+  });
+
   it.each([
     { kind: 'read-failed', state: 'failed', reason: 'target rubric read failed; retry this audit when its backing plan is readable' },
     { kind: 'missing', state: 'skipped', reason: 'target rubric not found' },
@@ -5064,6 +5093,30 @@ describe('resolveGradingAuditQuotaBackoff', () => {
       until: iso(GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS),
       source: 'default',
     });
+  });
+});
+
+describe('quota repair route capacity', () => {
+  const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' } as const;
+  it.each([
+    { serviceable: 1, reachable: true, modelCount: 1, expected: true },
+    { serviceable: 0, reachable: true, modelCount: 1, expected: false },
+    { serviceable: 1, reachable: true, modelCount: 0, expected: false },
+    { serviceable: 1, reachable: false, modelCount: 1, expected: false },
+  ])('requires a serving pool and reachable non-refusing model: %j', async ({ serviceable, reachable, modelCount, expected }) => {
+    await expect(gradingAuditQuotaRouteCanServe(profile, {
+      readPoolVerdict: async () => ({ serviceable }),
+      readCodexHeadroom: async () => ({ reachable, serviceableByModel: { [profile.model]: modelCount } }),
+    })).resolves.toBe(expected);
+  });
+  it('preserves the old quota wall when current capacity cannot be measured', async () => {
+    await expect(gradingAuditQuotaRouteCanServe(profile, {
+      readPoolVerdict: async () => { throw new Error('ledger unavailable'); },
+    })).resolves.toBe(false);
+    await expect(gradingAuditQuotaRouteCanServe(profile, {
+      readPoolVerdict: async () => ({ serviceable: 1 }),
+      readCodexHeadroom: async () => { throw new Error('gateway unavailable'); },
+    })).resolves.toBe(false);
   });
 });
 

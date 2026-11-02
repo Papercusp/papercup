@@ -31,6 +31,7 @@ import setTemplateDataTool from './agent-tools/plans/set-template-data';
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   shortIdleTimeoutMs: undefined as number | undefined,
+  coveredWorkItemLookups: undefined as string[] | undefined,
 }));
 
 const MAX_BOUNDED_LOCK_BUSY_RETRIES = 2;
@@ -69,7 +70,17 @@ vi.mock('@papercusp/db-org', async (orig) => {
         if (h.shortIdleTimeoutMs !== undefined) {
           await tx`SELECT set_config('idle_in_transaction_session_timeout', ${`${h.shortIdleTimeoutMs}ms`}, true)`;
         }
-        return cb(tx as unknown as postgres.Sql);
+        const measuredTx = new Proxy(tx, {
+          apply(target, thisArg, args) {
+            const query = Array.isArray(args[0]) ? args[0].join('') : '';
+            if (h.coveredWorkItemLookups && query.includes('SELECT w.feature_id AS work_item_id') &&
+                query.includes('w.source_plan_item_ids')) {
+              h.coveredWorkItemLookups.push(String(args[4]));
+            }
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+        return cb(measuredTx as unknown as postgres.Sql);
       }) as Promise<T>,
   };
 });
@@ -4240,9 +4251,17 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
     const repaired = (await rubrics.amendRubric(roundtrip))!;
     expect(repaired.criteria).toEqual(exact.rubric.criteria);
-    expect(repaired.criteriaHash).toBe(exact.rubric.criteriaHash);
+    // Projection repair advances subjectPlanRevision, which is part of the
+    // full-template criteriaHash. Check BAR meaning and the immutable snapshot.
+    expect(repaired).toMatchObject({
+      revision: bound.revision,
+      barSetHash: exact.rubric.barSetHash,
+      barContract: { meaningRevision: exact.rubric.barContract!.meaningRevision },
+    });
     expect((await read()).rubric.criteria).toEqual(exact.rubric.criteria);
-    expect((await read(bound.revision!)).rubric.criteria).toEqual(exact.rubric.criteria);
+    const immutableAfterRepair = await read(bound.revision!);
+    expect(immutableAfterRepair.rubric.criteria).toEqual(exact.rubric.criteria);
+    expect(immutableAfterRepair.rubric.criteriaHash).toBe(exact.rubric.criteriaHash);
     const [after] = await db.adminSql`SELECT content FROM harness_shared.harness_plans
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
     const { parseRequirementBars } = await import('./acceptance-bar-seed');
@@ -4843,6 +4862,90 @@ describe('template_data persistence boundary — the set-template-data door', ()
       (${workspaceId},${thread},${author},${JSON.stringify(receipt)}) RETURNING id`;
     return `thread-post:${post.id}`;
   }
+
+  it('reuses covered work-item lookups across clauses without losing explicit or legacy bindings', async () => {
+    const subject = 'amend-covered-lookup-reuse';
+    const seeded = await seedBarContract(subject, {
+      authorMethods: true,
+      body: `## Requirements
+
+**R-1 — First outcome.** The first outcome holds.
+
+**R-2 — Second outcome.** The second outcome holds.
+
+**R-3 — Third outcome.** The third outcome holds.
+
+## Design
+
+### Bar-to-work map for this plan
+
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001 | tree |
+| R-2 | P-001 | tree |
+| R-3 | P-002 | tree |
+
+## Work
+
+- **P-001** \`done\` first two outcomes
+- **P-002** \`done\` third outcome
+`,
+    });
+    const canonicalId = 'F-amend-covered-canonical';
+    const legacyId = 'F-amend-covered-legacy';
+    const explicitId = 'F-amend-covered-explicit';
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,title,status,source_plan_slug,source_plan_item_ids,payload)
+      VALUES
+        (${seeded.workspaceId},'papercusp',${canonicalId},'feature','Canonical coverage','done',${subject},ARRAY['P-001'],'{}'::jsonb),
+        (${seeded.workspaceId},'papercusp',${legacyId},'feature','Legacy coverage','done',NULL,NULL,
+          ${JSON.stringify({ plan_item: { slug: subject, item: 'P-002' } })}::jsonb),
+        (${seeded.workspaceId},'papercusp',${explicitId},'feature','Explicit coverage','done',NULL,NULL,'{}'::jsonb)`;
+    await db.adminSql`INSERT INTO harness_shared.work_item_spec_revision_edges
+      (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,created_by)
+      SELECT c.workspace_id,c.harness_slug,${explicitId},c.plan_slug,c.spec_id,c.current_revision,r.content_hash,'test-author'
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug AND r.plan_slug=c.plan_slug
+         AND r.spec_id=c.spec_id AND r.revision=c.current_revision
+       WHERE c.workspace_id=${seeded.workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${subject}
+         AND r.source_bar_key='R-1'`;
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Change all three outcomes while preserving every projected work-item binding.',
+      criteria: before.criteria.map((criterion) => {
+        const { bar: _bar, barHash: _barHash, ...canonical } = criterion;
+        return { ...canonical, driftMarkers: `${criterion.driftMarkers} A required work-item binding is missing.` };
+      }),
+    };
+    const approvalRef = await postApproval(amendment);
+    h.coveredWorkItemLookups = [];
+    try {
+      await rubrics.amendRubric({ ...amendment, approvalRef });
+      expect(h.coveredWorkItemLookups.sort()).toEqual(['P-001', 'P-002']);
+    } finally {
+      h.coveredWorkItemLookups = undefined;
+    }
+    const edges = await db.adminSql<{ bar: string; work_item_id: string }[]>`
+      SELECT r.source_bar_key AS bar,e.work_item_id
+        FROM harness_shared.work_item_spec_revision_edges e
+        JOIN harness_shared.plan_spec_clauses c
+          ON c.workspace_id=e.workspace_id AND c.harness_slug=e.harness_slug AND c.plan_slug=e.plan_slug
+         AND c.spec_id=e.spec_id AND c.current_revision=e.spec_revision
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug AND r.plan_slug=c.plan_slug
+         AND r.spec_id=c.spec_id AND r.revision=c.current_revision
+       WHERE e.workspace_id=${seeded.workspaceId} AND e.harness_slug='papercusp' AND e.plan_slug=${subject}
+       ORDER BY r.source_bar_key,e.work_item_id`;
+    expect(edges).toEqual([
+      { bar: 'R-1', work_item_id: canonicalId },
+      { bar: 'R-1', work_item_id: explicitId },
+      { bar: 'R-2', work_item_id: canonicalId },
+      { bar: 'R-3', work_item_id: legacyId },
+    ]);
+  });
 
   it('authors unified sections through proposal preflight and stores only canonical promise and method fields', async () => {
     const workspaceId = activeWorkspaceId();

@@ -744,6 +744,8 @@ export interface DispatchPendingGradingAuditsDeps {
    * never routed to a pool the launcher will refuse at boot. Fails open.
    */
   providerCanServe?: (provider: string) => Promise<boolean>;
+  /** Strict current route reading before an explicit repair retires an old quota wall. */
+  quotaRouteCanServe?: typeof gradingAuditQuotaRouteCanServe;
   /** Running server generation used to pin audits of generation-bound cards to a fresh launch. */
   readCurrentGeneration?: typeof readRunningGeneration;
   /** Shared tri-state ancestry check used by both dispatch and scorecards:emit. */
@@ -1363,6 +1365,8 @@ interface GradingAuditReservationOptions {
    * That proof lets a compatible dispatcher clear a legacy generation-incompatible backoff.
    */
   allowGenerationIncompatibleBackoff?: boolean;
+  /** Explicit repair proved the requested provider/model can serve again. */
+  allowRecoveredQuotaBackoff?: boolean;
 }
 
 async function withGradingAuditSubjectMutex<T>(
@@ -1504,6 +1508,24 @@ async function readGradingAuditPoolVerdict(
   ]);
   const rows = await accountStatus(activeWorkspaceId(), nowMs);
   return poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider);
+}
+
+/** Reuse the launcher's pool/model readings; unknown capacity cannot retire a quota wall. */
+export async function gradingAuditQuotaRouteCanServe(
+  profile: GradingLaunchProfile,
+  deps: {
+    readPoolVerdict?: (provider: string, nowMs: number) => Promise<{ serviceable: number } | undefined>;
+    readCodexHeadroom?: () => Promise<Pick<GatewayHeadroom, 'reachable' | 'serviceableByModel'>>;
+  } = {},
+): Promise<boolean> {
+  try {
+    const verdict = await (deps.readPoolVerdict ?? readGradingAuditPoolVerdict)(profile.agent, Date.now());
+    if (!gradingAuditFallbackVerdictCanServe(verdict)) return false;
+    const headroom = await (deps.readCodexHeadroom ?? (() => fetchGatewayHeadroom({ provider: 'codex' })))();
+    return headroom.reachable && gradingAuditFallbackModelCanServe(headroom, profile.model);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1733,6 +1755,10 @@ export async function reservePendingGradingAudit(
                OR (
                  ${options.allowGenerationIncompatibleBackoff === true}
                  AND payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'code' = 'generation_incompatible'
+               )
+               OR (
+                 ${options.allowRecoveredQuotaBackoff === true}
+                 AND payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'code' = 'model_quota_exhausted'
                )
                OR CASE
                     WHEN payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'until'
@@ -2855,6 +2881,16 @@ export async function dispatchPendingGradingAudits(
         ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
       };
       let reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+      // A dated wall describes the failed route at that time. An explicit
+      // targeted repair may have selected a recovered pool or another route.
+      // Re-check current capacity and use the same atomic election/lease guard;
+      // this exception applies only to quota, never other failure backoffs.
+      if (reservation.status === 'quota-backoff' && profile && explicitTargetIds.includes(issueId) &&
+          await (deps.quotaRouteCanServe ?? gradingAuditQuotaRouteCanServe)(profile)) {
+        reservation = await reserve(issueId, idempotencyKey, {
+          ...reservationOptions, allowRecoveredQuotaBackoff: true,
+        });
+      }
       // Targeted repair must reach an auditor's proven terminal provider error
       // even while its original dispatch lease is fresh. Reuse the native
       // identity proof; a healthy/unreadable peer or an incomplete scan keeps

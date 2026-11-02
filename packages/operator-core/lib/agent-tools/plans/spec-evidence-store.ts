@@ -4776,6 +4776,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       Math.max(0, Date.now() - startedAt),
     );
   };
+  const recordMeasurementPhase = (name: string, startedAt: number) => {
+    if (!diagnostics) return;
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    diagnostics.phaseMs[`${name}TotalMs`] = (diagnostics.phaseMs[`${name}TotalMs`] ?? 0) + elapsedMs;
+    diagnostics.phaseMs[`${name}MaxMs`] = Math.max(diagnostics.phaseMs[`${name}MaxMs`] ?? 0, elapsedMs);
+  };
   if (options.auditAsOf && options.includeRetracted !== true) {
     throw new Error('auditAsOf requires includeRetracted:true');
   }
@@ -5190,13 +5196,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             : hasRepoFixturePaths(recipe)
               ? await measurementCommitFor(fixtureRoot)
               : null;
+          let measurementPhaseStartedAt = diagnostics ? Date.now() : 0;
           const broadTreeScanRefusal = await broadRepoTreeScanGuard(
             measurementRoot,
             recipe,
             measuredAtCommit,
             committedTreeScans,
           );
+          recordMeasurementPhase('broadTreeScan', measurementPhaseStartedAt);
           if (broadTreeScanRefusal) throw new Error(broadTreeScanRefusal);
+          measurementPhaseStartedAt = diagnostics ? Date.now() : 0;
           // Same single read as before; the per-file hashes it now also returns are what
           // name the moved paths below at zero extra IO. Under a batch probe snapshot the
           // pre-read fence is decided locally; its post-read half runs after this loop.
@@ -5292,6 +5301,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
             });
           }
+          recordMeasurementPhase('repoFiles', measurementPhaseStartedAt);
+          measurementPhaseStartedAt = diagnostics ? Date.now() : 0;
           const completedRecipe = completedTestRuntimeRecipe(row, recipe);
           measured = {
             sourceFingerprint: detailed.sourceFingerprint,
@@ -5310,6 +5321,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                 await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits,
                 { memo: remoteRuntimeIdentities }) } : {}),
           };
+          recordMeasurementPhase('environment', measurementPhaseStartedAt);
           files = detailed.files;
         }
         bindingMeasurementStatus('measured', bindingStartedAt);
