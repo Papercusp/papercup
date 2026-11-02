@@ -12,7 +12,7 @@
  * therefore group it under the fleet in fleet:assignments, per
  * packages/operator-core/lib/fleet/assignments.ts's `groupByAgent`).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
