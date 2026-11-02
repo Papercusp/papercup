@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+// These orchestration tests isolate the separately tested, expensive replay engine.
+vi.mock('./perf-workload-power', () => ({ reproducePerfWorkloadPower: vi.fn(() => true) }));
 import { PERF_WORKLOAD_POLICY, perfProtocolHash, sealPerfWorkloadProtocol, verifyPerfWorkloadPrerequisites, normalizePerfWorkloadObservation,
   type PerfWorkloadProtocolInput, type PerfProtocolEvidence } from './perf-workload-protocol';
 
@@ -25,9 +27,13 @@ function fixture() {
       independenceEvidenceRef: `independence:${n}`, observations: PERF_WORKLOAD_POLICY.strata.map(stratum => ({ journey: 'http', stratum, completedPerArm: 10_000, allObservationsRetained: true })) });
   }
   const designHash = perfProtocolHash({ ...input, comparisons: input.comparisons.map(({ powerEvidenceRef: _ref, ...rest }) => rest) });
+  proofs.set('power-computation', { kind: 'power-computation', hash: hash('power-computation'), endedAtMs: 900, protocolInputHash: designHash,
+    result: { status: 'estimated', method: 'nested-paired-block-production-ci-fixed-monte-carlo-v1', assumption: 'conditional-on-preregistered-empirical-baseline-generator',
+      simulations: 200, iterations: 10_000, seed: 4, familySize: 9, comparisonAlpha: (1 - 0.95) / 9,
+      monteCarloFamilyAlpha: 0.05, scenarios: [{ id: 'fixture', jointPasses: 190, lowerPowerBound: 0.81 }], lowerPowerBound: 0.81 } });
   for (const comparison of input.comparisons) proofs.set(comparison.powerEvidenceRef, { kind: 'power', hash: hash(comparison.powerEvidenceRef),
     endedAtMs: 900, protocolInputHash: designHash, journey: comparison.journey, stratum: comparison.stratum, metric: comparison.metric,
-    lowerPowerBound: 0.81, comparisonAlpha: 0.05 / 9, margin: comparison.metric === 'p95' ? 1.05 : comparison.metric === 'p99' ? 1.10 : 0.95 });
+    lowerPowerBound: 0.81, computationRef: 'power-computation', comparisonAlpha: (1 - 0.95) / 9, margin: comparison.metric === 'p95' ? 1.05 : comparison.metric === 'p99' ? 1.10 : 0.95 });
   const protocol = sealPerfWorkloadProtocol(input);
   proofs.set('registration', { kind: 'registration', hash: hash('registration'), protocolHash: protocol.hash, registeredAtMs: 1100 });
   // The real resolver adds a DB insertion timestamp without changing the hashed body.
@@ -69,7 +75,7 @@ describe('immutable D-012 workload preregistration', () => {
     expect((await verifyPerfWorkloadPrerequisites(changed, 'registration', 1200, f.read)).status).toBe('unknown');
   });
 
-  it.each(['registration', 'baseline:1', 'power:cold:p95', 'block:1:cold:p95', 'independence:1'])
+  it.each(['registration', 'baseline:1', 'power:cold:p95', 'power-computation', 'block:1:cold:p95', 'independence:1'])
     ('rejects %s with missing or late ledger publication despite early authored timestamps', async ref => {
       const f = fixture();
       const proof = f.proofs.get(ref)!;
@@ -81,10 +87,27 @@ describe('immutable D-012 workload preregistration', () => {
 
   it('does not mistake a caller scalar, missing record or failed evidence lookup for power', async () => {
     const f = fixture();
+    const proof = f.proofs.get('power:cold:p95');
+    if (proof?.kind !== 'power') throw new Error('fixture');
+    delete proof.computationRef;
+    expect((await verifyPerfWorkloadPrerequisites(f.protocol, 'registration', 1200, f.read)).reasons).toContain('missing-or-unreproducible-joint-power-computation');
     f.proofs.delete('power:cold:p95');
     expect((await verifyPerfWorkloadPrerequisites(f.protocol, 'registration', 1200, f.read)).reasons).toContain('missing-unmatched-or-underpowered-pretrial-proof');
     expect((await verifyPerfWorkloadPrerequisites(f.protocol, 'registration', 1200, async () => { throw new Error('unavailable'); })).status).toBe('unknown');
     expect((await verifyPerfWorkloadPrerequisites(f.protocol, 'registration', 1200, () => { throw new Error('synchronous failure'); })).status).toBe('unknown');
+  });
+
+  it('requires the exact joint result and alpha emitted by the production CI', async () => {
+    const f = fixture();
+    const proof = f.proofs.get('power:cold:p95');
+    if (proof?.kind !== 'power') throw new Error('fixture');
+    // A literal .05 has different binary rounding from the production 1-.95.
+    expect((await verifyPerfWorkloadPrerequisites(f.protocol, 'registration', 1200, f.read)).status).toBe('ready-for-trial');
+    proof.comparisonAlpha = 0.05 / 9;
+    expect((await verifyPerfWorkloadPrerequisites(f.protocol, 'registration', 1200, f.read)).reasons).toContain('missing-unmatched-or-underpowered-pretrial-proof');
+    proof.comparisonAlpha = (1 - 0.95) / 9;
+    proof.lowerPowerBound = 0.82;
+    expect((await verifyPerfWorkloadPrerequisites(f.protocol, 'registration', 1200, f.read)).status).toBe('unknown');
   });
 
   it.each(['underpowered', 'wrong-family', 'wrong-margin', 'posttrial', 'wrong-design'] as const)('keeps %s power unknown', async mutation => {

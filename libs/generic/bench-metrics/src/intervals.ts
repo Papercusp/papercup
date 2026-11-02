@@ -449,6 +449,8 @@ function appendPairedBlockSample(repeat: PairedTimeSeries, rng: () => number, a:
  * every inner decision calls pairedBlockBootstrapCI with >=10,000 draws. The
  * same outer indices are used for every metric, preserving cross-metric noise.
  * Input series must therefore share a consistently aligned time/repeat manifest.
+ * Outer blocks use the longest predeclared dependence length in that repeat;
+ * each inner CI retains its own metric's predeclared block length.
  * Scenarios are explicit natural-scale alternatives, NOT the null limits. An
  * alternative exactly on a valid test's null boundary cannot promise 80% power.
  *
@@ -493,7 +495,7 @@ export function prospectivePairedBlockPower(
         return { status: 'unknown', reason: 'invalid-baseline-repeat' };
       }
       repeatIds.add(repeat.repeatId);
-      if (repeat.repeatId !== reference[i].repeatId || repeat.a.length !== reference[i].a.length || repeat.blockLength !== reference[i].blockLength) {
+      if (repeat.repeatId !== reference[i].repeatId || repeat.a.length !== reference[i].a.length) {
         return { status: 'unknown', reason: 'unaligned-comparison-manifest' };
       }
     }
@@ -521,10 +523,11 @@ export function prospectivePairedBlockPower(
       for (let k = 0; k < reference.length; k++) {
         const repeatIndex = Math.floor(rng() * reference.length);
         const repeat = reference[repeatIndex];
+        const outerBlockLength = Math.max(...family.map(member => member.repeats[repeatIndex].blockLength));
         const indices: number[] = [];
         const unused: number[] = [];
         const indexSeries = Array.from({ length: repeat.a.length }, (_, i) => i);
-        appendPairedBlockSample({ ...repeat, a: indexSeries, b: indexSeries }, rng, indices, unused);
+        appendPairedBlockSample({ ...repeat, a: indexSeries, b: indexSeries, blockLength: outerBlockLength }, rng, indices, unused);
         for (let m = 0; m < family.length; m++) {
           const source = family[m].repeats[repeatIndex];
           const scale = scenario.candidateScales[family[m].id];

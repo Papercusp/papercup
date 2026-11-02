@@ -5,6 +5,8 @@
  * reduction/acceptance. Runtime oracles and the 24h soak remain separate gates.
  */
 import { createHash } from 'node:crypto';
+import type { PairedBlockPower, PairedPowerScenario } from '@papercusp/bench-metrics';
+import { reproducePerfWorkloadPower } from './perf-workload-power';
 
 function freeze<T>(value: T): Readonly<T> {
   if (value && typeof value === 'object') {
@@ -99,6 +101,11 @@ export function perfProtocolHash(value: unknown): string {
 
 export type PerfWorkloadStratum = typeof PERF_WORKLOAD_POLICY.strata[number];
 export type PerfWorkloadMetric = 'p95' | 'p99' | 'throughput';
+export interface PerfWorkloadBaselineSeries {
+  journey: string; stratum: PerfWorkloadStratum; metric: PerfWorkloadMetric;
+  /** Ordered paired observations; throughput values require equal exposure bins. */
+  a: number[]; b: number[];
+}
 export interface PerfWorkloadComparison {
   journey: string;
   stratum: PerfWorkloadStratum;
@@ -123,6 +130,8 @@ export interface PerfWorkloadProtocolInput {
   comparisons: PerfWorkloadComparison[];
   bootstrapReplicates: number;
   seed: number;
+  /** Fixed outer count; no optional stopping or surrogate inference rule. */
+  powerDesign?: { simulations: number; monteCarloFamilyAlpha: number; maximumSampledPairs: number; scenarios: PairedPowerScenario[] };
 }
 export interface PerfWorkloadProtocol {
   schemaVersion: 1;
@@ -142,10 +151,16 @@ export type PerfProtocolEvidence = ({
   kind: 'baseline'; hash: string; endedAtMs: number; sourceManifestHash: string; fixtureHash: string;
   independentRepeatId: string; independenceEvidenceRef: string;
   observations: Array<{ journey: string; stratum: PerfWorkloadStratum; completedPerArm: number; allObservationsRetained: boolean }>;
+  series?: PerfWorkloadBaselineSeries[];
 } | {
   kind: 'power'; hash: string; endedAtMs: number; protocolInputHash: string;
   journey: string; stratum: PerfWorkloadStratum; metric: PerfWorkloadMetric;
   lowerPowerBound: number; comparisonAlpha: number; margin: number;
+  computationRef?: string;
+} | {
+  kind: 'power-computation'; hash: string; endedAtMs: number; protocolInputHash: string;
+  /** Entire joint family result; independently reproduced from baseline bytes. */
+  result: PairedBlockPower;
 } | {
   kind: 'block-selection'; hash: string; endedAtMs: number; baselineHash: string;
   independentRepeatId: string; journey: string; stratum: PerfWorkloadStratum; metric: PerfWorkloadMetric;
@@ -215,6 +230,7 @@ export async function verifyPerfWorkloadPrerequisites(
     baselines.push(baseline);
   }
   if (baselines.length < 3) reject('insufficient-baseline-repeats');
+  const powerComputations = new Map<string, Promise<boolean>>();
   for (const comparison of input.comparisons) {
     const identity = key(comparison.journey, comparison.stratum, comparison.metric);
     if (!expected.has(identity) || seen.has(identity)) reject('unexpected-or-duplicate-comparison');
@@ -238,15 +254,27 @@ export async function verifyPerfWorkloadPrerequisites(
     const margin = comparison.metric === 'p95' ? 1.05 : comparison.metric === 'p99' ? 1.10 : 0.95;
     // The evidence hashes the design excluding proof refs, avoiding a hash cycle.
     const design = { ...input, comparisons: input.comparisons.map(({ powerEvidenceRef: _ref, ...rest }) => rest) };
+    const computationRef = power?.kind === 'power' ? power.computationRef ?? '' : '';
+    if (!powerComputations.has(computationRef)) powerComputations.set(computationRef, (async () => {
+      const computation = await read(computationRef);
+      return computation?.kind === 'power-computation' && sha(computation.hash) &&
+        Number.isFinite(computation.endedAtMs) && computation.endedAtMs < input.createdAtMs &&
+        publishedBefore(computation, input.createdAtMs) && computation.publishedAtMs! >= computation.endedAtMs &&
+        computation.protocolInputHash === perfProtocolHash(design) && reproducePerfWorkloadPower(input, baselines, computation);
+    })().catch(() => false));
+    if (!await powerComputations.get(computationRef)) reject('missing-or-unreproducible-joint-power-computation');
+    const computation = await read(computationRef);
+    const computedBound = computation?.kind === 'power-computation' && computation.result.status === 'estimated' ? computation.result.lowerPowerBound : null;
     if (power?.kind !== 'power' || !sha(power.hash) || power.protocolInputHash !== perfProtocolHash(design) ||
         power.journey !== comparison.journey || power.stratum !== comparison.stratum || power.metric !== comparison.metric ||
         !Number.isFinite(power.endedAtMs) || power.endedAtMs >= input.createdAtMs ||
         !publishedBefore(power, input.createdAtMs) || power.publishedAtMs! < power.endedAtMs ||
         !Number.isFinite(power.lowerPowerBound) || power.lowerPowerBound < 0.8 || power.lowerPowerBound > 1 ||
-        power.comparisonAlpha !== 0.05 / expected.size || power.margin !== margin) reject('missing-unmatched-or-underpowered-pretrial-proof');
+        power.lowerPowerBound !== computedBound ||
+        power.comparisonAlpha !== (1 - PERF_WORKLOAD_POLICY.familyConfidence) / expected.size || power.margin !== margin) reject('missing-unmatched-or-underpowered-pretrial-proof');
   }
   if (seen.size !== expected.size || [...expected].some(identity => !seen.has(identity))) reject('incomplete-comparison-family');
-  if (input.bootstrapReplicates * (0.05 / expected.size) / 2 < 20) reject('insufficient-bootstrap-tail-resolution');
+  if (input.bootstrapReplicates * ((1 - PERF_WORKLOAD_POLICY.familyConfidence) / expected.size) / 2 < 20) reject('insufficient-bootstrap-tail-resolution');
   return { status: reasons.size ? 'unknown' : 'ready-for-trial', reasons: [...reasons].sort() };
 }
 

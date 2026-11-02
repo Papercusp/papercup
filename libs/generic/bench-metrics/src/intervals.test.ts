@@ -36,6 +36,10 @@ describe('prospectivePairedBlockPower', () => {
     expect(prospectivePairedBlockPower(family(), scenarios, { ...options, maximumSampledPairs: 1 })).toEqual({ status: 'unknown', reason: 'prospective-computation-budget' });
     const changed = [...family(), { ...family()[0], id: 'other', repeats: repeats.map(r => ({ ...r, repeatId: `${r.repeatId}-different` })) }];
     expect(prospectivePairedBlockPower(changed, [{ id: 'x', candidateScales: { p95: 1, other: 1 } }], options)).toMatchObject({ status: 'unknown', reason: 'unaligned-comparison-manifest' });
+    const aligned = [1, 2].map(blockLength => ({ ...family()[0], id: `m${blockLength}`,
+      repeats: repeats.map(r => ({ ...r, a: [10, 20], b: [10, 20], blockLength })) }));
+    expect(prospectivePairedBlockPower(aligned, [{ id: 'x', candidateScales: { m1: 1, m2: 1 } }], { ...options, maximumSampledPairs: 1 }))
+      .toMatchObject({ status: 'unknown', reason: 'prospective-computation-budget' });
     expect(prospectivePairedBlockPower(family(), [{ id: 'x', candidateScales: {} }], options)).toMatchObject({ status: 'unknown', reason: 'invalid-prospective-alternative' });
     expect(() => prospectivePairedBlockPower(family(), scenarios, { ...options, simulations: 199 })).toThrow(RangeError);
     expect(() => prospectivePairedBlockPower(family(), scenarios, { ...options, iterations: 9999 })).toThrow(RangeError);
