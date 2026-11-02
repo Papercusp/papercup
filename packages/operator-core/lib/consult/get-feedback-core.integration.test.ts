@@ -1968,6 +1968,23 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(row.expires_at).toBeNull();
   });
 
+  it('does not minimum-fill a transcript that fails a required source reference', async () => {
+    const subject = 'code-cleanup-campaigns-2026-10-26';
+    const unrelated = cand('unrelated', { subjectEvidenceCoverage: {
+      status: 'mismatch', required: [subject],
+      evidence: [{ subject, status: 'mismatch', score: 0.1 }], unresolved: [],
+    } });
+    const { deps, opened, reached } = makeDeps(routeOf([], { all: [unrelated] }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, resolvedSubjectRefs: [subject] }, deps));
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.reason).toBe('below_floor');
+    expect(r.hint).toContain('unrelated transcripts were not dispatched');
+    expect(opened[0].direct_to).toEqual([]);
+    expect(reached).toHaveLength(0);
+    const row = await stateRow(r.conversation_id);
+    expect(row).toMatchObject({ state: 'no_qualified_responder', responder_id: null, wakes_used: 0 });
+  });
+
   it('an all-dead qualified pool ROUTES (the no_live_responder verdict is retired with the wake)', async () => {
     const { deps, reached } = makeDeps(
       routeOf([cand('agent-d1', { liveness: 'ended' }), cand('agent-d2', { liveness: 'recorded' })]),
