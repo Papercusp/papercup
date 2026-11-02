@@ -3209,6 +3209,8 @@ describe('work_items:complete (keyed-array)', () => {
       kind: 'feature',
       family: 'feature',
       state: 'in_progress',
+      assignee: 'su-tester',
+      takenAt: '2026-10-31T00:00:00.000Z',
       harness: 'papercusp',
       payload: {
         plan_item: {
@@ -3612,6 +3614,7 @@ describe('work_items:complete (keyed-array)', () => {
         targetIds: pendingTargets,
         ctx,
         harness: 'papercusp',
+        acceptanceRef: 'F-101',
       });
       expect(r).toMatchObject({
         ok: false,
