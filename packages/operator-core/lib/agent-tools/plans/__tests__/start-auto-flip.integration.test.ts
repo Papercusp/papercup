@@ -25,6 +25,9 @@ import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../../scorec
 import { metadataClauseWrite } from '../coordination-metadata-fixtures';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from '../spec-quality';
 import { parsePlan } from '../parser';
+import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
+import { toolGuardText } from '../../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
+import { controlAnchorKernelResolver } from '../../../projected-tool-deps';
 
 // WI-5825: plans:start resolves its write key through resolvePlanScope — the SAME
 // authority its plan READ uses — not the ambient activeWorkspaceId(). Pin the resolver
@@ -286,7 +289,7 @@ async function cleanupFixture() {
 beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
-  await admin.unsafe(await readFile(new URL('../../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql.DRAFT', import.meta.url), 'utf8'));
+  await admin.unsafe(await readFile(new URL('../../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql', import.meta.url), 'utf8'));
 }, 60_000);
 
 afterAll(async () => {
@@ -324,6 +327,17 @@ beforeEach(async () => {
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
+  it.each(['promotion','binding'])('issues no authority when the final %s leg fails', async leg => {
+    await seedLegacyPlan('ready');
+    if (leg === 'promotion') START_GATES.promotion.mockRejectedValueOnce(new Error('promotion unavailable'));
+    else START_GATES.claimSpec.mockRejectedValueOnce(new Error('binding unavailable'));
+    const { isError } = await runStart();
+    expect(isError).toBe(true);
+    const [row] = await admin`SELECT execution_start_revision_seq FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    expect(row.execution_start_revision_seq).toBeNull();
+  });
+
   it('starting a DRAFT plan flips its frontmatter to ready and reports autoApproved:true', async () => {
     await seedLegacyPlan('draft');
     expect(await frontmatterStatus()).toBe('draft');
@@ -579,6 +593,25 @@ describe('plans:start — draft auto-approve survives the retired op_status axis
     expect(receipt.body).toContain('status: ready');
     const { readPlanExecutionStart } = await import('../plan-execution-authority');
     expect(await readPlanExecutionStart({ planSlug: SLUG, harnessSlug: HARNESS }, WS)).toEqual([]);
+    // Admission must consume the receipt made by canonical start, not a test-issued shortcut.
+    const ownerId = `su-${HARNESS}`;
+    await admin`INSERT INTO harness_shared.session_briefs (owner_id,workspace_id,current_plan_slug,harness_slug)
+      VALUES (${ownerId},${WS},${SLUG},${HARNESS})`;
+    try {
+      const native = await toolGuardText({ ownerId, workspaceId: WS,
+        call: { tool: 'apply_patch', input: {}, client: 'codex' } }, async () => null);
+      expect(native).toBe('');
+      const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'private write admitted' }] }));
+      const tool = { pluginName: 'fixture', description: 'private write', inputSchema: { type: 'object' },
+        capabilities: [], expose: { mcp: { name: 'capability:write' } }, fn: handler } as ProjectedTool;
+      const result = await dispatchProjectedTool(tool, 'capability:write', {},
+        { workspaceId: WS, isSuperuser: true, uiClientId: ownerId, signal: new AbortController().signal,
+          log: () => {}, progress: () => {}, emit: () => {} }, { kernelEnforcement: controlAnchorKernelResolver });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
+      await admin`DELETE FROM harness_shared.session_briefs WHERE owner_id=${ownerId}`;
+    }
   });
 });
 

@@ -757,8 +757,18 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   // in that state produces the duplicate this bug was filed for. A stamped record is
   // adopted over a terminal edge answer only when it is itself non-terminal; when nothing
   // live exists anywhere the terminal record stands and step 3 mints, as before.
-  let existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
-  let edgeMissing = false;
+  // The line IS its execution record after migration 1601. Older records may
+  // still carry implements edges or payload stamps, while a new node has neither.
+  // Resolve the canonical identity first, scoped to this tenant and harness, so
+  // pickup cannot mint another record or resume a preserved legacy child.
+  const { sql } = getOrgPg();
+  const [node] = await sql<{ feature_id: string }[]>`
+    SELECT feature_id FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}
+       AND plan_slug = ${opts.planSlug} AND plan_line_id = ${opts.itemId}`;
+  let existing = node ? await getWorkItem(node.feature_id, opts.harnessSlug)
+    : await findImplementingWorkItem(opts.planSlug, opts.itemId);
+  let edgeMissing = Boolean(node);
   if (!existing || TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
     const stamped = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
     if (stamped && (!existing || !TERMINAL_WORK_ITEM_STATES.has(stamped.state))) {

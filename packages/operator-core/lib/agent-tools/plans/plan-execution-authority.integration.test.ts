@@ -100,7 +100,7 @@ beforeAll(async () => {
       plan_phase text,plan_decision_refs text[],plan_deliverable text,plan_owner_gate_marker text,plan_seq integer);
     CREATE TABLE harness_shared.work_item_deps (workspace_id text,dep_type text,blocked_kind text,blocked_ref text,blocker_kind text,blocker_ref text);
   `);
-  await db.sql.unsafe(await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql.DRAFT', import.meta.url), 'utf8'));
+  await db.sql.unsafe(await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql', import.meta.url), 'utf8'));
 }, 120_000);
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
@@ -224,6 +224,22 @@ describe('canonical successful-start revision authority (real PG)', () => {
     await db.sql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=NULL`;
     await db.sql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=${receipt.seq},template_data='{"execution_start_revision_seq":1}'::jsonb`;
     expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
+  it.each(['dangling','wrong-scope','invalid-scope','forged-rationale'])('fails closed for a %s referenced revision', async defect => {
+    const receipt = await issue();
+    if (defect === 'dangling') await db.sql`DELETE FROM harness_shared.plan_revisions WHERE seq=${receipt.seq}`;
+    else if (defect === 'wrong-scope') await db.sql`UPDATE harness_shared.plan_revisions SET workspace_id='foreign' WHERE seq=${receipt.seq}`;
+    else if (defect === 'invalid-scope') await db.sql`UPDATE harness_shared.plan_revisions
+      SET content_snapshot=jsonb_set(content_snapshot::jsonb,'{scope,workspaceId}','"foreign"')::text WHERE seq=${receipt.seq}`;
+    else await db.sql`UPDATE harness_shared.plan_revisions SET content_snapshot='plain plan body',
+      rationale='plans:start completed canonical promotion, admission and claim binding' WHERE seq=${receipt.seq}`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([
+      defect === 'dangling' || defect === 'wrong-scope' ? 'plan_start_revision_missing' : 'plan_start_revision_invalid',
+    ]);
+    expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
+      toolName: 'apply_patch', args: {} }, { readBindings: async () => [binding], checkPlan: checkExecutionPlan }))
+      .toMatchObject({ code: 'plan_execution_not_ready' });
   });
 
   it.each(['draft','shipped','superseded'])('clears authority on lifecycle %s', async status => {

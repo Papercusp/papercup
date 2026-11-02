@@ -425,7 +425,7 @@ describe('convertPlanItem step 2: terminal records must not mask a live one (EI-
   const givenPlanItem = (itemId: string) =>
     readPlanM.mockResolvedValue({
       row: { items: [{ id: itemId, status: 'todo', text: 'Provision the thing' }] },
-      parsed: { items: [], frontmatter: null, now: null },
+      parsed: { items: [], frontmatter: {}, now: null },
     });
 
   const convert = (itemId: string) =>
@@ -462,6 +462,25 @@ describe('convertPlanItem step 2: terminal records must not mask a live one (EI-
 
     expect(await convert('P-030')).toMatchObject({ status: 'resumed', workItem: { id: 'WI-stamped-live' } });
     expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('resumes the canonical line node without stamps instead of its legacy child', async () => {
+    givenPlanItem('P-031');
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, plan_slug, plan_line_id)
+      VALUES (${WS}, ${HARNESS}, 'WI-node', 'feature', 'pz', 'P-031')`;
+    await edge({ plan: 'pz', item: 'P-031', srcKind: 'issue', srcRef: 'WI-child' });
+    expect(await convert('P-031')).toMatchObject({ status: 'resumed', workItem: { id: 'WI-node' } });
+    expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('does not adopt a line node from another workspace', async () => {
+    givenPlanItem('P-032');
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, plan_slug, plan_line_id)
+      VALUES ('other-workspace', ${HARNESS}, 'WI-foreign-node', 'feature', 'pz', 'P-032')`;
+    createWorkItemM.mockResolvedValue({ id: 'WI-local', harness: HARNESS, state: 'open' });
+    expect(await convert('P-032')).toMatchObject({ status: 'converted', workItem: { id: 'WI-local' } });
   });
 
   it('still MINTS when every implementing record is genuinely terminal', async () => {
@@ -622,7 +641,7 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
     await givenInheritedGoal('member-9', 'goal-77');
     readPlanM.mockResolvedValue({
       row: { items: [{ id: 'P-007', status: 'todo', text: 'Do the thing' }] },
-      parsed: { items: [], frontmatter: null, now: null },
+      parsed: { items: [], frontmatter: {}, now: null },
     });
     claimPlanItemM.mockResolvedValue({ status: 'claimed', claim: { claimId: 'c1' }, mode: 'solo', viaAssignment: false });
     createWorkItemM.mockImplementation(async (input: { title: string }) => {
@@ -652,7 +671,7 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
     await givenRunsGoal('healer-1', 'goal-88');
     readPlanM.mockResolvedValue({
       row: { items: [{ id: 'P-003', status: 'wip', text: 'Old promoted work' }] },
-      parsed: { items: [], frontmatter: null, now: null },
+      parsed: { items: [], frontmatter: {}, now: null },
     });
     claimPlanItemM.mockResolvedValue({ status: 'claimed', claim: { claimId: 'c2' }, mode: 'solo', viaAssignment: false });
 

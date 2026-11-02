@@ -5,6 +5,7 @@ import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp'
 const connection = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: connection.sql }),
+  withWorkspace: async (_workspace: string, fn: (tx: unknown) => Promise<unknown>) => db.sql.begin(tx => fn(tx)),
 }));
 // Activation prerequisites have their own real-PG suite. This suite controls only that
 // verdict so the production revision comparison can be falsified against real rows.
@@ -38,6 +39,32 @@ beforeAll(async () => {
       audit_kind text, audit_seq bigint, audited_plan_content_hash text, audited_plan_revision_id bigint);
     CREATE TABLE harness_shared.plan_revisions (id bigint, workspace_id text, harness_slug text,
       plan_slug text, content_snapshot text, seq integer);
+    CREATE TABLE harness_shared.harness_registry (workspace_id text PRIMARY KEY, payload jsonb);
+    INSERT INTO harness_shared.harness_registry VALUES ('private-plan-execution',
+      '{"projects":[{"slug":"project","harness_kind":"hive"}]}'::jsonb);
+    -- Exercise the canonical rendered-plan reader, including its complete projection.
+    ALTER TABLE harness_shared.harness_plans
+      ADD COLUMN version integer DEFAULT 1, ADD COLUMN title text, ADD COLUMN created text,
+      ADD COLUMN updated text, ADD COLUMN owner text, ADD COLUMN initiative text,
+      ADD COLUMN supersedes text, ADD COLUMN superseded_by text,
+      ADD COLUMN op_started_at timestamptz, ADD COLUMN op_updated_at timestamptz,
+      ADD COLUMN current_wave integer, ADD COLUMN op_priority integer,
+      ADD COLUMN archived boolean DEFAULT false, ADD COLUMN is_legacy boolean DEFAULT false,
+      ADD COLUMN updated_at timestamptz, ADD COLUMN items jsonb DEFAULT '[]',
+      ADD COLUMN now_state text, ADD COLUMN now_next text, ADD COLUMN now_note jsonb,
+      ADD COLUMN promote_policy text, ADD COLUMN schedule jsonb, ADD COLUMN schedule_active boolean,
+      ADD COLUMN scheduled_at timestamptz, ADD COLUMN expires_at timestamptz, ADD COLUMN tzid text,
+      ADD COLUMN template_slug text, ADD COLUMN run_seq integer, ADD COLUMN template text,
+      ADD COLUMN template_data jsonb, ADD COLUMN input_schema jsonb, ADD COLUMN output_schema jsonb,
+      ADD COLUMN forced_past jsonb, ADD COLUMN verification_profile text,
+      ADD COLUMN verification_profile_source text;
+    ALTER TABLE harness_shared.work_items
+      ADD COLUMN feature_id text, ADD COLUMN item_kind text, ADD COLUMN plan_slug text,
+      ADD COLUMN plan_line_id text, ADD COLUMN plan_line_text text, ADD COLUMN plan_importance text,
+      ADD COLUMN plan_phase text, ADD COLUMN plan_decision_refs text[], ADD COLUMN plan_deliverable text,
+      ADD COLUMN plan_owner_gate_marker text, ADD COLUMN plan_seq integer;
+    CREATE TABLE harness_shared.work_item_deps (workspace_id text, dep_type text,
+      blocked_kind text, blocked_ref text, blocker_kind text, blocker_ref text);
   `);
 }, 120_000);
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
@@ -51,7 +78,8 @@ describe('real write-boundary bypass regression', () => {
   it('denies native patches and shell writes despite an unrelated held WI and no worn identity', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
       ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;
-    await db.sql`INSERT INTO harness_shared.work_items VALUES (${OWNER}, ${WS}, 'project', NULL, 'wip')`;
+    await db.sql`INSERT INTO harness_shared.work_items (taken_by,workspace_id,harness_slug,source_plan_slug,status)
+      VALUES (${OWNER}, ${WS}, 'project', NULL, 'wip')`;
     for (const tool of ['apply_patch', 'exec_command']) {
       const text = await toolGuardText({ ownerId: OWNER, workspaceId: WS,
         call: { tool, input: { cmd: 'touch implementation.ts' }, client: 'codex' } }, async () => null);
@@ -63,7 +91,8 @@ describe('real write-boundary bypass regression', () => {
   });
   it('refuses platform dispatch before the implementation handler executes', async () => {
     // No session anchor: the linked work-item is independently authoritative.
-    await db.sql`INSERT INTO harness_shared.work_items VALUES (${OWNER}, ${WS}, 'project', 'draft-feature', 'wip')`;
+    await db.sql`INSERT INTO harness_shared.work_items (taken_by,workspace_id,harness_slug,source_plan_slug,status)
+      VALUES (${OWNER}, ${WS}, 'project', 'draft-feature', 'wip')`;
     const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'wrote source' }] }));
     const tool: ProjectedTool = {
       pluginName: 'fixture', description: 'private write', inputSchema: { type: 'object' }, capabilities: [],
