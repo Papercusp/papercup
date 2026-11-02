@@ -427,7 +427,7 @@ export default defineTool({
           'tools-invoke-progress',
           TOOL_INVOKE_PROGRESS_INTERVAL_MS,
           () => reportProgress('Still waiting for nested tool "' + name + '" to finish.'),
-          { category: 'lifecycle', instanced: true },
+          { category: 'lifecycle', instanced: true, classification: 'must-sample' },
         )
         : undefined;
       try {
