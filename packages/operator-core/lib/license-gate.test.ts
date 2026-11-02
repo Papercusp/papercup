@@ -495,6 +495,38 @@ describe('installer leg — validateComponents', () => {
     expect(r.denied).toEqual([]);
   });
 
+  it('attributes packaged Bun binaries and their Syft records with the linked LGPL obligations', () => {
+    const file = JSON.parse(readFileSync(COMPONENTS_PATH, 'utf8'));
+    const paths = [
+      'app/sidecar/bin/bun',
+      'app/sidecar/bin/bun.exe',
+      'Papercusp Server.app/Contents/Resources/sidecar/bin/bun',
+      'squashfs-root/usr/lib/Papercusp Server/sidecar/bin/bun',
+    ];
+    const input = {
+      payloads: [...paths, 'app/sidecar/bin/unreviewed-runtime'].map((path) => ({ path, kind: 'native' })),
+      syftArtifacts: paths.map((path) => ({ type: 'binary', name: 'bun', version: '1.4.4', licenses: [], path })),
+    };
+    const r = attributeInstaller({ ...input, components: file.components });
+    expect(r.denied).toEqual([]);
+    expect(r.unreviewed.map((u: { path: string }) => u.path)).toEqual(['app/sidecar/bin/unreviewed-runtime']);
+    const bun = r.components.find((c: { name: string }) => c.name === 'Bun runtime');
+    expect(bun).toMatchObject({ kind: 'program', verdict: 'weak-copyleft', hits: paths.length * 2 });
+    expect(bun?.license).toContain('LGPL-2.0');
+    expect(bun?.license).toContain('LGPL-2.1');
+    const notices = renderThirdPartyNotices({}, { installerComponents: [bun] });
+    expect(notices).toContain('Bun runtime');
+    expect(notices).toContain('relinking');
+    expect(notices).toContain('corresponding source');
+
+    // Removing the reviewed entry must reproduce both original audit findings.
+    const missing = attributeInstaller({
+      ...input, components: file.components.filter((c: { name: string }) => c.name !== 'Bun runtime'),
+    });
+    expect(missing.unreviewed.filter((u: { what: string }) => u.what === 'binary:bun@1.4.4')).toHaveLength(paths.length);
+    expect(missing.unreviewed.filter((u: { path: string; what: string }) => paths.includes(u.path) && u.what === 'native binary')).toHaveLength(paths.length);
+  });
+
   // Defect #10 (open-source-release R-15 build8): the GTK/gdk-pixbuf plugin modules were
   // listed only under usr/lib/x86_64-linux-gnu/, but linuxdeploy flattens them to usr/lib/,
   // so the finished AppImage reported 26 UNREVIEWED payloads. Both layouts must match.

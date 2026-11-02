@@ -7,6 +7,7 @@ const deps = vi.hoisted(() => ({
   handlerPhaseRollup: vi.fn(),
   flagPollSuspects: vi.fn(),
   runtimeObservabilityHealth: vi.fn(),
+  readRuntimeSecurityCensus: vi.fn(),
 }));
 
 vi.mock('../../dev-data', () => ({
@@ -16,6 +17,7 @@ vi.mock('../../dev-data', () => ({
 }));
 vi.mock('../../observability/runtime', () => ({
   runtimeObservabilityHealth: deps.runtimeObservabilityHealth,
+  readRuntimeSecurityCensus: deps.readRuntimeSecurityCensus,
 }));
 
 type ToolResponse = { content: Array<{ type: string; text: string }> };
@@ -27,6 +29,17 @@ function callTool(args: Record<string, unknown>, phases?: ReturnType<typeof crea
 }
 
 describe('dev:telemetry phase attribution', () => {
+  it('routes actual-host discovery without running SQL rollups', async () => {
+    const captured = { status: 'unavailable', populationComplete: false, unresolved: ['host-not-registered'] };
+    deps.readRuntimeSecurityCensus.mockResolvedValue(captured);
+    const tracker = createPhaseTracker();
+    const result = await callTool({ view: 'security-census', limit: 7 }, tracker);
+    expect(JSON.parse(result.content[0]!.text)).toEqual(captured);
+    expect(deps.readRuntimeSecurityCensus).toHaveBeenCalledWith(7);
+    expect(deps.telemetryRollup).not.toHaveBeenCalled();
+    expect(deps.handlerPhaseRollup).not.toHaveBeenCalled();
+    expect(tracker.intervals().map(({ phase }) => phase)).toEqual(['dev:telemetry:security-census']);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     deps.telemetryRollup.mockResolvedValue({ entries: [] });

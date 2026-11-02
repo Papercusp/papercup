@@ -237,6 +237,7 @@ export async function postInjection(port, body, opts = {}) {
   // an empty successful verdict must not be mistaken for unavailable authority.
   // Reported once; a throwing callback never changes transport delivery.
   let collectMs = null;
+  let attemptedOperatorOrigin = null;
   const collectErrors = [];
   let hookOutcomeReported = false;
   const reportHookOutcome = (stage, extra = {}) => {
@@ -245,6 +246,7 @@ export async function postInjection(port, body, opts = {}) {
     try {
       opts.onHookOutcome({
         port, stage, timeoutMs: spec.timeoutMs, elapsedMs: Math.max(0, now() - startedAt), collectMs,
+        ...(attemptedOperatorOrigin ? { operatorOrigin: attemptedOperatorOrigin } : {}),
         ...(collectErrors.length ? { collectErrors } : {}), ...extra,
       });
     } catch { /* diagnostic only */ }
@@ -303,6 +305,8 @@ export async function postInjection(port, body, opts = {}) {
     // the turn-start acknowledgement on a second host. One wall bounds the chain.
     for (const base of operatorBases(env)) {
       try {
+        // URL.origin excludes credentials, paths and query parameters.
+        attemptedOperatorOrigin = new URL(base).origin;
         res = await fetchImpl(base + spec.endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -683,7 +687,8 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
         // bodies or exception messages, which may contain sensitive material.
         const detail = post
           ? `stage=${post.stage}; elapsedMs=${post.elapsedMs}; timeoutMs=${post.timeoutMs}` +
-            (Number.isInteger(post.status) ? `; httpStatus=${post.status}` : '')
+            (Number.isInteger(post.status) ? `; httpStatus=${post.status}` : '') +
+            (post.operatorOrigin ? `; operatorOrigin=${post.operatorOrigin}` : '')
           : `stage=guard-threw; errorType=${error?.name ?? 'unknown'}`;
         return adapter.render('pre-tool',
           `plan_execution_not_ready: execution authority is unavailable; this mutation is refused. Guard diagnostic: ${detail}. Use read-only tools or restore the operator, then retry.`, event);

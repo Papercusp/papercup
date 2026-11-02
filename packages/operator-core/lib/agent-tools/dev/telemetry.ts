@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { trackPhase } from '@papercusp/tooldef';
 import { flagPollSuspects, handlerPhaseRollup, telemetryRollup } from '../../dev-data';
-import { runtimeObservabilityHealth } from '../../observability/runtime';
+import { readRuntimeSecurityCensus, runtimeObservabilityHealth } from '../../observability/runtime';
 
 export default defineTool({
   name: 'dev:telemetry',
@@ -29,6 +29,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
+    view: z.enum(['rollup', 'security-census']).optional()
+      .describe('security-census reads the actual serving host and boot artifact: incomplete discovery, never a security verdict. Default rollup.'),
     workspaceIds: z.array(z.string()).nullable().optional(),
     /** Filter by which transport drove the dispatch. 'unknown' matches
      *  rows pre-migration 058 (transport=NULL). null/omitted = no filter. */
@@ -40,6 +42,10 @@ export default defineTool({
       .describe('Tool name: also return its per-phase timing (handlerPhases) and phase coverage of wall time.'),
   }),
   async handler(args, ctx) {
+    if (args.view === 'security-census') {
+      return { content: [{ type: 'text', text: JSON.stringify(await trackPhase(ctx.phases,
+        'dev:telemetry:security-census', () => readRuntimeSecurityCensus(args.limit))) }] };
+    }
     const hours = args.hours ?? 24;
     const [result, handlerPhases] = await Promise.all([
       trackPhase(

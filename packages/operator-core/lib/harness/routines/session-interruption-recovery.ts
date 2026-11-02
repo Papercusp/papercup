@@ -93,7 +93,7 @@ export interface SessionRecoveryDeps {
   claim(candidate: SessionRecoveryEvidence, key: string): Promise<SessionRecoveryEvidence | null>;
   restore(candidate: SessionRecoveryEvidence, decision: Exclude<SessionRecoveryDecision, { action: 'hold' }>,
     key: string): Promise<{ verified: boolean; reason: string }>;
-  finish(candidate: SessionRecoveryEvidence, key: string, result: { verified: boolean; reason: string }): Promise<void>;
+  finish(candidate: SessionRecoveryEvidence, key: string, result: { verified: boolean; reason: string }): Promise<boolean | void>;
 }
 
 /** One bounded pass. A wait restore never supplies a work prompt. Errors consume
@@ -108,7 +108,7 @@ export async function recoverInterruptedSessions(deps: SessionRecoveryDeps, nowM
     const key = sessionRecoveryKey(candidate.interruption!);
     const claimed = await deps.claim(candidate, key);
     if (!claimed) { result.held[candidate.ownerId] = 'claim-lost'; continue; }
-    const fresh = classifySessionInterruption(claimed, nowMs, key);
+    const fresh = classifySessionInterruption(claimed, nowMs, claimed.interruption?.leaseKey ?? key);
     if (fresh.action === 'hold') {
       await deps.finish(claimed, key, { verified: false, reason: fresh.reason });
       result.held[candidate.ownerId] = fresh.reason; continue;
@@ -117,8 +117,8 @@ export async function recoverInterruptedSessions(deps: SessionRecoveryDeps, nowM
     let outcome: { verified: boolean; reason: string };
     try { outcome = await deps.restore(claimed, fresh, key); }
     catch (error) { outcome = { verified: false, reason: error instanceof Error ? error.message : String(error) }; }
-    await deps.finish(claimed, key, outcome);
-    if (outcome.verified) result.restored.push(candidate.ownerId);
+    const finished = await deps.finish(claimed, key, outcome);
+    if (outcome.verified && finished !== false) result.restored.push(candidate.ownerId);
   }
   return result;
 }

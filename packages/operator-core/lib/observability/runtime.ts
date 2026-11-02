@@ -2,6 +2,8 @@
 import { pinModuleState } from '@papercusp/module-singleton';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
+import type { ObservedSurface } from '@papercusp/testing-shell/census';
 import { context, trace, TraceFlags } from '@opentelemetry/api';
 import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
@@ -12,6 +14,7 @@ import { measureBootOperatorArtifact, type OperatorArtifactIdentity,
   type OperatorArtifactParentExpectation } from '../release/operator-artifact';
 import { getBuildInfo } from '../build-info';
 import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
+import { SECURITY_POPULATIONS } from '../coverage-census/security-manifest';
 
 type DispatchStart = Parameters<NonNullable<DispatchProjectedDeps['onDispatchStart']>>[0];
 type InvokeRequest = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -19,6 +22,13 @@ type Invocation = Parameters<NonNullable<DispatchProjectedDeps['recordInvocation
 
 interface BoundaryContext { callId: string; workspaceId: string; harness: string; tool: string;
   receipts: ExecutionBoundaryReceipt[] }
+
+export interface RuntimeSecurityPopulation {
+  surfaces: readonly ObservedSurface[];
+  declaredSurfaces: readonly ObservedSurface[];
+  unresolved: readonly string[];
+}
+type SecurityCapture = () => Promise<RuntimeSecurityPopulation>;
 
 /** Hash the actual loaded function body. Reading its source file here would
  * race a working-tree edit and could label old compiled code with new bytes. */
@@ -89,10 +99,68 @@ const state = pinModuleState('@papercusp/operator-core.otel-runtime', () => ({
   registration: null as ReturnType<ReturnType<typeof createTracing>['register']> | null,
   boundaryContext: new AsyncLocalStorage<BoundaryContext>(),
   boundaryReceipts: new Map<string, ExecutionBoundaryReceipt[]>(),
+  securityCapture: null as SecurityCapture | null,
 }));
 // An already running development host can retain the pre-extension singleton.
 state.boundaryContext ??= new AsyncLocalStorage<BoundaryContext>();
 state.boundaryReceipts ??= new Map<string, ExecutionBoundaryReceipt[]>();
+
+/** The actual request host registers once on the existing observability state;
+ * no transport argument can supply the population or replace this callback. */
+export function registerRuntimeSecurityCapture(capture: SecurityCapture): () => void {
+  state.securityCapture = capture;
+  return () => { if (state.securityCapture === capture) state.securityCapture = null; };
+}
+
+/** Discovery only. Full-set identity precedes paging; unknown closure remains
+ * explicit. Never boot tracing/plugins or relabel old code with checkout bytes. */
+export async function readRuntimeSecurityCensus(limit = 50) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw Error('security_census_invalid_limit');
+  const artifact = state.artifact?.status === 'measured' ? {
+    status: 'measured' as const, sourceSha: state.artifact.sourceSha,
+    bundleSha256: state.artifact.bundleSha256, manifestSha256: state.artifact.manifestSha256,
+    evidenceRef: state.artifact.evidenceRef,
+  } : { status: 'unknown' as const, reason: state.artifact?.reason ?? 'boot-artifact-not-measured' };
+  const runtimeIdentity = { processId: process.pid, platform: process.platform,
+    arch: process.arch, nodeVersion: process.version, artifact };
+  const unresolved = SECURITY_POPULATIONS.map(population => `security-population-not-closed:${population}`);
+  if (artifact.status !== 'measured') unresolved.push('security-runtime-artifact-unqualified');
+  const capture = state.securityCapture;
+  const hostCaptureSha256 = capture ? loadedHandlerFingerprint(capture) : null;
+  let population: RuntimeSecurityPopulation | null = null;
+  if (!capture) unresolved.push('security-host-capture-not-registered');
+  else {
+    try { population = await capture(); }
+    catch { unresolved.push('security-host-capture-failed'); }
+  }
+  // Exclude live schemas/functions. This digest does not claim schema coverage.
+  const rows = (population ? [
+    ...population.surfaces.map(surface => ({ basis: 'serving-registry' as const, surface })),
+    ...population.declaredSurfaces.map(surface => ({ basis: 'declared-route' as const, surface })),
+  ] : []).map(({ basis, surface }) => ({ basis, kind: surface.kind, surfaceId: surface.surfaceId,
+    sourceFile: surface.sourceFile ?? null, fidelity: surface.fidelity, attrs: surface.attrs ?? {} }));
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const key = canonicalJson([row.basis, row.kind, row.surfaceId]);
+    if (seen.has(key)) unresolved.push(`security-census-duplicate:${key}`);
+    seen.add(key);
+  }
+  if (population) unresolved.push(...population.unresolved);
+  if (!rows.length) unresolved.push('security-host-population-empty');
+  const ordered = rows.map(row => ({ row, key: canonicalJson(row) }))
+    .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0).map(entry => entry.row);
+  const body = JSON.parse(canonicalJson({ runtimeIdentity, hostCaptureSha256, rows: ordered,
+    unresolved: unresolved.sort() })) as { runtimeIdentity: typeof runtimeIdentity; hostCaptureSha256: string | null;
+      rows: typeof rows; unresolved: string[] };
+  const discoverySha256 = createHash('sha256').update(canonicalJson(body)).digest('hex');
+  return { status: population ? 'captured' as const : 'unavailable' as const,
+    evidenceKind: 'runtime-discovery' as const, discoverySha256,
+    runtimeIdentity: body.runtimeIdentity, hostCaptureSha256,
+    populationComplete: false as const, closureAccepted: false as const, executionAdmitted: false as const,
+    schemaCoverage: 'not-included' as const, unresolved: body.unresolved,
+    total: rows.length, count: Math.min(rows.length, limit), truncatedByLimit: rows.length > limit,
+    rows: body.rows.slice(0, limit) };
+}
 
 function runtime() {
   if (!state.runtime) {

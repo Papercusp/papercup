@@ -152,6 +152,29 @@ describe('unavailable mutation authority reports its transport branch', () => {
     expect(await pending).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
   });
 
+  it('reports the attempted origin without leaking URL credentials or request details', async () => {
+    const out = await runInjection({ adapter, nativeEvent: 'PreToolUse', event: {},
+      env: { PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: 'http://user:secret@remote.example:3123/private?token=hidden' },
+      fetchImpl: (async () => ({ ok: false, status: 503 })) as unknown as typeof fetch,
+    });
+    expect(out).toContain('operatorOrigin=http://remote.example:3123');
+    for (const secret of ['user', 'secret', '/private', 'token', 'hidden']) expect(out).not.toContain(secret);
+  });
+
+  it('names the fallback origin when the pinned operator cannot be reached', async () => {
+    let attempts = 0;
+    const out = await runInjection({ adapter, nativeEvent: 'PreToolUse', event: {},
+      env: { PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170', PAPERCUSP_MCP_PROXY_PORT: '9079' },
+      fetchImpl: (async () => {
+        if (++attempts === 1) throw new Error('unreachable');
+        return { ok: false, status: 503 };
+      }) as unknown as typeof fetch,
+    });
+    expect(attempts).toBe(2);
+    expect(out).toContain('operatorOrigin=http://127.0.0.1:9079');
+    expect(out).not.toContain('operatorOrigin=http://127.0.0.1:3170');
+  });
+
   it('keeps a successful empty verdict distinct from unavailable authority', async () => {
     expect(await run(answer(''))).toBeNull();
     expect(await run(answer('named-rule refusal'))).toBe('named-rule refusal');
