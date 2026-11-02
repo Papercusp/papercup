@@ -32,6 +32,21 @@ import type postgres from 'postgres';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
+// A read-failed rubric deliberately refuses emission, but the facade hides its cause.
+// Keep the real read and its deadlines; retain the exception in this integration's log.
+vi.mock('../../pg-read-query', async (orig) => {
+  const actual = await orig<typeof import('../../pg-read-query')>();
+  const boundedPgReadTxn: typeof actual.boundedPgReadTxn = async (fn, opts) => {
+    try {
+      return await actual.boundedPgReadTxn(fn, opts);
+    } catch (error) {
+      console.error('[emit-from-ledger fixture] bounded read failed', error);
+      throw error;
+    }
+  };
+  return { ...actual, boundedPgReadTxn };
+});
+
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
