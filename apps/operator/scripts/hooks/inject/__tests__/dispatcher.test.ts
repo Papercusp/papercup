@@ -421,15 +421,41 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject",
       "sed -n '1,20p' apps/operator/scripts/hooks/inject/core.mjs",
     ].join('\n');
+    const readOnlyCommands = [
+      readOnlyInspection,
+      "rg -n -C 2 'plan_execution_not_ready|isSafeWithoutExecutionAuthority' apps/operator/scripts/hooks/inject/core.mjs",
+      [
+        "ptool tools:find --json - <<'JSON'",
+        '{"query":"plans:get"}',
+        'JSON',
+      ].join('\n'),
+      [
+        "ptool reports:get --json - --harness=papercusp <<'JSON'",
+        '{"id":"report-1"}',
+        'JSON',
+      ].join('\n'),
+      [
+        "ptool consult:reply --json - --harness=papercusp <<'JSON'",
+        '{"conversation_id":"consult-1","kind":"answer","body":"Reviewed.","evidence":[{"session_id":"session-1","turn_idx":3}]}',
+        'JSON',
+      ].join('\n'),
+    ];
+    const refusedPtoolWrite = [
+      "ptool work_items:set_state --json - <<'JSON'",
+      '{"id":"WI-123","state":"done"}',
+      'JSON',
+    ].join('\n');
 
     for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
       vi.useFakeTimers();
       try {
-        const read = runInjection({ adapter, nativeEvent,
-          event: { tool_name: 'exec_command', tool_input: { cmd: readOnlyInspection } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
-        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
-        expect(await read).toBeNull();
+        for (const cmd of readOnlyCommands) {
+          const read = runInjection({ adapter, nativeEvent,
+            event: { tool_name: 'exec_command', tool_input: { cmd } },
+            env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+          await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+          expect(await read).toBeNull();
+        }
 
         const write = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: 'touch source.ts' } },
@@ -437,6 +463,14 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
         const decision = JSON.parse((await write)!).hookSpecificOutput;
         expect(decision).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
+        const ptoolWrite = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: refusedPtoolWrite } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(JSON.parse((await ptoolWrite)!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
         });

@@ -4177,6 +4177,81 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(currentCriterion?.check).toMatchObject({ kind: 'tests', files });
   });
 
+  it('EI-27697322830922884: current/exact reads and a read-amend roundtrip preserve bindings over stale live checks', async () => {
+    const seeded = await explicitAmendmentSubject('live-check-downgrade-subject', 'live');
+    // The legacy fixture adds Intent to its plan blocks after seeding. Adopt it
+    // canonically first, so this test reaches the binding guard, not the promise guard.
+    const authoring = {
+      rubricId: seeded.rubricSlug, actorId: 'binding-author', reason: 'Bind the maintained suites and registered instrument.',
+      criteria: seeded.rubric.criteria.map((criterion, index) => ({
+        ...criterion,
+        intent: { request: `Retain outcome ${index + 1}.`, sourceRefs: ['session_turn:fixture'] },
+        ...(index === 1 ? {
+          check: { kind: 'instrument' as const, instrumentKey: 'code-intel:coupling-shadow-window' },
+          requiredTestLayers: [],
+        } : {}),
+      })),
+    };
+    const bound = (await rubrics.amendRubric({ ...authoring, approvalRef: await postApproval(authoring) }))!;
+    const { default: rubricsGetTool } = await import('./agent-tools/rubrics/get');
+    type ReadResult = {
+      rubric: NonNullable<Awaited<ReturnType<typeof rubrics.getRubric>>>;
+      liveRequirements?: { live: string[]; changed: string[]; kept: Array<{ barKey: string; reason: string }> };
+    };
+    const read = async (revision?: number) => {
+      const response = await rubricsGetTool.handler(
+        { rubricRef: seeded.rubricSlug, detail: 'full', ...(revision === undefined ? {} : { revision }) },
+        { isSuperuser: true, uiClientId: 'rubric-binding-integrity-test', workspaceId: seeded.workspaceId } as never,
+      ) as { data: { results: ReadResult[] } };
+      return response.data.results[0]!;
+    };
+    const baseline = await read();
+    expect(baseline.liveRequirements).toMatchObject({ live: ['R-1', 'R-2'], changed: [], kept: [] });
+    const [subject] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const stale = subject!.content.replace(
+      JSON.stringify(bound.criteria[0]!.check),
+      JSON.stringify({ kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] }),
+    ).replace(
+      JSON.stringify(bound.criteria[1]!.check),
+      JSON.stringify({ kind: 'instrument', instrumentKey: 'none' }),
+    );
+    expect(stale).not.toBe(subject!.content);
+    // Simulate a historical writer leaving same-kind stale checks in the plan.
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${stale}, content_hash=${hashPlanContent(stale)}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const current = await read();
+    const exact = await read(bound.revision!);
+    expect(current.rubric.revision).toBe(exact.rubric.revision);
+    expect(current.rubric.criteriaHash).toBe(exact.rubric.criteriaHash);
+    expect(current.rubric.criteria).toEqual(exact.rubric.criteria);
+    expect(current.liveRequirements).toMatchObject({ live: [], changed: [], kept: [
+      { barKey: 'R-1', reason: 'check-binding-downgraded' },
+      { barKey: 'R-2', reason: 'check-binding-downgraded' },
+    ] });
+    expect(exact.liveRequirements).toBeUndefined();
+    const roundtrip = {
+      rubricId: seeded.rubricSlug, actorId: 'binding-author', reason: 'Repair stale plan checks from the complete current read.',
+      criteria: current.rubric.criteria,
+      expectedRubricRevision: bound.revision, expectedSubjectPlanRevision: Number(subject!.version),
+    };
+    expect(await rubrics.previewAcceptanceBarAmendment(roundtrip)).toMatchObject({
+      changedBars: [], changes: [], approvalRequired: false,
+      requirementsDrift: { rerenderedOnApply: ['R-1', 'R-2'] },
+    });
+    const repaired = (await rubrics.amendRubric(roundtrip))!;
+    expect(repaired.criteria).toEqual(exact.rubric.criteria);
+    expect(repaired.criteriaHash).toBe(exact.rubric.criteriaHash);
+    expect((await read()).rubric.criteria).toEqual(exact.rubric.criteria);
+    expect((await read(bound.revision!)).rubric.criteria).toEqual(exact.rubric.criteria);
+    const [after] = await db.adminSql`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const parsed = parseRequirementBars(after!.content);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.bars.map((bar) => bar.criterion!.check)).toEqual(bound.criteria.map((criterion) => criterion.check));
+  });
+
   it('EI-25970739425963382: renders method edits beside a meaning change while only that meaning changes BAR identity', async () => {
     const seeded = await explicitAmendmentSubject('mixed-render-subject');
     const method = 'Run the second current fixture and retain its result.';
