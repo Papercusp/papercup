@@ -139,6 +139,51 @@ describe("host memory right-sizing accounting", () => {
     expect(out.populationFingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("deduplicates partial residency only at proven resident backing offsets", () => {
+    const out = runPy([fixture,
+      "text = mapping(0x1000000, resident=1024).replace('Size: 2048 kB', 'Size: 2048 kB\\nKernelPageSize: 512 kB')",
+      // Present-bit alone identifies a shared file offset; PFNs may be redacted.
+      "present = 1 << 63",
+      "read = lambda address: present if address in (0x1000000, 0x1100000) else 0",
+      "ranges, unknown, observed = cs._hugetlb_backing_ranges(text, read)",
+      "bad = cs._hugetlb_backing_ranges(text, lambda _: present)",
+      "print(json.dumps({'ranges': ranges, 'unknown': unknown, 'observed': observed, 'changed': bad}))",
+    ].join("\n")) as any;
+    expect(out.ranges).toEqual([["00:01", 7, 0, 524288], ["00:01", 7, 1048576, 1572864]]);
+    expect(out.unknown).toBe(0);
+    expect(out.observed).toBe(1024 * 1024);
+    // Changed presence no longer agrees with the kernel's resident byte count.
+    expect(out.changed).toEqual([[], 1024 * 1024, 1024 * 1024]);
+  });
+
+  it("keeps private/anonymous huge pages unknown even with PFNs, avoiding mixed-identity double counts", () => {
+    const out = runPy([fixture,
+      "text = mapping(0x1000000, inode=0, flags='ht').replace('Size: 2048 kB', 'Size: 2048 kB\\nKernelPageSize: 2048 kB')",
+      "known = cs._hugetlb_backing_ranges(text, lambda _: (1 << 63) | 1024)",
+      "redacted = cs._hugetlb_backing_ranges(text, lambda _: 1 << 63)",
+      "print(json.dumps({'known': known, 'redacted': redacted}))",
+    ].join("\n")) as any;
+    expect(out.known).toEqual([[], 2097152, 2097152]);
+    expect(out.redacted).toEqual([[], 2097152, 2097152]);
+  });
+
+  it("captures partially resident shared aliases through actual sparse pagemap fixtures", () => {
+    const out = runPy([fixture,
+      "for pid, address in [(10, 0x1000000), (20, 0x2000000)]:",
+      "    proc(pid, huge=1024)",
+      "    text = mapping(address, resident=1024).replace('Size: 2048 kB', 'Size: 2048 kB\\nKernelPageSize: 512 kB')",
+      "    put(f'proc/{pid}', 'smaps', text)",
+      "    with open(os.path.join(root, f'proc/{pid}/pagemap'), 'wb') as f:",
+      "        for delta in [0, 524288, 1048576, 1572864]:",
+      "            f.seek((address + delta) // os.sysconf('SC_PAGE_SIZE') * 8)",
+      "            f.write(((1 << 63) if delta in [0, 1048576] else 0).to_bytes(8, sys.byteorder))",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    expect(out.explicitHugeTlbBytesAttributed).toBe(1024 * 1024);
+    expect(out.hugeTlbBytesInUnresolvedMappings).toBe(0);
+    expect(out.hugeTlbAttributionComplete).toBe(true);
+  });
+
   it("discards a PID reused during capture and leaves an entirely unreadable census unknown", () => {
     const out = runPy([fixture, "proc(10)",
       "starts = iter([99, 100])",

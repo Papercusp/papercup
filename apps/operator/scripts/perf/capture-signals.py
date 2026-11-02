@@ -494,12 +494,14 @@ def _memory_process_identity(pid, proc_root):
     return _memory_process_stat(pid, proc_root)[0]
 
 
-def _hugetlb_backing_ranges(text):
-    """Prove sharing only for fully resident MAP_SHARED HugeTLB file ranges.
+def _hugetlb_backing_ranges(text, pagemap_reader=None, base_page_size=4096):
+    """Prove sharing from resident MAP_SHARED backing offsets.
 
     A matching path or inode alone does not prove anonymous/COW/partial-resident
-    pages are identical. Those mappings remain unattributed. Offsets, not virtual
-    addresses, identify aliases of a live shared backing object.
+    pages are identical. A partial mapping needs pagemap presence for each huge
+    page. Private/anonymous mappings stay unknown: mixing physical-frame keys
+    with backing-offset keys could count a private alias of a shared page twice.
+    Missing or changing detail stays unattributed; physical frames are not read.
     """
     header = re.compile(r"^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+([0-9a-f]+)\s+([0-9a-f]+:[0-9a-f]+)\s+(\d+)(?:\s|$)")
     blocks = []
@@ -524,11 +526,37 @@ def _hugetlb_backing_ranges(text):
         size = int(end, 16) - int(start, 16)
         flags = next((line.split()[1:] for line in block["lines"]
                       if line.startswith("VmFlags:")), [])
-        if (int(inode) > 0 and "ht" in flags and "sh" in flags
+        shared_backing = int(inode) > 0 and "ht" in flags and "sh" in flags
+        if (shared_backing
                 and resident == size == fields.get("Size")):
             ranges.append((device, int(inode), int(offset, 16), int(offset, 16) + size))
         else:
-            unresolved += resident
+            page_size = fields.get("KernelPageSize", 0)
+            pieces = []
+            if (pagemap_reader is not None and shared_backing
+                    and page_size >= base_page_size and page_size % base_page_size == 0
+                    and size == fields.get("Size") and size % page_size == 0
+                    and int(start, 16) % page_size == 0 and int(offset, 16) % page_size == 0
+                    and size // page_size <= 65536):
+                try:
+                    for delta in range(0, size, page_size):
+                        entry = pagemap_reader(int(start, 16) + delta)
+                        if entry & (1 << 62):
+                            raise ValueError("swapped HugeTLB page")
+                        if not entry & (1 << 63):
+                            continue
+                        key, position = (device, int(inode)), int(offset, 16) + delta
+                        if pieces and pieces[-1][:2] == key and pieces[-1][3] == position:
+                            prior = pieces[-1]
+                            pieces[-1] = (*key, prior[2], position + page_size)
+                        else:
+                            pieces.append((*key, position, position + page_size))
+                except (OSError, ValueError):
+                    pieces = []
+            if pieces and sum(stop - begin for _, _, begin, stop in pieces) == resident:
+                ranges.extend(pieces)
+            else:
+                unresolved += resident
     return ranges, unresolved, observed
 
 
@@ -556,7 +584,22 @@ def _process_memory(pid, proc_root):
             with open(os.path.join(base, "smaps")) as f:
                 text = f.read(2 * 1024 * 1024 + 1)
             if len(text) <= 2 * 1024 * 1024:
-                found, unknown, observed = _hugetlb_backing_ranges(text)
+                try:
+                    with open(os.path.join(base, "pagemap"), "rb") as pagemap:
+                        base_page_size = os.sysconf("SC_PAGE_SIZE")
+                        reads = 0
+                        def read_page(address):
+                            nonlocal reads
+                            reads += 1
+                            if reads > 65536:
+                                raise ValueError("pagemap detail capped")
+                            raw = os.pread(pagemap.fileno(), 8, address // base_page_size * 8)
+                            if len(raw) != 8:
+                                raise ValueError("pagemap detail unreadable")
+                            return int.from_bytes(raw, sys.byteorder)
+                        found, unknown, observed = _hugetlb_backing_ranges(text, read_page, base_page_size)
+                except OSError:
+                    found, unknown, observed = _hugetlb_backing_ranges(text)
                 with open(os.path.join(base, "smaps_rollup")) as f:
                     after_fields = _memory_fields(f.read())
                 after_huge = (after_fields.get("Shared_Hugetlb", -1)
