@@ -12,7 +12,9 @@ ARG BUILD_NODE_VERSION=25.9.0
 ARG RUST_VERSION=1.97.1
 ARG RUSTUP_VERSION=1.28.2
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-RUN <<'NATIVE_BUILD'
+# --mount makes legacy Docker refuse before any heredoc can silently become an
+# empty command. These build steps require BuildKit's heredoc parser.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked <<'NATIVE_BUILD'
 # NATIVE_PREFLIGHT_BEGIN
 case "$TARGETARCH" in
   amd64) node_arch=x64; rust_host=x86_64-unknown-linux-gnu ;;
@@ -41,19 +43,7 @@ curl -fSsL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
 printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: %s-pgdg\nArchitectures: %s\nComponents: main\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc\n' \
   "$VERSION_CODENAME" "$TARGETARCH" > /etc/apt/sources.list.d/pgdg.sources
 apt-get update
-apt-get install -y --no-install-recommends pkg-config libasound2-dev libssl-dev file binutils rsync gh patchelf postgresql-18-pgvector \
-  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
-# The native producer emits both GUI and Server artifacts. Check the target
-# development closure now, before dependency preparation and Rust compilation.
-# NATIVE_GUI_PREFLIGHT_BEGIN
-for module in gtk+-3.0 webkit2gtk-4.1 javascriptcoregtk-4.1 ayatana-appindicator3-0.1 librsvg-2.0; do
-  if ! pkg-config --exists "$module"; then
-    echo "ERROR: native builder requires GUI development module $module" >&2
-    exit 2
-  fi
-done
-unset module
-# NATIVE_GUI_PREFLIGHT_END
+apt-get install -y --no-install-recommends pkg-config libasound2-dev libssl-dev file binutils rsync gh patchelf postgresql-18-pgvector
 # NATIVE_PGVECTOR_PREFLIGHT_BEGIN
 pgvector_sql=(/usr/share/postgresql/18/extension/vector--*.sql)
 [[ -s /usr/lib/postgresql/18/lib/vector.so \
@@ -125,6 +115,23 @@ exec /usr/bin/git "$@"
 GIT_EOF_WRAPPER
 chmod 755 /opt/build-git/bin/git
 GIT_EOF_COMPAT
+# Keep this closure after the toolchain layers so extending GUI prerequisites
+# reuses the native compiler and verified rootfs already built for Server.
+RUN <<'NATIVE_GUI_BUILD'
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+# NATIVE_GUI_PREFLIGHT_BEGIN
+for module in gtk+-3.0 webkit2gtk-4.1 javascriptcoregtk-4.1 ayatana-appindicator3-0.1 librsvg-2.0; do
+  if ! pkg-config --exists "$module"; then
+    echo "ERROR: native builder requires GUI development module $module" >&2
+    exit 2
+  fi
+done
+unset module
+# NATIVE_GUI_PREFLIGHT_END
+rm -rf /var/lib/apt/lists/*
+NATIVE_GUI_BUILD
 # This builds audited Server releases from independent /product inputs. The
 # audited pinned dogfood route supports both native architectures and already
 # skips the unused development dependency generation after install. vm-release

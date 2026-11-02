@@ -38,13 +38,19 @@ export default defineTool({
       .nullable().optional(),
     hours: z.number().int().positive().max(168).optional(),
     limit: z.number().int().positive().max(500).optional(),
+    offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional()
+      .describe('security-census only: zero-based offset into the sorted full population.'),
+    discoverySha256: z.string().regex(/^[a-f0-9]{64}$/).optional()
+      .describe('security-census only: full population digest returned by the first page; refuses a changed population.'),
     phasesFor: z.string().min(1).optional()
       .describe('Tool name: also return its per-phase timing (handlerPhases) and phase coverage of wall time.'),
   }),
   async handler(args, ctx) {
     if (args.view === 'security-census') {
       return { content: [{ type: 'text', text: JSON.stringify(await trackPhase(ctx.phases,
-        'dev:telemetry:security-census', () => readRuntimeSecurityCensus(args.limit))) }] };
+        'dev:telemetry:security-census', () => readRuntimeSecurityCensus(args.limit, {
+          offset: args.offset, expectedDiscoverySha256: args.discoverySha256,
+        }))) }] };
     }
     const hours = args.hours ?? 24;
     const [result, handlerPhases] = await Promise.all([

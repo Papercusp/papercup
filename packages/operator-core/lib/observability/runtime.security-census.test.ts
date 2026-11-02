@@ -42,4 +42,30 @@ describe('owning-process security discovery', () => {
     old(); expect((await readRuntimeSecurityCensus()).total).toBe(1);
     for (const limit of [0, 501, 1.5]) await expect(readRuntimeSecurityCensus(limit)).rejects.toThrow('invalid_limit');
   });
+
+  it('retrieves later pages against the full population identity and refuses changed populations', async () => {
+    const surfaces = [surface('three'), surface('one'), surface('two')];
+    releases.push(registerRuntimeSecurityCapture(async () => ({ surfaces, declaredSurfaces: [], unresolved: [] })));
+    const whole = await readRuntimeSecurityCensus(3), first = await readRuntimeSecurityCensus(1);
+    const second = await readRuntimeSecurityCensus(1, { offset: 1, expectedDiscoverySha256: first.discoverySha256 });
+    const last = await readRuntimeSecurityCensus(1, { offset: 2, expectedDiscoverySha256: first.discoverySha256 });
+    expect([...first.rows, ...second.rows, ...last.rows]).toEqual(whole.rows);
+    expect(second).toMatchObject({ offset: 1, count: 1, total: 3, truncatedByLimit: true });
+    expect(last).toMatchObject({ offset: 2, count: 1, truncatedByLimit: false });
+    expect(await readRuntimeSecurityCensus(1, { offset: 3 })).toMatchObject({ count: 0, rows: [], truncatedByLimit: false });
+    surfaces.push(surface('four'));
+    await expect(readRuntimeSecurityCensus(1, { offset: 1, expectedDiscoverySha256: first.discoverySha256 }))
+      .rejects.toThrow('population_changed');
+    expect(last.populationComplete).toBe(false); expect(last.executionAdmitted).toBe(false);
+  });
+
+  it('rejects malformed page identities before calling the host capture', async () => {
+    let captures = 0;
+    releases.push(registerRuntimeSecurityCapture(async () => { captures++; return { surfaces: [], declaredSurfaces: [], unresolved: [] }; }));
+    for (const offset of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(readRuntimeSecurityCensus(1, { offset })).rejects.toThrow('invalid_offset');
+    }
+    await expect(readRuntimeSecurityCensus(1, { expectedDiscoverySha256: 'not-a-digest' })).rejects.toThrow('invalid_discovery_digest');
+    expect(captures).toBe(0);
+  });
 });

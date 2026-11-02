@@ -33,9 +33,10 @@ describe('dev:telemetry phase attribution', () => {
     const captured = { status: 'unavailable', populationComplete: false, unresolved: ['host-not-registered'] };
     deps.readRuntimeSecurityCensus.mockResolvedValue(captured);
     const tracker = createPhaseTracker();
-    const result = await callTool({ view: 'security-census', limit: 7 }, tracker);
+    const discoverySha256 = 'a'.repeat(64);
+    const result = await callTool({ view: 'security-census', limit: 7, offset: 14, discoverySha256 }, tracker);
     expect(JSON.parse(result.content[0]!.text)).toEqual(captured);
-    expect(deps.readRuntimeSecurityCensus).toHaveBeenCalledWith(7);
+    expect(deps.readRuntimeSecurityCensus).toHaveBeenCalledWith(7, { offset: 14, expectedDiscoverySha256: discoverySha256 });
     expect(deps.telemetryRollup).not.toHaveBeenCalled();
     expect(deps.handlerPhaseRollup).not.toHaveBeenCalled();
     expect(tracker.intervals().map(({ phase }) => phase)).toEqual(['dev:telemetry:security-census']);
