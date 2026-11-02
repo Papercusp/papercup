@@ -15,16 +15,35 @@
  */
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
 import { getOrgPg } from '@papercusp/db-org';
-import { ingestInteractiveUsage } from './ingest-claude-transcripts';
+import { ingestInteractiveUsage, type IngestProgress } from './ingest-claude-transcripts';
 import { repriceUsageSamples } from './reprice-usage-samples';
 
 registerSystemAction('interactive-usage-ingest', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const maxFiles = Number(cfg.max_files);
-  const result = await ingestInteractiveUsage({
-    root: typeof cfg.root === 'string' && cfg.root.length > 0 ? cfg.root : undefined,
-    maxFilesPerTick: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : undefined,
-  });
+  let progress: IngestProgress | undefined;
+  let progressAt = Date.now();
+  const sweepStartedAt = progressAt;
+  const result = await (async () => {
+    const timer = setInterval(() => {
+      if (!progress) return;
+      console.info(`[interactive-usage] sweep still running ${JSON.stringify({
+        ...progress,
+        elapsedMs: Date.now() - sweepStartedAt,
+        phaseElapsedMs: Date.now() - progressAt,
+      })}`);
+    }, 60_000);
+    timer.unref?.();
+    try {
+      return await ingestInteractiveUsage({
+        root: typeof cfg.root === 'string' && cfg.root.length > 0 ? cfg.root : undefined,
+        maxFilesPerTick: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : undefined,
+        onProgress: (snapshot) => { progress = snapshot; progressAt = Date.now(); },
+      });
+    } finally {
+      clearInterval(timer);
+    }
+  })();
   const t = result.totals;
   console.log(
     `[interactive-usage] scanned ${result.scannedFiles} transcript(s) → ` +
@@ -32,7 +51,9 @@ registerSystemAction('interactive-usage-ingest', async (ctx: SystemActionCtx) =>
       `${Math.round((t.cacheReadTokens + t.cacheCreationTokens) / 1000)}k cache + ` +
       `${Math.round((t.inputTokens + t.outputTokens) / 1000)}k fresh tokens), ` +
       `${result.skippedUnchanged} unchanged` +
-      (result.errors.length ? `, ${result.errors.length} error(s)` : ''),
+      (result.errors.length ? `, ${result.errors.length} error(s)` : '') +
+      (progress?.phase === 'completed'
+        ? ` phases=${JSON.stringify(progress.phaseMs)} sourcePhases=${JSON.stringify(progress.sourcePhaseMs)}` : ''),
   );
   for (const e of result.errors.slice(0, 5)) console.warn(`[interactive-usage]   ! ${e.file}: ${e.error}`);
 
