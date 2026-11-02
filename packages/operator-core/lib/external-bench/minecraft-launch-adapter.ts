@@ -11,6 +11,7 @@ import { currentBenchmarkProtocolSchema } from './reproducibility/schema';
 import { withMinecraftAssignment, type FrozenMinecraftManifest, type FrozenMinecraftPair,
   type FrozenMinecraftSelection } from './minecraft-protocol';
 import { readMinecraftInitialWorld, startMinecraftParticipantBridge, type MinecraftRuntime } from './minecraft-runtime';
+import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEvidence } from './minecraft-evidence';
 import { readCurrentBenchRepeatedSessionControl, startCurrentBenchTaskAssignment, type CurrentTaskInput } from './run-launcher';
 import { createCurrentSuBenchHarness, CURRENT_STOCK_CLAUDE_BLUEPRINT, CURRENT_STOCK_CODEX_BLUEPRINT,
   currentBenchAssignmentId, currentBenchSessionUsageDelta, requireCurrentBenchNativeRunCost,
@@ -21,7 +22,8 @@ import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { runRepeatedSessions } from './repeated-session';
 import { generationStatusForStopReason } from './types';
 import type { IsoBudget } from './coordination-topology';
-import type { AgentRunOutput, RunAgentInput } from './run-topology';
+import { runTopology, type AgentRunOutput, type RunAgentInput, type TopologyRunDeps } from './run-topology';
+import { resolveCoordinationSpec } from './coordination-topology';
 
 export interface MinecraftNativeAssignmentInput {
   current: CurrentTaskInput;
@@ -271,4 +273,94 @@ export async function runMinecraftNativeParticipant(input: MinecraftNativeAssign
       executionPath: 'minecraft-native-assignment', armMeta: { ...result.sessions.at(-1)?.armMeta,
         repeatedSession: { ...repeated, stop: result.stop, sessions: result.sessions } } };
   } finally { await assignment.stop(); }
+}
+
+export interface MinecraftNativeTrialPorts extends MinecraftNativeRunPorts {
+  collectEvidence: typeof collectMinecraftEvidence;
+}
+const liveTrialPorts: MinecraftNativeTrialPorts = { ...liveRunPorts, collectEvidence: collectMinecraftEvidence };
+
+/** Consume one prepared single-player runtime. The shared driver owns rows and
+ * denominators; the host-owned evidence reader owns shutdown and grading. A
+ * retained archive must be acknowledged before a scored row can be published.
+ * Coordinated and product-capability arms need their own verified delivery and
+ * participant accounting; this entry point cannot declare those on their behalf.
+ */
+export async function runMinecraftNativeTrial(input: MinecraftNativeAssignmentInput, control: {
+  rolloutId: string;
+  retainEvidence(archive: { trialId: string; sha256: string; body: string }): Promise<void>;
+  onResult: NonNullable<TopologyRunDeps<MinecraftRuntime>['onResult']>;
+  now?: () => number;
+}, ports: MinecraftNativeTrialPorts = liveTrialPorts) {
+  const protocol = currentBenchmarkProtocolSchema.parse(input.current.protocol);
+  const arm = protocol.arms.find(value => value.id === input.current.options.armId);
+  if (!arm || !['stock-native-reference', 'repeated-session'].includes(arm.control?.topology ?? '') ||
+      input.runtime.trial.protocol.participants.length !== 1 || !control.rolloutId.trim() ||
+      typeof control.retainEvidence !== 'function' || typeof control.onResult !== 'function') {
+    throw Error('Minecraft single-player trial requires a frozen native reference and durable evidence/result sinks');
+  }
+  const task = structuredClone(input.current.task);
+  const generation = arm.generationBudget;
+  let retained: Promise<{ evidence: Awaited<ReturnType<typeof collectMinecraftEvidence>>; sha256: string }> | undefined;
+  const retain = () => retained ??= (async () => {
+    const evidence = await ports.collectEvidence(input.runtime);
+    const body = exportMinecraftEvidence(evidence);
+    const sha256 = createHash('sha256').update(body).digest('hex');
+    await control.retainEvidence({ trialId: input.runtime.trial.trialId, sha256, body });
+    return { evidence, sha256 };
+  })();
+  let sinkFailure: { cause: unknown } | undefined;
+  let failure: { cause: unknown } | undefined;
+  try {
+    const result = await runTopology<MinecraftRuntime>({
+      spec: resolveCoordinationSpec({ id: arm.id, kind: 'harness', spine: {} }),
+      backlog: [task], cap: 1, runId: protocol.runId, seed: input.current.options.seed,
+      budget: { maxCostUsd: generation.maxUsd, maxTokens: generation.maxTokens, maxWallMs: generation.maxWallClockMs },
+      now: control.now ?? Date.now,
+      rowMeta: { suite: 'minecraft', modelId: arm.model, harnessVersion: arm.runtime.sourceRevision,
+        preregHash: input.current.options.preregistration.preregHash, rolloutId: control.rolloutId,
+        graderFamily: protocol.grader.family, graderVersion: protocol.grader.version,
+        priceTableVersion: protocol.priceSchedule.version },
+      seam: {
+        modality: 'in-container', clone: async () => input.runtime,
+        grade: async () => {
+          const { evidence, sha256 } = await retain();
+          const grade = gradeMinecraftEvidence(input.runtime.trial, evidence);
+          if (grade.graderFamily !== protocol.grader.family || grade.graderVersion !== protocol.grader.version)
+            throw Error('Minecraft evidence grader differs from the frozen grader');
+          return { resolved: grade.graderError ? null : grade.resolved, score: grade.score,
+            graderStatus: grade.graderError ? 'error' : grade.resolved ? 'passed' : 'failed',
+            detail: { ...grade.rawGraderOutput as object, graderError: grade.graderError, archiveSha256: sha256 } };
+        },
+        // Final disposal is outside runTopology: teardown errors must reach the
+        // caller even if the shared driver has already emitted an error row.
+        teardown: async () => {},
+      },
+      runAgent: invocation => runMinecraftNativeParticipant(input,
+        { attemptBudget: invocation.attemptBudget, directive: invocation.directive }, ports),
+      onResult: async row => {
+        try {
+          // Also retain interrupted/failed generations: they stay in the
+          // denominator and their replay must survive runtime disposal.
+          await retain();
+          await control.onResult(row);
+        } catch (error) { sinkFailure = { cause: error }; }
+      },
+    });
+    // runTopology deliberately tolerates a failed optional result hook. This
+    // adapter requires acknowledged persistence, so propagate that failure.
+    if (sinkFailure) throw sinkFailure.cause;
+    return result;
+  } catch (error) {
+    failure = { cause: error };
+    throw error;
+  } finally {
+    try {
+      const report = await input.runtime.dispose();
+      if (!report.removed || report.errors.length) throw Error(`Minecraft trial cleanup incomplete: ${report.errors.join('; ')}`);
+    } catch (cleanup) {
+      if (failure) throw new AggregateError([failure.cause, cleanup], 'Minecraft trial persistence/execution and cleanup failed');
+      throw cleanup;
+    }
+  }
 }

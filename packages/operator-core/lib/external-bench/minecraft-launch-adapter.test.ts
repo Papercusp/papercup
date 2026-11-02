@@ -6,8 +6,8 @@ import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMinecraftNativeParticipant, startMinecraftNativeAssignment,
-  type MinecraftNativeAssignmentPorts, type MinecraftNativeRunPorts } from './minecraft-launch-adapter';
+import { runMinecraftNativeParticipant, runMinecraftNativeTrial, startMinecraftNativeAssignment,
+  type MinecraftNativeAssignmentPorts, type MinecraftNativeRunPorts, type MinecraftNativeTrialPorts } from './minecraft-launch-adapter';
 import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial } from './minecraft-protocol';
 import { controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
 import { canonicalJson } from './reproducibility/canonical-json';
@@ -17,6 +17,8 @@ import type { BenchHarnessDriver } from './run-loop';
 import { runTopology } from './run-topology';
 import { resolveCoordinationSpec } from './coordination-topology';
 import { currentBenchAssignmentId } from './current-su';
+import { minecraftOfflinePlayerUuid } from './minecraft-runtime';
+import { readMinecraftEvidenceExport } from './minecraft-evidence';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -26,6 +28,7 @@ async function fixture(armId = 'stock') {
   const protocol = controlledProtocolFixture();
   protocol.arms = protocol.arms.filter(arm => ['stock', 'coordinated', 'repeated-session'].includes(arm.id));
   protocol.aggregateBudgetUsd = 15; protocol.grader.family = 'minecraft';
+  protocol.grader.version = 'minecraft@1.20.4/server-advancements-v1';
   const material = (taskId: string, n: number) => ({ taskId, worldSeed: String(n), objective: 'iron-tools',
     referenceSha256: sha(n * 10), scoringFixtureSha256: sha(n * 10 + 1), exampleSha256: [] });
   const manifest = freezeMinecraftManifest({ schemaVersion: 1, revision: 1,
@@ -303,5 +306,68 @@ describe('Minecraft measured native participant', () => {
     const control = drift === 'model-calls' ? { attemptBudget: { ...f.control.attemptBudget, maxModelCalls: 1 } } : f.control;
     await expect(runMinecraftNativeParticipant(f.input, control, f.ports)).rejects.toThrow();
     expect(f.ports.startBridge).not.toHaveBeenCalled(); expect(f.ports.startAssignment).not.toHaveBeenCalled();
+  });
+});
+
+async function trialFixture() {
+  const f = await measuredFixture();
+  const snapshot = { runtimeId: 'owned-server', trial: f.input.runtime.trial, startedAtMs: 0, stoppedAtMs: 50,
+    files: { 'programs.jsonl': '', 'server.log': 'trusted server', 'bot.log': 'trusted bot',
+      [`world/world/advancements/${minecraftOfflinePlayerUuid('alice')}.json`]: JSON.stringify({ DataVersion: 1 }),
+      [`world/world/stats/${minecraftOfflinePlayerUuid('alice')}.json`]: JSON.stringify({ DataVersion: 1, stats: {} }) },
+    provenance: { source: 'host-collected-server-files', deterministicReplay: false, nondeterministicInputs: ['server-ticks'] } };
+  const body = canonicalJson({ schemaVersion: 1, trialId: f.input.runtime.trial.trialId, runtimeId: snapshot.runtimeId,
+    sha256: createHash('sha256').update(canonicalJson(snapshot)).digest('hex'), snapshot });
+  const evidence = readMinecraftEvidenceExport(body, createHash('sha256').update(body).digest('hex'));
+  f.input.runtime.dispose = vi.fn(async () => ({ removed: true, errors: [], evidenceDir: 'host-only' }));
+  const ports: MinecraftNativeTrialPorts = { ...f.ports, collectEvidence: vi.fn(async () => evidence) };
+  const retainEvidence = vi.fn(async (_archive: { trialId: string; sha256: string; body: string }) => {}), onResult = vi.fn(async () => {});
+  return { ...f, ports, control: { rolloutId: 'frozen-rollout', retainEvidence, onResult, now: () => 0 }, evidence };
+}
+describe('Minecraft native trial coordinator', () => {
+  it('retains trusted replay before persisting an unsolved task in the shared denominator', async () => {
+    const f = await trialFixture();
+    const result = await runMinecraftNativeTrial(f.input, f.control, f.ports);
+    expect(result).toMatchObject({ attemptedTaskIds: ['t1'], skippedTaskIds: [], accountingUnknown: false });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ suite: 'minecraft', arm: 'stock', generationStatus: 'completed',
+      graderStatus: 'failed', resolved: false, score: 0, costUsd: 0.2 });
+    const archive = f.control.retainEvidence.mock.calls[0]![0];
+    expect(readMinecraftEvidenceExport(archive.body, archive.sha256)).toEqual(f.evidence);
+    expect(f.control.retainEvidence.mock.invocationCallOrder[0]).toBeLessThan(f.control.onResult.mock.invocationCallOrder[0]!);
+    expect(f.ports.collectEvidence).toHaveBeenCalledOnce();
+    expect(f.input.runtime.dispose).toHaveBeenCalledOnce();
+    expect(f.native.stop).toHaveBeenCalledOnce();
+  });
+  it('retains failure replay and a denominator row when native generation cannot start', async () => {
+    const f = await trialFixture();
+    vi.mocked(f.ports.startAssignment).mockRejectedValue(Error('native startup refused'));
+    const result = await runMinecraftNativeTrial(f.input, f.control, f.ports);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ generationStatus: 'error', resolved: null });
+    expect(f.control.retainEvidence).toHaveBeenCalledOnce(); expect(f.control.onResult).toHaveBeenCalledOnce();
+    expect(f.input.runtime.dispose).toHaveBeenCalledOnce();
+  });
+  it.each(['archive', 'row'])('propagates a failed %s sink and still disposes the runtime', async sink => {
+    const f = await trialFixture();
+    const target = sink === 'archive' ? f.control.retainEvidence : f.control.onResult;
+    target.mockRejectedValue(Error('durability unavailable'));
+    await expect(runMinecraftNativeTrial(f.input, f.control, f.ports)).rejects.toThrow(/durability unavailable/);
+    expect(f.input.runtime.dispose).toHaveBeenCalledOnce();
+    if (sink === 'archive') expect(f.control.onResult).not.toHaveBeenCalled();
+  });
+  it('propagates unverified runtime cleanup after a persisted row', async () => {
+    const f = await trialFixture();
+    vi.mocked(f.input.runtime.dispose).mockResolvedValue({ removed: false, errors: ['container remains'], evidenceDir: 'host-only' });
+    await expect(runMinecraftNativeTrial(f.input, f.control, f.ports)).rejects.toThrow(/cleanup incomplete: container remains/);
+    expect(f.control.onResult).toHaveBeenCalledOnce();
+  });
+  it('refuses an unverified coordinated topology before native allocation or runtime disposal', async () => {
+    const f = await fixture('coordinated');
+    const dispose = vi.fn(); f.input.runtime.dispose = dispose;
+    const ports = { ...f.ports, readRepeatedSession: vi.fn(), collectEvidence: vi.fn() };
+    await expect(runMinecraftNativeTrial(f.input, { rolloutId: 'frozen', retainEvidence: vi.fn(), onResult: vi.fn() }, ports))
+      .rejects.toThrow(/frozen native reference/);
+    expect(f.ports.startAssignment).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
   });
 });
