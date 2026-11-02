@@ -66,12 +66,14 @@ export async function acceptanceBarSourceFingerprint(body: string): Promise<stri
   return createHash('sha256').update(JSON.stringify(material)).digest('hex');
 }
 
-/** A legacy prose block has no verification fields to edit. It may acquire them
- * by materializing its reviewed canonical criterion, never by authoring a new
- * promise. First isolate that conversion; the locked rubric validates it below.
+/** Materialize a reviewed legacy block, or restore already-reviewed Intent on an
+ * explicit block. An explicit block must preserve every other meaning field.
+ * The locked canonical criterion validates the complete result below; this is
+ * never authority to adopt newly authored Intent or change a promise/map.
  */
 async function legacyRequirementMaterializations(previousBody: string, nextBody: string) {
   const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const { verificationNeutralCriterion } = await import('./acceptance-live-requirements');
   const previous = parseRequirementBars(previousBody);
   const next = parseRequirementBars(nextBody);
   if (!previous.ok || !next.ok || previous.bars.length !== next.bars.length) return null;
@@ -88,7 +90,13 @@ async function legacyRequirementMaterializations(previousBody: string, nextBody:
     const before = previous.bars[index]!;
     const after = next.bars[index]!;
     if (canonicalJson(before) === canonicalJson(after)) continue;
-    if (before.barKey !== after.barKey || before.title !== after.title || before.criterion || !after.criterion) return null;
+    if (before.barKey !== after.barKey || before.title !== after.title || !after.criterion) return null;
+    if (before.criterion) {
+      if (!before.criterion.intent || !after.criterion.intent) return null;
+      const { intent: _priorIntent, ...priorMeaning } = verificationNeutralCriterion(before.criterion);
+      const { intent: _nextIntent, ...nextMeaning } = verificationNeutralCriterion(after.criterion);
+      if (canonicalJson(priorMeaning) !== canonicalJson(nextMeaning)) return null;
+    }
     materialized.push(after.criterion);
   }
   return materialized.length > 0 ? materialized : null;
@@ -112,8 +120,8 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     dryRun?: boolean;
   },
 ): Promise<boolean> {
-  // Re-audit can catch up across several neutral plan writes. A legacy-to-block
-  // conversion additionally needs exact equality with the locked canonical BAR.
+  // Re-audit can catch up across neutral writes. Legacy materialization and
+  // explicit Intent restoration additionally need exact locked canonical equality.
   if (!Number.isSafeInteger(args.previousVersion) || args.previousVersion < 1 ||
       !Number.isSafeInteger(args.nextVersion) || args.nextVersion <= args.previousVersion) return false;
   const [previousSource, nextSource] = await Promise.all([
@@ -165,7 +173,10 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     };
     for (const criterion of materialized) {
       const canonical = existingBarCriteria.find((candidate) => candidate.barKey === criterion.barKey);
-      if (!canonical || meaning(criterion) !== meaning(canonical)) return false;
+      // Explicit requirement blocks can omit canonical defaults such as role,
+      // scope and pass ratings. Inherit them just as the live verification
+      // overlay does; every authored meaning field must still equal canonical.
+      if (!canonical || meaning({ ...canonical, ...criterion }) !== meaning(canonical)) return false;
     }
   }
   const { buildAcceptanceBarSeed } = await import('./acceptance-bar-seed');
