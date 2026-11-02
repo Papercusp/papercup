@@ -58,6 +58,26 @@ describe('session interruption eligibility', () => {
 });
 
 describe('bounded interruption reconciliation', () => {
+  it('finishes a reserved lease even when the fresh evidence refuses recovery', async () => {
+    const finish = vi.fn();
+    const c = candidate();
+    await recoverInterruptedSessions({ list: async () => [c], claim: async () => ({ ...c, retired: true }),
+      restore: vi.fn(), finish }, now);
+    expect(finish).toHaveBeenCalledWith(expect.anything(), sessionRecoveryKey(c.interruption!),
+      { verified: false, reason: 'retired' });
+  });
+  it('permits its own last reserved attempt without allowing another reconciler past the lease', async () => {
+    const c = candidate(); c.interruption!.attempts = 2;
+    const key = sessionRecoveryKey(c.interruption!);
+    const reserved = { ...c, interruption: { ...c.interruption!, attempts: 3, state: 'recovering' as const,
+      nextAttemptAt: now + 300_000, leaseKey: key } };
+    expect(classifySessionInterruption(reserved, now).action).toBe('hold');
+    const restore = vi.fn(async () => ({ verified: true, reason: 'exact-native-host' }));
+    const r = await recoverInterruptedSessions({ list: async () => [c], claim: async () => reserved,
+      restore, finish: vi.fn() }, now);
+    expect(r.restored).toEqual(['solo']);
+    expect(restore).toHaveBeenCalledTimes(1);
+  });
   it('rechecks retirement after acquiring ownership', async () => {
     const c = candidate(); const restore = vi.fn();
     const result = await recoverInterruptedSessions({ list: async () => [c],

@@ -12337,9 +12337,26 @@ export function hostThroughPty(o) {
     tempPath: `${metaPath}.${process.pid}.tmp`,
     onError: () => {},
   });
+  let recoveryObservationKey = null;
+  const publishRecoveryObservation = (execution) => {
+    const nativeSessionId = env.PAPERCUSP_AGENT === 'codex'
+      ? currentNativeSessionId(child.pid, resolveRespawnNativeId)
+      : env.PAPERCUSP_NATIVE_SESSION_ID;
+    if (!nativeSessionId) return;
+    const key = JSON.stringify([nativeSessionId, childGeneration, execution.phase,
+      execution.turnStartedAt, execution.ownerInputPending, execution.ownerStopRequested]);
+    if (key === recoveryObservationKey) return;
+    if (appendHostEvent(ownerId, 'session-execution-observed', {
+      ownerId, nativeSessionId, hostPid: process.pid, hostStartedAt: baseMeta.startedAt,
+      advSessionId: baseMeta.advSessionId, headless: env.PAPERCUSP_PSU_HEADLESS === '1',
+      workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE,
+      execution,
+    })) recoveryObservationKey = key;
+  };
   const writeMeta = () => {
     try {
       const execution = currentNativeExecution();
+      publishRecoveryObservation(execution);
       if (execution.phase === 'failed' && execution.failure) {
         const nativeSessionId = env.PAPERCUSP_AGENT === 'codex'
           ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : null;
@@ -17494,6 +17511,10 @@ export function hostThroughPty(o) {
     const cleanup = (code, signal = null) => {
       hooksObservationRecovery?.close();
       if (cleaned) return;
+      // Preserve the last execution fence before discovery is removed. A deliberate
+      // shutdown is a stop witness; closing a terminal mid-turn retains its work.
+      try { publishRecoveryObservation({ ...currentNativeExecution(),
+        ...(shuttingDown ? { ownerStopRequested: true } : {}) }); } catch { /* ledger is best effort */ }
       cleaned = true;
       hostCleanedUp = true;
       if (identityAssumeTimer) clearInterval(identityAssumeTimer);

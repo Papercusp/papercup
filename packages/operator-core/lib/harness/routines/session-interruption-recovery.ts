@@ -14,6 +14,7 @@ export interface SessionInterruption {
   attempts: number;
   nextAttemptAt: number;
   state: 'pending' | 'recovering' | 'restored' | 'blocked';
+  leaseKey?: string;
 }
 
 export interface SessionRecoveryEvidence {
@@ -47,7 +48,7 @@ export function sessionRecoveryKey(s: SessionInterruption): string {
   return `interruption:${s.ownerId}:${s.nativeSessionId}:${s.hostPid}:${s.hostStartedAt}`;
 }
 
-export function classifySessionInterruption(e: SessionRecoveryEvidence, nowMs: number): SessionRecoveryDecision {
+export function classifySessionInterruption(e: SessionRecoveryEvidence, nowMs: number, ownedLease?: string): SessionRecoveryDecision {
   const hold = (reason: string): SessionRecoveryDecision => ({ action: 'hold', reason });
   if (e.retired) return hold('retired');
   if (!e.recoveryEnabled) return hold('recovery-disabled');
@@ -65,8 +66,9 @@ export function classifySessionInterruption(e: SessionRecoveryEvidence, nowMs: n
   if (x.ownerStopRequested) return hold('owner-stop');
   if (!e.launchRecipeAvailable || e.headless == null) return hold('launch-recipe-unknown');
   if (s.state === 'restored' || s.state === 'blocked') return hold(s.state);
-  if (s.attempts >= SESSION_RECOVERY_MAX_ATTEMPTS) return hold('retry-budget-exhausted');
-  if (s.nextAttemptAt > nowMs) return hold('backoff');
+  const ownsLease = ownedLease != null && s.leaseKey === ownedLease && s.state === 'recovering';
+  if (!ownsLease && s.attempts >= SESSION_RECOVERY_MAX_ATTEMPTS) return hold('retry-budget-exhausted');
+  if (!ownsLease && s.nextAttemptAt > nowMs) return hold('backoff');
   if (e.humanDecisionPending == null || e.meaningfulWaits == null) return hold('waiting-state-unknown');
   if (e.humanDecisionPending || x.ownerInputPending) return hold('human-decision-pending');
   if (e.meaningfulWaits > 0) return { action: 'restore-wait', reason: 'meaningful-event-wait', headless: e.headless };
@@ -106,8 +108,11 @@ export async function recoverInterruptedSessions(deps: SessionRecoveryDeps, nowM
     const key = sessionRecoveryKey(candidate.interruption!);
     const claimed = await deps.claim(candidate, key);
     if (!claimed) { result.held[candidate.ownerId] = 'claim-lost'; continue; }
-    const fresh = classifySessionInterruption(claimed, nowMs);
-    if (fresh.action === 'hold') { result.held[candidate.ownerId] = fresh.reason; continue; }
+    const fresh = classifySessionInterruption(claimed, nowMs, key);
+    if (fresh.action === 'hold') {
+      await deps.finish(claimed, key, { verified: false, reason: fresh.reason });
+      result.held[candidate.ownerId] = fresh.reason; continue;
+    }
     result.attempted.push(candidate.ownerId);
     let outcome: { verified: boolean; reason: string };
     try { outcome = await deps.restore(claimed, fresh, key); }

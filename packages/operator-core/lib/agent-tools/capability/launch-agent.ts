@@ -146,6 +146,9 @@ import {
  * successor's already-enrolled first-turn provenance. It is not part of the
  * public launch-agent schema or ordinary caller arguments. */
 export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
+/** Background recovery preserves identity and may reopen a waiting host without a turn.
+ * Symbol-keyed so a public JSON caller cannot grant itself this disposition. */
+export const INTERNAL_INTERRUPTION_RECOVERY: unique symbol = Symbol('internal-interruption-recovery');
 
 /** The ledger orders by started_at DESC. Read TWO unqualified candidates so a
  * tie or a newer running/later-incarnation row cannot disappear behind a filter.
@@ -900,6 +903,9 @@ export default defineTool({
       });
   })(),
   async handler(args, ctx) {
+    const interruptionRecovery = (args as typeof args & {
+      [INTERNAL_INTERRUPTION_RECOVERY]?: { ownerId: string; nativeSessionId: string; wait: boolean };
+    })[INTERNAL_INTERRUPTION_RECOVERY];
     let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
     const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
     const requestedDefaultEffort = args.effort;
@@ -907,7 +913,7 @@ export default defineTool({
     // must resume from its own launch record. It is intentionally outside the
     // public schema so ordinary resumes continue using the fleet recipe.
     const leaderRecoveryOwnerId = (args as typeof args & { __leaderRecoveryOwnerId?: string })
-      .__leaderRecoveryOwnerId?.trim() || null;
+      .__leaderRecoveryOwnerId?.trim() || interruptionRecovery?.ownerId || null;
     try {
       if (args.model) {
         modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
@@ -1134,7 +1140,7 @@ export default defineTool({
         'A session cannot be resumed more than once (a second CLI on one transcript collides). Use `fork: true` with `count` to branch N agents off it, or launch fresh agents with a `brief`.',
       );
     }
-    if (isResume && !args.brief?.trim() && !neutralLineageRequested) {
+    if (isResume && !args.brief?.trim() && !neutralLineageRequested && !interruptionRecovery?.wait) {
       return err(
         '`resume`/`fork` requires a non-empty `brief` — it is the resumed session\'s actionable next turn. A no-brief resume would open an idle CLI and report an ambiguous launch; use a fresh `plan` launch if no next-turn direction is available.',
       );
@@ -1324,6 +1330,10 @@ export default defineTool({
       // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
+      if (interruptionRecovery && (target.live || args.fork !== false ||
+          target.ownerId !== interruptionRecovery.ownerId || target.sessionId !== interruptionRecovery.nativeSessionId)) {
+        return err('Interruption recovery refused: source must remain dead, non-retired and exactly identity-bound.');
+      }
       if (neutralLineageRequested && resumeOwnerId) {
         // A neutral successor inherits the predecessor's registered mode, not
         // the recovering caller's owner-directed launch mode.
@@ -2787,7 +2797,7 @@ export default defineTool({
         const env = {
           ...base.env,
           // Only explicit exact resume authorizes retirement clearing.
-          ...(!fork && isResume ? { PSU_ALLOW_RETIRED_RESUME: '1' } : {}),
+          ...(!fork && isResume && !interruptionRecovery ? { PSU_ALLOW_RETIRED_RESUME: '1' } : {}),
           ...(scopedGateway ? { [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(scopedGateway) } : {}),
           ...(memberBrief ? { PAPERCUSP_KICKOFF_PROMPT: memberBrief } : {}),
           ...(internalKickoffOrigin

@@ -191,6 +191,33 @@ export interface TypedSlotLintResult {
 
 const MAX_MATCH_LINES = 5;
 const MATCH_LINE_CAP = 200;
+const CONVERSATION_ANSWER_AWAIT_REF_RE = /\bconversation:answered:([a-z0-9][a-z0-9_-]{3,63})\b/gi;
+
+function conversationAnswerAwaitRefs(text: string): string[] {
+  const refs: string[] = [];
+  const pattern = new RegExp(CONVERSATION_ANSWER_AWAIT_REF_RE.source, 'gi');
+  for (const match of text.matchAll(pattern)) {
+    const id = match[1]?.toLowerCase();
+    if (id) refs.push(id);
+  }
+  return refs;
+}
+
+function conversationAnswerAwaitRefsInWalls(text: string): Set<string> {
+  const refs = new Set<string>();
+  let inWallsSection = false;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    const heading = HEADING_RE.exec(line);
+    if (heading) {
+      inWallsSection = WALLS_HEADING_RE.test(heading[1] ?? '');
+      continue;
+    }
+    if (!inWallsSection) continue;
+    for (const id of conversationAnswerAwaitRefs(line)) refs.add(id);
+  }
+  return refs;
+}
 
 /**
  * Scan `text` line-by-line for owner-blocking-question prose with no [ask:…]
@@ -205,6 +232,7 @@ const MATCH_LINE_CAP = 200;
  */
 export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSlotLintResult {
   if (!text) return { flagged: false, matches: [] };
+  const typedWallAwaitRefs = conversationAnswerAwaitRefsInWalls(text);
   const matches: TypedSlotLintMatch[] = [];
   let inWallsSection = false;
   for (const rawLine of text.split('\n')) {
@@ -222,6 +250,10 @@ export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSl
     if (inWallsSection) continue; // EI-21762824239199233: walls rows ARE the typed form
     if (ASK_REF_RE.test(line)) continue; // the question IS a typed record
     if (WALL_MARKER_RE.test(line)) continue; // the walls slot is the typed form
+    // A prose line explicitly citing a conversation-answer key already stored
+    // in the typed Walls section refers to that existing await. Require the
+    // same key on both lines so an unrelated wall cannot clear a new question.
+    if (conversationAnswerAwaitRefs(line).some((id) => typedWallAwaitRefs.has(id))) continue;
     if (DEV_WHY_PEER_REPAIR_NEXT_VERB_QUOTE_RE.test(line)) continue; // quoted peer-owned diagnostic, not a human ask
     let matchedTrigger: RegExpExecArray | undefined;
     for (const sourceRe of OWNER_QUESTION_RES) {
