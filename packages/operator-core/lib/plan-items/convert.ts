@@ -561,6 +561,44 @@ export async function listCoveredPlanItemRefs(
        AND ${stampMatch()}`;
   for (const r of issueRows) out.add(planItemRef(planSlug, r.item_id));
 
+  // Before source_plan_item_ids and plan_item stamps were consistently written,
+  // completed work-items carried the exact textual reference "Plan: <slug> item
+  // <id>" in their summary. They still count as coverage: re-promoting the open
+  // plan item creates a second execution record even though the old item is done.
+  const textCoversItem = (text: string, itemId: string): boolean => {
+    const normalized = text.replace(/\s+/g, ' ').toLowerCase();
+    const marker = ('plan: ' + planSlug + ' item ' + itemId).toLowerCase();
+    let offset = normalized.indexOf(marker);
+    while (offset >= 0) {
+      const before = normalized[offset - 1];
+      const after = normalized[offset + marker.length];
+      if ((!before || !/[a-z0-9_-]/.test(before)) && (!after || !/[a-z0-9-]/.test(after))) return true;
+      offset = normalized.indexOf(marker, offset + 1);
+    }
+    return false;
+  };
+  const [legacyFeatureRows, legacyIssueRows] = await Promise.all([
+    sql<{ title: string | null; summary: string | null; payload: unknown }[]>`
+      SELECT title, summary, payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ANY(${scopes})
+         AND harness_slug = ${harnessSlug}
+         AND strpos(lower(concat_ws(' ', title, summary, payload::text)), lower(${planSlug})) > 0`,
+    sql<{ title: string | null; summary: string | null; payload: unknown }[]>`
+      SELECT title, summary, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ANY(${scopes})
+         AND scope = ${`harness:${harnessSlug}`}
+         AND item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
+         AND strpos(lower(concat_ws(' ', title, summary, payload::text)), lower(${planSlug})) > 0`,
+  ]);
+  for (const row of [...legacyFeatureRows, ...legacyIssueRows]) {
+    const searchable = [row.title ?? '', row.summary ?? '', JSON.stringify(row.payload ?? '')].join('\n');
+    for (const itemId of itemIds) {
+      if (textCoversItem(searchable, itemId)) out.add(planItemRef(planSlug, itemId));
+    }
+  }
+
   return out;
 }
 
