@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-11-02T02:00:57.836Z",
+  "capturedAt": "2026-11-02T03:06:43.682Z",
   "viewport": {
     "width": 1440,
     "height": 880
@@ -121,11 +121,25 @@
       "file": "b-launcher.png",
       "bounds": [
         {
-          "title": "Quick AccessAll environments−□×",
-          "left": 240,
-          "top": 155,
-          "right": 1210,
-          "bottom": 781
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 580,
+          "top": 205,
+          "right": 1370,
+          "bottom": 765
+        },
+        {
+          "title": "Panel",
+          "left": 0,
+          "top": 32,
+          "right": 475,
+          "bottom": 880
+        },
+        {
+          "title": "Panel",
+          "left": 475,
+          "top": 32,
+          "right": 785,
+          "bottom": 880
         }
       ],
       "overviewCards": null
@@ -137,10 +151,31 @@
       "bounds": [
         {
           "title": "Orders",
-          "left": 75,
-          "top": 165,
-          "right": 1365,
-          "bottom": 753
+          "left": 18,
+          "top": 180,
+          "right": 243,
+          "bottom": 730
+        },
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 253,
+          "top": 180,
+          "right": 963,
+          "bottom": 730
+        },
+        {
+          "title": "Activity",
+          "left": 973,
+          "top": 180,
+          "right": 1228,
+          "bottom": 730
+        },
+        {
+          "title": "Fleet4",
+          "left": 1238,
+          "top": 180,
+          "right": 1422,
+          "bottom": 730
         }
       ],
       "overviewCards": null
@@ -151,11 +186,11 @@
       "file": "b-organizer.png",
       "bounds": [
         {
-          "title": "Arrange windowsThis computer−□×",
-          "left": 130,
-          "top": 145,
-          "right": 1310,
-          "bottom": 741
+          "title": "Panel",
+          "left": 0,
+          "top": 32,
+          "right": 1440,
+          "bottom": 880
         }
       ],
       "overviewCards": null
@@ -166,11 +201,18 @@
       "file": "b-chat.png",
       "bounds": [
         {
-          "title": "PapercupNative desktop−□×",
-          "left": 245,
-          "top": 115,
-          "right": 1205,
-          "bottom": 727.828125
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 110,
+          "top": 215,
+          "right": 870,
+          "bottom": 775
+        },
+        {
+          "title": "Panel",
+          "left": 940,
+          "top": 32,
+          "right": 1440,
+          "bottom": 880
         }
       ],
       "overviewCards": null
@@ -181,11 +223,18 @@
       "file": "b-accounts.png",
       "bounds": [
         {
-          "title": "Accounts & routingThis computer−□×",
-          "left": 310,
-          "top": 100,
-          "right": 1160,
-          "bottom": 760
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 110,
+          "top": 215,
+          "right": 870,
+          "bottom": 775
+        },
+        {
+          "title": "Panel",
+          "left": 965,
+          "top": 32,
+          "right": 1440,
+          "bottom": 880
         }
       ],
       "overviewCards": null
