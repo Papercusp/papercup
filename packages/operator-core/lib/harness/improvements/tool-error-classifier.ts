@@ -79,7 +79,7 @@ export interface ToolErrorRule {
  *  deadline. Word boundaries keep
  *  argument names such as `timeoutSec` from looking like a timeout outcome. */
 export const TIMEOUT_MESSAGE_PATTERN =
-  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)|did not complete within [0-9]+ms of its whole-call deadline|(^|[^a-zA-Z0-9_])query embed exceeded [0-9]+ms budget([^a-zA-Z0-9_]|$)';
+  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)|did not complete within [0-9]+ms of its whole-call deadline|(^|[^a-zA-Z0-9_])query embed exceeded [0-9]+ms budget([^a-zA-Z0-9_]|$)|dispatch deadline expired before tool';
 
 /** Caller-side auth/arg/scope error in the MESSAGE: a retained
  *  `missing_capability:` prefix from a nested `tools:invoke` refusal, or an `invalid_args:` prefix

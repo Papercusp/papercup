@@ -746,6 +746,12 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }).class).toBe('transient');
   });
 
+  it('classifies an MCP pre-dispatch deadline expiry as transient, not a structural tool error', () => {
+    const message = 'MCP dispatch deadline expired before tool "activity:report" started';
+    expect(classifyToolError(null, 'error', message)).toBe('transient');
+    expect(classifyToolError('handler_error', 'error', 'activity:report handler failed to persist its row')).toBe('structural');
+  });
+
   it('classifies a parent-signal abort as caller control flow, not a structural tool defect', () => {
     const message = 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned';
     expect(classifyToolError('aborted', 'error', message)).toBe('caller');
