@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactNode } from 'react';
+import { getLatestMeasure, PERF_INTERACTIONS } from '../../_components/perf/perf-marks';
 
 interface SyncState { loading?: boolean; fetching?: boolean; data?: unknown; error?: { message: string } | null }
 let wiState: SyncState;
@@ -105,6 +106,8 @@ function renderPanel(slug = 'alpha', searchParams = '', onUrlUpdate?: (e: unknow
 }
 
 beforeEach(() => {
+  performance.clearMarks?.();
+  performance.clearMeasures?.();
   wiState = { loading: false, fetching: false, data: ROWS, error: null };
   summaryState = {
     loading: false,
@@ -207,9 +210,18 @@ describe('WorkItemsPanel', () => {
     const onUrlUpdate = vi.fn();
     renderPanel('alpha', '', onUrlUpdate);
     fireEvent.click(screen.getByTestId('row-WI-1'));
+    const start = performance.getEntriesByName('work-item-open:start', 'mark')[0] as PerformanceMark;
+    expect(start.detail.subject).toBe('alpha:WI-1');
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).toBeNull();
     await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
     const ev = onUrlUpdate.mock.calls.at(-1)![0] as { searchParams: URLSearchParams };
     expect(ev.searchParams.get('sel')).toBe('WI-1');
+  });
+
+  it('does not leave a new timing start when clicking the already-selected row', () => {
+    renderPanel('alpha', '?sel=WI-1');
+    fireEvent.click(screen.getByTestId('row-WI-1'));
+    expect(performance.getEntriesByName('work-item-open:start', 'mark')).toHaveLength(0);
   });
 });
 

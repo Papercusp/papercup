@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Button } from '../../harness/Button';
+import { beginInteraction, clearInteraction, endInteraction, PERF_INTERACTIONS } from '../../_components/perf/perf-marks';
 
 interface HumanWorkView {
   offer: { id: string; brief: string; rubricRef: string; amountCents: number; currency: string;
@@ -30,6 +31,7 @@ export function HumanWorkSection({ slug, id, refreshKey }: { slug: string; id: s
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSeq = useRef(0);
+  const claimTiming = useRef<string | null>(null);
   const currentEndpoint = useRef(endpoint);
   currentEndpoint.current = endpoint;
 
@@ -54,13 +56,32 @@ export function HumanWorkSection({ slug, id, refreshKey }: { slug: string; id: s
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    return () => { controller.abort(); requestSeq.current++; };
+    return () => {
+      controller.abort();
+      requestSeq.current++;
+      if (claimTiming.current) clearInteraction(PERF_INTERACTIONS.workItemClaim, claimTiming.current);
+      claimTiming.current = null;
+    };
   }, [load, refreshKey]);
   useEffect(() => { setView(null); setResult(''); }, [endpoint]);
+  // End after React commits the server-confirmed claim, not on receipt alone.
+  useEffect(() => {
+    if (!claimTiming.current || busy) return;
+    if (view?.mine && view.offer.status === 'claimed') {
+      endInteraction(PERF_INTERACTIONS.workItemClaim, claimTiming.current);
+    } else {
+      clearInteraction(PERF_INTERACTIONS.workItemClaim, claimTiming.current);
+    }
+    claimTiming.current = null;
+  }, [view, busy]);
 
   const act = async (action: 'claim' | 'submit') => {
     if (!view || busy) return;
     const seq = ++requestSeq.current;
+    if (action === 'claim') {
+      claimTiming.current = `${endpoint}:${seq}`;
+      beginInteraction(PERF_INTERACTIONS.workItemClaim, claimTiming.current);
+    }
     setBusy(true);
     setError(null);
     try {

@@ -8,6 +8,7 @@ import { VirtualGrid, usePersistedColumnWidths } from '@papercusp/grid-core';
 import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import type { CompanionListSummary } from '@papercusp/facets';
 import { useLexicon } from '@/lib/useLexicon';
+import { beginInteraction, PERF_INTERACTIONS } from '../../_components/perf/perf-marks';
 import {
   useColumnFilterState,
   useColumnFiltersFromState,
@@ -331,7 +332,11 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           columnWidths={colWidths}
           onColumnWidthsChange={setColWidths}
           getRowId={(r) => r.id}
-          onRowClick={(r) => void setSelectedId(r.id)}
+          onRowClick={(r) => {
+            if (r.id === selectedId) return;
+            beginInteraction(PERF_INTERACTIONS.workItemOpen, `${slug}:${r.id}`);
+            void setSelectedId(r.id);
+          }}
           getRowBg={(r) =>
             r.id === selectedId ? 'color-mix(in oklab, var(--accent), transparent 80%)' : undefined
           }
