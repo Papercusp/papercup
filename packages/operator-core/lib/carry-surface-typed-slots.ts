@@ -64,7 +64,9 @@ const WALLS_HEADING_RE = /^walls$/i;
  *  - blocked-on-answer: "waiting on the owner", "blocked on owner input",
  *    "needs the owner's decision/approval/go".
  * Plain mentions of the owner ("the owner said X" — provenance lint's beat) or
- * of owner-walled facts with the wall marker do not match.
+ * of owner-walled facts with the wall marker do not match. The final family
+ * also accepts shorthand such as "owner answer is still needed"; conditional
+ * practice clauses that mention an owner wait are suppressed below.
  */
 const OWNER_QUESTION_RES: RegExp[] = [
   // `coord:ask owner-UI-only` is a tool-mode label, not prose; a word boundary
@@ -108,6 +110,12 @@ const AGENT_SUBJECT_RE = /\b(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
  * phrasing used in carry notes, e.g. "WI-40086 peer owner to confirm the exact
  * event emitter" (EI-21392657495371064). */
 const PEER_OWNER_SUBJECT_RE = /\b(?:peer|item|work[-\s]?item)\s+owner\b/i;
+
+/** A conditional procedure describes a possible owner wait, not the writer's
+ *  current question. Keep this clause-scoped so a real ask later on the same
+ *  line is still examined (EI-27165070964574205). */
+const CONDITIONAL_OWNER_WAIT_RE =
+  /^\s*(?:when|if)\s+(?:waiting|waits?|blocked|pending|holding|held)\s+(?:on|for)\s+(?:(?:the|an?)\s+)?(?:owner|human)\b/i;
 
 /**
  * A `dev:why` diagnostic can quote the peer-owned repair wait verbatim in a
@@ -159,6 +167,8 @@ function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
   if (EXPLICIT_EMPTY_STATUS_RE.test(afterMatch)) return true;
   const clauseStart = clauseStartBefore(line, matchIndex);
   const clauseBefore = line.slice(clauseStart, matchIndex);
+  const clauseThroughMatch = line.slice(clauseStart, matchIndex + match[0].length);
+  if (CONDITIONAL_OWNER_WAIT_RE.test(clauseThroughMatch)) return true;
   // Reading an existing answer before acting does not ask for a new one.
   // Bound both sides of this noun phrase so a real wait or later question
   // on the same line is still evaluated normally.
@@ -168,7 +178,6 @@ function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
   // Include the matched phrase: the `owner` in "peer owner to confirm" is
   // itself the start of the trigger match, so looking only before matchIndex
   // would miss the peer-owner subject.
-  const clauseThroughMatch = line.slice(clauseStart, matchIndex + match[0].length);
   if (AGENT_SUBJECT_RE.test(clauseBefore) || PEER_OWNER_SUBJECT_RE.test(clauseThroughMatch)) return true;
   const negationWindowStart = Math.max(clauseStart, matchIndex - NEGATION_WINDOW_CHARS);
   const negationWindow = line.slice(negationWindowStart, matchIndex);
