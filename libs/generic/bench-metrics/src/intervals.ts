@@ -411,6 +411,90 @@ export interface PairedPowerComparison {
   limit: number;
 }
 
+// Only functions created here opt into the exact sufficient-count evaluator.
+// Arbitrary caller callbacks keep the original materialized-sample path.
+const ratioStatistics = new WeakMap<PairedPowerComparison['statistic'], 'mean' | number>();
+
+/** Production ratio estimand, with an exact block-bootstrap fast path. */
+export function pairedRatioStatistic(metric: 'mean' | number): PairedPowerComparison['statistic'] {
+  if (metric !== 'mean' && (!Number.isFinite(metric) || metric < 0 || metric > 1)) {
+    throw new RangeError('pairedRatioStatistic: mean or a quantile in [0,1] required');
+  }
+  const statistic: PairedPowerComparison['statistic'] = (a, b) => {
+    const estimate = (values: readonly number[]) => metric === 'mean'
+      ? values.reduce((sum, value) => sum + value, 0) / values.length : empiricalQuantile(values, metric);
+    const av = estimate(a); const bv = estimate(b);
+    return av !== null && bv !== null && av > 0 ? bv / av : null;
+  };
+  ratioStatistics.set(statistic, metric);
+  return statistic;
+}
+
+/**
+ * Same RNG calls, repeat choices, truncated circular blocks and type-7 ranks as
+ * materializing every pair. Quantile counts avoid re-sorting each bootstrap;
+ * means retain sampled addition order (including floating-point rounding).
+ * Signed zero uses the generic path so Set/Map cannot merge its two identities.
+ */
+function ratioBlockSampler(repeats: readonly PairedTimeSeries[], metric: 'mean' | number): ((rng: () => number) => number | null) | null {
+  if (repeats.some(repeat => repeat.a.some(value => Object.is(value, -0)) || repeat.b.some(value => Object.is(value, -0)))) return null;
+  const ratio = (a: number, b: number) => a > 0 ? b / a : null;
+  if (metric === 'mean') return rng => {
+    let a = 0; let b = 0; let count = 0;
+    for (let k = 0; k < repeats.length; k++) {
+      const repeat = repeats[Math.floor(rng() * repeats.length)];
+      for (let offset = 0; offset < repeat.a.length; offset += repeat.blockLength) {
+        const start = Math.floor(rng() * repeat.a.length);
+        const size = Math.min(repeat.blockLength, repeat.a.length - offset);
+        for (let j = 0; j < size; j++) {
+          const index = (start + j) % repeat.a.length;
+          a += repeat.a[index]; b += repeat.b[index]; count++;
+        }
+      }
+    }
+    return ratio(a / count, b / count);
+  };
+  const axis = (arm: 'a' | 'b') => {
+    const unique = new Set<number>();
+    for (const repeat of repeats) for (const value of repeat[arm]) unique.add(value);
+    const values = Float64Array.from(unique).sort();
+    const ranks = new Map(Array.from(values, (value, rank) => [value, rank] as const));
+    return { values, counts: new Float64Array(values.length),
+      ranks: repeats.map(repeat => Uint32Array.from(repeat[arm], value => ranks.get(value)!)) };
+  };
+  const a = axis('a'); const b = axis('b');
+  const quantile = (data: ReturnType<typeof axis>, count: number) => {
+    const rank = metric * (count - 1); const lo = Math.floor(rank); const hi = Math.ceil(rank);
+    let cumulative = 0; let lower = 0;
+    for (let i = 0; i < data.values.length; i++) {
+      const previous = cumulative;
+      cumulative += data.counts[i];
+      if (previous <= lo && cumulative > lo) lower = data.values[i];
+      if (cumulative > hi) return lo === hi ? data.values[i] : lower + (data.values[i] - lower) * (rank - lo);
+    }
+    return NaN;
+  };
+  return rng => {
+    a.counts.fill(0); b.counts.fill(0);
+    let count = 0;
+    for (let k = 0; k < repeats.length; k++) {
+      const r = Math.floor(rng() * repeats.length); const repeat = repeats[r];
+      const ar = a.ranks[r]; const br = b.ranks[r];
+      for (let offset = 0; offset < repeat.a.length; offset += repeat.blockLength) {
+        const start = Math.floor(rng() * repeat.a.length);
+        const size = Math.min(repeat.blockLength, repeat.a.length - offset);
+        for (let j = 0; j < size; j++) {
+          const index = (start + j) % repeat.a.length;
+          a.counts[ar[index]]++; b.counts[br[index]]++; count++;
+        }
+      }
+    }
+    const av = quantile(a, count); const bv = quantile(b, count);
+    // empiricalQuantile returns null on an unrepresentable interpolation.
+    return Number.isFinite(av) && Number.isFinite(bv) ? ratio(av, bv) : null;
+  };
+}
+
 export interface PairedPowerScenario {
   id: string;
   /** Natural-scale intervention, fixed before a prospective simulation. */
@@ -658,14 +742,20 @@ export function pairedBlockBootstrapCI(
   if (point === null || !Number.isFinite(point)) return { status: 'unknown', reason: 'undefined-observed-statistic' };
   const rng = mulberry32(seed);
   const draws = new Float64Array(iterations);
+  const ratioMetric = ratioStatistics.get(statistic);
+  const fastSample = ratioMetric === undefined ? null : ratioBlockSampler(repeats, ratioMetric);
   for (let iteration = 0; iteration < iterations; iteration++) {
-    a.length = 0;
-    b.length = 0;
-    for (let k = 0; k < repeats.length; k++) {
-      const repeat = repeats[Math.floor(rng() * repeats.length)];
-      appendPairedBlockSample(repeat, rng, a, b);
+    let draw: number | null;
+    if (fastSample) draw = fastSample(rng);
+    else {
+      a.length = 0;
+      b.length = 0;
+      for (let k = 0; k < repeats.length; k++) {
+        const repeat = repeats[Math.floor(rng() * repeats.length)];
+        appendPairedBlockSample(repeat, rng, a, b);
+      }
+      draw = statistic(a, b);
     }
-    const draw = statistic(a, b);
     if (draw === null || !Number.isFinite(draw)) return { status: 'unknown', reason: 'undefined-bootstrap-statistic' };
     draws[iteration] = draw;
   }

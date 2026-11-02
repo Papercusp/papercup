@@ -1,5 +1,5 @@
 /** Replay the complete D-012 performance family; memory/correctness/soak remain separate. */
-import { empiricalQuantile, pairedBlockBootstrapCI, type PairedBlockInterval } from '@papercusp/bench-metrics';
+import { pairedRatioStatistic, pairedBlockBootstrapCI, type PairedBlockInterval } from '@papercusp/bench-metrics';
 import {
   PERF_WORKLOAD_POLICY, perfProtocolHash, verifyPerfWorkloadPrerequisites,
   type PerfProtocolEvidence, type PerfWorkloadProtocol,
@@ -146,11 +146,8 @@ export async function evaluatePerfWorkloadRuns(protocol: PerfWorkloadProtocol, r
           b: isRate ? group.b.throughput : group.b.latencyMs, blockLength: comparison.blockLengths[trial[i].baselineRepeatId] };
       });
       if (samples.some(sample => sample.a.length < PERF_WORKLOAD_POLICY.minimumCompletedPerArm || sample.b.length < PERF_WORKLOAD_POLICY.minimumCompletedPerArm)) continue;
-      const interval = pairedBlockBootstrapCI(samples, (a, b) => {
-        const statistic = (values: readonly number[]) => isRate ? values.reduce((sum, x) => sum + x, 0) / values.length : empiricalQuantile(values, quantile);
-        const av = statistic(a); const bv = statistic(b);
-        return av !== null && bv !== null && av > 0 ? bv / av : null;
-      }, { familySize: pinned.input.comparisons.length, familyConfidence: PERF_WORKLOAD_POLICY.familyConfidence,
+      const interval = pairedBlockBootstrapCI(samples, pairedRatioStatistic(isRate ? 'mean' : quantile),
+        { familySize: pinned.input.comparisons.length, familyConfidence: PERF_WORKLOAD_POLICY.familyConfidence,
         iterations: pinned.input.bootstrapReplicates, seed: pinned.input.seed });
       const limit = isRate ? PERF_WORKLOAD_POLICY.ratios.throughputLower : comparison.metric === 'p95' ? PERF_WORKLOAD_POLICY.ratios.p95Upper : PERF_WORKLOAD_POLICY.ratios.p99Upper;
       comparisons.push({ journey: comparison.journey, stratum: comparison.stratum, metric: comparison.metric, limit, interval });

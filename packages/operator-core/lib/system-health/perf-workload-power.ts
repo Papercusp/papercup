@@ -1,5 +1,5 @@
 /** Exact prospective power adapter for the existing immutable perf evidence. */
-import { empiricalQuantile, prospectivePairedBlockPower, type PairedPowerComparison } from '@papercusp/bench-metrics';
+import { pairedRatioStatistic, prospectivePairedBlockPower, type PairedPowerComparison } from '@papercusp/bench-metrics';
 import { PERF_WORKLOAD_POLICY, perfProtocolHash, type PerfWorkloadProtocolInput, type PerfProtocolEvidence } from './perf-workload-protocol';
 
 type Baseline = Extract<PerfProtocolEvidence, { kind: 'baseline' }>;
@@ -44,12 +44,7 @@ export function computePerfWorkloadPower(input: PerfWorkloadProtocolInput, basel
     const quantile = comparison.metric === 'p95' ? 0.95 : 0.99;
     family.push({ id, repeats, direction: comparison.metric === 'throughput' ? 'lower' : 'upper',
       limit: comparison.metric === 'p95' ? 1.05 : comparison.metric === 'p99' ? 1.10 : 0.95,
-      statistic: (a, b) => {
-        const mean = (values: readonly number[]) => values.reduce((sum, x) => sum + x, 0) / values.length;
-        const av = comparison.metric === 'throughput' ? mean(a) : empiricalQuantile(a, quantile);
-        const bv = comparison.metric === 'throughput' ? mean(b) : empiricalQuantile(b, quantile);
-        return av !== null && bv !== null && av > 0 ? bv / av : null;
-      } });
+      statistic: pairedRatioStatistic(comparison.metric === 'throughput' ? 'mean' : quantile) });
   }
   if (expected.size || !family.length) return { status: 'unknown' as const, reason: 'incomplete-power-family' };
   if (!design.scenarios.some(scenario => family.every(member => scenario.candidateScales[member.id] === 1))) {

@@ -1,5 +1,47 @@
 import { describe, it, expect } from 'vitest';
-import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact, empiricalQuantile, baselineAutocorrelationBlocks, pairedBlockBootstrapCI, prospectivePairedBlockPower, type PairedPowerComparison, type PairedTimeSeries } from './intervals';
+import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact, empiricalQuantile, baselineAutocorrelationBlocks, pairedBlockBootstrapCI, pairedRatioStatistic, prospectivePairedBlockPower, type PairedPowerComparison, type PairedTimeSeries } from './intervals';
+
+describe('exact ratio block acceleration', () => {
+  // The callback wrapper deliberately bypasses the optimized function identity.
+  // It independently materializes/sorts the SAME RNG's pairs in the old path.
+  const compare = (repeats: PairedTimeSeries[], metric: 'mean' | number, seed: number) => {
+    const fast = pairedRatioStatistic(metric);
+    const before = JSON.stringify(repeats);
+    const options = { familySize: 9, iterations: 10_000, seed };
+    const reference = pairedBlockBootstrapCI(repeats, (a, b) => fast(a, b), options);
+    expect(pairedBlockBootstrapCI(repeats, fast, options)).toEqual(reference);
+    expect(JSON.stringify(repeats)).toBe(before);
+  };
+
+  it.each(['mean', 0, 0.95, 0.99, 1] as const)('matches the materialized %s ratio on unequal repeats, ties and truncated circular blocks', metric => {
+    const repeats = [17, 23, 31].map((n, r) => ({ repeatId: `r${r}`, blockLength: [3, 8, 11][r],
+      a: Array.from({ length: n }, (_, i) => 0.3 + (i * 17 + r) % 19 / 7),
+      b: Array.from({ length: n }, (_, i) => 0.1 + (i * 11 + r) % 13 / 3) }));
+    for (const seed of [0, 871]) compare(repeats, metric, seed);
+  });
+
+  it('keeps unrepresentable statistics and sparse zero-denominator draws unknown', () => {
+    for (const metric of ['mean', 0.95] as const) for (const values of [[0, 0, 1], [1e308, 1e308], [-1e308, 1e308]]) {
+      compare([0, 1, 2].map(i => ({ repeatId: `r${i}`, a: values, b: values.map(x => x / 2), blockLength: 1 })), metric, 7);
+    }
+  });
+
+  it('preserves signed-zero semantics and rejects invalid estimands', () => {
+    for (const q of [0, 0.95, 1]) compare([0, 1, 2].map(i => ({ repeatId: `r${i}`, a: [1, 2], b: [-0, 0], blockLength: 1 })), q, 7);
+    expect(() => pairedRatioStatistic(NaN)).toThrow(RangeError);
+    expect(() => pairedRatioStatistic(1.01)).toThrow(RangeError);
+  });
+
+  it('preserves the complete prospective joint-power result under the accelerated production decision', () => {
+    const repeats = [0, 1, 2].map(i => ({ repeatId: `r${i}`, a: [10, 20], b: [10, 21], blockLength: 1 }));
+    const statistic = pairedRatioStatistic(0.95);
+    const base = { id: 'tail', repeats, direction: 'upper' as const, limit: 1.05 };
+    const scenarios = [{ id: 'unchanged', candidateScales: { tail: 1 } }];
+    const options = { simulations: 200, iterations: 10_000, seed: 87, maximumSampledPairs: 100_000_000 };
+    expect(prospectivePairedBlockPower([{ ...base, statistic }], scenarios, options))
+      .toEqual(prospectivePairedBlockPower([{ ...base, statistic: (a, b) => statistic(a, b) }], scenarios, options));
+  }, 30_000);
+});
 
 describe('prospectivePairedBlockPower', () => {
   // Synthetic tiny fixtures exercise the engine, never the runtime sample floor.

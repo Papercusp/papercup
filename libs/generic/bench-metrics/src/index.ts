@@ -43,6 +43,7 @@ export {
   empiricalQuantile,
   baselineAutocorrelationBlocks,
   pairedBlockBootstrapCI,
+  pairedRatioStatistic,
   prospectivePairedBlockPower,
   type PairedPowerComparison,
   type PairedPowerScenario,

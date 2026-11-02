@@ -1,5 +1,14 @@
 {
   "schemaVersion": 1,
+  "runnerReuseMap20261102": {
+    "qualification": "Source reconciliation only; no new capture, runtime qualification or acceptance.",
+    "custody": "run-retained-baseline.py adapter_inputs/capture_adapters checks program/request SHA before restoration and dispatch, exact ordered request/terminal captures, and stable inputs afterward. adapterCapture returns BEFORE --benchmark/timing branches, with adapterBehaviorAuthenticated=false and baselineAccepted=false.",
+    "actualAdapter": "prose-adapter-capture-cli.ts runProseAdapterCapture is an exported callable seam for isolated search:fulltext/search:semantic work_item/session_turn direct handlers. It excludes transport/auth middleware and paid judging.",
+    "pairedBenchmark": "bm25-hybrid-recall-cli.ts runBm25HybridRecall retains inputs/declaration/attempts/ledger and paired/warm/steady attribution. declareBm25Attempts sets corpus:null. Timed-query embeddings are precomputed; keep that timing/cost boundary explicit. Query identity is not retrieval-corpus identity.",
+    "runtimeObserver": "runtime-qualification-cli.ts child --benchmark dynamically invokes runBm25HybridRecall and parent re-reads benchmark evidence. Ordinary mode embeds one SDK probe. Preflight and later handler capture are separate processes. Reports deliberately keep qualifiedComponentsOnly=true and completeRuntimeClosureVerified=false on a successful component qualification.",
+    "nextSeam": "Extend the existing runtime qualifier's child invocation and parent artifact readback for exported runProseAdapterCapture; preserve source/native/model observers and cleanup. Bind observed process and capture request/output identities. Do not join the SDK probe and separately launched handler receipts as one process, or turn instrumentation latency into budget acceptance.",
+    "remaining": "Authenticate independent retrieval-corpus provenance and full applicable loaded closure, then freeze source-backed per-cell policy and FrozenAdapterStudy before new treatment. Retain paired benchmark for inherited R18 method; actual handler cells need their own budget authority. G remains exploratory."
+  },
   "prospectiveDeclarationReconciliation20261102": {
     "status": "preparation-only; no study sealed, adapter invoked, threshold accepted or baseline discharged",
     "reuse": "FrozenAdapterStudy in adapter-baseline.ts, SearchEvaluationCell in libs/generic/search-core/src/relevance-eval.ts, and adapter-baseline-cli.ts --freeze. This is a worklist for that existing format, not a new executable study format.",
