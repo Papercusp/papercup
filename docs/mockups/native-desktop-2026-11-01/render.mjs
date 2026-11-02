@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const browser = await chromium.launch({ headless: true });
@@ -37,6 +37,18 @@ try {
     await page.screenshot({ path: join(directory, `platform-${platform}.png`), animations: 'disabled' });
     captures.push({ platform, surface: 'chat', file: `platform-${platform}.png` });
   }
+  const comparisonPage = await browser.newPage({ viewport: { width: 2520, height: 665 }, deviceScaleFactor: 1 });
+  for (const [surface, label] of Object.entries({ launcher: 'Quick Access', terminal: 'Terminal HUD', organizer: 'Window organizer', chat: 'Papercup chat', accounts: 'Accounts' })) {
+    const tiles = [];
+    for (const [direction, name, subtitle] of [['a', 'Focus', 'Compact floating windows'], ['b', 'Workbench', 'Persistent context panes'], ['c', 'Orbit', 'Edge controls and drawers']]) {
+      const base64 = (await readFile(join(directory, `${direction}-${surface}.png`))).toString('base64');
+      tiles.push(`<section><h2>${direction.toUpperCase()} / ${name}</h2><p>${subtitle}</p><img alt="${name}: ${label}" src="data:image/png;base64,${base64}"></section>`);
+    }
+    await comparisonPage.setContent(`<html><head><style>*{box-sizing:border-box}body{margin:0;padding:30px 30px 24px;background:#f4f3ed;color:#2c342d;font-family:Inter,Arial,sans-serif}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:25px}h1{font-size:24px;margin:0;font-weight:550;letter-spacing:-.5px}header span{font-size:12px;color:#777f70}main{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}h2{font-size:17px;margin:0 0 5px;font-weight:550}p{font-size:12px;color:#747d6d;margin:0 0 15px}img{display:block;width:100%;border:1px solid #d2d5c8;border-radius:11px}footer{font-size:11px;color:#7d8575;margin-top:21px}</style></head><body><header><h1>Papercup · ${label}</h1><span>Three native directions · sample data</span></header><main>${tiles.join('')}</main><footer>Remote actions reuse psu saved connections. Visual mockups; native behavior is not implemented.</footer></body></html>`);
+    await comparisonPage.screenshot({ path: join(directory, `compare-${surface}.png`), animations: 'disabled' });
+    captures.push({ surface, file: `compare-${surface}.png`, comparison: true });
+  }
+  await comparisonPage.close();
   const overflow = captures.flatMap(capture => (capture.bounds || []).filter(rect => rect.left < 0 || rect.top < 32 || rect.right > 1440 || rect.bottom > 880).map(rect => ({ file: capture.file, ...rect })));
   const verification = { capturedAt: new Date().toISOString(), viewport: { width: 1440, height: 880 }, captures, browserErrors: errors, networkRequests: network, windowOverflow: overflow, purpose: 'Visual mockup rendering; not production native integration acceptance.' };
   await writeFile(join(directory, 'verification.json'), `${JSON.stringify(verification, null, 2)}\n`);

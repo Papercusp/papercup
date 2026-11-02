@@ -20,4 +20,16 @@ The HTML represents native interface designs; it is not the proposed production 
 node docs/mockups/native-desktop-2026-11-01/render.mjs
 ```
 
-The renderer verifies the intended controls and collects browser errors before writing `verification.json`. These checks validate the mockup, not production native behavior.
+The renderer records browser errors, unexpected network requests, overview-card integrity, and window bounds in `verification.json`. These checks validate the mockup, not production native behavior.
+
+## Comparison sheets
+
+- [Quick Access](compare-launcher.png)
+- [Terminal HUD](compare-terminal.png)
+- [Window organizer](compare-organizer.png)
+- [Papercup chat](compare-chat.png)
+- [Accounts](compare-accounts.png)
+
+Each sheet places A, B, and C side by side. Full-size views use `<direction>-<surface>.png`, for example `b-accounts.png`. The `<direction>-overview.png` files show all five interfaces in one direction.
+
+During delivery, the gallery was also exercised in Playwright for remote search and saved-psu-connection focus previews, independent Default/Force/Exclude axes, clearing overrides while preserving Default, Orbit panel collapse, simulated chat submission, overview keyboard navigation, and a narrow viewport. This is preview verification only; it does not establish any production native behavior.
