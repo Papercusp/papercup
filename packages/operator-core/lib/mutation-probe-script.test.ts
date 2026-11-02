@@ -3891,6 +3891,70 @@ fi
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('separates the launcher notice prefix from test-child substitutions', () => {
+    const guard = join(dir, 'launcher-substituted-router.sh');
+    const top = resolve(__dirname, '../../../');
+    const launcherNotice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'scripts/test-files.mjs',
+      top,
+      pid: 42,
+      entry: 'scripts/test-files.mjs',
+    });
+    const launcherOffset = Buffer.byteLength(launcherNotice + '\n');
+    const lines = [
+      '#!/usr/bin/env bash',
+      `printf '%s\\n' '${launcherNotice}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then',
+      `  printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0 childNoticeOffsetBytes=${launcherOffset} skippedTests=0\\n'`,
+      '  exit 0',
+      'fi',
+      `printf 'TEST_FILE_RESULT requested=1 status=failed childSubstituted=0 childNoticeOffsetBytes=${launcherOffset} skippedTests=0\\n'`,
+      "printf 'TEST_FILE_ASSERTION_FAILURE file=\"fixture.test.ts\" name=\"behavior\" message=\"AssertionError\"\\n'",
+      'exit 1',
+    ];
+    writeFileSync(guard, lines.join('\n'));
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=1 gitReaders=0 unclassified=0 launcherNotices=1 childRecords=0');
+    expect(out).toContain('verdict=caught');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('refuses a notice prefix that does not come from the test-files launcher', () => {
+    const guard = join(dir, 'unverified-launcher-router.sh');
+    const top = resolve(__dirname, '../../../');
+    const notice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'scripts/affected-tests.mjs',
+      top,
+      pid: 42,
+      entry: 'scripts/affected-tests.mjs',
+    });
+    const noticeOffset = Buffer.byteLength(notice + '\n');
+    const guardSource = [
+      '#!/usr/bin/env bash',
+      `printf '%s\\n' '${notice}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+      `printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0 childNoticeOffsetBytes=${noticeOffset} skippedTests=0\\n'`,
+    ].join('\n');
+    writeFileSync(guard, guardSource);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('launcher-entry-unverified');
+    expect(out).toContain('verdict=harness-error');
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(out).not.toContain('VERDICT: MUTANT SURVIVED');
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('accepts only the verified built-ins-only Git reader receipt while still catching the mutant', () => {
     const guard = join(dir, 'git-reader-router.sh');
     const top = resolve(__dirname, '../../../libs/test-config');
@@ -3906,7 +3970,7 @@ fi
     const lines = [
       '#!/usr/bin/env bash',
       "printf '%s\\n' '" + readerNotice + "' >> \"$PAPERCUSP_COMMITTED_SOURCE_NOTICES\"",
-      "printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 skippedTests=0\\n'",
+      "printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 childNoticeOffsetBytes=0 skippedTests=0\\n'",
       'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then',
       "  printf 'TEST_FILE_ASSERTION_FAILURE file=\"fixture.test.ts\" name=\"behavior\" message=\"AssertionError\"\\n'",
       '  exit 1',
