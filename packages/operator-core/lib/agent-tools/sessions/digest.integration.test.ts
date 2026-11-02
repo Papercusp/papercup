@@ -235,6 +235,54 @@ describe('sessions:digest narrow CTE + primary-key text join (WI-6843)', () => {
     } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id LIKE 'incident-%'`; }
   });
 
+  it('includes both normalized UTC boundaries and uses ingestion time only when transcript time is missing', async () => {
+    const stops = [
+      { session: 'boundary-before', ts: '2026-05-31T23:59:59.999Z', ingestedAt: '2026-06-01T00:30Z' },
+      { session: 'boundary-lower', ts: '2026-06-01T00:00Z', ingestedAt: '2026-06-01T00:30Z' },
+      { session: 'boundary-fallback', ts: null, ingestedAt: '2026-06-01T00:30Z' },
+      { session: 'boundary-upper', ts: '2026-06-01T01:00Z', ingestedAt: '2026-06-01T00:30Z' },
+      { session: 'boundary-after', ts: '2026-06-01T01:00:00.001Z', ingestedAt: '2026-06-01T00:30Z' },
+    ];
+    try {
+      for (const stop of stops) {
+        await sql`INSERT INTO harness_shared.session_turns
+          (workspace_id, source_kind, session_id, turn_idx, ts, ingested_at, speaker, text)
+          VALUES (${WORKSPACE}, 'codex', ${stop.session}, 0, ${stop.ts}::timestamptz,
+                  ${stop.ingestedAt}::timestamptz, 'assistant', 'API Error: 429 Too many requests')`;
+      }
+      const result = await callDigest({ since: '2026-06-01T02:00:00+02:00',
+        until: '2026-06-01T03:00:00+02:00', stopKinds: ['rate_limit'] }) as any;
+      expect(result.digests.map((d: any) => d.stopRef).sort()).toEqual([
+        'session_turn:codex:boundary-fallback:0',
+        'session_turn:codex:boundary-lower:0',
+        'session_turn:codex:boundary-upper:0',
+      ]);
+      expect(result.digests.find((d: any) => d.session_id === 'boundary-fallback').asOf)
+        .toContain('2026-06-01T00:30:00');
+      expect(result.coverage).toMatchObject({ since: '2026-06-01T00:00:00.000Z',
+        until: '2026-06-01T01:00:00.000Z', status: 'complete-for-indexed-transcript-window' });
+    } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id LIKE 'boundary-%'`; }
+  });
+
+  it('continues an empty filtered page without claiming unindexed host-only history is covered', async () => {
+    try {
+      await sql`INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+        VALUES (${WORKSPACE}, 'codex', 'empty-page-billing', 0, '2026-06-02T00:00Z', 'assistant', '402 Insufficient credits'),
+               (${WORKSPACE}, 'codex', 'empty-page-rate', 0, '2026-06-02T00:01Z', 'assistant', 'API Error: 429 Too many requests')`;
+      const first = await callDigest({ since: '2026-06-02', until: '2026-06-03',
+        stopKinds: ['billing'], limit: 1 }) as any;
+      expect(first.digests).toEqual([]);
+      expect(first).toMatchObject({ hasMore: true, coverage: { pageScanned: 1,
+        scannedThrough: 1, status: 'more-pages', hostOnlyOwners: 'not-covered' } });
+      expect(first.nextCursor).toBeTypeOf('string');
+      const last = await callDigest({ stopKinds: ['billing'], limit: 1, cursor: first.nextCursor }) as any;
+      expect(last.digests.map((d: any) => d.stopRef)).toEqual(['session_turn:codex:empty-page-billing:0']);
+      expect(last).toMatchObject({ hasMore: false, nextCursor: null, coverage: {
+        scannedThrough: 2, status: 'complete-for-indexed-transcript-window', hostOnlyOwners: 'not-covered' } });
+    } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id LIKE 'empty-page-%'`; }
+  });
+
   it('reports the census bound without generating an unusable continuation', async () => {
     await sql`INSERT INTO harness_shared.session_turns
       (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
