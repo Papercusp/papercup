@@ -4707,6 +4707,28 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
     expect(testRun!.args).toContain("lib/a.test.ts");
   });
 
+  it("runs targeted integration repair files through the private-PG wrapper", async () => {
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(cfg, exec);
+    const file = "lib/persistence-venue.integration.test.ts";
+
+    await deps.runTestsAtRef?.("deadbeef", [
+      { workspace: "@example/fixture-pkg", file },
+    ]);
+
+    const testRun = calls.find((c) => c.args.includes(file));
+    expect(testRun).toBeDefined();
+    expect(testRun!.cmd).toBe(process.execPath);
+    expect(testRun!.args.slice(0, 3)).toEqual([
+      join(cpTree, "scripts", "with-test-pg.mjs"),
+      "--",
+      "npm",
+    ]);
+    expect(testRun!.args).toContain(TIMEOUT_FLAG);
+    expect(testRun!.args).toContain("--no-file-parallelism");
+    expect(testRun!.opts?.env?.VITEST_MAX_FORKS).toBe("1");
+  });
+
   it("routes standalone package rescue runs through the package directory", async () => {
     const standaloneCfg = releaseConfig({
       integrationRoot: "/int",

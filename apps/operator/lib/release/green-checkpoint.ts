@@ -25543,7 +25543,28 @@ export function realCheckpointDeps(
         let workspacePassed = true;
         let workspaceErrored = false;
         for (const invocation of invocations) {
-          const r = await exec(invocation.cmd, invocation.args, {
+          // Targeted repair runs do not inherit the full suite's private product database.
+          // An integration file that opens the canonical admin handle would otherwise hit the
+          // protected live operator DB and report a deterministic false red (the persistence-
+          // venue leg exposed this on frozen candidate 63442ecf6f53). Reuse the maintained
+          // private-PG wrapper rather than weakening the live-DB guard or teaching individual
+          // integration tests a second fixture path. A mixed batch can safely share the same
+          // wrapper; unit files do not depend on the product database.
+          const needsPrivatePg = vitestFiles.some((file) =>
+            /\.integration\.test\.[cm]?[jt]sx?$/.test(file),
+          );
+          const command = needsPrivatePg
+            ? {
+                cmd: process.execPath,
+                args: [
+                  path.join(cfg.checkpointRoot, "scripts", "with-test-pg.mjs"),
+                  "--",
+                  invocation.cmd,
+                  ...invocation.args,
+                ],
+              }
+            : invocation;
+          const r = await exec(command.cmd, command.args, {
             cwd: invocation.cwd,
             env,
             allowNonZero: true,
