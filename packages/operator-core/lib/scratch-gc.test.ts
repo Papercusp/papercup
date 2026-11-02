@@ -333,6 +333,34 @@ describe('runScratchGc — retention', () => {
     expect(existsSync(before)).toBe(false);
   });
 
+  it.each(['EACCES', 'EPERM', 'EROFS'])(
+    'keeps an unreclaimable retention run and continues to later runs (%s)',
+    async (code) => {
+      const blocked = makeRunDir('ws-A', 'demo:tool', UUID(800), 100, RETENTION_MS + 3000);
+      const reclaimable = makeRunDir('ws-A', 'demo:tool', UUID(801), 100, RETENTION_MS + 2000);
+      const remove = vi.mocked(rmAsync);
+      const originalRemove = remove.getMockImplementation()!;
+      remove.mockImplementation(async (...args) => {
+        if (String(args[0]) === blocked) throw Object.assign(new Error('protected scratch run'), { code });
+        return originalRemove(...args);
+      });
+      try {
+        const r = await runScratchGc({ workspaceRegistry: ['ws-A'], enforceQuota: false });
+        expect(r.retentionEvictions).toBe(1);
+        expect(r.unreclaimablePaths).toContainEqual({
+          workspaceId: 'ws-A',
+          path: blocked,
+          phase: 'retention',
+          errorCode: code,
+        });
+        expect(existsSync(blocked)).toBe(true);
+        expect(existsSync(reclaimable)).toBe(false);
+      } finally {
+        remove.mockImplementation(originalRemove);
+      }
+    },
+  );
+
   it('does not hold the workspace mutex while sizing retention candidates', async () => {
     const workspaceId = 'ws-retention-admission';
     const staleRun = makeRunDir(workspaceId, 'demo:tool', UUID(20), 100, RETENTION_MS + 1000);
@@ -1113,6 +1141,7 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
       markersWritten: 0,
       unprovenEntries: 0,
       deadWorkspacesDeferred: [],
+      unreclaimablePaths: [],
     });
   });
 
@@ -1266,6 +1295,38 @@ describe('runScratchGc — deletes only provably-dead, quiet workspace roots (WI
     expect(r.deadWorkspaces).toBe(2);
     expect(existsSync(wsRoot)).toBe(false);
   });
+
+  it.each(['EACCES', 'EPERM', 'EROFS'])(
+    'defers an unreclaimable dead workspace and continues to other roots (%s)',
+    async (code) => {
+      const blocked = makeDeadWorkspace('ws-DEAD-BLOCKED');
+      const reclaimable = makeDeadWorkspace('ws-DEAD-OK');
+      const remove = vi.mocked(rmAsync);
+      const originalRemove = remove.getMockImplementation()!;
+      remove.mockImplementation(async (...args) => {
+        if (String(args[0]) === blocked) throw Object.assign(new Error('protected workspace scratch'), { code });
+        return originalRemove(...args);
+      });
+      try {
+        const r = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders });
+        expect(r.deadWorkspaces).toBe(1);
+        expect(r.deadWorkspacesDeferred).toContainEqual({
+          workspaceId: 'ws-DEAD-BLOCKED',
+          reason: 'unreclaimable',
+        });
+        expect(r.unreclaimablePaths).toContainEqual({
+          workspaceId: 'ws-DEAD-BLOCKED',
+          path: blocked,
+          phase: 'dead-workspace',
+          errorCode: code,
+        });
+        expect(existsSync(blocked)).toBe(true);
+        expect(existsSync(reclaimable)).toBe(false);
+      } finally {
+        remove.mockImplementation(originalRemove);
+      }
+    },
+  );
 
   it('backfills the marker onto a registered root that predates markers, and never creates a root', async () => {
     const wsRoot = join(root(), 'ws-LEGACY');
