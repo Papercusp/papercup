@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { threadId } from 'node:worker_threads';
 
 export const nativeSourceRetentionLimits = Object.freeze({ sourceBytes: 16 * 1024 ** 2,
   processBytes: 64 * 1024 ** 2, pinnedSourceBytes: 128 * 1024 ** 2,
@@ -69,13 +70,13 @@ function installNativeProcessTrace(out) {
     if (!terminal && remaining-- < 0) return;
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
-        processIdentity: identity, pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields };
+        processIdentity: identity, pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId };
       if (!terminal && remaining === -1) row = { ...row, event: 'trace-limit' };
       let bytes = Buffer.from(JSON.stringify(row));
       if (bytes.length > 128 * 1024) {
         bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,
           event: 'trace-event-too-large', processIdentity: identity, pid: process.pid,
-          ppid: process.ppid, atMs: row.atMs, omittedEvent: event }));
+          ppid: process.ppid, atMs: row.atMs, omittedEvent: event, threadId }));
       }
       const sha256 = createHash('sha256').update(bytes).digest('hex');
       const path = join(root, `${sha256}.json`);
