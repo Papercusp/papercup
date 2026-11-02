@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { promisify } from 'node:util';
 import { readFile, writeFile } from 'node:fs/promises';
 import postgres from 'postgres';
@@ -7,18 +8,52 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 const exec = promisify(execFile);
 
-async function screenshot(tool: string, pid: string, output: string) {
-  // Pin the visible X11 window as the maintained Quick Access journey does.
-  // --pid selects a bridge; screenshot also requires a capture target.
-  const env = { ...process.env, DISPLAY: process.env.VERIFY_TAURI_DISPLAY! };
-  expect(env.DISPLAY).toBeTruthy();
-  const { stdout } = await exec('xdotool', ['search', '--onlyvisible', '--all',
-    '--pid', pid, '--name', '^Papercusp Operator$'], { env, timeout: 10_000 });
+async function screenshot(tool: string, pid: string, output: string, display = process.env.VERIFY_TAURI_DISPLAY) {
+  // Reuse the native collection journey's process-scoped X11 targeting.
+  // Document and OS titles differ; neither identifies the owned native window.
+  expect(display).toMatch(/^:\d+$/);
+  const env = { ...process.env, DISPLAY: display, XDG_SESSION_TYPE: 'x11', WAYLAND_DISPLAY: '' };
+  const { stdout } = await exec('xdotool', ['search', '--onlyvisible', '--pid', pid],
+    { env, timeout: 10_000 });
   const windows = stdout.trim().split('\n').filter(Boolean);
   expect(windows).toHaveLength(1);
+  expect(windows[0]).toMatch(/^[1-9]\d*$/);
   await exec(tool, ['screenshot', '--pid', pid, '--window-id', windows[0],
     '--output', output], { env, timeout: 30_000 });
 }
+
+test('rubric screenshot captures an owned X11 window without assuming its title', async ({}, info) => {
+  test.setTimeout(30_000);
+  const server = spawn('Xvfb', ['-displayfd', '1', '-screen', '0', '640x480x24', '-nolisten', 'tcp'],
+    { stdio: ['ignore', 'pipe', 'ignore'] });
+  let window: ReturnType<typeof spawn> | undefined;
+  try {
+    const [number] = await once(server.stdout!, 'data', { signal: AbortSignal.timeout(10_000) });
+    const display = `:${number.toString().trim()}`;
+    expect(display).toMatch(/^:\d+$/);
+    const env = { ...process.env, DISPLAY: display };
+    window = spawn('xmessage', ['-title', 'Papercusp', '-buttons', '', 'Native rubric capture contract'],
+      { env, stdio: 'ignore' });
+    const pid = String(window.pid);
+    let id = '';
+    await expect.poll(async () => {
+      const result = await exec('xdotool', ['search', '--onlyvisible', '--name', '^Papercusp$'],
+        { env, timeout: 2_000 }).catch(() => ({ stdout: '' }));
+      id = result.stdout.trim();
+      return /^\d+$/.test(id);
+    }, { timeout: 10_000 }).toBe(true);
+    // Xt does not publish _NET_WM_PID; explicitly model the native app's
+    // process ownership on this disposable display before exercising capture.
+    await exec('xprop', ['-id', id, '-f', '_NET_WM_PID', '32c', '-set', '_NET_WM_PID', pid], { env });
+    const path = info.outputPath('rubric-screenshot-contract.png');
+    await screenshot(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools', pid, path, display);
+    expect((await readFile(path)).subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    await info.attach('Screenshot CLI contract fixture (not product acceptance)', { path, contentType: 'image/png' });
+  } finally {
+    window?.kill();
+    server.kill();
+  }
+});
 
 test('rubric unknown reasons match the current native trend window', async ({}, info) => {
   test.setTimeout(180_000);
