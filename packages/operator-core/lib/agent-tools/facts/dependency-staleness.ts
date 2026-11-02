@@ -55,6 +55,8 @@ import type { CellReadEnv } from '../../cell-read';
 import type { CellReader } from '../../cell-registry';
 import { resolveCurrentTokens } from '../../freshness/resolvers';
 
+let cellReadModule: Promise<typeof import('../../cell-read')> | undefined;
+
 /**
  * P-012 (derived-status-not-hand-written-2026-10-12) — FILE ANCHORS.
  *
@@ -599,7 +601,8 @@ async function observeCell(
   // File-only facts use the freshness resolver directly. Loading the cell
   // dispatcher for them pulls in the full tool graph before a single hash,
   // exceeding the notes push warmup budget (WI-6554700010044943).
-  const { readCell } = await import('../../cell-read');
+  // Share initialization across the parallel reads in captureFactDependencies.
+  const { readCell } = await (cellReadModule ??= import('../../cell-read'));
   const read = await readCell(cell, reader, env, subject);
   if (read.status === 'value') {
     return {
