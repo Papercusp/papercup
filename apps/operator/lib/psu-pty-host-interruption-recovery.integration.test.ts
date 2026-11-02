@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { metaPathFor, socketPathFor } from '../scripts/psu-pty-host.mjs';
+import { metaPathFor, socketPathFor, nativeExecutionFromRows } from '../scripts/psu-pty-host.mjs';
 
 const m = vi.hoisted(() => ({ sql: null as any, launch: vi.fn() }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -25,10 +25,11 @@ let db: OrgTestDb;
 beforeAll(async () => { db = await createOrgTestDb(); m.sql = db.adminSql; }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
-async function eventually<T>(read: () => T | undefined): Promise<T> {
+async function eventually<T>(read: () => T | undefined,
+  diagnostic: () => string = () => 'host observation unavailable'): Promise<T> {
   return vi.waitFor(() => {
     const value = read();
-    expect(value).toBeDefined();
+    expect(value, value == null ? diagnostic() : undefined).toBeDefined();
     return value as T;
   }, { timeout: 15_000, interval: 30 });
 }
@@ -61,12 +62,21 @@ describe('lost host to restored native conversation', () => {
       try { return JSON.parse(readFileSync(metaPathFor(owner), 'utf8')); } catch { return undefined; }
     };
     const start = async (work: boolean) => {
+      const startedPayload = { type: 'task_started', turn_id: 'journey-original' };
+      const completedPayload = { type: 'task_complete', turn_id: 'journey-original' };
+      const completes = work && scenario.negative === 'completed';
+      // Reject malformed fixture events before paying for a native process.
+      const at = Date.now();
+      const fixtureRows = [startedPayload, ...(completes ? [completedPayload] : [])]
+        .map(payload => ({ type: 'event_msg', timestamp: new Date(at).toISOString(), payload }));
+      expect(nativeExecutionFromRows(fixtureRows, { agent: 'codex', nowMs: at }).phase)
+        .toBe(completes ? 'settled' : 'running');
       const nativeCode = `const fs=require('node:fs');
         process.on('SIGINT',()=>{});
         setTimeout(()=>{if (${work}) fs.appendFileSync(${JSON.stringify(transcript)}, JSON.stringify({type:'event_msg',
-          timestamp:new Date().toISOString(),payload:{type:'task_started'}})+'\\n');},100);
-        ${work && scenario.negative === 'completed' ? `setTimeout(()=>fs.appendFileSync(${JSON.stringify(transcript)},
-          JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_complete'}})+'\\n'),200);` : ''}
+          timestamp:new Date().toISOString(),payload:${JSON.stringify(startedPayload)}})+'\\n');},100);
+        ${completes ? `setTimeout(()=>fs.appendFileSync(${JSON.stringify(transcript)},
+          JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:${JSON.stringify(completedPayload)}})+'\\n'),200);` : ''}
         process.stdout.write('READY\\n'); setInterval(()=>process.stdout.write('.'),100);`;
       const hostCode = `import {hostThroughPty} from ${JSON.stringify(hostModule)};
         import {EventEmitter} from 'node:events';
@@ -95,7 +105,7 @@ describe('lost host to restored native conversation', () => {
           throw new Error(`native identity absent: ${JSON.stringify(meta.execution)}; stderr=${stderr}`);
         }
         return meta?.pid === child.pid && meta.execution?.nativeSessionId === native ? meta : undefined;
-      });
+      }, () => JSON.stringify({ stage: 'host-start', meta: readMeta(), stderr }));
     };
     try {
       const original = await start(true);
@@ -103,7 +113,8 @@ describe('lost host to restored native conversation', () => {
         const meta = readMeta();
         return meta?.execution?.phase === (scenario.negative === 'completed' ? 'settled' : 'running') &&
           (!scenario.stopped || meta.execution.ownerStopRequested) ? meta : undefined;
-      });
+      }, () => JSON.stringify({ stage: 'native-execution', meta: readMeta(),
+        transcript: readFileSync(transcript, 'utf8') }));
       if (scenario.waiting) await db.adminSql`INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, policy)
         VALUES (${ws}, ${owner}, 'dependency:journey-ready', 'wake')`;
