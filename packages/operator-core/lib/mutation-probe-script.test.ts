@@ -1936,6 +1936,43 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(readFileSync(s, 'utf8')).toBe('keep\n');
   });
 
+  it.skipIf(!containWorks)('refuses a verdict when a post-preflight overlay mount fails', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-leg-overlay-failure-repo');
+    const fakeBin = join(dir, 'mount-failure-bin');
+    const mountCount = join(dir, 'overlay-mount-count');
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, 'mount'), [
+      '#!/usr/bin/env bash',
+      'if [ "$1" = "-t" ] && [ "$2" = "overlay" ]; then',
+      '  count="$(cat "$MUTATION_PROBE_TEST_OVERLAY_COUNT_FILE" 2>/dev/null || printf 0)"',
+      '  count=$((count + 1))',
+      '  printf "%s\\n" "$count" > "$MUTATION_PROBE_TEST_OVERLAY_COUNT_FILE"',
+      '  if [ "$count" -eq 2 ]; then exit 32; fi',
+      'fi',
+      'exec /usr/bin/mount "$@"',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const env = {
+      ...process.env,
+      PATH: fakeBin + ':' + (process.env.PATH ?? ''),
+      MUTATION_PROBE_TEST_OVERLAY_COUNT_FILE: mountCount,
+    };
+    const { code, out } = runProbeIO([
+      '--file', s, '--mutate', 's/keep/KEEP/', '--test', guard,
+    ], env, repo);
+
+    expect(readFileSync(mountCount, 'utf8').trim()).toBe('2');
+    expect(out).toContain('MUTATION_PROBE_CONTAINMENT status=contained overlays=1 uncovered=0 failed=0');
+    expect(out).toContain('overlay mount failed for');
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=harness-error .*containment_setup_failed=yes/);
+    expect(out).not.toMatch(/verdict=(caught|survived)/);
+    expect(code).toBe(2);
+    expect(existsSync(join(repo, 'rootlevel-copy-baseline'))).toBe(false);
+    expect(existsSync(join(repo, 'rootlevel-mutant'))).toBe(false);
+    expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('keep\n');
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
   it.skipIf(!containWorks)('splits a checkout with a mount point under it and discards root-level writes', () => {
     const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-mounted-repo');
     // A bind under the root, like the shared papercusp tree's .gitnexus: overlayfs will not take
