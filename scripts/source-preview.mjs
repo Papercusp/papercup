@@ -748,11 +748,13 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
   const reportProgress = (phase, progress) => {
     assert.ok(active.has(phase) && ['deps.census', 'deps.postverify'].includes(phase),
       'Verifier dependency progress requires an active census phase');
-    assert.deepEqual(Object.keys(progress ?? {}).sort(), ['completedTrees', 'currentTree', 'totalTrees'],
+    assert.deepEqual(Object.keys(progress ?? {}).filter(key => key !== 'cacheHit').sort(), ['completedTrees', 'currentTree', 'totalTrees'],
       'Verifier dependency progress must remain bounded');
+    assert.ok(!Object.hasOwn(progress, 'cacheHit') || typeof progress.cacheHit === 'boolean',
+      'Verifier dependency cacheHit must be boolean');
     assert.ok(Number.isSafeInteger(progress.completedTrees) && Number.isSafeInteger(progress.totalTrees) &&
       progress.totalTrees > 0 && progress.totalTrees <= 1000 &&
-      progress.completedTrees >= 0 && progress.completedTrees < progress.totalTrees &&
+      progress.completedTrees >= 0 && progress.completedTrees <= progress.totalTrees &&
       typeof progress.currentTree === 'string' && progress.currentTree.length > 0 &&
       progress.currentTree.length <= 256, 'Invalid verifier dependency progress');
     record(phase, 'progress', { progress });

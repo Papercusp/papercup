@@ -2549,6 +2549,24 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(message).toContain(phases);
   });
 
+  it('retains bounded dependency cache progress and rejects invalid extensions', async () => {
+    const path = join(tmp, 'dependency-cache-progress.phases.jsonl');
+    const run = verifierPhaseRunner(path,
+      { ...process.env, PAPERCUSP_CHECKPOINT_LOG_DIR: join(tmp, 'cache-progress-archive') }, path + '.child.json');
+    const progress = { completedTrees: 1, totalTrees: 1, currentTree: 'node_modules' };
+    await run('deps.census', () => {
+      for (const cacheHit of [false, true]) run.reportProgress?.('deps.census', { ...progress, cacheHit });
+      run.reportProgress?.('deps.census', progress);
+      expect(() => run.reportProgress?.('deps.census', { ...progress, completedTrees: 2 })).toThrow('Invalid verifier dependency progress');
+      expect(() => run.reportProgress?.('deps.census', { ...progress, cacheHit: 'yes' } as never)).toThrow('cacheHit must be boolean');
+      expect(() => run.reportProgress?.('deps.census', { ...progress, extra: 'unbounded' } as never)).toThrow('must remain bounded');
+    });
+    const rows = readFileSync(path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.filter(row => row.event === 'progress').map(row => row.progress)).toEqual([
+      { ...progress, cacheHit: false }, { ...progress, cacheHit: true }, progress,
+    ]);
+  });
+
   function bgRecipePhaseRunner(label: string) {
     const traceEnabled = Boolean(process.env.PAPERCUSP_BG_LOGICAL_TRACE);
     const path = join(tmp, label + '.phases.jsonl');
