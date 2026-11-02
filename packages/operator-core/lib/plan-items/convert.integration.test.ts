@@ -70,6 +70,7 @@ const {
   findCoverageWorkItems,
   findConvertedWorkItemByStamp,
   listConvertedPlanItemRefs,
+  listCoveredPlanItemRefs,
   IMPLEMENTS_REL,
   convertPlanItem,
   stampPromotedWorkItemProvenance,
@@ -195,6 +196,33 @@ describe('listConvertedPlanItemRefs (PG)', () => {
     await edge({ plan: 'p5', item: 'I-5', srcRef: 'EI-6', ws: 'other-ws' }); // wrong workspace — excluded
     const refs = await listConvertedPlanItemRefs([WS]);
     expect([...refs].sort()).toEqual([planItemRef('p1', 'I-1'), planItemRef('p2', 'I-2')].sort());
+  });
+});
+
+describe('listCoveredPlanItemRefs (PG, legacy text coverage)', () => {
+  it('reads legacy feature and issue coverage across both workspace partitions', async () => {
+    cs.scope = 'papercusp-workspace';
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, summary)
+      VALUES (${WS}, 'web', 'F-legacy', 'feature', 'Plan: legacy-plan item P-001'),
+             ('papercusp-workspace', 'web', 'EI-legacy', 'bug', 'Plan: legacy-plan item P-002')`;
+
+    expect([...(await listCoveredPlanItemRefs('legacy-plan', 'web', ['P-001', 'P-002']))].sort())
+      .toEqual([planItemRef('legacy-plan', 'P-001'), planItemRef('legacy-plan', 'P-002')]);
+  });
+
+  it('keeps legacy coverage within its tenant, harness and exact plan/item references', async () => {
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, summary)
+      VALUES (${WS}, 'web', 'EI-positive', 'bug', 'Plan: legacy-plan item P-001'),
+             (${WS}, 'other-harness', 'EI-wrong-harness', 'bug', 'Plan: legacy-plan item P-002'),
+             ('other-workspace', 'web', 'EI-wrong-tenant', 'bug', 'Plan: legacy-plan item P-003'),
+             (${WS}, 'web', 'EI-long-item', 'bug', 'Plan: legacy-plan item P-0040'),
+             (${WS}, 'web', 'EI-long-plan', 'bug', 'Plan: legacy-plan-extra item P-005')`;
+
+    expect([...(await listCoveredPlanItemRefs('legacy-plan', 'web',
+      ['P-001', 'P-002', 'P-003', 'P-004', 'P-005']))])
+      .toEqual([planItemRef('legacy-plan', 'P-001')]);
   });
 });
 

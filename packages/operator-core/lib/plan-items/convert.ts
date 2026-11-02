@@ -588,7 +588,7 @@ export async function listCoveredPlanItemRefs(
       SELECT title, summary, payload
         FROM harness_shared.work_items
        WHERE workspace_id = ANY(${scopes})
-         AND scope = ${`harness:${harnessSlug}`}
+         AND harness_slug = ${harnessSlug}
          AND item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
          AND strpos(lower(concat_ws(' ', title, summary, payload::text)), lower(${planSlug})) > 0`,
   ]);
