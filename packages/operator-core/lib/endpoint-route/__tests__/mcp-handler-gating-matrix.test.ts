@@ -2093,9 +2093,11 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
     await withSdkHost(
       superuserExtra('&workspace=ws-test&client=su-tier-shaping&harness=papercup&role=operator'),
       async client => {
-        await client.listTools();
-        const statusDefinition = getCatalog().find(tool => tool.name === 'fleet:status');
-        if (!statusDefinition) throw new Error('Expected the production fleet:status definition after tools/list');
+        const listing = await client.listTools();
+        expect(listing.tools.some(tool => tool.name === 'fleet:status')).toBe(true);
+        // Role-gated tools (requirePrincipal:false) register in the projected
+        // registry, not the legacy principal-gated getCatalog() list.
+        const statusDefinition = (await import('../../agent-tools/fleet_registry/status')).default;
         const mutableStatus = statusDefinition as unknown as {
           handler: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>;
           shape?: { standard?: unknown; trimmed?: unknown };
