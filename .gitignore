@@ -107,6 +107,8 @@ test-results/
 # Cloudflare wrangler local secrets (JWT_SECRET, CF tokens). Was tracked until
 # 2026-09-30 (open-source-release P-013); never commit it again.
 **/.dev.vars
+# Wrangler's per-bundle middleware output is transient build scratch, not source.
+apps/operator-public/.wrangler/tmp/
 .source/
 
 # Rust/Tauri build artifacts — accidentally committed before; never again.

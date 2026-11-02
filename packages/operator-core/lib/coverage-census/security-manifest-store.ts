@@ -1,0 +1,44 @@
+/** P-001 snapshots reuse canonical text artifacts with immutable content addresses.
+ * No new table, routine, public tool or parallel evidence store. Stored snapshots
+ * grant no approval or execution authority: host commitment is a separate gate.
+ */
+import { loadImmutableTextArtifact, saveImmutableTextArtifact } from '../text-artifacts';
+import {
+  createSecurityManifest, createSecurityTupleLedger,
+  type SecurityManifest, type SecuritySnapshot, type SecurityTupleLedger,
+} from './security-manifest';
+
+function exact<T>(claimed: SecuritySnapshot<T>, rebuilt: SecuritySnapshot<T>): void {
+  if (claimed.sha256 !== rebuilt.sha256 || claimed.bytes !== rebuilt.bytes) throw new Error('security_snapshot_identity_mismatch');
+}
+
+export async function saveSecurityManifest(harness: string, manifest: SecuritySnapshot<SecurityManifest>) {
+  exact(manifest, createSecurityManifest(manifest.body));
+  return saveImmutableTextArtifact(harness, manifest.bytes);
+}
+export async function loadSecurityManifest(harness: string, sha256: string): Promise<SecuritySnapshot<SecurityManifest> | null> {
+  const bytes = await loadImmutableTextArtifact(harness, sha256);
+  if (bytes === null) return null;
+  const rebuilt = createSecurityManifest(JSON.parse(bytes) as SecurityManifest);
+  if (rebuilt.bytes !== bytes || rebuilt.sha256 !== sha256) throw new Error('security_snapshot_identity_mismatch');
+  return rebuilt;
+}
+export async function saveSecurityTupleLedger(harness: string, ledger: SecuritySnapshot<SecurityTupleLedger>) {
+  const manifest = await loadSecurityManifest(harness, ledger.body.manifestSha256);
+  if (!manifest) throw new Error('security_ledger_manifest_missing');
+  const rebuilt = createSecurityTupleLedger({ manifest, producer: ledger.body.producer,
+    tuples: ledger.body.rows.map(row => row.tuple), dispositions: ledger.body.rows.map(row => row.disposition) });
+  exact(ledger, rebuilt);
+  return saveImmutableTextArtifact(harness, ledger.bytes);
+}
+export async function loadSecurityTupleLedger(harness: string, sha256: string): Promise<SecuritySnapshot<SecurityTupleLedger> | null> {
+  const bytes = await loadImmutableTextArtifact(harness, sha256);
+  if (bytes === null) return null;
+  const body = JSON.parse(bytes) as SecurityTupleLedger;
+  const manifest = await loadSecurityManifest(harness, body.manifestSha256);
+  if (!manifest) throw new Error('security_ledger_manifest_missing');
+  const rebuilt = createSecurityTupleLedger({ manifest, producer: body.producer,
+    tuples: body.rows.map(row => row.tuple), dispositions: body.rows.map(row => row.disposition) });
+  if (rebuilt.bytes !== bytes || rebuilt.sha256 !== sha256) throw new Error('security_snapshot_identity_mismatch');
+  return rebuilt;
+}

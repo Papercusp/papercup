@@ -41,7 +41,8 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => WS };
 });
 
-const { loadTextArtifact, saveTextArtifact, compareAndSwapTextArtifact, appendTextArtifact, deleteTextArtifact } = await import('./text-artifacts');
+const { loadTextArtifact, saveTextArtifact, compareAndSwapTextArtifact, appendTextArtifact, deleteTextArtifact,
+  saveImmutableTextArtifact, loadImmutableTextArtifact } = await import('./text-artifacts');
 const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 
 let rootSql: postgres.Sql;
@@ -85,6 +86,59 @@ const wsOf = async (slug: string, key: string) =>
   (await rootSql<{ workspace_id: string }[]>`SELECT workspace_id FROM harness_shared.harness_text_artifacts WHERE harness_slug=${slug} AND rel_path=${key}`)[0]?.workspace_id;
 
 describe('text-artifacts (drizzle, PG)', () => {
+  it('preserves concurrent immutable revisions and refuses every ordinary write path', async () => {
+    const first = await saveImmutableTextArtifact('web', '{"revision":1}');
+    const same = await Promise.all(Array.from({ length: 3 }, () => saveImmutableTextArtifact('web', '{"revision":1}')));
+    expect(same.every(ref => ref.sha256 === first.sha256)).toBe(true);
+    const second = await saveImmutableTextArtifact('web', '{"revision":2}');
+    expect(second.sha256).not.toBe(first.sha256);
+    for (const key of [first.relPath, `.papercusp/${first.relPath}`]) {
+      await expect(saveTextArtifact('web', key, 'changed')).rejects.toThrow('immutable_namespace');
+      await expect(appendTextArtifact('web', key, 'changed')).rejects.toThrow('immutable_namespace');
+      await expect(deleteTextArtifact('web', key)).rejects.toThrow('immutable_namespace');
+      await expect(compareAndSwapTextArtifact('web', key, '{"revision":1}', 'changed')).rejects.toThrow('immutable_namespace');
+      await expect(compareAndSwapTextArtifact('web', key, null, 'changed')).rejects.toThrow('immutable_namespace');
+    }
+    expect(await loadImmutableTextArtifact('web', first.sha256)).toBe('{"revision":1}');
+    expect(await loadImmutableTextArtifact('web', second.sha256)).toBe('{"revision":2}');
+    // An administrative DB write is not granted by these APIs. Detect it on read.
+    await rootSql`UPDATE harness_shared.harness_text_artifacts SET content='tampered' WHERE rel_path=${first.relPath}`;
+    await expect(loadImmutableTextArtifact('web', first.sha256)).rejects.toThrow('immutable_corrupt');
+    await expect(saveImmutableTextArtifact('web', '{"revision":1}')).rejects.toThrow('immutable_corrupt');
+  });
+
+  it('never adopts a foreign workspace immutable revision', async () => {
+    const ref = await saveImmutableTextArtifact('web', 'content');
+    await rootSql`UPDATE harness_shared.harness_text_artifacts SET workspace_id='other-ws' WHERE rel_path=${ref.relPath}`;
+    expect(await loadImmutableTextArtifact('web', ref.sha256)).toBeNull();
+    await expect(saveImmutableTextArtifact('web', 'content')).rejects.toThrow('immutable_conflict');
+    expect(await wsOf('web', ref.relPath)).toBe('other-ws');
+  });
+
+  it('round-trips pinned security manifests and tuple ledgers through real canonical storage', async () => {
+    const { createSecurityManifest, createSecurityTupleLedger, SECURITY_POPULATIONS, securityTupleId } = await import('./coverage-census/security-manifest');
+    const { saveSecurityManifest, loadSecurityManifest, saveSecurityTupleLedger, loadSecurityTupleLedger } = await import('./coverage-census/security-manifest-store');
+    const source = { revision: 'source-revision', sha256: 'a'.repeat(64) };
+    const manifest = createSecurityManifest({ producer: 'producer', source, runtime: source,
+      inputs: SECURITY_POPULATIONS.map(population => ({ id: population, population, source,
+        surfaces: [{ kind: population, surfaceId: population, fidelity: 'declared' }] })) });
+    const tuples = SECURITY_POPULATIONS.map(population => ({ population, kind: population, surfaceId: population,
+      distribution: 'gui-installed', platform: 'linux', runtime: 'native', enforcementMode: 'strict', effect: 'process', channel: 'ipc' }));
+    const ledger = createSecurityTupleLedger({ manifest, producer: 'producer', tuples,
+      dispositions: tuples.map(tuple => ({ rowId: securityTupleId(tuple), applicability: 'notApplicable' as const,
+        reason: 'Implementation-checker storage fixture only; no qualification claim', sourceRefs: ['fixture:storage'] })) });
+    await expect(saveSecurityTupleLedger('web', ledger)).rejects.toThrow('manifest_missing');
+    expect((await saveSecurityManifest('web', manifest)).sha256).toBe(manifest.sha256);
+    expect(await loadSecurityManifest('web', manifest.sha256)).toEqual(manifest);
+    expect((await saveSecurityTupleLedger('web', ledger)).sha256).toBe(ledger.sha256);
+    expect(await loadSecurityTupleLedger('web', ledger.sha256)).toEqual(ledger);
+    await expect(saveSecurityTupleLedger('web', { ...ledger, sha256: 'b'.repeat(64) })).rejects.toThrow('identity_mismatch');
+    const changed = createSecurityManifest({ ...manifest.body, runtime: { ...source, sha256: 'c'.repeat(64) } });
+    await saveSecurityManifest('web', changed);
+    expect(await loadSecurityManifest('web', manifest.sha256)).toEqual(manifest);
+    expect(await loadSecurityManifest('web', changed.sha256)).toEqual(changed);
+  });
+
   it('save → load round-trips, null when absent', async () => {
     expect(await loadTextArtifact('web', 'notes.md')).toBeNull();
     await saveTextArtifact('web', 'notes.md', 'hello');
