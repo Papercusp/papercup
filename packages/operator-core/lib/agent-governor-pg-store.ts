@@ -62,6 +62,7 @@ function rowToState(row: BudgetRow, floor: GovernorLimits): GovernorState {
   s.limits = {
     maxConcurrent: floor.maxConcurrent,
     ...(l.rpm !== undefined ? { rpm: l.rpm } : floor.rpm !== undefined ? { rpm: floor.rpm } : {}),
+    ...(l.rpmFromHeaders === true ? { rpmFromHeaders: true } : {}),
     ...(l.itpm !== undefined ? { itpm: l.itpm } : {}),
     ...(l.otpm !== undefined ? { otpm: l.otpm } : {}),
   };
@@ -94,6 +95,7 @@ export class PgGovernorStore implements GovernorStore {
       // /internal/docs/agent-insights/postgres-js-jsonb-binding.
       const limitsObj = {
         ...(s.limits.rpm !== undefined ? { rpm: s.limits.rpm } : {}),
+        ...(s.limits.rpmFromHeaders === true ? { rpmFromHeaders: true } : {}),
         ...(s.limits.itpm !== undefined ? { itpm: s.limits.itpm } : {}),
         ...(s.limits.otpm !== undefined ? { otpm: s.limits.otpm } : {}),
       };
