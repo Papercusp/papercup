@@ -13,6 +13,22 @@ import { readPartialNativeChannelCustody, readPartialNativeCompletion,
   registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { writeRelatedFilterList } from '../../../../scripts/lib/related-tests.mjs';
 
+function retainNativeStartupFailure(dir: string, error: unknown) {
+  // Preserve the actual execFile result as well as the source/trace fixture.
+  // A timeout's killed flag alone does not establish closed descendant pipes.
+  const failure = error as Error & { code?: string | number; signal?: string;
+    killed?: boolean; stdout?: string | Buffer; stderr?: string | Buffer };
+  let retentionError: string | null = null;
+  try {
+    writeFileSync(join(dir, 'failure.stdout'), failure.stdout ?? '', { mode: 0o600 });
+    writeFileSync(join(dir, 'failure.stderr'), failure.stderr ?? '', { mode: 0o600 });
+    writeFileSync(join(dir, 'failure.json'), JSON.stringify({ code: failure.code ?? null,
+      signal: failure.signal ?? null, killed: failure.killed ?? null,
+      terminationObserved: false }), { mode: 0o600 });
+  } catch (cause) { retentionError = String(cause); }
+  failure.message += `\nNATIVE_STARTUP_FAILURE ${JSON.stringify({ retainedRoot: dir, retentionError })}`;
+}
+
 describe('focused runner startup tracing', () => {
   it('predicts the exact native preload environment before OUT allocation without fabricating a channel', () => {
     const plain = { NODE_OPTIONS: '--stack-trace-limit=30' };
@@ -197,6 +213,7 @@ describe('focused runner startup tracing', () => {
         selectedSpecifications: [{ testFile: `file-${step}.test.ts`, pool: 'forks', projectName: null,
           testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }],
       }));
+      let completed = false;
       try {
         const enrolled = registerPartialNativeProducerChannels(out, { status: 'ready', channels }, {
           attemptId: 'attempt', runGroupId: 'group', root: dir, workspaceName: 'ws',
@@ -281,7 +298,11 @@ describe('focused runner startup tracing', () => {
             command: { ...producer.command, argv: ['run', 'foreign'] } }, native).status).toBe('refused');
           expect(read().status).toBe('bound');
         }
-      } finally { rmSync(dir, { recursive: true, force: true }); }
+        completed = true;
+      } catch (error) {
+        retainNativeStartupFailure(dir, error);
+        throw error;
+      } finally { if (completed) rmSync(dir, { recursive: true, force: true }); }
     }, 30_000);
 
   it.each(['event', 'stream'])('never publishes partial %s artifacts when killed after opening the output', async kind => {
@@ -760,6 +781,7 @@ describe('focused runner startup tracing', () => {
         if (message.type === 'started') child.send({ type: 'stop' });
       });
       child.send({ type: 'start', config: { secret: 'never-log' } });`);
+    let completed = false;
     try {
       const env = startupTraceEnv({ ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: undefined });
       const { stderr } = await promisify(execFile)(process.execPath, [parent], { env, timeout: 10_000 });
@@ -774,8 +796,12 @@ describe('focused runner startup tracing', () => {
       expect(rows.some(row => row.event === 'node-loaded' && row.pid === workerPid)).toBe(true);
       expect(rows.find(row => row.event === 'started-received')).toMatchObject({ error: false });
       expect(stderr).not.toContain('never-log');
+      completed = true;
+    } catch (error) {
+      retainNativeStartupFailure(dir, error);
+      throw error;
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      if (completed) rmSync(dir, { recursive: true, force: true });
     }
   });
 
