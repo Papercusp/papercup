@@ -95,6 +95,7 @@ import {
   normalizeLaunchMode,
   resolveLaunchMode,
 } from '../../agent-launch-core';
+import { clampCompactionLimit } from '../../agent-config-constants';
 import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 import {
@@ -2331,6 +2332,11 @@ export default defineTool({
       launchContext: neutralLineageRequested ? undefined : persistedHeadcountProfile?.config.launchContext,
       extraArgs: neutralLineageRequested ? undefined : args.extraArgs ?? undefined,
     };
+    const compactionLimitWarnings: Array<{
+      memberIndex: number;
+      requested: number;
+      effective: number;
+    }> = [];
     const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
       // A successor is a fresh process even though it has a source identity.
       // Apply the same Codex model policy as an ordinary fresh launch; otherwise
@@ -2351,14 +2357,28 @@ export default defineTool({
       // pinning here, add an explicit `goalRole` to MemberSpec — do NOT reinstate
       // the `--role` lookup.
       const folded = foldMemberSpec(flatBase, memberSpecs[i]);
-      if (folded.agent !== 'codex') return folded;
-      // One policy owns both the omitted-model default and the Spark deny. Do
-      // this before any terminal/PTY is opened so a bad member cannot partially
-      // launch a batch and leave an untracked process behind.
-      const selection = resolveCodexModelSelection(folded.model, {
-        source: folded.modelSource ?? (folded.model ? 'explicit' : 'configured-default'),
-      });
-      return { ...folded, model: selection.model, modelSource: selection.source };
+      let effective = folded;
+      if (folded.agent === 'codex') {
+        // One policy owns both the omitted-model default and the Spark deny. Do
+        // this before any terminal/PTY is opened so a bad member cannot partially
+        // launch a batch and leave an untracked process behind.
+        const selection = resolveCodexModelSelection(folded.model, {
+          source: folded.modelSource ?? (folded.model ? 'explicit' : 'configured-default'),
+        });
+        effective = { ...folded, model: selection.model, modelSource: selection.source };
+      }
+      if (fleetSlug && effective.compactionLimit != null) {
+        const requested = effective.compactionLimit;
+        const limit = clampCompactionLimit(requested, effective.model, { fleetMember: true });
+        if (limit < requested) {
+          compactionLimitWarnings.push({ memberIndex: i, requested, effective: limit });
+          notes.push(
+            `⚠ Member ${i + 1} requested compaction limit ${requested} tokens, above the fleet-member ceiling; the effective limit is ${limit} tokens. For an unfleeted agent that needs a higher limit, pass independent: true and omit fleet.`,
+          );
+          effective = { ...effective, compactionLimit: limit };
+        }
+      }
+      return effective;
     });
     if (gradingAuditTaskDetail !== undefined) {
       if (!isGradingAuditTaskDetail(gradingAuditTaskDetail)) {
@@ -3391,6 +3411,7 @@ export default defineTool({
       failed: failed.length,
       failures,
       partial: partialLaunch,
+      compactionLimitWarnings,
       command,
       fleet: fleetSlug,
       independent: args.independent === true,
