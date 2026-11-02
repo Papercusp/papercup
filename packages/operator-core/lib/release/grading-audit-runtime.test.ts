@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
 import * as databaseTargets from '@papercusp/db-org/connection';
 import type { TaskRow } from '../task-manager/types';
-import { readGradingAuditSourcePin } from './grading-audit-source-pin';
+import { readGradingAuditSourcePin, writeGradingAuditSourcePin } from './grading-audit-source-pin';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
 import { ownerPidFromSocketPath, resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } from '../fleet/spawner-socket-path';
 import { SPAWNER_SCOPE_ENV } from '../fleet/sidecar-exec-lifetime';
@@ -159,6 +159,42 @@ createServer((_req, res) => res.end(JSON.stringify({ sha: process.env.PAPERCUSP_
       expect(run.output()).toContain('deadline');
     } finally { await run.stop(); }
   }, 15000);
+
+  it('acquires the same retained endpoint while a real recycled child is waiting to listen', async () => {
+    const run = await launch(`import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+let attempt = 1;
+try { attempt += Number(readFileSync('attempt', 'utf8')); } catch {}
+writeFileSync('attempt', String(attempt));
+const listen = () => {
+  if (attempt > 1 && !existsSync('resume')) return setTimeout(listen, 10);
+  createServer((_req, res) => res.end(JSON.stringify({ sha: process.env.PAPERCUSP_BUILD_SHA,
+    version: '1.2.3', attempt }))).listen(Number(process.env.PORT), '127.0.0.1', () => {
+      if (attempt === 1) setTimeout(() => process.kill(process.pid, 'SIGKILL'), 20);
+    });
+};
+listen();`, 120);
+    try {
+      await vi.waitFor(() => expect(run.output()).toContain('signal=SIGKILL'), { timeout: 6000 });
+      run.deps.now = () => Date.now();
+      writeGradingAuditSourcePin(run.locator, Math.floor(Date.now() / 1000));
+      const taskId = await run.deps.spawn!('ws', run.locator);
+      delete run.deps.probe;
+      run.deps.sleep = vi.fn(async () => {
+        writeFileSync(join(run.source.sourceRoot, 'resume'), 'ready');
+        await new Promise(resolve => setTimeout(resolve, 100));
+      });
+      const recovered = await ensureGradingAuditRuntime({ ...run.input, issueId: 'EI-b' }, run.deps);
+      expect(recovered.taskId).toBe(taskId);
+      expect(recovered.baseUrl).toBe(run.locator.baseUrl);
+      expect(run.deps.sleep).toHaveBeenCalled();
+      expect(run.deps.spawn).toHaveBeenCalledTimes(1);
+      expect(run.deps.stop).not.toHaveBeenCalled();
+      const health = await fetch(run.locator.baseUrl).then(response => response.json());
+      expect(health).toMatchObject({ sha: run.input.evaluatorBuild.sha, version: '1.2.3', attempt: 2 });
+      expect(readFileSync(join(run.source.sourceRoot, 'attempt'), 'utf8')).toBe('2');
+    } finally { await run.stop(); }
+  }, 12000);
 
   it('halts repeated short crashes instead of spinning until its lifetime expires', async () => {
     const run = await launch("console.log('CRASH'); process.exit(42);");

@@ -349,9 +349,8 @@ describe('P-014: the unit-state widening (arg-surface drift)', () => {
     expectArgSurface(
       devServiceHealth,
       'dev:service_health',
-      // `unitsOnly` (optional) only skips the unrelated fixed-endpoint snapshot; the unitStates/unitsUnknown a
-      // cover() expression reads are identical with or without it, so coverage is unchanged.
-      // `detail` changes only returned snapshot verbosity; it does not affect unit-state coverage.
+      // `detail` only changes returned snapshot verbosity. `unitsOnly` skips fixed-endpoint probes but preserves the
+      // `unitStates`/`unitsUnknown` fields cover() reads, so neither option changes unit-state coverage.
       ['detail', 'scope', 'units', 'unitsOnly'],
       '`detail` does not change the unit-state coverage. systemctlIsActive.cover() emits `dev:service_health { units: [...], scope: ... }` for every unit outside the ' +
         'probe registry — which is 50 of the 114 corpus atoms. Removing either arg makes those expressions uncallable ' +
