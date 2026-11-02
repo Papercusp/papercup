@@ -6,8 +6,10 @@ import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMinecraftNativeParticipant, runMinecraftNativeTrial, startMinecraftNativeAssignment,
-  type MinecraftNativeAssignmentPorts, type MinecraftNativeRunPorts, type MinecraftNativeTrialPorts } from './minecraft-launch-adapter';
+import { runMinecraftNativeParticipant, runMinecraftNativeTrial, runMinecraftStoredTrial, startMinecraftNativeAssignment,
+  type MinecraftNativeAssignmentPorts, type MinecraftNativeRunPorts, type MinecraftNativeTrialPorts,
+  type MinecraftStoredTrialPorts } from './minecraft-launch-adapter';
+import { rolloutIdFor } from './reproducibility/emit';
 import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial } from './minecraft-protocol';
 import { controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
 import { canonicalJson } from './reproducibility/canonical-json';
@@ -369,5 +371,76 @@ describe('Minecraft native trial coordinator', () => {
     await expect(runMinecraftNativeTrial(f.input, { rolloutId: 'frozen', retainEvidence: vi.fn(), onResult: vi.fn() }, ports))
       .rejects.toThrow(/frozen native reference/);
     expect(f.ports.startAssignment).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
+  });
+});
+
+async function storedTrialFixture() {
+  const f = await trialFixture();
+  const { current } = f.input;
+  const rolloutId = rolloutIdFor(current.protocol.runId, 'minecraft', current.task.instanceId,
+    current.options.armId, current.options.seed);
+  const emitRollout = vi.fn<MinecraftStoredTrialPorts['emitRollout']>(async () => ({ rolloutId, runId: current.protocol.runId }));
+  return { ...f, rolloutId, ports: { ...f.ports, emitRollout } };
+}
+describe('Minecraft canonical rollout persistence', () => {
+  it('atomically stores replay, unsolved score, native accounting and frozen provenance in the existing rollout', async () => {
+    const f = await storedTrialFixture();
+    const result = await runMinecraftStoredTrial(f.input, f.ports);
+    expect(f.ports.emitRollout).toHaveBeenCalledOnce();
+    const [saved, scope] = f.ports.emitRollout.mock.calls[0]!;
+    expect(scope).toEqual({ workspaceId: 'benchmarks' });
+    expect(saved).toMatchObject({ suite: 'minecraft', modality: 'in-container', taskId: 't1', arm: 'stock',
+      generation: { status: 'completed', tokensIn: result.rows[0]!.tokensIn,
+        tokensOut: result.rows[0]!.tokensOut, tokensTotal: result.rows[0]!.tokensTotal,
+        armMeta: { executionPath: 'minecraft-native-assignment' } },
+      grading: { resolved: false, status: 'failed', score: 0, family: 'minecraft' },
+      provenance: { configSnapshot: { protocol: f.input.current.protocol,
+        minecraft: { trial: f.input.runtime.trial, pair: f.input.pairing.pair } } } });
+    const retained = saved.generation.armMeta!.minecraftEvidence as { sha256: string; trialId: string };
+    expect(readMinecraftEvidenceExport(saved.generation.submission!, retained.sha256)).toEqual(f.evidence);
+    expect(result.rows[0]).toMatchObject({ rolloutId: f.rolloutId, armMeta: { minecraftEvidence: retained } });
+    expect(f.control.retainEvidence).not.toHaveBeenCalled();
+    expect(f.control.onResult).not.toHaveBeenCalled();
+    expect(f.input.runtime.dispose).toHaveBeenCalledOnce();
+  });
+  it('persists failed native startup and its replay without turning it into a capability failure', async () => {
+    const f = await storedTrialFixture();
+    vi.mocked(f.ports.startAssignment).mockRejectedValue(Error('native startup refused'));
+    await runMinecraftStoredTrial(f.input, f.ports);
+    const saved = f.ports.emitRollout.mock.calls[0]![0];
+    expect(saved).toMatchObject({ generation: { status: 'error' }, grading: { resolved: null, status: 'error' } });
+    expect(saved.generation.submission).toContain(f.input.runtime.trial.trialId);
+    expect(f.input.runtime.dispose).toHaveBeenCalledOnce();
+  });
+  it('snapshots host provenance before awaiting native startup', async () => {
+    const f = await storedTrialFixture();
+    const initialState = structuredClone(f.input.pairing.initialState);
+    const environment = structuredClone(f.input.runtime.measurement);
+    vi.mocked(f.ports.startAssignment).mockImplementationOnce(async () => {
+      f.input.pairing.initialState = { ...initialState, worldSha256: sha(99) };
+      f.input.runtime.measurement = { ...environment, serverInstanceId: 'later-server' };
+      return f.native;
+    });
+    await runMinecraftStoredTrial(f.input, f.ports);
+    expect(f.ports.emitRollout.mock.calls[0]![0].provenance).toMatchObject({
+      configSnapshot: { minecraft: { initialState } }, envFingerprint: environment,
+    });
+  });
+  it.each(['rejected', 'foreign-receipt'])('propagates %s persistence and still verifies runtime disposal', async failure => {
+    const f = await storedTrialFixture();
+    if (failure === 'rejected') f.ports.emitRollout.mockRejectedValue(Error('transaction unavailable'));
+    else f.ports.emitRollout.mockResolvedValue({ rolloutId: 'foreign', runId: f.input.current.protocol.runId });
+    await expect(runMinecraftStoredTrial(f.input, f.ports)).rejects.toThrow(
+      failure === 'rejected' ? /transaction unavailable/ : /foreign persistence receipt/);
+    expect(f.input.runtime.dispose).toHaveBeenCalledOnce();
+  });
+  it.each(['context', 'store'])('refuses a foreign %s workspace before native allocation', async source => {
+    const f = await storedTrialFixture();
+    if (source === 'context') f.input.current.context.workspaceId = 'foreign';
+    else f.input.current.scope.workspaceId = 'foreign';
+    await expect(runMinecraftStoredTrial(f.input, f.ports)).rejects.toThrow(/workspace/);
+    expect(f.ports.startAssignment).not.toHaveBeenCalled();
+    expect(f.ports.emitRollout).not.toHaveBeenCalled();
+    expect(f.input.runtime.dispose).not.toHaveBeenCalled();
   });
 });
