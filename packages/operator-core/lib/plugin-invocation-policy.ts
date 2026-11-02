@@ -65,9 +65,9 @@ export function createPluginInvocationChokepoint(deps: {
       // operation and installation; caller-controlled fields remain query data.
       const installation = Object.freeze({ ...request.tool.pluginInstallation });
       const pluginName = request.tool.pluginName;
-      const boundPrincipal: Principal = { ...principal, kind: principal.kind, authMethod: principal.authMethod,
+      const boundPrincipal = { ...principal, kind: principal.kind, authMethod: principal.authMethod,
         trust: principal.trust!, capabilities: new Set(principal.capabilities),
-        allowedTools: new Set(principal.allowedTools) };
+        allowedTools: new Set(principal.allowedTools) } satisfies Principal;
       const declaration = { name: request.toolName, capabilities: [...request.tool.capabilities] };
       const input = structuredClone(request.input);
       const dispatchIdentity = () => canonicalJson({ toolName: request.toolName, pluginName: request.tool.pluginName,

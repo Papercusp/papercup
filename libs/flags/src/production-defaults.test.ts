@@ -825,7 +825,8 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // case was 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK
     // both stay 12. Count 36 → 35.
     // P-010 adds a destructive-migration cutover interlock. Count 36 → 37.
-    expect(offCount).toBe(37);
+    // P-002/P-019 adds the registered security-policy cutover. Count 37 → 38.
+    expect(offCount).toBe(38);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
