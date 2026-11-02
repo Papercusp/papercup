@@ -1432,6 +1432,24 @@ export async function claimAgentLaunch(opts: {
              AND existing.summary = '{}'::jsonb
            )
            OR (
+             -- The spawning protocol persists a token-CAS attempt BEFORE any
+             -- native spawn. An expired, explicitly empty pre-attempt receipt
+             -- can be replaced atomically: the old token can no longer advance
+             -- or release it. This also repairs the legacy progress write that
+             -- lost its token; that writer's next CAS already fails closed.
+             -- Missing fields are uncertainty, never negative spawn evidence.
+             EXCLUDED.summary ->> 'requestKind' = 'capability:launch-agent'
+             AND EXCLUDED.summary ->> 'launchState' = 'claimed'
+             AND COALESCE(EXCLUDED.summary ->> 'claimToken', '') <> ''
+             AND existing.summary ->> 'requestKind' = 'capability:launch-agent'
+             AND existing.summary ->> 'launchState' = 'spawning'
+             AND existing.summary -> 'spawnAttempted' = 'false'::jsonb
+             AND existing.summary -> 'nativeSpawnAttempted' = '[]'::jsonb
+             AND existing.summary -> 'memberResults' = '{}'::jsonb
+             AND existing.summary -> 'processHandles' = '{}'::jsonb
+             AND existing.summary -> 'tasks' = '[]'::jsonb
+           )
+           OR (
              existing.summary -> 'agentStarted' = 'null'::jsonb
              AND existing.launched_at < ${now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS}
              AND (
@@ -1478,8 +1496,8 @@ export async function claimAgentLaunch(opts: {
   }
 }
 
-/** Record what the winning launch actually did, so a later replay of the same key
- *  can report it instead of a bare "already launched". Best-effort. */
+/** Record what the winning launch actually did, preserving its ownership token
+ *  across progress writes so later owned writes and cleanup retain their CAS. */
 export async function recordAgentLaunchResult(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
@@ -1493,6 +1511,9 @@ export async function recordAgentLaunchResult(opts: {
     const updated = await sql<Array<{ idempotency_key: string }>>`
       UPDATE harness_shared.agent_launch_idempotency
          SET summary = ${JSON.stringify(opts.summary)}::text::jsonb
+           || CASE WHEN summary ? 'claimToken'
+                THEN jsonb_build_object('claimToken', summary -> 'claimToken')
+                ELSE '{}'::jsonb END
        WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
          AND (${opts.claimToken ?? null}::text IS NULL OR summary ->> 'claimToken' = ${opts.claimToken ?? null})
       RETURNING idempotency_key
