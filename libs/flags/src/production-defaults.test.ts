@@ -50,6 +50,9 @@ const VALID_DARK_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>([
  * fails loudly if the derivation ever silently flips a flag.
  */
 const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
+  // P-002/P-019: explicit security authorization cutover, pending exact host
+  // resource binding and independently precommitted qualification under Avi AUTO.
+  "papercusp-plugin-invocation-policy",
   // P-010 / EI-26074325417052646: destructive PG-payload cutover waits for
   // a successful backup and compatible readers on the shared database.
   "papercusp-session-archive-cold-migration",

@@ -743,8 +743,32 @@ function isCanonicalPlanAnchorRepairCommand(command) {
 
   const header = lines.shift();
   const closingDelimiter = lines.pop();
-  const match = /^ptool[ \t]+plans:edit[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  const match = /^(.*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
   if (!match || closingDelimiter !== match[2] || lines.includes(match[2])) return false;
+  const commands = readOnlyCommandSegments(match[1]);
+  if (commands?.length !== 1) return false;
+  const [tool, verb, ...args] = commands[0];
+  if (tool !== 'ptool' || verb !== 'plans:edit') return false;
+  let jsonStdin = false;
+  let explicitUrl = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--json' && !jsonStdin && args[i + 1] === '-') {
+      jsonStdin = true;
+      i++;
+    } else if (/^--(?:workspace|harness)=[A-Za-z0-9._-]+$/.test(arg)) {
+      continue;
+    } else if (!explicitUrl && (arg === '--url' || arg.startsWith('--url='))) {
+      const url = arg === '--url' ? args[++i] : arg.slice('--url='.length);
+      // The maintained local staging operator is the only extra destination.
+      // Never forward the session bearer to an arbitrary host or audit sidecar.
+      if (typeof url !== 'string' || !/^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):3170\/?$/.test(url)) return false;
+      explicitUrl = true;
+    } else {
+      return false;
+    }
+  }
+  if (!jsonStdin) return false;
 
   let payload;
   try {

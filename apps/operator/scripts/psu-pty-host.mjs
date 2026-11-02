@@ -7662,6 +7662,20 @@ export function controlSocketProbeOutcome(msg, ownerId) {
   return { ok: true, reason: 'control-socket-live' };
 }
 
+export function controlSocketSelfHealAction({ metaMine, sockOnDisk, serverListening }) {
+  if (metaMine && sockOnDisk && serverListening) return 'healthy';
+  if (!sockOnDisk || !serverListening) return 'rebind';
+  return 'reassert';
+}
+
+export function closeControlServerForRebind(server, afterClose) {
+  if (server.listening) {
+    server.close(afterClose);
+    return;
+  }
+  afterClose();
+}
+
 export function decodeControl(payload) {
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
   try {
@@ -10404,6 +10418,19 @@ export function deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery = fal
   return 'clear';
 }
 
+/** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
+export function codexHomeEnsureFailureMetadata(failure, capMs) {
+  const statusCode = Number.isInteger(failure?.status) ? failure.status : null;
+  const retryable = failure?.stage === 'request' ||
+    (failure?.stage === 'response' &&
+      (statusCode === 408 || statusCode === 429 ||
+        (statusCode !== null && statusCode >= 500 && statusCode <= 599)));
+  return {
+    retryable,
+    capMs: Number.isFinite(capMs) && capMs > 0 ? Math.round(capMs) : null,
+  };
+}
+
 /**
  * A minimal FIFO async mutex serializing the GATED-inject critical section within
  * a single host (EI-8822). Each control-socket connection runs its OWN async
@@ -12432,6 +12459,7 @@ export function hostThroughPty(o) {
   // would silently trample a live successor's registration).
   let rebindControlSocket = () => {}; // assigned after the server exists below
   let lastHealNoticeAt = 0;
+  let controlSocketRebindPending = false;
   const selfHealTick = async () => {
     let m = null;
     try { m = JSON.parse(await fsPromises.readFile(metaPath, 'utf8')); } catch { /* missing/corrupt metadata is reasserted */ }
@@ -12442,21 +12470,23 @@ export function hostThroughPty(o) {
     const metaMine = !!(m && m.pid === process.pid);
     const sockOnDisk = await fsPromises.access(sock).then(() => true, () => false);
     if (metadataWriter.closed) return false;
-    if (metaMine && sockOnDisk) return true;
+    const action = controlSocketSelfHealAction({ metaMine, sockOnDisk, serverListening: server.listening });
+    if (action === 'healthy') return true;
     writeMeta();
-    if (!sockOnDisk) rebindControlSocket();
+    if (action === 'rebind') rebindControlSocket();
     const now = Date.now();
     if (now - lastHealNoticeAt > 60_000) {
       lastHealNoticeAt = now;
       appendHostEvent(ownerId, 'discovery-reasserted', {
         metadataRewritten: !metaMine,
-        socketRebound: !sockOnDisk,
+        socketRebound: action === 'rebind',
+        serverListening: server.listening,
       });
       try {
         writeTerminalDiagnostic(
           `psu-pty-host: discovery re-asserted for ${ownerId} ` +
-            `(json ${metaMine ? 'ok' : 'rewritten'}, sock ${sockOnDisk ? 'ok' : 'rebound'}) — ` +
-            `it was removed while this host was live\n`,
+            `(json ${metaMine ? 'ok' : 'rewritten'}, socket ${action === 'rebind' ? 'rebind requested' : 'path ok'}) — ` +
+            `discovery state was unhealthy while this host was live\n`,
         );
       } catch {
         /* never let a diagnostic write break the host */
@@ -17069,22 +17099,36 @@ export function hostThroughPty(o) {
   // ENOENT), so heal by closing the listener and re-listening on the same path.
   // net.Server supports listen-after-close; the connection handler is reused.
   rebindControlSocket = () => {
+    if (controlSocketRebindPending) return;
+    controlSocketRebindPending = true;
+    let rebindStarted = false;
+    const startRebind = () => {
+      if (rebindStarted) return;
+      rebindStarted = true;
+      try {
+        if (existsSync(sock)) unlinkSync(sock); // a dead successor's stray node would block bind
+      } catch {
+        /* ignore */
+      }
+      try {
+        listenControlSocket();
+      } catch (e) {
+        appendHostEvent(ownerId, 'control-socket-rebind-failed', hostErrorEvidence(e));
+        writeTerminalDiagnostic(`psu: control socket re-bind failed: ${e.message}\n`);
+      } finally {
+        controlSocketRebindPending = false;
+      }
+    };
     try {
-      server.close(() => {
-        try {
-          if (existsSync(sock)) unlinkSync(sock); // a dead successor's stray node would block bind
-        } catch {
-          /* ignore */
-        }
-        try {
-          listenControlSocket();
-        } catch (e) {
-          appendHostEvent(ownerId, 'control-socket-rebind-failed', hostErrorEvidence(e));
-          writeTerminalDiagnostic(`psu: control socket re-bind failed: ${e.message}\n`);
-        }
-      });
-    } catch {
-      /* close() throws only when already closed — nothing to heal then */
+      closeControlServerForRebind(server, startRebind);
+    } catch (e) {
+      if (!server.listening) {
+        startRebind();
+        return;
+      }
+      controlSocketRebindPending = false;
+      appendHostEvent(ownerId, 'control-socket-rebind-failed', hostErrorEvidence(e));
+      writeTerminalDiagnostic(`psu: control socket re-bind failed: ${e.message}\n`);
     }
   };
 
@@ -18253,7 +18297,9 @@ export function hostThroughPty(o) {
           } catch {
             if (env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') {
               recycling = false;
+              const failureOutcome = codexHomeEnsureFailureMetadata(homeEnsureFailure, carryRearmCapMs);
               appendHostEvent(ownerId, 'respawn-failed', { mode: respawnMode, reason: 'codex-route-unavailable',
+                ...failureOutcome,
                 ...(homeEnsureFailure ? { homeEnsureFailure } : {}) });
               // The hook already reported QUEUED. A post-ACK preparation
               // failure must also reach the terminal; the host ledger alone
@@ -18265,12 +18311,7 @@ export function hostThroughPty(o) {
                 `Codex home preparation failed${status}. The current session is intact; ` +
                 'the operator repair must succeed before the managed carry can finish.\n',
               );
-              const statusCode = homeEnsureFailure?.status;
-              const retryable = homeEnsureFailure?.stage === 'request' ||
-                (homeEnsureFailure?.stage === 'response' &&
-                  (statusCode === 408 || statusCode === 429 ||
-                    (statusCode >= 500 && statusCode <= 599)));
-              return { ...settleQuotaRecovery(false, 'codex-route-unavailable'), retryable };
+              return { ...settleQuotaRecovery(false, 'codex-route-unavailable'), retryable: failureOutcome.retryable };
             }
           }
         }

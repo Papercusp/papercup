@@ -86,6 +86,10 @@ it('persists a full census page with bounded bulk statements', async () => {
   expect(operationWrites).toHaveLength(1);
   const batch = operationWrites[0]!.find(value => typeof value === 'string' && value.startsWith('['));
   expect(JSON.parse(batch as string)).toHaveLength(250);
+  const exampleWrites = tx.mock.calls.filter(([parts]) => parts.join('').includes('INSERT INTO harness_shared.sql_intent_examples'));
+  expect(exampleWrites).toHaveLength(1);
+  const exampleBatch = exampleWrites[0]!.find(value => typeof value === 'string' && value.startsWith('['));
+  expect(JSON.parse(exampleBatch as string)).toHaveLength(250);
 });
 it('R17-DURABLE', async () => {
   const events: string[] = [], observation = row();
