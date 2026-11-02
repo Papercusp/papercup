@@ -111,10 +111,12 @@ describe('current host selection', () => {
   });
 });
 
-function minecraftLaunchFixture() {
+function minecraftLaunchFixture(ledger?: 'on' | 'off') {
   config = controlledProtocolFixture();
   config.taskIds = ['t1']; config.seeds = [1]; config.aggregateBudgetUsd = 15;
   config.grader.family = 'minecraft'; config.grader.version = 'minecraft@1.20.4/server-advancements-v1';
+  if (ledger) config.arms.find(arm => arm.id === 'solo')!.control!.capabilities = {
+    ...allCapabilities('off'), 'work-item-ledger': ledger };
   for (const rate of config.priceSchedule.rates) {
     rate.inputTokenCeiling = 1000; rate.inputTokenCeilingSourceSha256 = 'e'.repeat(64);
   }
@@ -124,7 +126,8 @@ function minecraftLaunchFixture() {
   const manifest = freezeMinecraftManifest({ schemaVersion: 1, revision: 1,
     train: [material('train', 1)], dev: [material('dev', 2)], heldOut: [material('t1', 3)] });
   const initialState = { worldSha256: hash(90), memorySha256: config.context.memoryHash };
-  const arms = config.arms.filter(arm => ['stock', 'repeated-session'].includes(arm.id)).map(arm => {
+  const selectedArm = ledger ? 'solo' : 'stock';
+  const arms = config.arms.filter(arm => [selectedArm, 'repeated-session'].includes(arm.id)).map(arm => {
     const selection = freezeMinecraftSelection(manifest, { runId: config.runId, armId: arm.id, modelId: arm.model,
       promptSha256: arm.runtime.promptHash, configurationSha256: createHash('sha256').update(canonicalJson(config)).digest('hex'), sources: [] });
     const trial = freezeMinecraftTrial({ schemaVersion: 1, runId: config.runId, armId: arm.id, taskId: 't1',
@@ -136,18 +139,18 @@ function minecraftLaunchFixture() {
     return { trial, selection, initialState };
   });
   const pair = freezeMinecraftPair(manifest, { arms, orderSeed: hash(100) });
-  const selected = arms.find(value => value.trial.protocol.armId === 'stock')!;
+  const selected = arms.find(value => value.trial.protocol.armId === selectedArm)!;
   const launch: MinecraftTaskLaunch = { ...selected, manifest, participantId: 'alice', pairing: { pair, initialState },
     runtime: { serverJar: '/host/pinned-server.jar', botImage: `sha256:${hash(72)}`, acceptEula: true,
       worldBaseline: { worldSha256: initialState.worldSha256, dispose: vi.fn(async () => {}) } } };
   const preregHash = hash(50);
   io.prereg.mockResolvedValue({ preregHash, config });
-  const request = { ...input, arm: 'stock', suite: 'minecraft', current: { ...input.current!, protocolRunId: config.runId,
+  const request = { ...input, arm: selectedArm, suite: 'minecraft', current: { ...input.current!, protocolRunId: config.runId,
     preregHash, seed: 1 } };
-  const execute = vi.fn<typeof runMinecraftProvisionedTrial>(async (host): Promise<Awaited<ReturnType<typeof runMinecraftProvisionedTrial>>> => ({ arm: 'stock', runId: config.runId,
+  const execute = vi.fn<typeof runMinecraftProvisionedTrial>(async (host): Promise<Awaited<ReturnType<typeof runMinecraftProvisionedTrial>>> => ({ arm: selectedArm, runId: config.runId,
     startedAtMs: 0, finishedAtMs: 1, modelCallsSpent: 0, tokensSpent: 0, costUsdSpent: 0,
     accountingUnknown: false, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: [], rows: [{
-      runId: config.runId, suite: 'minecraft', modality: 'in-container', taskId: 't1', arm: 'stock', seed: 1,
+      runId: config.runId, suite: 'minecraft', modality: 'in-container', taskId: 't1', arm: selectedArm, seed: 1,
       resolved: false, score: 0, graderStatus: 'failed', graderFamily: 'minecraft', graderVersion: config.grader.version,
       tokensIn: 0, tokensOut: 0, tokensTotal: 0, costUsd: 0, priceTableVersion: config.priceSchedule.version,
       wallClockMs: 1, turns: 0, budgetTokens: null, capped: false, generationStatus: 'completed', generationError: null,
@@ -158,6 +161,21 @@ function minecraftLaunchFixture() {
   return { request, deps, execute, launch };
 }
 describe('Minecraft current operational lifecycle', () => {
+  it.each(['on', 'off'] as const)('routes verified solo ledger-%s through the maintained Minecraft lifecycle', async ledger => {
+    const f = minecraftLaunchFixture(ledger);
+    expect(currentBenchLaunchSelection(f.request, config).arm.id).toBe('solo');
+    await (await launchBenchRun(f.request, f.deps)).done;
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.execute.mock.calls[0]![0].options.armId).toBe('solo');
+    expect(io.upsert.mock.calls[0][0]).toMatchObject({ suite: 'minecraft', arm: 'solo' });
+    expect(io.legacyRun).not.toHaveBeenCalled();
+  });
+  it('refuses unsupported solo capabilities before registration', async () => {
+    const f = minecraftLaunchFixture('on');
+    config.arms.find(arm => arm.id === 'solo')!.control!.capabilities['consult-router'] = 'on';
+    await expect(launchBenchRun(f.request, f.deps)).rejects.toThrow(/unavailable for: consult-router/);
+    expect(io.register).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled();
+  });
   it('registers the existing governor and run roster, then projects the stored result into live status', async () => {
     const f = minecraftLaunchFixture();
     await (await launchBenchRun(f.request, f.deps)).done;

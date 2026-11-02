@@ -20,6 +20,7 @@ import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEviden
 import { readCurrentBenchRepeatedSessionControl, startCurrentBenchTaskAssignment, type CurrentTaskInput } from './run-launcher';
 import { createCurrentSuBenchHarness, CURRENT_STOCK_CLAUDE_BLUEPRINT, CURRENT_STOCK_CODEX_BLUEPRINT,
   currentBenchAssignmentId, currentBenchSessionUsageDelta, requireCurrentBenchNativeRunCost,
+  currentBenchSoloCapabilityControl,
   type CurrentBenchNativeRunCost, type CurrentBenchSessionBudget,
   type CurrentSuBenchObservations, type CurrentSuBenchOptions } from './current-su';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
@@ -64,6 +65,7 @@ export async function startMinecraftNativeAssignment(input: MinecraftNativeAssig
   const trial = runtime.trial, game = trial.protocol;
   const topology = arm?.control?.topology;
   const stock = topology === 'stock-native-reference' || topology === 'repeated-session';
+  if (topology === 'solo') currentBenchSoloCapabilityControl(arm!);
   if (!arm || !['stock-native-reference', 'solo', 'coordinated', 'repeated-session'].includes(topology ?? '') ||
       arm.agent === 'proximus' || options.agent !== arm.agent || options.model !== arm.model ||
       options.account !== arm.account || options.effort !== arm.effort || protocol.grader.family !== 'minecraft' ||
@@ -304,14 +306,15 @@ export type MinecraftNativeTrialControl = {
 /** Consume one prepared single-player runtime. The shared driver owns rows and
  * denominators; the host-owned evidence reader owns shutdown and grading. A
  * replay must be retained before, or atomically with, the scored row.
- * Coordinated and product-capability arms need their own verified delivery and
- * participant accounting; this entry point cannot declare those on their behalf.
+ * Solo uses the maintained host's verified capability controls. Coordinated
+ * arms still require shared participant accounting before admission.
  */
 export async function runMinecraftNativeTrial(input: MinecraftNativeAssignmentInput, control: MinecraftNativeTrialControl,
   ports: MinecraftNativeTrialPorts = liveTrialPorts) {
   const protocol = currentBenchmarkProtocolSchema.parse(input.current.protocol);
   const arm = protocol.arms.find(value => value.id === input.current.options.armId);
-  if (!arm || !['stock-native-reference', 'repeated-session'].includes(arm.control?.topology ?? '') ||
+  if (arm?.control?.topology === 'solo') currentBenchSoloCapabilityControl(arm);
+  if (!arm || !['stock-native-reference', 'repeated-session', 'solo'].includes(arm.control?.topology ?? '') ||
       input.runtime.trial.protocol.participants.length !== 1 || !control.rolloutId.trim() ||
       !(typeof control.persistResult === 'function'
         ? control.retainEvidence === undefined && control.onResult === undefined
@@ -413,7 +416,8 @@ export function prepareMinecraftTaskLaunch(protocol: ReturnType<typeof currentBe
     pairing: { pair: source.pairing.pair, initialState: structuredClone(source.pairing.initialState) } };
   const { trial, selection, participantId } = launch, game = trial.protocol;
   const arm = protocol.arms.find(value => value.id === armId);
-  if (!arm || arm.agent !== 'codex' || !['stock-native-reference', 'repeated-session'].includes(arm.control?.topology ?? '') ||
+  if (arm?.control?.topology === 'solo') currentBenchSoloCapabilityControl(arm);
+  if (!arm || arm.agent !== 'codex' || !['stock-native-reference', 'repeated-session', 'solo'].includes(arm.control?.topology ?? '') ||
       protocol.grader.family !== 'minecraft' || protocol.aggregateBudgetUsd > 20 ||
       protocol.runId !== game.runId || armId !== game.armId || !protocol.taskIds.includes(game.taskId) ||
       game.participants.length !== 1 || game.participants[0] !== participantId ||

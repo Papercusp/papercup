@@ -64,6 +64,7 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
   currentBenchCodexRoute, requireCurrentBenchHostBinding, requireCurrentBenchNativeRunCost,
+  currentBenchSoloCapabilityControl,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchTaskRequestCensus } from './current-su';
@@ -659,7 +660,8 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
     /^claude\/\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(arm.runtime.clientVersion);
   const minecraftReference = input.suite === 'minecraft' && protocol.grader.family === 'minecraft' &&
     protocol.aggregateBudgetUsd <= 20 && arm.agent === 'codex' &&
-    ['stock-native-reference', 'repeated-session'].includes(arm.control?.topology ?? '');
+    ['stock-native-reference', 'repeated-session', 'solo'].includes(arm.control?.topology ?? '');
+  if (minecraftReference && arm.control?.topology === 'solo') currentBenchSoloCapabilityControl(arm);
   if (input.suite === 'minecraft' && !minecraftReference ||
       !minecraftReference && (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference && !claudeReference))
     throw new Error('Unsupported current benchmark execution arm/client.');

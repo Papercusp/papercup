@@ -12,7 +12,7 @@ import { runMinecraftNativeParticipant, runMinecraftNativeTrial, runMinecraftSto
   type MinecraftStoredTrialPorts, type MinecraftTaskLaunch, type MinecraftProvisionedTrialPorts } from './minecraft-launch-adapter';
 import { rolloutIdFor } from './reproducibility/emit';
 import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial } from './minecraft-protocol';
-import { controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
+import { allCapabilities, controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
 import { canonicalJson } from './reproducibility/canonical-json';
 import type { MinecraftRuntime } from './minecraft-runtime';
 import type { CurrentBenchTaskRequestCensus, CurrentTaskInput } from './run-launcher';
@@ -26,10 +26,12 @@ import { readMinecraftEvidenceExport } from './minecraft-evidence';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const sha = (n: number) => n.toString(16).padStart(64, '0');
-async function fixture(armId = 'stock') {
+async function fixture(armId = 'stock', ledger?: 'on' | 'off') {
   const root = await mkdtemp(join(tmpdir(), 'mc-native-adapter-')); roots.push(root);
   const protocol = controlledProtocolFixture();
-  protocol.arms = protocol.arms.filter(arm => ['stock', 'coordinated', 'repeated-session'].includes(arm.id));
+  protocol.arms = protocol.arms.filter(arm => ['stock', 'coordinated', 'repeated-session', ...(ledger ? ['solo'] : [])].includes(arm.id));
+  if (ledger) protocol.arms.find(arm => arm.id === 'solo')!.control!.capabilities = {
+    ...allCapabilities('off'), 'work-item-ledger': ledger };
   protocol.aggregateBudgetUsd = 15; protocol.grader.family = 'minecraft';
   protocol.grader.version = 'minecraft@1.20.4/server-advancements-v1';
   const material = (taskId: string, n: number) => ({ taskId, worldSeed: String(n), objective: 'iron-tools',
@@ -214,8 +216,8 @@ describe('Minecraft native assignment composition', () => {
   });
 });
 
-async function measuredFixture(repeated = false) {
-  const f = await fixture(repeated ? 'repeated-session' : 'stock');
+async function measuredFixture(repeated = false, ledger?: 'on' | 'off') {
+  const f = await fixture(repeated ? 'repeated-session' : ledger ? 'solo' : 'stock', ledger);
   const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
   const binding = { workspaceId: f.input.current.options.workspaceId, runId: f.input.current.protocol.runId,
     preregHash: f.input.current.options.preregistration.preregHash,
@@ -312,8 +314,8 @@ describe('Minecraft measured native participant', () => {
   });
 });
 
-async function trialFixture() {
-  const f = await measuredFixture();
+async function trialFixture(ledger?: 'on' | 'off') {
+  const f = await measuredFixture(false, ledger);
   const snapshot = { runtimeId: 'owned-server', trial: f.input.runtime.trial, startedAtMs: 0, stoppedAtMs: 50,
     files: { 'programs.jsonl': '', 'server.log': 'trusted server', 'bot.log': 'trusted bot',
       [`world/world/advancements/${minecraftOfflinePlayerUuid('alice')}.json`]: JSON.stringify({ DataVersion: 1 }),
@@ -375,8 +377,8 @@ describe('Minecraft native trial coordinator', () => {
   });
 });
 
-async function storedTrialFixture() {
-  const f = await trialFixture();
+async function storedTrialFixture(ledger?: 'on' | 'off') {
+  const f = await trialFixture(ledger);
   const { current } = f.input;
   const rolloutId = rolloutIdFor(current.protocol.runId, 'minecraft', current.task.instanceId,
     current.options.armId, current.options.seed);
@@ -446,8 +448,8 @@ describe('Minecraft canonical rollout persistence', () => {
   });
 });
 
-async function provisionedFixture() {
-  const f = await storedTrialFixture();
+async function provisionedFixture(ledger?: 'on' | 'off') {
+  const f = await storedTrialFixture(ledger);
   const { runtime, current, ...assignment } = f.input;
   const launch: MinecraftTaskLaunch = { ...assignment, trial: runtime.trial,
     runtime: { serverJar: '/host/pinned-server.jar', botImage: `sha256:${sha(72)}`, acceptEula: true,
@@ -456,6 +458,24 @@ async function provisionedFixture() {
   return { ...f, launch, host: current, ports: { ...f.ports, startRuntime } };
 }
 describe('Minecraft host provisioning', () => {
+  it.each(['on', 'off'] as const)('provisions the frozen solo ledger-%s arm through native treatment and canonical storage', async ledger => {
+    const f = await provisionedFixture(ledger);
+    expect(prepareMinecraftTaskLaunch(f.host.protocol, 'solo', f.launch).launch.trial).toBe(f.launch.trial);
+    const result = await runMinecraftProvisionedTrial(f.host, f.launch, f.ports);
+    expect(f.ports.createDriver).toHaveBeenCalledWith(expect.objectContaining({ armId: 'solo' }),
+      f.host.context, expect.anything(), false);
+    expect(result.rows[0]).toMatchObject({ arm: 'solo', generationStatus: 'completed', resolved: false });
+    expect(f.ports.emitRollout).toHaveBeenCalledOnce(); expect(f.native.stop).toHaveBeenCalledOnce();
+    // The trial and provisioning finally each verify the idempotent cleanup.
+    expect(f.input.runtime.dispose).toHaveBeenCalledTimes(2);
+  });
+  it.each(['memory-recall', 'carry-respawn', 'fleet-leader', 'locks', 'consult-router', 'planning', 'review'] as const)
+    ('rejects unsupported solo %s before runtime provisioning', async capability => {
+      const f = await provisionedFixture('on');
+      f.host.protocol.arms.find(arm => arm.id === 'solo')!.control!.capabilities[capability] = 'on';
+      await expect(runMinecraftProvisionedTrial(f.host, f.launch, f.ports)).rejects.toThrow(/Native capability control is unavailable/);
+      expect(f.ports.startRuntime).not.toHaveBeenCalled(); expect(f.ports.startAssignment).not.toHaveBeenCalled();
+    });
   it('restores the frozen world and uses a fresh private workspace through canonical storage', async () => {
     const f = await provisionedFixture();
     const result = await runMinecraftProvisionedTrial(f.host, f.launch, f.ports);
@@ -519,7 +539,7 @@ describe('Minecraft host provisioning', () => {
     expect(f.ports.emitRollout.mock.calls[0]![0].provenance).toMatchObject({
       configSnapshot: { minecraft: { initialState: { worldSha256: sha(90) } } } });
   });
-  it('does not admit a solo or coordinated treatment as a native reference', async () => {
+  it('does not accept a changed topology without a refrozen gameplay selection', async () => {
     const f = await provisionedFixture();
     f.host.protocol.arms.find(arm => arm.id === 'stock')!.control!.topology = 'solo';
     expect(() => prepareMinecraftTaskLaunch(f.host.protocol, 'stock', f.launch)).toThrow(/frozen native reference/);

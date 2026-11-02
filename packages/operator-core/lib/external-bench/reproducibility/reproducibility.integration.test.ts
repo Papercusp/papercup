@@ -52,7 +52,7 @@ const MIGRATIONS = [
   '291-benchmark-reproducibility.sql',
   '292-benchmark-hive-layer.sql',
   '302-bench-run-score.sql',
-  '1615-benchmark-frozen-arm-identities.sql.DRAFT',
+  '1615-benchmark-frozen-arm-identities.sql',
 ];
 const WS = 'bench-repro-test-ws';
 const RUN = 'run-pilot-1';
@@ -240,7 +240,7 @@ describe('current frozen rollout emission', () => {
         grading: { ...base.grading, ...protocol.grader } };
       const receipt = await emitRollout(attempt, { sql, workspaceId: WS });
       // Reapply over actual saved data: the extension must be idempotent.
-      await sql.unsafe(migrationSql('1615-benchmark-frozen-arm-identities.sql.DRAFT'));
+      await sql.unsafe(migrationSql('1615-benchmark-frozen-arm-identities.sql'));
       const [row] = await listRunResults({ runId: protocol.runId, sql, workspaceId: WS });
       expect(row.arm).toBe(armId);
       expect((await getRollout(receipt.rolloutId, { sql, workspaceId: WS }))!.arm).toBe(armId);
