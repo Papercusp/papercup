@@ -59,18 +59,20 @@ describe('lost host to restored native conversation', () => {
     };
     const start = async (work: boolean) => {
       const nativeCode = `const fs=require('node:fs');
-        if (${work}) fs.appendFileSync(${JSON.stringify(transcript)}, JSON.stringify({type:'event_msg',
-          timestamp:new Date().toISOString(),payload:{type:'task_started'}})+'\\n');
-        process.stdout.write('READY\\n'); setInterval(()=>{},1000);`;
+        process.on('SIGINT',()=>{});
+        setTimeout(()=>{if (${work}) fs.appendFileSync(${JSON.stringify(transcript)}, JSON.stringify({type:'event_msg',
+          timestamp:new Date().toISOString(),payload:{type:'task_started'}})+'\\n');},100);
+        process.stdout.write('READY\\n'); setInterval(()=>process.stdout.write('.'),100);`;
       const hostCode = `import {hostThroughPty} from ${JSON.stringify(hostModule)};
         import {EventEmitter} from 'node:events';
         const stdin=Object.assign(new EventEmitter(),{isTTY:false,resume(){},pause(){}});
         const signalSource=new EventEmitter();
         const done=hostThroughPty({command:process.execPath,args:['-e',${JSON.stringify(nativeCode)}],
           cwd:${JSON.stringify(root)},ownerId:${JSON.stringify(owner)},advSessionId:${JSON.stringify(String(adv.id))},
-          env:process.env,bridgeTty:false,activityPersistMs:25,
+          env:process.env,bridgeTty:${scenario.stopped},activityPersistMs:25,
+          resolveRespawnNativeId:()=>${JSON.stringify(native)},
           io:{stdin,stdout:{isTTY:false,write(){return true;}}},signalSource,onExit(){}});
-        ${scenario.stopped && work ? "setTimeout(()=>stdin.emit('data',Buffer.from('\\x03')),150);" : ''}
+        ${scenario.stopped && work ? "setTimeout(()=>stdin.emit('data',Buffer.from('\\x03')),500);" : ''}
         process.on('SIGTERM',()=>signalSource.emit('SIGTERM')); await done;`;
       const child = spawn(process.execPath, ['--input-type=module', '-e', hostCode], {
         cwd: root, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
@@ -84,6 +86,9 @@ describe('lost host to restored native conversation', () => {
       return eventually(() => {
         if (child.exitCode != null) throw new Error(`fixture host exited: ${stderr}`);
         const meta = readMeta();
+        if (meta && meta.execution?.nativeSessionId == null) {
+          throw new Error(`native identity absent: ${JSON.stringify(meta.execution)}; stderr=${stderr}`);
+        }
         return meta?.pid === child.pid && meta.execution?.nativeSessionId === native ? meta : undefined;
       });
     };

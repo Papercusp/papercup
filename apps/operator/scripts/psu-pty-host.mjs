@@ -12681,7 +12681,10 @@ export function hostThroughPty(o) {
       (lastNativeExecution?.nativeSessionId ?? null) === observedSessionId;
     const execution = retainNativeExecutionObservation(lastNativeExecution, observed, {
       sameChild: sameNativeChild,
-      sameFence: nativeExecutionFence === fence,
+      // Stop input advances lastInputAt without starting a new native turn.
+      // Keep that child's positive running witness until native terminal proof
+      // supersedes it, so the durable interruption witness retains the stop.
+      sameFence: nativeExecutionFence === fence || (ownerStopRequested && sameNativeChild),
     });
     nativeExecutionFence = fence;
     lastNativeExecution = {
