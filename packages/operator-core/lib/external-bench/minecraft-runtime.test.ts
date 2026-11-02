@@ -88,6 +88,7 @@ describe('Minecraft owned runtime lifecycle', () => {
     const f = await fixture(); const runtime = await startMinecraftRuntime(f);
     const bridge = await startMinecraftParticipantBridge(runtime, f.assignment);
     await runtime.stop();
+    expect(bridge.signal.aborted).toBe(true);
     await expect(fetch(bridge.endpoint, { method: 'POST', headers: { authorization: `Bearer ${bridge.token}` },
       body: JSON.stringify({ source: 'return 1' }) })).rejects.toThrow();
     await expect(startMinecraftParticipantBridge(runtime, f.assignment)).rejects.toThrow(/active/);

@@ -75,12 +75,13 @@ export function minecraftOfflinePlayerUuid(name: string): string { return offlin
  * player identity, Docker authority, world paths and scoring stay host-owned.
  * The existing execute path owns program isolation, deadlines and replay. */
 export async function startMinecraftParticipantBridge(runtime: MinecraftRuntime, assignment: MinecraftAssignment): Promise<{
-  endpoint: string; token: string; participantId: string; stop(): Promise<void>;
+  endpoint: string; token: string; participantId: string; signal: AbortSignal; stop(): Promise<void>;
 }> {
   const owner = ownedRuntimes.get(runtime);
   if (!owner?.active()) throw Error('Minecraft gameplay requires an active owned runtime');
   const { participantId } = requireMinecraftAssignment(assignment, runtime.trial.trialId);
   const token = randomBytes(32).toString('base64url');
+  const revoked = new AbortController();
   const authorization = Buffer.from(`Bearer ${token}`);
   let closed = false, stopping: Promise<void> | undefined;
   const server = createServer((request, response) => {
@@ -136,6 +137,7 @@ export async function startMinecraftParticipantBridge(runtime: MinecraftRuntime,
       // stopping this runtime after a program deadline.
       server.closeAllConnections();
     });
+    revoked.abort();
     return stopping;
   };
   await new Promise<void>((resolve, reject) => {
@@ -147,7 +149,7 @@ export async function startMinecraftParticipantBridge(runtime: MinecraftRuntime,
   if (!owner.active()) { await stop(); throw Error('Minecraft trial is closed'); }
   const address = server.address();
   if (!address || typeof address === 'string') { await stop(); throw Error('Minecraft gameplay listener unavailable'); }
-  return { endpoint: `http://127.0.0.1:${address.port}/`, token, participantId, stop };
+  return { endpoint: `http://127.0.0.1:${address.port}/`, token, participantId, signal: revoked.signal, stop };
 }
 
 function offlineUuid(name: string): string {
