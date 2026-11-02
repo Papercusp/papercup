@@ -1,0 +1,13 @@
+
+const optional = (value, key) => value != null && typeof value === "object" && key in value ? value[key] : null;
+function routineIdentity(row) {
+  const healthValue = optional(row, "health");
+  const health = healthValue && typeof healthValue === "object" && !Array.isArray(healthValue) ? healthValue : {};
+  const marker = health.git_sync_activity && typeof health.git_sync_activity === "object" && !Array.isArray(health.git_sync_activity)
+    ? health.git_sync_activity
+    : {};
+  return {
+    active: marker.active === true,
+    phase: typeof marker.phase === "string" ? marker.phase : null,
+    ownerPid: Number.isSafeInteger(marker.owner_pid) && marker.owner_pid > 0 ? marker.owner_pid : null,
+    workflowId: typeof marker.workflow_id === "string" && marker.workflow_id.length > 0 ? marker.wo…[TRUNCATED +4141 chars — see _projection.cursor]
