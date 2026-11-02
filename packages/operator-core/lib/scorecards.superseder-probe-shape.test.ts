@@ -51,4 +51,44 @@ describe('scorecards superseder probe SQL shape (WI-6554700010018130)', () => {
     );
     expect(bare, `bare correlated rubricRef equality at scorecards.ts:${bare.map((b) => b.line).join(',')}`).toEqual([]);
   });
+
+  // EI-27666228016040017: a removable LIMIT lets EXISTS flatten this helper
+  // into an anti-join. Its outer rubric guard then becomes a Join Filter,
+  // after the inner timestamp scan, even for an unrelated rubric. OFFSET 0
+  // retains the correlated subplan and its early One-Time Filter. Pin this
+  // planner barrier rather than making the guard depend on test DB statistics.
+  const specQualityProbe = source.match(/function specQualitySupersederSql\([^)]*\)\s*\{([\s\S]*?)\n\}/)?.[1];
+  const preservesOuterGuard = (probe: string) => /LIMIT\s+1\s+OFFSET\s+0\s*`/.test(probe);
+
+  it('finds the spec-quality probe and its outer-rubric guard (positive control)', () => {
+    expect(specQualityProbe).toBeDefined();
+    expect(specQualityProbe).toContain("scorecard.payload -> 'observation' ->> 'rubricRef'");
+    expect(specQualityProbe).toContain('SPEC_QUALITY_RUBRIC_REF');
+  });
+
+  it('keeps spec-quality supersession correlated so unrelated rubric reads skip its inner scan', () => {
+    expect(preservesOuterGuard(specQualityProbe ?? '')).toBe(true);
+  });
+
+  it('detects removal of the optimizer barrier', () => {
+    expect(preservesOuterGuard((specQualityProbe ?? '').replace(/OFFSET\s+0/, ''))).toBe(false);
+  });
+
+  // The inner constant is an index qual; the correlated rubric guards above
+  // must still avoid joining the planner's equivalence class.
+  const preservesInnerRubricIndex = (probe: string) =>
+    /^\s*AND\s+spec_superseder\.payload\s*->\s*'observation'\s*->>\s*'rubricRef'\s*=\s*\$\{SPEC_QUALITY_RUBRIC_REF\}\s*$/m.test(probe);
+
+  it('keeps the inner spec-quality constant usable by the rubric index', () => {
+    expect(preservesInnerRubricIndex(specQualityProbe ?? '')).toBe(true);
+  });
+
+  it('detects hiding the inner rubric equality from the planner', () => {
+    const mutant = (specQualityProbe ?? '').replace(
+      /AND (spec_superseder\.payload -> 'observation' ->> 'rubricRef' = \$\{SPEC_QUALITY_RUBRIC_REF\})/,
+      'AND ($1) IS TRUE',
+    );
+    expect(mutant).not.toBe(specQualityProbe);
+    expect(preservesInnerRubricIndex(mutant)).toBe(false);
+  });
 });
