@@ -267,6 +267,31 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('routes startup-only through the bounded owned child without listing or reporting passing tests', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'router-startup-only-'));
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'startup-only-fixture' }));
+    writeFileSync(join(root, 'vitest.config.ts'), 'export default {}');
+    writeFileSync(join(root, 'src/selected.test.ts'), 'throw new Error("must not collect")');
+    const runCapturedTestProcessImpl = vi.fn(async () => ({ status: 2, stdout: '', stderr: '', signal: null }));
+    const runVitestListImpl = vi.fn(() => { throw new Error('list must not run'); });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const status = await main(['--startup-only', 'src/selected.test.ts'], { repoRoot: root,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skipped', reason: 'fixture' }),
+        runCapturedTestProcessImpl, runVitestListImpl });
+      expect(status).toBe(2);
+      expect(runVitestListImpl).not.toHaveBeenCalled();
+      expect(runCapturedTestProcessImpl).toHaveBeenCalledOnce();
+      expect(runCapturedTestProcessImpl).toHaveBeenCalledWith(process.execPath,
+        expect.arrayContaining(['--startup-only-child', '--config', 'vitest.config.ts', 'src/selected.test.ts']),
+        expect.objectContaining({ cwd: root, files: ['src/selected.test.ts'],
+          timeoutMs: expect.any(Number), watchdogMaxMs: expect.any(Number) }));
+      expect(log.mock.calls.flat().join('\n')).toContain('"testVerdict":"not-measured"');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('status=passed');
+    } finally { log.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('routes the DB-free PTY process fixture through its maintained integration config', () => {
     expect(discoverVitestRoute('apps/operator/lib/psu-pty-host-assume-fence.integration.test.ts'))
       .toMatchObject({

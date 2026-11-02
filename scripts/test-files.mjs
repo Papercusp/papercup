@@ -25,7 +25,7 @@ import { createRequire } from 'node:module';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV } from './lib/with-test-pg-cleanup.mjs';
 import { isVitestAssertionFailure } from '@papercusp/test-config/vitest-failure-classification';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
-import { startupTraceEnv } from './lib/vitest-startup-trace.mjs';
+import { diagnoseVitestStartup, startupTraceEnv } from './lib/vitest-startup-trace.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
 import {
   parseSummaryFailedCounts,
@@ -2406,7 +2406,7 @@ export function parseCli(argv) {
   // them (including the file list) would be forwarded to vitest as argv. `--require-ran` takes the
   // `=` form only, deliberately: a space-separated value would be indistinguishable from a test
   // path in exactly this scan.
-  const isOwnOption = (arg) => arg === '--dry' || arg.startsWith('--require-ran=');
+  const isOwnOption = (arg) => arg === '--dry' || arg === '--startup-only' || arg.startsWith('--require-ran=');
   const firstVitestArg = separator < 0
     ? argv.findIndex((arg) => !isOwnOption(arg) && arg.startsWith('-'))
     : -1;
@@ -2426,7 +2426,8 @@ export function parseCli(argv) {
   // WI-39830: normalize the name filter to the joined form ONCE, here, so every downstream
   // consumer of `vitestArgs` gets it — the main `vitest run` spawn, the per-file fallback
   // re-run, and `nameFilterFrom` (which already accepts both forms) alike.
-  return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs) };
+  return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs),
+    ...(own.includes('--startup-only') ? { startupOnly: true } : {}) };
 }
 
 /**
@@ -3818,7 +3819,7 @@ export async function main(
     },
   });
   try {
-  const { dry, requireRan, files, vitestArgs: requestedVitestArgs } = parseCli(argv);
+  const { dry, requireRan, files, startupOnly, vitestArgs: requestedVitestArgs } = parseCli(argv);
   let loaderPolicy;
   try { loaderPolicy = vitestConfigLoaderPolicy(requestedVitestArgs); }
   catch (error) { console.error(formatRouteError(error.message)); return 2; }
@@ -3924,6 +3925,29 @@ export async function main(
     }
   }
   const nameFilter = nameFilterFrom(vitestArgs);
+  if (startupOnly) {
+    // A diagnostic never enters list/collection or the assertion receipt path.
+    // Reuse this router's exact route/config, admission, process scope, bounded
+    // FD sampling, hard ceiling, and owned termination rather than another runner.
+    if (dry || requireRan || groups.length !== 1 || groups[0].runner === 'node') {
+      console.error(formatRouteError('startup-only requires one Vitest route and no dry/require-ran verdict'));
+      return TEST_FILE_EXIT_NOT_MEASURED;
+    }
+    const group = groups[0];
+    const exact = group.routes.map(route => relative(group.cwd, route.absolute));
+    const configArgs = [...(group.config ? ['--config', group.config] : []), ...configLoaderArgs];
+    const timeoutMs = testFileListTimeoutMs(process.env);
+    if (!ensurePreemptReady()) return TEST_FILE_EXIT_TEMPFAIL;
+    const result = await runCapturedTestProcessImpl(process.execPath,
+      [fileURLToPath(import.meta.url), '--startup-only-child', ...configArgs, ...exact, ...vitestArgs],
+      { cwd: group.cwd, env: process.env, files: exact, timeoutMs, watchdogMaxMs: timeoutMs });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    console.error(`TEST_FILE_STARTUP_ONLY ${JSON.stringify({ testVerdict: 'not-measured',
+      status: result.status, signal: result.signal, timedOut: Boolean(result.timedOut),
+      processDiagnostic: result.processDiagnostic ?? null })}`);
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
   let listTimeoutMs;
   try {
     listTimeoutMs = testFileListTimeoutMs(process.env);
@@ -4968,7 +4992,14 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   // This module is also imported through TypeScript/tsx entrypoints whose dependency graph is
   // transformed to CommonJS (for example apps/operator/scripts/lint-tests.ts). Keep the async
   // exit-code handoff without top-level await, which esbuild correctly rejects in that format.
-  void runTestFilesCli().then(
+  const diagnosticChild = process.argv[2] === '--startup-only-child';
+  const run = diagnosticChild
+    ? runTestFilesCli(process.argv.slice(3), { run: async args => {
+      await diagnoseVitestStartup(args, row => console.error(`TEST_FILE_STARTUP_ONLY_EVENT ${JSON.stringify(row)}`));
+      return TEST_FILE_EXIT_NOT_MEASURED;
+    } })
+    : runTestFilesCli();
+  void run.then(
     (exitCode) => {
       process.exitCode = exitCode;
     },
