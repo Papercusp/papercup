@@ -2131,15 +2131,16 @@ function within(parent, child) {
 }
 
 let output;
-let noticeText;
+let noticeBytes;
 try {
   output = readFileSync(outputFile, 'utf8');
-  noticeText = readFileSync(noticeFile, 'utf8');
+  noticeBytes = readFileSync(noticeFile);
 } catch {
   fail('receipt-unreadable');
 }
 
 const reportedCounts = [];
+const reportedOffsets = [];
 for (const line of output.split(/\r?\n/)) {
   if (line.startsWith('TEST_FILE_CHILD_SUBSTITUTED ')) {
     const count = line.match(/\bcount=(\d+)\b/);
@@ -2154,15 +2155,54 @@ for (const line of output.split(/\r?\n/)) {
       if (!/^\d+$/.test(value)) fail('runner-result-count-unknown');
       reportedCounts.push(Number(value));
     }
+    const offsetField = line.split(/\s+/).find((part) => part.startsWith('childNoticeOffsetBytes='));
+    if (offsetField) {
+      const value = offsetField.slice('childNoticeOffsetBytes='.length);
+      const offset = Number(value);
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(offset)) fail('runner-notice-offset-unknown');
+      reportedOffsets.push(offset);
+    }
   }
   if (line.includes('COMMITTED_SOURCE notice-unrecorded')) fail('loader-notice-write-failed');
 }
 
+const uniqueOffsets = [...new Set(reportedOffsets)];
+if (uniqueOffsets.length > 1) fail('runner-notice-offset-mismatch');
+const childNoticeOffsetBytes = uniqueOffsets[0] ?? 0;
+if (childNoticeOffsetBytes > noticeBytes.length
+  || (childNoticeOffsetBytes > 0 && noticeBytes[childNoticeOffsetBytes - 1] !== 0x0a)) {
+  fail('runner-notice-offset-invalid');
+}
+
 const repoRoot = canonical(repoRootInput);
-const rawLines = noticeText.split(/\r?\n/).filter((line) => line.length > 0);
-const parsedRecords = rawLines.map((line) => {
-  try { return JSON.parse(line); } catch { fail('malformed-jsonl'); }
-});
+function parseRecords(bytes) {
+  return bytes.toString('utf8').split(/\r?\n/).filter((line) => line.length > 0).map((line) => {
+    try { return JSON.parse(line); } catch { fail('malformed-jsonl'); }
+  });
+}
+const launcherPrefix = noticeBytes.subarray(0, childNoticeOffsetBytes);
+const childSuffix = noticeBytes.subarray(childNoticeOffsetBytes);
+const launcherRecords = parseRecords(launcherPrefix);
+const parsedRecords = parseRecords(childSuffix);
+const acceptedLauncherRecords = [];
+for (const record of launcherRecords) {
+  if (record?.schemaVersion !== 'committed-source-notice-v1'
+    || typeof record.rel !== 'string' || typeof record.top !== 'string') {
+    fail('malformed-notice-record');
+  }
+  const top = canonical(record.top);
+  if (!within(repoRoot, top)) continue;
+  const exactLauncher = isAbsolute(record.top) && record.kind === 'substituted' && record.via === 'esm'
+    && top === repoRoot && record.rel === 'scripts/test-files.mjs'
+    && record.entry === 'scripts/test-files.mjs'
+    && Number.isSafeInteger(record.pid) && record.pid > 0;
+  if (!exactLauncher) fail('launcher-entry-unverified', record);
+  const sourcePath = canonical(resolve(top, record.rel));
+  const entryPath = canonical(resolve(top, record.entry));
+  if (!within(top, sourcePath) || !within(repoRoot, entryPath)) fail('notice-path-outside-repository', record);
+  if (sourcePath === canonical(subjectInput)) fail('launcher-subject-substituted', record);
+  acceptedLauncherRecords.push(record);
+}
 const records = [];
 for (const record of parsedRecords) {
   if (record?.schemaVersion !== 'committed-source-notice-v1'
@@ -2175,7 +2215,8 @@ for (const record of parsedRecords) {
 }
 if (reportedCounts.some((count) => count !== records.length)) fail('runner-count-mismatch');
 if (records.length === 0) {
-  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=0 gitReaders=0 unclassified=0');
+  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + acceptedLauncherRecords.length
+    + ' gitReaders=0 unclassified=0 launcherNotices=' + acceptedLauncherRecords.length + ' childRecords=0');
   process.exit(0);
 }
 
@@ -2239,8 +2280,9 @@ for (const record of records) {
   if (!exactGitReader) fail('subject-dependent-or-unknown-child', record);
 }
 
-console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + records.length
-  + ' gitReaders=' + records.length + ' unclassified=0');
+console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + (acceptedLauncherRecords.length + records.length)
+  + ' gitReaders=' + records.length + ' unclassified=0'
+  + ' launcherNotices=' + acceptedLauncherRecords.length + ' childRecords=' + records.length);
 JS
 }
 

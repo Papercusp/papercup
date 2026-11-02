@@ -3907,7 +3907,7 @@ fi
     const lines = [
       '#!/usr/bin/env bash',
       `printf '%s\\n' '${launcherNotice}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
-      'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then',
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ] || [ "$PAPERCUSP_MUTATION_PHASE" = copy-baseline ]; then',
       `  printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0 childNoticeOffsetBytes=${launcherOffset} skippedTests=0\\n'`,
       '  exit 0',
       'fi',
