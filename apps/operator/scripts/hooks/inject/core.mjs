@@ -677,8 +677,17 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     // Context delivery retains its fail-silent contract; native edits and arbitrary
     // shell execution require an actual server verdict. Read/Grep/Glob still work.
     if (port === 'pre-tool' && /^(?:Edit|Write|MultiEdit|edit|write|apply_patch|Bash|bash|exec_command|shell_command|shell|write_stdin)$/.test(partial.tool ?? '')) {
-      unavailableMutationGuard = () => adapter.render('pre-tool',
-        'plan_execution_not_ready: execution authority is unavailable; this mutation is refused. Use read-only tools or restore the operator, then retry.', event);
+      unavailableMutationGuard = (error = null) => {
+        // No trace-file opt-in should be needed to distinguish an HTTP refusal
+        // from a timeout. Include only transport metadata, never request/response
+        // bodies or exception messages, which may contain sensitive material.
+        const detail = post
+          ? `stage=${post.stage}; elapsedMs=${post.elapsedMs}; timeoutMs=${post.timeoutMs}` +
+            (Number.isInteger(post.status) ? `; httpStatus=${post.status}` : '')
+          : `stage=guard-threw; errorType=${error?.name ?? 'unknown'}`;
+        return adapter.render('pre-tool',
+          `plan_execution_not_ready: execution authority is unavailable; this mutation is refused. Guard diagnostic: ${detail}. Use read-only tools or restore the operator, then retry.`, event);
+      };
     }
 
     const detectorSessionKey =
@@ -725,7 +734,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     return done('emitted', payload, { port, payloadChars: payload.length });
   } catch (err) {
     if (unavailableMutationGuard)
-      return done('guard-threw-deny', unavailableMutationGuard(), { error: String(err?.message ?? err).slice(0, 300) });
+      return done('guard-threw-deny', unavailableMutationGuard(err), { error: String(err?.message ?? err).slice(0, 300) });
     // Invariant 1, final backstop: an adapter bug must cost silence, not a turn.
     return done('runner-threw', null, { error: String(err?.message ?? err).slice(0, 300) });
   }

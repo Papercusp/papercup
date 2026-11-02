@@ -106,6 +106,21 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     }));
   });
 
+  it('resolves the self selector to the authenticated caller before admission recovery', async () => {
+    const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+    const result = await call({ ...base, to: 'self' }, { ...context, uiClientId: ownerId });
+
+    expect(recoveryIO.target).not.toHaveBeenCalled();
+    expect(recoveryIO.request).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-recovery',
+      harnessSlug: 'papercusp',
+      workItemId: 'WI-original',
+      caller: ownerId,
+      target: ownerId,
+    }));
+    expect(result).toMatchObject({ ok: true, workItemId: 'WI-original' });
+  });
+
   it('passes an exact canonical owner ID directly to recovery authorization', async () => {
     const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
     const result = await call({ ...base, to: ownerId });

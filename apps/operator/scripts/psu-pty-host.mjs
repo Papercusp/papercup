@@ -12287,6 +12287,7 @@ export function hostThroughPty(o) {
     // resolveRespawnNativeId; a Claude host that advertised the cap refused every
     // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
     caps: ['carry-respawn', 'control-socket-probe-v1', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+      ...(env.PAPERCUSP_AGENT === 'claude' ? ['reset-reanchor-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)

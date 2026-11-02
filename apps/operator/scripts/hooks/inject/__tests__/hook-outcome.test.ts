@@ -118,3 +118,42 @@ describe('runInjection writes one outcome record per invocation when opted in', 
     expect(typeof hookOutcomeTracer({ PAPERCUSP_HOOK_OUTCOME_FILE: '/tmp/x.jsonl' }, {})).toBe('function');
   });
 });
+
+describe('unavailable mutation authority reports its transport branch', () => {
+  const adapter = { client: 'test', portForEvent: () => 'pre-tool',
+    parse: () => ({ tool: 'exec_command', input: { cmd: 'read-only probe' } }),
+    render: (_port: string, text: string) => text };
+  const run = (fetchImpl: typeof fetch) => runInjection({
+    adapter, nativeEvent: 'PreToolUse', event: {}, env: { PAPERCUSP_SID: 'su-test' }, fetchImpl,
+  });
+
+  it('names HTTP status without exposing response bodies', async () => {
+    const out = await run((async () => ({ ok: false, status: 503,
+      json: async () => ({ secret: 'must-not-appear' }) })) as unknown as typeof fetch);
+    expect(out).toContain('execution authority is unavailable');
+    expect(out).toContain('stage=http-error');
+    expect(out).toContain('httpStatus=503');
+    expect(out).not.toContain('must-not-appear');
+  });
+
+  it('distinguishes an unreachable operator from a timeout', async () => {
+    const out = await run((async () => { throw new Error('sensitive-route'); }) as unknown as typeof fetch);
+    expect(out).toContain('stage=unreachable');
+    expect(out).not.toContain('sensitive-route');
+  });
+
+  it('names a wall abort while retaining the hard deadline', async () => {
+    vi.useFakeTimers();
+    const pending = run(((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(new Error('aborted')));
+    })) as unknown as typeof fetch);
+    await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
+    expect(await pending).toContain('stage=wall-during-fetch');
+    expect(await pending).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
+  });
+
+  it('keeps a successful empty verdict distinct from unavailable authority', async () => {
+    expect(await run(answer(''))).toBeNull();
+    expect(await run(answer('named-rule refusal'))).toBe('named-rule refusal');
+  });
+});

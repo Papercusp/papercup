@@ -940,7 +940,7 @@
           "POST"
         ]
       },
-      "description": "Report one worker-activity event (a native tool call, lifecycle transition, or todo snapshot) to the cross-CLI activity bridge sink (harness_shared.agent_activity). Called by the per-CLI hooks on every tool call; feeds the pui fleet view + curator. The display summary is derived server-side from tool_name+tool_input when not supplied. Fire-and-forget: returns { ok, id } and never blocks.",
+      "description": "Report one worker-activity event (a native tool call, lifecycle transition, or todo snapshot) to the cross-CLI activity bridge sink (harness_shared.agent_activity). Called by the per-CLI hooks on every tool call; feeds the pui fleet view + curator. The display summary is derived server-side from tool_name+tool_input when not supplied. Fire-and-forget: returns { ok, id: null, persistence: 'async' } without waiting for the insert.",
       "capabilities": [
         "activity:report"
       ],

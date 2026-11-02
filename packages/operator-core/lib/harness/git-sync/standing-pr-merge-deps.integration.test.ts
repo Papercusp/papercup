@@ -105,7 +105,7 @@ function makeDeps(
   store: ReturnType<typeof memStore>,
   runSuite: RunSuite = async () => true,
   onError?: (e: unknown) => void,
-  admittedFixPaths: string[] = ['a.txt', 'new-fix.txt', 'pr.txt'],
+  admittedFixPaths?: string[],
 ) {
   return createDefaultStandingPrMergeDeps({
     repoDir: deps_repo,
@@ -114,7 +114,11 @@ function makeDeps(
     store,
     runSuite,
     onError,
-    resolveAdmittedFixPaths: async () => ({ ok: true, paths: admittedFixPaths }),
+    resolveAdmittedFixPaths: async ({ prHeadSha, targetTipSha }) => ({
+      ok: true,
+      paths: admittedFixPaths ?? git(deps_repo, 'diff', '--no-renames', '--name-only', `${targetTipSha}...${prHeadSha}`)
+        .split('\n').filter(Boolean),
+    }),
   });
 }
 
@@ -387,6 +391,7 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
           const real = makeWorktreeSuiteRunner('test -f pr.txt && test -f a.txt');
           return async (a) => (tested.push(a.sha), real(a));
         },
+        buildDeps: ({ runSuite }) => makeDeps(store, runSuite),
       },
     });
     return { entry, tested, commands, suiteAsked };
@@ -560,6 +565,11 @@ describe('findUnpublishedGitlinks: submodule commits must be on their main repos
     const store = memStore();
     const d = createDefaultStandingPrMergeDeps({
       repoDir: upstreamCheckout, installSlug: INSTALL, prNumber: PR_NUMBER, store, runSuite: async () => true,
+      resolveAdmittedFixPaths: async ({ prHeadSha, targetTipSha }) => ({
+        ok: true,
+        paths: git(upstreamCheckout, 'diff', '--no-renames', '--name-only', `${targetTipSha}...${prHeadSha}`)
+          .split('\n').filter(Boolean),
+      }),
     });
 
     // A PR without gitlink changes has nothing to publish.

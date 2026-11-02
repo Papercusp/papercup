@@ -84,12 +84,14 @@ describe('compiled detached eligibility at installed boot', () => {
     expect(existsSync(join(f.root, 'runtime-acceptance'))).toBe(false);
     expect(JSON.parse(f.run().stdout)).toBeNull();
   });
-  it.each(['missing', 'corrupt-envelope', 'corrupt-signature', 'wrong-candidate', 'wrong-entrypoint'])('refuses %s at boot', kind => {
+  it.each(['missing', 'corrupt-envelope', 'corrupt-signature', 'wrong-candidate', 'wrong-entrypoint', 'oversized', 'directory'])('refuses %s at boot', kind => {
     const f = fixture();
     if (kind !== 'missing') expect(f.run('install').status).toBe(0);
     const base = join(f.root, 'runtime-acceptance', sha(1));
     if (kind === 'corrupt-envelope') writeFileSync(base + '.json', 'forged');
     if (kind === 'corrupt-signature') writeFileSync(base + '.json.sig', 'forged');
+    if (kind === 'oversized') writeFileSync(base + '.json', Buffer.alloc(64 * 1024 + 1));
+    if (kind === 'directory') { rmSync(base + '.json'); mkdirSync(base + '.json'); }
     if (kind === 'wrong-candidate') f.request.candidate.candidateSha256 = sha(8);
     if (kind === 'wrong-entrypoint') f.request.candidate.entrypointSha256 = sha(8);
     writeFileSync(f.args, JSON.stringify(f.request));
