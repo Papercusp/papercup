@@ -24,8 +24,25 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
   }
   const evaluate = (expression: string) => native('eval', expression);
   const wait = (expression: string) => expect.poll(() => evaluate(expression), { timeout: 60_000 }).toBe(true);
-  await native('navigate', '/rubrics');
+  const origin = await evaluate('location.origin');
+  const target = new URL('/rubrics', origin);
+  target.searchParams.set('ws', workspace);
+  target.searchParams.set('verify-tauri-isolated', '1');
+  await native('navigate', target.href);
+  // Native navigation must retain the disposable workspace, as the maintained
+  // owner-question journey does. A missing row alone cannot prove that scope.
+  await expect.poll(async () => evaluate(`({
+    workspace: window.__PAPERCUSP_WS__ || new URL(location.href).searchParams.get('ws'),
+    origin: location.origin
+  })`), { timeout: 30_000 }).toEqual({ workspace, origin });
   const rubricRef = 'grading-integrity';
+  const list = await evaluate(`fetch('/api/zero-harness/rest-query?name=rubrics.list&args=%7B%7D', {
+    headers: {'x-papercusp-workspace': ${JSON.stringify(workspace)}}
+  }).then(async response => ({status: response.status, body: await response.json(), url: location.href}))`);
+  await info.attach('native rubric list precondition', { body: JSON.stringify(list), contentType: 'application/json' });
+  expect(list.status).toBe(200);
+  expect(list.body.rows.some((row: { rubricId: string }) => row.rubricId === rubricRef),
+    'The isolated rubric list must contain the selected fixture before waiting for its DOM row').toBe(true);
   await wait(`Array.from(document.querySelectorAll('.pc-rubrics tbody tr')).some(row => row.textContent.includes(${JSON.stringify(rubricRef)}))`);
   await evaluate(`Array.from(document.querySelectorAll('.pc-rubrics tbody tr')).find(row => row.textContent.includes(${JSON.stringify(rubricRef)})).click()`);
   const selector = '[aria-label="Unknown rating breakdown"]';
@@ -66,4 +83,31 @@ test('rubric unknown reasons match the current native trend window', async ({}, 
   const screenshot = info.outputPath('rubric-unknown-breakdown.png');
   await exec(tool, ['screenshot', '--pid', pid, '--output', screenshot], { timeout: 30_000 });
   await info.attach('native rubric unknown breakdown screenshot', { path: screenshot, contentType: 'image/png' });
+});
+
+test.afterEach(async ({}, info) => {
+  if (info.status === info.expectedStatus) return;
+  const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN;
+  const pid = process.env.VERIFY_TAURI_PID;
+  if (!tool || !pid) return;
+  const captures = await Promise.allSettled([
+    (async () => {
+      const { stdout } = await exec(tool, ['eval', '--pid', pid, `({
+        url: location.href, workspace: window.__PAPERCUSP_WS__ || null,
+        body: document.body.innerText.slice(0, 5000),
+        rubricRows: Array.from(document.querySelectorAll('.pc-rubrics tbody tr')).map(row => row.textContent)
+      })`, '--json'], { timeout: 30_000 });
+      await info.attach('failed native rubric DOM', { body: stdout, contentType: 'application/json' });
+    })(),
+    (async () => {
+      const path = info.outputPath('rubric-unknown-breakdown-failure.png');
+      await exec(tool, ['screenshot', '--pid', pid, '--output', path], { timeout: 30_000 });
+      await info.attach('failed native rubric screenshot', { path, contentType: 'image/png' });
+    })(),
+  ]);
+  await info.attach('native rubric diagnostic capture results', {
+    body: JSON.stringify(captures.map(result => result.status === 'fulfilled'
+      ? { status: result.status } : { status: result.status, error: String(result.reason) })),
+    contentType: 'application/json',
+  });
 });
