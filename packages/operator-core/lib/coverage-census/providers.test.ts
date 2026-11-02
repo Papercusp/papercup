@@ -19,12 +19,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { listAllProjectedTools, projectedToolProviderVersion } from '@papercusp/tooldef';
+import { listAllProjectedTools, projectedToolProviderVersion, registerProjectedTool, unregisterProjectedToolsForPlugin } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface } from '@papercusp/testing-shell/census';
 import { censusProviders } from './provider-registry';
 import { assertRegistryNonEmpty } from './providers/_non-empty';
 import { honoRoutesProvider, HTTP_ROUTE_KIND } from './providers/hono-routes';
-import { mcpToolsProvider, MCP_TOOL_KIND } from './providers/mcp-tools';
+import { enumerateProjectedHandlerSurfaces, mcpToolsProvider, MCP_TOOL_KIND } from './providers/mcp-tools';
 import { syncQueriesProvider, SYNC_QUERY_KIND } from './providers/sync-queries';
 import { routeRegistrationOrder } from '../endpoint-route/register';
 import { ALL_ROUTES } from '../endpoint-route/routes';
@@ -150,6 +150,29 @@ describe('hono-routes population', () => {
 });
 
 describe('mcp-tools population', () => {
+  it('security inventory retains HTTP-only handlers, every transport and composition edges', async () => {
+    const pluginName = 'security-census-http-only-fixture';
+    registerProjectedTool({ pluginName, description: 'HTTP-only inventory fixture',
+      inputSchema: { type: 'object', properties: {} }, capabilities: [],
+      expose: { http: { path: '/__security_census_fixture', methods: ['GET', 'POST'] }, ipc: true },
+      replaces: ['coord:declare-intent'], fn: async () => ({ content: [] }),
+    });
+    try {
+      const surfaces = await enumerateProjectedHandlerSurfaces(ctx);
+      expect(surfaces.map(s => s.surfaceId).sort()).toEqual(listAllProjectedTools().map(def =>
+        def.expose.mcp ? `mcp:${def.expose.mcp.name}` : `http:${def.expose.http!.path}`).sort());
+      expect(surfaces.find(s => s.surfaceId === 'http:/__security_census_fixture')).toMatchObject({
+        sourceFile: null, fidelity: 'declared', attrs: { replaces: ['coord:declare-intent'], dispatchRoutes: [
+          { channel: 'http', route: 'GET /__security_census_fixture' },
+          { channel: 'http', route: 'POST /__security_census_fixture' },
+          { channel: 'ipc', route: '/__security_census_fixture' },
+        ] },
+      });
+      // The same fixture must not leak into the MCP-only population/retirement scope.
+      expect((await mcpToolsProvider.enumerate(ctx)).some(s => s.surfaceId.includes('__security_census_fixture'))).toBe(false);
+    } finally { unregisterProjectedToolsForPlugin(pluginName); }
+  });
+
   it('is exactly the live tool catalog', async () => {
     const surfaces = await mcpToolsProvider.enumerate(ctx);
     const catalog = listAllProjectedTools()

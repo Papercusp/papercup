@@ -24,7 +24,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { listAllProjectedTools, projectedToolProviderVersion } from '@papercusp/tooldef';
+import { listAllProjectedTools, projectedToolProviderVersion, type ProjectedTool } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
 import { assertRegistryNonEmpty } from './_non-empty';
 import { resolveToolSourceFile } from '../../tool-source-file';
@@ -38,8 +38,8 @@ export const MCP_TOOL_KIND = 'mcp-tool';
  * file that happens to exist. Missing, unreadable or external source stays unknown.
  * This identifies a source file, not the bytes loaded by a running process.
  */
-async function censusToolSourceFile(toolName: string, repoRoot: string): Promise<string | null> {
-  const source = await resolveToolSourceFile(toolName);
+async function censusToolSourceFile(toolName: string | undefined, repoRoot: string, capturedSource?: string): Promise<string | null> {
+  const source = toolName ? await resolveToolSourceFile(toolName) : capturedSource;
   if (!source) return null;
   try {
     const actual = fs.realpathSync(source);
@@ -49,6 +49,56 @@ async function censusToolSourceFile(toolName: string, repoRoot: string): Promise
   } catch {
     return null;
   }
+}
+
+function handlerAttrs(def: ProjectedTool): Record<string, unknown> {
+  return {
+    capabilities: def.capabilities,
+    effect: def.effect ?? null,
+    hasArgumentSensitiveEffect: typeof def.effectForCall === 'function',
+    // These are declarations from the serving registry, not confinement proof.
+    pluginName: def.pluginName,
+    providerVersion: projectedToolProviderVersion(def),
+    builtinProvider: def.builtinProvider ?? null,
+    installationSource: def.pluginInstallation?.source ?? null,
+    expose: def.expose,
+    authorization: {
+      requirePrincipal: def.requirePrincipal ?? null,
+      agentRoles: def.agentRoles ?? null,
+      requireRoles: def.requireRoles ?? null,
+      hasResourceAuthorizer: typeof def.authorize === 'function',
+    },
+    replaces: Array.isArray(def.replaces) ? def.replaces : null,
+  };
+}
+
+/**
+ * Security inventory of ALL projected handlers, including HTTP-only plugins.
+ * Extend the existing census extractor without changing its MCP retirement scope.
+ * This is the loaded registry; configured but unloaded plugins need reconciliation
+ * from loader/install inputs as well, and must never be inferred absent here.
+ */
+export async function enumerateProjectedHandlerSurfaces(ctx: CensusContext): Promise<ObservedSurface[]> {
+  await import('../../agent-tools/index');
+  const surfaces = await Promise.all(listAllProjectedTools().map(async (def): Promise<ObservedSurface> => ({
+    kind: 'projected-handler',
+    // Same preference as the canonical registry entry key. No registration-order ids.
+    surfaceId: def.expose.mcp ? `mcp:${def.expose.mcp.name}` : `http:${def.expose.http!.path}`,
+    sourceFile: await censusToolSourceFile(def.expose.mcp?.name, ctx.repoRoot, def.sourceFile),
+    schemaRef: def.discoveryInputSchema ?? def.inputSchema,
+    attrs: {
+      ...handlerAttrs(def),
+      dispatchRoutes: [
+        ...(def.expose.mcp ? [{ channel: 'mcp', route: def.expose.mcp.name }] : []),
+        ...(def.expose.http ? (def.expose.http.methods ?? [def.expose.http.method ?? 'POST'])
+          .map(method => ({ channel: 'http', route: `${method} ${def.expose.http!.path}` })) : []),
+        ...(def.expose.ipc ? [{ channel: 'ipc', route: def.expose.mcp?.name ?? def.expose.http!.path }] : []),
+      ],
+    },
+    fidelity: 'declared',
+  })));
+  return assertRegistryNonEmpty(surfaces, 'listAllProjectedTools() full handler population',
+    'The loaded handler registry is empty; inventory cannot infer an empty deployment.') as ObservedSurface[];
 }
 
 export const mcpToolsProvider: SurfaceCensusProvider = {
@@ -70,26 +120,7 @@ export const mcpToolsProvider: SurfaceCensusProvider = {
       surfaceId: def.expose.mcp!.name,
       sourceFile: await censusToolSourceFile(def.expose.mcp!.name, ctx.repoRoot),
       schemaRef: def.discoveryInputSchema ?? def.inputSchema,
-      attrs: {
-        capabilities: def.capabilities,
-        effect: def.effect ?? null,
-        hasArgumentSensitiveEffect: typeof def.effectForCall === 'function',
-        // These are declarations from the serving registry, not confinement proof.
-        pluginName: def.pluginName,
-        providerVersion: projectedToolProviderVersion(def),
-        builtinProvider: def.builtinProvider ?? null,
-        installationSource: def.pluginInstallation?.source ?? null,
-        expose: def.expose,
-        authorization: {
-          requirePrincipal: def.requirePrincipal ?? null,
-          agentRoles: def.agentRoles ?? null,
-          requireRoles: def.requireRoles ?? null,
-          hasResourceAuthorizer: typeof def.authorize === 'function',
-        },
-        // A composite tool bundles other tools; its coverage question is different from a
-        // primitive's, so record it rather than making the census re-derive it.
-        replaces: Array.isArray(def.replaces) ? def.replaces : null,
-      },
+      attrs: handlerAttrs(def),
       fidelity: 'declared',
     })));
 

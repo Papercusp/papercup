@@ -402,6 +402,156 @@ export interface PairedTimeSeries {
   blockLength: number;
 }
 
+/** One predeclared member of a simultaneous ratio comparison family. */
+export interface PairedPowerComparison {
+  id: string;
+  repeats: readonly PairedTimeSeries[];
+  statistic: (a: readonly number[], b: readonly number[]) => number | null;
+  direction: 'upper' | 'lower';
+  limit: number;
+}
+
+export interface PairedPowerScenario {
+  id: string;
+  /** Natural-scale intervention, fixed before a prospective simulation. */
+  candidateScales: Readonly<Record<string, number>>;
+}
+
+export type PairedBlockPower = {
+  status: 'estimated';
+  method: 'nested-paired-block-production-ci-fixed-monte-carlo-v1';
+  assumption: 'conditional-on-preregistered-empirical-baseline-generator';
+  simulations: number;
+  iterations: number;
+  seed: number;
+  familySize: number;
+  comparisonAlpha: number;
+  monteCarloFamilyAlpha: number;
+  scenarios: Array<{ id: string; jointPasses: number; lowerPowerBound: number }>;
+  lowerPowerBound: number;
+} | { status: 'unknown'; reason: string };
+
+/** A single paired draw, shared by the CI and prospective generator. */
+function appendPairedBlockSample(repeat: PairedTimeSeries, rng: () => number, a: number[], b: number[]): void {
+  for (let offset = 0; offset < repeat.a.length; offset += repeat.blockLength) {
+    const start = Math.floor(rng() * repeat.a.length);
+    for (let j = 0; j < Math.min(repeat.blockLength, repeat.a.length - offset); j++) {
+      const index = (start + j) % repeat.a.length;
+      a.push(repeat.a[index]);
+      b.push(repeat.b[index]);
+    }
+  }
+}
+
+/**
+ * Prospective power of the EXACT production CI decision over the WHOLE family.
+ * Each outer trial resamples independent baseline repeats and paired time blocks;
+ * every inner decision calls pairedBlockBootstrapCI with >=10,000 draws. The
+ * same outer indices are used for every metric, preserving cross-metric noise.
+ * Input series must therefore share a consistently aligned time/repeat manifest.
+ * Scenarios are explicit natural-scale alternatives, NOT the null limits. An
+ * alternative exactly on a valid test's null boundary cannot promise 80% power.
+ *
+ * Fixed-N Hoeffding bounds cover Monte Carlo error simultaneously over scenarios.
+ * This is conditional power under the empirical generator, NOT an independence,
+ * stationarity, baseline coverage, model adequacy, or runtime acceptance proof.
+ * Never substitute a one-bootstrap/location-model approximation for this engine.
+ * The deterministic work budget refuses BEFORE running; it cannot truncate a
+ * simulation or silently reduce the number of inner draws/outer trials.
+ */
+export function prospectivePairedBlockPower(
+  family: readonly PairedPowerComparison[],
+  scenarios: readonly PairedPowerScenario[],
+  opts: { simulations: number; iterations: number; seed: number; familyConfidence?: number;
+    monteCarloFamilyAlpha?: number; maximumSampledPairs: number },
+): PairedBlockPower {
+  const confidence = opts.familyConfidence ?? 0.95;
+  const mcAlpha = opts.monteCarloFamilyAlpha ?? 0.05;
+  if (!family.length || !scenarios.length || !Number.isSafeInteger(opts.simulations) || opts.simulations < 200 ||
+      !Number.isSafeInteger(opts.iterations) || opts.iterations < 10_000 || !Number.isSafeInteger(opts.seed) ||
+      !Number.isFinite(confidence) || confidence <= 0 || confidence >= 1 ||
+      !Number.isFinite(mcAlpha) || mcAlpha <= 0 || mcAlpha >= 1 ||
+      !Number.isSafeInteger(opts.maximumSampledPairs) || opts.maximumSampledPairs < 1) {
+    throw new RangeError('prospectivePairedBlockPower: complete family/scenarios, >=200 fixed simulations, >=10000 inner draws and explicit work budget required');
+  }
+  const comparisonAlpha = (1 - confidence) / family.length;
+  if (opts.iterations * comparisonAlpha / 2 < 20) return { status: 'unknown', reason: 'insufficient-bootstrap-tail-resolution' };
+  const reference = family[0].repeats;
+  if (reference.length < 3) return { status: 'unknown', reason: 'insufficient-independent-repeats' };
+  const ids = new Set<string>();
+  for (const comparison of family) {
+    if (!comparison.id.trim() || ids.has(comparison.id) || !['upper', 'lower'].includes(comparison.direction) ||
+        !Number.isFinite(comparison.limit) || comparison.limit <= 0) return { status: 'unknown', reason: 'invalid-comparison-family' };
+    ids.add(comparison.id);
+    if (comparison.repeats.length !== reference.length) return { status: 'unknown', reason: 'unaligned-comparison-manifest' };
+    const repeatIds = new Set<string>();
+    for (let i = 0; i < reference.length; i++) {
+      const repeat = comparison.repeats[i];
+      if (!repeat.repeatId.trim() || repeatIds.has(repeat.repeatId) || !repeat.a.length || repeat.a.length !== repeat.b.length ||
+          Array.from(repeat.a).some(x => !Number.isFinite(x)) || Array.from(repeat.b).some(x => !Number.isFinite(x)) ||
+          !Number.isSafeInteger(repeat.blockLength) || repeat.blockLength < 1 || repeat.blockLength > repeat.a.length) {
+        return { status: 'unknown', reason: 'invalid-baseline-repeat' };
+      }
+      repeatIds.add(repeat.repeatId);
+      if (repeat.repeatId !== reference[i].repeatId || repeat.a.length !== reference[i].a.length || repeat.blockLength !== reference[i].blockLength) {
+        return { status: 'unknown', reason: 'unaligned-comparison-manifest' };
+      }
+    }
+  }
+  const scenarioIds = new Set<string>();
+  for (const scenario of scenarios) {
+    if (!scenario.id.trim() || scenarioIds.has(scenario.id) || Object.keys(scenario.candidateScales).length !== family.length ||
+        family.some(member => !Number.isFinite(scenario.candidateScales[member.id]) || scenario.candidateScales[member.id] <= 0)) {
+      return { status: 'unknown', reason: 'invalid-prospective-alternative' };
+    }
+    scenarioIds.add(scenario.id);
+  }
+  // Resampling unequal repeats can select the largest one in every slot.
+  const maxPairs = reference.length * Math.max(...reference.map(repeat => repeat.a.length));
+  const work = scenarios.length * opts.simulations * (family.length * opts.iterations + 1) * maxPairs;
+  if (!Number.isSafeInteger(work) || work > opts.maximumSampledPairs) return { status: 'unknown', reason: 'prospective-computation-budget' };
+  const results: Array<{ id: string; jointPasses: number; lowerPowerBound: number }> = [];
+  for (let scenarioIndex = 0; scenarioIndex < scenarios.length; scenarioIndex++) {
+    const scenario = scenarios[scenarioIndex];
+    let jointPasses = 0;
+    for (let simulation = 0; simulation < opts.simulations; simulation++) {
+      const stream = (opts.seed ^ Math.imul(simulation + 1, 0x9e3779b1) ^ Math.imul(scenarioIndex + 1, 0x85ebca6b)) >>> 0;
+      const rng = mulberry32(stream);
+      const trial: PairedTimeSeries[][] = family.map(() => []);
+      for (let k = 0; k < reference.length; k++) {
+        const repeatIndex = Math.floor(rng() * reference.length);
+        const repeat = reference[repeatIndex];
+        const indices: number[] = [];
+        const unused: number[] = [];
+        const indexSeries = Array.from({ length: repeat.a.length }, (_, i) => i);
+        appendPairedBlockSample({ ...repeat, a: indexSeries, b: indexSeries }, rng, indices, unused);
+        for (let m = 0; m < family.length; m++) {
+          const source = family[m].repeats[repeatIndex];
+          const scale = scenario.candidateScales[family[m].id];
+          trial[m].push({ repeatId: `outer-${k}`, blockLength: source.blockLength,
+            a: indices.map(index => source.a[index]), b: indices.map(index => source.b[index] * scale) });
+        }
+      }
+      let pass = true;
+      for (let m = 0; m < family.length; m++) {
+        const ci = pairedBlockBootstrapCI(trial[m], family[m].statistic, {
+          familySize: family.length, familyConfidence: confidence, iterations: opts.iterations,
+          seed: (stream ^ 0xc2b2ae35) >>> 0,
+        });
+        if (ci.status === 'unknown') return { status: 'unknown', reason: `prospective-${ci.reason}` };
+        if (family[m].direction === 'upper' ? ci.interval.upper > family[m].limit : ci.interval.lower < family[m].limit) pass = false;
+      }
+      if (pass) jointPasses++;
+    }
+    const lowerPowerBound = Math.max(0, jointPasses / opts.simulations - Math.sqrt(Math.log(scenarios.length / mcAlpha) / (2 * opts.simulations)));
+    results.push({ id: scenario.id, jointPasses, lowerPowerBound });
+  }
+  return { status: 'estimated', method: 'nested-paired-block-production-ci-fixed-monte-carlo-v1',
+    assumption: 'conditional-on-preregistered-empirical-baseline-generator', simulations: opts.simulations,
+    iterations: opts.iterations, seed: opts.seed, familySize: family.length, comparisonAlpha,
+    monteCarloFamilyAlpha: mcAlpha, scenarios: results, lowerPowerBound: Math.min(...results.map(row => row.lowerPowerBound)) };
+}
+
 /**
  * Deterministic BASELINE-only ACF diagnostic for preregistering block lengths.
  * Inspect every lag through n/4, using a multiplicity-adjusted Gaussian noise
@@ -510,14 +660,7 @@ export function pairedBlockBootstrapCI(
     b.length = 0;
     for (let k = 0; k < repeats.length; k++) {
       const repeat = repeats[Math.floor(rng() * repeats.length)];
-      for (let offset = 0; offset < repeat.a.length; offset += repeat.blockLength) {
-        const start = Math.floor(rng() * repeat.a.length);
-        for (let j = 0; j < Math.min(repeat.blockLength, repeat.a.length - offset); j++) {
-          const index = (start + j) % repeat.a.length;
-          a.push(repeat.a[index]);
-          b.push(repeat.b[index]);
-        }
-      }
+      appendPairedBlockSample(repeat, rng, a, b);
     }
     const draw = statistic(a, b);
     if (draw === null || !Number.isFinite(draw)) return { status: 'unknown', reason: 'undefined-bootstrap-statistic' };

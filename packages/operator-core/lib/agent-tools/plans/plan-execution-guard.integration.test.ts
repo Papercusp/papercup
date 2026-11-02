@@ -10,6 +10,12 @@ vi.mock('@papercusp/db-org', async original => ({
 // Activation prerequisites have their own real-PG suite. This suite controls only that
 // verdict so the production revision comparison can be falsified against real rows.
 vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: async () => ({ satisfied: true, auditSeq: 1 }) }));
+// The real revision comparison must reach the next policy gate. Its explicit
+// refusal keeps this narrow fixture from claiming complete start admission or
+// provisioning the unrelated registry, scorecard and budget subsystems.
+vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async () => ({
+  ok: false, refusal: { code: 'private-downstream-start-policy' },
+}) }));
 
 import { checkExecutionPlan, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
 import { toolGuardText } from '../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
@@ -127,6 +133,18 @@ describe('real write-boundary bypass regression', () => {
     await db.sql`INSERT INTO harness_shared.plan_revisions (id,workspace_id,harness_slug,plan_slug,content_snapshot) VALUES (1,${WS},'project','draft-feature',${before})`;
     await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'old',1)`;
     const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+    expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['activation_audit_stale']);
+  });
+  it('admits first-start generated promotion receipts but rejects a material addition to that same section', async () => {
+    const before = '---\ntitle: Feature\nstatus: draft\n---\n# Feature\n## Requirements\nPreserve findings.\n';
+    const after = before.replace('status: draft', 'status: ready')
+      + '\n## Promoted\n\n<!-- plan-pipeline: do not edit this block manually -->\n- [ ] WI-123 — Preserve findings <!-- P-001 -->\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${after}, content_hash='after-promotion', status='ready'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions (id,workspace_id,harness_slug,plan_slug,content_snapshot) VALUES (1,${WS},'project','draft-feature',${before})`;
+    await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'before-promotion',1)`;
+    const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+    expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['private-downstream-start-policy']);
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${after + '\nDiscard failed attempts.\n'}, content_hash='material-change'`;
     expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['activation_audit_stale']);
   });
   it('does not treat ready status as completion of the standard start process', async () => {

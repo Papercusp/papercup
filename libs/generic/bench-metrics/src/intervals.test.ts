@@ -1,5 +1,46 @@
 import { describe, it, expect } from 'vitest';
-import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact, empiricalQuantile, baselineAutocorrelationBlocks, pairedBlockBootstrapCI, type PairedTimeSeries } from './intervals';
+import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact, empiricalQuantile, baselineAutocorrelationBlocks, pairedBlockBootstrapCI, prospectivePairedBlockPower, type PairedPowerComparison, type PairedTimeSeries } from './intervals';
+
+describe('prospectivePairedBlockPower', () => {
+  // Synthetic tiny fixtures exercise the engine, never the runtime sample floor.
+  const repeats = [0, 1, 2].map(i => ({ repeatId: `r${i}`, a: [10], b: [10], blockLength: 1 }));
+  const ratio = (a: readonly number[], b: readonly number[]) => empiricalQuantile(b, 0.95)! / empiricalQuantile(a, 0.95)!;
+  const family = (): PairedPowerComparison[] => [{ id: 'p95', repeats, statistic: ratio, direction: 'upper', limit: 1.05 }];
+  const options = { simulations: 200, iterations: 10_000, seed: 123, maximumSampledPairs: 100_000_000 };
+
+  it('powers the production CI jointly under explicit alternatives, retaining worst-scenario power', () => {
+    const result = prospectivePairedBlockPower(family(), [
+      { id: 'unchanged', candidateScales: { p95: 1 } }, { id: 'regressed', candidateScales: { p95: 1.2 } },
+    ], options);
+    expect(result).toMatchObject({ status: 'estimated', scenarios: [
+      { id: 'unchanged', jointPasses: 200 }, { id: 'regressed', jointPasses: 0 },
+    ], lowerPowerBound: 0 });
+    if (result.status === 'estimated') expect(result.scenarios[0].lowerPowerBound).toBeGreaterThan(0.8);
+  }, 30_000);
+
+  it('does not turn high marginal power into a joint family pass', () => {
+    const all = [...family(), { id: 'rate', repeats, statistic: ratio, direction: 'lower' as const, limit: 0.95 }];
+    const result = prospectivePairedBlockPower(all, [{ id: 'one-bad-member', candidateScales: { p95: 1, rate: 0.8 } }], options);
+    expect(result).toMatchObject({ status: 'estimated', scenarios: [{ jointPasses: 0 }], lowerPowerBound: 0 });
+  }, 30_000);
+
+  it('replays exactly and preserves baseline inputs', () => {
+    const before = JSON.stringify(repeats);
+    const scenarios = [{ id: 'unchanged', candidateScales: { p95: 1 } }];
+    expect(prospectivePairedBlockPower(family(), scenarios, options)).toEqual(prospectivePairedBlockPower(family(), scenarios, options));
+    expect(JSON.stringify(repeats)).toBe(before);
+  }, 30_000);
+
+  it('refuses incomplete, unaligned or unaffordable designs before running', () => {
+    const scenarios = [{ id: 'unchanged', candidateScales: { p95: 1 } }];
+    expect(prospectivePairedBlockPower(family(), scenarios, { ...options, maximumSampledPairs: 1 })).toEqual({ status: 'unknown', reason: 'prospective-computation-budget' });
+    const changed = [...family(), { ...family()[0], id: 'other', repeats: repeats.map(r => ({ ...r, repeatId: `${r.repeatId}-different` })) }];
+    expect(prospectivePairedBlockPower(changed, [{ id: 'x', candidateScales: { p95: 1, other: 1 } }], options)).toMatchObject({ status: 'unknown', reason: 'unaligned-comparison-manifest' });
+    expect(prospectivePairedBlockPower(family(), [{ id: 'x', candidateScales: {} }], options)).toMatchObject({ status: 'unknown', reason: 'invalid-prospective-alternative' });
+    expect(() => prospectivePairedBlockPower(family(), scenarios, { ...options, simulations: 199 })).toThrow(RangeError);
+    expect(() => prospectivePairedBlockPower(family(), scenarios, { ...options, iterations: 9999 })).toThrow(RangeError);
+  });
+});
 
 describe('baselineAutocorrelationBlocks', () => {
   it('treats a constant baseline as a measured diagnostic, never an independence/power claim', () => {

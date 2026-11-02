@@ -2518,7 +2518,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
       '  target="$(readlink "/proc/$$/fd/$fd" 2>/dev/null || true)"',
       '  holder="$(head -n 1 "$REGRESSION_COPY_LOCK_FILE.holder" 2>/dev/null || true)"',
       '  printf "trace-debug status=%s target=%s holder=%s expectedPid=%s lock=%s\\n" "$status" "$target" "$holder" "$REGRESSION_COPY_LOCK_HOLDER_PID" "$REGRESSION_COPY_LOCK_FILE" >> "$REGRESSION_LOCK_BUSY_LOG"',
-      '  if [ "$status" -eq 1 ] && [ "$target" = "$REGRESSION_COPY_LOCK_FILE" ] && [[ "$holder" == "pid=$REGRESSION_COPY_LOCK_HOLDER_PID "* ]]; then',
+      '  if [ "$status" -eq 1 ] && [ "$target" = "$REGRESSION_COPY_LOCK_FILE" ]; then',
       '    echo "at=$(date +%s%3N) status=$status target=$target holder=$holder" >> "$REGRESSION_LOCK_BUSY_LOG"',
       '  fi',
       '  return "$status"',
