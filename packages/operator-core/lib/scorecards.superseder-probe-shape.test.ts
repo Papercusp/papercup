@@ -27,12 +27,28 @@ const SOURCE_PATH =
 function correlatedRubricRefLines(source: string): Array<{ line: number; text: string }> {
   const out: Array<{ line: number; text: string }> = [];
   source.split('\n').forEach((text, idx) => {
-    if (/superseder\.payload\s*->\s*'observation'\s*->>\s*'rubricRef'\s*=\s*scorecard\./.test(text)) {
-      out.push({ line: idx + 1, text: text.trim() });
+    const match = text.match(/\b([A-Za-z_]\w*)\.payload\s*->\s*'observation'\s*->>\s*'rubricRef'\s*=\s*scorecard\./);
+    if (match) {
+      // Normalize the captured SQL alias for the guard below. Matching only the
+      // suffix of explicit_superseder previously reported a wrapped probe as bare.
+      out.push({ line: idx + 1, text: text.trim().replace(`${match[1]}.payload`, 'superseder.payload') });
     }
   });
   return out;
 }
+
+describe('correlated rubric probe aliases', () => {
+  it.each(['superseder', 'explicit_superseder', 'renamed_card'])('normalizes %s without hiding a bare comparison', (alias) => {
+    const comparison = `${alias}.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'`;
+    const normalized = "superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'";
+    expect(correlatedRubricRefLines(`AND (${comparison}) IS TRUE`)).toEqual([
+      { line: 1, text: `AND (${normalized}) IS TRUE` },
+    ]);
+    expect(correlatedRubricRefLines(`AND ${comparison}`)).toEqual([
+      { line: 1, text: `AND ${normalized}` },
+    ]);
+  });
+});
 
 describe('scorecards superseder probe SQL shape (WI-6554700010018130)', () => {
   const source = readFileSync(SOURCE_PATH, 'utf8');
