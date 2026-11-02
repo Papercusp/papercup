@@ -820,6 +820,12 @@ export function hasVitestWorkerTerminationWarning(output) {
   );
 }
 
+/** Vitest can also force-exit its main process with passing assertions (EI-27702384737902667). */
+export function hasVitestCloseTimeoutWarning(output) {
+  const plain = stripVitestAnsi(output ?? '');
+  return plain.split(/\r?\n/).some((line) => /^close timed out after \d+ms$/.test(line.trim()));
+}
+
 /**
  * Combine every GROUP's outcome (one per owning cwd/config — a multi-workspace request produces
  * >1) into a single honest final verdict, isolated from I/O so it is unit-testable (EI-13535).
@@ -2832,7 +2838,17 @@ export function readTestChildDiagnostic(rootPid, {
       const entries = readdirImpl(`/proc/${pid}/fd`).filter(fd => /^\d+$/.test(fd))
         .sort((a, b) => Number(a) - Number(b));
       if (entries.length > 8) detailTruncated = true;
-      files = entries.slice(0, 8).map(fd => {
+      const selected = entries.slice(0, 8);
+      // The blocked read may use a descriptor above the low-fd sample (for
+      // example getdents64 on fd 22). Keep that link within the existing cap.
+      // This is only a sampling hint: not every syscall's first argument is
+      // a descriptor, and procfs observations can race with close/reuse.
+      const firstArgument = Number(syscall?.arguments?.[0]);
+      if (Number.isSafeInteger(firstArgument) && firstArgument >= 0) {
+        const candidate = entries.find(fd => Number(fd) === firstArgument);
+        if (candidate !== undefined && !selected.includes(candidate)) selected[selected.length - 1] = candidate;
+      }
+      files = selected.map(fd => {
         let target = null;
         try { target = readlinkImpl(`/proc/${pid}/fd/${fd}`); }
         catch { unreadableFields += 1; unavailable.push(`fd:${fd}`); }
@@ -4342,11 +4358,20 @@ export async function main(
     }
     const runOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     const workerTerminationWarning = hasVitestWorkerTerminationWarning(runOutput);
+    const closeTimeoutWarning = hasVitestCloseTimeoutWarning(runOutput);
     if (workerTerminationWarning) {
       console.error(
         'TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR — Vitest reported a worker that did not ' +
           'terminate within teardownTimeout. Assertions may have passed, but this test process did ' +
           'not finish cleanly; refusing an overall green result.',
+      );
+    }
+    if (closeTimeoutWarning) {
+      console.error(
+        'TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR — Vitest forced process exit after a close ' +
+          'timeout. Assertions may have passed, but this test process did not finish cleanly; ' +
+          'refusing an overall green result. Reproduce with --reporter=default ' +
+          '--reporter=hanging-process to identify the remaining resources.',
       );
     }
     // EI-21902345477441137: a watchdog reap kills the child via signal, so `result.status` is
@@ -4474,7 +4499,7 @@ export async function main(
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
-      finalizationError: Boolean(result.governedFinalizationError || workerTerminationWarning),
+      finalizationError: Boolean(result.governedFinalizationError || workerTerminationWarning || closeTimeoutWarning),
       // EI-21902345477441137: distinct from `failed` — a reaped run produced no verdict at all,
       // so it must never contribute to `anyFailed` (that would be the exact bug this fixes) nor
       // silently read as a clean pass (that would hide a genuine resource-limit problem).
