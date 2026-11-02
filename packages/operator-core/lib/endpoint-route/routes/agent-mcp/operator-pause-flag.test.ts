@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (definition: unknown) => definition }));
+vi.mock('@papercusp/agent-mcp', async orig => ({
+  ...await orig<typeof import('@papercusp/agent-mcp')>(), defineTool: (definition: unknown) => definition,
+}));
 vi.mock('../../../auth', () => ({ getSessionUser: vi.fn() }));
 vi.mock('../../../device-operator-actions', async orig => ({
   ...await orig<typeof import('../../../device-operator-actions')>(),
