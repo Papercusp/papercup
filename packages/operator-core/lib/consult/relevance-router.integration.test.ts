@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { recordExpertiseRoutingInvocation, readExpertiseRoutingRecorderHealth, EXPERTISE_ROUTING_PATH } from '../endpoint-route/telemetry';
 import { readExpertiseExecutionHealth } from './consult-routing-health';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { _pendingFallbackObservationCount } from '../degradation/fallback-observations';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
@@ -70,6 +71,10 @@ const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): 
   // Analytic vector fixtures isolate the PG/vector contract. Subject scenarios
   // override this seam with independent positive/counterexample evidence.
   scoreSubjectEvidence: async (_subject, texts) => texts.map(() => 1),
+  // This fixture measures transcript SQL and analytic ranking. Production
+  // symbol resolution runs host git/snapshot probes with its own telemetry;
+  // its separate suites exercise that boundary with controlled dependencies.
+  resolveCodeSymbols: null,
   ...over,
 });
 
@@ -199,6 +204,12 @@ beforeAll(async () => {
 afterAll(async () => {
   try { await rootSql?.end({ timeout: 5 }); }
   finally { await fixtureDb?.drop(); }
+});
+
+afterEach(() => {
+  // Fail in the originating case, before an unbound observation's timer can
+  // try the protected live admin pool during an unrelated later test.
+  expect(_pendingFallbackObservationCount()).toBe(0);
 });
 
 const baseParams = { workspaceId: WS, requesterId: 'agent-self', question: 'how does the consult router work?' };
@@ -469,15 +480,23 @@ describe('bounded subject evidence against real transcript SQL', () => {
   });
 
   it('distinguishes failed/malformed scores from a measured no-expert case', async () => {
-    for (const scoreSubjectEvidence of [async () => { throw new Error('scorer unavailable'); }, async () => [], async (_q: string, texts: string[]) => texts.map(() => NaN)]) {
+    const cases = [
+      { scoreSubjectEvidence: async () => { throw Object.assign(new Error('private scorer payload'), { name: 'RerankDeadlineError' }); }, failure: { reason: 'scorer-error', errorCode: 'ETIMEDOUT', count: 1 } },
+      { scoreSubjectEvidence: async () => [], failure: { reason: 'score-shape', count: 1 } },
+      { scoreSubjectEvidence: async (_q: string, texts: string[]) => texts.map(() => NaN), failure: { reason: 'invalid-score', count: 1 } },
+    ];
+    for (const { scoreSubjectEvidence, failure } of cases) {
       const result = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence }));
       expect(result.verdict).toBe('relevance_unmeasured');
       expect(result.snapshot.degraded).toBe('evidence-unavailable');
       expect(result.qualified).toEqual([]);
+      expect(result.snapshot.subjectValidation?.failures).toContainEqual(failure);
+      expect(JSON.stringify(result.snapshot)).not.toContain('private scorer payload');
     }
     const measured = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence: async (_q, texts) => texts.map(() => 0.1) }));
     expect(measured.verdict).toBe('no_qualified_responder');
     expect(measured.snapshot.subjectValidation?.unmeasured).toBe(0);
+    expect(measured.snapshot.subjectValidation?.failures).toBeUndefined();
   });
 
   it('caps scored owners and leaves overflow explicitly unmeasured', async () => {
