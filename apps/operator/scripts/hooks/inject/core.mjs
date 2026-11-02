@@ -764,6 +764,42 @@ function isCanonicalPlanAnchorRepairCommand(command) {
 }
 
 /**
+ * A bounded, single typed operator call cannot run arbitrary shell code. These
+ * reads and consult dispositions still cross the authenticated operator, which
+ * enforces role, participant and identity ceilings. Only the unavailable plan
+ * lookup is independent of them; an actual guard refusal always wins.
+ * @param {string} command
+ */
+function isCanonicalReviewPtoolCommand(command) {
+  if (command.length > 32_768 || command.includes(String.fromCharCode(0))) return false;
+  const normalized = command.replace(/\r\n/g, '\n');
+  if (normalized.includes('\r')) return false;
+  const lines = normalized.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length < 3) return false;
+  const header = lines.shift();
+  const closingDelimiter = lines.pop();
+  const match = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return false;
+  try {
+    const payload = JSON.parse(lines.join('\n'));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    let tool = match[1];
+    if (tool === 'tools:invoke') {
+      if (Object.keys(payload).some(key => !['name', 'args', 'projection'].includes(key)) ||
+          typeof payload.name !== 'string' || !payload.args ||
+          typeof payload.args !== 'object' || Array.isArray(payload.args)) return false;
+      tool = payload.name;
+    }
+    return ['tools:find', 'plans:get', 'plans:items', 'work_items:get', 'reports:get',
+      'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
+      'consult:reply', 'consult:decline'].includes(tool);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Only a small set of non-implementation operations may pass through when the
  * remote execution-authority lookup itself is unavailable. Everything else
  * stays fail-closed.
@@ -777,7 +813,7 @@ function isSafeWithoutExecutionAuthority(partial, env) {
   const segments = readOnlyCommandSegments(command);
   return (segments !== null && segments.every(tokens =>
     isReadOnlyRipgrepInvocation(tokens, env) || isReadOnlyFileReadInvocation(tokens))) ||
-    isCanonicalPlanAnchorRepairCommand(command);
+    isCanonicalPlanAnchorRepairCommand(command) || isCanonicalReviewPtoolCommand(command);
 }
 
 /**

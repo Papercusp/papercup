@@ -411,6 +411,40 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: unavailable authority permits only bounded reviewer read/control calls, including one invoke wrapper', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const ptool = (name: string, args: unknown) =>
+      [`ptool ${name} --json - <<'JSON'`, JSON.stringify(args), 'JSON'].join('\n');
+    const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    const read = ptool('conversations:get', { id: 'consult-1' });
+    const decline = ptool('consult:decline', { conversation_id: 'consult-1', reason: 'Cannot read evidence: $() `literal`' });
+    const safe = [read, decline,
+      ptool('tools:invoke', { name: 'conversations:get', args: { id: 'consult-1' } }),
+      ptool('tools:invoke', { name: 'consult:decline', args: { conversation_id: 'consult-1', reason: 'blocked' } }),
+    ];
+    const unsafe = [
+      ptool('tools:invoke', { name: 'capability:write', args: { file_path: 'source.ts', content: 'changed' } }),
+      ptool('tools:invoke', { name: 'tools:invoke', args: { name: 'conversations:get', args: { id: 'consult-1' } } }),
+      ptool('tools:invoke', { name: 'conversations:get', args: {}, authenticatedPrincipal: 'someone-else' }),
+      read + '\ntouch source.ts', read.replace("<<'JSON'", '<<JSON'),
+      read.replace('ptool ', 'FAKE=1 ptool '), read.replace(' --json', ' --url=http://elsewhere --json'),
+      'touch source.ts',
+    ];
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd } },
+        env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl }), cmd).toBeNull();
+      for (const cmd of unsafe) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+    }
+  });
+
   it('pre-tool: a wall during authority fetch permits grouped read-only inspection but still denies writes', async () => {
     const { runInjection } = await import('../core.mjs');
     const stalledFetch = ((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {

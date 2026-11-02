@@ -634,14 +634,17 @@ export function perGroupVitestEnv(env, groupIndex, groupCount) {
 
 /** The router knows the population before launch, including groups which never
  * start. Keep the unsealed declaration readable if the router is hard-killed. */
-export function createRouterProofCustody(groups, env, repoRoot) {
+export async function createRouterProofCustody(groups, env, repoRoot) {
   if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim() && !env.PAPERCUSP_TEST_ARTIFACT_DIR) return null;
   // Keep ordinary router supervision independent of the native custody subject.
   // In mutation probes its test child must exercise the intended overlay; an
   // eager parent import would instead load committed scheduler bytes even when
   // this run never requested custody. Active custody still uses the same helper
   // and remains subject to the committed-source loader's normal checks.
-  const { retainNativeProofPacket } = createRequire(import.meta.url)('./lib/budgeted-task-scheduler.mjs');
+  // Keep this lazy, but use the module's native ESM loader. The committed-source
+  // fence can substitute a dirty ESM helper; its CommonJS compile hook must
+  // refuse because it cannot safely make that substitution.
+  const { retainNativeProofPacket } = await import('./lib/budgeted-task-scheduler.mjs');
   const base = env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'testing-run');
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(base, 'native-router-'));
@@ -3956,7 +3959,7 @@ export async function main(
   const receiptChildEnv = receiptFile
     ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
     : process.env;
-  if (!dry) proofCustody = createRouterProofCustodyImpl(groups, receiptChildEnv, repoRoot);
+  if (!dry) proofCustody = await createRouterProofCustodyImpl(groups, receiptChildEnv, repoRoot);
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final

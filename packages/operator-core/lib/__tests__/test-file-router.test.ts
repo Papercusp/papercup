@@ -127,7 +127,7 @@ describe('router native custody population (P002)', () => {
         return nextLoad(url, context);
       } });
       const { createRouterProofCustody } = await import(${JSON.stringify(router)});
-      if (createRouterProofCustody([], {}, process.cwd()) !== null)
+      if (await createRouterProofCustody([], {}, process.cwd()) !== null)
         throw new Error('unrequested custody was activated');
       console.log('unrequested-custody-remains-unloaded');
     `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
@@ -135,22 +135,45 @@ describe('router native custody population (P002)', () => {
     expect(child.status, child.stderr).toBe(0);
     expect(child.stdout).toContain('unrequested-custody-remains-unloaded');
   });
+  it('loads the lazy custody helper through ESM when the CommonJS guard refuses it', () => {
+    const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import Module from 'node:module';
+      const compile = Module.prototype._compile;
+      Module.prototype._compile = function(source, filename) {
+        if (filename.endsWith('/scripts/lib/budgeted-task-scheduler.mjs'))
+          throw new Error('COMMITTED_SOURCE cannot substitute a dirty CommonJS helper');
+        return compile.call(this, source, filename);
+      };
+      const { createRouterProofCustody } = await import(${JSON.stringify(router)});
+      const session = await createRouterProofCustody([], {
+        PAPERCUSP_TEST_ARTIFACT_DIR: ${JSON.stringify(join(tmpdir(), 'router-esm-custody-'))}
+      }, process.cwd());
+      if (!session?.directory) throw new Error('custody did not initialize');
+      const { rmSync } = await import('node:fs');
+      rmSync(session.directory, { recursive: true, force: true });
+      console.log('custody-helper-loaded-as-esm');
+    `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('custody-helper-loaded-as-esm');
+  });
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'router-native-custody-')); });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
-  function setup(extraEnv: Record<string, string> = {}) {
+  async function setup(extraEnv: Record<string, string> = {}) {
     const producer = join(root, 'producer'), packets = join(root, 'packets');
     mkdirSync(producer);
     const groups = [0, 1].map(index => ({ cwd: producer, runner: 'vitest',
       routes: [{ absolute: join(producer, `file-${index}.test.ts`) }] }));
     const out = join(producer, 'out.json');
-    const session = createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: packets,
+    const session = await createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: packets,
       PAPERCUSP_WORKSPACE_ID: 'custody-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_TEST_RUN_GROUP: 'router-fixture', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'custody-workspace',
       PC_EXECUTED_SOURCE_MAP_OUT: out, ...extraEnv }, root);
     return { producer, session };
   }
-  function produce(session: ReturnType<typeof createRouterProofCustody>, id: string) {
+  function produce(session: Awaited<ReturnType<typeof createRouterProofCustody>>, id: string) {
     const group = session.expected.find((row: { id: string; out: string }) => row.id === id);
     writeFileSync(group.out, '{"rows":[],"diagnostics":[]}');
     for (const suffix of ['.modules', '.native-processes', '.processes']) mkdirSync(group.out + suffix);
@@ -159,8 +182,8 @@ describe('router native custody population (P002)', () => {
       complete: true, stdout: Buffer.from([0, 255, 10]), stderr: Buffer.from([254, 0, 10]),
     } }, 'npx', ['vitest', 'run', ...group.selected]);
   }
-  it('retains primary/detail identity and raw failed-child streams after temporary output removal', () => {
-    const { producer, session } = setup();
+  it('retains primary/detail identity and raw failed-child streams after temporary output removal', async () => {
+    const { producer, session } = await setup();
     const detail = session.detail('group-0', 0, 'file-0.test.ts', join(producer, 'detail.json'));
     for (const id of ['group-0', 'group-1', detail]) produce(session, id);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -176,8 +199,8 @@ describe('router native custody population (P002)', () => {
       expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
     } finally { log.mockRestore(); }
   });
-  it('retains an expected group which never started instead of shrinking the population', () => {
-    const { session } = setup();
+  it('retains an expected group which never started instead of shrinking the population', async () => {
+    const { session } = await setup();
     produce(session, 'group-0');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
@@ -190,11 +213,11 @@ describe('router native custody population (P002)', () => {
   });
 
   it.each(['enabled', 'disabled', 'missing-root', 'relative-root', 'missing-workspace'] as const)
-    ('derives process-source custody from the real preload producer (%s)', mode => {
+    ('derives process-source custody from the real preload producer (%s)', async mode => {
       const env = { PC_EXECUTED_SOURCE_MAP_PRELOAD: mode === 'disabled' ? '0' : '1',
         PC_EXECUTED_SOURCE_MAP_ROOT: mode === 'missing-root' ? '' : mode === 'relative-root' ? 'relative' : root,
         ...(mode === 'missing-workspace' ? { PC_EXECUTED_SOURCE_MAP_WORKSPACE: '' } : {}) };
-      const { producer, session } = setup(env);
+      const { producer, session } = await setup(env);
       const capture = resolve(REPO_ROOT, 'libs/test-config/src/executed-config-load-capture.ts');
       for (const group of session.expected) {
         produce(session, group.id);
