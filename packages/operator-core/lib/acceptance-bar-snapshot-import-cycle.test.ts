@@ -89,3 +89,19 @@ describe('acceptance-bar-contract-snapshot import graph', () => {
     expect(staticImportChain(snapshot, evaluator)).toBeNull();
   });
 });
+
+describe('spec evidence schema initialization (EI-27689464176702417)', () => {
+  const store = path.join(LIB, 'agent-tools/plans/spec-evidence-store.ts');
+  const consumer = path.join(LIB, 'agent-tools/testing/evidence.ts');
+
+  it('positive control: testing evidence reads the store schemas at module initialization', () => {
+    expect(staticImportChain(consumer, store)).toEqual([
+      'agent-tools/testing/evidence.ts',
+      'agent-tools/plans/spec-evidence-store.ts',
+    ]);
+  });
+
+  it('the store cannot initialize its testing consumer before its schemas are defined', () => {
+    expect(staticImportChain(store, consumer)).toBeNull();
+  });
+});
