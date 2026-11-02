@@ -1057,6 +1057,7 @@ interface CodeRunLogsNotice {
   sanitizedLines: number;
   truncatedLines: number;
   droppedAfterLimit: number;
+  textTruncated?: true;
   note: string;
 }
 
@@ -1133,6 +1134,7 @@ export function shapeCodeRunLogs<T extends { logs?: unknown }>(
       sanitizedLines,
       truncatedLines,
       droppedAfterLimit,
+      ...(truncatedLines > 0 || droppedAfterLimit > 0 ? { textTruncated: true as const } : {}),
       note: 'code:run logs were shaped to keep terminal noise bounded; the script return value in `summary` is unchanged',
     },
   };
