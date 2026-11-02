@@ -1840,6 +1840,47 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     return { repo, subject: subjectPath, guard };
   }
 
+  it.skipIf(!containWorks).each(['absolute env', 'relative env', 'metadata'])
+  ('keeps external Cargo target artifacts clean across consecutive probes (%s)', (configuration) => {
+    const repo = join(dir, 'cargo-repo');
+    const target = join(dir, 'external-target');
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    git(repo, ['init', '-q']);
+    writeFileSync(join(repo, 'Cargo.toml'), '[package]\nname="containment-fixture"\nversion="0.1.0"\n');
+    const source = join(repo, 'src', 'subject.rs');
+    writeFileSync(source, 'keep\n');
+    const artifact = join(target, 'cached-build');
+    const env: NodeJS.ProcessEnv = { ...process.env, MUTATION_PROBE_CONTAIN_WRITES: '1' };
+    if (configuration === 'metadata') {
+      delete env.CARGO_TARGET_DIR;
+      const bin = join(dir, 'cargo-bin');
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'cargo'), '#!/usr/bin/env node\nconsole.log(JSON.stringify({target_directory: process.env.PROBE_FIXTURE_CARGO_TARGET}));\n', { mode: 0o755 });
+      Object.assign(env, { PATH: `${bin}:${env.PATH}`, PROBE_FIXTURE_CARGO_TARGET: target });
+    } else {
+      env.CARGO_TARGET_DIR = configuration === 'absolute env' ? target : '../external-target';
+    }
+    // Model a reusable native artifact: the initial baseline builds only on a
+    // cache miss; subsequent phases compile their subject into the same target.
+    const quotedArtifact = JSON.stringify(artifact);
+    const guard = `mkdir -p ${JSON.stringify(target)} && if [ "$PAPERCUSP_MUTATION_PHASE" != baseline ] || [ ! -f ${quotedArtifact} ]; then cp {} ${quotedArtifact}; fi && grep -q '^keep$' ${quotedArtifact}`;
+    const args = ['--file', source, '--relocation', 'overlay', '--mutate', 's/keep/KEEP/', '--test', guard];
+    const calibration = runProbeIO(args, { ...env, MUTATION_PROBE_CONTAIN_WRITES: '0' }, repo);
+    expect(calibration.code, calibration.out).toBe(0);
+    expect(readFileSync(artifact, 'utf8')).toBe('KEEP\n');
+    // Remove only this fixture's known leaked artifact, then prove both the
+    // first-build target and the next probe remain free of mutant output.
+    rmSync(target, { recursive: true });
+    for (let probe = 0; probe < 2; probe++) {
+      const result = runProbeIO(args, env, repo);
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toContain('write containment: CONTAINED');
+      expect(result.out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+      expect(readFileSync(artifact, 'utf8')).toBe('keep\n');
+    }
+    expect(readFileSync(source, 'utf8')).toBe('keep\n');
+  }, 120_000);
+
   it.skipIf(!containWorks)('preserves reporter Git readings and caller identity through contained mutation legs', () => {
     // EI-26900834772734276: a root-mapped bind is not the runner's nested,
     // caller-mapped namespace. Exercise the real setup and worker together.

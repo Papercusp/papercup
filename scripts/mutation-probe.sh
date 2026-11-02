@@ -3210,6 +3210,43 @@ contain_outer_root() {
   realpath -e -- "$root" 2>/dev/null || true
 }
 
+# Cargo can write outside either checkout via CARGO_TARGET_DIR or config.toml.
+# Reuse its target resolver so those artifacts receive the same per-leg COW
+# protection as in-checkout build outputs, including on a target's first build.
+contain_cargo_targets() {
+  node --input-type=module - "$RUNNER_ROOT/scripts/lib/cargo-result.mjs" "$FILE" "$ORIGINAL_CWD" <<'JS'
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { dirname, join, parse } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [helper, subject, cwd] = process.argv.slice(2);
+const manifests = new Set();
+for (const start of [dirname(subject), cwd]) {
+  for (let dir = start; ; dir = dirname(dir)) {
+    const manifest = join(dir, 'Cargo.toml');
+    if (existsSync(manifest)) { manifests.add(manifest); break; }
+    if (dirname(dir) === dir) break;
+  }
+}
+if (manifests.size) {
+  const { resolveCargoTargetDir } = await import(pathToFileURL(helper));
+  const targets = new Set();
+  for (const manifest of manifests) {
+    const target = resolveCargoTargetDir(manifest, { cwd });
+    if (target === parse(target).root || /[\r\n]/.test(target)) {
+      throw new Error('Cargo target cannot be safely covered by write containment');
+    }
+    mkdirSync(target, { recursive: true });
+    const canonical = realpathSync(target);
+    if (canonical === parse(canonical).root || /[\r\n]/.test(canonical)) {
+      throw new Error('Cargo target resolves outside safe write containment');
+    }
+    targets.add(canonical);
+  }
+  for (const target of targets) console.log(target);
+}
+JS
+}
+
 # True when path $1 is $2 or lies under it.
 contain_path_under() {
   case "$1" in
@@ -3400,13 +3437,19 @@ LATE_CHILDREN
 # only when a real leg-shaped run proved both the subject bind and a discarded
 # canary write; otherwise the probe runs the plain overlay and says so.
 contain_preflight() {
-  local cand r o p canary="" canary_dir="" err_line mounted=0 line
+  local cand r o p canary="" canary_dir="" err_line mounted=0 line cargo_targets
   local -a cands=()
   CONTAIN_STATUS="uncontained"
   cand="$(contain_outer_root "$(dirname "$FILE")")"
   [ -n "$cand" ] && cands+=("$cand")
   cand="$(contain_outer_root "$(pwd -P)")"
   [ -n "$cand" ] && cands+=("$cand")
+  if [ "${MUTATION_PROBE_CONTAIN_WRITES:-1}" != "0" ] && [ "$RELOCATION_USED" = "overlay" ] && [ "$DELETES_ACK" -eq 0 ]; then
+    cargo_targets="$(contain_cargo_targets)" || die "could not resolve Cargo targets for write containment"
+    while IFS= read -r cand; do
+      [ -n "$cand" ] && cands+=("$cand")
+    done <<< "$cargo_targets"
+  fi
   for cand in ${cands[@]+"${cands[@]}"}; do
     for r in ${CONTAIN_ROOTS[@]+"${CONTAIN_ROOTS[@]}"}; do
       contain_path_under "$cand" "$r" && continue 2
