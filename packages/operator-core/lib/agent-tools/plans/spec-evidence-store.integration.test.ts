@@ -249,6 +249,9 @@ beforeAll(async () => {
       harness_slug text,
       file_path text,
       status text,
+      -- readHarnessTestRunEvidence selects duration_ms directly; a missing column
+      -- makes that fail-closed reader return null instead of the scoped receipts.
+      duration_ms integer,
       -- bind-from-test-run also reads the run's measurement lower bound.
       started_at timestamptz NOT NULL DEFAULT now(),
       finished_at timestamptz,
@@ -3332,13 +3335,15 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     workItemId = 'WI-101',
     details?: Record<string, unknown>,
     supersedeAtRevision = false,
+    sourcePaths?: string[],
   ) {
     const out = (await bindTool.handler(
       {
         harness: HARNESS,
         slug: 'reconnect-plan',
         ...(supersedeAtRevision ? { supersedeAtRevision: true } : {}),
-        binding: { workItemId, specId: 'SPEC-003-01', fromTestRun, ...(details ? { details } : {}) },
+        binding: { workItemId, specId: 'SPEC-003-01', fromTestRun, ...(details ? { details } : {}),
+          ...(sourcePaths ? { sourcePaths } : {}) },
       } as never,
       CTX,
     )) as { data: { results: Array<Record<string, unknown>>; supersession?: unknown[] } };
@@ -3985,9 +3990,11 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     await setRunExecutionDetails(mutant, execution('mutant', 1));
 
     // Bound WITHOUT causalControls: only the mutant row is adopted into the plan harness.
+    // This fixture is a plain directory, not a Git checkout. The case measures
+    // calibration attribution, so provide its canonical source at the binding seam.
     const bound = await bindFromRun(mutant, 'WI-101', {
       adequacy: { targeted: 'SPEC-003-01', testCases: [failedCase] },
-    });
+    }, false, ['src/reconnect.ts']);
     if (!bound?.ok) throw new Error(JSON.stringify(bound));
     expect(bound).toMatchObject({ ok: true, status: 'created' });
     const harnesses = await db.sql<{ id: number; harness_slug: string | null }[]>`
