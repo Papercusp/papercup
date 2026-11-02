@@ -272,8 +272,12 @@ export function summarizeProofHistory(history: unknown[]): Record<string, unknow
     byCurrentness,
     reasons: ranked.slice(0, PROOF_REASONS_PER_BAR),
     ...(ranked.length > PROOF_REASONS_PER_BAR ? { reasonsOmitted: ranked.length - PROOF_REASONS_PER_BAR } : {}),
-    rowsTruncated: true,
-    rowsCut: `[TRUNCATED ${history.length} proof rows summarized — recover: ${SHAPE_RECOVER_HINT}]`,
+    ...(history.length > 0
+      ? {
+          rowsTruncated: true,
+          rowsCut: `[TRUNCATED ${history.length} proof rows summarized — recover: ${SHAPE_RECOVER_HINT}]`,
+        }
+      : {}),
   };
 }
 
