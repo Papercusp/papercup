@@ -2509,21 +2509,23 @@ exec "$REGRESSION_REAL_GIT" "$@"
     ].join(String.fromCharCode(10)), { mode: 0o755 });
     const realFlock = spawnSync('which', ['flock'], { encoding: 'utf8' }).stdout.trim();
     expect(realFlock).not.toBe('');
-    const bashEnv = join(bin, 'setup-lock-probe.bash');
-    writeFileSync(bashEnv, [
-      'flock() {',
-      '  local status=0 fd="" argument target holder',
-      '  "$REGRESSION_REAL_FLOCK" "$@" || status=$?',
-      '  for argument in "$@"; do fd="$argument"; done',
-      '  target="$(readlink "/proc/$$/fd/$fd" 2>/dev/null || true)"',
-      '  holder="$(head -n 1 "$REGRESSION_COPY_LOCK_FILE.holder" 2>/dev/null || true)"',
-
-      '  if [ "$status" -eq 1 ] && [ "$target" = "$REGRESSION_COPY_LOCK_FILE" ]; then',
-      '    echo "at=$(date +%s%3N) status=$status target=$target holder=$holder" >> "$REGRESSION_LOCK_BUSY_LOG"',
-      '  fi',
-      '  return "$status"',
-      '}',
-    ].join(String.fromCharCode(10)));
+    const flockShim = join(bin, 'flock');
+    writeFileSync(flockShim, [
+      '#!/usr/bin/env bash',
+      'status=0',
+      'fd=""',
+      'argument=""',
+      'target=""',
+      'holder=""',
+      '"$REGRESSION_REAL_FLOCK" "$@" || status=$?',
+      'for argument in "$@"; do fd="$argument"; done',
+      'target="$(readlink "/proc/$$/fd/$fd" 2>/dev/null || true)"',
+      'holder="$(head -n 1 "$REGRESSION_COPY_LOCK_FILE.holder" 2>/dev/null || true)"',
+      'if [ "$status" -eq 1 ] && [ "$target" = "$REGRESSION_COPY_LOCK_FILE" ]; then',
+      '  printf "at=%s status=%s target=%s holder=%s\\n" "$(date +%s%3N)" "$status" "$target" "$holder" >> "$REGRESSION_LOCK_BUSY_LOG"',
+      'fi',
+      'exit "$status"',
+    ].join(String.fromCharCode(10)), { mode: 0o755 });
     const traceHolder = spawn(realFlock, ['-x', defaultCopyLock, 'sleep', '1'], {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
@@ -2546,7 +2548,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
       'exec {fd}>>"$REGRESSION_COPY_LOCK_FILE"; flock -n "$fd"',
     ], { encoding: 'utf8', env: {
       ...defaultCopyEnv,
-      BASH_ENV: bashEnv,
+      PATH: [bin, process.env.PATH].filter(Boolean).join(':'),
       REGRESSION_REAL_FLOCK: realFlock,
       REGRESSION_COPY_LOCK_FILE: defaultCopyLock,
       REGRESSION_COPY_LOCK_HOLDER_PID: String(traceHolder.pid),
@@ -2641,7 +2643,6 @@ exec "$REGRESSION_REAL_GIT" "$@"
       ], { stdio: ['ignore', 'pipe', 'pipe'], env: {
         ...defaultCopyEnv,
         PATH: [bin, process.env.PATH].filter(Boolean).join(':'),
-        BASH_ENV: bashEnv,
         REGRESSION_REAL_GIT: realGit,
         REGRESSION_REAL_CP: realCp,
         REGRESSION_REAL_FLOCK: realFlock,
