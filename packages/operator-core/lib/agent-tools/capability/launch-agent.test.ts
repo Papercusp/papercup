@@ -1722,6 +1722,29 @@ describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () =
     expect(spawnedCommand()).toContain('--fleet=alpha-fleet');
   });
 
+  it('clamps and discloses a requested compaction limit above the fleet-member ceiling', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['su-caller', { fleetSlug: 'alpha-fleet', fleetRole: 'leader' }]]),
+    );
+
+    const res = await launchAgent.handler({
+      brief: 'help out',
+      members: [{ compactionLimit: 500_000 }],
+    }, ctx);
+
+    expect(spawnedCommand()).toContain('--fleet=alpha-fleet');
+    expect(spawnedCommand()).toContain('--compaction-limit=400000');
+    expect(spawnedCommand()).not.toContain('--compaction-limit=500000');
+    expect(textOf(res)).toContain('500000');
+    expect(textOf(res)).toContain('400000');
+    expect(textOf(res)).toContain('independent: true');
+    expect(dataOf(res)?.launch).toMatchObject({
+      fleet: 'alpha-fleet',
+      independent: false,
+      compactionLimitWarnings: [{ memberIndex: 0, requested: 500_000, effective: 400_000 }],
+    });
+  });
+
   it('keeps an independent fresh launch out of the caller presence fleet', async () => {
     fetchPresenceFleetMock.mockResolvedValue(
       new Map([['su-caller', { fleetSlug: 'alpha-fleet', fleetRole: 'leader' }]]),
@@ -1782,11 +1805,12 @@ describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () =
     expect(command).toContain('--model=gpt-5.6-luna:max');
     expect(command).toContain('--account=default');
     expect(command).toContain('--context-size=trimmed');
-    expect(command).toContain('--compaction-limit=825000');
+    expect(command).toContain('--compaction-limit=400000');
     expect(command).toContain('--headless');
     expect(dataOf(res)?.launch).toMatchObject({
       fleet: 'alpha-fleet',
       headcountProfile: { applied: true, target: 30 },
+      compactionLimitWarnings: [{ memberIndex: 0, requested: 825_000, effective: 400_000 }],
     });
   });
 });
