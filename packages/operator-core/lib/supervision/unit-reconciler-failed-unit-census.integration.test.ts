@@ -148,7 +148,7 @@ describe.skipIf(!userSystemdReachable)('failed-unit census on the real user syst
       (message) => void censusLogs.push(message),
     );
 
-    if (censusLogs.length > 0) throw new Error('census logs: ' + JSON.stringify(censusLogs));
+    expect(censusLogs, JSON.stringify(censusLogs)).toEqual([]);
     expect(reported).toContain(unit);
     expect(notes.join('\n')).toContain(unit);
   }, 30_000);
