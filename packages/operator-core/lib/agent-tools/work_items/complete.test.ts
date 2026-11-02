@@ -1287,6 +1287,46 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
   });
 
+  it('does not treat the deferred no-work sentinel as an omitted requirement disposition', async () => {
+    const sentinels = ['none', ' N/A ', 'NA', '-', 'Nothing', 'NOTHING DEFERRED'];
+    for (const [index, deferred] of sentinels.entries()) {
+      const closeItem = {
+        ...item,
+        id: 'WI-deferred-no-work-sentinel-' + index,
+        kind: 'change',
+        family: 'issue',
+        state: 'open',
+        title: 'Bind the test result to a real run and require that run to be a PASS before closing this change.',
+        summary:
+          'The close must account for deferred work against the originating requirement, preserve the exact requested behavior, and record a durable follow-up for anything still outstanding.',
+      };
+      getWorkItem.mockResolvedValue(closeItem);
+
+      const validation = await oneRaw({
+        id: closeItem.id,
+        state: 'resolved',
+        assumptions: 'none',
+        validateOnly: true,
+        completion: {
+          summary: 'implemented the change',
+          verifiedHow: 'unit',
+          testResult: 'focused test passed',
+          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+          deferred,
+        },
+      });
+
+      expect(validation).toMatchObject({
+        ok: true,
+        validationOnly: true,
+        completionAuthority: 'committed',
+      });
+      expect(validation.requirementShortfallWarning).toBeUndefined();
+      expect(validation.completionEvidenceFindings).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    }
+  });
+
   it('keeps discard/wontfix bug closes drainable without inventing a causal record', async () => {
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'dropped' }));
     const r = await oneRaw({

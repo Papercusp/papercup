@@ -305,6 +305,7 @@ import {
   describeUnparseableCompletionJsonString,
   gatherFlatCompletion,
   hoistMisplacedCompletionFields,
+  normalizeDeferred,
 } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -2101,7 +2102,7 @@ function completionTextParts(completion: unknown): string[] {
     ...strings(rec.verifiedHow),
     ...strings(rec.coordNotes),
     ...strings(rec.whatLanded),
-    ...strings(rec.deferred),
+    ...strings(normalizeDeferred(rec.deferred)),
     ...strings(rec.migrations),
     ...strings(nested.testsRun),
     ...strings(nested.testResult),
@@ -2975,7 +2976,7 @@ export function claimsUniversalVerification(completion: {
     completion.testResult,
     completion.coordNotes,
     ...list(completion.whatLanded),
-    ...list(completion.deferred),
+    ...list(normalizeDeferred(completion.deferred)),
   ]
     .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
     .join('\n');
@@ -4864,7 +4865,8 @@ async function completeOneTracked(
     completionNarrative.rootCauseVerification = it.completion.rootCauseVerification;
   }
   if (it.completion.whatLanded?.length) completionNarrative.whatLanded = it.completion.whatLanded;
-  if (it.completion.deferred?.length) completionNarrative.deferred = it.completion.deferred;
+  const normalizedDeferred = normalizeDeferred(it.completion.deferred);
+  if (normalizedDeferred?.length) completionNarrative.deferred = normalizedDeferred;
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
   if (it.completion.discharges?.length) completionNarrative.discharges = it.completion.discharges;
   if (it.completion.contributesTo?.length) completionNarrative.contributesTo = it.completion.contributesTo;
@@ -4988,7 +4990,7 @@ async function completeOneTracked(
     authorityByEvidence === 'committed'
       ? requirementDispositionShortfall(completionEvidenceForGate, {
           sourceText: `${existing.title ?? ''}\n${existing.summary ?? ''}`,
-          declaresDeferredWork: Boolean(it.completion.deferred?.some((d) => d.trim())),
+          declaresDeferredWork: Boolean(normalizedDeferred?.some((d) => d.trim())),
           // `registeredRepoRoots` is only computed on the unresolved-path branch above, so
           // fall back to the primary checkout the way `unresolvedPathsInCompletion` does —
           // otherwise the citation check would sit permanently unjudgeable on the closes
@@ -5029,7 +5031,7 @@ async function completeOneTracked(
       const cited = residueCitations(
         {
           residue: completionEvidenceForGate?.coverage?.residue,
-          deferred: it.completion.deferred,
+          deferred: normalizedDeferred,
           requirementDisposition: completionEvidenceForGate?.requirementDisposition,
           summary: it.completion.summary,
         },
@@ -5908,7 +5910,7 @@ async function completeOneTracked(
   // of truth, so "did this completion record verification" can never disagree
   // between the two call sites.
   const hasTests = completionEvidenceForGate !== undefined;
-  const hasDeferred = Array.isArray(it.completion.deferred) && it.completion.deferred.length > 0;
+  const hasDeferred = Boolean(normalizedDeferred?.length);
   // Bare strings never reach this handler: completionSpec rejects them before
   // completeOne runs, with the exact structured-object example in its issue message.
   const verificationWarning =
