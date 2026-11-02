@@ -38,7 +38,8 @@ function fixture() {
     expose: { mcp: { name: 'fixture:write' } },
     fn: async () => { service.perform(); return { content: [{ type: 'text', text: 'performed' }] }; } };
   const ctx: Request['ctx'] = { log: () => {}, role: 'operator', workspaceId: principal.workspaceId,
-    harnessSlug: 'test-harness', principal };
+    harnessSlug: 'test-harness', principal, signal: new AbortController().signal,
+    progress: () => {}, emit: () => {} };
   const run = (input: unknown = {}, target = tool, context = ctx) =>
     dispatchProjectedTool(target, target.expose.mcp!.name, input, context, { aroundInvoke });
   return { marker, service, policy, tool, ctx, principal, aroundInvoke, run,

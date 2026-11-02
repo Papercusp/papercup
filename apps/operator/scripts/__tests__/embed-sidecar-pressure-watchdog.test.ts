@@ -136,7 +136,7 @@ describe('embed sidecar pressure supervision contract', () => {
     const unit = readFileSync(SIDECAR_UNIT, 'utf8');
 
     expect(unit).toContain('MemoryAccounting=yes');
-    expect(unit).toContain('MemoryHigh=8G');
+    expect(unit).toContain('MemoryHigh=10G');
     expect(unit).toContain('MemoryMax=12G');
     expect(unit).toContain('MemorySwapMax=0');
     expect(unit).toContain('OOMPolicy=kill');
