@@ -492,9 +492,9 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
         const before = performance.now();
         const wire = await callToolWithPressureRetry(client, buildCallToolParams(tool,
           { ...args, payloadTier: 'full' }, { outputSchema: entry.outputSchema,
-            servingGeneration: requireServingGeneration(entry) }), { maxAttempts: 1, timeoutMs: remaining() });
+            servingGeneration: requireServingGeneration(entry) }), { maxAttempts: 1, timeoutMs: remaining() })
+          .finally(() => measuredCalls.push({ tool, args, elapsedMs: performance.now() - before }));
         CallToolResultSchema.parse(wire);
-        measuredCalls.push({ tool, args, elapsedMs: performance.now() - before });
         expect(wire.isError, `${tool} returned an MCP error`).not.toBe(true);
         const payload = JSON.parse(resultToText(wire, { raw: true }));
         const decoded = await unwrapOutputEnvelope(payload, {
@@ -510,12 +510,18 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       expect(discovery.hits.slice(0, 3).map((hit: { tool: string }) => hit.tool)).toContain('sessions:digest');
       const inputs = { since: '2026-10-30T00:00:00.000Z', until: '2026-10-31T23:59:59.000Z',
         stopKinds: ['quota', 'authentication', 'billing', 'rate_limit'], taskMode: 'as-of', limit: 3 };
+      // Keep the full recovery evidence through the supported projection;
+      // bootstrap and closing display fields repeat data and need no spill.
+      const projection = { pick: ['ok', 'hasMore', 'nextCursor', 'coverage',
+        'digests[].stopRef', 'digests[].stopKind', 'digests[].stopEvidence', 'digests[].taskMode',
+        'digests[].kickoff', 'digests[].kickoffRef', 'digests[].kickoffProvenance',
+        'digests[].checkpoint', 'digests[].checkpointRef', 'digests[].checkpointProvenance'] };
       const incidents: any[] = [];
       const pages: any[] = [];
       let cursor: string | undefined;
       let snapshotAt: string | undefined;
       for (let page = 0; page < 168; page++) {
-        const result = await call('sessions:digest', { ...inputs, ...(cursor ? { cursor } : {}) });
+        const result = await call('sessions:digest', { ...inputs, projection, ...(cursor ? { cursor } : {}) });
         expect(result.ok, `digest failure: ${JSON.stringify(result)}`).toBe(true);
         expect(Array.isArray(result.digests)).toBe(true);
         expect(result.coverage, 'unknown indexed coverage').toBeTruthy();
