@@ -32,7 +32,8 @@ import { canonicalJson } from '@papercusp/hash-chain';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
-import { boundedPgReadTxn } from './pg-read-query';
+import { boundedPgReadTxn, extractPgErrorInfo, type PgReadTxnTimeoutPhase } from './pg-read-query';
+import { namedQueryStageTimings, traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type { EvidenceRuntimeId } from './serving-runtimes';
 import { PLAN_CLASSES_BY_PROFILE } from './plan-class-refs';
@@ -1048,14 +1049,46 @@ type RubricPlanRowRead =
   | { kind: 'found'; row: RubricPlanRow }
   | { kind: 'missing' }
   | { kind: 'ambiguous'; error: RubricRefAmbiguousError }
-  | { kind: 'error' };
+  | { kind: 'error'; diagnostic: RubricReadFailureDiagnostic };
+
+/** Bounded local diagnostics; never retain SQL, row contents, or exception prose. */
+export interface RubricReadFailureDiagnostic {
+  phase: 'plan-row-read' | 'row-map' | 'first-party-seed';
+  reason: 'exception' | 'invalid-row';
+  code?: string;
+  timeoutPhase?: PgReadTxnTimeoutPhase;
+  correlationId?: string;
+}
+
+function rubricReadFailure(
+  phase: RubricReadFailureDiagnostic['phase'],
+  error?: unknown,
+  reason: RubricReadFailureDiagnostic['reason'] = 'exception',
+): RubricReadFailureDiagnostic {
+  const code = error === undefined ? undefined : extractPgErrorInfo(error).code;
+  const timeout = error && typeof error === 'object'
+    ? (error as { boundedPgReadTxn?: { phase?: unknown } }).boundedPgReadTxn?.phase
+    : undefined;
+  const timeoutPhase = timeout === 'acquire' || timeout === 'setup' || timeout === 'callback' || timeout === 'commit'
+    ? timeout : undefined;
+  const correlationId = namedQueryStageTimings()?.requestId;
+  const diagnostic: RubricReadFailureDiagnostic = {
+    phase, reason,
+    ...(code && (/^[A-Z0-9]{5}$/.test(code) || ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'].includes(code)) ? { code } : {}),
+    ...(timeoutPhase ? { timeoutPhase } : {}),
+    ...(correlationId ? { correlationId } : {}),
+  };
+  // Null-returning compatibility readers still leave a request-correlated cause.
+  console.warn('[rubrics:read-failed]', JSON.stringify(diagnostic));
+  return diagnostic;
+}
 
 /** A rubric lookup keeps a failed backing read distinct from an authoritative miss. */
 export type RubricLookupResult =
   | { kind: 'found'; rubric: Rubric }
   | { kind: 'missing' }
   | { kind: 'ambiguous'; error: RubricRefAmbiguousError }
-  | { kind: 'read-failed' };
+  | { kind: 'read-failed'; diagnostic?: RubricReadFailureDiagnostic };
 
 /**
  * Read one rubric-template plan by its explicit slug. Explicit rubric reads are
@@ -1067,7 +1100,7 @@ export type RubricLookupResult =
  */
 async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRead> {
   try {
-    const rows = await boundedPgReadTxn<RubricPlanRow[]>(
+    const rows = await traceNamedQueryStage('rubric-plan-row-read', () => boundedPgReadTxn<RubricPlanRow[]>(
       (tx) => tx<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
@@ -1078,12 +1111,12 @@ async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRea
          AND plan_slug = ${rubricId}
        ORDER BY harness_slug
        LIMIT 2`,
-    );
+    ));
     const row = uniqueRubricRow(rows, rubricId);
     return row ? { kind: 'found', row } : { kind: 'missing' };
   } catch (error) {
     if (error instanceof RubricRefAmbiguousError) return { kind: 'ambiguous', error };
-    return { kind: 'error' };
+    return { kind: 'error', diagnostic: rubricReadFailure('plan-row-read', error) };
   }
 }
 
@@ -1586,9 +1619,9 @@ export async function readRubric(rubricId: string): Promise<RubricLookupResult> 
   if (result.kind !== 'missing' || process.env.VITEST) return result;
 
   try {
-    await ensureFirstPartyRubricsSeeded();
-  } catch {
-    return { kind: 'read-failed' };
+    await traceNamedQueryStage('rubric-first-party-seed', () => ensureFirstPartyRubricsSeeded());
+  } catch (error) {
+    return { kind: 'read-failed', diagnostic: rubricReadFailure('first-party-seed', error) };
   }
   result = await readRubricWithoutSeedingResult(rubricId);
   return result;
@@ -1597,15 +1630,17 @@ export async function readRubric(rubricId: string): Promise<RubricLookupResult> 
 async function readRubricWithoutSeedingResult(rubricId: string): Promise<RubricLookupResult> {
   const direct = await readRubricPlanRowById(rubricId);
   if (direct.kind === 'ambiguous') return direct;
-  if (direct.kind === 'error') return { kind: 'read-failed' };
+  if (direct.kind === 'error') return { kind: 'read-failed', diagnostic: direct.diagnostic };
   if (direct.kind === 'missing') return direct;
 
   try {
-    const rubric = (await mapRubricPlanRows([direct.row]))[0];
+    const rubric = (await traceNamedQueryStage('rubric-row-map', () => mapRubricPlanRows([direct.row])))[0];
     // A present but malformed row cannot safely be presented as a missing rubric.
-    return rubric ? { kind: 'found', rubric } : { kind: 'read-failed' };
-  } catch {
-    return { kind: 'read-failed' };
+    return rubric ? { kind: 'found', rubric } : {
+      kind: 'read-failed', diagnostic: rubricReadFailure('row-map', undefined, 'invalid-row'),
+    };
+  } catch (error) {
+    return { kind: 'read-failed', diagnostic: rubricReadFailure('row-map', error) };
   }
 }
 
