@@ -51,7 +51,7 @@
 import { createHash } from 'node:crypto';
 import type { AgentFact, FactDependency } from '../../agent-facts/store';
 import { FACT_MAX_DEPENDENCIES, FACT_DEPENDENCY_OBSERVED_CHARS, isFactFileAnchor } from '../../agent-facts/store';
-import { readCell, type CellReadEnv } from '../../cell-read';
+import type { CellReadEnv } from '../../cell-read';
 import type { CellReader } from '../../cell-registry';
 import { resolveCurrentTokens } from '../../freshness/resolvers';
 
@@ -596,6 +596,10 @@ async function observeCell(
   env: CellReadEnv,
   subject?: string,
 ): Promise<CurrentCellObservation> {
+  // File-only facts use the freshness resolver directly. Loading the cell
+  // dispatcher for them pulls in the full tool graph before a single hash,
+  // exceeding the notes push warmup budget (WI-6554700010044943).
+  const { readCell } = await import('../../cell-read');
   const read = await readCell(cell, reader, env, subject);
   if (read.status === 'value') {
     return {
