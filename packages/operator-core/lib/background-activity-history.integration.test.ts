@@ -158,16 +158,17 @@ describe('scoped startup activity audit history', () => {
     expect(JSON.stringify(history)).not.toContain('secret');
   });
 
-  it.each(['routine', 'event', 'timer'] as const)('observes an actual %s invocation in its explicit workspace', async source => {
+  it.each(['routine', 'event', 'timer', 'sync'] as const)('observes an actual %s invocation in its explicit workspace', async source => {
     let release!: (value: string) => void;
     const invoke = vi.fn(() => new Promise<string>(resolve => { release = resolve; }));
     const pending = runObservedBackgroundActivity({ workspaceId: 'startup-b', featureId, source,
-      trigger: source === 'event' ? 'event' : 'timer' }, invoke);
+      trigger: source === 'event' ? 'event' : source === 'sync' ? 'sync' : 'timer' }, invoke);
     expect(invoke).toHaveBeenCalledOnce();
     await vi.waitFor(async () => expect(await state.sql`SELECT id FROM harness_shared.audit_log`).toHaveLength(1));
     expect(await readStartupActivityHistory([featureId])).toEqual([]);
     state.workspace = 'startup-b';
-    expect(await readStartupActivityHistory([featureId])).toEqual([expect.objectContaining({ operation: 'start', status: 'running', source })]);
+    expect(await readStartupActivityHistory([featureId])).toEqual([expect.objectContaining({ operation: 'start', status: 'running', source,
+      trigger: source === 'event' ? 'event' : source === 'sync' ? 'sync' : 'timer' })]);
     release('value');
     await expect(pending).resolves.toBe('value');
   });

@@ -23,6 +23,8 @@ import type { DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
 import { EXTERNAL_SCHEDULES, SYNC_TRIGGERED_SCHEDULES } from './schedule-descriptors.mjs';
 import { runWithWorkspace } from './workspace-als';
 import { startupReactionFeatureId } from './events/reaction-id';
+import { _setCachedPrimaryManagedTimersForTests } from './cluster-managed-timers-sync';
+import { ownHonoPort } from './schedule-federation';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its allow/baseline sets only.
 import { BASELINE, ALLOWLIST, ALLOWLIST_DIRS } from '../../../scripts/check-no-raw-setinterval.mjs';
@@ -128,12 +130,14 @@ describe('startup activity disclosure', () => {
       ...emptyInventory, getRoutines: async () => [item],
       getManaged: () => [{ name: 'ephemeral:opaque-id', category: 'ephemeral-harness', intervalMs: 1000,
         activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId },
+        stopStatus: 'draining', cancellable: false,
         armedAt: 0, lastFireAt: 1, lastError: null, running: true, runningSince: 1,
         skippedWhileRunning: 0, fires: 1, shed: false, instanced: false, instances: 1, classification: null }],
     }));
     const matches = snapshot.features.filter(feature => feature.id === featureId);
     expect(matches).toHaveLength(1);
-    expect(matches[0]).toMatchObject({ origin: 'routines', observed: 'running', scope: { kind: 'workspace', id: 'workspace-a' } });
+    expect(matches[0]).toMatchObject({ origin: 'routines', observed: 'running', scope: { kind: 'workspace', id: 'workspace-a' },
+      stop: { status: 'draining', cancellable: false } });
     expect(matches[0].entrypointIds).toEqual(expect.arrayContaining(['routine-dispatch', 'managed-fire-on-arm']));
   });
 
@@ -476,6 +480,13 @@ describe('collectScheduleInventory', () => {
     const repair = rows.find((r) => r.name === 'doc-steward-dispatch')!;
     expect(repair.armed).toBe(false);
     expect(repair.detail).toMatchObject({ flag: 'papercusp-doc-steward' });
+    for (const row of rows) {
+      const a = scheduleStartupFeature(row, { workspaceId: 'sync-a', deviceId: 'one' });
+      const b = scheduleStartupFeature(row, { workspaceId: 'sync-a', deviceId: 'two' });
+      expect(a.scope).toEqual({ kind: 'workspace', id: 'sync-a' });
+      expect(a.id).toBe(b.id);
+      expect(scheduleStartupFeature(row, { workspaceId: 'sync-b', deviceId: 'one' }).id).not.toBe(a.id);
+    }
   });
 
   it('the DEFAULT sync-triggered manifest carries the doc drift pipeline', async () => {
@@ -763,6 +774,35 @@ describe('schedule descriptors ⇄ recurring writers (P-006 C-10)', () => {
  * its passes ran 6+ days undetected.
  */
 describe('collectScheduleInventory — sibling-process federation', () => {
+  it('includes its own primary snapshot, preserves stop metadata, and reports stale snapshots as unknown', async () => {
+    const id = `activity-${'c'.repeat(64)}`;
+    const snapshot = { pid: 12345, role: 'operator', timers: [{
+      name: 'primary-optional', category: 'global-sweep' as const, intervalMs: 1000, armedAt: 1,
+      lastFireAt: 2, lastError: null, running: true, runningSince: 2, skippedWhileRunning: 0,
+      fires: 1, shed: false, instanced: false, instances: 1, classification: null,
+      activity: { kind: 'workspace' as const, workspaceId: 'primary-workspace', featureId: id },
+      stopStatus: 'draining' as const, cancellable: false,
+    }], dbosSchedules: [], sentAt: Date.now(), receivedAt: Date.now() };
+    const siblings: import('./schedule-federation').SiblingManagedTimers[] = [];
+    try {
+      _setCachedPrimaryManagedTimersForTests(snapshot);
+      const deps = { ...emptySources, getSiblingManaged: async () => siblings };
+      const rows = await collectScheduleInventory(deps);
+      const row = rows.find(candidate => candidate.name === 'primary-optional')!;
+      expect(row.detail).toMatchObject({ pid: 12345, port: ownHonoPort(), federated: true,
+        stopStatus: 'draining', cancellable: false });
+      expect(scheduleStartupFeature(row)).toMatchObject({ id, scope: { kind: 'workspace', id: 'primary-workspace' },
+        observed: 'running', stop: { status: 'draining', cancellable: false } });
+      expect(siblings).toEqual([]);
+      _setCachedPrimaryManagedTimersForTests({ ...snapshot, receivedAt: Date.now() - 20_000 });
+      const stale = await collectScheduleInventory(deps);
+      expect(stale.some(candidate => candidate.name === 'primary-optional')).toBe(false);
+      expect(stale.find(candidate => candidate.source === 'external-process')).toMatchObject({
+        armed: null, detail: { reachable: false, pid: 12345, port: ownHonoPort() },
+      });
+    } finally { _setCachedPrimaryManagedTimersForTests(null); }
+  });
+
   const federated = (over: Record<string, unknown> = {}) => ({
     port: 3271,
     pid: 4242,

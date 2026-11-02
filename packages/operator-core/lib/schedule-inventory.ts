@@ -28,7 +28,8 @@ import {
 } from './dbos/dbos-schedule-introspect';
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
 import { listManaged, type ManagedEntry, type TimerClassification } from '@papercusp/scheduled-registry';
-import { collectSiblingManagedTimers, type SiblingManagedTimers } from './schedule-federation';
+import { collectSiblingManagedTimers, ownHonoPort, type SiblingManagedTimers } from './schedule-federation';
+import { getCachedPrimaryManagedTimers } from './cluster-managed-timers-sync';
 import { spendForTargetRole, spendReasonForTargetRole } from './automation/routine-classification';
 import {
   EXTERNAL_SCHEDULES,
@@ -375,6 +376,18 @@ export async function collectScheduleInventory(
    * shared Postgres, so both copies would carry identical fire-state and the second
    * row would read as a duplicate rather than as information. Federation exists to
    * add what was MISSING, not to double-report what was already visible. */
+  // The own-port discovery entry is excluded by sibling federation. A request
+  // worker must still include its own primary's pushed runtime snapshot.
+  const primary = getCachedPrimaryManagedTimers();
+  const federated = [...siblings];
+  if (primary && !federated.some(sibling => sibling.pid === primary.pid && sibling.port === ownHonoPort())
+    && (shouldCollectSource('external-process') || shouldCollectSource('dbos'))) {
+    const fresh = Date.now() - primary.receivedAt >= 0 && Date.now() - primary.receivedAt <= 15_000;
+    federated.push({ port: ownHonoPort(), pid: primary.pid, label: `${primary.role}(primary via :${ownHonoPort()})`,
+      process: primary.role, ok: fresh, timers: fresh ? primary.timers : [],
+      dbosSchedules: fresh ? primary.dbosSchedules : [], stallWaker: null, elapsedMs: 0,
+      ...(fresh ? {} : { error: 'primary runtime snapshot unavailable or stale' }) });
+  }
   const localDbosNames = new Set(dbos.map((d) => d.name));
 
   for (const d of dbos) {
@@ -512,7 +525,7 @@ export async function collectScheduleInventory(
    * like "does not exist" — which is how a reaper that failed 100% of its passes ran
    * 6+ days undetected.
    */
-  for (const s of siblings) {
+  for (const s of federated) {
     if (!s.ok) {
       // A sibling that did not answer yields ONE explicit UNKNOWN row. This is the
       // whole point of the degraded path: silence must be VISIBLE. Dropping the row
@@ -574,6 +587,8 @@ export async function collectScheduleInventory(
           instanced: m.instanced ?? false,
           classification: m.classification ?? null,
           ...(m.activity === undefined ? {} : { activity: m.activity }),
+          ...(m.stopStatus === undefined ? {} : { stopStatus: m.stopStatus }),
+          ...(m.cancellable === undefined ? {} : { cancellable: m.cancellable }),
         },
       });
     }
@@ -748,7 +763,7 @@ export interface StartupActivityHistoryEntry {
   at: string;
   actor: string;
   trigger: string;
-  source?: 'settings' | 'native' | 'routine' | 'timer' | 'event' | 'supervisor';
+  source?: 'settings' | 'native' | 'routine' | 'timer' | 'event' | 'supervisor' | 'sync';
   reason?: 'user-choice' | 'automatic-start' | 'clean-quit' | 'pause-expired' | 'dispatch-blocked' | 'service-recovery' | 'invocation';
   previous: StartupActivityPolicy | null;
   resulting: StartupActivityPolicy | null;
@@ -807,8 +822,10 @@ export function startupActivityFeatureId(
 ): string {
   const binding = managedWorkspaceBinding(row);
   if (binding) return binding.featureId;
+  const workspaceScoped = row.source === 'routines' || (row.source === 'in-process'
+    && SYNC_TRIGGERED_SWEEPS.some(entry => entry.name === row.name));
   return `activity-${createHash('sha256').update(JSON.stringify([
-    context.workspaceId ?? null, row.source === 'routines' ? null : context.deviceId ?? null,
+    context.workspaceId ?? null, workspaceScoped ? null : context.deviceId ?? null,
     row.source, row.installSlug, row.detail.process ?? null, row.name,
   ])).digest('hex')}`;
 }
@@ -847,7 +864,7 @@ export function scheduleStartupFeature(
     origin: row.source,
     entrypointIds,
     scope: binding ? { kind: 'workspace', id: binding.workspaceId }
-      : row.source === 'routines' ? { kind: 'workspace', id: context.workspaceId ?? null }
+      : row.source === 'routines' || sync ? { kind: 'workspace', id: context.workspaceId ?? null }
       : row.source === 'dbos' ? { kind: 'unknown', id: null } : { kind: 'device', id: context.deviceId ?? null },
     dependencies: null,
     desired: { ...unknownPolicy(), automatic: row.source === 'routines' || sync ? row.armed : null },
@@ -877,7 +894,7 @@ export const startupHistorySchema = z.object({
   at: z.string().datetime({ offset: true }),
   actor: historyCode,
   trigger: historyCode,
-  source: z.enum(['settings', 'native', 'routine', 'timer', 'event', 'supervisor']).optional(),
+  source: z.enum(['settings', 'native', 'routine', 'timer', 'event', 'supervisor', 'sync']).optional(),
   reason: z.enum(['user-choice', 'automatic-start', 'clean-quit', 'pause-expired', 'dispatch-blocked', 'service-recovery', 'invocation']).optional(),
   previous: startupPolicySchema.nullable(),
   resulting: startupPolicySchema.nullable(),
@@ -918,6 +935,11 @@ export async function collectStartupActivity(
       // Inventory rows are sorted for display, not authority. Retain the routine's
       // description/policy regardless of whether its live timer sorted before it.
       const merged = feature.origin === 'routines' ? feature : existing;
+      const runningStops = [existing, feature].filter(candidate => candidate.observed === 'running')
+        .flatMap(candidate => candidate.stop ? [candidate.stop] : []);
+      const stop = runningStops.find(candidate => candidate.status === 'pending' || candidate.status === 'draining')
+        ?? runningStops[0] ?? existing.stop ?? feature.stop;
+      if (stop) merged.stop = stop;
       merged.entrypointIds = [...new Set([...existing.entrypointIds, ...feature.entrypointIds])];
       merged.observed = existing.observed === 'running' || feature.observed === 'running' ? 'running'
         : existing.observed === 'idle' || feature.observed === 'idle' ? 'idle' : 'unknown';

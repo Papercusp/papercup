@@ -4188,7 +4188,6 @@ describe('template_data persistence boundary — the set-template-data door', ()
         intent: { request: `Retain outcome ${index + 1}.`, sourceRefs: ['session_turn:fixture'] },
         ...(index === 1 ? {
           check: { kind: 'instrument' as const, instrumentKey: 'code-intel:coupling-shadow-window' },
-          requiredTestLayers: [],
         } : {}),
       })),
     };

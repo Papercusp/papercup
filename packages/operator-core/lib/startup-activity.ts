@@ -42,7 +42,7 @@ const validFeatureId = /^activity-[a-f0-9]{64}$/;
 const persistedHistorySchema = startupHistorySchema.extend({
   featureId: startupHistorySchema.shape.featureId.regex(validFeatureId),
   actor: startupHistorySchema.shape.actor.regex(/^(user|system):[a-f0-9]{64}$/),
-  trigger: startupHistorySchema.shape.trigger.regex(/^(manual|login|boot|timer|event|supervisor|upgrade|repair|settings|pause-expiry|unknown)$/),
+  trigger: startupHistorySchema.shape.trigger.regex(/^(manual|login|boot|timer|event|supervisor|upgrade|repair|settings|pause-expiry|sync|unknown)$/),
   source: startupHistorySchema.shape.source.unwrap(),
   reason: startupHistorySchema.shape.reason.unwrap(),
 });
@@ -170,7 +170,7 @@ export function stopObservedBackgroundActivity(scope: ObservedActivityScope): Ma
  * Audit failures cannot replay an effect or leak its arguments/error body.
  */
 export async function runObservedBackgroundActivity<T>(
-  scope: { workspaceId: string; featureId: string; source: 'routine' | 'event' | 'timer'; trigger: 'timer' | 'event' | 'manual' | 'unknown' },
+  scope: { workspaceId: string; featureId: string; source: 'routine' | 'event' | 'timer' | 'sync'; trigger: 'timer' | 'event' | 'manual' | 'unknown' | 'sync' },
   invoke: () => T | Promise<T>,
 ): Promise<T> {
   const key = observedActivityKey(scope);
