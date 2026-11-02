@@ -64,10 +64,23 @@ beforeAll(async () => {
   db = await createFreshPgDb('executionstart');
   connection.sql = db.sql;
   await db.sql.unsafe(`
+    CREATE TABLE harness_shared.harness_registry (workspace_id text PRIMARY KEY,payload jsonb);
+    INSERT INTO harness_shared.harness_registry VALUES ('execution-ws','{"projects":[{"slug":"project","harness_kind":"hive"}]}'::jsonb);
     CREATE TABLE harness_shared.harness_plans (workspace_id text, harness_slug text, plan_slug text,
       content text, content_hash text, status text, op_status text, template_data jsonb, input_schema jsonb,
       archived boolean DEFAULT false, version integer DEFAULT 1, now_note jsonb, updated_at timestamptz,
       PRIMARY KEY(workspace_id,harness_slug,plan_slug));
+    ALTER TABLE harness_shared.harness_plans
+      ADD COLUMN title text, ADD COLUMN created text, ADD COLUMN updated text, ADD COLUMN owner text,
+      ADD COLUMN initiative text, ADD COLUMN supersedes text, ADD COLUMN superseded_by text,
+      ADD COLUMN op_started_at timestamptz, ADD COLUMN op_updated_at timestamptz,
+      ADD COLUMN current_wave integer, ADD COLUMN op_priority integer, ADD COLUMN is_legacy boolean DEFAULT false,
+      ADD COLUMN items jsonb DEFAULT '[]', ADD COLUMN now_state text, ADD COLUMN now_next text,
+      ADD COLUMN promote_policy text, ADD COLUMN schedule jsonb, ADD COLUMN schedule_active boolean,
+      ADD COLUMN scheduled_at timestamptz, ADD COLUMN expires_at timestamptz, ADD COLUMN tzid text,
+      ADD COLUMN template_slug text, ADD COLUMN run_seq integer, ADD COLUMN template text,
+      ADD COLUMN output_schema jsonb, ADD COLUMN forced_past jsonb,
+      ADD COLUMN verification_profile text, ADD COLUMN verification_profile_source text;
     CREATE TABLE harness_shared.plan_revisions (id bigserial PRIMARY KEY, workspace_id text, harness_slug text,
       plan_slug text, seq integer, content_hash text, content_snapshot text, rationale text, author_kind text,
       author_id text, session_id text, session_kind text, created_at bigint,
@@ -77,7 +90,10 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.session_briefs (owner_id text, workspace_id text,current_plan_slug text,harness_slug text,control_state jsonb);
     CREATE TABLE harness_shared.adv_sessions (coord_owner_id text,workspace_id text,plan_slug text,ended_at timestamptz);
     CREATE TABLE harness_shared.plan_item_claims (owner text,workspace_id text,harness_slug text,plan_slug text);
-    CREATE TABLE harness_shared.work_items (taken_by text,workspace_id text,harness_slug text,source_plan_slug text,status text);
+    CREATE TABLE harness_shared.work_items (taken_by text,workspace_id text,harness_slug text,source_plan_slug text,status text,
+      feature_id text,item_kind text,plan_slug text,plan_line_id text,plan_line_text text,plan_importance text,
+      plan_phase text,plan_decision_refs text[],plan_deliverable text,plan_owner_gate_marker text,plan_seq integer);
+    CREATE TABLE harness_shared.work_item_deps (workspace_id text,dep_type text,blocked_kind text,blocked_ref text,blocker_kind text,blocker_ref text);
   `);
   await db.sql.unsafe(await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql.DRAFT', import.meta.url), 'utf8'));
 }, 120_000);

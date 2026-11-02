@@ -4,7 +4,7 @@ import type { AgentIdentity } from '../coordination/identity';
 import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisions';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
 import { planExecutionMeaning } from './plan-execution-meaning';
-import type { ExecutionPlanBinding } from './plan-execution-guard';
+import { checkPlanExecutionReadiness, type ExecutionPlanBinding } from './plan-execution-guard';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
 export type ExecutionPlanRow = Record<string, unknown> & { content: string; content_hash: string };
@@ -44,7 +44,6 @@ export async function recordPlanExecutionStart(scope: ExecutionStartScope, ident
        FOR UPDATE`;
     const row = rows[0]?.row;
     if (!row || !isDeepStrictEqual(row, expected)) throw new Error('plan_changed_before_start_proof');
-    const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
     const blockers = await checkPlanExecutionReadiness({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug }, scope.workspaceId);
     if (blockers.length) throw new Error(`plan_start_proof_refused:${blockers.join(',')}`);
     const revision = await recordPlanRevisionInTransaction(tx, {

@@ -4,6 +4,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspace } from '../../workspace-als';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { parsePlan } from './parser';
+import { getPlanRow } from './source';
 import { planExecutionMeaning } from './plan-execution-meaning';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
@@ -130,11 +131,11 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
         (!audit.content_snapshot || planExecutionMeaning(audit.content_snapshot) !== planExecutionMeaning(row.content)))
         return ['activation_audit_stale'];
     }
-    const [{ getPlanRow }, { evaluatePlanStartReadiness }, { readAndEvaluateAcceptanceBarLifecycle },
+    const [{ evaluatePlanStartReadiness }, { readAndEvaluateAcceptanceBarLifecycle },
       { checkPlanAdmission }, { withPinnedPlanTypes }, { checkPlanStartable },
       { evaluatePlanSpecQualityGate }, { evaluatePlanStartBarCritique }, { specQualityPlanItemIds },
       { validatePlanCandidateDependencies }] = await Promise.all([
-      import('./source'), import('./plan-input-validation'), import('../../acceptance-bar-lifecycle-evaluator'),
+      import('./plan-input-validation'), import('../../acceptance-bar-lifecycle-evaluator'),
       import('./plan-admission-gate'), import('../../plan-types/pins'),
       import('./plan-start-gate'), import('./plan-spec-quality-gate'), import('./plan-start-critique-gate'),
       import('./spec-quality'),
