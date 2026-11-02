@@ -34,6 +34,7 @@ vi.mock('./plan-admission-gate', () => ({ checkPlanAdmission: async () => gates.
   ? { admitted: false, refusal: { code: gates.blocker } } : { admitted: true } }));
 vi.mock('./source', async original => ({
   ...(await original<typeof import('./source')>()),
+  resolvePlanScope: async () => ({ workspaceId: 'execution-ws', harnessSlug: 'project' }),
   getPlanRow: async () => {
     const rows = await db.sql<{ content: string; content_hash: string }[]>`
       SELECT content,content_hash FROM harness_shared.harness_plans WHERE workspace_id='execution-ws' AND harness_slug='project' AND plan_slug='feature'`;
