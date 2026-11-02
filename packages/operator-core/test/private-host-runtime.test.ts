@@ -15,10 +15,38 @@ import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
-afterEach(() => {
+function cleanupPrivateHostTestDirectories(directories: string[], failed: boolean) {
+  if (failed) {
+    console.error(`[private-host-runtime] retained failure evidence: ${JSON.stringify(directories)}`);
+    return;
+  }
+  for (const dir of directories) rmSync(dir, { recursive: true, force: true });
+}
+
+afterEach(({ task }) => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  cleanupPrivateHostTestDirectories(dirs.splice(0), task.result?.state === 'fail');
+});
+
+it.each([false, true])('preserves private-host failure evidence and cleans successful fixtures (failed=%s)', failed => {
+  const root = mkdtempSync(join(tmpdir(), 'private-builder-cleanup-')); dirs.push(root);
+  const journal = join(root, 'hono-host.mjs.build-steps.jsonl');
+  const original = '{"step":"compile","event":"start"}\n';
+  writeFileSync(journal, original);
+  const report = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    cleanupPrivateHostTestDirectories([root], failed);
+    if (failed) {
+      expect(readFileSync(journal, 'utf8')).toBe(original);
+      expect(report).toHaveBeenCalledWith(expect.stringContaining(JSON.stringify([root])));
+    } else {
+      expect(existsSync(root)).toBe(false);
+      expect(report).not.toHaveBeenCalled();
+    }
+  } finally {
+    report.mockRestore();
+  }
 });
 
 
