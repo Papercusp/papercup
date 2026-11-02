@@ -12,6 +12,8 @@ Focus and Orbit remain earlier comparison studies; Workbench is the current iter
 
 The production requirement is availability from desktop login, with no separate Dock/taskbar/Alt-Tab entries for panels. This is specified by plan decision `quick-access-search-launcher-2026-10-26#D-009`. This mockup does not install a startup helper or register actual OS shortcuts.
 
+The Workbench lifecycle is also captured in `b-dismissed.png` (panels dismissed, integration still available) and `b-chat-pinned.png` (chat pinned beside the existing terminal). Pin state is independent for each sidebar. Ordinary terminal windows remain application windows; the sidebars do not acquire app launchers or minimize/maximize controls.
+
 Remote connections reuse psu's saved profile and connection mechanism. Sources checked: `apps/operator/scripts/psu-connection-front-controller.mjs`, `apps/tui/src/remote_connect.rs`, and `packages/operator-ui/src/accounts/AccountsTab.tsx`. Sample identities, counts, usage, and reset times are illustrative.
 
 The HTML represents native interface designs; it is not the proposed production renderer. The native implementation would use GNOME/GTK, AppKit/SwiftUI, and WinUI/WPF while retaining existing backend contracts.

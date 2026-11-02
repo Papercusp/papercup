@@ -22,7 +22,12 @@ try {
   for (const direction of ['a', 'b', 'c']) {
     for (const surface of ['launcher', 'terminal', 'organizer', 'chat', 'accounts', 'overview']) {
       await page.evaluate(({ direction, surface }) => window.__mockup.set(direction, surface), { direction, surface });
-      await page.screenshot({ path: join(directory, `${direction}-${surface}.png`), animations: 'disabled' });
+      try {
+        await page.screenshot({ path: join(directory, `${direction}-${surface}.png`), animations: 'disabled' });
+      } catch (error) {
+        const metrics = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, bodyWidth: document.body.scrollWidth, bodyHeight: document.body.scrollHeight })).catch(() => null);
+        throw new Error(`Screenshot failed for ${direction}/${surface}; viewport=${JSON.stringify(metrics)}; pageErrors=${JSON.stringify(errors)}: ${error.message}`, { cause: error });
+      }
       const bounds = await page.evaluate(() => [...document.querySelectorAll('#stage > .window, #stage > .wing, #stage > .os-panel, #stage > .os-wing, #stage > .os-overview')].map(element => {
         const rect = element.getBoundingClientRect();
         return { title: element.querySelector('.titlebar,.wing-title')?.textContent?.trim() || 'Panel', left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
@@ -32,6 +37,15 @@ try {
       captures.push({ direction, surface, file: `${direction}-${surface}.png`, bounds, overviewCards });
     }
   }
+  await page.evaluate(() => window.__mockup.set('b', 'chat'));
+  await page.keyboard.press('Escape');
+  await page.screenshot({ path: join(directory, 'b-dismissed.png'), animations: 'disabled' });
+  captures.push({ direction: 'b', surface: 'dismissed', file: 'b-dismissed.png', lifecycle: true });
+  await page.keyboard.press('Control+Alt+p');
+  await page.locator('[data-os-pin]').click();
+  await page.screenshot({ path: join(directory, 'b-chat-pinned.png'), animations: 'disabled' });
+  captures.push({ direction: 'b', surface: 'chat-pinned', file: 'b-chat-pinned.png', lifecycle: true });
+  await page.evaluate(() => window.__mockup.get().osPins.clear());
   for (const platform of ['ubuntu', 'mac', 'windows']) {
     await page.evaluate(platform => window.__mockup.set('b', 'chat', platform), platform);
     await page.screenshot({ path: join(directory, `platform-${platform}.png`), animations: 'disabled' });
