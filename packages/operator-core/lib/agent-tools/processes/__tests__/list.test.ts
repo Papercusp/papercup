@@ -137,6 +137,13 @@ describe('processes:list structured output', () => {
     expect(projected.agentRoles).toContain('mug');
   });
 
+  it('documents PID counts and PID arrays as distinct return fields', () => {
+    const returns = projected.guidance?.returns ?? '';
+    expect(returns).toContain('pids: number|null (PID count)');
+    expect(returns).toContain('livePids: number[]|null (PID array');
+    expect(returns).toContain('unaccountedGroups?: Array<{ pids: number[] (PID array) }>');
+  });
+
   it('accepts the singular state filter used by sibling task surfaces', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     vi.mocked(listTasks).mockClear();
