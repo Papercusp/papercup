@@ -1,8 +1,9 @@
 /** POLICY-IDEMPOTENT: actual routine enqueue and DBOS queue admission on private PG.
  * Only the terminal action is a counting fixture; queue conflicts are never mocked.
- * Unrelated scheduled maintenance is not registered in this isolated executor.
+ * The real routinesTick schedule runs only against this private database;
+ * unrelated periodic registrations are parked for the executor's lifetime.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
@@ -24,6 +25,7 @@ const executions = new Map<string, string[]>();
 const blocked = new Map<string, { wait: Promise<void>; release: () => void }>();
 const workspace = 'startup-dedup-test';
 const action = 'startup-dedup-test-effect';
+const schedules: Array<{ config: { crontab: string }; original: string }> = [];
 
 beforeAll(async () => {
   db = await createOrgTestDb();
@@ -31,10 +33,14 @@ beforeAll(async () => {
   ({ DBOS } = await import('@dbos-inc/dbos-sdk'));
   DBOS.setConfig({ name: 'papercusp-startup-dedup-test', systemDatabaseUrl: db.adminDsn,
     systemDatabaseSchemaName: 'dbos', applicationVersion: 'startup-dedup-test', runAdminServer: false });
-  const scheduled = vi.spyOn(DBOS, 'registerScheduled').mockImplementation(() => {});
-  try {
-    ({ enqueueRoutineFire: enqueue } = await import('./routines-workflow'));
-  } finally { scheduled.mockRestore(); }
+  ({ enqueueRoutineFire: enqueue } = await import('./routines-workflow'));
+  const registrations = DBOS.getAssociatedInfo('dbos.scheduler');
+  expect(registrations.some(registration => registration.methodReg.name === 'routinesTick')).toBe(true);
+  for (const registration of registrations) {
+    const config = registration.methodConfig as { crontab: string };
+    schedules.push({ config, original: config.crontab });
+    config.crontab = registration.methodReg.name === 'routinesTick' ? '* * * * * *' : '0 0 0 1 1 *';
+  }
   const { registerSystemAction } = await import('../harness/routines/system-actions');
   registerSystemAction(action, async context => {
     if (!context.workflowId || !context.routineId) throw new Error('Expected real routine and workflow identities');
@@ -49,18 +55,25 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const gate of blocked.values()) gate.release();
   try { await DBOS?.shutdown(); }
-  finally { await db?.cleanup(); }
+  finally {
+    for (const { config, original } of schedules) config.crontab = original;
+    await db?.cleanup();
+  }
+});
+
+afterEach(async () => {
+  await db.adminSql`UPDATE harness_shared.routines SET active = false WHERE workspace_id = ${workspace}`;
 });
 
 async function routine(): Promise<RoutineFireRow> {
   const id = `startup-dedup-${randomUUID()}`;
   const row: RoutineFireRow = { id, workspaceId: workspace, installSlug: 'startup-dedup-test', name: id,
-    targetRole: `system:${action}`, triggerConfig: { cron: '0 * * * * *' },
+    targetRole: `system:${action}`, triggerConfig: { cron: '0 0 0 1 1 *' },
     payloadTemplate: null, rescheduleIntervalSec: null, targetOwnerId: null };
   await db.adminSql`INSERT INTO harness_shared.routines
-    (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, active)
-    VALUES (${id}, ${workspace}, ${row.installSlug}, ${id}, 'schedule',
-      ${JSON.stringify(row.triggerConfig)}::text::jsonb, ${row.targetRole}, true)`;
+    (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, active, tier, next_fire_at)
+    VALUES (${id}, ${workspace}, ${row.installSlug}, ${id}, 'cron',
+      ${JSON.stringify(row.triggerConfig)}::text::jsonb, ${row.targetRole}, true, 'durable', 'infinity')`;
   return row;
 }
 
@@ -111,4 +124,51 @@ describe('startup routine duplicate admission (real DBOS and PostgreSQL)', () =>
     expect(executions.get(first.id)).toHaveLength(1);
     expect(executions.get(second.id)).toHaveLength(1);
   }, 60_000);
+
+  it('collapses an automatic scheduler delivery during a manual fire, then runs a later scheduled occurrence', async () => {
+    const row = await routine();
+    const release = hold(row.id);
+    try {
+      await expect(enqueue(row)).resolves.toMatchObject({ ok: true, status: 'enqueued' });
+      await expect.poll(() => executions.get(row.id)?.length ?? 0, { timeout: 15_000 }).toBe(1);
+      await db.adminSql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second'
+        WHERE id = ${row.id}`;
+      // Only the actual scheduled tick can claim and advance this row: no tick
+      // implementation, claim, enqueue or admission return value is mocked.
+      await expect.poll(async () => {
+        const [state] = await db.adminSql<{ claimed: boolean }[]>`
+          SELECT last_fired_at IS NOT NULL AND next_fire_at > now() AS claimed
+          FROM harness_shared.routines WHERE id = ${row.id}`;
+        return state?.claimed;
+      }, { timeout: 30_000 }).toBe(true);
+      await expect.poll(async () => {
+        const [state] = await db.adminSql<{ finished: boolean }[]>`
+          SELECT EXISTS (SELECT 1 FROM dbos.workflow_status
+            WHERE name = 'routinesTick' AND status = 'SUCCESS'
+              AND updated_at >= (SELECT extract(epoch FROM last_fired_at) * 1000
+                FROM harness_shared.routines WHERE id = ${row.id})) AS finished`;
+        return state?.finished;
+      }, { timeout: 30_000 }).toBe(true);
+      expect(executions.get(row.id)).toHaveLength(1);
+      expect(await db.adminSql`SELECT workflow_uuid FROM dbos.workflow_status
+        WHERE deduplication_id = ${`routine:${row.id}`}`).toHaveLength(1);
+    } finally { release(); }
+    await complete(row.id);
+
+    // A new due occurrence must reach the same real scheduler without being
+    // mistaken for a replay of the earlier, already completed manual request.
+    await db.adminSql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second'
+      WHERE id = ${row.id}`;
+    await expect.poll(() => executions.get(row.id)?.length ?? 0, { timeout: 30_000 }).toBe(2);
+    await complete(row.id);
+    expect(new Set(executions.get(row.id)).size).toBe(2);
+    const { startupActivityFeatureId } = await import('../schedule-inventory');
+    const featureId = startupActivityFeatureId({ source: 'routines', installSlug: row.installSlug,
+      name: row.name, detail: {} }, { workspaceId: workspace });
+    const starts = await db.adminSql<{ trigger: string }[]>`
+      SELECT details->'startupActivity'->>'trigger' AS trigger FROM harness_shared.audit_log
+      WHERE workspace_id = ${workspace} AND action = 'background-activity' AND subject = ${featureId}
+      ORDER BY ts, id`;
+    expect(starts.map(start => start.trigger).sort()).toEqual(['manual', 'timer']);
+  }, 120_000);
 });
