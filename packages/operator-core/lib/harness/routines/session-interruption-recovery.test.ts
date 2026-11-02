@@ -19,6 +19,23 @@ describe('session interruption eligibility', () => {
       action: 'resume-work', reason: 'interrupted-native-turn', headless: false,
     });
   });
+  it.each(['solo-loop', 'fleet-held-work'])('recovers authorized unfinished %s after a settled turn', kind => {
+    const c = candidate(kind === 'solo-loop'
+      ? { loop: { active: true, goal: 'finish the existing task', nextFireAt: now - 1 } }
+      : { actionableHeldWork: 1 });
+    c.interruption!.execution.phase = 'settled';
+    expect(classifySessionInterruption(c, now)).toMatchObject({ action: 'resume-work',
+      reason: kind === 'solo-loop' ? 'due-loop' : 'actionable-held-work' });
+  });
+  it('rejects a stale incarnation even when the owner still holds work', () => {
+    const c = candidate({ actionableHeldWork: 1 });
+    c.interruption!.nativeSessionId = 'superseded-native';
+    expect(classifySessionInterruption(c, now)).toEqual({ action: 'hold', reason: 'identity-mismatch' });
+  });
+  it('does not infer an unfinished request from an unknown native phase', () => {
+    const c = candidate(); c.interruption!.execution.phase = 'unknown';
+    expect(classifySessionInterruption(c, now)).toEqual({ action: 'hold', reason: 'no-authorized-work-evidence' });
+  });
   it.each([true, false])('preserves saved headless=%s', headless => {
     expect(classifySessionInterruption(candidate({ headless }), now)).toMatchObject({ action: 'resume-work', headless });
   });

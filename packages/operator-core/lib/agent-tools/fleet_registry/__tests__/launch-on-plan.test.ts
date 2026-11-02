@@ -1550,14 +1550,14 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(payload.superviseGrant).toMatchObject({ requested: supervise, persisted: true });
   });
 
-  it('preserves an existing fleet opt-out when supervise is omitted', async () => {
+  it.each([false, true])('preserves an existing fleet supervise:%s when supervise is omitted', async (supervise) => {
     createFleetIfAbsentMock.mockResolvedValue({
       record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
       created: false,
     });
     getFleetHeadcountTargetMock.mockResolvedValue({
       workspaceId: 'ws-1', fleetSlug: 'existing-fleet', enabled: true, target: 1,
-      config: { plan: 'my-plan', harness: 'papercusp', supervise: false },
+      config: { plan: 'my-plan', harness: 'papercusp', supervise },
     });
     const payload = parseHandlerPayload(await invokeLaunchHandler(
       { name: 'Existing Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,

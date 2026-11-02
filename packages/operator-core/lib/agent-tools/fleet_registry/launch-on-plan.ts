@@ -1922,6 +1922,28 @@ const PAIRED_ROLE_ARGS = z.object({
   count: z.number().int().min(1).optional(),
 });
 
+/** The existing fresh-profile write, shared by the launcher and its real-PG
+ * integration oracle. Explicit supervision changes on existing fleets still
+ * go through resolveSuperviseGrant below. */
+export async function persistFreshFleetLaunchProfile(opts: {
+  freshFleetCreated: boolean;
+  workspaceId: string;
+  fleetSlug: string;
+  target: number;
+  config: FleetHeadcountConfig;
+}, sql?: Parameters<typeof setFleetHeadcountTarget>[0]['sql']): Promise<{
+  target: number; config: FleetHeadcountConfig;
+} | null> {
+  // Default only at birth. Ordinary top-ups preserve the existing recipe,
+  // including both an explicit opt-out and an existing supervision grant.
+  if (!opts.freshFleetCreated) return null;
+  const config = normalizePersistedFleetLaunchConfig({ ...opts.config,
+    supervise: opts.config.supervise ?? true });
+  await setFleetHeadcountTarget({ workspaceId: opts.workspaceId, fleetSlug: opts.fleetSlug,
+    target: opts.target, config, ...(sql ? { sql } : {}) });
+  return { target: opts.target, config };
+}
+
 /** R5 (interrupted-member-recovery-hardening-2026-09-01): decide how an explicit
  * `supervise` grant/revoke reaches the fleet's durable headcount row. Pure so
  * the branch is provable without opening a terminal (this module's standing
@@ -4879,13 +4901,14 @@ export default defineTool({
         // New fleets recover missing members by default. Keep this default at
         // fresh-recipe creation: schema-level defaulting would overwrite an
         // existing fleet's explicit opt-out on an otherwise ordinary top-up.
-        supervise: args.supervise ?? true,
+        supervise: args.supervise,
         // The fleet's mode outlives the founding caller (WI-6554700010029298).
         ...recipeModeField(launchMode),
       });
       try {
-        await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: count, config });
-        persistedHeadcountProfile = { target: count, config };
+        persistedHeadcountProfile = await persistFreshFleetLaunchProfile({
+          freshFleetCreated, workspaceId, fleetSlug, target: count, config,
+        });
       } catch (error) {
         try {
           await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
