@@ -10,13 +10,14 @@ vi.mock('./loop', () => ({ getLoopStatuses: m.loops }));
 vi.mock('./psu-pty-host-events-ingest', () => ({ ingestPsuPtyHostEvents: async () => ({ ingestErrors: 0 }) }));
 vi.mock('../../agent-tools/capability/launch-agent', () => ({ default: { handler: m.launch },
   INTERNAL_INTERRUPTION_RECOVERY: Symbol.for('integration-interruption') }));
-import { sweepSessionInterruptions } from './session-interruption-runtime';
+import { interruptionFromEvent, sweepSessionInterruptions } from './session-interruption-runtime';
+import { sessionRecoveryKey } from './session-interruption-recovery';
 let db: OrgTestDb;
 const ws = 'interruption-integration';
 const owner = 'su-interruption-integration';
 const native = '30c49db4-e1e3-4ac7-9bec-960c500b46ea';
 const ctx = { workspaceId: ws, installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null };
-beforeAll(async () => { db = await createOrgTestDb(); m.sql = db.adminSql; });
+beforeAll(async () => { db = await createOrgTestDb({ adminPoolMax: 6 }); m.sql = db.adminSql; });
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   vi.clearAllMocks(); m.loops.mockResolvedValue(new Map());
@@ -44,7 +45,122 @@ async function receipt() {
     FROM harness_shared.session_briefs WHERE owner_id = ${owner}`;
   return r?.marker;
 }
+async function reserveFixture(attempts: number, state = 'pending') {
+  const [row] = await db.adminSql`SELECT owner_id, payload, ts,
+    payload->>'nativeSessionId' AS session_id FROM harness_shared.psu_pty_host_events
+    WHERE owner_id = ${owner}`;
+  const interruption = interruptionFromEvent(row)!;
+  const marker = { ...interruption, key: sessionRecoveryKey(interruption), attempts,
+    state, nextAttemptAt: 0, ...(state === 'recovering' ? { leaseKey: 'expired-reservation' } : {}) };
+  await db.adminSql`INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, control_state)
+    VALUES (${owner}, ${ws}, ${JSON.stringify({ lifecycle: { interruption: marker } })}::jsonb)`;
+}
 describe('production interruption SQL against migrated PostgreSQL', () => {
+  it('uses durable member lineage after presence teardown and honors a later explicit leave', async () => {
+    await db.adminSql`INSERT INTO harness_shared.fleet_membership_events
+      (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event, at)
+      VALUES (${ws}, ${owner}, ${owner}, 'original-fleet', 'member', 'join', now())`;
+    try {
+      const joined = await sweepSessionInterruptions(ctx, true, { fleetSlug: 'original-fleet' });
+      expect(joined.protectedOwnerIds).toEqual([owner]);
+      expect(m.launch).not.toHaveBeenCalled();
+      // A stale presence mirror must not resurrect an explicit durable leave.
+      await db.adminSql`INSERT INTO harness_shared.coord_presence (owner_id, workspace_id, fleet_slug, fleet_role)
+        VALUES (${owner}, ${ws}, 'original-fleet', 'member')`;
+      await db.adminSql`INSERT INTO harness_shared.fleet_membership_events
+        (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event, at)
+        VALUES (${ws}, ${owner}, ${owner}, NULL, NULL, 'leave', now())`;
+      const left = await sweepSessionInterruptions(ctx, true, { fleetSlug: 'original-fleet' });
+      expect(left.protectedOwnerIds).toEqual([]);
+    } finally {
+      await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
+      await db.adminSql`DELETE FROM harness_shared.fleet_membership_events WHERE owner_id = ${owner}`;
+    }
+  });
+  it('shares a fleet-filtered original-member claim with the ordinary interruption actor', async () => {
+    await db.adminSql`INSERT INTO harness_shared.coord_presence (owner_id, workspace_id, fleet_slug, fleet_role)
+      VALUES (${owner}, ${ws}, 'original-fleet', 'member')
+      ON CONFLICT (owner_id) DO UPDATE SET fleet_slug = 'original-fleet', fleet_role = 'member'`;
+    try {
+      const [fleet] = await Promise.all([
+        sweepSessionInterruptions(ctx, false, { fleetSlug: 'original-fleet' }),
+        sweepSessionInterruptions(ctx),
+      ]);
+      expect(fleet.protectedOwnerIds).toEqual([owner]);
+      expect(m.launch).toHaveBeenCalledTimes(1);
+      expect(await receipt()).toMatchObject({ attempts: 1, state: 'restored' });
+      const foreign = await sweepSessionInterruptions(ctx, false, { fleetSlug: 'foreign-fleet' });
+      expect(foreign.protectedOwnerIds).toEqual([]);
+    } finally {
+      await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
+    }
+  });
+  it('allows only one of three concurrent writers to consume the final attempt', async () => {
+    await reserveFixture(2);
+    m.launch.mockResolvedValue({ isError: true });
+    await Promise.all(Array.from({ length: 3 }, () => sweepSessionInterruptions(ctx)));
+    expect(m.launch).toHaveBeenCalledTimes(1);
+    expect(await receipt()).toMatchObject({ attempts: 3, state: 'blocked' });
+    await Promise.all(Array.from({ length: 3 }, () => sweepSessionInterruptions(ctx)));
+    await sweepSessionInterruptions(ctx);
+    expect(m.launch).toHaveBeenCalledTimes(1);
+  });
+  it('does not let a delayed earlier launcher finish a later reservation', async () => {
+    let release!: (value: any) => void;
+    let started!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    m.launch.mockImplementationOnce(() => {
+      started(); return new Promise(resolve => { release = resolve; });
+    }).mockResolvedValue({ isError: true });
+    const first = sweepSessionInterruptions(ctx);
+    await entered;
+    const firstLease = (await receipt()).leaseKey;
+    try {
+      await db.adminSql`UPDATE harness_shared.session_briefs SET control_state =
+        jsonb_set(control_state, '{lifecycle,interruption,nextAttemptAt}', '0'::jsonb)
+        WHERE owner_id = ${owner}`;
+      await sweepSessionInterruptions(ctx);
+      const second = await receipt();
+      expect(second).toMatchObject({ attempts: 2, state: 'pending' });
+      expect(second.leaseKey).not.toBe(firstLease);
+      release({ data: { launch: { resumeVerified: true } } });
+      await first;
+      expect(await receipt()).toEqual(second);
+    } finally {
+      release({ isError: true }); await first;
+    }
+  });
+  it('durably holds an expired final reservation whose native outcome is uncertain', async () => {
+    await reserveFixture(3, 'recovering');
+    await sweepSessionInterruptions(ctx);
+    expect(m.launch).not.toHaveBeenCalled();
+    expect(await receipt()).toMatchObject({ attempts: 3, state: 'blocked',
+      reason: 'expired-final-reservation-uncertain', leaseKey: null });
+    await sweepSessionInterruptions(ctx);
+    expect(m.launch).not.toHaveBeenCalled();
+  });
+  it.each(['stop', 'retirement', 'completion'])('revalidates durable %s after reservation', async kind => {
+    let nativeCreations = 0;
+    m.launch.mockImplementation(async args => {
+      if (kind === 'retirement') {
+        await db.adminSql`UPDATE harness_shared.adv_sessions SET retired_at = now()
+          WHERE coord_owner_id = ${owner}`;
+      } else {
+        const field = kind === 'stop' ? 'ownerStopRequested' : 'phase';
+        const value = kind === 'stop' ? 'true' : '"settled"';
+        await db.adminSql`UPDATE harness_shared.psu_pty_host_events SET payload =
+          jsonb_set(payload, ${['execution', field]}::text[], ${value}::jsonb)
+          WHERE owner_id = ${owner}`;
+      }
+      await args[Symbol.for('integration-interruption')].beforeNativeCreate();
+      nativeCreations += 1;
+      return { data: { launch: { resumeVerified: true } } };
+    });
+    const result = await sweepSessionInterruptions(ctx);
+    expect(nativeCreations).toBe(0);
+    expect(result.restored).toEqual([]);
+    expect(await receipt()).toMatchObject({ attempts: 1, state: 'pending' });
+  });
   it('arbitrates concurrent and repeated recoveries through one durable lifecycle receipt', async () => {
     await Promise.all([sweepSessionInterruptions(ctx), sweepSessionInterruptions(ctx)]);
     await sweepSessionInterruptions(ctx);

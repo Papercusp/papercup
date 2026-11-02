@@ -40,7 +40,11 @@ beforeEach(() => {
       row.receipt = JSON.parse(values.find(v => typeof v === 'string' && v.startsWith('{')) as string);
       return [{ owner_id: row.owner_id }];
     }
-    if (text.includes('UPDATE harness_shared.session_briefs')) return [];
+    if (text.includes('UPDATE harness_shared.session_briefs')) {
+      if (!text.includes('RETURNING owner_id')) return [];
+      row.receipt = JSON.parse(values.find(v => typeof v === 'string' && v.startsWith('{')) as string);
+      return [{ owner_id: row.owner_id }];
+    }
     throw new Error(`unhandled query: ${text}`);
   });
 });
@@ -55,7 +59,7 @@ describe('production session interruption adapter', () => {
     expect(result.restored).toEqual([row.owner_id]);
     expect(m.launch).toHaveBeenCalledWith(expect.objectContaining({ resume: { agentId: row.owner_id },
       fork: false, headless, brief: expect.stringContaining('unfinished request'),
-      [Symbol.for('test-interruption')]: { ownerId: row.owner_id, nativeSessionId: row.session_id, wait: false } }), expect.anything());
+      [Symbol.for('test-interruption')]: expect.objectContaining({ ownerId: row.owner_id, nativeSessionId: row.session_id, wait: false }) }), expect.anything());
   });
   it.each(['event', 'delivery', 'future-loop'])('restores a %s wait without submitting a prompt', async kind => {
     if (kind === 'event') awaits = [{ subscriber_id: row.owner_id, event_key: 'dependency:ready', expires_ts: null, once: true }];
@@ -86,6 +90,19 @@ describe('production session interruption adapter', () => {
     m.delivery.mockRejectedValueOnce(new Error('wait-store-unavailable'));
     await expect(sweepSessionInterruptions(ctx)).rejects.toThrow('wait-store-unavailable');
     expect(m.launch).not.toHaveBeenCalled();
+  });
+  it('rechecks a stop recorded after reservation before native creation', async () => {
+    let nativeCreations = 0;
+    m.launch.mockImplementation(async args => {
+      Object.assign(row.payload.execution, { ownerStopRequested: true });
+      await args[Symbol.for('test-interruption')].beforeNativeCreate();
+      nativeCreations += 1;
+      return { data: { launch: { resumeVerified: true } } };
+    });
+    const result = await sweepSessionInterruptions(ctx);
+    expect(nativeCreations).toBe(0);
+    expect(result.restored).toEqual([]);
+    expect(row.receipt).toMatchObject({ state: 'pending', reason: 'interruption-revalidation:owner-stop' });
   });
   it('dry run neither ingests, claims nor launches', async () => {
     await sweepSessionInterruptions(ctx, true);

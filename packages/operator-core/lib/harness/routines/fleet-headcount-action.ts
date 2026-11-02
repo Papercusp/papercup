@@ -1152,7 +1152,8 @@ function governorLaunchTransaction(args: {
   return transaction;
 }
 
-async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<void> {
+async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<void> {
+  const { workspaceId } = ctx;
   // EI-23259368987233359, half 2 of 2 — THE BARRIER A MEMBER IS ACTUALLY OPENED
   // BEHIND. This repeats the check `runFleetHeadcountGovernor` already made, on
   // purpose and for the same reason `claimFleetHeadcountAttempt` repeats the
@@ -1171,6 +1172,10 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     );
     return;
   }
+  // Exact continuation takes precedence over manufacturing another identity.
+  // Both this actor and the interruption routine enter the same durable claim.
+  const { sweepSessionInterruptions } = await import('./session-interruption-runtime');
+  const recovery = await sweepSessionInterruptions(ctx, false, { fleetSlug });
   const attempt = await claimFleetHeadcountAttempt({ workspaceId, fleetSlug });
   if (!attempt) return;
   const fleet = await getFleet(workspaceId, fleetSlug);
@@ -1225,6 +1230,12 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     executingMemberIds = countedMemberSet(
       await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
     );
+    const pendingOriginals = recovery.protectedOwnerIds.filter(id => !executingMemberIds?.has(id));
+    if (pendingOriginals.length > 0) {
+      await recordFleetHeadcountAttempt({ workspaceId, fleetSlug, succeeded: false,
+        error: `exact member continuation awaiting execution census: ${pendingOriginals.join(', ')}` });
+      return;
+    }
 
     // Legacy launch records have no truthful --launched-by correlation. Adopt
     // the independently-live roster into a fresh, unprobed transaction before
@@ -2049,7 +2060,7 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
       );
       continue;
     }
-    await topUpOneFleet(ctx.workspaceId, target.fleetSlug);
+    await topUpOneFleet(ctx, target.fleetSlug);
   }
 }
 

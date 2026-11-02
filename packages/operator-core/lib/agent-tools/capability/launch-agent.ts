@@ -905,7 +905,8 @@ export default defineTool({
   })(),
   async handler(args, ctx) {
     const interruptionRecovery = (args as typeof args & {
-      [INTERNAL_INTERRUPTION_RECOVERY]?: { ownerId: string; nativeSessionId: string; wait: boolean };
+      [INTERNAL_INTERRUPTION_RECOVERY]?: { ownerId: string; nativeSessionId: string; wait: boolean;
+        beforeNativeCreate?: () => Promise<void> };
     })[INTERNAL_INTERRUPTION_RECOVERY];
     let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
     const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
@@ -914,7 +915,9 @@ export default defineTool({
     // must resume from its own launch record. It is intentionally outside the
     // public schema so ordinary resumes continue using the fleet recipe.
     const leaderRecoveryOwnerId = (args as typeof args & { __leaderRecoveryOwnerId?: string })
-      .__leaderRecoveryOwnerId?.trim() || interruptionRecovery?.ownerId || null;
+      .__leaderRecoveryOwnerId?.trim() || null;
+    const originalRecoveryOwnerId = leaderRecoveryOwnerId ?? interruptionRecovery?.ownerId;
+    let recoveredFleetRole: 'leader' | 'member' | undefined = leaderRecoveryOwnerId ? 'leader' : undefined;
     try {
       if (args.model) {
         modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
@@ -1336,7 +1339,7 @@ export default defineTool({
           (target.sessionId ?? target.ompThreadId) !== interruptionRecovery.nativeSessionId)) {
         return err('Interruption recovery refused: source must remain dead, non-retired and exactly identity-bound.');
       }
-      if (neutralLineageRequested && resumeOwnerId) {
+      if ((neutralLineageRequested || interruptionRecovery) && resumeOwnerId) {
         // A neutral successor inherits the predecessor's registered mode, not
         // the recovering caller's owner-directed launch mode.
         launchMode = await readCallerLaunchMode(workspaceId, resumeOwnerId);
@@ -1994,6 +1997,8 @@ export default defineTool({
           const membership = await latestFleetMembership(workspaceId, resumeOwnerId);
           if (membership?.fleetSlug) {
             fleetSlug = membership.fleetSlug;
+            if (interruptionRecovery && (membership.fleetRole === 'leader' || membership.fleetRole === 'member'))
+              recoveredFleetRole = membership.fleetRole;
             scheme = await getFleetScheme(workspaceId, membership.fleetSlug);
           }
         } catch (e) {
@@ -2081,8 +2086,8 @@ export default defineTool({
             headless: args.headless,
             extraArgs: requestedProfileExtraArgs,
           },
-          ...(leaderRecoveryOwnerId ? {
-            memberOwnerId: leaderRecoveryOwnerId,
+          ...(originalRecoveryOwnerId ? {
+            memberOwnerId: originalRecoveryOwnerId,
             preferMemberRecord: true,
           } : {}),
           reusePath: leaderRecoveryOwnerId
@@ -2589,7 +2594,7 @@ export default defineTool({
               // unless the caller deliberately requests another one. Without
               // this, `--account=auto` sessions silently restart on `default`.
               account: args.account ?? resumeAccount,
-              fleetRole: leaderRecoveryOwnerId ? 'leader' : undefined,
+              fleetRole: recoveredFleetRole === 'leader' ? 'leader' : undefined,
               // Resume/fork does not pass --agent, but the command builder
               // still needs the recorded backend to apply Codex's model
               // policy. A Codex source may have changed model OR reasoning
@@ -2851,6 +2856,7 @@ export default defineTool({
           }
         };
         try {
+          await interruptionRecovery?.beforeNativeCreate?.();
           if (recheckInPlaceResume) await recheckInPlaceResume();
           if (recheckOriginalMember) await recheckOriginalMember();
           if (reconcileOriginalRouting) await reconcileOriginalRouting();
@@ -2888,6 +2894,7 @@ export default defineTool({
             if (recheckOriginalMember) await recheckOriginalMember();
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
             await successorPreparation.beforeSpawn?.();
+            await interruptionRecovery?.beforeNativeCreate?.();
             if (startupReservation && startupReservation.expiresAtMs <= Date.now())
               throw new Error('Ended-source resume startup reservation expired before process start.');
             // In-place resumes skip bootstrap. Only an explicit admitted launch

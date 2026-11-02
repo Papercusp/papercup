@@ -2404,6 +2404,53 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     }
   });
 
+  it.each([
+    ['cancelled-before-write', { kind: 'drop' }],
+    ['cancel-requested', { kind: 'park', hostCommitPending: true }],
+    ['delivery-already-committed', { kind: 'delivered', channel: 'psu-socket-inject' }],
+  ] as const)(
+    'respects the host write boundary when an ended loop delivery was previously accepted (%s)',
+    async (reason, expected) => {
+      const injectPsuHostWithConfirmation = vi.fn(async (
+        _sock: unknown,
+        _request: Record<string, unknown>,
+      ) => ({
+        ok: reason === 'cancelled-before-write',
+        confirmation: 'acked' as const,
+        reason,
+      }));
+      const d = deps({
+        findPsuHost: vi.fn(() => ({
+          id: 'pty-loop',
+          ownerId: 'su-abc',
+          sock: 'host-sock',
+          caps: ['delivery-cancel'],
+        })) as never,
+        injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+        getLoopStatusFn: vi.fn(async () => null) as never,
+      });
+      const delivery = work({
+        id: 782699,
+        payload: loopPayload,
+        attempts: 2,
+        lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+      });
+
+      const out = await executeWake(delivery, d);
+
+      expect(out).toMatchObject(expected);
+      expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
+      expect(injectPsuHostWithConfirmation.mock.calls[0]?.[1]).toMatchObject({
+        mode: 'delivery-cancel',
+        ownerId: 'su-abc',
+        deliveryId: '782699',
+      });
+      expect(d.findPsuHost).toHaveBeenCalledWith('su-abc');
+      expect(d.injectPsuHost).not.toHaveBeenCalled();
+      expect(d.write).not.toHaveBeenCalled();
+    },
+  );
+
   // EI-21393930883750326: the drop verdict is composition-aware. An ended loop
   // fire folded beside a NON-loop sibling (the await → loop:end parking
   // incident: await 93491's work-item:claimable fire rode in delivery #166616

@@ -3647,6 +3647,45 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
+  it.each([1, 2])('internal recovery revalidates at native creation boundary %s', async boundary => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    let calls = 0;
+    const beforeNativeCreate = vi.fn(async () => {
+      if (++calls === boundary) throw new Error('interruption-revalidation:owner-stop');
+    });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId,
+        wait: true, beforeNativeCreate },
+    } as never, ctx);
+    expect(isError(res)).toBe(true);
+    expect(beforeNativeCreate).toHaveBeenCalledTimes(boundary);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('interruption recovery preserves a member role and uses that member launch record', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test', agent: 'claude',
+      launchSpec: { v: 1, agent: 'claude', workspaceId: 'ws-test', harnessSlug: 'papercusp',
+        fleet: { slug: 'target-fleet', role: 'member' }, model: 'sonnet:high' },
+      launchArgv: ['psu', '--no-picker', '--fleet=target-fleet', '--agent=claude',
+        '--harness=papercusp', '--headless', '--carry=warm', '--account=default',
+        '--model=sonnet:high', '--role=su'],
+    });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(res), textOf(res)).toBe(false);
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--fleet=target-fleet');
+    expect(command).not.toContain('--fleet-role=leader');
+    expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith(dead.ownerId, 'ws-test');
+  });
+
   it('leader recovery uses the ended owner launch record and restores the leader role', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);

@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   lapseRule: vi.fn(),
   orgSql: vi.fn(),
   getModes: vi.fn(),
+  recoverInterruptions: vi.fn(),
   events: [] as string[],
   headcountEvents: [] as Record<string, unknown>[],
 }));
@@ -117,6 +118,9 @@ vi.mock('../../papercusp-root', () => ({
 vi.mock('./system-actions', () => ({
   registerSystemAction: vi.fn(),
 }));
+vi.mock('./session-interruption-runtime', () => ({
+  sweepSessionInterruptions: (...args: unknown[]) => mocks.recoverInterruptions(...args),
+}));
 
 import { FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS, runFleetHeadcountGovernor } from './fleet-headcount-action';
 
@@ -189,6 +193,7 @@ const grantedTarget = (config: Record<string, unknown> | null = baseConfig) => (
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.recoverInterruptions.mockResolvedValue({ protectedOwnerIds: [] });
   mocks.events.length = 0;
   mocks.headcountEvents.length = 0;
   mocks.getFlag.mockResolvedValue(true);
@@ -245,6 +250,23 @@ beforeEach(() => {
   mocks.setHeadcountTarget.mockResolvedValue(undefined);
   mocks.orgSql.mockResolvedValue([]);
   mocks.getModes.mockResolvedValue([]);
+});
+
+describe('interrupted original members precede refill', () => {
+  it('defers a replacement while the original continuation is not yet in the execution census', async () => {
+    mocks.recoverInterruptions.mockResolvedValue({ protectedOwnerIds: ['original-member'] });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    await runFleetHeadcountGovernor({ installSlug: 'papercusp', workspaceId: 'ws',
+      triggerConfig: {}, payloadTemplate: null });
+    expect(mocks.recoverInterruptions).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws' }),
+      false, { fleetSlug: 'fleet-a' });
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.claimSlot).not.toHaveBeenCalled();
+    expect(mocks.recordAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.stringContaining('original-member'),
+    }));
+  });
 });
 
 // WI-1457060. The governor reasoned only about member headcount and readiness, never
