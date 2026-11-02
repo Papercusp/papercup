@@ -7,6 +7,7 @@ import { claudeAttemptHeaders, makeBearerCredentialResolver } from '../inference
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentBenchAttemptLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession, currentBenchNativeFailure,
+  currentBenchSoloCapabilityControl,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
@@ -2396,6 +2397,13 @@ describe('current benchmark restart and live binding', () => {
     const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32101, stop } as never));
     const opts = { ...options, preregistration: { preregHash, config: protocol, repoRoot: snapshotRoot } };
     const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted }, opts);
+    if (ledger) {
+      expect(ports.verifyGenerationBudget!(protocol.arms[0].generationBudget, 't1'))
+        .toEqual({ frozenBudget: protocol.arms[0].generationBudget, topology: 'solo',
+          capabilityControl: currentBenchSoloCapabilityControl(protocol.arms[0]) });
+      expect(() => ports.verifyGenerationBudget!({ ...protocol.arms[0].generationBudget, maxUsd: 99 }, 't1')).toThrow(/budget/);
+      expect(() => ports.verifyGenerationBudget!(protocol.arms[0].generationBudget, 'foreign')).toThrow(/assignment/);
+    }
     const context = await ports.restoreContext(restoredHandle, 't1');
     const args = currentBenchLaunchRequest(opts, restoredHandle, 'issue', context);
     try { await ports.launch(args);
@@ -2405,7 +2413,7 @@ describe('current benchmark restart and live binding', () => {
     expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
     expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({
       denyTools: [], denyAmbientContext: true,
-      denyOutside: ledger === 'off' ? ['coord:whoami', 'session:request-compaction']
+      denyOutside: ledger ? currentBenchSoloCapabilityControl(protocol.arms[0]).toolNames
         : ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
       denyWorkItemsOutside: { id: restoredHandle.featureId, harness: restoredHandle.slug, checkout },
       imposedBy: expect.stringContaining('benchmark-host') });
@@ -2430,9 +2438,10 @@ describe('current benchmark restart and live binding', () => {
     }
     expect(evaluateSessionConfinement({ toolName: 'work_items:list', args: {}, confinement }).allowed).toBe(false);
     expect(evaluateSessionConfinement({ toolName: 'coord:inbox', args: {}, confinement }).allowed).toBe(false);
-    // The actual launch ceiling admits the installed hook's empty self request
-    // in both ledger arms. This measures dispatch admission only; the local
-    // response does not prove a host respawn or model request.
+    // Controlled carry-off arms deny managed carry; legacy assignments retain
+    // their existing hook path. Neither is a measurement of a real respawn.
+    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {}, confinement }).allowed).toBe(!ledger);
+    if (!ledger) {
     const nativeSessionId = randomUUID();
     const dispatch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
       expect(url).toBe('http://benchmark.invalid/mcp');
@@ -2465,6 +2474,7 @@ describe('current benchmark restart and live binding', () => {
     expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {},
       confinement: { ...confinement, denyOutside: confinement.denyOutside!.filter(name => name !== 'session:request-compaction') } }))
       .toMatchObject({ allowed: false, matchedGlob: 'outside-exact-ceiling' });
+    }
     const calls = native.launch.mock.calls.length;
     // A caller cannot reintroduce an agent-facing instruction prefix outside
     // the frozen host arm, even if the frozen context suffix is unchanged.
@@ -2536,6 +2546,40 @@ describe('current benchmark restart and live binding', () => {
       const again = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')] as typeof override;
       expect(readFileSync(again.codex.command, 'utf8')).toContain('fswe-task-1');
     } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
+  });
+  it.each(['memory-recall', 'carry-respawn', 'fleet-leader', 'locks', 'consult-router', 'planning', 'review'] as const)
+    ('refuses unsupported native %s delivery before admission', async capability => {
+      const protocol = currentProtocolFixture();
+      protocol.arms[0].control = { topology: 'solo', solverGroup: 'solver', solverToolsHash: 'f'.repeat(64),
+        capabilities: { ...allCapabilities('off'), [capability]: 'on' } };
+      protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock', solverToolsHash: 'f'.repeat(64),
+        capabilities: allCapabilities('off') };
+      const opts = { ...options, preregistration: { ...options.preregistration, config: protocol } };
+      const f = fixture(opts);
+      f.ports.verifyGenerationBudget = () => ({ frozenBudget: protocol.arms[0].generationBudget,
+        topology: 'solo', capabilityControl: currentBenchSoloCapabilityControl(protocol.arms[0]) });
+      const result = await f.run();
+      expect(result.telemetry.generationError).toContain(`unavailable for: ${capability}`);
+      expect(f.ports.admit).not.toHaveBeenCalled(); expect(f.ports.launch).not.toHaveBeenCalled();
+    });
+  it.each(['on', 'off'] as const)('executes the verified solo ledger-%s control and retains its control snapshot', async ledger => {
+    const protocol = currentProtocolFixture();
+    protocol.arms[0].control = { topology: 'solo', solverGroup: 'solver', solverToolsHash: 'f'.repeat(64),
+      capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger } };
+    protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock', solverToolsHash: 'f'.repeat(64),
+      capabilities: allCapabilities('off') };
+    const opts = { ...options, preregistration: { ...options.preregistration, config: protocol } };
+    const f = fixture(opts), control = currentBenchSoloCapabilityControl(protocol.arms[0]);
+    f.ports.verifyGenerationBudget = () => ({ frozenBudget: protocol.arms[0].generationBudget,
+      topology: 'solo', capabilityControl: control });
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('done'); expect(f.ports.launch).toHaveBeenCalledOnce();
+    expect(result.telemetry.armMeta).toMatchObject({ currentExecution: { nativeCapabilityControl: control } });
+    // A topology-only receipt cannot claim that the control was applied.
+    const forged = fixture(opts);
+    forged.ports.verifyGenerationBudget = () => ({ frozenBudget: protocol.arms[0].generationBudget, topology: 'solo' });
+    expect((await forged.run()).telemetry.generationError).toMatch(/exact frozen capability control/);
+    expect(forged.ports.admit).not.toHaveBeenCalled(); expect(forged.ports.launch).not.toHaveBeenCalled();
   });
   it('issues and revokes the frozen Claude baseline route through the existing host controller', async () => {
     const f = budgetFixture(); f.input.protocol.arms[1].agent = 'claude';
