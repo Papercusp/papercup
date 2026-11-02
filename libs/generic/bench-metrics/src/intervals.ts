@@ -385,6 +385,121 @@ export function pairedBootstrapCI(
   };
 }
 
+/** Type-7 empirical quantile. Missing/non-finite observations are never deleted. */
+export function empiricalQuantile(values: readonly number[], q: number): number | null {
+  if (!Number.isFinite(q) || q < 0 || q > 1) throw new RangeError('empiricalQuantile: q must be in [0,1]');
+  if (!values.length || values.some(value => !Number.isFinite(value))) return null;
+  return percentile(Float64Array.from(values).sort(), q);
+}
+
+export interface PairedTimeSeries {
+  /** Independent paired repeat; observations inside a repeat may be dependent. */
+  repeatId: string;
+  a: readonly number[];
+  b: readonly number[];
+  /** Fixed from BASELINE autocorrelation before candidate outcomes are observed. */
+  blockLength: number;
+}
+
+export type PairedBlockInterval = {
+  status: 'measured';
+  interval: Interval;
+  method: 'paired-hierarchical-circular-block-percentile-type7';
+  independentRepeats: number;
+  pairs: number;
+  iterations: number;
+  seed: number;
+  familySize: number;
+  familyConfidence: number;
+  /** Nominal per-comparison alpha; intervals use both tails (alpha/2 each). */
+  comparisonAlpha: number;
+} | { status: 'unknown'; reason: string };
+
+/**
+ * Hierarchical paired block bootstrap: draw independent repeats, then circular
+ * moving time blocks WITHIN each drawn repeat. One index draw selects BOTH arms.
+ * Blocks never join different repeats. A short final block is truncated to the
+ * selected repeat's original length; unequal repeats retain their own size.
+ *
+ * `statistic` defines the estimand on the pooled paired sample (e.g. a type-7
+ * quantile ratio). Returning null/non-finite makes the WHOLE result unknown:
+ * dropping inconvenient resamples would bias a confidence interval. Callbacks
+ * must be pure. The source arrays are never modified.
+ *
+ * Bonferroni covers the PREDECLARED complete family of metrics/journeys/strata.
+ * This returns an interval, never an acceptance or power claim. Callers still
+ * must verify preregistration, sample size, independence, power, censoring and
+ * telemetry. It cannot infer independence merely from different repeat IDs.
+ */
+export function pairedBlockBootstrapCI(
+  repeats: readonly PairedTimeSeries[],
+  statistic: (a: readonly number[], b: readonly number[]) => number | null,
+  opts: { familySize: number; familyConfidence?: number; iterations?: number; seed?: number },
+): PairedBlockInterval {
+  const familyConfidence = opts.familyConfidence ?? 0.95;
+  const iterations = opts.iterations ?? 10_000;
+  const seed = opts.seed ?? 12345;
+  if (!Number.isSafeInteger(opts.familySize) || opts.familySize < 1 ||
+      !Number.isFinite(familyConfidence) || familyConfidence <= 0 || familyConfidence >= 1 ||
+      !Number.isSafeInteger(iterations) || iterations < 10_000 || !Number.isSafeInteger(seed)) {
+    throw new RangeError('pairedBlockBootstrapCI: valid family, confidence, integer seed and >=10000 iterations required');
+  }
+  const comparisonAlpha = (1 - familyConfidence) / opts.familySize;
+  // Too few draws to resolve the adjusted tail is uncertainty, not a point CI.
+  if (iterations * comparisonAlpha / 2 < 20) {
+    return { status: 'unknown', reason: 'insufficient-bootstrap-tail-resolution' };
+  }
+  if (repeats.length < 2) return { status: 'unknown', reason: 'insufficient-independent-repeats' };
+  const ids = new Set<string>();
+  for (const repeat of repeats) {
+    if (!repeat.repeatId.trim() || ids.has(repeat.repeatId)) return { status: 'unknown', reason: 'repeat-identity' };
+    ids.add(repeat.repeatId);
+    if (!repeat.a.length || repeat.a.length !== repeat.b.length ||
+        repeat.a.some(value => !Number.isFinite(value)) || repeat.b.some(value => !Number.isFinite(value))) {
+      return { status: 'unknown', reason: 'missing-nonfinite-or-unpaired-observations' };
+    }
+    if (!Number.isSafeInteger(repeat.blockLength) || repeat.blockLength < 1 || repeat.blockLength > repeat.a.length) {
+      return { status: 'unknown', reason: 'invalid-preregistered-block-length' };
+    }
+  }
+  const a: number[] = [];
+  const b: number[] = [];
+  for (const repeat of repeats) {
+    for (let j = 0; j < repeat.a.length; j++) { a.push(repeat.a[j]); b.push(repeat.b[j]); }
+  }
+  const point = statistic(a, b);
+  if (point === null || !Number.isFinite(point)) return { status: 'unknown', reason: 'undefined-observed-statistic' };
+  const rng = mulberry32(seed);
+  const draws = new Float64Array(iterations);
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    a.length = 0;
+    b.length = 0;
+    for (let k = 0; k < repeats.length; k++) {
+      const repeat = repeats[Math.floor(rng() * repeats.length)];
+      for (let offset = 0; offset < repeat.a.length; offset += repeat.blockLength) {
+        const start = Math.floor(rng() * repeat.a.length);
+        for (let j = 0; j < Math.min(repeat.blockLength, repeat.a.length - offset); j++) {
+          const index = (start + j) % repeat.a.length;
+          a.push(repeat.a[index]);
+          b.push(repeat.b[index]);
+        }
+      }
+    }
+    const draw = statistic(a, b);
+    if (draw === null || !Number.isFinite(draw)) return { status: 'unknown', reason: 'undefined-bootstrap-statistic' };
+    draws[iteration] = draw;
+  }
+  draws.sort();
+  const ci = 1 - comparisonAlpha;
+  return {
+    status: 'measured',
+    interval: { point, lower: percentile(draws, comparisonAlpha / 2), upper: percentile(draws, 1 - comparisonAlpha / 2), ci },
+    method: 'paired-hierarchical-circular-block-percentile-type7',
+    independentRepeats: repeats.length, pairs: repeats.reduce((sum, repeat) => sum + repeat.a.length, 0),
+    iterations, seed, familySize: opts.familySize, familyConfidence, comparisonAlpha,
+  };
+}
+
 /** Outcome of McNemar's exact test on paired binary outcomes. */
 export interface McNemarResult {
   /** Pairs where only the BASELINE succeeded. */
