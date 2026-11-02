@@ -34,6 +34,7 @@ import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-co
 import { resolveAgentIdentity } from '../coordination/identity';
 import { authoringReuse } from '../../code-intelligence/reuse-authoring';
 import { suggestResearchAnchors } from '../../code-intelligence/research-trail';
+import { sessionAllowsAmbientContext } from '../../capability-envelope/session-confinement-port';
 import { productShapingScaffold, productShapingWriteAdvisory, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
 import { planDeclarationsScaffold, planDeclarationsWriteAdvisory } from './plan-declarations';
 import {
@@ -814,10 +815,12 @@ export default defineTool({
 
     const shapingAdvisory = body != null && body.trim().length > 0 ? productShapingWriteAdvisory(body) : null;
     const declarationsAdvisory = body != null && body.trim().length > 0 ? planDeclarationsWriteAdvisory(body) : null;
-    const reuseAdvice = await authoringReuse(ctx, { workspaceId: result.scope.workspaceId,
-      harness: result.scope.harnessSlug, plan: value.slug, text: body ?? args.title });
-    const suggestedAnchors = await suggestResearchAnchors(result.scope.workspaceId,
-      resolveAgentIdentity(ctx).ownerId, harnessSlug ?? result.scope.harnessSlug);
+    const adviceOwner = resolveAgentIdentity(ctx).ownerId;
+    const allowAdvice = await sessionAllowsAmbientContext({ ownerId: adviceOwner, workspaceId: result.scope.workspaceId });
+    const reuseAdvice = allowAdvice ? await authoringReuse(ctx, { workspaceId: result.scope.workspaceId,
+      harness: result.scope.harnessSlug, plan: value.slug, text: body ?? args.title }) : undefined;
+    const suggestedAnchors = allowAdvice ? await suggestResearchAnchors(result.scope.workspaceId,
+      adviceOwner, harnessSlug ?? result.scope.harnessSlug) : undefined;
     return {
       content: [
         {
