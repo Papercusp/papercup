@@ -1,0 +1,26 @@
+{
+  "irVersion": "0.1",
+  "surface": "workbench-inbox-three-layout-study",
+  "ecosystem": "native-desktop",
+  "a11y": { "landmark": "main", "headingLevel": 1 },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "children": [
+      { "kind": "heading", "copy": { "key": "inbox.title", "default": "Questions, within reach." } },
+      {
+        "kind": "raw",
+        "ecosystem": "native-desktop",
+        "ref": "inbox-artboard",
+        "spec": {
+          "why-raw": "Registry search returned no matching inbox component. Reuse the existing Workbench resident-sidebar visual language for three native design mockups.",
+          "layouts": ["compact-stack", "split-inbox", "focused-queue"],
+          "controls": ["urgency-and-source", "goal-plan-context", "quick-choice", "written-reply", "send-and-next", "snooze", "dismiss"],
+          "behavior": "Local sample data only; no live reply. Browser shortcut simulation and Escape dismiss; no OS registration claim."
+        },
+        "interactions": ["select-question", "choose-answer", "write-reply", "send-preview", "snooze-preview", "change-layout"]
+      }
+    ]
+  },
+  "components": []
+}

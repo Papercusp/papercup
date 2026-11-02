@@ -88,6 +88,7 @@ import {
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_PLANS_START_TIMEOUT_MS,
+  PTOOL_PLAN_STATUS_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS,
   PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
@@ -1735,7 +1736,12 @@ describe('ptool call deadlines', () => {
     expect(PTOOL_PLANS_START_TIMEOUT_MS).toBe(130_000);
     expect(PTOOL_PLANS_START_TIMEOUT_MS).toBeGreaterThan(125_000);
     expect(PTOOL_PLANS_NEW_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
+    expect(timeoutForTool('plans:set-plan-status')).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:set-plan-status',
+      args: { slug: 'plan-a', status: 'shipped', dryRun: true },
+    })).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
+    expect(PTOOL_PLAN_STATUS_TIMEOUT_MS).toBeGreaterThan(905_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
     // EI-23211866726609651: scorecards:get can exceed the ordinary 30s client
     // cutoff while reading an oversized evidence index; the same budget must
@@ -1946,7 +1952,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:set-plan-status',
       args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },
-    })).toBe(60_000);
+    })).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:orient',
       args: {},

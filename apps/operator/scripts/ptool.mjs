@@ -2153,6 +2153,10 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 // dispatcher wrote a reservation (EI-24230006371870177).
 export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
 
+// Plan shipment can recruit and verify a reviewer within its declared 900s
+// handler budget. Keep both direct and deferred calls beyond MCP settlement.
+export const PTOOL_PLAN_STATUS_TIMEOUT_MS = 915_000;
+
 // EI-21106949380687332: a FOREGROUND-capable tool (testing:run, build:typecheck,
 // capability:bash, capability:inspect, code:run) self-clamps its OWN command timeout to
 // FOREGROUND_TIMEOUT_CEILING_MS (50s — packages/operator-core/lib/agent-tools/capability/
@@ -2490,7 +2494,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // client budget. Keep ptool outside the MCP transport cap so callers observe
   // the typed verdict (or idempotent reconciliation) instead of an ambiguous
   // may-have-executed timeout.
-  ['plans:set-plan-status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['plans:set-plan-status', PTOOL_PLAN_STATUS_TIMEOUT_MS],
   ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
   // EI-21391946334020415: activity:recent and events:status are compound
   // coordination reads. Under serializer pressure their valid responses can
