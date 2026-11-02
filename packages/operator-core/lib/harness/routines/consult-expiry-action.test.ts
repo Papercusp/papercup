@@ -36,8 +36,8 @@ vi.mock('./system-actions', () => ({
   SYSTEM_TARGET_PREFIX: 'system:',
   registerSystemAction: seams.register,
 }));
-vi.mock('@papercusp/db-org', async (original) => ({
-  ...await original<typeof import('@papercusp/db-org')>(),
+vi.mock('@papercusp/db-org', () => ({
+  DEFAULT_TX_ACQUIRE_DEADLINE_MS: 45_000,
   getOrgPg: () => ({ sql: {} }),
 }));
 vi.mock('../../consult/consult-expiry-core', () => ({ sweepExpiredConsults: seams.sweep }));
