@@ -315,7 +315,7 @@ selection_stdout="$VH_PHASE_DIR/selection.stdout.log"
 selection_errors="$VH_PHASE_DIR/selection.stderr.log"
 (
   cd "$ROOT/apps/operator" || exit 2
-  PLAYWRIGHT_JSON_OUTPUT_FILE="$selection_report" timeout --signal=TERM --kill-after=5s 60s bash -c \
+  PLAYWRIGHT_JSON_OUTPUT_NAME="$selection_report" timeout --signal=TERM --kill-after=5s 60s bash -c \
     'exec $OPERATOR_E2E_PLAYWRIGHT "$@" --list --reporter=json' -- "$@"
 ) >"$selection_stdout" 2>"$selection_errors"
 selection_status=$?

@@ -81,6 +81,12 @@ beforeEach(() => {
   process.env.PAPERCUSP_HOME = join(fakeHome, '.papercusp');
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(fakeHome, '.papercusp', 'su-codex-homes');
   process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
+  // Home and hook tests must not depend on the installed Codex CLI supporting
+  // `debug models`. Tests for a particular model replace this isolated cache.
+  mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+  writeFileSync(join(fakeHome, '.codex', 'models_cache.json'), JSON.stringify({
+    models: [{ slug: 'fixture-model', multi_agent_version: 'v2' }],
+  }));
   vi.resetModules();
 });
 
