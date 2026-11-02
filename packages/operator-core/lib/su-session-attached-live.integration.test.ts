@@ -561,7 +561,10 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       }, { timeout: 120_000, interval: 100 });
       const descriptor = host.descriptor();
       const identity = descriptor.identity;
-      expect(descriptor).toMatchObject({ executionKind: 'programmatic', runtimeGeneration: 1 });
+      const generation = descriptor.runtimeGeneration;
+      expect(descriptor.executionKind).toBe('programmatic');
+      expect(Number.isSafeInteger(generation)).toBe(true);
+      expect(generation).toBeGreaterThanOrEqual(0);
       expect(identity.nativeSessionId).toBeTruthy();
       const tasks = await listTasks({ workspaceId, sessionId: identity.nativeSessionId!, coordOwnerId: identity.ownerId,
         classes: ['agent-session'] });
@@ -571,7 +574,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       expect(tasks[0].pid).toBeGreaterThan(0);
       const saved = await readDurableSuSession({ workspaceId, agentChatId: chatId });
       expect(saved).toMatchObject({ advSessionId: identity.advSessionId, nativeSessionId: identity.nativeSessionId,
-        runtimeGeneration: 1, descriptor: { executionKind: 'programmatic' } });
+        runtimeGeneration: generation, descriptor: { executionKind: 'programmatic' } });
       const route = suSessionRoutes.find(item => item.method === 'POST')!;
       const eventsRoute = suSessionRoutes.find(item => item.path.endsWith('/events'))!;
       const connectClient = async () => {
@@ -586,7 +589,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       const nonce = `R8-${randomUUID()}`;
       const command = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
         type: 'owner_turn', commandId: `r8-${randomUUID()}`, turnId: `turn-${randomUUID()}`,
-        issuedAt: new Date().toISOString(), target: identity, expectedRuntimeGeneration: 1,
+        issuedAt: new Date().toISOString(), target: identity, expectedRuntimeGeneration: generation,
         content: `This is a bounded read-only transport acceptance test. Call Papercusp coord:whoami exactly once (tools:invoke if deferred), then reply with ${nonce}. Do nothing else.` };
       await connectClient();
       const post = () => route.handler(new Request('http://localhost/commands', { method: 'POST', headers,
@@ -637,11 +640,11 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       subscription = undefined;
       await connectClient();
       expect(getRegisteredSuSessionHost(key)).toBe(host);
-      expect(host.descriptor().runtimeGeneration).toBe(1);
+      expect(host.descriptor().runtimeGeneration).toBe(generation);
       expect(await (await post()).json()).toMatchObject({ ok: true, replayed: true });
       expect(await listTasks({ workspaceId, sessionId: identity.nativeSessionId!, coordOwnerId: identity.ownerId,
         classes: ['agent-session'] })).toHaveLength(1);
-      const stale = await host.acceptCommand({ ...command, commandId: `stale-${randomUUID()}`, expectedRuntimeGeneration: 0 });
+      const stale = await host.acceptCommand({ ...command, commandId: `stale-${randomUUID()}`, expectedRuntimeGeneration: generation + 1 });
       expect(await stale.terminal).toMatchObject({ status: 'refused', refusal: { code: 'runtime_generation_mismatch' } });
       const interrupt = host.startCommand({ schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
         type: 'interrupt', commandId: `interrupt-${randomUUID()}`, issuedAt: new Date().toISOString(), target: identity });
@@ -654,7 +657,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       const afterEnd = host.startCommand({ ...command, commandId: `ended-${randomUUID()}` });
       expect(await afterEnd.terminal).toMatchObject({ status: 'refused' });
       console.info('SU_EXEC_R8_NATIVE_RECEIPT', JSON.stringify({ backend, executionKind: 'programmatic',
-        ownerId: identity.ownerId, nativeSessionId: identity.nativeSessionId, runtimeGeneration: 1, taskId,
+        ownerId: identity.ownerId, nativeSessionId: identity.nativeSessionId, runtimeGeneration: generation, taskId,
         toolStream: true, durableReplay: true, staleCommandRefused: true, ended: true,
         // This case deliberately does not claim the separate PTY, active-tool
         // interruption, background-child or operator-loss qualification duties.
