@@ -7013,6 +7013,8 @@ export async function writeFrozenCandidateRepairQueue(
     manifested = withRepairManifest(queue, Date.now(), {
       legOutputs: evidence.legOutputs,
       workspaceDirs: npmWorkspaceDirsByName(resolveIntegrationRoot()),
+      // This root scripts project is outside npm workspaces.
+      legProjectDirs: { 'lint:tsc:scripts': 'scripts' },
     });
     // Producers attach current paths before this write. Compare against the persisted
     // manifest, not that already-updated input, so newly actionable paths are published.
