@@ -1305,6 +1305,44 @@ describe('release:repair-queue', () => {
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
+  it('P-004: an import closure above the per-call path cap refuses to render an unusable retry command', async () => {
+    const maxPaths = repairQueueModule.REPAIR_QUEUE_ADMIT_MAX_PATHS;
+    const requestedPaths = Array.from({ length: maxPaths }, (_, i) => `lib/requested-${i}.ts`);
+    const missing = Array.from({ length: 215 }, (_, i) => ({
+      from: requestedPaths[0]!,
+      specifier: `./dependency-${i}`,
+      wanted: `lib/dependency-${i}.ts`,
+      tried: [`lib/dependency-${i}.ts`],
+      atProbeRef: 'present',
+    }));
+    mocks.admit.mockReturnValue({
+      ok: false,
+      code: 'admission-incomplete',
+      detail: 'REFUSED: admission is incomplete',
+      commit: 'e'.repeat(40),
+      missing,
+    });
+
+    const result = body(
+      await tool.handler({ op: 'admit', paths: requestedPaths, confirm: true } as never, { role: 'su' } as never),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      refused: true,
+      reason: 'admission-incomplete',
+      admitCommandUnavailable: {
+        reason: 'expanded-path-limit',
+        requiredPathCount: maxPaths + missing.length,
+        maxPaths,
+      },
+    });
+    expect(result).not.toHaveProperty('admitCommand');
+    expect(String((result as { note?: string }).note)).toContain('Do not retry a partial or split list');
+    expect(String((result as { note?: string }).note)).toContain('The frozen candidate is unchanged');
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
   it('nothing-to-admit reads as already-admitted: idempotent, ok:true, no write', async () => {
     mocks.admit.mockReturnValue({
       ok: false,

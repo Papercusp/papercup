@@ -2536,6 +2536,35 @@ export default defineTool({
             patchRouting = { error: { step: 'cohort-drag-route', detail: err instanceof Error ? err.message : String(err) } };
           }
         }
+        const missingAdmissionGuidance = outcome.missing
+          ? (() => {
+              const expandedPaths = [...new Set([...paths, ...outcome.missing.map((m) => m.wanted)])];
+              if (expandedPaths.length <= REPAIR_QUEUE_ADMIT_MAX_PATHS) {
+                return {
+                  missing: outcome.missing,
+                  // The same admission, widened by exactly the missing paths — and nothing else.
+                  admitCommand: renderAdmitCommand(expandedPaths),
+                  note:
+                    'P-004: an admitted file imports a path that does not exist at the proved commit. The tip is never ' +
+                    'widened for you — re-run admitCommand (your hunks for the added paths must be in the edit ledger, ' +
+                    'i.e. you authored them on staging).',
+                };
+              }
+              return {
+                missing: outcome.missing,
+                admitCommandUnavailable: {
+                  reason: 'expanded-path-limit',
+                  requiredPathCount: expandedPaths.length,
+                  maxPaths: REPAIR_QUEUE_ADMIT_MAX_PATHS,
+                },
+                note:
+                  `P-004: the complete import closure requires ${expandedPaths.length} unique paths, above the ` +
+                  `per-call cap of ${REPAIR_QUEUE_ADMIT_MAX_PATHS}. Do not retry a partial or split list; the admission ` +
+                  'requires the full closure in one call. The frozen candidate is unchanged. Follow repairQueue.nextAction; ' +
+                  'route any terminal-retirement decision to the candidate owner.',
+              };
+            })()
+          : {};
         return json({
           ok: false,
           admitted: false,
@@ -2548,17 +2577,7 @@ export default defineTool({
           ...(outcome.stray ? { stray: outcome.stray } : {}),
           ...(outcome.paths ? { invalidPaths: outcome.paths } : {}),
           ...(outcome.step ? { step: outcome.step } : {}),
-          ...(outcome.missing
-            ? {
-                missing: outcome.missing,
-                // The same admission, widened by exactly the missing paths — and nothing else.
-                admitCommand: renderAdmitCommand([...new Set([...paths, ...outcome.missing.map((m) => m.wanted)])]),
-                note:
-                  'P-004: an admitted file imports a path that does not exist at the proved commit. The tip is never ' +
-                  'widened for you — re-run admitCommand (your hunks for the added paths must be in the edit ledger, ' +
-                  'i.e. you authored them on staging).',
-              }
-            : {}),
+          ...missingAdmissionGuidance,
           judgedSha: queue.repairHead,
           containment: await containmentAt(queue.repairHead),
           ...base,
