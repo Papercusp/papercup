@@ -81,10 +81,13 @@ import { isCheckpointRunLockHeldCheap } from '../../release-checkpoint-lock';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   ADMISSION_PREVIEW_INLINE_BUDGET_MS,
+  currentAdmissionPreviewHostInstanceId,
+  currentAdmissionPreviewHostPort,
   createRoutineMetadataAdmissionPreviewStore,
   deferredAdmissionPreviewPayload,
   describeAdmissionPreviewOperation,
   emitAdmissionPreviewSettled,
+  recoverOrphanedAdmissionPreviewOperations,
   runAdmissionPreviewOperation,
   type AdmissionPreviewStore,
 } from '../../release/admission-preview-operation';
@@ -3257,6 +3260,18 @@ export function __setAdmissionPreviewDepsForTests(deps: {
 
 function admissionPreviewStoreFor(queueTarget: GateVerdictTarget): AdmissionPreviewStore {
   return admissionPreviewStoreFactory(queueTarget);
+}
+
+/** Run once after boot migrations and before this host starts accepting requests. */
+export async function recoverAdmissionPreviewsAtHostBoot(): Promise<number> {
+  const queueTarget = target();
+  const interrupted = await recoverOrphanedAdmissionPreviewOperations({
+    store: admissionPreviewStoreFor(queueTarget),
+    hostInstanceId: currentAdmissionPreviewHostInstanceId(),
+    hostPort: currentAdmissionPreviewHostPort(),
+    emitSettled: (operation) => admissionPreviewEmitter(operation, queueTarget.workspaceId),
+  });
+  return interrupted.length;
 }
 
 async function runDeferrableAdmissionPreview<T extends { data?: unknown }>(
