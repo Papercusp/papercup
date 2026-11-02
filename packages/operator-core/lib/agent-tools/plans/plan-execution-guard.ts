@@ -4,6 +4,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspace } from '../../workspace-als';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { parsePlan } from './parser';
+import { planExecutionMeaning } from './plan-execution-meaning';
+export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
 // and validate the small token vocabulary this read-only boundary accepts.
@@ -89,18 +91,15 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
     .map(row => ({ planSlug: row.plan_slug, harnessSlug: row.harness_slug }));
 }
 
-/** Ignore progress/Now and whitespace, but retain scope, requirements, decisions and dependencies. */
-export function planExecutionMeaning(content: string): string {
-  const parsed = parsePlan(content);
-  const { status: _status, updated: _updated, ...frontmatter } = parsed.frontmatter.raw;
-  let body = parsed.prose;
-  if (parsed.now) body = body.replace(parsed.now.raw, '');
-  for (const item of parsed.items) body = body.replace(item.rawLine,
-    item.rawLine.replace(/`[a-z-]+`/, item.storedStatus === 'dropped' ? '`dropped`' : '`live`'));
-  return JSON.stringify([Object.entries(frontmatter).sort(), body.replace(/\s+/g, ' ').trim()]);
+export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
+  const { readPlanExecutionStart } = await import('./plan-execution-authority');
+  const proof = await readPlanExecutionStart(binding, workspaceId);
+  if (proof.length) return proof;
+  return checkPlanExecutionReadiness(binding, workspaceId);
 }
 
-export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
+/** Current policy is required both when issuing authority and on every use. */
+export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
   return runWithWorkspace(workspaceId, async () => {
     const { sql } = getOrgPg();
     const rows = await sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null }>>`
@@ -112,7 +111,6 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
     const parsed = parsePlan(row.content);
     if (!['ready', 'active', 'awaiting-acceptance'].includes(parsed.frontmatter.status ?? ''))
       return [`plan_status:${parsed.frontmatter.status ?? 'unknown'}`];
-    if (row.op_status !== 'started') return ['plan_not_started'];
     const scope = { workspaceId, harnessSlug: row.harness_slug, planSlug: binding.planSlug };
     const { evaluateConversationActivationGate } = await import('./plan-activation-gate');
     const activation = await evaluateConversationActivationGate(sql as never, scope);
@@ -133,13 +131,33 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
         return ['activation_audit_stale'];
     }
     const [{ getPlanRow }, { evaluatePlanStartReadiness }, { readAndEvaluateAcceptanceBarLifecycle },
-      { checkPlanAdmission }, { withPinnedPlanTypes }] = await Promise.all([
+      { checkPlanAdmission }, { withPinnedPlanTypes }, { checkPlanStartable },
+      { evaluatePlanSpecQualityGate }, { evaluatePlanStartBarCritique }, { specQualityPlanItemIds },
+      { validatePlanCandidateDependencies }] = await Promise.all([
       import('./source'), import('./plan-input-validation'), import('../../acceptance-bar-lifecycle-evaluator'),
       import('./plan-admission-gate'), import('../../plan-types/pins'),
+      import('./plan-start-gate'), import('./plan-spec-quality-gate'), import('./plan-start-critique-gate'),
+      import('./spec-quality'),
+      import('./plan-candidate-dependencies'),
     ]);
     const opts = { harnessSlug: row.harness_slug, workspaceId };
     const plan = await getPlanRow(binding.planSlug, opts);
     if (!plan || plan.contentHash !== row.content_hash) return ['plan_revision_changed'];
+    const dependencies = validatePlanCandidateDependencies(parsed, 'started');
+    if (dependencies.state === 'rejected' || dependencies.state === 'invalid-draft') return ['plan_dependencies_invalid'];
+    const gate = await checkPlanStartable(binding.planSlug, opts, null, 'start');
+    if (!gate.ok) return [gate.refusal.code];
+    const items = plan.items.length ? plan.items : parsed.items;
+    const quality = await evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
+      planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items });
+    if (!quality.satisfied) return [quality.code ?? 'spec_quality_not_current'];
+    if (quality.applicable) {
+      const critique = await evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
+        planSlug: binding.planSlug, nonDroppedItemCount: specQualityPlanItemIds(items).length,
+        contractEnforced: quality.mode === 'enforced' });
+      if (critique?.mode === 'enforced' && !critique.verdict.satisfied)
+        return [critique.verdict.code ?? 'critique_missing'];
+    }
     const inputs = evaluatePlanStartReadiness({ template: plan.template, inputSchema: plan.inputSchema }, plan.templateData);
     if (!inputs.ready) return [inputs.code];
     const bars = await withPinnedPlanTypes(scope, () => readAndEvaluateAcceptanceBarLifecycle(binding.planSlug,

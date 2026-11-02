@@ -33,17 +33,17 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_items (taken_by text, workspace_id text, harness_slug text,
       source_plan_slug text, status text);
     CREATE TABLE harness_shared.harness_plans (workspace_id text, harness_slug text, plan_slug text,
-      content text, content_hash text, op_status text);
+      content text, content_hash text, op_status text, status text DEFAULT 'draft', execution_start_revision_seq integer);
     CREATE TABLE harness_shared.plan_audits (workspace_id text, harness_slug text, plan_slug text,
       audit_kind text, audit_seq bigint, audited_plan_content_hash text, audited_plan_revision_id bigint);
     CREATE TABLE harness_shared.plan_revisions (id bigint, workspace_id text, harness_slug text,
-      plan_slug text, content_snapshot text);
+      plan_slug text, content_snapshot text, seq integer);
   `);
 }, 120_000);
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions');
-  await db.sql`INSERT INTO harness_shared.harness_plans VALUES (${WS}, 'project', 'draft-feature',
+  await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,op_status) VALUES (${WS}, 'project', 'draft-feature',
     ${'---\ntitle: Draft\nstatus: draft\n---\n# Draft\n'}, 'draft-hash', NULL)`;
 });
 
@@ -94,13 +94,14 @@ describe('real write-boundary bypass regression', () => {
   });
   it('refuses materially changed scope against the immutable audited revision', async () => {
     const before = '---\ntitle: Feature\nstatus: ready\n---\n# Feature\n## Requirements\nPreserve findings.\n';
-    await db.sql`UPDATE harness_shared.harness_plans SET content=${before.replace('ready', 'active').replace('Preserve', 'Discard')}, content_hash='new', op_status='started'`;
-    await db.sql`INSERT INTO harness_shared.plan_revisions VALUES (1,${WS},'project','draft-feature',${before})`;
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${before.replace('ready', 'active').replace('Preserve', 'Discard')}, content_hash='new', op_status='started', status='active'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions (id,workspace_id,harness_slug,plan_slug,content_snapshot) VALUES (1,${WS},'project','draft-feature',${before})`;
     await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'old',1)`;
-    expect(await checkExecutionPlan(binding, WS)).toEqual(['activation_audit_stale']);
+    const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+    expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['activation_audit_stale']);
   });
   it('does not treat ready status as completion of the standard start process', async () => {
-    await db.sql`UPDATE harness_shared.harness_plans SET content=${'---\ntitle: Draft\nstatus: ready\n---\n# Draft\n'}`;
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${'---\ntitle: Draft\nstatus: ready\n---\n# Draft\n'}, status='ready'`;
     expect(await checkExecutionPlan(binding, WS)).toEqual(['plan_not_started']);
   });
 });
