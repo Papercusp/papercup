@@ -33,7 +33,8 @@
           { "kind": "text", "copy": { "key": "native.terminal", "default": "Terminal HUD" } },
           { "kind": "text", "copy": { "key": "native.organizer", "default": "Window organizer" } },
           { "kind": "text", "copy": { "key": "native.chat", "default": "Papercup chat" } },
-          { "kind": "text", "copy": { "key": "native.accounts", "default": "Accounts" } }
+          { "kind": "text", "copy": { "key": "native.accounts", "default": "Accounts" } },
+          { "kind": "text", "copy": { "key": "native.goals", "default": "Goals and Work on everything" } }
         ]
       },
       {
@@ -46,7 +47,8 @@
           "selectedDirection": "workbench",
           "lifecycle": "Resident in the signed-in desktop session from login. Each panel is summoned directly by a configurable global shortcut, with no foreground app launch and no independent Dock/taskbar/Alt-Tab entry. Escape dismisses, repeated shortcut toggles, and optional pinning retains context. Panels have no app minimize/maximize chrome. Only ordinary terminal windows retain application-window behavior. Mock shortcuts are browser-scoped simulations, not OS registration.",
           "governingDecision": "quick-access-search-launcher-2026-10-26#D-009",
-          "surfaces": ["launcher", "terminal-hud", "window-organizer", "papercup-chat", "accounts"],
+          "surfaces": ["launcher", "terminal-hud", "window-organizer", "papercup-chat", "accounts", "goals-and-work-on-everything"],
+          "goals": "D-010: Goals and Work on everything are first-class context. Goals sidebar has a direct shortcut; search includes goals; terminal rails and chat carry selected-goal context; accounts show goal spend/cap without changing account-control scope; layouts can group by goal within each desktop. Reuse existing goal list/detail, ongoing-work-model, GoalWorkRail and WorkOnEverything controls, priority worklists, attention, outcomes and evidence. Standing-goal plan progress is not completion of the endless goal. Pause/resume/start reflect server-confirmed state and degraded-result warnings. All mock goal actions are previews and change no live goal.",
           "remote": "Reuse psu saved profiles, connection selection, transports, and reattachment through the existing connection front controller. No new credential or remote transport store.",
           "agentActivation": "Focus the exact existing terminal. Remote targets reuse the selected saved psu connection. No chat popup is opened by agent selection.",
           "terminalPanels": "Orders on the left, Activity on the right, and optional Fleet peers. Compact states preserve terminal space.",

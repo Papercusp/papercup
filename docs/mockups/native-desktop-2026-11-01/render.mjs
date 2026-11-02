@@ -33,10 +33,23 @@ try {
         return { title: element.querySelector('.titlebar,.wing-title')?.textContent?.trim() || 'Panel', left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
       }));
       const overviewCards = surface === 'overview' ? await page.locator('.overview-card > .overview-inner').count() : null;
-      if (surface === 'overview' && overviewCards !== 5) errors.push(`Overview ${direction} must contain five intact preview cards; found ${overviewCards}`);
+      const expectedCards = direction === 'b' ? 6 : 5;
+      if (surface === 'overview' && overviewCards !== expectedCards) errors.push(`Overview ${direction} must contain ${expectedCards} intact preview cards; found ${overviewCards}`);
       captures.push({ direction, surface, file: `${direction}-${surface}.png`, bounds, overviewCards });
     }
   }
+  await page.evaluate(() => window.__mockup.set('b', 'goals'));
+  await page.locator('.goal-directory [data-os-goal="native"]').click();
+  await page.screenshot({ path: join(directory, 'b-goals.png'), animations: 'disabled' });
+  captures.push({ direction: 'b', surface: 'goals', file: 'b-goals.png' });
+  await page.locator('.goal-directory [data-os-goal="work-all"]').click();
+  await page.screenshot({ path: join(directory, 'b-work-on-everything.png'), animations: 'disabled' });
+  captures.push({ direction: 'b', surface: 'work-on-everything', file: 'b-work-on-everything.png' });
+  await page.evaluate(() => window.__mockup.set('b', 'launcher'));
+  await page.locator('#agent-search').fill('work on everything');
+  await page.screenshot({ path: join(directory, 'b-goal-search.png'), animations: 'disabled' });
+  captures.push({ direction: 'b', surface: 'goal-search', file: 'b-goal-search.png' });
+  await page.locator('#agent-search').fill('');
   await page.evaluate(() => window.__mockup.set('b', 'chat'));
   await page.keyboard.press('Escape');
   await page.screenshot({ path: join(directory, 'b-dismissed.png'), animations: 'disabled' });
