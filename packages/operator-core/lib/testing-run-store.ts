@@ -2127,9 +2127,16 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
         const installLockTimeout = code === 2
           && /TEST_FILE_INSTALL_READER_WAIT\b/m.test(output)
           && /Timed out after \d+ms waiting for fs-mutex writer\b/i.test(output);
+        const parentSignal = /TEST_FILE_PROGRESS state=parent-(sigterm|sigint|sighup)\b/m.exec(output)?.[1];
+        const parentSignalExitCode = parentSignal === 'sigterm' ? 143
+          : parentSignal === 'sigint' ? 130
+            : parentSignal === 'sighup' ? 129 : null;
+        const routerParentTermination = parentSignalExitCode !== null && code === parentSignalExitCode;
         if (installLockTimeout) {
           state.snapshot.status = 'cancelled';
           appendOutput(state, '\nTEST_RUN_NOT_MEASURED reason=install-lock-timeout executed=0\n');
+        } else if (routerParentTermination) {
+          state.snapshot.status = 'cancelled';
         } else {
           state.snapshot.status = code === 0 ? 'pass' : 'fail';
         }

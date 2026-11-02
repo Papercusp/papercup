@@ -36,6 +36,7 @@ interface FakeChild {
   killed: boolean;
   _emitError: (error: Error) => void;
   _emitStdout: (chunk: string) => void;
+  _emitStderr: (chunk: string) => void;
   _emitClose: (code: number) => void;
 }
 let lastChild: FakeChild;
@@ -44,9 +45,10 @@ function makeChild(): FakeChild {
   const closeCbs: Array<(c: number) => void> = [];
   const errorCbs: Array<(error: Error) => void> = [];
   const stdoutCbs: Array<(b: Buffer) => void> = [];
+  const stderrCbs: Array<(b: Buffer) => void> = [];
   const child: FakeChild = {
     stdout: { on: (_e, cb) => stdoutCbs.push(cb) },
-    stderr: { on: () => {} },
+    stderr: { on: (_e, cb) => stderrCbs.push(cb) },
     on: (e, cb) => {
       if (e === 'close') closeCbs.push(cb as (c: number) => void);
       if (e === 'error') errorCbs.push(cb as (error: Error) => void);
@@ -56,6 +58,7 @@ function makeChild(): FakeChild {
     killed: false,
     _emitError: (error) => errorCbs.forEach((cb) => cb(error)),
     _emitStdout: (chunk) => stdoutCbs.forEach((cb) => cb(Buffer.from(chunk))),
+    _emitStderr: (chunk) => stderrCbs.forEach((cb) => cb(Buffer.from(chunk))),
     _emitClose: (code) => closeCbs.forEach((cb) => cb(code)),
   };
   return child;
@@ -754,6 +757,44 @@ describe('close handler', () => {
     const b = store.startRun(req());
     lastChild._emitClose(1);
     expect(store.getRun(b.runId)?.status).toBe('fail');
+  });
+
+  it('marks router-parent SIGTERM as cancelled and retains completed case output', () => {
+    const snapshot = store.startRun(req());
+    lastChild._emitStderr(
+      '✓ completed case evidence\nTEST_FILE_PROGRESS state=parent-sigterm cwd="/repo"\n',
+    );
+    lastChild._emitClose(143);
+
+    const run = store.getRun(snapshot.runId);
+    expect(run).toMatchObject({
+      status: 'cancelled',
+      exitCode: 143,
+      output: expect.stringContaining('✓ completed case evidence'),
+    });
+    expect(run?.output).toContain('TEST_FILE_PROGRESS state=parent-sigterm');
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      taskManagerMocks.begin.mock.results[0]?.value,
+      { state: 'killed', exitCode: 143 },
+      { scopeCgroupPath: null },
+    );
+  });
+
+  it('keeps an unmarked SIGTERM exit as fail', () => {
+    const snapshot = store.startRun(req());
+    lastChild._emitStderr('✓ completed case evidence\n');
+    lastChild._emitClose(143);
+
+    expect(store.getRun(snapshot.runId)).toMatchObject({
+      status: 'fail',
+      exitCode: 143,
+      output: expect.stringContaining('✓ completed case evidence'),
+    });
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      taskManagerMocks.begin.mock.results[0]?.value,
+      { state: 'exited', exitCode: 143 },
+      { scopeCgroupPath: null },
+    );
   });
 
   it('preserves the observed verdict when a child error arrives after close', () => {
