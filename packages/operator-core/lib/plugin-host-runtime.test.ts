@@ -81,12 +81,86 @@ beforeEach(() => {
 });
 
 describe('plugin host security discovery', () => {
+  it('retains configured and unloaded candidates from the original walk without discovering plugins', () => {
+    const discovery = {
+      roots: [{ pluginsDir: '/configured/plugins', source: 'project' }],
+      candidates: [
+        { path: '/configured/plugins/broken', source: 'project', status: 'error' as const },
+        { path: '/configured/plugins/excluded', source: 'project', status: 'excluded' as const,
+          reason: 'installed copies only', manifest: { name: 'excluded', tools: [{ name: 'unloaded-tool' }] } },
+        { path: '/configured/plugins/shadowed', source: 'project', status: 'shadowed' as const, pluginName: 'duplicate' },
+      ],
+      unavailable: [{ path: '/unreadable/plugins', code: 'EACCES' }],
+    };
+    _injectPluginHostForTests([], discovery);
+    const captured = inspectPluginHostSecurityPopulation();
+    expect(captured.surfaces.map(s => s.kind)).toEqual(['configured-plugin-root',
+      'configured-plugin-candidate', 'configured-plugin-candidate', 'configured-plugin-candidate']);
+    expect(captured.surfaces.slice(1)).toMatchObject([
+      { attrs: { discoveryStatus: 'error', manifest: null, manifestCoverage: 'unknown' } },
+      { attrs: { discoveryStatus: 'excluded', reason: 'installed copies only',
+        manifest: { name: 'excluded', tools: [{ name: 'unloaded-tool' }] }, manifestCoverage: 'parsed-declarations-only' } },
+      { attrs: { discoveryStatus: 'shadowed', pluginName: 'duplicate' } },
+    ]);
+    expect(captured.unresolved).toContain('plugin-runtime-configured-inputs-unverified');
+    expect(captured.unresolved).toContain('plugin-runtime-input-unavailable:["/unreadable/plugins","EACCES"]');
+    discovery.candidates[0].path = '/changed';
+    expect(captured.surfaces[1].attrs.path).toBe('/configured/plugins/broken');
+    const snapshot = captured.surfaces[2].attrs as { manifest?: { tools: Array<{ name: string }> } };
+    snapshot.manifest!.tools[0]!.name = 'consumer mutation';
+    expect(inspectPluginHostSecurityPopulation().surfaces[2].attrs).toMatchObject({
+      manifest: { tools: [{ name: 'unloaded-tool' }] },
+    });
+    expect(inspectPluginHostSecurityPopulation().phase).toBe('loaded');
+  });
+
   it('preserves an uninitialized host without discovering or initializing it', () => {
     const first = inspectPluginHostSecurityPopulation(), second = inspectPluginHostSecurityPopulation();
     expect(first).toEqual(second);
     expect(first.phase).toBe('uninitialized'); expect(first.surfaces).toEqual([]);
     expect(first.unresolved).toContain('plugin-runtime-host-uninitialized');
     expect(first.unresolved).toContain('plugin-runtime-configured-inputs-unverified');
+    expect(first.declaredSurfaces).toEqual([]);
+  });
+
+  it('enumerates cached declarations from excluded, failed and shadowed candidates without implying reachability', () => {
+    const excludedManifest = { name: 'duplicate', version: '1', capabilities: ['network:fetch'],
+      tools: [{ name: 'same', expose: { mcp: { name: 'same' } } }, { name: 'same' }],
+      actions: [{ name: 'run' }], routines: [{ id: 'scheduled' }],
+      reactions: [{ id: 'listen', on: 'fixture:done', fire: 'same' }], apiRoutes: true };
+    const record = makePlugin();
+    Object.defineProperty(record, 'plugin', { get() { throw Error('must not read plugin code'); } });
+    _injectPluginHostForTests([record], { roots: [], unavailable: [], candidates: [
+      { path: '/excluded', source: 'project', status: 'excluded', reason: 'distribution excluded', manifest: excludedManifest },
+      { path: '/failed', source: 'global', status: 'error', error: 'import failed',
+        manifest: { name: 'duplicate', tools: [{ name: 'same' }] } },
+      { path: '/shadowed', source: 'global', status: 'shadowed',
+        manifest: { name: 'duplicate', tools: [{ name: 'same' }] } },
+    ] });
+    const captured = inspectPluginHostSecurityPopulation(), rows = captured.declaredSurfaces;
+    expect(rows).toHaveLength(8);
+    expect(new Set(rows.map(row => row.surfaceId)).size).toBe(8);
+    expect(rows.map(row => row.attrs?.declarationKind)).toEqual([
+      'tools', 'tools', 'actions', 'routines', 'reactions', 'apiRoutes', 'tools', 'tools',
+    ]);
+    expect(rows.map(row => row.attrs?.discoveryStatus)).toEqual([
+      'excluded', 'excluded', 'excluded', 'excluded', 'excluded', 'excluded', 'error', 'shadowed',
+    ]);
+    for (const row of rows) expect(row).toMatchObject({ kind: 'configured-plugin-declaration',
+      sourceFile: null, fidelity: 'declared', attrs: { reachability: 'unknown',
+        actualEffectCoverage: 'unknown', loadedArtifactCoverage: 'unknown', applicability: 'unknown' } });
+    expect(rows[0]!.attrs).toMatchObject({ path: '/excluded', reason: 'distribution excluded',
+      capabilities: ['network:fetch'], declaration: { name: 'same' } });
+    expect(rows[6]!.attrs).toMatchObject({ path: '/failed', error: 'import failed' });
+    expect(captured.unresolved).toContain('plugin-runtime-declaration-reconciliation-unverified');
+    expect(captured.unresolved.some(gap => gap.startsWith('plugin-runtime-api-routes-unexpanded:'))).toBe(true);
+    // Each output and the original loader metadata retain separate custody.
+    const declaration = rows[0]!.attrs!.declaration as { name: string };
+    declaration.name = 'consumer mutation';
+    (rows[0]!.attrs!.capabilities as string[]).push('filesystem:write');
+    expect(excludedManifest.tools[0]!.name).toBe('same');
+    expect((inspectPluginHostSecurityPopulation().declaredSurfaces[0]!.attrs!.declaration as { name: string }).name).toBe('same');
+    expect(inspectPluginHostSecurityPopulation().declaredSurfaces[0]!.attrs!.capabilities).toEqual(['network:fetch']);
   });
 
   it('captures tool-less loaded records without reading plugin code and preserves duplicate paths', () => {
