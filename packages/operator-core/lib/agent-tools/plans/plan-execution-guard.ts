@@ -255,8 +255,8 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
   observe?: PlanExecutionTimingObserver): Promise<string[]> {
   return runWithWorkspace(workspaceId, async () => {
     const { sql } = getOrgPg();
-    const rows = await measurePlanStage('scope', observe, () => sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null }>>`
-      SELECT harness_slug, content, content_hash, op_status FROM harness_shared.harness_plans
+    const rows = await measurePlanStage('scope', observe, () => sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null; created_at: Date | string | null }>>`
+      SELECT harness_slug, content, content_hash, op_status, created_at FROM harness_shared.harness_plans
        WHERE workspace_id=${workspaceId} AND plan_slug=${binding.planSlug}
          AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`);
     if (rows.length !== 1) return [rows.length ? 'plan_scope_ambiguous' : 'bound_plan_missing'];
@@ -287,7 +287,7 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
         return ['activation_audit_stale'];
     }
     const [{ evaluatePlanStartReadiness }, { checkPlanAdmission }, { checkPlanStartable },
-      { evaluatePlanSpecQualityGate }, { evaluatePlanStartBarCritique }, { specQualityPlanItemIds },
+      { evaluatePlanSpecQualityGate }, { evaluatePlanStartBarCritique, isPlanStartBarCritiqueInCohort }, { specQualityPlanItemIds },
       { validatePlanCandidateDependencies }] = await Promise.all([
       import('./plan-input-validation'), import('./plan-admission-gate'),
       import('./plan-start-gate'), import('./plan-spec-quality-gate'), import('./plan-start-critique-gate'),
@@ -306,7 +306,11 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     const quality = await measurePlanStage('spec_quality', observe, () => evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
       planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items }));
     if (!quality.satisfied) return [quality.code ?? 'spec_quality_not_current'];
-    if (quality.applicable) {
+    // Legacy plans only receive diagnostic critiques. Native authority needs no
+    // reconstruction of those histories; full start/report readers retain it.
+    // Read the cohort on every invocation, and evaluate unknown dates normally.
+    const createdMs = row.created_at == null ? Number.NaN : new Date(row.created_at).getTime();
+    if (quality.applicable && isPlanStartBarCritiqueInCohort(createdMs)) {
       const critique = await measurePlanStage('critique', observe, () => evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
         planSlug: binding.planSlug, nonDroppedItemCount: specQualityPlanItemIds(items).length,
         contractEnforced: quality.mode === 'enforced' }));
