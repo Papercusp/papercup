@@ -119,13 +119,16 @@ export interface FrozenCarryBoundary {
   readonly initialPrompt: string;
   readonly initialPromptSha256: string;
   readonly mode: 'on' | 'off';
+  /** Preregistered context-token trigger, identical across paired arms. */
+  readonly compactionLimit?: number;
 }
 
 export function validFrozenCarryBoundary(value: unknown): value is FrozenCarryBoundary {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  return Object.keys(row).length === 3 && Object.keys(row).every(key =>
-    ['initialPrompt', 'initialPromptSha256', 'mode'].includes(key)) &&
+  return Object.keys(row).every(key =>
+    ['initialPrompt', 'initialPromptSha256', 'mode', 'compactionLimit'].includes(key)) &&
+    (row.compactionLimit === undefined || Number.isSafeInteger(row.compactionLimit) && (row.compactionLimit as number) >= 20_000) &&
     typeof row.initialPrompt === 'string' && row.initialPrompt.trim().length > 0 && row.initialPrompt.length <= 200_000 &&
     typeof row.initialPromptSha256 === 'string' && /^[a-f0-9]{64}$/.test(row.initialPromptSha256) &&
     (row.mode === 'on' || row.mode === 'off');
