@@ -18,10 +18,9 @@ beforeAll(async () => {
   db = await createOrgTestDb();
   dbRef.sql = db.adminSql;
   root = mkdtempSync(path.join(tmpdir(), 'work-perf-fixture-'));
-  const url = db.url;
   env = { ...process.env, VERIFY_TAURI_ISOLATED_DB: '1', PAPERCUSP_VERIFY_TAURI_ISOLATED: '1',
     PAPERCUSP_HOME: root + '/papercusp-home', PAPERCUSP_WORKSPACE: 'verify-tauri-isolated-999',
-    HARNESS_ADMIN_DATABASE_URL: url, HARNESS_DATABASE_URL: url,
+    HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.appDsn,
     VERIFY_TAURI_PORT: '49999', OPERATOR_DEV_PORT: '49999' };
   for (const key of ['PAPERCUSP_WORKSPACE', 'PAPERCUSP_HOME', 'HARNESS_ADMIN_DATABASE_URL',
     'HARNESS_DATABASE_URL']) vi.stubEnv(key, env[key]!);
