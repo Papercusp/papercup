@@ -11,7 +11,7 @@
  * need Docker). Run: npm run test:file -- <this file>
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -41,7 +41,7 @@ let root: string;
 async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv, timeout = 30_000) {
   const phase = bin === 'docker' ? args.slice(0, 2).join(' ') : 'wrapper';
   const started = Date.now();
-  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'started', containerIds: containers }));
+  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'started', at: new Date(started).toISOString(), containerIds: containers }));
   const result = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: string | null; timedOut: boolean; error: string | null }>(resolve => {
     const child = execFile(bin, args, { env, encoding: 'utf8', timeout }, (error, stdout, stderr) => {
       resolve({ stdout, stderr, status: typeof error?.code === 'number' ? error.code : error ? null : 0,
@@ -50,7 +50,7 @@ async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv, tim
     });
     child.stdin?.end();
   });
-  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: result.error ? 'failed' : 'completed', elapsedMs: Date.now() - started,
+  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: result.error ? 'failed' : 'completed', at: new Date().toISOString(), elapsedMs: Date.now() - started,
     status: result.status, signal: result.signal, timedOut: result.timedOut, error: result.error }));
   return result;
 }
@@ -83,13 +83,32 @@ async function startContainer(extra: string[] = [], network = 'none'): Promise<s
 async function removeContainer(id: string, primaryError?: unknown): Promise<void> {
   const index = containers.indexOf(id);
   if (index >= 0) containers.splice(index, 1);
+  // Subscribe before removal: Docker's shared historical event buffer can
+  // evict this container's events before a later diagnostic query reads it.
+  const watcher = spawn('docker', ['events', '--since', new Date().toISOString(), '--filter', `container=${id}`,
+    '--format', '{{json .}}'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let events = '', watcherError: string | null = null;
+  watcher.stdout.on('data', chunk => { events = (events + String(chunk)).slice(-12_000); });
+  watcher.stderr.on('data', chunk => { watcherError = ((watcherError ?? '') + String(chunk)).slice(-1000); });
+  const watcherDone = new Promise<void>(resolve => {
+    watcher.once('error', error => { watcherError = String(error); resolve(); });
+    watcher.once('close', () => resolve());
+  });
   try {
     const removed = await command('docker', ['rm', '-f', id]);
+    if (removed.error) {
+      const inspected = await command('docker', ['inspect', '--format', '{{json .State}}', id], undefined, 5000);
+      console.info('CONTAINER_EXEC_REMOVAL_FAILURE', JSON.stringify({ id, inspected }));
+    }
     expect(removed.status, JSON.stringify({ id, removed })).toBe(0);
   } catch (error) {
     cleanupFailures.push({ containerId: id, error: String(error) });
     throw primaryError === undefined ? error : new AggregateError([primaryError, error],
       'Container assertion and cleanup both failed');
+  } finally {
+    watcher.kill('SIGKILL');
+    await watcherDone;
+    console.info('CONTAINER_EXEC_REMOVAL_EVENTS', JSON.stringify({ id, events, watcherError }));
   }
 }
 
@@ -734,7 +753,23 @@ describe('container exec target against a live container', () => {
     let lease: Awaited<ReturnType<NonNullable<typeof egress>['openTaskNetwork']>> | undefined;
     let cid: string | undefined, primaryError: unknown;
     try {
-      egress = await startBenchEgress({ runId: `native-mcp-${randomUUID()}`, endpoints: [
+      const image = await command('docker', ['image', 'inspect', '--format', '{{.Id}}', 'nginx:alpine']);
+      expect(image.status, JSON.stringify(image)).toBe(0);
+      const { liveProcExec } = await import('./grader/index');
+      egress = await startBenchEgress({ runId: `native-mcp-${randomUUID()}`, exec: async (bin, args, opts) => {
+        const startedAt = Date.now();
+        console.info('NATIVE_MCP_EGRESS_PHASE', JSON.stringify({ args, at: new Date(startedAt).toISOString(), state: 'started', timeoutMs: opts?.timeoutMs }));
+        try {
+          const result = await liveProcExec(bin, args, opts);
+          console.info('NATIVE_MCP_EGRESS_PHASE', JSON.stringify({ args, at: new Date().toISOString(), state: 'completed',
+            elapsedMs: Date.now() - startedAt, code: result.code }));
+          return result;
+        } catch (error) {
+          console.info('NATIVE_MCP_EGRESS_PHASE', JSON.stringify({ args, at: new Date().toISOString(), state: 'failed',
+            elapsedMs: Date.now() - startedAt, error: String(error) }));
+          throw error;
+        }
+      }, endpoints: [
         { name: 'mcp', listenPort: 9071, targetPort: port, transport: 'http' },
         { name: 'gw', listenPort: 8788, targetPort: port },
       ] });
@@ -782,6 +817,7 @@ describe('container exec target against a live container', () => {
       expect(methods, output).toContain('initialize');
       expect(methods, output).toContain('tools/list');
       expect(methods, output).not.toContain('unknown');
+      console.info('NATIVE_MCP_FUNCTIONAL_PROOF', JSON.stringify({ generated, cid, methods, at: new Date().toISOString() }));
     } catch (error) { primaryError = error; throw error; }
     finally {
       const failures: unknown[] = [];

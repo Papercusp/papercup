@@ -612,7 +612,7 @@ describe('admission endpoint protection — terminal twins', () => {
       ...(creator === 'watchdog' ? { claim_hold_release: releaseContract } : {}),
       claim_hold_by: actor, claim_hold_reason: 'future independent source work',
       claim_hold_at: new Date(1000).toISOString() };
-    const parked = snapshot(twin.id, { payload: parkPayload, agentParkAudit: {
+    const parked = snapshot(twin.id, { kind: 'bug', payload: parkPayload, agentParkAudit: {
       id: 'audit-park', atMs: 1008, actor, action: 'work_items:claim_hold:set',
       details: { mode: 'claim_hold', by: actor, reason: parkPayload.claim_hold_reason,
         ...(creator === 'watchdog' ? { releaseContract } : {}) },
@@ -633,6 +633,7 @@ describe('admission endpoint protection — terminal twins', () => {
       expect(select({}, true, { assignee: actor }).batch).toEqual([]);
       expect(select({}, true, { payload: { _claimHold: true } }).batch).toEqual([]);
       expect(admissionEndpointBlock(parked)).toMatchObject({ reason: 'claim-held' });
+      if (creator === 'watchdog') expect(select({ kind: 'change' }).pairs).toEqual([]);
     });
 
     if (creator === 'watchdog') it.each([
