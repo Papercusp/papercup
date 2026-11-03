@@ -238,7 +238,11 @@ describe('real write-boundary bypass regression', () => {
       .mockResolvedValue({ satisfied: false, codes: ['current-policy-regressed'], blockingBars: [] });
     try {
       const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
-      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual([]);
+      const stages: string[] = [];
+      expect(await checkPlanExecutionReadiness(binding, WS, timing => {
+        stages.push(timing.stage); throw Error('diagnostic sink unavailable');
+      })).toEqual([]);
+      expect(stages).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'spec_quality', 'admission']);
       expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
       expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
         harnessSlug: 'project', requireCompleteContractBeforeProof: true, proofMode: 'metadata',
