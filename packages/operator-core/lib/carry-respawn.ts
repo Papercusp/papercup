@@ -43,7 +43,8 @@ import { deriveLaunchPromptText, type LaunchPlanRef } from './agent-tools/plans/
 import { getLoopCarryNoteWithMeta, shortCarryHash, type LoopCarryNoteWithMeta } from './carry-note';
 import { createHash } from 'node:crypto';
 import { sessionCarryPolicy } from './capability-envelope/session-confinement-port';
-import { validFrozenCarryBoundary, type FrozenCarryBoundary } from './capability-envelope/session-confinement';
+import { validFrozenCarryBoundary, frozenCarryTriggerReceipt, type FrozenCarryBoundary, type FrozenCarryTriggerReceipt } from './capability-envelope/session-confinement';
+export { frozenCarryTriggerReceipt, type FrozenCarryTriggerReceipt } from './capability-envelope/session-confinement';
 
 /** The two artifacts a successor respawn delivers, plus the boundary gate. */
 export interface RespawnLaunchSpec {
@@ -94,40 +95,6 @@ export interface RespawnLaunchSpec {
   /** Exact input hashes, not proof that a host delivered or resumed them. */
   frozenAssignmentCarry?: { mode: 'on' | 'off'; initialPromptSha256: string; noteSha256: string | null;
     firstPromptSha256: string; trigger?: FrozenCarryTriggerReceipt };
-}
-
-export interface FrozenCarryTriggerReceipt {
-  kind: 'matched-threshold' | 'recovery';
-  source: 'self-request' | 'watchdog-soft' | 'watchdog-force' | 'context-death' | 'tool-reference-death';
-  limitTokens: number;
-  nativeSessionId: string;
-  observedTokens: number;
-  observedAtMs: number;
-  usageSource: 'codex-last-token-usage' | 'live-transcript-bytes/4';
-}
-
-/** Host-only evidence, never read from tool arguments. A forced/error restart
- * remains recovery even above the limit; it cannot certify the paired schedule. */
-export function frozenCarryTriggerReceipt(boundary: FrozenCarryBoundary, input: {
-  source: FrozenCarryTriggerReceipt['source'];
-  usage: import('./compaction-usage').CurrentContextUsage;
-  runtimeLimit?: number;
-}, nowMs = Date.now()): FrozenCarryTriggerReceipt {
-  const reading = input.usage.reading;
-  const matched = input.source === 'self-request' || input.source === 'watchdog-soft';
-  if (!validFrozenCarryBoundary(boundary) || boundary.compactionLimit === undefined ||
-      !['self-request', 'watchdog-soft', 'watchdog-force', 'context-death', 'tool-reference-death'].includes(input.source) ||
-      !['codex-last-token-usage', 'live-transcript-bytes/4'].includes(reading?.source ?? '') ||
-      input.runtimeLimit !== undefined && input.runtimeLimit !== boundary.compactionLimit ||
-      !input.usage.nativeSessionId?.trim() || !reading ||
-      !Number.isSafeInteger(reading.tokens) || reading.tokens < 0 ||
-      !Number.isSafeInteger(reading.observedAtMs) || reading.observedAtMs > nowMs + 30_000 ||
-      nowMs - reading.observedAtMs > 60_000 ||
-      matched && reading.tokens < boundary.compactionLimit)
-    throw new Error('Frozen compaction trigger is unmeasured, changed or below its preregistered threshold.');
-  return { kind: matched ? 'matched-threshold' : 'recovery', source: input.source,
-    limitTokens: boundary.compactionLimit, nativeSessionId: input.usage.nativeSessionId,
-    observedTokens: reading.tokens, observedAtMs: reading.observedAtMs, usageSource: reading.source };
 }
 
 /** Both conditions restart from the identical frozen task and retained checkout.

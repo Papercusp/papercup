@@ -134,6 +134,40 @@ export function validFrozenCarryBoundary(value: unknown): value is FrozenCarryBo
     (row.mode === 'on' || row.mode === 'off');
 }
 
+export interface FrozenCarryTriggerReceipt {
+  kind: 'matched-threshold' | 'recovery';
+  source: 'self-request' | 'watchdog-soft' | 'watchdog-force' | 'context-death' | 'tool-reference-death';
+  limitTokens: number;
+  nativeSessionId: string;
+  observedTokens: number;
+  observedAtMs: number;
+  usageSource: 'codex-last-token-usage' | 'live-transcript-bytes/4';
+}
+
+/** Pure host evidence shared by the carry builder, handler and watchdog.
+ * Recovery never certifies a matched schedule, even above its frozen limit. */
+export function frozenCarryTriggerReceipt(boundary: FrozenCarryBoundary, input: {
+  source: FrozenCarryTriggerReceipt['source'];
+  usage: import('../compaction-usage').CurrentContextUsage;
+  runtimeLimit?: number;
+}, nowMs = Date.now()): FrozenCarryTriggerReceipt {
+  const reading = input.usage.reading;
+  const matched = input.source === 'self-request' || input.source === 'watchdog-soft';
+  if (!validFrozenCarryBoundary(boundary) || boundary.compactionLimit === undefined ||
+      !['self-request', 'watchdog-soft', 'watchdog-force', 'context-death', 'tool-reference-death'].includes(input.source) ||
+      !['codex-last-token-usage', 'live-transcript-bytes/4'].includes(reading?.source ?? '') ||
+      input.runtimeLimit !== undefined && input.runtimeLimit !== boundary.compactionLimit ||
+      !input.usage.nativeSessionId?.trim() || !reading ||
+      !Number.isSafeInteger(reading.tokens) || reading.tokens < 0 ||
+      !Number.isSafeInteger(reading.observedAtMs) || reading.observedAtMs > nowMs + 30_000 ||
+      nowMs - reading.observedAtMs > 60_000 ||
+      matched && reading.tokens < boundary.compactionLimit)
+    throw new Error('Frozen compaction trigger is unmeasured, changed or below its preregistered threshold.');
+  return { kind: matched ? 'matched-threshold' : 'recovery', source: input.source,
+    limitTokens: boundary.compactionLimit, nativeSessionId: input.usage.nativeSessionId,
+    observedTokens: reading.tokens, observedAtMs: reading.observedAtMs, usageSource: reading.source };
+}
+
 const ALLOWED: SessionConfinementDecision = { allowed: true, applied: true };
 const UNCONFINED: SessionConfinementDecision = { allowed: true, applied: false };
 
