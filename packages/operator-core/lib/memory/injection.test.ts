@@ -371,6 +371,7 @@ beforeEach(() => {
     .mockImplementation(recallCorpusContext);
   vi.mocked(getMemoryBackend).mockReset();
   recordRecallStatsMock.mockClear();
+  recallCorpusContext.mockClear();
   // The Jev gate reuses answers through the process-wide operator cache
   // (WI-10004485); each test mocks its own answers, so start every test empty.
   resetOperatorCacheForTests();

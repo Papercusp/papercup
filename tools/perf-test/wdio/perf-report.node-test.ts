@@ -13,7 +13,7 @@ import { captureOwnedNativeStacks, collectOwnedWebKitSample, NativeSampleBuffer,
   parseNativeStackDelayMs, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
 
-import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, assertVerifierBuildFixture, assertVerifierBuildFixtureUnchanged, bindVerifierEnvironment, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, nativeStartupDuration, readBuildIdentity, readPublisherToken, type NativeStartupReading, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, assertVerifierBuildFixture, assertVerifierBuildFixtureUnchanged, bindVerifierEnvironment, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, nativeStartupDuration, workJourneyDuration, readBuildIdentity, readPublisherToken, type NativeStartupReading, type PerfMeasure, type WorkJourneyReading } from "./perf-report";
 import {
   installPopupLayoutProbe,
   installPopupReactProbe,
@@ -26,6 +26,26 @@ import {
 } from "./app-mount";
 import { classifyAttemptTimeout } from "../../../libs/generic/gui-readiness/src/interaction-measure";
 import { beginInteraction, endInteraction, markInteractionPhase } from "../../../apps/operator/app/_components/perf/perf-marks";
+
+test('work journeys reject stale, duplicate, missing, failed and cross-document timing evidence', () => {
+  const reading: WorkJourneyReading = { now: 1600, entries: [{ startTime: 1000, duration: 500 }],
+    contentReady: true, connectionReady: true };
+  assert.equal(workJourneyDuration(reading, 999), 500);
+  // A measured regression remains a real sample, even when over its budget.
+  assert.equal(workJourneyDuration({ ...reading, now: 4000,
+    entries: [{ startTime: 1000, duration: 2500 }] }, 999), 2500);
+  for (const patch of [
+    { entries: [] }, { entries: [...reading.entries, ...reading.entries] },
+    { contentReady: false }, { connectionReady: false }, { now: 900 }, { now: NaN },
+    { now: 32_000 }, { entries: [{ startTime: 998, duration: 500 }] },
+    { entries: [{ startTime: NaN, duration: 500 }] },
+    { entries: [{ startTime: 1000, duration: -1 }] },
+    { entries: [{ startTime: 1000, duration: NaN }] },
+    { now: 40_000, entries: [{ startTime: 1000, duration: 30_001 }] },
+  ]) assert.equal(workJourneyDuration({ ...reading, ...patch }, 999), null, JSON.stringify(patch));
+  assert.equal(workJourneyDuration(reading, NaN), null);
+  assert.equal(workJourneyDuration(reading, -1), null);
+});
 
 test('native startup accepts only one fresh process span with matching endpoints and current content', () => {
   const origin = { startedAtEpochMs: 8000, pid: 42, primaryWindow: true };
