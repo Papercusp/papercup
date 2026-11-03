@@ -21,6 +21,28 @@ vi.mock('../../plan-items/agent-names', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../plan-items/agent-names')>()),
   resolveAdoptedName: async () => null,
 }));
+
+// Keep every completion-side database read on the in-memory unit-test substrate.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  const sql = (_strings: TemplateStringsArray, ..._values: unknown[]) => [];
+  return {
+    ...actual,
+    getOrgPg: () => ({
+      sql: Object.assign(sql, {
+        begin: async <T>(callback: (tx: typeof sql) => Promise<T>): Promise<T> => callback(sql),
+        unsafe: async () => [],
+      }),
+    }),
+  };
+});
+
+// This suite does not test completion-verification storage or its live-dependent query.
+vi.mock('../../harness/improvements/completion-verification-store', () => ({
+  spawnCompletionVerificationForClose: async () => ({ outcome: 'no-dependents' }),
+  applyCompletionVerdictForClose: async () => null,
+  acceptCompletionOnSettlementForSubject: async () => null,
+}));
 const acceptanceRead = vi.hoisted(() => vi.fn());
 // The reference binding/terminal-write suite controls the artifact reader's
 // outcome. acceptance.test.ts separately drives that reader with real canary
