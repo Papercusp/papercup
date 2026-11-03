@@ -107,7 +107,8 @@ const issuesOutLinksMany = vi.fn(
 /** P-010: scorecardTrend's supersession check — a rel-filtered in-edge read, NOT the join. */
 const issuesSupersededByRevision = vi.fn(async (_ids: string[]) => new Set<string>());
 
-vi.mock('./issues-engineer', () => ({
+vi.mock('./issues-engineer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./issues-engineer')>()),
   issuesScopeWorkspace: () => 'test-workspace',
   issuesOutLinksMany: (ids: string[]) => issuesOutLinksMany(ids),
   issuesSupersededByRevision: (ids: string[]) => issuesSupersededByRevision(ids),
@@ -174,7 +175,8 @@ describe('the aggregate readers stay cheap (WI-6124)', () => {
       expect(rows).toHaveLength(2);
       expect(rows[0].gradedGeneration?.hostStartedAt).toBe('2026-07-14T18:08:24.000Z');
       expect(rows[0].generationFreshness).toBeUndefined();
-      expect(rows[0].rubricCurrentness?.state).toBe('unknown');
+      // Rubric identity can be current while generation freshness is deliberately unmeasured.
+      expect(rows[0].rubricCurrentness?.state).toBe('current');
       expect(rows[0].ratings.alpha.rating).toBe('healthy');
     } finally {
       delete observation.gradedGeneration;

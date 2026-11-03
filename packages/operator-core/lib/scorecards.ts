@@ -2457,9 +2457,10 @@ export function classifySubjectRubricCurrentness(
 export function settledGradingAuditIsCurrent(row: {
   gradingAudit?: ScorecardGradingAudit;
   gradingAuditCurrentness?: ScorecardGradingAuditCurrentness;
-}): boolean {
-  if (!row.gradingAudit) return true;
+}, required = false): boolean {
+  if (!row.gradingAudit) return !required;
   if (row.gradingAudit.state !== 'passed') return false;
+  if (required) return row.gradingAuditCurrentness?.state === 'current';
   // Older injected/test rows do not carry the read-time projection. Production
   // scorecards:list always does; preserving the absent case keeps the helper
   // compatible with pre-P-013 readers while rejecting explicit uncertainty.
@@ -4390,7 +4391,7 @@ async function listScorecardsAtLimit(
       keys: string[] | null;
       overrides?: Record<string, number>;
       ratingRubric: ScorecardRatingRubric | null;
-      kind: Rubric['kind'];
+      kind: Rubric['kind'] | undefined;
       liveIdentity: Pick<Rubric, 'revision' | 'criteriaHash'> | null;
     }
   >();
@@ -4428,7 +4429,9 @@ async function listScorecardsAtLimit(
     // payload yields no structured view) so a bad row degrades, never throws.
     if (!observation?.rubricRef || !observation.ratings) continue;
     if (!rubricMeta.has(observation.rubricRef)) {
-      const rubric = await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(observation.rubricRef!));
+      const rubric = finalizedRubrics.has(observation.rubricRef)
+        ? finalizedRubrics.get(observation.rubricRef)!
+        : await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(observation.rubricRef!));
       rubricMeta.set(observation.rubricRef, {
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
