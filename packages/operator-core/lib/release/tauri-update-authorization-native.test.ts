@@ -6,7 +6,8 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization } from '../../../../libs/generic/tauri-release-kit/src/signature.mjs';
 
-const archiveDependencies = ['tar="=0.4.46"', 'flate2="=1.1.9"', 'plist="=1.10.0"'];
+const archiveDependencies = ['tar="=0.4.46"', 'flate2="=1.1.9"',
+  'plist={version="=1.10.0",features=["enable_unstable_features_that_may_break_with_minor_version_bumps"]}'];
 
 // Compile the actual portable native consumer, avoiding a dependency on a running
 // desktop/WebKit. This maintained Vitest test owns the Cargo harness and fixtures.
@@ -170,7 +171,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('0 failed; 0 ignored');
     if (process.platform !== 'win32') {
       expect(result.stdout).toContain('protected_policy_reloads_current_revocation_and_floors ... ok');
@@ -278,7 +279,7 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'actual_compiled_image_and_negative_containers', '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('native-extraction: actual compiled image and exact bytes');
     for (const [name] of variants) expect(result.stdout).toContain(`native-extraction-refused: ${JSON.stringify(name)}`);
   } finally {
@@ -423,7 +424,7 @@ it('selects universal Mach-O and Mac archive inputs by installed executable iden
         for (path,kind,mode,bytes,link) in entries {
             let mut h=tar::Header::new_gnu();
             h.set_entry_type(tar::EntryType::new(kind)); h.set_mode(mode); h.set_size(bytes.len() as u64);
-            h.set_link_name(link).unwrap();
+            if !link.is_empty() { h.set_link_name(link).unwrap(); }
             if path.len() <= 100 {
                 h.as_mut_bytes()[..100].fill(0);
                 h.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes()); h.set_cksum();
@@ -470,12 +471,22 @@ it('selects universal Mach-O and Mac archive inputs by installed executable iden
     }
     #[test] fn candidate_mac_bundle_refuses_identity_and_namespace_ambiguity() {
         let good=bundle_info("Main","gui","1.2.3",false);
+        let xml=String::from_utf8(good.clone()).unwrap();
+        // These otherwise valid plists preserve every required identity field.
+        // Without the duplicate/depth/event guards each would be accepted.
+        let duplicate=xml.replace("</dict>","<key>CFBundleExecutable</key><string>Main</string></dict>").into_bytes();
+        let deep=xml.replace("</dict>",&format!("<key>Ignored</key>{}<string>x</string>{}</dict>",
+            "<array>".repeat(40),"</array>".repeat(40))).into_bytes();
+        let mut amplified=plist::Value::from_reader(std::io::Cursor::new(&good)).unwrap();
+        amplified.as_dictionary_mut().unwrap().insert("Ignored".into(),
+            plist::Value::Array(vec![plist::Value::Boolean(true);16_384]));
+        let mut many_events=Vec::new(); amplified.to_writer_binary(&mut many_events).unwrap();
+        assert!(many_events.len() <= 65_536);
         let refuses=|bytes:Vec<u8>| assert!(extract_macos_archive_inputs(&bytes,"darwin-x86_64").is_err());
         for info in [bundle_info("Missing","gui","1.2.3",false),bundle_info("Main","other","1.2.3",true),
             bundle_info("Main","gui","2.0.0",false),bundle_info("../Main","gui","1.2.3",false),
             bundle_info("/Main","gui","1.2.3",false),b"invalid plist".to_vec(),
-            b"<plist><dict><key>CFBundleExecutable</key><string>Main</string><key>CFBundleExecutable</key><string>Decoy</string></dict></plist>".to_vec(),
-            format!("<plist>{}{}{}</plist>","<array>".repeat(40),"<string>x</string>","</array>".repeat(40)).into_bytes(),
+            duplicate, deep, many_events,
             vec![b'x';65_537]] { refuses(bundle(x86(),info,vec![])); }
         for path in ["Other.app/Contents/extra","GUI.app/Contents/MacOS/main","GUI.app/contents/resource",
             "GUI.app/Contents/Info.plist","GUI.app/Contents/MacOS/Main/child","GUI.app/Contents/MacOS",
@@ -497,6 +508,9 @@ it('selects universal Mach-O and Mac archive inputs by installed executable iden
             refuses(archive(vec![("GUI.app/Contents/Info.plist",b'0',0o644,good.clone(),""),
                 ("GUI.app/Contents/MacOS/Main",kind,0o644,if kind==b'0' {x86()}else{vec![]},"Decoy")]));
         }
+        refuses(archive(vec![("GUI.app/Contents/Info.plist",b'2',0o777,vec![],"Other.plist"),
+            ("GUI.app/Contents/Other.plist",b'0',0o644,good.clone(),""),
+            ("GUI.app/Contents/MacOS/Main",b'0',0o755,x86(),"")]));
         // A symlink ancestor before its child also refuses (opposite tar order).
         refuses(archive(vec![("GUI.app/Contents/MacOS",b'2',0o777,vec![],"Other"),
             ("GUI.app/Contents/MacOS/Main",b'0',0o755,x86(),""),
@@ -534,13 +548,14 @@ it('selects universal Mach-O and Mac archive inputs by installed executable iden
     }
 }
 `);
-    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'tests::candidate_', '--', '--nocapture'],
+    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'candidate_', '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('native-universal: both table widths, both targets, full artifact and all-slice refusal');
     expect(result.stdout).toContain('native-mac-archive: XML/binary plist, GNU long path, thin/universal, full archive binding');
     expect(result.stdout).toContain('native-mac-refusal: plist identity, aliases, traversal, links, types and unattributed inputs');
     expect(result.stdout).toContain('native-mac-bounds: entry/metadata size, count, truncation, CRC and trailing members');
+    expect(result.stdout).toContain('native-mac-inflation: bound includes padding after tar end');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -688,7 +703,7 @@ include!(concat!(env!("OUT_DIR"),"/update-build-inputs.rs"));
           security: { csp: null }, windows: [{ label: 'main', title: 'runtime' }],
         } }), GIT_AUTHOR_NAME: 'not-an-authenticated-principal' },
     });
-    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('producer-proof: real Tauri ACLs');
   } finally {
     rmSync(root, { recursive: true, force: true });
