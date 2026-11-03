@@ -17,7 +17,7 @@ afterAll(async () => {
   await db?.cleanup();
 }, 120_000);
 
-function launch(action: 'raise' | 'reconcile') {
+function launch(action: 'raise' | 'reconcile' | 'restart') {
   const env = { ...process.env, HARNESS_DATABASE_URL: db.adminDsn,
     HARNESS_ADMIN_DATABASE_URL: db.adminDsn, PAPERCUSP_PGBOUNCER: '0', PAPERCUSP_WORKSPACE_ID: WS };
   delete env.VITEST_WORKER_ID;
@@ -68,6 +68,15 @@ describe('original managed tick recovery across fresh processes and the real con
 
     const exited = once(producer.child, 'exit');
     producer.child.kill('SIGKILL'); await exited;
+    const recoveryStartedAt = Date.now();
+    const restarts = [launch('restart'), launch('restart')];
+    const started = await Promise.all(restarts.map(worker => worker.message));
+    expect(started.map(message => message.kind)).toEqual(['started', 'started']);
+    // Includes fresh-process boot: the original cadence is the finite deadline.
+    expect(Date.now() - recoveryStartedAt).toBeLessThan(60_000);
+    await expect.poll(async () => (await envelopes()).filter(row => row.resolves_condition === key).length,
+      { timeout: Math.max(1, 60_000 - (Date.now() - recoveryStartedAt)), interval: 50 }).toBe(1);
+    expect(Date.now() - recoveryStartedAt).toBeLessThanOrEqual(60_000);
     await Promise.all([reconcile(), reconcile()]);
     await reconcile();
     const rows = await envelopes();
