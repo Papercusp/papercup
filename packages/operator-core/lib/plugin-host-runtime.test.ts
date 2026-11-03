@@ -5,7 +5,7 @@
  * test feeds the runtime a fixed set of fake `LoadedPlugin` records and
  * asserts on the lifecycle / action / spawn behavior.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, onTestFailed, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -123,12 +123,13 @@ describe('plugin host security discovery', () => {
     expect(first.declaredSurfaces).toEqual([]);
   });
 
-  it('enumerates cached declarations from excluded, failed and shadowed candidates without implying reachability', () => {
+  it('enumerates cached declarations from excluded, failed and shadowed candidates without implying reachability', ({ onTestFinished }) => {
     const excludedManifest = { name: 'duplicate', version: '1', capabilities: ['network:fetch'],
       tools: [{ name: 'same', expose: { mcp: { name: 'same' } } }, { name: 'same' }],
       actions: [{ name: 'run' }], routines: [{ id: 'scheduled' }],
       reactions: [{ id: 'listen', on: 'fixture:done', fire: 'same' }], apiRoutes: true };
-    const record = makePlugin();
+    const record = makePlugin(), original = record.plugin;
+    onTestFinished(() => { Object.defineProperty(record, 'plugin', { configurable: true, value: original }); });
     Object.defineProperty(record, 'plugin', { get() { throw Error('must not read plugin code'); } });
     _injectPluginHostForTests([record], { roots: [], unavailable: [], candidates: [
       { path: '/excluded', source: 'project', status: 'excluded', reason: 'distribution excluded', manifest: excludedManifest },
@@ -645,8 +646,16 @@ describe('registerPluginReactionRules (P-005 — capability-scoped plugin rules)
     }) => Promise<void>,
     toolOverrides: Record<string, unknown> = {},
   ) {
+    const started = performance.now();
+    const stages = [{ phase: 'import-agent-mcp', elapsedMs: 0 }];
+    const stage = (phase: string) => stages.push({ phase, elapsedMs: Math.round(performance.now() - started) });
+    // A timeout must identify which deferred import/body/cleanup was pending;
+    // the test title alone cannot distinguish module loading from rule logic.
+    onTestFailed(() => { console.error('PLUGIN_REACTION_FIXTURE_FAILURE', JSON.stringify({ stages })); });
     const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
+    stage('import-event-registry');
     const { _resetReactionsForTests } = await import('./events/registry');
+    stage('register-fixture-tool');
     _resetReactionsForTests();
     registerProjectedTool({
       pluginName: 'fixture',
@@ -659,11 +668,14 @@ describe('registerPluginReactionRules (P-005 — capability-scoped plugin rules)
     } as never);
     const errors: Array<{ plugin: string; rule: string; error: string }> = [];
     try {
+      stage('test-body');
       await run({ errors, push: (e) => errors.push(e) });
     } finally {
+      stage('fixture-cleanup');
       unregisterProjectedToolsForPlugin('fixture');
       _resetReactionsForTests();
     }
+    stage('complete');
   }
 
   function pluginWithReactions(reactions: unknown[], over: Record<string, unknown> = {}): LoadedPlugin {
