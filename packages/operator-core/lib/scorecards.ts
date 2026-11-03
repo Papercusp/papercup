@@ -1514,6 +1514,8 @@ export function builtInCriterionKeysForRubric(rubricRef: string): string[] | nul
 export interface ScorecardRow {
   purpose?: 'diagnostic' | 'grading';
   barSetHash?: string | null;
+  /** Explicit history explains why a row cannot participate in settled comparisons. */
+  exclusionReasons?: string[];
   /** The engineer_issue id (EI-/WI-…) — the drill-back key. */
   issueId: string;
   /** ISO timestamp the scorecard was filed. */
@@ -3949,6 +3951,8 @@ export interface ScorecardListCursor {
 }
 
 export interface ListScorecardsFilter {
+  /** Exclude incomplete and unsettled observations BEFORE counting page slots. */
+  finalizedOnly?: boolean;
   /** Explicit baseline/audit history; diagnostics never occupy default page slots. */
   includeDiagnostics?: boolean;
   /** Restrict to one rubric (e.g. 'pot-coordination-health'). */
@@ -4173,6 +4177,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   // WHERE semantics (NULL → not matched) and keeps the probe on the selective
   // supersedes index (measured 6,018 ms → 474 ms).
   let rows: ScorecardRowDb[] = [];
+  const finalizedRubrics = new Map<string, Rubric | null>();
   let before = filter.before;
   let exhausted = false;
   while (rows.length < limit && !exhausted) {
@@ -4277,12 +4282,24 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
     // Advance by every raw row, including malformed ones. Only structurally valid
     // scorecards count toward the requested page. This keeps malformed history
     // auditable without letting it consume a visible page slot.
-    rows.push(
-      ...batch.filter((row) => {
-        const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
-        return Boolean(observation?.rubricRef && observation.ratings);
-      }),
-    );
+    for (const row of batch) {
+      const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
+      if (!observation?.rubricRef || !observation.ratings) continue;
+      if (filter.finalizedOnly) {
+        if (scorecardAdmissionExclusion(observation) ||
+            (observation.gradingAudit && observation.gradingAudit.state !== 'passed')) continue;
+        if (!finalizedRubrics.has(observation.rubricRef)) {
+          finalizedRubrics.set(observation.rubricRef,
+            await getRubricWithoutSeeding(observation.rubricRef).catch(() => null));
+        }
+        const rubric = finalizedRubrics.get(observation.rubricRef);
+        const keys = rubric?.criteria.map(criterion => criterion.key)
+          ?? builtInCriterionKeysForRubric(observation.rubricRef);
+        const rated = Object.keys(observation.ratings);
+        if (!keys || keys.length !== rated.length || keys.some(key => !rated.includes(key))) continue;
+      }
+      rows.push(row);
+    }
     const tail = batch[batch.length - 1]!;
     before = { createdAt: tsIso(tail.created_at), issueId: tail.issue_id };
     if (batch.length < batchLimit) exhausted = true;
@@ -4447,6 +4464,12 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       missingKeys,
       extraKeys,
       rubricResolved,
+      exclusionReasons: [
+        ...(scorecardAdmissionExclusion(observation) ? [scorecardAdmissionExclusion(observation)!] : []),
+        ...(!rubricResolved ? ['rubric-unavailable'] : []),
+        ...(missingKeys.length || extraKeys.length ? ['incomplete'] : []),
+        ...(gradingAudit && gradingAudit.state !== 'passed' && gradingAudit.state !== 'pending' ? ['grading-audit-failed'] : []),
+      ],
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
       ...(observation.baselineRef ? { baselineRef: observation.baselineRef } : {}),
@@ -5022,6 +5045,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     sourceHive: filter.sourceHive,
     since: filter.since,
     limit: sampleLimit,
+    finalizedOnly: true,
     // WI-6124: no includeLinks — the trend is a pure roll-up of ratings + createdAt and
     // never reads `linkedItems`, so it takes the default and skips the join.
   });
