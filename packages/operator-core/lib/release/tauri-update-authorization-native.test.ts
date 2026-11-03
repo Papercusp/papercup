@@ -30,13 +30,13 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
     const signer = key('release', 'release-principal');
     const approver = key('reviewer', 'reviewer-principal');
     const candidate = { artifact: 'actual candidate archive\n', policy: '{"effect":"bounded"}', configuration: '{"product":"gui"}',
-      sourceRevision: 'd'.repeat(40), version: '1.2.3', product: 'gui', platform: 'linux-x86_64', authorId: 'author-principal' };
+      sourceRevision: 'd'.repeat(40), version: '1.2.3', product: 'gui', platform: 'linux-x86_64', authorIds: ['author-principal', 'coauthor-principal'] };
     const digest = (s: string) => createHash('sha256').update(s).digest('hex');
     const metadata: TauriUpdateAuthorization = {
-      schema: 'tauri-update-authorization-v1', artifactSha256: digest(candidate.artifact),
+      schema: 'tauri-update-authorization-v2', artifactSha256: digest(candidate.artifact),
       policySha256: digest(candidate.policy), configurationSha256: digest(candidate.configuration),
       sourceRevision: candidate.sourceRevision, version: candidate.version, product: candidate.product,
-      platform: candidate.platform, authorId: candidate.authorId, approverId: 'reviewer', approverEpoch: 2,
+      platform: candidate.platform, authorIds: candidate.authorIds, approverId: 'reviewer', approverEpoch: 2,
       signerId: 'release', signerEpoch: 2, rootEpoch: 3, rollbackCounter: 7, issuedAt: 1000, expiresAt: 3000,
     };
     const envelope = (payload = encodeTauriUpdateAuthorization(metadata), algorithm = 'ED') =>
@@ -62,8 +62,11 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
       add(`changed actual ${field} bytes`, v => { v.candidate[field] += 'tampered'; }, false,
         `candidate ${{ artifact: 'artifactSha256', policy: 'policySha256', configuration: 'configurationSha256' }[field]}`);
     }
-    for (const field of ['sourceRevision', 'version', 'product', 'platform', 'authorId'] as const) {
+    for (const field of ['sourceRevision', 'version', 'product', 'platform'] as const) {
       add(`changed actual ${field}`, v => { v.candidate[field] += 'x'; }, false, `candidate ${field}`);
+    }
+    for (const authorIds of [[], ['author-principal'], ['author-principal', 'other-principal'], ['coauthor-principal', 'author-principal']]) {
+      add(`changed actual authors ${JSON.stringify(authorIds)}`, v => { v.candidate.authorIds = authorIds; }, false, 'candidate authorIds');
     }
     for (const field of ['signature', 'approvalSignature'] as const) {
       add(`wrong ${field}`, v => { v.envelope[field] = key('wrong', 'wrong-principal').sign(v.envelope.payload); });
@@ -80,7 +83,23 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
       add(`missing ${role}`, v => { v.trust[role] = []; });
       add(`invalid ${role} key`, v => { v.trust[role][0].publicKey = 'untrusted'; });
     }
-    add('reviewer is author', v => { v.trust.approvers[0].principalId = candidate.authorId; }, false, 'not independent');
+    for (const principalId of candidate.authorIds) {
+      add(`reviewer is source author ${principalId}`, v => { v.trust.approvers[0].principalId = principalId; }, false, 'not independent');
+    }
+    add('signed author set omits applicable coauthor', v => {
+      v.envelope = envelope(encodeTauriUpdateAuthorization({ ...metadata, authorIds: ['author-principal'] }));
+    }, false, 'candidate authorIds');
+    add('author set changes after independent review', v => {
+      v.candidate.authorIds = ['author-principal', 'other-principal'];
+      const changed = envelope(encodeTauriUpdateAuthorization({ ...metadata, authorIds: v.candidate.authorIds }));
+      v.envelope = { ...changed, approvalSignature: v.envelope.approvalSignature };
+    }, false, 'approval signature');
+    for (const authorIds of [Array.from({ length: 64 }, (_, i) => `author-${String(i).padStart(2, '0')}`), ['\u{10000}', '\ue000']]) {
+      add(`canonical author set ${authorIds.length}`, v => {
+        v.candidate.authorIds = authorIds;
+        v.envelope = envelope(encodeTauriUpdateAuthorization({ ...metadata, authorIds }));
+      }, true);
+    }
     add('reviewer is release principal', v => { v.trust.approvers[0].principalId = signer.trusted.principalId; }, false, 'not independent');
     add('same cryptographic key under a distinct principal', v => { v.trust.approvers[0].publicKey = signer.trusted.publicKey; }, false, 'not independent');
     for (const [field, value] of [['rootEpoch', 4], ['minRollbackCounter', 8], ['minIssuedAt', 1001], ['maxMetadataAgeMs', 999], ['maxMetadataAgeMs', 0]] as const) {
@@ -96,11 +115,15 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
     for (const [name, payload] of [
       ['reordered canonical fields', JSON.stringify(Object.fromEntries(Object.entries(metadata).reverse()))],
       ['unknown metadata field', JSON.stringify({ ...metadata, ignored: true })],
-      ['duplicate metadata field', encodeTauriUpdateAuthorization(metadata).replace('{', '{"schema":"tauri-update-authorization-v1",')],
+      ['duplicate metadata field', encodeTauriUpdateAuthorization(metadata).replace('{', '{"schema":"tauri-update-authorization-v2",')],
       ['unsafe counter', JSON.stringify({ ...metadata, rollbackCounter: Number.MAX_SAFE_INTEGER + 1 })],
       ['negative counter', JSON.stringify({ ...metadata, rollbackCounter: -1 })],
       ['noninteger counter', JSON.stringify({ ...metadata, rollbackCounter: 7.5 })],
-      ['whitespace in label', JSON.stringify({ ...metadata, authorId: 'author principal' })],
+      ['legacy single author', JSON.stringify({ ...metadata, schema: 'tauri-update-authorization-v1', authorIds: undefined, authorId: 'author-principal' })],
+      ['missing authors', JSON.stringify({ ...metadata, authorIds: undefined })],
+      ...[null, [], 'author-principal', ['a', 'a'], ['z', 'a'], ['bad author'], ['a'.repeat(201)],
+        Array.from({ length: 65 }, (_, i) => `a${String(i).padStart(2, '0')}`)]
+        .map(authorIds => [`invalid authors ${JSON.stringify(authorIds)}`, JSON.stringify({ ...metadata, authorIds })]),
     ]) add(name, v => { v.envelope = envelope(payload); });
 
     const source = resolve(__dirname, '../../../../papercusp-desktop/src-tauri/src/update_authorization.rs');
@@ -120,7 +143,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
     use serde::Deserialize;
     #[derive(Deserialize)] #[serde(rename_all="camelCase")]
     struct Input { artifact:String, policy:String, configuration:String, source_revision:String,
-        version:String, product:String, platform:String, author_id:String }
+        version:String, product:String, platform:String, author_ids:Vec<String> }
     #[derive(Deserialize)] struct Vector { name:String, trust:Trust, envelope:Envelope,
         candidate:Input, now:u64, allow:bool, reason:String }
     #[test] fn authentic_cross_language_vectors() {
@@ -130,7 +153,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
             let i=&v.candidate;
             let c=Candidate { artifact:i.artifact.as_bytes(), policy:i.policy.as_bytes(),
                 configuration:i.configuration.as_bytes(), source_revision:&i.source_revision,
-                version:&i.version, product:&i.product, platform:&i.platform, author_id:&i.author_id };
+                version:&i.version, product:&i.product, platform:&i.platform, author_ids:&i.author_ids };
             let result=verify(&v.trust, &v.envelope, &c, v.now);
             assert_eq!(result.is_ok(),v.allow,"{}: {:?}",v.name,result.as_ref().err());
             match result {
@@ -164,8 +187,8 @@ it('extracts actual build inputs from a compiled native image and refuses decoys
     const osNames: Record<string, string> = { linux: 'linux', darwin: 'darwin', win32: 'windows' };
     const platform = `${osNames[process.platform]}-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}`;
     const inputs = {
-      schema: 'tauri-update-inputs-v1', policy: '{"effect":"bounded"}', configuration: '{"product":"gui"}',
-      sourceRevision: 'd'.repeat(40), version: '1.2.3', product: 'gui', platform, authorId: 'author-principal',
+      schema: 'tauri-update-inputs-v2', policy: '{"effect":"bounded"}', configuration: '{"product":"gui"}',
+      sourceRevision: 'd'.repeat(40), version: '1.2.3', product: 'gui', platform, authorIds: ['author-principal', 'coauthor-principal'],
     };
     const section = process.platform === 'darwin' ? '__DATA,__pcupd' : '.pcupd';
     const compile = (name: string, payload: string, options: { decoy?: boolean; duplicate?: boolean } = {}) => {
@@ -191,11 +214,14 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
       ['oversized section', ' '.repeat(1024 * 1024 + 1)],
       ['unknown field', JSON.stringify({ ...inputs, ignored: true })],
       ['reordered fields', JSON.stringify(Object.fromEntries(Object.entries(inputs).reverse()))],
-      ['duplicate field', JSON.stringify(inputs).replace('{', '{"schema":"tauri-update-inputs-v1",')],
+      ['duplicate field', JSON.stringify(inputs).replace('{', '{"schema":"tauri-update-inputs-v2",')],
       ['wrong schema', JSON.stringify({ ...inputs, schema: 'unknown' })],
       ['wrong platform identity', JSON.stringify({ ...inputs, platform: 'darwin-universal' })],
       ['invalid source identity', JSON.stringify({ ...inputs, sourceRevision: 'dirty' })],
-      ['invalid author identity', JSON.stringify({ ...inputs, authorId: 'author principal' })],
+      ['legacy single author', JSON.stringify({ ...inputs, schema: 'tauri-update-inputs-v1', authorIds: undefined, authorId: 'author-principal' })],
+      ['missing authors', JSON.stringify({ ...inputs, authorIds: undefined })],
+      ...[[], ['a', 'a'], ['z', 'a'], ['bad author'], Array.from({ length: 65 }, (_, i) => `a${i}`)]
+        .map(authorIds => [`invalid authors ${JSON.stringify(authorIds)}`, JSON.stringify({ ...inputs, authorIds })] as [string, string]),
       ['nonobject policy', JSON.stringify({ ...inputs, policy: '[]' })],
       ['nonobject configuration', JSON.stringify({ ...inputs, configuration: 'null' })],
     ];
@@ -228,7 +254,7 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
         assert_eq!(candidate.version,input["version"].as_str().unwrap());
         assert_eq!(candidate.product,input["product"].as_str().unwrap());
         assert_eq!(candidate.platform,platform);
-        assert_eq!(candidate.author_id,input["authorId"].as_str().unwrap());
+        assert_eq!(serde_json::to_value(candidate.author_ids).unwrap(),input["authorIds"]);
         assert_eq!(format!("{:x}",Sha256::digest(candidate.artifact)),fixtures["artifactSha256"].as_str().unwrap());
         assert!(extract_binary_inputs(&bytes[..32],platform).is_err());
         assert!(extract_binary_inputs(&bytes,"unknown").is_err());
@@ -324,7 +350,9 @@ include!(concat!(env!("OUT_DIR"),"/update-build-inputs.rs"));
         assert_eq!(input["version"],"1.2.5");
         assert_eq!(input["product"],"com.papercusp.producer-fixture");
         assert_eq!(input["sourceRevision"],"d".repeat(40));
-        assert_eq!(input["authorId"], "");
+        assert_eq!(input["schema"], "tauri-update-inputs-v2");
+        assert_eq!(input["authorIds"], serde_json::json!([]));
+        assert!(input.get("authorId").is_none());
         assert_eq!(config["tauri"]["app"]["windows"][0]["title"],"runtime");
         assert!(config["tauri"]["app"]["security"]["csp"].is_null());
         assert_eq!(config["nativeBuild"]["PAPERCUSP_CHANNEL"],"alpha");

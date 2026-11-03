@@ -375,7 +375,7 @@ describe('writeRoleCodexHome', () => {
       promptText: 'P',
     });
     expect(parseToml(readFileSync(role.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
-    expect(parseToml(readFileSync(role.configPath, 'utf8')).mcp_servers.papercusp.required).toBe(true);
+    expect(parseToml(readFileSync(role.configPath, 'utf8')).mcp_servers).toMatchObject({ papercusp: { required: true } });
     const opts = {
       sessionKey: 'no-update-su',
       model: RESOLVED_CODEX_DEFAULT,
