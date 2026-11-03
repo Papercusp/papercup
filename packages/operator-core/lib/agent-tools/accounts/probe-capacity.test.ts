@@ -59,10 +59,11 @@ afterEach(() => {
 
 describe('accounts:probe-capacity — failure persistence', () => {
   it('applied successful inference clears stale sustained penalties before fresh consult selection', async () => {
-    pool = recordAccountWindow(pool, 'a', { utilization: 0.2, utilization7d: 0.73 }, T0);
-    for (let i = 1; i <= 3; i++) pool = recordAccountPenalty(pool, 'a', T0 + i);
+    const recent = Date.now() - 1000;
+    pool = recordAccountWindow(pool, 'a', { utilization: 0.2, utilization7d: 0.73 }, recent);
+    for (let i = 1; i <= 3; i++) pool = recordAccountPenalty(pool, 'a', recent + i);
     const before = getAccount(pool, 'a')!.rate;
-    expect(isSpawnEligible(getAccount(pool, 'a')!, T0 + 4)).toBe(false);
+    expect(isSpawnEligible(getAccount(pool, 'a')!, Date.now())).toBe(false);
     probeM.mockResolvedValue([{ accountId: 'a', ok: true, status: 200,
       windows: { utilization: 0.2, utilization7d: 0.73 }, before: {}, unwalls: false }]);
     await tool.handler({ apply: true } as never, {} as never);

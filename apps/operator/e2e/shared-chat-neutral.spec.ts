@@ -39,8 +39,11 @@ test.afterEach(async ({ page }, info) => {
   await info.attach('neutral-source', { body: JSON.stringify({
     entry, sourceFingerprint, profile: 'in-memory-fixture', productionHostEvidence: false,
   }), contentType: 'application/json' });
+  // The protocol assertions can finish before Chromium has painted its first
+  // surface. Element capture waits for a stable rendered box before capture;
+  // page.screenshot only waits for fonts and can reject this fast first case.
   if (info.status === 'passed') await info.attach('neutral-browser', {
-    body: await page.screenshot(), contentType: 'image/png',
+    body: await page.locator('main').screenshot(), contentType: 'image/png',
   });
 });
 
