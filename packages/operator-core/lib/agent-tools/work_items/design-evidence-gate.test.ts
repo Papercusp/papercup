@@ -8,7 +8,19 @@
  * cannot be established. The deciding logic has its own suites in
  * design-compare/{gate,feature-gate}.test.ts and is not re-tested here.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
+
+// The real completion handler resolves this name from Postgres; this suite tests the gate, not agent naming.
+vi.mock('../../plan-items/agent-names', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../plan-items/agent-names')>()),
+  resolveAdoptedName: async () => null,
+}));
 const acceptanceRead = vi.hoisted(() => vi.fn());
 // The reference binding/terminal-write suite controls the artifact reader's
 // outcome. acceptance.test.ts separately drives that reader with real canary

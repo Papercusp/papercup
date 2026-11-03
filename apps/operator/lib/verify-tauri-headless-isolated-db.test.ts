@@ -241,12 +241,16 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_BASE=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_URL=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_USE_EMBEDDED_PG=0" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_PG_DATA_DIR=$ISOLATED_PG_DATA_DIR" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"');
     expect(src).toContain('export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"');
     expect(src).toContain('export PAPERCUSP_SU_CODEX_HOMES_DIR="$ISOLATED_CODEX_HOMES_DIR"');
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACE_ID=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_SU_CODEX_HOMES_DIR=%q\\n'");
+    expect(src).toContain("printf 'export PAPERCUSP_USE_EMBEDDED_PG=%q\\n' 0");
+    expect(src).toContain("printf 'export PAPERCUSP_PG_DATA_DIR=%q\\n' \"$ISOLATED_PG_DATA_DIR\"");
     expect(src).toContain('grep -Fxq "PAPERCUSP_PSU_PTY_DIR=$ISOLATED_HOME/psu-pty" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('export PAPERCUSP_PSU_PTY_DIR="$ISOLATED_HOME/psu-pty"');
     expect(src).toContain("printf 'export PAPERCUSP_PSU_PTY_DIR=%q\\n' \"$ISOLATED_HOME/psu-pty\"");
