@@ -1904,7 +1904,21 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     });
 
     const { deps, reachCalls, alerts } = makeDeps({ withReach: true });
-    deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
+    deps.rejudgeFirstTurn = (u) => u.agent === 'claude'
+      ? rejudgeFirstTurn(u, {
+          readLaunchLogReason: async (path) => path === nativeLog
+            ? launchLogFailureReason(readFileSync(path, 'utf8'))
+            : null,
+          analyzeClaudeTranscript: (path) => path === nativeTranscript ? {
+            trailingMissingToolReferenceTurns: 0,
+            lastMissingToolReferenceName: null,
+            assistantTurnsSinceLastPrompt: 0,
+            trailingContextLimitTurns: 0,
+            lastContextLimitEvidence: null,
+          } : null,
+          analyzeCodexRollout: () => null,
+        })
+      : rejudgeFirstTurn(u);
     const stops: Array<Parameters<NonNullable<ExpirySweepDeps['stopAnsweringSession']>>[0]> = [];
     deps.stopAnsweringSession = async (t) => { stops.push(t); return 'stopped exact answering session'; };
 
