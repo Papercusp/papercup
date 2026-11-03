@@ -1,0 +1,85 @@
+import { fork, type ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { once } from 'node:events';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { computeConditionStates } from '../agent-tools/coordination/tools/conditions';
+
+const WS = 'p005-managed-original-process';
+const children = new Set<ChildProcess>();
+let db: OrgTestDb;
+beforeAll(async () => { db = await createOrgTestDb(); }, 300_000);
+afterAll(async () => {
+  await Promise.all([...children].map(async child => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const ended = once(child, 'exit'); child.kill('SIGKILL'); await ended;
+  }));
+  await db?.cleanup();
+}, 120_000);
+
+function launch(action: 'raise' | 'reconcile') {
+  const env = { ...process.env, HARNESS_DATABASE_URL: db.adminDsn,
+    HARNESS_ADMIN_DATABASE_URL: db.adminDsn, PAPERCUSP_PGBOUNCER: '0', PAPERCUSP_WORKSPACE_ID: WS };
+  delete env.VITEST_WORKER_ID;
+  delete env.VITEST_POOL_ID;
+  const child = fork(fileURLToPath(new URL('../../test/managed-tick-alarm-process.fixture.ts', import.meta.url)), [action], {
+    execArgv: ['--import', 'tsx'], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  children.add(child);
+  let diagnostics = '';
+  child.stdout?.on('data', () => {});
+  child.stderr?.on('data', chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4000); });
+  const message = new Promise<Record<string, any>>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`P005 ${action} child did not settle in 60s`)), 60_000);
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`P005 ${action} exited ${code}: ${diagnostics}`)); });
+    child.once('message', value => { clearTimeout(timer); resolve(value as Record<string, any>); });
+  });
+  return { child, message };
+}
+
+async function envelopes() {
+  const rows = await db.adminSql<{ body: Record<string, unknown> }[]>`
+    SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = ${WS}
+      AND surface = 'messages' AND body->>'condition_key' LIKE 'alarm:managed-tick:%' ORDER BY id`;
+  return rows.map(row => row.body);
+}
+
+async function reconcile() {
+  const worker = launch('reconcile');
+  const result = await worker.message;
+  if (worker.child.exitCode === null && worker.child.signalCode === null) await once(worker.child, 'exit');
+  expect(result.kind).toBe('reconciled');
+  return result.result;
+}
+
+describe('original managed tick recovery across fresh processes and the real condition store', () => {
+  it('keeps a live predecessor open, then atomically settles the ended original episode across restart and concurrent recovery', async () => {
+    const producer = launch('raise');
+    const raised = await producer.message;
+    expect(raised.kind).toBe('raised');
+    const key = raised.data.conditionKey as string;
+    const original = (await envelopes()).find(row => row.condition_key === key)!;
+    expect(original).toMatchObject({ one_shot: true, data: { timerName: 'fresh-process-held', heldMs: 600_001,
+      producerRun: raised.data.producerRun, watcherIntervalMs: 60_000 }, emitter: { pid: producer.child.pid } });
+    expect((await reconcile()).resolved).toEqual([]);
+    expect(computeConditionStates(await envelopes()).find(row => row.condition_key === key)?.open).toBe(true);
+
+    const exited = once(producer.child, 'exit');
+    producer.child.kill('SIGKILL'); await exited;
+    await Promise.all([reconcile(), reconcile()]);
+    await reconcile();
+    const rows = await envelopes();
+    expect(rows.filter(row => row.resolves_condition === key)).toHaveLength(1);
+    expect(rows.find(row => row.msg_id === original.msg_id)).toEqual(original);
+    expect(computeConditionStates(rows).find(row => row.condition_key === key)?.open).toBe(false);
+
+    const successor = launch('raise');
+    const next = await successor.message;
+    expect(next.data.conditionKey).not.toBe(key);
+    await reconcile();
+    const states = computeConditionStates(await envelopes());
+    expect(states.find(row => row.condition_key === key)?.open).toBe(false);
+    expect(states.find(row => row.condition_key === next.data.conditionKey)?.open).toBe(true);
+  }, 300_000);
+});
