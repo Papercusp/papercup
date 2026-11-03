@@ -276,7 +276,7 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
     expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
     expect(result.stdout).toContain('native-extraction: actual compiled image and exact bytes');
-    for (const [name] of variants) expect(result.stdout).toContain(`native-extraction-refused: "${name}"`);
+    for (const [name] of variants) expect(result.stdout).toContain(`native-extraction-refused: ${JSON.stringify(name)}`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
