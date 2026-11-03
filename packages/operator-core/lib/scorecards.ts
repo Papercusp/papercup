@@ -4365,7 +4365,10 @@ async function listScorecardsAtLimit(
           needsGradingAudit({ rubricKind: rubric?.kind, rubricRef: observation.rubricRef,
             provisional: observation.provisional !== undefined }), audit, gradingAuditRubric);
         if (!reasons.length && filter.comparableOnly) {
-          if (!rubric || observation.rubricRevision !== rubric.revision ||
+          const resetAt = rubric?.historyResetAt ? Date.parse(rubric.historyResetAt) : NaN;
+          if (Number.isFinite(resetAt) && Date.parse(tsIso(row.created_at)) < resetAt) {
+            reasons.push('pre-contract-reset');
+          } else if (!rubric || observation.rubricRevision !== rubric.revision ||
               !observation.criteriaHash || observation.criteriaHash !== rubric.criteriaHash ||
               (observation.barSetHash ?? null) !== (rubric.barSetHash ?? null)) {
             reasons.push('incompatible-rubric');
@@ -5138,7 +5141,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // contract trends exactly as before.
   const resetAtMs = trendRubric?.historyResetAt ? Date.parse(trendRubric.historyResetAt) : NaN;
   const inGeneration = Number.isFinite(resetAtMs) ? rows.filter((r) => Date.parse(r.createdAt) >= resetAtMs) : rows;
-  const preContractResetExcluded = rows.length - inGeneration.length;
+  const preContractResetExcluded = rows.length - inGeneration.length +
+    (page.selection?.excludedCounts['pre-contract-reset'] ?? 0);
 
   // P-010: drop scorecards a later filing REVISED. A correction used to enter the
   // series as an extra sample, so re-grading moved the trend twice — once for the
@@ -5268,7 +5272,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     ['provisional', provisionalExcluded],
     ['grading-audit-pending', gradingAuditPendingExcluded],
     ...Object.entries(page.selection?.excludedCounts ?? {}).filter(([key]) =>
-      key !== 'provisional' && key !== 'grading-audit-pending'),
+      key !== 'provisional' && key !== 'grading-audit-pending' && key !== 'pre-contract-reset'),
   ];
   const excludedPopulations = excludedPopulationCounts.filter(([, count]) => count > 0);
   const excludedTotal = excludedPopulations.reduce((total, [, count]) => total + count, 0);
