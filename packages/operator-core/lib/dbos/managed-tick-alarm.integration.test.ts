@@ -29,11 +29,11 @@ function launch(action: 'raise' | 'reconcile') {
   let diagnostics = '';
   child.stdout?.on('data', () => {});
   child.stderr?.on('data', chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4000); });
-  const message = new Promise<Record<string, any>>((resolve, reject) => {
+  const message = new Promise<Record<string, unknown>>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`P005 ${action} child did not settle in 60s`)), 60_000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); reject(new Error(`P005 ${action} exited ${code}: ${diagnostics}`)); });
-    child.once('message', value => { clearTimeout(timer); resolve(value as Record<string, any>); });
+    child.once('message', value => { clearTimeout(timer); resolve(value as Record<string, unknown>); });
   });
   return { child, message };
 }
@@ -50,7 +50,7 @@ async function reconcile() {
   const result = await worker.message;
   if (worker.child.exitCode === null && worker.child.signalCode === null) await once(worker.child, 'exit');
   expect(result.kind).toBe('reconciled');
-  return result.result;
+  return result.result as { resolved: string[]; intervalMs: number };
 }
 
 describe('original managed tick recovery across fresh processes and the real condition store', () => {
@@ -58,10 +58,11 @@ describe('original managed tick recovery across fresh processes and the real con
     const producer = launch('raise');
     const raised = await producer.message;
     expect(raised.kind).toBe('raised');
-    const key = raised.data.conditionKey as string;
+    const raisedData = raised.data as Record<string, unknown>;
+    const key = raisedData.conditionKey as string;
     const original = (await envelopes()).find(row => row.condition_key === key)!;
     expect(original).toMatchObject({ one_shot: true, data: { timerName: 'fresh-process-held', heldMs: 600_001,
-      producerRun: raised.data.producerRun, watcherIntervalMs: 60_000 }, emitter: { pid: producer.child.pid } });
+      producerRun: raisedData.producerRun, watcherIntervalMs: 60_000 }, emitter: { pid: producer.child.pid } });
     expect((await reconcile()).resolved).toEqual([]);
     expect(computeConditionStates(await envelopes()).find(row => row.condition_key === key)?.open).toBe(true);
 
@@ -76,10 +77,11 @@ describe('original managed tick recovery across fresh processes and the real con
 
     const successor = launch('raise');
     const next = await successor.message;
-    expect(next.data.conditionKey).not.toBe(key);
+    const successorKey = (next.data as Record<string, unknown>).conditionKey;
+    expect(successorKey).not.toBe(key);
     await reconcile();
     const states = computeConditionStates(await envelopes());
     expect(states.find(row => row.condition_key === key)?.open).toBe(false);
-    expect(states.find(row => row.condition_key === next.data.conditionKey)?.open).toBe(true);
+    expect(states.find(row => row.condition_key === successorKey)?.open).toBe(true);
   }, 300_000);
 });
