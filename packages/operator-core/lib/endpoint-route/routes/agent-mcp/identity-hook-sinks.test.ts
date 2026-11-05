@@ -258,6 +258,67 @@ describe('POST /agent-mcp/tool-guard', () => {
       expect(JSON.stringify(log.mock.calls)).not.toContain('private-plan-content');
     } finally { clock.mockRestore(); log.mockRestore(); }
   });
+  it('preserves the complete snapshot timing vocabulary alongside outer guard stages', async () => {
+    // Preserve the observed prefix that exhausted the old 16-stage budget, then
+    // complete the current emitter vocabulary without importing snapshot runtime.
+    const sources = {
+      plan: true, rubric: true, vetting: true, lineage: true, grading: true, clauses: true,
+      'plan-items': true, 'work-contracts': true, 'lineage-parties': true, evidence: true,
+    } satisfies Record<import('../../../acceptance-bar-contract-snapshot').AcceptanceBarSnapshotSource, true>;
+    const stages = [
+      'bindings', 'goal_module', 'goal_read', 'goal', 'start_proof', 'scope', 'plan_row',
+      'audit', 'activation', 'admission',
+      ...Object.keys(sources).map(source => `start_gate_snapshot_${source}`),
+      'start_gate', 'spec_quality', 'critique', 'recheck', 'binding',
+    ];
+    const expectedStages = Object.fromEntries(stages.map((stage, index) => [stage, index + 1]));
+    expectedStages['start_gate_snapshot_plan-items']! += 5;
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
+      for (const [index, stage] of stages.entries()) observeTiming({ stage, durationMs: index + 1 });
+      observeTiming({ stage: 'start_gate_snapshot_plan-items', durationMs: 5 });
+      now = 1000;
+      return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit',
+          input: { secret: NEVER_EMIT_MARKER } }),
+      }));
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
+      expect(res.headers.get('Server-Timing')).toBe('guard;dur=1000.0, setup;dur=0.0, plan;dur=1000.0, '
+        + Object.entries(expectedStages).map(([stage, duration]) => `plan_${stage};dur=${duration.toFixed(1)}`).join(', '));
+      expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
+        totalMs: 1000, setupMs: 0, planMs: 1000, identityMs: null, aborted: false, planStages: expectedStages,
+      }));
+      expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
+    } finally { clock.mockRestore(); log.mockRestore(); }
+  });
+
+  it('keeps extended plan timings bounded and rejects invalid labels and durations', async () => {
+    const stages = Array.from({ length: 32 }, (_, index) =>
+      `stage_${String.fromCharCode(97 + Math.floor(index / 26), 97 + index % 26)}`);
+    planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
+      for (const stage of ['private-plan-content', 'start_gate_snapshot_private-content', 'x'.repeat(33),
+        'start_gate_snapshot_work-contracts_extra', 'bad;dur=1', 'bad stage', 'Uppercase', '']) {
+        observeTiming({ stage, durationMs: 1 });
+      }
+      for (const durationMs of [NaN, Infinity, -1]) observeTiming({ stage: 'invalid', durationMs });
+      for (const stage of stages) observeTiming({ stage, durationMs: 0 });
+      observeTiming({ stage: 'overflow', durationMs: 1 });
+      observeTiming({ stage: stages[0], durationMs: 2 });
+      return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
+    });
+    const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+      method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit' }),
+    }));
+    const planTimings = res.headers.get('Server-Timing')!.split(', ').filter(timing => timing.startsWith('plan_'));
+    expect(planTimings).toEqual(stages.map((stage, index) => `plan_${stage};dur=${index === 0 ? '2.0' : '0.0'}`));
+  });
+
   it('correlates a slow refused request across its response and server timing log', async () => {
     const guardRequestId = '550e8400-e29b-41d4-a716-446655440000';
     let now = 0;
