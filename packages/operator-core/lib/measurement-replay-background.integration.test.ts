@@ -48,7 +48,7 @@ it('persists and replays original command and SQL measurements after private liv
         expect(receipt).toMatchObject({ recorded: 3, command: { value: 120, replay: 120 },
           sql: { value: 20, replay: 20 }, scoped: { value: 20, replay: 20, sqlReplay: 'unavailable' },
           liveAfterMutation: { command: 0, sql: 500 } });
-        console.info('MEASUREMENT_REPLAY_VERIFIED ' + JSON.stringify({ runId, ...receipt }));
+        console.info('MEASUREMENT_REPLAY_VERIFIED ' + JSON.stringify(receipt));
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
       }
