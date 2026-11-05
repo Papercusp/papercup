@@ -1,7 +1,7 @@
 /** The existing loopback owner perimeter is the publication authority. Visitors
  * only use Pages/GitHub; this route never accepts credentials, Gist IDs or scope. */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool } from '@papercusp/tooldef/define-tool';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { getReport } from '../../../report-library';
@@ -31,7 +31,7 @@ export default defineTool({
       if (!report) return Response.json({error:'This report is unavailable in the current workspace.'},{status:404});
       const github=await reportSharingGithub();
       const sharing=await changeReportSharing({...input,report},{github,store:postgresReportShareStore(sql)});
-      notifySyncInvalidate(['reports.sharing']);
+      await notifySyncInvalidate('reports.sharing',{reportId:input.reportId});
       return Response.json({ok:true,sharing});
     } catch(error) {
       if(error instanceof ReportSharingError) return Response.json({code:error.code,error:error.message},{status:409});

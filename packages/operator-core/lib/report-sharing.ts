@@ -193,13 +193,15 @@ export async function reportSharingGithub(): Promise<SharingGithub> {
       catch (error) { if (statusCode(error) !== 404) throw error; }
     },
     async readable(login, gistId, version, digest) {
-      const options: RequestInit = { credentials: 'omit', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15_000) };
+      const options: RequestInit = { credentials: 'omit', cache: 'no-store', referrerPolicy:'no-referrer', signal: AbortSignal.timeout(15_000) };
       try {
         const [html, raw] = await Promise.all([
           fetch('https://' + login.toLowerCase() + '.github.io/' + repo + '/', options),
           fetch('https://gist.githubusercontent.com/' + login + '/' + gistId + '/raw/report.md', options),
         ]);
-        return html.ok && raw.ok && (await html.text()).includes('content="' + version + '"') && digestOf(await raw.text()) === digest;
+        return html.ok && raw.ok && new URL(html.url).hostname === login.toLowerCase()+'.github.io'
+          && new URL(raw.url).hostname === 'gist.githubusercontent.com'
+          && (await html.text()).includes('content="' + version + '"') && digestOf(await raw.text()) === digest;
       } catch { return false; }
     },
   };
