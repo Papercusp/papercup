@@ -950,6 +950,9 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
       expect(result.stdout).toContain('native-mac-helper-approval: trusted baseline required');
       expect(result.stdout).toContain('native-mac-helper: fixed protected executable and bounded stalled pipe');
     }
+    if (process.platform === 'darwin') {
+      expect(result.stdout).toContain('native-mac-acl: native deny-delete accepted, hidden grants refused, removal restores access');
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
