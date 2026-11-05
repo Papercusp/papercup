@@ -138,9 +138,9 @@ describe('accepted agent operation placement (WI-10006859)', () => {
     const routineId = `rt-retired-${kind}`;
     const callerId = `routine:${routineId}`;
     await sql`INSERT INTO harness_shared.routines
-      (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, active)
+      (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, concurrency, active)
       VALUES (${routineId}, ${ws}, ${harnessSlug}, ${routineId}, 'cron', '{}'::jsonb,
-        'system:blueprint-operation', true)`;
+        'system:blueprint-operation', 'skip', true)`;
     const handles = new Map<string, Awaited<ReturnType<typeof submitBlueprintOperation>>>();
     for (const scenario of ['orphan', 'live', 'claimed', 'pending', 'unretired', 'retryable', 'changed']) {
       const handle = await submitBlueprintOperation(sql, { workspaceId: ws, harnessSlug, callerId,
