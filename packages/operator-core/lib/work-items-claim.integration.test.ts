@@ -1349,9 +1349,13 @@ describe('work_items observe — `rd` (D-004, real PG)', () => {
       const id = family === 'feature' ? 'F-specific-admission' : 'WI-specific-admission';
       if (family === 'feature') await seedFeature(id, { admission: 'pending' });
       else await seedIssue(id, { admission: 'pending' });
-      await db.sql`UPDATE harness_shared.work_items
-        SET payload = ${JSON.stringify(payload)}::jsonb, duplicate_of = ${duplicateOf}
-        WHERE workspace_id = 'default' AND feature_id = ${id}`;
+      // Bind serialized JSON as text first: postgres otherwise serializes the
+      // string again for an inferred jsonb parameter, hiding every JSON field.
+      const stored = await db.sql`UPDATE harness_shared.work_items
+        SET payload = ${JSON.stringify(payload)}::text::jsonb, duplicate_of = ${duplicateOf}
+        WHERE workspace_id = 'default' AND feature_id = ${id}
+        RETURNING jsonb_typeof(payload) AS payload_type`;
+      expect(stored).toMatchObject([{ payload_type: 'object' }]);
 
       const obs = await wi.observeWorkItem(id, { harness: H });
       expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true });
@@ -1368,9 +1372,11 @@ describe('work_items observe — `rd` (D-004, real PG)', () => {
   it('admission diagnostics revalidate a held row without changing ordinary held observations', async () => {
     const id = 'F-held-specific-admission';
     await seedFeature(id, { admission: 'pending', takenBy: 'agB' });
-    await db.sql`UPDATE harness_shared.work_items
-      SET payload = ${JSON.stringify({ dedupCoverage: { degraded: true } })}::jsonb
-      WHERE workspace_id = 'default' AND feature_id = ${id}`;
+    const stored = await db.sql`UPDATE harness_shared.work_items
+      SET payload = ${JSON.stringify({ dedupCoverage: { degraded: true } })}::text::jsonb
+      WHERE workspace_id = 'default' AND feature_id = ${id}
+      RETURNING jsonb_typeof(payload) AS payload_type`;
+    expect(stored).toMatchObject([{ payload_type: 'object' }]);
     const ordinary = await wi.observeWorkItem(id, { harness: H });
     expect(ordinary).toMatchObject({ available: false, claimedBy: 'agB' });
     expect(ordinary?.admissionPending).toBeUndefined();

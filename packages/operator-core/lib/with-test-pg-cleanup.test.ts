@@ -149,6 +149,29 @@ describe('private PostgreSQL independent cleanup', () => {
     } finally { f.dispose(); }
   });
 
+  it.each([false, true])('reaps registered databases before early/final PG stop and retains cleanup failure (fails=%s)', async fails => {
+    const order: string[] = [];
+    let alive = true;
+    const failure = new Error('owned database drop is unconfirmed');
+    const prepare = vi.fn(async () => {
+      expect(alive).toBe(true);
+      order.push('databases');
+      if (fails) throw failure;
+    });
+    const stop = createSingleFlightStop(async () => { order.push('pg-stop'); alive = false; }, prepare);
+    if (fails) {
+      await expect(stop()).rejects.toBe(failure);
+      expect(alive).toBe(false);
+      await expect(stop()).rejects.toBe(failure);
+      expect(order).toEqual(['databases', 'pg-stop', 'pg-stop']);
+    } else {
+      await Promise.all([stop(), stop()]);
+      await stop();
+      expect(order).toEqual(['databases', 'pg-stop']);
+    }
+    expect(prepare).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])('fences detached managed tasks before private PG removal (fails=%s)', async fails => {
     const f = fixture();
     try {
