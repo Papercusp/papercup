@@ -774,7 +774,7 @@ export function replayRetainedProbe(input: {
   if (!selected && (p.truncated || p.redacted || p.gaps.length)) {
     return unavailable('Original inputs have retention gaps; exact predicate replay is unavailable.');
   }
-  if (!selected && (!diagnostics.has(path) || [...diagnostics.keys()].some(key => key.startsWith(path + '[')))) {
+  if ((!selected && !diagnostics.has(path)) || [...diagnostics.keys()].some(key => key.startsWith(path + '['))) {
     return unavailable('The original scalar input is absent or has an ambiguous object shape; missing is not null.');
   }
   const value = selected ? selected.value : diagnostics.get(path)!;

@@ -121,6 +121,7 @@ const measurement = {
   kind: 'repo-files' as const,
   sourcePaths: [SOURCE_PATH],
   testPaths: [TEST_PATH],
+  fixturePaths: [TEST_PATH],
 };
 
 let db: OrgTestDb;
@@ -205,9 +206,10 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
 
     await db.adminSql`
       INSERT INTO harness_shared.work_items
-        (workspace_id, harness_slug, feature_id, title, status, item_kind, source_plan_slug, taken_by)
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, source_plan_slug,
+         source_plan_item_ids, taken_by)
       VALUES (${WORKSPACE}, ${HARNESS}, ${WORK_ITEM}, 'Implement acceptance snapshot reuse',
-              'done', 'feature', ${PLAN}, 'su-impl')`;
+              'done', 'feature', ${PLAN}, ${[ITEM]}::text[], 'su-impl')`;
     const [testRun] = await db.adminSql<{ id: number }[]>`
       INSERT INTO harness_shared.test_runs
         (workspace_id, harness_slug, file_path, framework, status, finished_at)
@@ -215,6 +217,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       RETURNING id`;
 
     const fingerprints = await measureRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    expect(fingerprints.fixtureFingerprint).toEqual(expect.any(String));
     const bindingInput = {
       harnessSlug: HARNESS,
       planSlug: PLAN,
@@ -224,6 +227,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       evidenceRef: EVIDENCE_REF,
       sourceFingerprint: fingerprints.sourceFingerprint,
       testFingerprint: fingerprints.testFingerprint,
+      fixtureFingerprint: fingerprints.fixtureFingerprint,
       testRunId: Number(testRun!.id),
       details: {
         evidencePlane: 'tree',
@@ -254,6 +258,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       planSlugs: [PLAN],
       evidenceRefs: [EVIDENCE_REF],
     });
+    expect(classified?.currentness.unknownReasons).toEqual([]);
     expect(classified).toMatchObject({
       details: { currentMeasurement: measurement },
       serverMeasurement: { status: 'measured' },

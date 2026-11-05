@@ -37,6 +37,7 @@ import {
   encodeContinuityProbe,
   runContinuityProbeBatch,
   replayRetainedProbe,
+  replayRetainedSqlProbe,
   validateContinuityProbe,
   type ContinuityProbe,
   type ContinuityProbeSource,
@@ -353,6 +354,28 @@ describe('historical retained probe predicate replay', () => {
       expect(replayRetainedProbe({ value: batch.results[0]!.observed as string, unit: null,
         provenance: batch.results[0]!.provenance })).toMatchObject({ status: 'unavailable' });
     }
+  });
+
+  it('refuses conflicting scalar witnesses and never upgrades predicate evidence to SQL query evidence', async () => {
+    const { input } = await capture(7);
+    expect(input.provenance?.predicateInput).toEqual({ path: '$["rows"]["0"]["n"]', value: 7 });
+    for (const edit of [
+      (p: NonNullable<typeof input.provenance>) => { p.predicateInput!.path = '$["other"]'; },
+      (p: NonNullable<typeof input.provenance>) => { p.predicateInput!.value = 8; },
+      (p: NonNullable<typeof input.provenance>) => { p.diagnostics.push({ path: '$["rows"]["0"]["n"]["nested"]', value: 7 }); },
+    ]) {
+      const provenance = structuredClone(input.provenance!);
+      edit(provenance);
+      expect(replayRetainedProbe({ ...input, provenance })).toMatchObject({ status: 'unavailable' });
+    }
+    const provenance = structuredClone(input.provenance!);
+    provenance.truncated = true;
+    provenance.gaps = ['diagnostics-truncated'];
+    expect(replayRetainedProbe({ ...input, provenance })).toMatchObject({ status: 'reproduced', scope: 'probe-predicate' });
+    const read = vi.fn();
+    expect(await replayRetainedSqlProbe({ ...input, provenance }, read))
+      .toMatchObject({ status: 'unavailable', scope: 'sql-query' });
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('refuses missing or non-scalar original inputs instead of guessing object shape or null', async () => {
