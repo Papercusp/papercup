@@ -19,6 +19,8 @@ it('retains the actual private operator population, signed custody and migrated 
       'packages/operator-core/lib/observability/runtime.ts',
       'packages/operator-core/lib/coverage-census/security-qualification.ts',
       'packages/operator-core/lib/coverage-census/security-manifest-store.ts',
+      'packages/operator-core/lib/superuser-token.ts',
+      'packages/operator-core/lib/auth/principal/from-superuser-token.ts',
       'packages/operator-core/lib/release/operator-artifact.ts',
       'apps/operator/bin/host-handler.ts', 'apps/operator/bin/host-bootstrap.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
@@ -46,6 +48,7 @@ it('retains the actual private operator population, signed custody and migrated 
       expect(build.status).toBe(0);
       expect(build.progress.completedSteps).toBeGreaterThan(0);
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
+        transport: 'mcp', authenticatedActor: expect.stringMatching(/^su-/), unauthenticatedRejected: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         populationComplete: false, closureAccepted: false, qualifyingBaselineAccepted: false,
         backgroundRuntime: 'not-captured', recoveryAdapters: 'not-reconciled' });
