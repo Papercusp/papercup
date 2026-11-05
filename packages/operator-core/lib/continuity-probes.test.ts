@@ -321,6 +321,40 @@ describe('historical retained probe predicate replay', () => {
     }
   });
 
+  it.each([
+    { advisory: 'Context only. '.repeat(40) },
+    { cohort: Array.from({ length: 100 }, (_, i) => ({ id: i, label: `sample-${i}` })) },
+    { password: 'unrelated-secret' },
+  ])('replays the selected scalar when surrounding diagnostics have retention gaps: %j', async context => {
+    const payload = { ...context, state: 'green' };
+    const dispatch = vi.fn(async () => ({ data: payload }));
+    const batch = await runContinuityProbeBatch([source(readProbe())], {
+      retainMeasurement: true, now: () => Date.parse(measuredAt), dispatchTool: dispatch,
+    });
+    const provenance = batch.results[0]!.provenance!;
+    expect(provenance.gaps.length).toBeGreaterThan(0);
+    payload.state = 'red';
+    expect(replayRetainedProbe({ value: 'green', unit: null, provenance }))
+      .toMatchObject({ status: 'reproduced', scope: 'probe-predicate', value: 'green', verdict: 'pass' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(provenance)).not.toContain('unrelated-secret');
+  });
+
+  it('does not promote a partial response or a sensitive selected value to scoped replay evidence', async () => {
+    for (const payload of [
+      { state: 'green', _partial: true }, { state: 'green', complete: false },
+      { state: 'green', _projection: { truncated: true } },
+      { state: 'Authorization: Bearer tiny' },
+    ]) {
+      const batch = await runContinuityProbeBatch([source(readProbe())], {
+        retainMeasurement: true, now: () => Date.parse(measuredAt),
+        dispatchTool: async () => ({ data: payload }),
+      });
+      expect(replayRetainedProbe({ value: batch.results[0]!.observed as string, unit: null,
+        provenance: batch.results[0]!.provenance })).toMatchObject({ status: 'unavailable' });
+    }
+  });
+
   it('refuses missing or non-scalar original inputs instead of guessing object shape or null', async () => {
     for (const value of [undefined, { count: 3 }, []]) {
       const { input } = await capture(value, { op: 'exists', value: undefined });
@@ -355,6 +389,8 @@ describe('historical retained probe predicate replay', () => {
     ];
     for (const modify of modifications) {
       const provenance = structuredClone(input.provenance!);
+      // Legacy evidence has no independently retained scalar witness.
+      delete provenance.predicateInput;
       modify(provenance);
       expect(replayRetainedProbe({ ...input, provenance })).toMatchObject({ status: 'unavailable', value: null });
     }
