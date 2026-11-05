@@ -12,6 +12,11 @@ function render(source:string,status=200){
   return {done,request,diagram};
 }
 describe('anonymous shared reader',()=>{
+  it('uses a fresh raw CDN cache key for each load so a deleted Gist cannot reuse an edge response',async()=>{
+    const first=render('# Snapshot');await first.done;const second=render('# Snapshot');await second.done;
+    const a=new URL(String(first.request.mock.calls[0]?.[0]));const b=new URL(String(second.request.mock.calls[0]?.[0]));
+    expect(a.searchParams.get('read')).toBeTruthy();expect(a.searchParams.get('read')).not.toBe(b.searchParams.get('read'));
+  });
   it('SHARE-READER renders headings, tables, fenced code and sanitized diagram output',async()=>{
     const f=render('# A report\n\n## Findings\n\n| A | B |\n|---|---|\n| yes | done |\n\n```js\nconst a = 1\n```\n\n```mermaid\ngraph TD; A-->B\n```');await f.done;
     expect(document.querySelector('#report')?.getAttribute('hidden')).toBeNull();expect(document.querySelectorAll('table')).toHaveLength(1);

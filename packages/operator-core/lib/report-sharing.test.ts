@@ -87,9 +87,9 @@ describe('selected-edition Gist sharing',()=>{
 
 describe('reusable Pages bundle',()=>{
   it('builds only generic assets with a restrictive CSP and no report-specific inputs',async()=>{
-    const assets=await buildReportViewer();expect(Object.keys(assets.files).sort()).toEqual(['.nojekyll','index.html','viewer.css','viewer.js','viewer.json']);
+    const assets=await buildReportViewer();expect(Object.keys(assets.files).sort()).toEqual(['.nojekyll','index.html','viewer.'+assets.version+'.css','viewer.'+assets.version+'.js','viewer.json']);
     const all=Object.values(assets.files).join('\n');expect(all).not.toContain(report.bodyMd);expect(all).not.toContain(id);
     expect(assets.files['index.html']).toContain("connect-src https://gist.githubusercontent.com");
-    expect(assets.files['index.html']).toContain('no-referrer');expect(assets.files['viewer.js'].length).toBeGreaterThan(1000);
+    expect(assets.files['index.html']).toContain('no-referrer');expect(assets.files['viewer.'+assets.version+'.js'].length).toBeGreaterThan(1000);
   },30000);
 });

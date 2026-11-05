@@ -27,7 +27,10 @@ export async function startReportViewer(doc: Document, deps: {
   status.textContent = 'Loading shared report…';
   try {
     const request = deps.fetch ?? win.fetch.bind(win);
-    const response = await request('https://gist.githubusercontent.com/' + match[1] + '/' + match[2] + '/raw/report.md', {
+    // GitHub's raw CDN can serve a deleted Gist for five minutes, even when
+    // fetch says no-store. A fresh cache key checks the provider on EVERY load.
+    const readNonce = [...win.crypto.getRandomValues(new Uint32Array(4))].join('-');
+    const response = await request('https://gist.githubusercontent.com/' + match[1] + '/' + match[2] + '/raw/report.md?read=' + readNonce, {
       credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
       signal: AbortSignal.timeout(15_000),
     });

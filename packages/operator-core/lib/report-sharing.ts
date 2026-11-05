@@ -101,7 +101,7 @@ export async function changeReportSharing(input: {
     }
     const ready = viewer.ready && await deps.github.readable(user.login, share.gistId!, assets.version, share.digest);
     return { ...inactive, phase: ready ? 'ready' : 'pending', ...(ready
-      ? { url: 'https://' + user.login.toLowerCase() + '.github.io/' + REPORT_VIEWER_REPO + '/#' + new URLSearchParams({ gist: user.login + '/' + share.gistId }) }
+      ? { url: 'https://' + user.login.toLowerCase() + '.github.io/' + REPORT_VIEWER_REPO + '/?v=' + assets.version + '#' + new URLSearchParams({ gist: user.login + '/' + share.gistId }) }
       : { message: 'The secret snapshot is saved. GitHub Pages is preparing the reader. Check again shortly.' }) };
   });
 }
@@ -196,8 +196,8 @@ export async function reportSharingGithub(): Promise<SharingGithub> {
       const options: RequestInit = { credentials: 'omit', cache: 'no-store', referrerPolicy:'no-referrer', signal: AbortSignal.timeout(15_000) };
       try {
         const [html, raw] = await Promise.all([
-          fetch('https://' + login.toLowerCase() + '.github.io/' + repo + '/', options),
-          fetch('https://gist.githubusercontent.com/' + login + '/' + gistId + '/raw/report.md', options),
+          fetch('https://' + login.toLowerCase() + '.github.io/' + repo + '/?v=' + version, options),
+          fetch('https://gist.githubusercontent.com/' + login + '/' + gistId + '/raw/report.md?read=' + randomUUID(), options),
         ]);
         return html.ok && raw.ok && new URL(html.url).hostname === login.toLowerCase()+'.github.io'
           && new URL(raw.url).hostname === 'gist.githubusercontent.com'
