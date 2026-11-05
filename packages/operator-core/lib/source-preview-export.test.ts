@@ -315,11 +315,14 @@ describe('immutable generation verifier snapshots', () => {
       // relative support files beside the separately frozen helper.
       cpSync(join(SOURCE_ROOT, 'apps/operator/bin/release'), join(root, 'apps/operator/bin/release'),
         { recursive: true });
+      const cliEntryPath = 'packages/operator-core/lib/util/cli-entry.ts';
+      write(root, cliEntryPath, readFileSync(join(SOURCE_ROOT, cliEntryPath), 'utf8'));
       git(root, ['init', '-q']);
       git(root, ['add', '.']);
       git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'current generation tooling']);
       const generation = join(root, 'apps/operator/bin/release/dependency-generation.sh');
-      const env: NodeJS.ProcessEnv = { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
+      const env: NodeJS.ProcessEnv & { DEPENDENCY_GENERATION_COPY_LOCK_FILE: string } = {
+        ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
         DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'copy.lock'),
         DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' };
       const shell = (file: string, args: string[], extra = {}) => spawnSync('bash', [file, ...args],
@@ -352,6 +355,7 @@ describe('immutable generation verifier snapshots', () => {
         write(dest, '.verifier-source.json', JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
         for (const tree of [donor, dest]) {
           cpSync(join(root, 'apps/operator/bin/release'), join(tree, 'apps/operator/bin/release'), { recursive: true });
+          write(tree, cliEntryPath, readFileSync(join(root, cliEntryPath), 'utf8'));
           write(tree, '.gitignore', 'node_modules/\ndist/\n.verifier-source.json\n');
           write(tree, 'scripts/npm-install-safe.mjs', 'process.stderr.write("DONOR_READ_FORBIDDEN");process.exit(91);');
           git(tree, ['init', '-q']);
