@@ -306,9 +306,8 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     return { mode: 'disabled', reason: 'user_disabled' };
   }
 
-  const key = await deps.resolveKey();
-
   if (preference === 'openai') {
+    const key = await deps.resolveKey();
     if (key) return resolvedEmbedder('openai', deps.buildOpenAi(key));
     return { mode: 'disabled', reason: 'openai_forced_but_no_key' };
   }
@@ -347,6 +346,7 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     return resolvedEmbedder('local', await deps.buildLocal());
   }
   // 'auto' — openai first, then local, then disabled.
+  const key = await deps.resolveKey();
   if (key) return resolvedEmbedder('openai', deps.buildOpenAi(key));
   if (await deps.localInstalled()) {
     return resolvedEmbedder('local', await deps.buildLocal());

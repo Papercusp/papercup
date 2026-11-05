@@ -458,6 +458,17 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
     expect(localInstalled).not.toHaveBeenCalled();
   });
 
+  it.each(['local', 'gemma', 'harrier'] as const)('forced %s stays usable when cloud credential resolution throws', async (mode) => {
+    const { deps, resolveKey, buildOpenAi } = makeDeps({
+      readPreference: async () => mode,
+      resolveKey: async () => { throw new Error('credential store unavailable'); },
+      localInstalled: async () => true,
+    });
+    expect((await resolveEmbedderWith(deps)).mode).toBe(mode);
+    expect(resolveKey).not.toHaveBeenCalled();
+    expect(buildOpenAi).not.toHaveBeenCalled();
+  });
+
   it('local-forced never consults the openai key (forced means forced)', async () => {
     const { deps, resolveKey, buildOpenAi } = makeDeps({
       readPreference: async () => 'local',
