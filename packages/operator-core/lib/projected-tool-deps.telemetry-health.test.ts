@@ -122,6 +122,9 @@ describe("telemetry health counters (EI-7431)", () => {
     const otherOwner = sessionToolSurfaceKey("su-other", "ws-test")!;
     const otherWorkspace = sessionToolSurfaceKey(owner, "ws-other")!;
     for (const surface of [key, otherOwner, otherWorkspace]) getSessionSurface(surface, seed);
+    const restore = () => restoreSessionTools({ sessionKey: key, seed, ownerId: owner,
+      workspaceId: "ws-test", readUsedTools: async () => [] });
+    await expect(restore()).resolves.toBe(false);
     let release!: () => void;
     let entered!: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
@@ -132,8 +135,8 @@ describe("telemetry health counters (EI-7431)", () => {
     await started;
     try {
       await record("plans:get", ctx({ uiClientId: owner, isSuperuser: true }));
-      await restoreSessionTools({ sessionKey: key, seed, ownerId: owner,
-        workspaceId: "ws-test", readUsedTools: async () => [] });
+      await expect(restore()).resolves.toBe(true);
+      await expect(restore()).resolves.toBe(false);
       expect(getSessionSurface(key, seed)).toEqual(new Set(["tools:invoke", "plans:get"]));
       expect(getSessionUsedTools(key)).toEqual(new Set(["plans:get"]));
       expect(getSessionUsedTools(otherOwner)?.size).toBe(0);
