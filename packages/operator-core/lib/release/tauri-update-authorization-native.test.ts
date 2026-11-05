@@ -688,6 +688,7 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         let apps=path.join("Applications"); fs::create_dir(&apps).unwrap();
         fs::set_permissions(&apps,Permissions::from_mode(0o700)).unwrap();
         let target=apps.join("Papercusp GUI.app"); fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target,Permissions::from_mode(0o755)).unwrap();
         fs::write(target.join("old-product"),b"old").unwrap();
         let outside=path.join("outside"); fs::create_dir(&outside).unwrap();
         fs::write(outside.join("keep"),b"untouched").unwrap();
@@ -721,7 +722,8 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         assert!(install_test(&directory,&applications,request(),2000,no_ready).is_err());
         fs::set_permissions(&apps,Permissions::from_mode(0o700)).unwrap();
         assert_eq!(read(),policy);assert_eq!(ready_count.get(),0);
-        assert!(install_test(&directory,&applications,receive(request()),2000,||Err("cancelled".into())).is_err());
+        let cancelled=install_test(&directory,&applications,receive(request()),2000,||Err("cancelled".into()));
+        assert_eq!(cancelled.unwrap_err(),"cancelled","must reach READY before exercising cancellation");
         assert_eq!(read(),retained);assert!(target.join("old-product").exists());
         assert_eq!(fs::read(outside.join("keep")).unwrap(),b"untouched");
         assert_eq!(fs::read_dir(&apps).unwrap().count(),1,"cancel cleans only its private stage");

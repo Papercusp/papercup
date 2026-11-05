@@ -15,6 +15,7 @@ import path from 'node:path';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import type { SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
@@ -210,10 +211,22 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
          source_plan_item_ids, taken_by)
       VALUES (${WORKSPACE}, ${HARNESS}, ${WORK_ITEM}, 'Implement acceptance snapshot reuse',
               'done', 'feature', ${PLAN}, ${[ITEM]}::text[], 'su-impl')`;
+    // This migrated-store fixture models a reporter-written run, including the
+    // execution facts the reader now requires independently of binding prose.
+    const execution = {
+      schemaVersion: 1, root: h.repoRoot, filePath: TEST_PATH,
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      testNamePattern: null, testLayer: 'integration', passed: 1, failed: 0,
+      skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: null, worktreeDirty: false,
+    };
+    expect(parseTestRunExecutionDetails(execution)).toEqual(execution);
     const [testRun] = await db.adminSql<{ id: number }[]>`
       INSERT INTO harness_shared.test_runs
-        (workspace_id, harness_slug, file_path, framework, status, finished_at)
-      VALUES (${WORKSPACE}, ${HARNESS}, ${TEST_PATH}, 'vitest', 'pass', ${OBSERVED_AT})
+        (workspace_id, harness_slug, file_path, framework, status, finished_at,
+         worktree_dirty, execution_details)
+      VALUES (${WORKSPACE}, ${HARNESS}, ${TEST_PATH}, 'vitest', 'pass', ${OBSERVED_AT},
+              false, ${JSON.stringify(execution)}::jsonb)
       RETURNING id`;
 
     const fingerprints = await measureRepoFilesEvidenceAtRoot(h.repoRoot, measurement);

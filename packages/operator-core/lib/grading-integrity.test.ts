@@ -216,6 +216,7 @@ function deps() {
     listTasks,
     readRetainedTaskKernelVerdicts: vi.fn(async (_tasks: readonly TaskRow[], _workspaceId?: string) =>
       new Map<string, string>()),
+    markEndedUnobserved: vi.fn(async () => 0),
     bindTaskNativeSession: vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['bindTaskNativeSession']>>()
       .mockResolvedValue(null),
     getTask,
