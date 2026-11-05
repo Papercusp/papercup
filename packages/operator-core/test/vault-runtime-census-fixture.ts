@@ -42,7 +42,12 @@ async function main() {
   assert.equal(url.hostname, '127.0.0.1');
   assert.ok(url.port && !['3070', '3170', '3271', '9071', '9171'].includes(url.port));
   console.log('VAULT_CENSUS_STAGE=bundle-start');
-  const prepared = preparePrivateOperatorApiBundle(root, evidenceDir);
+  // Renew preparation only for distinct completed build steps. The fixed
+  // synchronous deadline can interrupt a progressing full-input guard census.
+  const prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, { builder: {
+    timeoutMs: 240_000, maxMs: 420_000,
+    onProgress: progress => console.log('VAULT_CENSUS_STAGE=build-' + progress.step),
+  } });
   const originalBundle = readFileSync(prepared.path);
   host = spawn(process.execPath, [prepared.path], { cwd: root, env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'] });

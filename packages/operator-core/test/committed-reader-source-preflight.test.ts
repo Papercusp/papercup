@@ -396,6 +396,28 @@ describe('private worker source selection before allocation', () => {
 });
 
 describe('original build observations without runtime qualification', () => {
+  it('admits the builder dependency link only to the independently pinned source dependencies', () => {
+    const f = observedBuildFixture('ln -s "$PWD/node_modules" "$(dirname "$2")/node_modules"\n');
+    const built = f.produceObserved();
+    const receipt = JSON.parse(readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'), 'utf8'));
+    expect(built.qualification).toEqual({ status: 'pending' });
+    expect(receipt.artifactCensus.some((file: { path: string }) => file.path === 'node_modules')).toBe(false);
+    expect(receipt.artifactCensus.every((file: { kind: string }) => file.kind === 'file')).toBe(true);
+    expect(receipt.dependencyFiles).toEqual(f.closure.dependencyFiles);
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+  });
+
+  it.each(['foreign', 'dangling', 'directory'] as const)(
+    'refuses an unpinned %s runtime dependency binding after compilation', dimension => {
+      const script = dimension === 'directory' ? 'mkdir "$(dirname "$2")/node_modules"\n'
+        : (dimension === 'foreign' ? 'mkdir "$(dirname "$2")/foreign"\n' : '')
+          + `ln -s "$(dirname "$2")/${dimension}" "$(dirname "$2")/node_modules"\n`;
+      const f = observedBuildFixture(script);
+      expect(() => f.produceObserved()).toThrow();
+      expect(existsSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toBe(false);
+      expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    });
+
   it('admits archive workspace links through preparation and dependency recheck', () => {
     const f = observedBuildFixture();
     const built = f.produceObserved();
@@ -468,6 +490,23 @@ describe('original build observations without runtime qualification', () => {
 });
 
 describe('retained committed reader producer and consumer', () => {
+  it('rechecks the pinned runtime dependency binding when consuming produced artifacts', () => {
+    const f = producerFixture('ln -s "$PWD/node_modules" "$(dirname "$2")/node_modules"\n');
+    const produced = f.produce();
+    expect(f.consume()).toEqual(produced);
+    const link = join(f.dir, 'prepare/node_modules');
+    rmSync(link);
+    symlinkSync(join(f.dir, 'node_modules'), link, 'dir');
+    // Even a redirect to the same final tree must retain the exact source binding.
+    expect(() => f.consume()).toThrow(/Prepared runtime dependency binding differs/);
+  });
+
+  it('still refuses other artifact symlinks beside a pinned runtime dependency binding', () => {
+    const f = producerFixture('ln -s "$PWD/node_modules" "$(dirname "$2")/node_modules"\n'
+      + 'ln -s asset.sql "$(dirname "$2")/redirect.sql"\n');
+    expect(() => f.produce()).toThrow(/symlink artifacts require independent qualification/);
+  });
+
   it('builds once at the allocated path and consumes the original pinned artifacts without rebuilding', () => {
     const f = producerFixture();
     expect(f.inputs).not.toHaveProperty('sha256');

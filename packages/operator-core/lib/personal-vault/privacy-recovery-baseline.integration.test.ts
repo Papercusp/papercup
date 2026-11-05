@@ -8,7 +8,7 @@ import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptio
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
-const options = isolatedWorkerOptions(480_000);
+const options = isolatedWorkerOptions(480_000, process.env, 720_000);
 
 it('retains the actual private operator population, signed custody and migrated schema without claiming closure', async context => {
   const runId = await recordIsolatedIntegrationProof({ root,
@@ -42,6 +42,9 @@ it('retains the actual private operator population, signed custody and migrated 
       const line = result.output.split('\n').find(row => row.startsWith('VAULT_CENSUS_RECEIPT '));
       expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('VAULT_CENSUS_RECEIPT '.length));
+      const build = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+      expect(build.status).toBe(0);
+      expect(build.progress.completedSteps).toBeGreaterThan(0);
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         populationComplete: false, closureAccepted: false, qualifyingBaselineAccepted: false,
