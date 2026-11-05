@@ -710,16 +710,16 @@ const retainedReceiptNames = ['operator-api-preflight.json', 'operator-api-input
 function preparedArtifactCensus(evidenceDir: string, sourceRoot: string) {
   // bundle-host.sh binds custom outputs to the already pinned dependency
   // tree. Verify that exact binding separately; it is not a copied artifact.
-  // Never follow or silently omit a foreign, dangling or independent tree.
+  // Custom outputs outside the source root require this binding even when
+  // consuming retained artifacts. Its removal must not fall back to an
+  // ancestor's dependencies. Never follow a foreign or independent tree.
   const dependencyPath = join(evidenceDir, 'node_modules');
   const dependencies = lstatSync(dependencyPath, { throwIfNoEntry: false });
-  if (dependencies) {
-    assert.ok(dependencies.isSymbolicLink()
-      && resolve(evidenceDir, readlinkSync(dependencyPath)) === resolve(sourceRoot, 'node_modules'),
+  assert.ok(dependencies?.isSymbolicLink()
+    && resolve(evidenceDir, readlinkSync(dependencyPath)) === resolve(sourceRoot, 'node_modules'),
     'Prepared runtime dependency binding differs');
-    assert.equal(realpathSync(dependencyPath), realpathSync(join(sourceRoot, 'node_modules')),
-      'Prepared runtime dependency binding differs');
-  }
+  assert.equal(realpathSync(dependencyPath), realpathSync(join(sourceRoot, 'node_modules')),
+    'Prepared runtime dependency binding differs');
   // Enumerate every other entry without following links, then reuse the
   // maintained byte census and its strict symlink checks for that population.
   const includedPaths = new Set(readdirSync(evidenceDir, { recursive: true, withFileTypes: true })
