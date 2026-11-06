@@ -3834,11 +3834,20 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     // as stale refused EVERY HTTP tools/call, even straight after a successful
     // tools/list. A stateless call can still opt into the fence by echoing the
     // generation its listing carried (`_meta['papercusp/servingGeneration']`,
-    // stamped on every tools/list entry). An undeclared stateless call has
-    // nothing to compare against, so it is dispatched without the per-call
-    // generation read; argument validation and the kernel preflight still gate it.
+    // stamped on every tools/list entry). Ordinary direct calls without that
+    // declaration retain their legacy path. Dynamic tools:invoke is different:
+    // its target schema may come from another generation, so it must fail closed
+    // when the stateless caller supplies no listing generation.
     const declaredGeneration = declaredServingGeneration(req);
-    if (!sessionKey && declaredGeneration === null) return runHandler();
+    const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
+    if (!sessionKey && declaredGeneration === null) {
+      if (requestedName === 'tools:invoke') {
+        throw new Error(
+          'stale_tool_contract: stateless tools:invoke requires papercusp/servingGeneration metadata from tools/list; refresh tools/list before retrying',
+        );
+      }
+      return runHandler();
+    }
 
     const before = await readGeneration();
     if (before.state !== 'known') {
