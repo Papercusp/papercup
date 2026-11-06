@@ -763,6 +763,7 @@ export function parseArgs(argv = []) {
     script: null,
     scriptFile: null,
     list: false,
+    stdio: false,
     listFilter: null,
     workspace: null,
     allWorkspaces: false,
@@ -798,6 +799,7 @@ export function parseArgs(argv = []) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { out.help = true; continue; }
     if (a === '--raw') { out.raw = true; continue; }
+    if (a === '--stdio') { out.stdio = true; continue; }
     if (a === '--all-workspaces') { out.allWorkspaces = true; continue; }
     if (a === '--list' || a === '-l') { out.list = true; sawList = true; continue; }
     // `--flag=value`
@@ -1940,6 +1942,73 @@ export function requireServingGeneration(tool) {
   );
   error.code = 'serving_generation_missing';
   throw error;
+}
+
+/** A downstream MCP connection retains exactly the catalog it was shown.
+ * Older clients omit call metadata. Supply the listed generation, never a
+ * newly fetched generation; stale mutations must reach the upstream fence.
+ * @param {{ listTools: Function, callTool: Function }} client
+ * @param {{ toolName?: string|null, listTools?: Function }} [options]
+ */
+export function createPtoolStdioBridge(client, { toolName = null, listTools = () => listAllTools(client) } = {}) {
+  let catalog = null;
+  return {
+    async listTools() {
+      catalog = null;
+      const listed = await listTools();
+      const selected = toolName ? listed.filter(tool => tool.name === toolName) : listed;
+      if (toolName && selected.length !== 1) throw new Error(`Unknown tool: ${toolName}`);
+      catalog = new Map(selected.map(tool => [tool.name, structuredClone(tool)]));
+      return { tools: structuredClone([...catalog.values()]) };
+    },
+    async callTool(params, options = {}) {
+      if (!catalog) throw new Error('stale_tool_contract: read tools/list before tools/call');
+      const tool = catalog.get(params.name);
+      if (!tool) throw new Error(`Unknown tool: ${params.name}`);
+      const generation = requireServingGeneration(tool);
+      const declared = params._meta?.['papercusp/servingGeneration'];
+      if (declared !== undefined && declared !== generation)
+        throw new Error('stale_tool_contract: caller generation differs from its listed catalog');
+      const request = buildCallToolParams(params.name, params.arguments ?? {}, {
+        outputSchema: tool.outputSchema,
+        servingGeneration: generation,
+        idempotencyKey: params._meta?.idempotencyKey ?? randomUUID(),
+      });
+      // No automatic catalog refresh or replay, especially for writes.
+      return client.callTool(request, undefined, options);
+    },
+  };
+}
+
+async function servePtoolStdio(client, toolName) {
+  const [{ Server }, { StdioServerTransport }, types] = await Promise.all([
+    importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/server/index.js'),
+    importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/server/stdio.js'),
+    importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js'),
+  ]);
+  const bridge = createPtoolStdioBridge(client, { toolName });
+  const server = new Server({ name: 'papercusp-ptool', version: '1.0.0' }, { capabilities: { tools: {} } });
+  server.setRequestHandler(types.ListToolsRequestSchema, () => bridge.listTools());
+  server.setRequestHandler(types.CallToolRequestSchema, (request, extra) =>
+    bridge.callTool(request.params, {
+      signal: extra.signal, timeout: timeoutForTool(request.params.name, request.params.arguments ?? {}),
+    }));
+  let finished;
+  const closed = new Promise(resolve => { finished = resolve; });
+  server.onclose = () => finished();
+  const close = () => { void server.close().finally(() => finished()); };
+  process.stdin.once('end', close);
+  process.once('SIGTERM', close);
+  process.once('SIGINT', close);
+  try {
+    await server.connect(new StdioServerTransport());
+    await closed;
+  } finally {
+    process.stdin.off('end', close);
+    process.off('SIGTERM', close);
+    process.off('SIGINT', close);
+    await server.close();
+  }
 }
 
 // The local MCP proxy can spend three 8s upstream attempts plus retry backoff
@@ -4242,6 +4311,8 @@ export const PTOOL_SDK_MODULE_LOADERS = Object.freeze({
   '@modelcontextprotocol/sdk/client/index.js': () => import('@modelcontextprotocol/sdk/client/index.js'),
   '@modelcontextprotocol/sdk/client/streamableHttp.js': () =>
     import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+  '@modelcontextprotocol/sdk/server/index.js': () => import('@modelcontextprotocol/sdk/server/index.js'),
+  '@modelcontextprotocol/sdk/server/stdio.js': () => import('@modelcontextprotocol/sdk/server/stdio.js'),
 });
 
 /** Default SDK importer: refuses a specifier with no bundle-traceable loader. */
@@ -4859,6 +4930,7 @@ export const PTOOL_USAGE = `ptool — call any Papercusp defineTool endpoint fro
   return await tools.dev.build_status({});
   EOF
   ptool --list [filter]         print the catalog (optionally name-filtered)
+  ptool [tool] --stdio          serve MCP over stdio with the listed generation
   ptool <tool> --transport=uds  require direct local MCP (http and auto also accepted)
 
 Prefer --json-file or --json - for any payload that is not a trivial,
@@ -4928,6 +5000,9 @@ async function main() {
     console.log(PTOOL_USAGE);
     return;
   }
+  if (args.stdio && (args.list || args.json !== null || args.jsonFile !== null ||
+      args.script !== null || args.scriptFile !== null || args.projection !== null))
+    throw new Error('--stdio cannot be combined with catalog output or scripted input');
 
   // Read scripted input before opening the MCP session. The payload can carry
   // the harness that should scope that session, including through a nested
@@ -5204,6 +5279,10 @@ async function main() {
     throw error;
   }
   try {
+    if (args.stdio) {
+      await servePtoolStdio(client, args.tool);
+      return;
+    }
     let projection;
     if (args.projection != null) {
       try {

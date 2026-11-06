@@ -7,6 +7,7 @@ import {
   callToolWithPressureRetry,
   callToolWithReplayRecovery,
   buildCallToolParams,
+  createPtoolStdioBridge,
   requireServingGeneration,
   refreshToolCallAfterStaleContract,
   canDispatchWithoutCatalog,
@@ -4806,14 +4807,89 @@ describe('ptool SDK imports are bundle-traceable (WI-6554700010012487)', () => {
     const client = await importPtoolSdkModule('@modelcontextprotocol/sdk/client/index.js');
     const transport = await importPtoolSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js');
     const types = await importPtoolSdkModule('@modelcontextprotocol/sdk/types.js');
+    const server = await importPtoolSdkModule('@modelcontextprotocol/sdk/server/index.js');
+    const stdio = await importPtoolSdkModule('@modelcontextprotocol/sdk/server/stdio.js');
     expect(typeof client.Client).toBe('function');
     expect(typeof transport.StreamableHTTPClientTransport).toBe('function');
     expect(types.CallToolResultSchema).toBeDefined();
+    expect(typeof server.Server).toBe('function');
+    expect(typeof stdio.StdioServerTransport).toBe('function');
   });
 
   it('refuses a specifier that has no loader instead of importing it dynamically', async () => {
-    await expect(importPtoolSdkModule('@modelcontextprotocol/sdk/server/index.js')).rejects.toThrow(
+    await expect(importPtoolSdkModule('@modelcontextprotocol/sdk/server/missing.js')).rejects.toThrow(
       /no bundle-traceable loader/,
     );
+  });
+});
+
+describe('ptool stdio catalog generation bridge', () => {
+  const entry = (generation = 'serving-generation-v1:first') => ({
+    name: 'tools:invoke', inputSchema: { type: 'object' },
+    _meta: { 'papercusp/servingGeneration': generation },
+  });
+
+  it('refuses calls before the downstream client has listed tools', async () => {
+    const callTool = vi.fn();
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool });
+    await expect(bridge.callTool({ name: 'tools:invoke' })).rejects.toThrow(/read tools\/list/);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(parseArgs(['tools:invoke', '--stdio']).stdio).toBe(true);
+  });
+
+  it('forwards a metadata-free legacy request with its actual listed generation and preserves the result', async () => {
+    const result = { isError: true, content: [{ type: 'text', text: 'unknown tool negative control' }] };
+    const callTool = vi.fn(async () => result);
+    const listed = entry();
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools: async () => [listed] });
+    const shown = await bridge.listTools();
+    shown.tools[0]._meta['papercusp/servingGeneration'] = 'caller-tampered';
+    listed._meta['papercusp/servingGeneration'] = 'upstream-mutated';
+    expect(await bridge.callTool({ name: 'tools:invoke', arguments: { name: 'capability:missing', args: {} } })).toBe(result);
+    expect(callTool.mock.calls[0][0]).toMatchObject({ name: 'tools:invoke',
+      arguments: { name: 'capability:missing', args: '{}' },
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:first' } });
+  });
+
+  it('does not refresh or replay a rejected stale mutation; an explicit listing admits the new generation', async () => {
+    let generation = 'serving-generation-v1:first';
+    const listTools = vi.fn(async () => [entry(generation)]);
+    const callTool = vi.fn(async params => {
+      if (params._meta['papercusp/servingGeneration'] !== generation) throw new Error('stale_tool_contract');
+      return { content: [{ type: 'text', text: 'settled' }] };
+    });
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools });
+    await bridge.listTools();
+    generation = 'serving-generation-v1:second';
+    const request = { name: 'tools:invoke', arguments: { name: 'work_items:complete', args: {} } };
+    await expect(bridge.callTool(request)).rejects.toThrow(/stale_tool_contract/);
+    expect(listTools).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    await bridge.listTools();
+    await expect(bridge.callTool(request)).resolves.toHaveProperty('content');
+  });
+
+  it('refuses missing generations, foreign tools and a contradictory caller declaration before dispatch', async () => {
+    const callTool = vi.fn();
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools: async () => [entry('')] });
+    await bridge.listTools();
+    await expect(bridge.callTool({ name: 'tools:invoke' })).rejects.toThrow(/serving_generation_missing/);
+    await expect(bridge.callTool({ name: 'capability:bash' })).rejects.toThrow(/Unknown tool/);
+    const pinned = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools: async () => [entry()] });
+    await pinned.listTools();
+    await expect(pinned.callTool({ name: 'tools:invoke',
+      _meta: { 'papercusp/servingGeneration': 'foreign' } })).rejects.toThrow(/stale_tool_contract/);
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('limits advertised tools and invalidates the baseline when a requested refresh fails', async () => {
+    const callTool = vi.fn();
+    const listTools = vi.fn(async () => [entry(), { name: 'other', inputSchema: { type: 'object' } }]);
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools, toolName: 'tools:invoke' });
+    expect((await bridge.listTools()).tools.map(tool => tool.name)).toEqual(['tools:invoke']);
+    listTools.mockRejectedValueOnce(new Error('unavailable'));
+    await expect(bridge.listTools()).rejects.toThrow(/unavailable/);
+    await expect(bridge.callTool({ name: 'tools:invoke' })).rejects.toThrow(/read tools\/list/);
+    expect(callTool).not.toHaveBeenCalled();
   });
 });
