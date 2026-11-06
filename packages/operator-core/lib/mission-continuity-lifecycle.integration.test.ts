@@ -5,7 +5,7 @@ import type { Sql } from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { applyMissionEvent, applyMissionEventInTransaction, readSessionMission, updateMissionOutboxInTransaction } from './session-brief-mission';
 import type { MissionParent, MissionEvent } from './mission-continuity';
-import { applySessionTaskOp, readSessionTasks, type SessionTaskOpArgs } from './session-tasks';
+import { applySessionTaskOp, type SessionTaskOpArgs } from './session-tasks';
 import { commitMissionTaskTransition } from './mission-continuity-task-acceptance';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -114,7 +114,7 @@ describe('canonical accepted task operations compose with retained mission state
     const owner='su-task-rollback';
     await initTask(owner,'a','WI-task-rollback');
     await expect(taskOp(owner,{op:'start',taskId:'a'},undefined,true)).rejects.toThrow('acceptance commit crash');
-    expect((await readSessionTasks(db.sql,'mission-test',owner))[0].status).toBe('pending');
+    expect((await taskOp(owner,{op:'view'})).tasks[0].status).toBe('pending');
     expect((await readSessionMission(scope(owner),db.sql)).availability).toBe('absent');
     await taskOp(owner,{op:'start',taskId:'a'});
     expect((await mission(owner)).state.currentWorkRef).toBe('session-task:'+owner+':a');
