@@ -13,7 +13,9 @@
  *  • promote-to-pipeline mints an F-FIX feature from a bug (D-005).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import type { Sql, TransactionSql } from 'postgres';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
@@ -117,6 +119,7 @@ vi.mock('./scheduler/plan-item-lane-guard', () => ({
 }));
 
 const wi = await import('./work-items');
+const checkpointStore = await import('./work-item-checkpoint');
 
 let db: FreshPgDb;
 let links: PgLinkStore;
@@ -128,6 +131,16 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
+    workspace_id text NOT NULL,
+    scope text NOT NULL,
+    note text,
+    journal jsonb NOT NULL DEFAULT '[]'::jsonb,
+    updated_ts bigint NOT NULL,
+    deps jsonb,
+    body_ts bigint,
+    attested_count integer NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, scope))`);
   // Terminal work-item transitions synchronously retire lifecycle-bound interest
   // machinery, and create/status/settled events write the durable fire latch. The
   // shared event-substrate list is audited from each table's creating migration, so
@@ -179,6 +192,7 @@ beforeEach(async () => {
   h.activeWorkspace = 'default';
   wi.resetWorkItemEmbedderWarmup();
   await db.sql`TRUNCATE harness_shared.work_items,
+                       harness_shared.carry_notes,
                        harness_shared.work_item_occurrences,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.coord_entity_subscriptions,
@@ -2885,6 +2899,51 @@ describe('unified work_items surface (real PG)', () => {
 
     expect(await wi.commentWorkItem('WI-404', 'ghost', 'agB')).toBeNull();
   });
+
+  it.each(['bug', 'feature'] as const)(
+    '%s checkpoint archive comment commits and rolls back with its checkpoint transaction',
+    async (kind) => {
+      const item = await wi.createWorkItem({ kind, title: `checkpoint archive ${kind}`, harness: 'papercup', createdBy: 'agA' });
+      const ref = { harness: 'papercup', workItemId: item.id, workspaceId: 'default' };
+      const prior = `complete prior checkpoint for ${kind}: ${'historical detail '.repeat(80)}`;
+      const archive = async (lockedPrior: string | null, tx: Sql | TransactionSql) => {
+        if (lockedPrior === null) throw new Error('locked checkpoint unexpectedly empty');
+        const post = await wi.commentWorkItem(item.id, lockedPrior, 'agB', {
+          workspaceId: 'default',
+          harness: 'papercup',
+          writerOwnerId: 'agB',
+          transaction: tx,
+        });
+        if (!post) throw new Error('work-item archive post was not created');
+        return post;
+      };
+
+      await checkpointStore.setWorkItemCheckpointWithPrior(ref, prior);
+      await expect(checkpointStore.setWorkItemCheckpointWithPrior(ref, 'uncommitted replacement', {
+        transform: async (lockedPrior, _incoming, tx) => {
+          await archive(lockedPrior, tx);
+          throw new Error('force checkpoint archive rollback');
+        },
+      })).rejects.toThrow('force checkpoint archive rollback');
+
+      expect(await checkpointStore.getWorkItemCheckpoint(ref)).toBe(prior);
+      expect((await wi.getWorkItemThreadWindow(item.id, 10, 'papercup'))?.total ?? 0).toBe(0);
+
+      const hash = createHash('sha256').update(prior, 'utf8').digest('hex');
+      let postId: number | undefined;
+      const committed = await checkpointStore.setWorkItemCheckpointWithPrior(ref, 'new checkpoint body', {
+        transform: async (lockedPrior, incoming, tx) => {
+          const post = await archive(lockedPrior, tx);
+          postId = post.id;
+          return `Earlier full checkpoint: thread-post:${post.id} (sha256:${hash})\n\n${incoming ?? ''}`;
+        },
+      });
+
+      expect(committed.stored).toContain(`Earlier full checkpoint: thread-post:${postId} (sha256:${hash})`);
+      const thread = await wi.getWorkItemThreadWindow(item.id, 10, 'papercup');
+      expect(thread?.posts).toEqual(expect.arrayContaining([expect.objectContaining({ id: postId, body: prior })]));
+    },
+  );
 
   it('reads a feature comment from the active workspace used by the writer', async () => {
     h.activeWorkspace = 'papercusp-workspace';

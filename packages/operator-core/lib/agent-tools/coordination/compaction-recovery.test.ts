@@ -69,7 +69,8 @@ vi.mock('../plans/source', () => ({
     status: 'ready',
   })),
 }));
-vi.mock('../plans/spec-clauses-store', () => ({
+vi.mock('../plans/spec-clauses-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../plans/spec-clauses-store')>()),
   listSpecClauses: vi.fn(async () => [{
     specId: 'SPEC-P-017',
     revision: 4,
@@ -198,6 +199,9 @@ describe('buildCompactionRecovery — held-item checkpoint fold', () => {
   });
 
   it('suppresses a missing-proof item to a read-only ownership warning', async () => {
+    const { renderHeldItemOwnershipWarning } = await import('../../carry-brief');
+    expect(renderHeldItemOwnershipWarning('owner-x', 'ws-1', { id: 'WI-unverified', harness: 'h' }))
+      .toContain('no holder proof');
     const { buildCompactionRecovery } = await import('./compaction-recovery');
     const recovery = await buildCompactionRecovery('owner-x', 'ws-1', {
       heldItems: [{
@@ -323,6 +327,38 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
       specs: [{ specId: 'SPEC-P-017', revision: 4, contentHash: 'spec-hash-4' }],
     });
     expect(delivery.marker.controlStateHash).toBeTruthy();
+  });
+
+  it.each(['older-task', 'all-task', 'no-task'])('keeps bounded task-applicable recovery authority: %s', async mode => {
+    const [{ getPlanRow }, { buildAndPersistControlAnchor }, { buildAutomaticCompactionRecovery }] =
+      await Promise.all([import('../plans/source'), import('./control-anchor'), import('./compaction-recovery')]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce(CONTROL);
+    const decisions = Array.from({ length: 9 }, (_, index) => {
+      const id = `D-${String(index + 1).padStart(3, '0')}`;
+      const task = mode === 'all-task' || (mode === 'older-task' && index === 0);
+      return `### ${id} — ruling\nDate: 2026-08-25\n${'Historical context. '.repeat(40)}\n\n${task ? 'P-017 remains paused until the original author releases it.' : 'Unrelated preparation.'}`;
+    }).join('\n\n');
+    vi.mocked(getPlanRow).mockResolvedValueOnce({
+      workspaceId: 'ws-1', harnessSlug: 'h', planSlug: CONTROL.state.scope.plan!,
+      content: `---\ntitle: scoped authority\nslug: scoped-authority\nstatus: ready\n---\n\n## Decisions\n\n${decisions}`,
+      contentHash: 'scoped-hash', version: 18, status: 'ready',
+    } as Awaited<ReturnType<typeof getPlanRow>>);
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { sessionHarness: 'h', heldItems: [] });
+    const authority = delivery.recovery.planAuthority;
+    expect(authority?.resolution).toBe('current');
+    if (authority?.resolution !== 'current') throw new Error('missing authority');
+    expect(authority.decisions.map(d => d.id)).toEqual(mode === 'older-task'
+      ? ['D-001', 'D-005', 'D-006', 'D-007', 'D-008', 'D-009']
+      : ['D-004', 'D-005', 'D-006', 'D-007', 'D-008', 'D-009']);
+    expect(authority.decisionsMore).toBe(3);
+    expect(authority.omittedDecisionRefs).toEqual((mode === 'older-task'
+      ? ['D-002', 'D-003', 'D-004'] : ['D-001', 'D-002', 'D-003']).map(id => `${CONTROL.state.scope.plan}#${id}`));
+    if (mode !== 'no-task') {
+      expect(authority.decisions[0].body).toContain('P-017 remains paused');
+      expect(authority.decisions[0].truncated).toBe(true);
+      expect(authority.taskLinkedDecisions).toBe(mode === 'older-task' ? 1 : 6);
+    }
+    expect(delivery.marker.complete).toBe(true);
   });
 
   it('uses the matching fleet launch plan only when the control scope has no plan', async () => {
