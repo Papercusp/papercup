@@ -49,6 +49,32 @@ async function measurePlanStage<T>(stage: string, observe: PlanExecutionTimingOb
   }
 }
 
+/** Fixed input-free labels for the canonical reader's existing measurements. */
+const planRowTimingStages = {
+  'source.resolveScope': 'plan_row_resolve_scope',
+  'source.waitForBegin': 'plan_row_wait_for_begin',
+  'source.workspaceSetup': 'plan_row_workspace_setup',
+  'source.acquireAndSetup': 'plan_row_acquire_and_setup',
+  'source.query': 'plan_row_query',
+  'source.finishTransaction': 'plan_row_finish_transaction',
+  'source.row': 'plan_row_row',
+} as const;
+
+function readTimedPlanRow(slug: string, opts: Parameters<typeof getPlanRow>[1],
+  observe: PlanExecutionTimingObserver | undefined): ReturnType<typeof getPlanRow> {
+  return measurePlanStage('plan_row', observe, async () => {
+    if (!observe) return getPlanRow(slug, opts);
+    const timings: Record<string, number> = {};
+    try { return await getPlanRow(slug, opts, timings); } finally {
+      for (const [source, stage] of Object.entries(planRowTimingStages)) {
+        const durationMs = timings[source];
+        if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) continue;
+        try { observe({ stage, durationMs }); } catch { /* diagnostics only */ }
+      }
+    }
+  });
+}
+
 /** Settle concurrent reads before interpreting them in the original refusal order. */
 function settledPlanValue<T>(result: PromiseSettledResult<T>): T {
   if (result.status === 'rejected') throw result.reason;
@@ -273,15 +299,15 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
       SELECT harness_slug, content, content_hash, op_status, created_at FROM harness_shared.harness_plans
        WHERE workspace_id=${workspaceId} AND plan_slug=${binding.planSlug}
          AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`),
-      binding.harnessSlug ? measurePlanStage('plan_row', observe,
-        () => getPlanRow(binding.planSlug, { harnessSlug: binding.harnessSlug!, workspaceId })) : Promise.resolve(null),
+      binding.harnessSlug ? readTimedPlanRow(binding.planSlug,
+        { harnessSlug: binding.harnessSlug, workspaceId }, observe) : Promise.resolve(null),
     ]);
     const rows = settledPlanValue(scopeRead);
     if (rows.length !== 1) return [rows.length ? 'plan_scope_ambiguous' : 'bound_plan_missing'];
     const row = rows[0]!;
     const opts = { harnessSlug: row.harness_slug, workspaceId };
     const plan = binding.harnessSlug ? settledPlanValue(renderedRead)
-      : await measurePlanStage('plan_row', observe, () => getPlanRow(binding.planSlug, opts));
+      : await readTimedPlanRow(binding.planSlug, opts, observe);
     if (!plan || plan.contentHash !== row.content_hash) return ['plan_revision_changed'];
     const parsed = parsePlan(plan.content);
     if (!['ready', 'active', 'awaiting-acceptance'].includes(parsed.frontmatter.status ?? ''))

@@ -118,6 +118,66 @@ beforeEach(async () => {
 });
 
 describe('real write-boundary bypass regression', () => {
+  it.each([true, false])('forwards canonical plan-row subphases with scoped binding %s', async scoped => {
+    const source = await import('./source');
+    const originalRead = source.getPlanRow;
+    const sourceTimings = {
+      'source.resolveScope': 1, 'source.waitForBegin': 2, 'source.workspaceSetup': 3,
+      'source.acquireAndSetup': 4, 'source.query': 5, 'source.finishTransaction': 6, 'source.row': 7,
+    };
+    const read = vi.spyOn(source, 'getPlanRow').mockImplementation(async (...args) => {
+      const row = await originalRead(...args);
+      if (args[2]) Object.assign(args[2], sourceTimings);
+      return row;
+    });
+    const timings: Array<{ stage: string; durationMs: number }> = [];
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness({ ...binding, harnessSlug: scoped ? 'project' : null }, WS,
+        timing => { timings.push(timing); throw new Error('broken observer'); })).toEqual(['plan_status:draft']);
+      expect(read).toHaveBeenCalledExactlyOnceWith(binding.planSlug,
+        { harnessSlug: 'project', workspaceId: WS }, expect.objectContaining(sourceTimings));
+      expect(Object.fromEntries(timings.map(({ stage, durationMs }) => [stage, durationMs]))).toMatchObject({
+        plan_row_resolve_scope: 1, plan_row_wait_for_begin: 2, plan_row_workspace_setup: 3,
+        plan_row_acquire_and_setup: 4, plan_row_query: 5, plan_row_finish_transaction: 6, plan_row_row: 7,
+      });
+    } finally { read.mockRestore(); }
+  });
+
+  it.each([true, false])('retains collected subphases and the reader error with scoped binding %s', async scoped => {
+    const source = await import('./source');
+    const failure = new Error('canonical rendered read failed');
+    const read = vi.spyOn(source, 'getPlanRow').mockImplementation(async (_slug, _opts, timings) => {
+      if (timings) Object.assign(timings, { 'source.resolveScope': 1, 'source.waitForBegin': 2,
+        'source.workspaceSetup': NaN, 'source.query': -1, 'source.row': Infinity,
+        'source.private-plan-content': 3 });
+      throw failure;
+    });
+    const timings: Array<{ stage: string; durationMs: number }> = [];
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      await expect(checkPlanExecutionReadiness({ ...binding, harnessSlug: scoped ? 'project' : null }, WS,
+        timing => { timings.push(timing); throw new Error('broken observer'); })).rejects.toBe(failure);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(timings.filter(({ stage }) => stage.startsWith('plan_row_'))).toEqual([
+        { stage: 'plan_row_resolve_scope', durationMs: 1 },
+        { stage: 'plan_row_wait_for_begin', durationMs: 2 },
+      ]);
+      expect(timings.some(({ stage }) => stage === 'plan_row')).toBe(true);
+    } finally { read.mockRestore(); }
+  });
+
+  it.each([true, false])('keeps the canonical reader call unchanged without an observer, scoped %s', async scoped => {
+    const source = await import('./source');
+    const read = vi.spyOn(source, 'getPlanRow');
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness({ ...binding, harnessSlug: scoped ? 'project' : null }, WS))
+        .toEqual(['plan_status:draft']);
+      expect(read).toHaveBeenCalledExactlyOnceWith(binding.planSlug, { harnessSlug: 'project', workspaceId: WS });
+    } finally { read.mockRestore(); }
+  });
+
   it('starts the canonical scoped read before the scope census settles and refuses mismatched revisions', async () => {
     const source = await import('./source');
     const originalRead = source.getPlanRow;
@@ -329,7 +389,9 @@ describe('real write-boundary bypass regression', () => {
       expect(await checkPlanExecutionReadiness(binding, WS, timing => {
         stages.push(timing.stage); throw Error('diagnostic sink unavailable');
       })).toEqual([]);
-      expect(stages.sort()).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'start_gate_snapshot_plan', 'spec_quality', 'admission', 'recheck'].sort());
+      expect(stages.sort()).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'start_gate_snapshot_plan',
+        'spec_quality', 'admission', 'recheck', 'plan_row_resolve_scope', 'plan_row_acquire_and_setup',
+        'plan_row_query', 'plan_row_finish_transaction', 'plan_row_row'].sort());
       expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
       expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
         harnessSlug: 'project', requireCompleteContractBeforeProof: true, proofMode: 'metadata',
