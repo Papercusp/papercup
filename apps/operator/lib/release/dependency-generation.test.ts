@@ -3063,6 +3063,79 @@ exec /bin/cp "$@"
     expect(existsSync(freshWithoutMarker)).toBe(true);
   });
 
+  it.each([
+    { label: 'permission denied', probe: 'permission', currentStart: '', removeWriter: false, removeScratch: false },
+    { label: 'unclassified probe failure', probe: 'unknown', currentStart: '', removeWriter: false, removeScratch: false },
+    { label: 'silent probe failure', probe: 'silent', currentStart: '', removeWriter: false, removeScratch: false },
+    { label: 'live matching identity', probe: 'live', currentStart: 'proc:100', removeWriter: false, removeScratch: false },
+    { label: 'unreadable live identity', probe: 'live', currentStart: '', removeWriter: false, removeScratch: false },
+    { label: 'incomparable identity provider', probe: 'live', currentStart: 'ps:Thu Nov 5 20:00:00 2026', removeWriter: false, removeScratch: false },
+    { label: 'confirmed absent owner', probe: 'absent', currentStart: '', removeWriter: true, removeScratch: true },
+    { label: 'recycled owner PID', probe: 'live', currentStart: 'proc:200', removeWriter: true, removeScratch: false },
+    { label: 'foreign host owner', probe: 'absent', currentStart: '', removeWriter: false, removeScratch: true, foreign: true },
+  ])('classifies $label writer liveness safely during cleanup (EI-27998982037137151)', ({
+    probe, currentStart, removeWriter, removeScratch, foreign,
+  }) => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const host = execFileSync('hostname', { encoding: 'utf8' }).trim();
+    const owner = `host=${foreign ? `foreign-${host}` : host}\npid=99999999\nstarted=1\nprocess_start=proc:100\n`;
+    const build = join(generationRoot, '.build-probe-writer');
+    const publishLock = join(generationRoot, '.publish-lock');
+    const inflight = join(generationRoot, '.inflight-probe-writer');
+    const scratch = join(integration, 'node_modules.generation-tmp.99999999');
+    for (const directory of [build, publishLock, inflight, scratch]) {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'uncommitted-input'), 'must survive unknown liveness\n');
+    }
+    writeFileSync(join(build, '.papercusp-generation-writer'), owner);
+    writeFileSync(join(publishLock, 'writer'), owner);
+    writeFileSync(join(inflight, 'writer'), owner);
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      // Model the kernel errno at the shell builtin boundary; never signal a
+      // real foreign process or touch a store outside this isolated fixture.
+      'kill() {',
+      '  test "$1" = -0 && test "$2" = 99999999 || return 2',
+      '  case "$WRITER_PROBE" in',
+      '    live) return 0 ;;',
+      '    permission) printf "bash: kill: (%s) - Operation not permitted\\n" "$2" >&2 ;;',
+      '    absent) printf "bash: kill: (%s) - No such process\\n" "$2" >&2 ;;',
+      '    unknown) printf "unclassified process lookup failure\\n" >&2 ;;',
+      '    silent) ;;',
+      '  esac',
+      '  return 1',
+      '}',
+      'dependency_generation_process_start() {',
+      '  test -n "$CURRENT_START" || return 1',
+      '  printf "%s\\n" "$CURRENT_START"',
+      '}',
+      'dependency_generation_cleanup_abandoned "$DG_ROOT"',
+      'DEPENDENCY_GENERATION_REAP_GRACE_SEC=0 dependency_generation_reap_dead_siblings "$ROOT/node_modules"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SCRIPT,
+        ROOT: integration,
+        DG_ROOT: generationRoot,
+        WRITER_PROBE: probe,
+        CURRENT_START: currentStart,
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    for (const directory of [build, publishLock, inflight]) {
+      expect(existsSync(directory), directory).toBe(!removeWriter);
+      if (!removeWriter) {
+        expect(readFileSync(join(directory, 'uncommitted-input'), 'utf8')).toBe('must survive unknown liveness\n');
+      }
+    }
+    expect(existsSync(scratch)).toBe(!removeScratch);
+    expect(readdirSync(generationRoot).filter((entry) => entry.startsWith('.stale-publish-lock.'))).toHaveLength(removeWriter ? 1 : 0);
+    expect(readdirSync(generationRoot).some((entry) => entry.startsWith('.stale-inflight.'))).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('keeps a live completed build owned until its atomic publication rename (WI-2144383)', () => {
     const integration = makeIntegration();
     const generationRoot = join(

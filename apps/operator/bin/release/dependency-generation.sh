@@ -411,7 +411,7 @@ dependency_generation_reap_dead_siblings() {
     pid="${rest%%.*}"
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     [ "$pid" = "$$" ] && continue
-    if kill -0 "$pid" 2>/dev/null || [ -d "/proc/$pid" ]; then
+    if dependency_generation_pid_is_live "$pid"; then
       continue
     fi
     mtime="$(stat -c '%Y' "$candidate" 2>/dev/null || stat -f '%m' "$candidate" 2>/dev/null || echo "$now")"
@@ -1240,8 +1240,25 @@ dependency_generation_select() {
   DEPENDENCY_GENERATION_REUSED='true'
 }
 
+# Destructive callers need positive absence, not merely a failed signal probe.
+# Bash exposes kill's errno through its diagnostic; pin the locale and recognize
+# only ESRCH for this PID. EPERM, unreadable /proc, and unknown failures preserve
+# the owner. This also works on hosts without /proc, unlike a directory fallback.
+dependency_generation_pid_is_live() {
+  local pid="$1" probe_error
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  if probe_error="$(LC_ALL=C kill -0 "$pid" 2>&1)"; then
+    return 0
+  fi
+  [ -d "/proc/$pid" ] && return 0
+  case "$probe_error" in
+    *"($pid)"*'No such process'*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 dependency_generation_writer_is_live() {
-  local marker="$1" expected_host="$2" owner_host owner_pid
+  local marker="$1" expected_host="$2" owner_host owner_pid owner_start current_start
   [ -f "$marker" ] || return 1
   owner_host="$(dependency_generation_read_field "$marker" host)"
   owner_pid="$(dependency_generation_read_field "$marker" pid)"
@@ -1249,7 +1266,17 @@ dependency_generation_writer_is_live() {
   case "$owner_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  kill -0 "$owner_pid" 2>/dev/null
+  dependency_generation_pid_is_live "$owner_pid" || return 1
+  owner_start="$(dependency_generation_read_field "$marker" process_start)"
+  if [ -n "$owner_start" ]; then
+    current_start="$(dependency_generation_process_start "$owner_pid" || true)"
+    # Only identities from the same readable provider are comparable. Falling
+    # back from /proc to ps is not evidence that the recorded process exited.
+    case "$owner_start:$current_start" in
+      proc:*:proc:*|ps:*:ps:*) [ "$current_start" = "$owner_start" ] || return 1 ;;
+    esac
+  fi
+  return 0
 }
 
 dependency_generation_path_is_old() {
