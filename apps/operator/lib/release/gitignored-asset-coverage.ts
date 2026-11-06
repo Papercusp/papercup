@@ -55,6 +55,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import ts from 'typescript';
 
 import {
@@ -301,6 +302,17 @@ function toleratesAbsence(call: ts.CallExpression): boolean {
       return true;
     }
     if (ts.isCallExpression(n) && /skipIf|runIf/.test(calleeName(n))) return true;
+    // Only existsSync can return false for a missing file without throwing.
+    // A negative assertion about readFile/stat still requires the file to exist.
+    if (calleeName(call) === 'existsSync' && ts.isCallExpression(n) &&
+      ts.isPropertyAccessExpression(n.expression) &&
+      ['toBe', 'toEqual'].includes(n.expression.name.text) &&
+      n.arguments[0]?.kind === ts.SyntaxKind.FalseKeyword) {
+      const subject = n.expression.expression;
+      if (ts.isCallExpression(subject) && calleeName(subject) === 'expect' && subject.arguments[0] === call) {
+        return true;
+      }
+    }
   }
   return false;
 }
@@ -318,9 +330,10 @@ function toleratesAbsence(call: ts.CallExpression): boolean {
 function derivesFromTemporaryFixture(
   node: ts.Node | undefined,
   constsAt: (n: ts.Node) => Map<string, ts.Expression>,
-  fns: Map<string, ts.SignatureDeclaration> = new Map(),
+  functionAt: (n: ts.CallExpression) => ts.SignatureDeclaration | undefined,
   depth = 0,
   seen: Set<string> = new Set(),
+  members: string[] = [],
 ): boolean {
   if (!node || depth > 12) return false;
 
@@ -333,11 +346,31 @@ function derivesFromTemporaryFixture(
     if (!init) return false;
     const next = new Set(seen);
     next.add(node.text);
-    return derivesFromTemporaryFixture(init, constsAt, fns, depth + 1, next);
+    return derivesFromTemporaryFixture(init, constsAt, functionAt, depth + 1, next, members);
+  }
+
+  if (ts.isPropertyAccessExpression(node)) {
+    return derivesFromTemporaryFixture(node.expression, constsAt, functionAt, depth + 1, seen,
+      [node.name.text, ...members]);
+  }
+
+  if (ts.isObjectLiteralExpression(node) && members.length) {
+    // Project the requested property instead of inheriting a sibling's temp root.
+    for (const property of [...node.properties].reverse()) {
+      if ((ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
+        (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+        property.name.text === members[0]) {
+        const value = ts.isPropertyAssignment(property) ? property.initializer : property.name;
+        return derivesFromTemporaryFixture(value, constsAt, functionAt, depth + 1, seen, members.slice(1));
+      }
+      // A later spread could replace the member; unknown provenance stays a requirement.
+      if (ts.isSpreadAssignment(property)) return false;
+    }
+    return false;
   }
 
   if (ts.isCallExpression(node)) {
-    if (TEMP_ROOT_FNS.has(calleeName(node))) return true;
+    if (!members.length && TEMP_ROOT_FNS.has(calleeName(node))) return true;
     // Follow a LOCAL fixture helper: `const root = fixture({...})` where
     // `function fixture(): string { const root = mkdtempSync(...); ... return root; }`
     // is the dominant fixture shape in this repo, and without this the helper's
@@ -345,17 +378,17 @@ function derivesFromTemporaryFixture(
     // return value reads as a real requirement. Only the RETURN expressions are
     // inspected, never the whole body: a helper that merely mentions `tmpdir()`
     // while returning a repo path must still be flagged.
-    const callee = calleeName(node);
-    if (callee && !seen.has(`fn:${callee}`)) {
-      const fn = fns.get(callee);
-      if (fn) {
+    const fn = functionAt(node);
+    if (fn) {
+      const key = `fn:${fn.getSourceFile().fileName}:${fn.pos}`;
+      if (!seen.has(key)) {
         // Cross into the helper with the identifier trail CLEARED — only the
         // recursion guards carry over. The caller's names shadow nothing here,
         // and keeping them would make the helper's own `root` look already-seen.
         const next = new Set([...seen].filter((s) => s.startsWith('fn:')));
-        next.add(`fn:${callee}`);
+        next.add(key);
         return returnExpressionsOf(fn).some((r) =>
-          derivesFromTemporaryFixture(r, constsAt, fns, depth + 1, next),
+          derivesFromTemporaryFixture(r, constsAt, functionAt, depth + 1, next, members),
         );
       }
     }
@@ -363,7 +396,7 @@ function derivesFromTemporaryFixture(
 
   let found = false;
   ts.forEachChild(node, (child) => {
-    if (!found && derivesFromTemporaryFixture(child, constsAt, fns, depth + 1, seen)) found = true;
+    if (!found && derivesFromTemporaryFixture(child, constsAt, functionAt, depth + 1, seen, members)) found = true;
   });
   return found;
 }
@@ -516,6 +549,41 @@ export function scanRequiredIgnoredAssets(opts: {
   const read = opts.readFile ?? ((p: string) => readFileSync(p, 'utf8'));
   const sites: RequiredAssetSite[] = [];
   let parsed = 0;
+  // Load relative fixture helpers lazily. Their bindings belong to their own
+  // module, so a caller's identically named root must never shadow them.
+  const modules = new Map<string, ts.SourceFile | undefined>();
+  const bindings = new WeakMap<ts.SourceFile, ReturnType<typeof buildScopedConstResolver>>();
+  const functions = new WeakMap<ts.SourceFile, ReturnType<typeof collectLocalFunctions>>();
+  const register = (sf: ts.SourceFile) => {
+    bindings.set(sf, buildScopedConstResolver(sf));
+    functions.set(sf, collectLocalFunctions(sf));
+    return sf;
+  };
+  const constsAt = (node: ts.Node) => bindings.get(node.getSourceFile())!(node);
+  const functionAt = (call: ts.CallExpression): ts.SignatureDeclaration | undefined => {
+    if (!ts.isIdentifier(call.expression)) return undefined;
+    const sf = call.getSourceFile(), name = call.expression.text;
+    const local = functions.get(sf)?.get(name);
+    if (local) return local;
+    for (const statement of sf.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) ||
+        !statement.moduleSpecifier.text.startsWith('.')) continue;
+      const imports = statement.importClause?.namedBindings;
+      if (!imports || !ts.isNamedImports(imports)) continue;
+      const imported = imports.elements.find((entry) => entry.name.text === name);
+      if (!imported) continue;
+      const base = resolve(dirname(sf.fileName), statement.moduleSpecifier.text);
+      for (const path of [base, `${base}.ts`, `${base}.tsx`, `${base}.mjs`, `${base}.js`, `${base}/index.ts`]) {
+        if (!modules.has(path)) {
+          try { modules.set(path, register(ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest, true))); }
+          catch { modules.set(path, undefined); }
+        }
+        const module = modules.get(path);
+        if (module) return functions.get(module)?.get(imported.propertyName?.text ?? imported.name.text);
+      }
+    }
+    return undefined;
+  };
 
   for (const rel of opts.testFiles) {
     let src: string;
@@ -532,17 +600,14 @@ export function scanRequiredIgnoredAssets(opts: {
     }
     parsed++;
 
-    const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-
-    const constsAt = buildScopedConstResolver(sf);
-    const localFns = collectLocalFunctions(sf);
+    const sf = register(ts.createSourceFile(resolve(opts.repoRoot, rel), src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX));
 
     const visit = (n: ts.Node): void => {
       if (ts.isCallExpression(n) && n.arguments.length > 0) {
         const fn = calleeName(n);
         if (FS_REQUIRE_FNS.has(fn) && !toleratesAbsence(n)) {
           const consts = constsAt(n);
-          if (derivesFromTemporaryFixture(n.arguments[0], constsAt, localFns)) {
+          if (derivesFromTemporaryFixture(n.arguments[0], constsAt, functionAt)) {
             ts.forEachChild(n, visit);
             return;
           }

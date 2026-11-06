@@ -4,6 +4,7 @@
  * a path whose unknowns were silently emptied all fail here.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -33,13 +34,36 @@ function source(rel: string): string {
   return text;
 }
 
-function exportsSymbol(text: string, symbol: string): boolean {
+function exportsSymbol(
+  text: string,
+  symbol: string,
+  file: string,
+  visited = new Set<string>(),
+): boolean {
+  const resolvedFile = path.resolve(file);
+  if (visited.has(resolvedFile)) return false;
+  visited.add(resolvedFile);
+
   const declared = new RegExp(
     `^export\\s+(?:declare\\s+)?(?:async\\s+)?(?:function\\*?|const|let|class|interface|type|enum)\\s+${symbol}\\b`,
     'm',
   );
   const listed = new RegExp(`^export\\s*\\{[^}]*\\b${symbol}\\b[^}]*\\}`, 'm');
-  return declared.test(text) || listed.test(text);
+  if (declared.test(text) || listed.test(text)) return true;
+
+  // `export *` is a real named re-export. Resolve it from the declaring file
+  // and inspect its target so barrel files do not produce false alarms.
+  const starReExport = /^\s*export\s+\*\s+from\s+(['"])([^'"]+)\1\s*;?/gm;
+  const requireFromFile = createRequire(resolvedFile);
+  for (const match of text.matchAll(starReExport)) {
+    try {
+      const target = requireFromFile.resolve(match[2]!);
+      if (existsSync(target) && exportsSymbol(readFileSync(target, 'utf8'), symbol, target, visited)) return true;
+    } catch {
+      // An unresolved re-export does not prove that this file exports the symbol.
+    }
+  }
+  return false;
 }
 
 /** First-column cells of the contract's "Processing path" table. */
@@ -81,7 +105,7 @@ describe('pilot processing map', () => {
       for (const e of p.enforcement) {
         const abs = path.join(REPO_ROOT, e.file);
         if (!existsSync(abs)) broken.push(`${p.id}: missing file ${e.file}`);
-        else if (!exportsSymbol(source(e.file), e.exportedSymbol)) {
+        else if (!exportsSymbol(source(e.file), e.exportedSymbol, abs)) {
           broken.push(`${p.id}: ${e.file} does not export ${e.exportedSymbol}`);
         }
       }

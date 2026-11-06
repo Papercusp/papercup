@@ -98,6 +98,43 @@ describe('Playwright isolated webServer contract', () => {
     vi.resetModules();
   });
 
+  it('uses the isolated native runtime without starting or warming a browser server', async () => {
+    const names = ['VERIFY_TAURI_PID', 'VERIFY_TAURI_DEV_URL', 'OPERATOR_E2E_BASE_URL',
+      'OPERATOR_E2E_REUSE_SERVER', 'PAPERCUSP_DISABLE_TEST_RUNS_REPORTER'] as const;
+    const previous = names.map(name => process.env[name]);
+    try {
+      process.env.VERIFY_TAURI_PID = '12345';
+      process.env.VERIFY_TAURI_DEV_URL = 'http://127.0.0.1:43179';
+      delete process.env.OPERATOR_E2E_BASE_URL;
+      delete process.env.OPERATOR_E2E_REUSE_SERVER;
+      process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER = '0';
+      vi.resetModules();
+      const { default: config } = await import('../../playwright.config.mts');
+      expect(config.use?.baseURL).toBe('http://127.0.0.1:43179');
+      expect(config.webServer).toBeUndefined();
+      expect(config.globalSetup).toBeUndefined();
+      expect(config.reporter).toContainEqual(['./test/reporters/admin-test-runs-reporter-playwright.ts', {}]);
+    } finally {
+      names.forEach((name, index) => restoreEnv(name, previous[index]));
+    }
+  });
+
+  it('keeps browser isolation when the native runtime binding is incomplete', async () => {
+    const names = ['VERIFY_TAURI_PID', 'VERIFY_TAURI_DEV_URL', 'OPERATOR_E2E_REUSE_SERVER'] as const;
+    const previous = names.map(name => process.env[name]);
+    try {
+      process.env.VERIFY_TAURI_PID = '12345';
+      delete process.env.VERIFY_TAURI_DEV_URL;
+      delete process.env.OPERATOR_E2E_REUSE_SERVER;
+      vi.resetModules();
+      const { default: config } = await import('../../playwright.config.mts');
+      expect(config.webServer).toMatchObject({ reuseExistingServer: false });
+      expect(config.globalSetup).toBe('./e2e/_warm-dev-server.ts');
+    } finally {
+      names.forEach((name, index) => restoreEnv(name, previous[index]));
+    }
+  });
+
   it('preflights browser temp headroom before the default and inherited hosted profiles load', () => {
     for (const name of ['playwright.config.mts', 'playwright.hosted-http1.config.ts']) {
       const source = readFileSync(join(OPERATOR_DIR, name), 'utf8');

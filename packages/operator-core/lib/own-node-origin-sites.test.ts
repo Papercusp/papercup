@@ -58,7 +58,10 @@ const BASELINE: Readonly<Record<string, { count: number; reason: string }>> = {
   'stranded-checkpoint-scan.ts': { count: 1, reason: `${AWARE} (own_node_authored via issueOwnAuthorWhereSql lifts the remote label, WI-10006562)` },
   'work-item-admission-recovery.ts': { count: 2, reason: `${AWARE} (heal before the local-only refusal)` },
   'work-item-topic-tags.ts': { count: 2, reason: `${AWARE} (heal-and-retry once)` },
-  'work-items-admission-promoter.ts': { count: 2, reason: `${AWARE} (snapshot ownNode mark)` },
+  'work-items-admission-promoter.ts': {
+    count: 7,
+    reason: `${AWARE} (remote-ID census, endpoint protection, and admission-review eligibility honor snapshot.ownNode) plus ${NOT_AUTHORITY} (agent-park and signed human-blocker checks only select read-only comparison references)`,
+  },
   'work-items-admission.ts': { count: 2, reason: 'defines the local-claimability predicates the own-node helpers extend' },
   'work-items-hold-open.ts': { count: 1, reason: `${NOT_AUTHORITY} (hold-open eligibility read)` },
   'work-items-orphan-author.ts': { count: 1, reason: 'repair permit: only a remote row can be an orphan-author candidate' },

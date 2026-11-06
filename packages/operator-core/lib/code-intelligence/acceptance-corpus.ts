@@ -25,8 +25,8 @@ import type { CodeIntelBackend, CodeIntelIntent } from './contracts.ts';
  * The commit the ground truth below was measured against.
  * Re-pin this together with any fixture re-measurement.
  */
-export const CORPUS_BASELINE_COMMIT = '1f3058e32bccddfc7783c2403ecfde15ab17eac3';
-export const CORPUS_BASELINE_MEASURED_AT = '2026-11-02T15:15:41Z';
+export const CORPUS_BASELINE_COMMIT = 'b77ca3bca0c0242702e011a467f5f0392310037a';
+export const CORPUS_BASELINE_MEASURED_AT = '2026-11-06T11:07:57Z';
 
 /**
  * A location this corpus asserts exists in the tree, ONE-indexed.
@@ -177,7 +177,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'libs/generic/scheduled-registry/src/index.ts',
-        line1: 557,
+        line1: 606,
         symbolOnLine: 'export function managedSetInterval',
       },
     ],
@@ -206,13 +206,13 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     gradeMode: 'must-contain',
     expectedSites: [
       {
-        path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 337,
+        path: 'papercusp-desktop/src-tauri/src/endpoint_ipc_transport.rs',
+        line1: 35,
         symbolOnLine: 'impl AsyncRead for IpcStream',
       },
       {
-        path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 353,
+        path: 'papercusp-desktop/src-tauri/src/endpoint_ipc_transport.rs',
+        line1: 51,
         symbolOnLine: 'impl AsyncWrite for IpcStream',
       },
     ],

@@ -6,9 +6,14 @@ import { preparePlaywrightTempDirectory } from '../../scripts/lib/playwright-tem
 preparePlaywrightTempDirectory();
 
 const PORT = Number(process.env.OPERATOR_E2E_PORT ?? 3055);
-const BASE_URL = process.env.OPERATOR_E2E_BASE_URL ?? `http://localhost:${PORT}`;
+// The native verifier already owns and warms an isolated app. Starting the
+// browser profile's Vite server here can collide with an unrelated desktop.
+const nativeRuntime = Boolean(process.env.VERIFY_TAURI_PID && process.env.VERIFY_TAURI_DEV_URL);
+const BASE_URL = process.env.OPERATOR_E2E_BASE_URL
+  ?? (nativeRuntime ? process.env.VERIFY_TAURI_DEV_URL : undefined)
+  ?? `http://localhost:${PORT}`;
 
-const reuseExisting = process.env.OPERATOR_E2E_REUSE_SERVER === '1';
+const reuseExisting = nativeRuntime || process.env.OPERATOR_E2E_REUSE_SERVER === '1';
 
 /**
  * Specs owned by a dedicated profile config (`playwright.<profile>.config.ts`).
@@ -30,7 +35,7 @@ export default defineConfig({
   testIgnore: PROFILE_OWNED_SPECS,
   // Warm the cold Vite dev server once before any worker starts, so no
   // worker's first test races dependency optimization (WI-10006792).
-  globalSetup: './e2e/_warm-dev-server.ts',
+  globalSetup: nativeRuntime ? undefined : './e2e/_warm-dev-server.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

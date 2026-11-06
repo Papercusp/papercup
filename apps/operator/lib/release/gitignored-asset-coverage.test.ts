@@ -394,6 +394,52 @@ describe('false-positive controls — the noise that would get this guard disabl
     expect(result.required).toEqual([]);
   });
 
+  it('follows an imported fixture return member without borrowing a temporary sibling', () => {
+    const result = scanFixture({
+      'packages/p/fixture.ts': `
+        import { mkdtempSync } from 'node:fs';
+        import { join } from 'node:path';
+        import { tmpdir } from 'node:os';
+        export async function fixture() {
+          const custody = mkdtempSync(join(tmpdir(), 'fixture-'));
+          const root = join(custody, 'source');
+          const checkout = '/real-checkout';
+          return { root, checkout };
+        }
+      `,
+      'packages/p/imported.test.ts': `
+        import { fixture as importedFixture } from './fixture';
+        import { readFileSync } from 'node:fs';
+        import { join } from 'node:path';
+        const fixture = () => importedFixture();
+        const root = '/caller-checkout';
+        it('distinguishes fixture members', async () => {
+          const f = await fixture();
+          readFileSync(join(f.root, 'apps/operator/dist-verify', 'temporary.mjs'));
+          readFileSync(join(f.checkout, 'apps/operator/dist-verify', 'real.mjs'));
+        });
+      `,
+    }, { ignored: ['apps/operator/dist-verify'], coveredRoots: [] });
+    expect(result.required.map(site => site.path)).toEqual(['apps/operator/dist-verify/real.mjs']);
+    expect(result.violations.map(site => site.path)).toEqual(['apps/operator/dist-verify/real.mjs']);
+  });
+
+  it('tolerates an explicit absence assertion without exempting positive existence or throwing reads', () => {
+    const result = scanFixture({
+      'packages/p/absence.test.ts': `
+        import { existsSync, readFileSync } from 'node:fs';
+        it('checks absence', () => {
+          expect(existsSync('apps/operator/dist-verify/absent')).toBe(false);
+          expect(existsSync('apps/operator/dist-verify/present')).toBe(true);
+          expect(readFileSync('apps/operator/dist-verify/read')).toEqual(false);
+        });
+      `,
+    }, { ignored: ['apps/operator/dist-verify'], coveredRoots: [] });
+    expect(result.violations.map(site => site.path)).toEqual([
+      'apps/operator/dist-verify/present', 'apps/operator/dist-verify/read',
+    ]);
+  });
+
   it('does NOT flag a test that tolerates absence via a skip guard', () => {
     const result = scanFixture(
       {
