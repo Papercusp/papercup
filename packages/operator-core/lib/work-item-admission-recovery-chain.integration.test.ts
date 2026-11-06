@@ -133,7 +133,7 @@ const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
 const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
 const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
 const { admissionCredentialDigest, admissionReplayContext } = await import('./work-item-admission-authority');
-const { requestAdmissionReview } = await import('./work-item-admission-review');
+const { requestAdmissionReview, runAdmissionReviews } = await import('./work-item-admission-review');
 const { appendFleetMembershipEvent } = await import('./fleet-membership-store');
 const originalContext = {
   workspaceId: 'default', harnessSlug: 'original-harness', profile: 'engineer' as const,
@@ -943,6 +943,79 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
       payload: { _admissionReviewReceipt: { requestId: queued.requestId, pickupConfirmed: false } } });
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('persists a guarded review refusal, retries on dependency change, and rechecks authority before a cached skip', async () => {
+    const original = await create('Guarded admission review target');
+    const dependency = await create(original.title);
+    const [a, b] = [original.id, dependency.id].sort();
+    const queued = await review(original.id);
+    h.model.mockImplementationOnce(async () => {
+      await db.sql`UPDATE harness_shared.work_items SET summary = 'reference changed during review'
+        WHERE feature_id = ${dependency.id}`;
+      return distinctPair(a, b);
+    });
+
+    const first = await tick();
+    const refusal = first.guardRefusals?.find(item => item.itemId === original.id);
+    expect(refusal).toMatchObject({
+      reason: 'snapshot-drift',
+      detail: expect.stringContaining(dependency.id),
+    });
+    const afterFirst = await row(original.id);
+    expect(afterFirst.payload._admissionReviewReceipt).toMatchObject({
+      requestId: queued.requestId,
+      guardDisposition: {
+        schemaVersion: 1,
+        outcome: 'guard-refused',
+        guardRefusals: [expect.objectContaining({ itemId: original.id, reason: 'snapshot-drift' })],
+        dependencies: [{ itemId: dependency.id, fingerprint: expect.any(String) }],
+      },
+    });
+    const reviewRunId = String(first.runId);
+    expect(reviewRunId).toContain(':review:' + queued.requestId);
+    const [reviewLedger] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+      WHERE id = ${reviewRunId}`;
+    expect(reviewLedger!.detail).toMatchObject({
+      status: 'complete',
+      guardRefusals: [expect.objectContaining({ itemId: original.id, reason: 'snapshot-drift' })],
+    });
+    expect(h.model).toHaveBeenCalledTimes(1);
+
+    const repeat = await runAdmissionReviews(
+      { ...scope, runId: 'guarded-review-same-dependency' }, db.sql, h.model);
+    expect(repeat.result).toBeNull();
+    expect(repeat.guardRefusals).toContainEqual(refusal);
+    expect(h.model).toHaveBeenCalledTimes(1);
+
+    h.revokedReviewers.add(reviewerOwnerId);
+    const revoked = await runAdmissionReviews(
+      { ...scope, runId: 'guarded-review-revoked-caller' }, db.sql, h.model);
+    expect(revoked.guardRefusals).toContainEqual(expect.objectContaining({
+      itemId: original.id,
+      reason: 'review-gated',
+      detail: expect.stringContaining('review requester absent, revoked or foreign'),
+    }));
+    expect(h.model).toHaveBeenCalledTimes(1);
+    expect((await row(original.id)).payload._admissionReviewReceipt).toMatchObject({
+      requestId: queued.requestId,
+      guardDisposition: { outcome: 'guard-refused' },
+    });
+    h.revokedReviewers.delete(reviewerOwnerId);
+
+    await db.sql`UPDATE harness_shared.work_items SET summary = 'reference changed after refusal'
+      WHERE feature_id = ${dependency.id}`;
+    h.model.mockResolvedValueOnce(distinctPair(a, b));
+    const retried = await runAdmissionReviews(
+      { ...scope, runId: 'guarded-review-dependency-changed' }, db.sql, h.model);
+    expect(retried.result?.reviewedItemId).toBe(original.id);
+    expect(h.model).toHaveBeenCalledTimes(2);
+    expect((await row(original.id)).payload._admissionReviewReceipt).toMatchObject({
+      requestId: queued.requestId,
+      runId: 'guarded-review-dependency-changed:review:' + queued.requestId,
+      pickupConfirmed: false,
+    });
+    expect((await row(original.id)).payload._admissionReviewReceipt).not.toHaveProperty('guardDisposition');
   });
 
   it('reviews the audited original blocked park with distinct creator, parker and leader without releasing it', async () => {

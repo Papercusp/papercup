@@ -28,6 +28,40 @@ type ReviewRequest = z.infer<typeof requestSchema>;
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, part) =>
   part && typeof part === 'object' && !Array.isArray(part)
     ? Object.fromEntries(Object.entries(part).sort(([a], [b]) => a.localeCompare(b))) : part);
+const ADMISSION_REVIEW_GUARD_RETRY_MS = 30 * 60 * 1000;
+
+type AdmissionReviewGuardDisposition = {
+  policyRevision: string;
+  retryAfterMs: number;
+  guardRefusals: AdmissionMergeGuardRefusal[];
+  dependencies: Array<{ itemId: string; fingerprint: string }>;
+};
+
+function admissionReviewGuardDisposition(value: unknown, requestId: string): AdmissionReviewGuardDisposition | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const receipt = value as Record<string, unknown>;
+  const disposition = receipt.guardDisposition;
+  if (receipt.requestId !== requestId || !disposition || typeof disposition !== 'object' || Array.isArray(disposition)) {
+    return null;
+  }
+  const row = disposition as Record<string, unknown>;
+  if (row.schemaVersion !== 1 || row.outcome !== 'guard-refused' ||
+      typeof row.policyRevision !== 'string' || typeof row.retryAfterMs !== 'number' ||
+      !Number.isFinite(row.retryAfterMs) || !Array.isArray(row.guardRefusals) ||
+      !Array.isArray(row.dependencies)) return null;
+  const guardRefusals = row.guardRefusals.filter((refusal): refusal is AdmissionMergeGuardRefusal =>
+    Boolean(refusal) && typeof refusal === 'object' && !Array.isArray(refusal) &&
+    typeof (refusal as AdmissionMergeGuardRefusal).itemId === 'string' &&
+    typeof (refusal as AdmissionMergeGuardRefusal).reason === 'string' &&
+    typeof (refusal as AdmissionMergeGuardRefusal).detail === 'string');
+  if (guardRefusals.length !== row.guardRefusals.length || guardRefusals.length === 0) return null;
+  const dependencies = row.dependencies.filter((dependency): dependency is { itemId: string; fingerprint: string } =>
+    Boolean(dependency) && typeof dependency === 'object' && !Array.isArray(dependency) &&
+    typeof (dependency as { itemId?: unknown }).itemId === 'string' &&
+    typeof (dependency as { fingerprint?: unknown }).fingerprint === 'string');
+  if (dependencies.length !== row.dependencies.length) return null;
+  return { policyRevision: row.policyRevision, retryAfterMs: row.retryAfterMs, guardRefusals, dependencies };
+}
 
 async function signature(sql: Sql, scope: AdmissionRecoveryScope, request: Omit<ReviewRequest, 'signature'>) {
   const [key] = await sql<{ value_b64: string }[]>`
@@ -152,15 +186,17 @@ export async function runAdmissionReviews(
   options: { workspaceId: string; harnessSlug: string; runId: string; targetItemIds?: readonly string[] },
   sql: Sql, llmCall: PromoterLlmCall,
 ): Promise<{ result: PromoterRunResult | null; guardRefusals: AdmissionMergeGuardRefusal[]; reviewedItemId?: string }> {
-  const rows = await sql<{ feature_id: string; request: unknown }[]>`
-    SELECT feature_id, payload->'_admissionReviewRequest' AS request FROM harness_shared.work_items
+  const rows = await sql<{ feature_id: string; request: unknown; receipt: unknown }[]>`
+    SELECT feature_id, payload->'_admissionReviewRequest' AS request,
+           payload->'_admissionReviewReceipt' AS receipt FROM harness_shared.work_items
      WHERE workspace_id = ${options.workspaceId} AND harness_slug = ${options.harnessSlug}
        AND admission IN ('pending', 'unreviewed')
        AND payload ? '_admissionReviewRequest'
        AND (jsonb_typeof(payload->'_admissionReviewRequest') IS DISTINCT FROM 'object'
          OR payload #>> '{_admissionReviewRequest,requestId}' IS NULL
          OR (payload #>> '{_admissionReviewReceipt,requestId}') IS DISTINCT FROM
-           payload #>> '{_admissionReviewRequest,requestId}')
+           payload #>> '{_admissionReviewRequest,requestId}'
+         OR payload #>> '{_admissionReviewReceipt,guardDisposition,outcome}' = 'guard-refused')
        AND (${options.targetItemIds === undefined} OR feature_id = ANY(${[...(options.targetItemIds ?? [])]}::text[]))
      ORDER BY
        CASE WHEN payload->>'_admissionReviewLastAttemptAtMs' ~ '^[0-9]{1,15}$'
@@ -174,7 +210,7 @@ export async function runAdmissionReviews(
     // Record an attempt before authority checks so a repeatedly refused request
     // cannot pin the fixed-size page. This scheduling marker is not part of the
     // signed request and does not create or imply an admission-review receipt.
-    const attempted = await sql<{ feature_id: string }[]>`
+    const attempted = await sql<{ feature_id: string; receipt: unknown }[]>`
       UPDATE harness_shared.work_items SET payload = jsonb_set(
         COALESCE(payload, '{}'::jsonb), '{_admissionReviewLastAttemptAtMs}',
         to_jsonb((extract(epoch FROM clock_timestamp()) * 1000)::bigint), true)
@@ -185,8 +221,9 @@ export async function runAdmissionReviews(
          AND (jsonb_typeof(payload->'_admissionReviewRequest') IS DISTINCT FROM 'object'
            OR payload #>> '{_admissionReviewRequest,requestId}' IS NULL
            OR (payload #>> '{_admissionReviewReceipt,requestId}') IS DISTINCT FROM
-             payload #>> '{_admissionReviewRequest,requestId}')
-       RETURNING feature_id`;
+             payload #>> '{_admissionReviewRequest,requestId}'
+           OR payload #>> '{_admissionReviewReceipt,guardDisposition,outcome}' = 'guard-refused')
+       RETURNING feature_id, payload->'_admissionReviewReceipt' AS receipt`;
     // The request, receipt, or admission changed after selection. Never judge
     // the stale snapshot; it will be reconsidered from the current queue state.
     if (attempted.length !== 1) continue;
@@ -210,11 +247,28 @@ export async function runAdmissionReviews(
       refuse(error.message);
       continue;
     }
+    const cached = admissionReviewGuardDisposition(attempted[0]!.receipt, request.requestId);
+    if (cached && cached.policyRevision === canonical(initial.revision) && Date.now() < cached.retryAfterMs) {
+      const snapshots = cached.dependencies.length > 0
+        ? await readAdmissionMergeSnapshots(sql, {
+          workspaceId: scope.workspaceId,
+          harnessSlug: scope.harnessSlug,
+          ids: cached.dependencies.map(dependency => dependency.itemId),
+        })
+        : new Map();
+      const unchanged = cached.dependencies.every(dependency =>
+        (snapshots.get(dependency.itemId)?.fingerprint ?? 'missing') === dependency.fingerprint);
+      if (unchanged) {
+        guardRefusals.push(...cached.guardRefusals);
+        continue;
+      }
+    }
 
     // Keep model work and its final beforeWrite revalidation outside the preflight
     // catch: late custody, request, or policy drift must still abort the run.
+    const reviewRunId = `${options.runId}:review:${request.requestId}`;
     const result = await runWorkItemAdmissionPromoter({
-      ...options, sql, llmCall, runId: `${options.runId}:review:${request.requestId}`,
+      ...options, sql, llmCall, runId: reviewRunId,
       targetItemIds: [scope.workItemId],
       reviewOnly: {
         itemId: scope.workItemId,
@@ -230,10 +284,38 @@ export async function runAdmissionReviews(
         afterWrite: async tx => {
           await tx`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
             '{_admissionReviewReceipt}', ${tx.typed(JSON.stringify({ requestId: request.requestId,
-              purpose: request.purpose, runId: `${options.runId}:review:${request.requestId}`,
+              purpose: request.purpose, runId: reviewRunId,
               pickupConfirmed: false }), 25)}::jsonb)
             WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
               AND feature_id = ${scope.workItemId}`;
+        },
+        afterGuardRefusal: async (tx, refusals, dependencies) => {
+          const recordedAtMs = Date.now();
+          const receipt = {
+            requestId: request.requestId,
+            purpose: request.purpose,
+            runId: reviewRunId,
+            pickupConfirmed: false,
+            guardDisposition: {
+              schemaVersion: 1,
+              outcome: 'guard-refused',
+              retryReason: 'retry when request, policy, or protected dependency changes; otherwise after 30 minutes',
+              recordedAtMs,
+              retryAfterMs: recordedAtMs + ADMISSION_REVIEW_GUARD_RETRY_MS,
+              policyRevision: canonical(initial.revision),
+              guardRefusals: refusals,
+              dependencies,
+            },
+          };
+          const rows = await tx<{ feature_id: string }[]>`
+            UPDATE harness_shared.work_items SET payload = jsonb_set(
+              COALESCE(payload, '{}'::jsonb), '{_admissionReviewReceipt}',
+              ${tx.typed(JSON.stringify(receipt), 25)}::jsonb, true)
+             WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+               AND feature_id = ${scope.workItemId}
+               AND payload #>> '{_admissionReviewRequest,requestId}' = ${request.requestId}
+             RETURNING feature_id`;
+          if (rows.length !== 1) throw new Error('review request changed before guard refusal disposition persisted');
         },
       },
     });

@@ -7,6 +7,7 @@ type Candidate = {
   request: unknown;
   attemptedAtMs: number | null;
   receiptId: string | null;
+  guardReceipt?: unknown;
 };
 
 const mocks = vi.hoisted(() => ({
@@ -46,6 +47,11 @@ type ReviewPromoterInput = {
     itemId: string;
     beforeWrite: (tx: Sql) => Promise<void>;
     afterWrite: (tx: Sql) => Promise<void>;
+    afterGuardRefusal?: (
+      tx: Sql,
+      refusals: readonly { itemId: string; canonicalId: string | null; reason: string; detail: string }[],
+      dependencies: readonly { itemId: string; fingerprint: string }[],
+    ) => Promise<void>;
   };
 };
 
@@ -92,8 +98,11 @@ const makeReviewSql = (candidates: Candidate[], selectedIds: readonly string[]) 
     const query = parts.join('?').replace(/\s+/g, ' ').trim();
     writes.push({ query, values });
     if (query.startsWith("SELECT feature_id, payload->'_admissionReviewRequest' AS request")) {
-      return candidates.filter(candidate => selectedIds.includes(candidate.feature_id) && candidate.receiptId === null)
-        .map(({ feature_id, request }) => ({ feature_id, request }));
+      return candidates.filter(candidate => selectedIds.includes(candidate.feature_id) &&
+        (candidate.receiptId === null ||
+          (candidate.guardReceipt as { guardDisposition?: { outcome?: string } } | undefined)
+            ?.guardDisposition?.outcome === 'guard-refused'))
+        .map(({ feature_id, request, guardReceipt }) => ({ feature_id, request, receipt: guardReceipt ?? null }));
     }
     if (query.startsWith('UPDATE harness_shared.work_items') &&
         query.includes('_admissionReviewLastAttemptAtMs')) {
@@ -101,7 +110,7 @@ const makeReviewSql = (candidates: Candidate[], selectedIds: readonly string[]) 
       expect(candidate).toBeDefined();
       expect(values).toContain(JSON.stringify(candidate!.request));
       candidate!.attemptedAtMs = clock++;
-      return [{ feature_id: candidate!.feature_id }];
+      return [{ feature_id: candidate!.feature_id, receipt: candidate!.guardReceipt ?? null }];
     }
     if (query.startsWith('SELECT value_b64 FROM harness_shared.operator_secrets')) {
       return [{ value_b64: 'dW5pdC1yZXZpZXcta2V5' }];
@@ -114,7 +123,8 @@ const makeReviewSql = (candidates: Candidate[], selectedIds: readonly string[]) 
       const receiptText = values.find(value => typeof value === 'string' && value.includes('"requestId"'));
       expect(candidate).toBeDefined();
       expect(receiptText).toBeDefined();
-      candidate!.receiptId = (JSON.parse(String(receiptText)) as { requestId: string }).requestId;
+      candidate!.guardReceipt = JSON.parse(String(receiptText));
+      candidate!.receiptId = (candidate!.guardReceipt as { requestId: string }).requestId;
       return [{ feature_id: candidate!.feature_id }];
     }
     throw new Error('unexpected admission-review SQL: ' + query);
@@ -169,7 +179,9 @@ describe('admission review queue fairness', () => {
         expect(query).toContain('feature_id LIMIT 20');
 
         return candidates
-          .filter(candidate => candidate.receiptId === null)
+          .filter(candidate => candidate.receiptId === null ||
+            (candidate.guardReceipt as { guardDisposition?: { outcome?: string } } | undefined)
+              ?.guardDisposition?.outcome === 'guard-refused')
           .sort((a, b) => {
             if (a.attemptedAtMs === null && b.attemptedAtMs !== null) return -1;
             if (a.attemptedAtMs !== null && b.attemptedAtMs === null) return 1;
@@ -177,7 +189,7 @@ describe('admission review queue fairness', () => {
               a.feature_id.localeCompare(b.feature_id);
           })
           .slice(0, 20)
-          .map(({ feature_id, request }) => ({ feature_id, request }));
+          .map(({ feature_id, request, guardReceipt }) => ({ feature_id, request, receipt: guardReceipt ?? null }));
       }
 
       if (query.startsWith('UPDATE harness_shared.work_items') &&
@@ -186,7 +198,7 @@ describe('admission review queue fairness', () => {
         expect(candidate).toBeDefined();
         expect(values).toContain(JSON.stringify(candidate!.request));
         candidate!.attemptedAtMs = clock++;
-        return [{ feature_id: candidate!.feature_id }];
+        return [{ feature_id: candidate!.feature_id, receipt: candidate!.guardReceipt ?? null }];
       }
 
       if (query.startsWith('SELECT value_b64 FROM harness_shared.operator_secrets')) {
@@ -200,7 +212,8 @@ describe('admission review queue fairness', () => {
         const receiptText = values.find(value => typeof value === 'string' && value.includes('"requestId"'));
         expect(candidate).toBeDefined();
         expect(receiptText).toBeDefined();
-        candidate!.receiptId = (JSON.parse(String(receiptText)) as { requestId: string }).requestId;
+        candidate!.guardReceipt = JSON.parse(String(receiptText));
+        candidate!.receiptId = (candidate!.guardReceipt as { requestId: string }).requestId;
         return [{ feature_id: candidate!.feature_id }];
       }
 
@@ -289,6 +302,69 @@ describe('signed admission review recovery', () => {
     expect(receiptWrite).toBeDefined();
     expect(receiptWrite!.values).toContain(featureId);
     expect(mocks.readVerifiedRecoveryTarget).toHaveBeenCalledWith(scope, sql);
+  });
+
+  it('caches a durable guard refusal until its protected dependency changes', async () => {
+    const request = makeValidRequest(43, featureId);
+    const candidates: Candidate[] = [
+      { feature_id: featureId, request, attemptedAtMs: null, receiptId: null },
+    ];
+    prepare(candidates, ['su-reviewer', 'su-reviewer', 'su-reviewer', 'su-reviewer', 'su-reviewer']);
+    let dependencyFingerprint = 'dependency-v1';
+    mocks.readSnapshots.mockImplementation(async (_sql: unknown, selection: { ids: string[] }) =>
+      new Map(selection.ids.map(id => [id, {
+        fingerprint: id === neighborId ? dependencyFingerprint : 'subject-v1',
+        assignee: null,
+        payload: { _admissionReviewRequest: request },
+      }])));
+    const { sql } = makeReviewSql(candidates, [featureId]);
+    const refusal = {
+      itemId: featureId, canonicalId: null, reason: 'snapshot-drift',
+      detail: 'reference dependency changed after judging',
+    } as const;
+    mocks.runPromoter.mockImplementationOnce(async (...args) => {
+      const input = args[0] as ReviewPromoterInput;
+      await input.reviewOnly.beforeWrite(input.sql);
+      await input.reviewOnly.afterGuardRefusal!(input.sql, [refusal], [
+        { itemId: neighborId, fingerprint: dependencyFingerprint },
+      ]);
+      return { guardRefusals: [refusal] };
+    });
+
+    const first = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'guard-refusal-first', targetItemIds: [featureId] },
+      sql,
+      vi.fn() as never,
+    );
+    expect(first.result?.guardRefusals).toContainEqual(refusal);
+    expect(candidates[0]!.guardReceipt).toMatchObject({
+      requestId: request.requestId,
+      guardDisposition: {
+        outcome: 'guard-refused',
+        guardRefusals: [refusal],
+        dependencies: [{ itemId: neighborId, fingerprint: 'dependency-v1' }],
+      },
+    });
+
+    const unchanged = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'guard-refusal-repeat', targetItemIds: [featureId] },
+      sql,
+      vi.fn() as never,
+    );
+    expect(unchanged.result).toBeNull();
+    expect(unchanged.guardRefusals).toContainEqual(refusal);
+    expect(mocks.runPromoter).toHaveBeenCalledTimes(1);
+
+    dependencyFingerprint = 'dependency-v2';
+    const retried = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'guard-refusal-dependency-changed', targetItemIds: [featureId] },
+      sql,
+      vi.fn() as never,
+    );
+    expect(retried.result?.reviewedItemId).toBe(featureId);
+    expect(mocks.runPromoter).toHaveBeenCalledTimes(2);
+    expect(candidates[0]!.guardReceipt).not.toHaveProperty('guardDisposition');
+    expect(candidates[0]!.receiptId).toBe(request.requestId);
   });
 
   it('refuses when the signed recovery target changes during model judging', async () => {

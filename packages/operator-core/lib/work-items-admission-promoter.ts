@@ -5223,6 +5223,11 @@ interface PersistAdmissionPlanInput {
     itemId: string;
     beforeWrite: (sql: OrgSql) => Promise<void>;
     afterWrite: (sql: OrgSql) => Promise<void>;
+    afterGuardRefusal?: (
+      sql: OrgSql,
+      refusals: readonly AdmissionMergeGuardRefusal[],
+      dependencies: readonly { itemId: string; fingerprint: string }[],
+    ) => Promise<void>;
   };
   workspaceId: string;
   harnessSlug: string;
@@ -5450,10 +5455,12 @@ async function persistAdmissionPlanInTransaction(
   const guardRefusals: AdmissionMergeGuardRefusal[] = [];
   const refusalKeys = new Set<string>();
   const heldById = new Map<string, string>();
+  const guardDependencyIds = new Map<string, Set<string>>();
   const registerRefusal = (
     itemId: string,
     canonicalId: string | null,
     problem: Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'>,
+    dependencyItemIds: readonly string[] = [itemId, ...(canonicalId ? [canonicalId] : [])],
   ): void => {
     // One endpoint can be visited once through its disposition and again
     // through a non-merge adjudication. Count the protected endpoint once;
@@ -5463,7 +5470,22 @@ async function persistAdmissionPlanInTransaction(
       refusalKeys.add(key);
       guardRefusals.push({ itemId, canonicalId, ...problem });
     }
+    if (itemId === input.reviewOnly?.itemId) {
+      const dependencies = guardDependencyIds.get(itemId) ?? new Set<string>();
+      for (const dependencyId of dependencyItemIds) {
+        if (dependencyId !== itemId) dependencies.add(dependencyId);
+      }
+      guardDependencyIds.set(itemId, dependencies);
+    }
     heldById.set(itemId, `merge guard ${problem.reason}: ${problem.detail}`);
+  };
+  const reviewGuardDependencies = (): Array<{ itemId: string; fingerprint: string }> => {
+    const targetId = input.reviewOnly?.itemId;
+    if (!targetId) return [];
+    return [...(guardDependencyIds.get(targetId) ?? [])].sort().map(itemId => ({
+      itemId,
+      fingerprint: liveById.get(itemId)?.fingerprint ?? 'missing',
+    }));
   };
 
   if (input.reviewOnly) {
@@ -5473,7 +5495,12 @@ async function persistAdmissionPlanInTransaction(
         readOnlyClaimedComparison: true, readOnlyAgentParkComparison: true,
       });
       if (problem) {
-        registerRefusal(input.reviewOnly.itemId, null, problem);
+        registerRefusal(input.reviewOnly.itemId, null, problem, [id]);
+        await input.reviewOnly.afterGuardRefusal?.(
+          sql,
+          guardRefusals.filter(refusal => refusal.itemId === input.reviewOnly!.itemId),
+          reviewGuardDependencies(),
+        );
         return { promotedIds: [], mergedIds: [], held: [...heldById].map(([itemId, reason]) => ({ itemId, reason })),
           replayedIds: [], adjudications: [], adjudicationsInserted: 0, uniqueRowsChanged: 0, guardRefusals };
       }
@@ -5534,7 +5561,7 @@ async function persistAdmissionPlanInTransaction(
       : snapshotIdentityProblem(capturedById.get(comparisonId), liveById.get(comparisonId), 'reference',
         readOnlyComparisonOptions(capturedById.get(comparisonId)));
     if (problem) {
-      registerRefusal(itemId, null, problem);
+      registerRefusal(itemId, null, problem, [comparisonId]);
       comparisonBlocked.add(itemId);
     } else {
       claimedComparisons.set(admissionPairKey(row.a, row.b), comparisonId);
@@ -5713,6 +5740,13 @@ async function persistAdmissionPlanInTransaction(
     actor,
     mergeSnapshots: liveById,
   });
+  if (input.reviewOnly) {
+    const targetRefusals = guardRefusals.filter(refusal => refusal.itemId === input.reviewOnly!.itemId);
+    const targetWillWrite = safePlan.dispositions.some(row => row.itemId === input.reviewOnly!.itemId);
+    if (targetRefusals.length > 0 && !targetWillWrite) {
+      await input.reviewOnly.afterGuardRefusal?.(sql, targetRefusals, reviewGuardDependencies());
+    }
+  }
   if (input.reviewOnly && safePlan.dispositions.some(row => row.itemId === input.reviewOnly!.itemId)) {
     await input.reviewOnly.afterWrite(sql);
   }
