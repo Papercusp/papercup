@@ -4,7 +4,8 @@
  * discover dependencies or certify the inventory's completeness/authorship.
  */
 import { createHash } from 'node:crypto';
-import { closeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
+import koffi from 'koffi';
 import { parseTauriUpdateCandidate, parseTauriUpdateEnvelope, verifyTauriUpdateAuthorization,
   type TauriUpdateCandidate, type TauriUpdateEnvelope, type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
 import { buildHandlerBwrapArgs } from './bwrap-args';
@@ -34,6 +35,91 @@ const snapshots = new WeakMap<PreparedHandlerRuntime, ReadonlyArray<HandlerRunti
 export interface HandlerRuntimeApproval {
   envelope: TauriUpdateEnvelope;
   withCurrentTrust<T>(use: (state: { trust: TauriUpdateTrust; expected: TauriUpdateCandidate; now: number }) => Promise<T>): Promise<T>;
+}
+
+/** Host installer adapter, never manifest input. The candidate still requires
+ * independently authenticated, complete build provenance. Koffi holds the SAME
+ * native directory flock as update_authorization.rs through the awaited use;
+ * no helper process, cached trust, new policy location or approval store.
+ */
+export function createCurrentHandlerRuntimeApproval(envelope: TauriUpdateEnvelope,
+  expected: TauriUpdateCandidate): HandlerRuntimeApproval {
+  const pinnedEnvelope = parseTauriUpdateEnvelope(envelope);
+  const pinnedCandidate = parseTauriUpdateCandidate(expected);
+  return Object.freeze({ envelope: pinnedEnvelope, async withCurrentTrust<T>(
+    use: (state: { trust: TauriUpdateTrust; expected: TauriUpdateCandidate; now: number }) => Promise<T>,
+  ): Promise<T> {
+    if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) {
+      throw new Error('unsupported protected handler runtime trust platform');
+    }
+    const invalid = () => new Error('protected administrator handler runtime trust is absent, invalid or unreadable');
+    const libc = koffi.load('libc.so.6');
+    const openat = libc.func('openat', 'int', ['int', 'str', 'int']);
+    const flock = libc.func('flock', 'int', ['int', 'int']);
+    // Linux O_CLOEXEC: do not pass the authority lease to the handler/children.
+    const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | 0x80000;
+    const descriptors: number[] = [];
+    const directory = (fd: number) => {
+      const stat = fstatSync(fd);
+      if (!stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022)) throw invalid();
+      return fd;
+    };
+    const child = (parent: number, name: string, isDirectory: boolean) => {
+      const fd: number = openat(parent, name, flags | (isDirectory ? constants.O_DIRECTORY : 0));
+      if (fd < 0) throw invalid();
+      descriptors.push(fd);
+      return isDirectory ? directory(fd) : fd;
+    };
+    try {
+      descriptors.push(openSync('/', flags | constants.O_DIRECTORY));
+      let parent = directory(descriptors[0]!);
+      for (const name of ['etc', 'papercusp']) parent = child(parent, name, true);
+      // LOCK_SH | LOCK_NB. Activators use LOCK_EX on this exact directory inode.
+      if (flock(parent, 1 | 4) !== 0) throw new Error('protected update trust is busy or unavailable');
+      const fd = child(parent, 'managed-policy.json', false);
+      const before = fstatSync(fd, { bigint: true });
+      if (!before.isFile() || before.uid !== 0n || (before.mode & 0o022n)
+        || before.nlink !== 1n || before.size < 1n || before.size > 16_384n) throw invalid();
+      const bytes = Buffer.alloc(16_385);
+      let size = 0;
+      while (size < bytes.length) {
+        const count = readSync(fd, bytes, size, bytes.length - size, null);
+        if (!count) break;
+        size += count;
+      }
+      const after = fstatSync(fd, { bigint: true });
+      if (BigInt(size) !== before.size || !(['dev', 'ino', 'uid', 'gid', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'] as const)
+        .every(field => before[field] === after[field])) throw invalid();
+      const policy = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)));
+      const exact = (value: unknown, fields: string[]): value is Record<string, unknown> => !!value
+        && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === fields.length
+        && fields.every(field => Object.hasOwn(value, field));
+      const integer = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+      const label = (value: unknown) => typeof value === 'string' && value.length > 0
+        && value.length <= 200 && !/[\s\x00-\x1f\x7f]/.test(value);
+      if (!exact(policy, ['version', 'update_channel', 'updateAuthorization']) || policy.version !== 1
+        || !['alpha', 'beta', 'stable'].includes(policy.update_channel as string)) throw invalid();
+      const trust = policy.updateAuthorization;
+      const integers = ['rootEpoch', 'minRollbackCounter', 'minIssuedAt', 'maxMetadataAgeMs'];
+      if (!exact(trust, [...integers, 'signers', 'approvers']) || integers.some(field => !integer(trust[field]))
+        || trust.maxMetadataAgeMs === 0) throw invalid();
+      for (const role of ['signers', 'approvers']) {
+        const keys = trust[role];
+        if (!Array.isArray(keys) || !keys.length || keys.length > 64 || keys.some(key =>
+          !exact(key, ['id', 'epoch', 'principalId', 'publicKey', 'revoked']) || !label(key.id)
+          || !label(key.principalId) || !integer(key.epoch) || typeof key.revoked !== 'boolean'
+          || typeof key.publicKey !== 'string' || !key.publicKey.length || key.publicKey.length > 4096)) throw invalid();
+        for (const key of keys) Object.freeze(key);
+        Object.freeze(keys);
+      }
+      return await use({ trust: Object.freeze(trust) as unknown as TauriUpdateTrust,
+        expected: pinnedCandidate, now: Date.now() });
+    } finally {
+      // Closing the actual locked descriptor AFTER promise settlement releases
+      // the kernel lease on both success and rejection, including sync throws.
+      for (const fd of descriptors.reverse()) closeSync(fd);
+    }
+  } });
 }
 /** Host producer input, authenticated against its complete source closure by
  * the protected installer. Neither a manifest nor signed envelope supplies it.

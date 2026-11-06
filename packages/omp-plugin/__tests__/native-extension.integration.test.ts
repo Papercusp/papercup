@@ -150,8 +150,13 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
     child.stdin.write(`${JSON.stringify({ id: 'proof', type: 'prompt', message: 'Run the two local calls.' })}\n`);
     await waitFor(() => frames.find(frame => frame.type === 'agent_end'));
     expect(frames.filter(frame => frame.type === 'tool_execution_end').map(frame => frame.isError), `${stderr}; hookCalls=${hookCalls.length}`).toEqual([false, false]);
-    expect(hookCalls).toEqual([1, 2].map(index => ({ nativeSessionId, callId: `native-call-${index}`,
-      tool: 'mcp__papercusp_su_echo', arguments: { value: `proof-${index}` } })));
+    // Retain the pre-hook input and the executed input as separate observations
+    // for each call. Exact order also detects duplicate or missing callbacks.
+    expect(hookCalls).toEqual([1, 2].flatMap(index => {
+      const original = { nativeSessionId, callId: `native-call-${index}`,
+        tool: 'mcp__papercusp_su_echo', arguments: { value: `proof-${index}` } };
+      return [original, { ...original, executedArguments: { value: `proof-${index}` } }];
+    }));
     expect(calls.map(call => call.arguments)).toEqual([{ value: 'proof-1' }, { value: 'proof-2' }]);
     expect(calls.map(call => call._meta)).toEqual([
       expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-1',

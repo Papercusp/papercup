@@ -7,15 +7,30 @@ import { expect, it } from 'vitest';
 
 const root = resolve(import.meta.dirname, '../../..');
 const modulePath = join(root, 'packages/operator-core/lib/testing-native-runtime.ts');
-const bwrap = spawnSync('bwrap', ['--dev-bind', '/', '/', '--die-with-parent', '--', 'true']);
+const bwrap = spawnSync('bwrap', ['--unshare-user', '--dev-bind', '/', '/', '--die-with-parent', '--', 'true']);
 
 it.skipIf(bwrap.status !== 0)('keeps native custody outside a mutation overlay and rejects source mismatch and process exit', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'native-runtime-wrapper-test-'));
   const receipt = join(dir, 'receipt.json');
   const socketReceipt = join(dir, 'socket');
+  const livenessCheck = join(dir, 'check-live.sh');
+  const owner = 'native-runtime-test-owner';
+  const provenance = 'native-runtime-test-launch';
+  const guard = `#!/usr/bin/env bash
+set -eu
+env_p="$(tr '\\0' '\\n' < "/proc/$VERIFY_TAURI_PID/environ")"
+if ! grep -qxF 'PAPERCUSP_SID=${owner}' <<<"$env_p" \\
+  || ! grep -qxF 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=${provenance}' <<<"$env_p"; then
+  echo 'native launch provenance mismatch' >&2
+  exit 1
+fi
+`;
+  writeFileSync(livenessCheck, guard);
   const commit = 'a'.repeat(40);
   writeFileSync(receipt, JSON.stringify({ schemaVersion: 'verifier-source-v1', sourceCommit: commit }));
-  const native = spawn(process.execPath, ['-e', 'console.log("READY"); setInterval(() => {}, 1000)']);
+  const native = spawn(process.execPath, ['-e', 'console.log("READY"); setInterval(() => {}, 1000)'], {
+    env: { ...process.env, PAPERCUSP_SID: owner, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: provenance },
+  });
   try {
     await new Promise<void>((done, reject) => {
       native.stdout.once('data', () => done());
@@ -23,21 +38,35 @@ it.skipIf(bwrap.status !== 0)('keeps native custody outside a mutation overlay a
     });
     const env: Record<string, string | undefined> = { ...process.env, VERIFY_TAURI_PID: String(native.pid), OPERATOR_SOURCE_ROOT: root,
       VERIFY_TAURI_SOURCE_REF: commit, VERIFY_TAURI_SOURCE_RECEIPT: receipt,
+      VERIFY_TAURI_LIVENESS_CHECK: livenessCheck,
       PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: undefined };
     // Actual-goal journeys can use the shared database read-only. Native
     // custody is proven by the source receipt and original process identity.
     delete env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
       const child = spawn(process.execPath, ['--import', 'tsx', modulePath, '--with-native-observer', '--',
-        'bwrap', '--dev-bind', '/', '/', '--die-with-parent', '--', process.execPath,
+        'bwrap', '--unshare-user', '--dev-bind', '/', '/', '--die-with-parent', '--', process.execPath,
         '--import', 'tsx', '--input-type=module', '-e', `
           import assert from 'node:assert/strict';
-          import { statSync, writeFileSync } from 'node:fs';
-          import { prepareNativeRuntimeReader } from ${JSON.stringify(pathToFileURL(modulePath).href)};
+          import { readFileSync, statSync, writeFileSync } from 'node:fs';
+          import { assertNativeRuntimeLiveness, prepareNativeRuntimeReader } from ${JSON.stringify(pathToFileURL(modulePath).href)};
           assert.throws(() => statSync('/proc/' + process.env.VERIFY_TAURI_PID + '/exe'), { code: 'EACCES' });
+          assert.throws(() => readFileSync('/proc/' + process.env.VERIFY_TAURI_PID + '/environ'), { code: 'EACCES' });
           writeFileSync(${JSON.stringify(socketReceipt)}, process.env.PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET);
           const read = prepareNativeRuntimeReader(${JSON.stringify(root)}, ${JSON.stringify(commit)});
           assert.match(read().fingerprint, /^[a-f0-9]{64}$/);
+          assert.match(assertNativeRuntimeLiveness(${JSON.stringify(root)}, ${JSON.stringify(commit)}).fingerprint, /^[a-f0-9]{64}$/);
+          for (const badGuard of [
+            ${JSON.stringify(guard.replace(owner, 'another-owner'))},
+            ${JSON.stringify(guard.replace(provenance, 'another-launch'))},
+          ]) {
+            writeFileSync(${JSON.stringify(livenessCheck)}, badGuard);
+            assert.throws(() => assertNativeRuntimeLiveness(${JSON.stringify(root)}, ${JSON.stringify(commit)}), /launch provenance mismatch/);
+          }
+          writeFileSync(${JSON.stringify(livenessCheck)}, ${JSON.stringify(guard)});
+          assert.match(assertNativeRuntimeLiveness(${JSON.stringify(root)}, ${JSON.stringify(commit)}).fingerprint, /^[a-f0-9]{64}$/);
+          assert.throws(() => assertNativeRuntimeLiveness(${JSON.stringify(root)}, 'b'.repeat(40)), /source receipt mismatch/);
+          console.log('PROVENANCE_VERIFIED');
           assert.throws(() => prepareNativeRuntimeReader(${JSON.stringify(root)}, 'b'.repeat(40)), /source receipt mismatch/);
           console.log('WITNESS_READY');
           const end = Date.now() + 10000;
@@ -58,6 +87,7 @@ it.skipIf(bwrap.status !== 0)('keeps native custody outside a mutation overlay a
       child.once('close', code => { clearTimeout(timer); done({ code, stdout, stderr }); });
     });
     expect(result.code, result.stderr).toBe(7);
+    expect(result.stdout).toContain('PROVENANCE_VERIFIED');
     expect(result.stdout).toContain('EXIT_REFUSED');
     expect(existsSync(readFileSync(socketReceipt, 'utf8'))).toBe(false);
     const refused = spawnSync('bash', [join(root, 'scripts/mutation-probe.sh'), '--help'], {
