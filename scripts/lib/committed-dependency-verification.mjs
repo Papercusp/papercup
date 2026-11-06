@@ -105,9 +105,34 @@ async function command(helper, args, script, deadline) {
   }
 }
 
-async function census(helper, donor, destination, scratch, deadline) {
-  const text = await command(helper, [donor, destination], [
-    'dependency_generation_input_fingerprint "$2"',
+async function selectGeneration(helper, donor, destination, deadline) {
+  const text = await command(helper, [donor, destination, String(process.pid)], [
+    'generation_root="$(dependency_generation_resolve_root "$2" "" 1)"',
+    'dependency_generation_select_inputs "$3" "$generation_root"',
+    'dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" "$4" "$DEPENDENCY_GENERATION_TOKEN"',
+    'trap dependency_generation_release_selector_lease ERR',
+    'printf "%s\\n" "$generation_root" "$DEPENDENCY_GENERATION_TREE" "$DEPENDENCY_GENERATION_SELECTOR_LEASE" "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_TOKEN"',
+    'trap - ERR',
+  ].join('\n'), deadline);
+  const [root, tree, lease, identity, token, ...extra] = text.trimEnd().split('\n');
+  if (extra.length || !isAbsolute(root || '') || !isAbsolute(tree || '') ||
+      !isAbsolute(lease || '') || !within(join(root, '.leases'), lease) ||
+      tree !== join(root, identity, 'tree') || !/^v1-[a-f0-9]{64}$/.test(identity) || !token)
+    fail('invalid generation selection');
+  return { root, tree, lease, identity, token };
+}
+
+async function census(helper, donor, destination, scratch, deadline, generation) {
+  const sourceInputCommands = generation ? [
+    // The generation contains dependency trees, not package/lock files. Reuse
+    // the publisher's exact-input selector and revalidate its immutable token.
+    'dependency_generation_select_inputs "$3" "$4"',
+    '[ "$DEPENDENCY_GENERATION_ID" = "$5" ] && [ "$DEPENDENCY_GENERATION_TOKEN" = "$6" ] && [ "$DEPENDENCY_GENERATION_TREE" = "$2" ]',
+    'printf "%s\\n" "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT"',
+  ] : ['dependency_generation_input_fingerprint "$2"'];
+  const text = await command(helper, [donor, destination,
+    ...(generation ? [generation.root, generation.identity, generation.token] : [])], [
+    ...sourceInputCommands,
     'dependency_generation_input_fingerprint "$3"',
     'printf "%s\\n" "$DEPENDENCY_GENERATION_RACY_WINDOW_SEC"',
     'dependency_generation_configure_workspace_dirs "$2"',
@@ -278,6 +303,7 @@ async function verifyBatch(batch, donor, destination, deadline) {
 /** Return typed incomplete progress, or complete proof of the existing copy. */
 export async function verifyRetainedDependencies(donor, destination, options, context) {
   const { checkpointDir, maxBatches = 64, maxDurationMs = 30_000, batchSize = 256 } = options;
+  if (options.generation !== undefined && typeof options.generation !== 'boolean') fail('invalid generation option');
   for (const [name, value, maximum] of [['maxBatches', maxBatches, 1_000_000],
     ['maxDurationMs', maxDurationMs, 3600_000], ['batchSize', batchSize, 4096]])
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum) fail('invalid ' + name);
@@ -289,18 +315,27 @@ export async function verifyRetainedDependencies(donor, destination, options, co
   const progress = { verifiedEntries: 0, verifiedBatches: 0, reusedBatches: 0, hashedFiles: 0, totalEntries: 0 };
   const incomplete = () => ({ status: 'incomplete', progress: { ...progress } });
   const mutexOptions = { timeoutMs: maxDurationMs };
-  return withFsMutex('committed-dependency-verification-' + digest(checkpoint).slice(0, 24), () =>
+  let generation;
+  try {
+    if (options.generation) {
+      generation = await selectGeneration(context.materializer, donor, destination, deadline);
+      donor = realpathSync(generation.tree);
+      if (within(donor, destination) || within(destination, donor)) fail('dependency roots overlap');
+      privateDirectory(checkpoint, [donor, destination]);
+    }
+    return await withFsMutex('committed-dependency-verification-' + digest(checkpoint).slice(0, 24), () =>
     withFsMutexRead(installLockNameForRoot(donor), async () => {
       const scratch = mkdtempSync(join(checkpoint, '.scan-'));
       try {
         context.verifySource();
-        const scan = await census(context.materializer, donor, destination, scratch, deadline);
+        const scan = await census(context.materializer, donor, destination, scratch, deadline, generation);
         const population = await inspect(scan, donor, destination, deadline);
         progress.totalEntries = population.entries;
         const rootIdentities = { donorRoot: directoryIdentity(donor), destinationRoot: directoryIdentity(destination) };
         const binding = digest(JSON.stringify({ schemaVersion, sourceCommit: context.sourceCommit,
           verifierFingerprint, materializer: digest(readFileSync(context.materializer)),
           donor, destination, ...rootIdentities,
+          generation: generation ? { identity: generation.identity, token: generation.token } : null,
           inputs: scan.sourceInputs, trees: scan.trees.map(({ path, sourceIdentity, destinationIdentity }) =>
             ({ path, sourceIdentity, destinationIdentity })), semantic: population.semantic, batchSize }));
         const manifestPath = join(checkpoint, 'manifest.json');
@@ -345,7 +380,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
         if (batch.length) await finishBatch();
         const finalDirectory = join(scratch, 'final');
         mkdirSync(finalDirectory, { mode: 0o700 });
-        const finalScan = await census(context.materializer, donor, destination, finalDirectory, deadline);
+        const finalScan = await census(context.materializer, donor, destination, finalDirectory, deadline, generation);
         const finalPopulation = await inspect(finalScan, donor, destination, deadline);
         if (JSON.stringify(rootIdentities) !== JSON.stringify({ donorRoot: directoryIdentity(donor),
               destinationRoot: directoryIdentity(destination) }) || finalScan.sourceInputs !== scan.sourceInputs ||
@@ -356,10 +391,14 @@ export async function verifyRetainedDependencies(donor, destination, options, co
             JSON.stringify(finalPopulation) !== JSON.stringify(population))
           fail('dependency census changed during verification');
         context.verifySource();
-        return { status: 'complete', paths: scan.trees.map(tree => tree.path), progress };
+        return { status: 'complete', sourceRoot: donor, paths: scan.trees.map(tree => tree.path), progress };
       } catch (error) {
         if (error instanceof Incomplete) return incomplete();
         throw error;
       } finally { rmSync(scratch, { recursive: true, force: true }); }
     }, mutexOptions), mutexOptions);
+  } finally {
+    if (generation) await command(context.materializer, [generation.lease],
+      'DEPENDENCY_GENERATION_SELECTOR_LEASE="$2"\ndependency_generation_release_selector_lease', Date.now() + 5000);
+  }
 }

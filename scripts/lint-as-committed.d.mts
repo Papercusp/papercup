@@ -60,10 +60,11 @@ export function committedWorkRootDependencyDonor(workRoot: any): string;
  * the bounded donor-reader fallback. Retained roots own their resulting bytes;
  * no generation pin or donor reader must outlive materialization.
  * An opt-in resumeVerification verifies an existing retained copy without a
- * generation selection or copy. Incomplete returns contain only progress;
+ * copy. generation:true uses the existing exact-input selector and a PID lease
+ * as its immutable byte donor. Incomplete returns contain only progress;
  * callers must resume before preparation, provenance or prepared receipts.
  * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
- * resumeVerification?: { checkpointDir: string, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
+ * resumeVerification?: { checkpointDir: string, generation?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export function materializeIndependentDependencies(repoRoot: any, workRoot: any, options?: {
@@ -73,6 +74,7 @@ export function materializeIndependentDependencies(repoRoot: any, workRoot: any,
     }) => void;
     resumeVerification?: {
         checkpointDir: string;
+        generation?: boolean;
         maxBatches?: number;
         maxDurationMs?: number;
         batchSize?: number;

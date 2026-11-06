@@ -352,10 +352,11 @@ export function committedWorkRootDependencyDonor(workRoot) {
  * the bounded donor-reader fallback. Retained roots own their resulting bytes;
  * no generation pin or donor reader must outlive materialization.
  * An opt-in resumeVerification verifies an existing retained copy without a
- * generation selection or copy. Incomplete returns contain only progress;
+ * copy. generation:true uses the existing exact-input selector and a PID lease
+ * as its immutable byte donor. Incomplete returns contain only progress;
  * callers must resume before preparation, provenance or prepared receipts.
  * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
- * resumeVerification?: { checkpointDir: string, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
+ * resumeVerification?: { checkpointDir: string, generation?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export async function materializeIndependentDependencies(repoRoot, workRoot, options = {}) {
@@ -495,7 +496,7 @@ done <<< "$sources"
     verification = await phase('resume-verification', () => verifyRetainedDependencies(
       donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource }));
     if (verification.status === 'incomplete') return verification;
-    snapshot = repairSnapshot(donor, verification.paths, true);
+    snapshot = repairSnapshot(verification.sourceRoot, verification.paths, true);
   } else {
     snapshot = phase('generation-selection-and-copy', () => materialize(true)) ?? await withFsMutexRead(installLockNameForRoot(donor), async () => {
       const copied = phase('donor-copy', () => materialize(false));
