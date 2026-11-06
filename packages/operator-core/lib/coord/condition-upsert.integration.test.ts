@@ -171,11 +171,17 @@ describe('exact-identity author handoff — rubric workflow P004', () => {
 
   it('handoff-restart-durability: adopts the persisted receipt through a fresh module reader', async () => {
     const t = target('restart');
-    const first = await reserveAuthorVettingHandoff(t, request);
+    const deliver = vi.fn(async () => ({ queued: 1, pickupConfirmed: false }));
+    const first = await reserveAuthorVettingHandoff(t, { ...request, deliver });
+    await advanceAuthorVettingHandoff({ id: first.id, target: t, actorId: 'su-author', phase: 'pickup',
+      authorize: async () => true });
+    const persisted = await reserveAuthorVettingHandoff(t, request);
+    expect(persisted.state).toBe('picked-up');
     vi.resetModules();
     const fresh = await import('./condition-upsert');
-    const replay = await fresh.reserveAuthorVettingHandoff(t, request);
-    expect(replay).toMatchObject({ id: first.id, created: false, key: first.key, target: t });
+    const replay = await fresh.reserveAuthorVettingHandoff(t, { ...request, deliver });
+    expect(replay).toEqual(persisted);
+    expect(deliver).toHaveBeenCalledTimes(1);
     expect(await holdersOf(first.key)).toEqual([first.id]);
   });
 
