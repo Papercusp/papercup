@@ -17,6 +17,8 @@
  *   - shareNet: true when manifest declares net:* caps.
  */
 
+import { posix } from 'node:path';
+
 export interface BwrapBuildOptions {
   workDir: string;
   bwrapBinary?: string; // default 'bwrap'
@@ -115,4 +117,61 @@ export function buildProviderBwrapArgs(opts: ProviderBwrapOptions): { binary: st
     ...opts.cmd,
   );
   return { binary, argv };
+}
+
+export interface HandlerBwrapOptions {
+  /** CHILD descriptor numbers, explicitly mapped by the trusted supervisor. */
+  files: ReadonlyArray<{ path: string; fd: number; executable: boolean }>;
+  /** A sealed createHandlerBootstrapFilter descriptor mapped into the child. */
+  bootstrapFilterFd: number;
+}
+
+/**
+ * Strict handler mount profile: no host path, directory bind, caller command,
+ * environment extension or permissive fallback. The trusted supervisor owes
+ * sealed file descriptors and the independently measured runtime closure.
+ * The fixed bootstrap owes the final TSYNC restrictions BEFORE handler import.
+ * This argv builder alone is not an established handler execution boundary.
+ */
+export function buildHandlerBwrapArgs(opts: HandlerBwrapOptions): { binary: string; argv: string[] } {
+  const fail = () => { throw new Error('invalid handler runtime-file profile'); };
+  const descriptor = (fd: number) => Number.isSafeInteger(fd) && fd >= 3;
+  if (!descriptor(opts.bootstrapFilterFd) || !opts.files.length || opts.files.length > 1024) fail();
+  const paths = new Map<string, boolean>();
+  const descriptors = new Set([opts.bootstrapFilterFd]);
+  for (const file of opts.files) {
+    if (!descriptor(file.fd) || descriptors.has(file.fd) || typeof file.executable !== 'boolean'
+      || typeof file.path !== 'string' || /[\\\x00-\x1f\x7f]/.test(file.path)
+      || posix.normalize(file.path) !== file.path
+      || !/^\/(?:runtime|handler|lib|lib64|usr\/lib)\/.+/.test(file.path)
+      || file.path.endsWith('/') || paths.has(file.path)) fail();
+    paths.set(file.path, file.executable);
+    descriptors.add(file.fd);
+  }
+  for (const path of paths.keys()) {
+    let parent = posix.dirname(path);
+    while (parent !== '/') {
+      if (paths.has(parent)) fail();
+      parent = posix.dirname(parent);
+    }
+  }
+  if (paths.get('/runtime/node') !== true || !paths.has('/runtime/bootstrap.cjs')
+    || !paths.has('/handler/entry.cjs')) fail();
+
+  const argv = [
+    '--unshare-user', '--unshare-net', '--unshare-pid', '--unshare-ipc',
+    '--unshare-uts', '--unshare-cgroup', '--disable-userns', '--assert-userns-disabled',
+    '--cap-drop', 'ALL', '--new-session', '--die-with-parent',
+    '--clearenv', '--setenv', 'HOME', '/tmp', '--setenv', 'PATH', '/runtime',
+    '--setenv', 'UV_USE_IO_URING', '0',
+    '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+    '--dir', '/runtime', '--dir', '/handler',
+  ];
+  for (const file of opts.files) {
+    argv.push('--perms', file.executable ? '0555' : '0444', '--ro-bind-data', String(file.fd), file.path);
+  }
+  argv.push('--remount-ro', '/', '--chdir', '/handler',
+    '--seccomp', String(opts.bootstrapFilterFd), '--',
+    '/runtime/node', '--no-global-search-paths', '/runtime/bootstrap.cjs');
+  return { binary: '/usr/bin/bwrap', argv };
 }

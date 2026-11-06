@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const native = vi.hoisted(() => ({
-  init: vi.fn(), release: vi.fn(), attr: vi.fn(), arch: vi.fn(), resolve: vi.fn(), add: vi.fn(), load: vi.fn(), prctl: vi.fn(), library: vi.fn(), fds: vi.fn(), fdTarget: vi.fn(), close: vi.fn(), exportBpf: vi.fn(), memfd: vi.fn(), seal: vi.fn(), seek: vi.fn(),
+  init: vi.fn(), release: vi.fn(), attr: vi.fn(), arch: vi.fn(), resolve: vi.fn(), add: vi.fn(), load: vi.fn(), prctl: vi.fn(), library: vi.fn(), fds: vi.fn(), fdTarget: vi.fn(), close: vi.fn(), write: vi.fn(), exportBpf: vi.fn(), memfd: vi.fn(), seal: vi.fn(), seek: vi.fn(),
 }));
-vi.mock('node:fs', () => ({ closeSync: native.close, readdirSync: native.fds, readlinkSync: native.fdTarget }));
+vi.mock('node:fs', () => ({ closeSync: native.close, readdirSync: native.fds, readlinkSync: native.fdTarget, writeFileSync: native.write }));
 vi.mock('koffi', () => ({ default: {
   struct: () => ({}), pointer: () => ({}), load: native.library,
 } }));
-import { createHandlerBootstrapFilter, HandlerProcessRestrictionError, loadAfterHandlerProcessRestrictions } from './handler-seccomp';
+import { createHandlerBootstrapFilter, createHandlerReadonlyFile, HandlerProcessRestrictionError, loadAfterHandlerProcessRestrictions } from './handler-seccomp';
+import { createHash } from 'node:crypto';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -35,6 +36,25 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch))('trusted handler restriction phase refusal', () => {
+  it('refuses changed runtime-file bytes before allocation and closes an unsealed file', () => {
+    const bytes = Buffer.from('trusted runtime input');
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    expect(() => createHandlerReadonlyFile(bytes, '0'.repeat(64))).toThrow('digest mismatch');
+    expect(native.memfd).not.toHaveBeenCalled();
+    native.seal.mockReturnValue(-1);
+    expect(() => createHandlerReadonlyFile(bytes, hash)).toThrow('cannot seal');
+    expect(native.write).toHaveBeenCalledWith(77, bytes);
+    expect(native.close).toHaveBeenCalledWith(77);
+  });
+
+  it('requires actual seal readback before publishing a runtime-file descriptor', () => {
+    const bytes = Buffer.from('trusted runtime input');
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    native.seal.mockImplementation((_fd, op) => op === 1034 ? 7 : 0);
+    expect(() => createHandlerReadonlyFile(bytes, hash)).toThrow('cannot seal');
+    expect(native.close).toHaveBeenCalledWith(77);
+  });
+
   it('closes an incomplete bootstrap descriptor and refuses launch if filter sealing fails', () => {
     native.seal.mockReturnValue(-1);
     expect(() => createHandlerBootstrapFilter()).toThrow(HandlerProcessRestrictionError);

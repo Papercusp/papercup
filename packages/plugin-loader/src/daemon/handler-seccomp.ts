@@ -8,7 +8,8 @@
  * TSYNC covers Node's existing threads, and newly created threads inherit it.
  * There is deliberately no permissive fallback or handler-supplied policy.
  */
-import { closeSync, readdirSync, readlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import koffi from 'koffi';
 
 const ALLOW = 0x7fff0000;
@@ -42,6 +43,48 @@ export interface HandlerProcessRestrictionReceipt {
   noNewPrivileges: true;
   synchronizedThreads: true;
   ioUringDisabled: true;
+}
+
+/**
+ * Host-only custody for ONE explicitly inventoried runtime/bundle file. Copy
+ * the bytes before hashing, then seal the kernel object before publishing its
+ * descriptor. A later donor edit cannot change the guest's file. The caller
+ * selects the expected digest from its trusted closure, owns the descriptor,
+ * and maps it to a child descriptor for bwrap --ro-bind-data. This does not
+ * establish authorship or discover/qualify a complete dependency closure.
+ */
+export function createHandlerReadonlyFile(contents: Uint8Array, expectedSha256: string): number {
+  if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) {
+    throw new HandlerProcessRestrictionError('unsupported handler runtime-file platform');
+  }
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256) || contents.byteLength > 256 * 1024 * 1024) {
+    throw new HandlerProcessRestrictionError('invalid handler runtime-file digest or size');
+  }
+  const bytes = Buffer.from(contents);
+  if (createHash('sha256').update(bytes).digest('hex') !== expectedSha256) {
+    throw new HandlerProcessRestrictionError('handler runtime-file digest mismatch');
+  }
+  let fd: number | undefined;
+  try {
+    const libc = koffi.load('libc.so.6');
+    const memfd = libc.func('memfd_create', 'int', ['str', 'unsigned int']);
+    const seal = libc.func('fcntl', 'int', ['int', 'int', 'int']);
+    const seek = libc.func('lseek', 'int64_t', ['int', 'int64_t', 'int']);
+    const opened: number = memfd('handler-runtime-file', 3); // CLOEXEC | ALLOW_SEALING
+    if (opened < 0) throw new HandlerProcessRestrictionError('cannot allocate handler runtime-file descriptor');
+    fd = opened;
+    writeFileSync(fd, bytes);
+    if (seal(fd, 1033, 15) !== 0 || seal(fd, 1034, 0) !== 15 || seek(fd, 0, 0) !== 0) {
+      throw new HandlerProcessRestrictionError('cannot seal or rewind handler runtime-file descriptor');
+    }
+    fd = undefined;
+    return opened;
+  } catch (cause) {
+    if (cause instanceof HandlerProcessRestrictionError) throw cause;
+    throw new HandlerProcessRestrictionError('cannot prepare handler runtime-file bytes', { cause });
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /**

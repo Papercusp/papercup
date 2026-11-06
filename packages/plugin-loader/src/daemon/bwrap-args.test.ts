@@ -3,9 +3,51 @@
  * plugins. Run with: npx vitest run packages/plugin-loader/src/daemon/bwrap-args.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { buildBwrapArgs, buildProviderBwrapArgs, PROVIDER_SYSTEM_RO_DIRS } from './bwrap-args';
+import { buildBwrapArgs, buildHandlerBwrapArgs, buildProviderBwrapArgs, PROVIDER_SYSTEM_RO_DIRS } from './bwrap-args';
 
 const base = { workDir: '/run/work', cmd: ['/bin/plugin', '--serve'] };
+
+describe('strict handler exact-file mount profile', () => {
+  const files = [
+    { path: '/runtime/node', fd: 4, executable: true },
+    { path: '/runtime/bootstrap.cjs', fd: 5, executable: false },
+    { path: '/handler/entry.cjs', fd: 6, executable: false },
+  ];
+  it('has no host bind or configurable command/environment and requires early seccomp', () => {
+    const { binary, argv } = buildHandlerBwrapArgs({ files, bootstrapFilterFd: 3 });
+    expect(binary).toBe('/usr/bin/bwrap');
+    expect(argv.filter(arg => arg.includes('bind'))).toEqual(Array(3).fill('--ro-bind-data'));
+    expect(argv.slice(argv.indexOf('--') + 1)).toEqual([
+      '/runtime/node', '--no-global-search-paths', '/runtime/bootstrap.cjs',
+    ]);
+    expect(argv.slice(argv.indexOf('--seccomp'), argv.indexOf('--') + 1)).toEqual(['--seccomp', '3', '--']);
+    for (const flag of ['--unshare-user', '--unshare-net', '--unshare-pid', '--unshare-ipc',
+      '--unshare-uts', '--unshare-cgroup', '--disable-userns', '--assert-userns-disabled', '--clearenv']) {
+      expect(argv).toContain(flag);
+    }
+    expect(argv.slice(argv.indexOf('--remount-ro'), argv.indexOf('--remount-ro') + 2)).toEqual(['--remount-ro', '/']);
+    expect(argv.flatMap((a, i) => a === '--setenv' ? [[argv[i + 1], argv[i + 2]]] : [])).toEqual([
+      ['HOME', '/tmp'], ['PATH', '/runtime'], ['UV_USE_IO_URING', '0'],
+    ]);
+  });
+  it.each(['/proc/self/mem', '/tmp/entry.cjs', '/dev/fd/0', '/etc/passwd', '/runtime/../handler/x',
+    '/runtime//x', '/runtime/x/', '/runtime/x\n', '/runtime/x\\y'])(
+    'rejects reserved or ambiguous guest path %j', path => {
+      expect(() => buildHandlerBwrapArgs({ files: [...files, { path, fd: 7, executable: false }], bootstrapFilterFd: 3 }))
+        .toThrow('invalid handler');
+    });
+  it.each(['filter-collision', 'stdio', 'duplicate-path', 'file-parent', 'missing-bootstrap', 'non-executable-node'])(
+    'refuses incomplete or conflicting mounts: %s', defect => {
+      const changed = files.map(file => ({ ...file }));
+      if (defect === 'filter-collision') changed[0]!.fd = 3;
+      if (defect === 'stdio') changed[0]!.fd = 2;
+      if (defect === 'duplicate-path') changed.push({ ...changed[0]!, fd: 7 });
+      if (defect === 'file-parent') changed.push({ path: '/handler/entry.cjs/x', fd: 7, executable: false });
+      if (defect === 'missing-bootstrap') changed.splice(1, 1);
+      if (defect === 'non-executable-node') changed[0]!.executable = false;
+      expect(() => buildHandlerBwrapArgs({ files: changed, bootstrapFilterFd: 3 })).toThrow('invalid handler');
+    });
+});
 
 describe('buildBwrapArgs', () => {
   it('defaults the binary to "bwrap" and honors an override', () => {
