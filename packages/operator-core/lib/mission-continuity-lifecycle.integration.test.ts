@@ -33,6 +33,8 @@ async function seed(ownerId: string) {
 
 beforeAll(async () => {
   db = await createFreshPgDb('mission-continuity');
+  // Task migration 981 installs the canonical notification trigger.
+  await applyMigrationForTest(db.sql, resolve(migrations, '1436-emit-change-notify-row-workspace.sql'));
   await applyMigrationForTest(db.sql, resolve(migrations, '322-session-briefs-ei1742.sql'));
   await applyMigrationForTest(db.sql, resolve(migrations, '1618-session-brief-mission-continuity.sql'));
   await applyMigrationForTest(db.sql, resolve(migrations, '981-session-task-engine.sql'));
@@ -60,11 +62,11 @@ async function seedTaskAuthority(ownerId: string, id: string, plan = 'root') {
   await db.sql`INSERT INTO harness_shared.work_items VALUES(${id},'eng','mission-test',${plan},${ownerId},
     '2026-11-06T00:00:00Z','open',31,null)`;
 }
-async function taskOp(ownerId: string, args: SessionTaskOpArgs, workItemId?: string, crash = false) {
+async function taskOp(ownerId: string, args: SessionTaskOpArgs, workItemId?: string, crash = false, appendId?: string) {
   return db.sql.begin(async transaction => {
     const tx = transaction as unknown as Sql;
     return applySessionTaskOp(tx, { ...args,workspaceId:'mission-test',sessionId:ownerId,
-      idFactory:()=>{throw new Error('test task ids must be explicit');},now:'2026-11-06T00:00:00.000Z',
+      idFactory:()=>{if(appendId) return appendId; throw new Error('test task ids must be explicit');},now:'2026-11-06T00:00:00.000Z',
       bridge:{
         seedWorkItem:workItemId?{workItemId,workItemHarness:'eng',relation:'for'}:null,
         async commitTransition(port,before,result) {
@@ -82,7 +84,7 @@ async function mission(ownerId:string) {
 }
 async function initTask(ownerId:string,id:string,workItemId:string) {
   await seedTaskAuthority(ownerId,workItemId);
-  await taskOp(ownerId,{op:'append',tasks:[{id,content:'canonical step'}]},workItemId);
+  await taskOp(ownerId,{op:'append',content:'canonical step'},workItemId,false,id);
 }
 
 describe('canonical accepted task operations compose with retained mission state',()=>{
@@ -121,7 +123,7 @@ describe('canonical accepted task operations compose with retained mission state
   it('keeps ambiguous displacement unknown and can accept later same-root progress at the same clock',async()=>{
     const owner='su-task-unknown';
     await initTask(owner,'a','WI-task-known');
-    await taskOp(owner,{op:'append',tasks:[{id:'unlinked',content:'unrecorded purpose'}]});
+    await taskOp(owner,{op:'append',content:'unrecorded purpose'},undefined,false,'unlinked');
     await taskOp(owner,{op:'start',taskId:'a'});
     await taskOp(owner,{op:'start',taskId:'unlinked'});
     const unknown=await mission(owner);
