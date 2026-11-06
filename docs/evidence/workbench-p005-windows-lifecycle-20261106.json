@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 Windows native resident lifecycle and settings",
+  "framework": "shell",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase lifecycle -Interactive"
+  ],
+  "startedAt": "2026-11-06T20:33:46.550536+00:00",
+  "finishedAt": "2026-11-06T20:34:31.167463+00:00",
+  "exitCode": 0,
+  "summary": "32 assertions passed in the signed-in Windows desktop, including actual resident startup, same-process preparation, native WPF settings disable, re-enable and uninstall. Seven canonical and native source hashes matched before/after. Current-build fixture proof; installed-artifact, live operator and full three-OS acceptance remain pending.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "sourcePrefix": "papercusp-desktop/",
+  "sourceSha256": {
+    "native/windows/PuiReadBridge.cs": "334ef3d73c12d31149a7f616f95ca2bb7f1a32fe7e2332499fea3a8e99ccc2b2",
+    "native/windows/WorkbenchModel.cs": "cfdd8b98e1260c0b8b4dab4d242d914708c64398d2c1b557bb812fbb233aa4de",
+    "native/windows/WorkbenchHost.cs": "3d853746f5a90d7d93609628896869941e366987b186653e31ba6f92f62750b0",
+    "native/windows/WorkbenchLifecycle.psm1": "bc4688485838d994ffaf274afcd5a5d66bb17904435600619b8306552754ac19",
+    "native/windows/workbench.ps1": "8b2ccbde94e17f46b573f665be8f51bf975ad94ec8ed39b3dda5840fbc18f849",
+    "test/fixtures/native-workbench-windows-lifecycle.ps1": "6f166b1b94e400935de8c32c8663bdfab38b7b6959bb7a03dfd4219862c60f72",
+    "test/fixtures/native-workbench-windows-host.ps1": "01c3acd962ea46c576ecc99c1446baf0964879fdb0881483ec8dc5105f9846c4"
+  },
+  "nativeSha256": {
+    "before": {
+      "WorkbenchLifecycle.psm1": "BC4688485838D994FFAF274AFCD5A5D66BB17904435600619B8306552754AC19",
+      "native-workbench-windows-lifecycle.ps1": "6F166B1B94E400935DE8C32C8663BDFAB38B7B6959BB7A03DFD4219862C60F72",
+      "PuiReadBridge.cs": "334EF3D73C12D31149A7F616F95CA2BB7F1A32FE7E2332499FEA3A8E99CCC2B2",
+      "WorkbenchHost.cs": "3D853746F5A90D7D93609628896869941E366987B186653E31BA6F92F62750B0",
+      "workbench.ps1": "8B2CCBDE94E17F46B573F665BE8F51BF975AD94EC8ED39B3DDA5840FBC18F849",
+      "WorkbenchModel.cs": "CFDD8B98E1260C0B8B4DAB4D242D914708C64398D2C1B557BB812FBB233AA4DE",
+      "native-workbench-windows-host.ps1": "01C3ACD962EA46C576ECC99C1446BAF0964879FDB0881483EC8DC5105F9846C4"
+    },
+    "after": {
+      "WorkbenchLifecycle.psm1": "BC4688485838D994FFAF274AFCD5A5D66BB17904435600619B8306552754AC19",
+      "native-workbench-windows-lifecycle.ps1": "6F166B1B94E400935DE8C32C8663BDFAB38B7B6959BB7A03DFD4219862C60F72",
+      "PuiReadBridge.cs": "334EF3D73C12D31149A7F616F95CA2BB7F1A32FE7E2332499FEA3A8E99CCC2B2",
+      "WorkbenchHost.cs": "3D853746F5A90D7D93609628896869941E366987B186653E31BA6F92F62750B0",
+      "workbench.ps1": "8B2CCBDE94E17F46B573F665BE8F51BF975AD94EC8ED39B3DDA5840FBC18F849",
+      "WorkbenchModel.cs": "CFDD8B98E1260C0B8B4DAB4D242D914708C64398D2C1B557BB812FBB233AA4DE",
+      "native-workbench-windows-host.ps1": "01C3ACD962EA46C576ECC99C1446BAF0964879FDB0881483EC8DC5105F9846C4"
+    }
+  },
+  "runs": [
+    {
+      "evidence": "/tmp/wb-p005-windows-lifecycle-resident-20261106-attempt1.json",
+      "exitCode": 0,
+      "result": {
+        "resident": true,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts",
+          "resident fixture refuses to overwrite an existing Workbench login registration",
+          "actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+          "unchanged desktop preparation preserves the same resident process",
+          "settings command reaches the resident native WPF dialog through its account event",
+          "saving native disable releases the resident and removes login registration",
+          "native settings persist explicit disable",
+          "login invocation respects the saved disabled choice",
+          "explicit enable restarts the same configured native host",
+          "explicit disable waits for resident shutdown",
+          "controller uninstall leaves no owned login entry and retains account choices"
+        ],
+        "count": 32
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": "first install enables native panels with distinct default shortcuts",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "login registration uses the exact installed controller and fixed argv",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "Workbench registration preserves unrelated login applications",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "native login command preserves spaces apostrophes and literal dollar signs",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "upgrade preserves account shortcuts and individual panel disable",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "upgrade refreshes the registered installation without resetting choices",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "disable removes this accounts Workbench login value",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "reinstall does not re-enable an explicitly disabled account",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "explicit enable restores login registration",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "duplicate enabled shortcuts are refused before writing",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "reserved F12 remains invalid even for a disabled panel",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "invalid native modifier bits are refused",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "invalid settings leave both persistence and login state unchanged",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "concurrent settings writer cannot bypass the per-account lock",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "registry failure is surfaced instead of accepting a partial settings update",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "registry failure restores the previous settings",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "missing resident is reported without starting a service or touching another account",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "settings wake targets the exact account and state-directory identity",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "uninstalling another role preserves the current roles login entry",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "uninstall removes owned login registration and retains account preferences",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "retained preferences survive uninstall and reinstall",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "corrupt preferences fail visibly instead of silently resetting shortcuts",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "resident fixture refuses to overwrite an existing Workbench login registration",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "unchanged desktop preparation preserves the same resident process",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "settings command reaches the resident native WPF dialog through its account event",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "saving native disable releases the resident and removes login registration",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "native settings persist explicit disable",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "login invocation respects the saved disabled choice",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "explicit enable restarts the same configured native host",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "explicit disable waits for resident shutdown",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    },
+    {
+      "id": "controller uninstall leaves no owned login entry and retains account choices",
+      "passed": true,
+      "evidence": "Maintained lifecycle fixture cases[], native interactive run 2026-11-06T20:33:46Z; terminal exit0."
+    }
+  ]
+}

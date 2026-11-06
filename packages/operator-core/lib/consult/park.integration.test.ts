@@ -57,6 +57,7 @@ const { parkVerdictEventKey } = await import('./park-resolver');
 const { appendParkerResponse, loadParkState, parkBlockerRef, pollParkOwnerAnswers, recordParkOwnerAnswer, runParkTriggersForConsult, sweepDueParks } = await import('./park-adapters');
 const { openDecisionReviewPark } = await import('./park-door');
 const { makeProdParkSeams } = await import('./park-prod');
+const { sweepParkDeliveries } = await import('./park-delivery-prod');
 
 const WS = h.ws;
 const QUESTION = 'Rename the export flag before the cutover?';
@@ -180,6 +181,65 @@ async function verdictAwaits(park: SeededPark) {
 const seams = (ws: string) => makeProdParkSeams(sql, ws);
 
 describe('consult-backed parking against real Postgres (R-9)', () => {
+  it('requires matching verdict pickup proof despite unrelated post-verdict tool activity', async () => {
+    const park = await seedPark(new Date(Date.now() - 60_000).toISOString());
+    const awaits = await awaitStore.listActiveAwaitsForKey(park.eventKey);
+    expect(awaits).toHaveLength(1);
+    const triggered = await runParkTriggersForConsult(sql, WS, park.consultId, seams(WS));
+    expect(triggered?.applied).toContain('clear-blocker');
+    const stored = await loadParkState(sql, WS, park.consultId);
+    const outcomeAt = stored!.outcomes.at(-1)!.at;
+    const deliveredAt = new Date(Date.parse(outcomeAt) + 1_000).toISOString();
+    const startedAt = new Date(Date.parse(outcomeAt) + 2_000).toISOString();
+    const now = new Date(Date.parse(outcomeAt) + 11 * 60_000).toISOString();
+    await awaitStore.insertDeliveries({ awaits, payload: { verdict: 'proceed' }, summary: 'private park pickup regression' });
+    const deliveries = await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivered', delivered_at = ${deliveredAt}::timestamptz,
+             turn_proof = 'awaiting', turn_started_at = NULL
+       WHERE subscriber_id = ${park.setterId} AND event_key = ${park.eventKey}
+       RETURNING id`;
+    expect(deliveries.length).toBeGreaterThan(0);
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+         status, coord_owner_id, call_origin, args_json, invoked_at)
+      VALUES (${WS}, 'papercusp', 'papercusp', 'docs:outline', 'su', 'private-park-test', 'private-park-test',
+              'ok', ${park.setterId}, 'agent', '{}'::jsonb, ${startedAt}::timestamptz)`;
+    const deps = {
+      rewake: vi.fn(async () => {}),
+      resume: vi.fn(async () => true),
+      notifyOwner: vi.fn(async () => {}),
+      record: vi.fn(async () => {}),
+    };
+    const check = () => sweepParkDeliveries({ sql, depsFor: () => deps, sessionState: async () => 'parked', now });
+    const withoutProof = await check();
+    expect(withoutProof.failures).toEqual([]);
+    expect(withoutProof.checked).toContainEqual({ consultId: park.consultId, action: 'rewake' });
+
+    await sql`UPDATE harness_shared.event_wake_deliveries
+      SET turn_proof = 'observed', turn_started_at = ${startedAt}::timestamptz,
+          payload = '{"verdict":"consider-alternative"}'::jsonb
+      WHERE subscriber_id = ${park.setterId} AND event_key = ${park.eventKey}`;
+    expect((await check()).checked).toContainEqual({ consultId: park.consultId, action: 'rewake' });
+
+    await sql`UPDATE harness_shared.event_wake_deliveries
+      SET payload = '{"verdict":"proceed"}'::jsonb, turn_started_at = ${outcomeAt}::timestamptz
+      WHERE subscriber_id = ${park.setterId} AND event_key = ${park.eventKey}`;
+    expect((await check()).checked).toContainEqual({ consultId: park.consultId, action: 'rewake' });
+
+    await sql`UPDATE harness_shared.event_wake_deliveries
+      SET turn_started_at = ${startedAt}::timestamptz
+      WHERE subscriber_id = ${park.setterId} AND event_key = ${park.eventKey}`;
+    const pickedUp = await check();
+    expect(pickedUp.failures).toEqual([]);
+    expect(pickedUp.checked).toContainEqual({ consultId: park.consultId, action: 'none', reason: 'delivered' });
+    const [persisted] = await sql<Array<{ delivered_at: string }>>`
+      SELECT park_state #>> '{delivery,deliveredAt}' AS delivered_at
+      FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id = ${park.consultId}`;
+    expect(persisted.delivered_at).toBe(now);
+  }, 60_000);
+
   it.each(['settled', 'durable-park', 'event-remains', 'credential-remains'] as const)(
     'settles issue-family human classification atomically: %s', async (scenario) => {
       const deadline = Date.now() + 3_600_000;
