@@ -42,6 +42,8 @@ export type MaintenanceStore = {
   publishRecovery(authority: MaintenanceRecoveryAuthority): Promise<void>;
   readRecovery(operationId: string): Promise<MaintenanceRecoveryAuthority | undefined>;
   pause(plan: MaintenancePlan, target: MaintenanceTarget, index: number): Promise<void>;
+  /** Refresh and pause under the same row lock, without an intervening commit. */
+  pauseFresh?(plan: MaintenancePlan, index: number): Promise<void>;
   previewTarget?(plan: MaintenancePlan, index: number): Promise<MaintenanceTarget>;
   previewCanonical(plan: MaintenancePlan): Promise<MaintenanceTarget>;
   assertCohort(plan: MaintenancePlan, canonicalActive: boolean): Promise<void>;
@@ -141,13 +143,19 @@ export async function runRoutineMaintenance(
     await step(() => store.prepare(plan));
     if (phases.recovery) await step(phases.recovery);
     for (const [index, target] of plan.others.entries()) {
-      const current = store.previewTarget ? await step(() => store.previewTarget!(plan, index)) : target;
-      await step(() => store.pause(plan, current, index));
+      if (store.pauseFresh) await step(() => store.pauseFresh!(plan, index));
+      else {
+        const current = store.previewTarget ? await step(() => store.previewTarget!(plan, index)) : target;
+        await step(() => store.pause(plan, current, index));
+      }
     }
     await step(() => store.assertCohort(plan, true));
     await step(phases.publication);
-    const canonical = await step(() => store.previewCanonical(plan));
-    await step(() => store.pause(plan, canonical, plan.others.length));
+    if (store.pauseFresh) await step(() => store.pauseFresh!(plan, plan.others.length));
+    else {
+      const canonical = await step(() => store.previewCanonical(plan));
+      await step(() => store.pause(plan, canonical, plan.others.length));
+    }
     await step(() => store.assertCohort(plan, false));
     await step(phases.adoption);
   } catch (error) { failure = String(error); }

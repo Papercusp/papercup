@@ -73,16 +73,52 @@ export function maintenancePgStore(sql: Sql, workspaceId: string, actor: string,
   };
   const previewId = (plan: MaintenancePlan, index: number) => rootId(plan.operationId) +
     (index === plan.others.length ? ':canonical-preview' : ':preview:' + index);
-  const previewTarget = (plan: MaintenancePlan, index: number) => transaction(plan.operationId, async tx => {
+  async function lockTarget(tx: Sql, target: MaintenanceTarget) {
+    const rows = await tx`SELECT id FROM harness_shared.routines WHERE workspace_id = ${workspaceId}
+      AND install_slug = ${target.installSlug} AND name = ${target.name} FOR UPDATE`;
+    if (rows.length !== 1) throw new Error('Maintenance target missing');
+  }
+  const previewInTransaction = async (tx: Sql, plan: MaintenancePlan, index: number) => {
     const stored = await planAt(tx, plan.operationId);
     if (!stored || !equal(stored, plan) || await isSealed(tx, plan.operationId)) throw new Error('Unknown/changed/sealed operation');
     const intended = [...stored.others, stored.canonical][index];
     if (!Number.isSafeInteger(index) || index < 0 || !intended) throw new Error('Preview index is outside the intended cohort');
+    await lockTarget(tx, intended);
     const target = { ...intended, before: await readRoutineSnap(tx, workspaceId, intended.installSlug, intended.name) };
     if (!target.before.active || target.before.groupSlug === 'release') throw new Error('Schedule no longer eligible');
     await audit(tx, previewId(stored, index), 'gateway-control.routines:maintenance-preview', subject(target), { target });
     return target;
-  });
+  };
+  const previewTarget = (plan: MaintenancePlan, index: number) =>
+    transaction(plan.operationId, tx => previewInTransaction(tx, plan, index));
+  const pauseInTransaction = async (tx: Sql, plan: MaintenancePlan, target: MaintenanceTarget, index: number) => {
+    const stored = await planAt(tx, plan.operationId);
+    if (!stored || !equal(stored, plan) || await isSealed(tx, plan.operationId)) throw new Error('Maintenance intent missing, changed or sealed');
+    if (Date.now() >= stored.deadlineMs - stored.cleanupTimeoutMs) throw new Error('Maintenance work deadline reached');
+    let expected = stored.others[index];
+    const preview = await tx<{ details: { target: MaintenanceTarget } }[]>`SELECT details FROM harness_shared.audit_log
+      WHERE workspace_id = ${workspaceId} AND id = ${previewId(stored, index)}`;
+    if (preview[0] || index === stored.others.length) expected = preview[0]?.details.target;
+    if (!expected || !equal(expected, target)) throw new Error('Target is outside the reviewed operation');
+    const id = rootId(plan.operationId) + ':pause:' + index;
+    const exists = await tx`SELECT id FROM harness_shared.audit_log WHERE workspace_id = ${workspaceId} AND id = ${id}`;
+    if (exists.length) throw new Error('Pause outcome already committed; recover instead of replaying');
+    await lockTarget(tx, target);
+    const read = () => readRoutineSnap(tx, workspaceId, target.installSlug, target.name);
+    const before = await read();
+    if (!routineSnapEqual(before, target.before)) throw new Error(`Stale routine preview: ${subject(target)}`);
+    if (Date.now() >= stored.deadlineMs - stored.cleanupTimeoutMs) throw new Error('Maintenance work deadline reached');
+    const next = { ...before, active: false, metadata: { ...before.metadata, pause: {
+      reason: plan.reason, pausedBy: actor, pausedAtMs: Date.now(), maintenanceOperationId: plan.operationId,
+    } } };
+    const outcome = await runControlMutation({
+      action: 'routines:set', subject: subject(target), actor, capturePrev: read,
+      apply: async () => { await writeRoutineSnap(tx, workspaceId, target.installSlug, target.name, next); return next; },
+      revertTo: snap => writeRoutineSnap(tx, workspaceId, target.installSlug, target.name, snap),
+      verify: async snap => ({ ok: routineSnapEqual(await read(), snap) }),
+    }, {}, { writeAudit: strictWriter(tx, id, { maintenanceOperationId: plan.operationId, index }) });
+    if (!outcome.applied || outcome.verify?.ok !== true || outcome.auditId !== id) throw new Error('Pause did not verify');
+  };
   return {
     prepare: plan => transaction(plan.operationId, async tx => {
       validateMaintenancePlan(plan);
@@ -119,35 +155,10 @@ export function maintenancePgStore(sql: Sql, workspaceId: string, actor: string,
       });
     },
     readRecovery: id => transaction(id, tx => recoveryAt(tx, id)),
-    pause: (plan, target, index) => transaction(plan.operationId, async tx => {
-      const stored = await planAt(tx, plan.operationId);
-      if (!stored || !equal(stored, plan) || await isSealed(tx, plan.operationId)) throw new Error('Maintenance intent missing, changed or sealed');
-      if (Date.now() >= stored.deadlineMs - stored.cleanupTimeoutMs) throw new Error('Maintenance work deadline reached');
-      let expected = stored.others[index];
-      const preview = await tx<{ details: { target: MaintenanceTarget } }[]>`SELECT details FROM harness_shared.audit_log
-        WHERE workspace_id = ${workspaceId} AND id = ${previewId(stored, index)}`;
-      if (preview[0] || index === stored.others.length) expected = preview[0]?.details.target;
-      if (!expected || !equal(expected, target)) throw new Error('Target is outside the reviewed operation');
-      const id = rootId(plan.operationId) + ':pause:' + index;
-      const exists = await tx`SELECT id FROM harness_shared.audit_log WHERE workspace_id = ${workspaceId} AND id = ${id}`;
-      if (exists.length) throw new Error('Pause outcome already committed; recover instead of replaying');
-      const locked = await tx`SELECT id FROM harness_shared.routines WHERE workspace_id = ${workspaceId}
-        AND install_slug = ${target.installSlug} AND name = ${target.name} FOR UPDATE`;
-      if (locked.length !== 1) throw new Error('Maintenance target missing');
-      const read = () => readRoutineSnap(tx, workspaceId, target.installSlug, target.name);
-      const before = await read();
-      if (!routineSnapEqual(before, target.before)) throw new Error(`Stale routine preview: ${subject(target)}`);
-      if (Date.now() >= stored.deadlineMs - stored.cleanupTimeoutMs) throw new Error('Maintenance work deadline reached');
-      const next = { ...before, active: false, metadata: { ...before.metadata, pause: {
-        reason: plan.reason, pausedBy: actor, pausedAtMs: Date.now(), maintenanceOperationId: plan.operationId,
-      } } };
-      const outcome = await runControlMutation({
-        action: 'routines:set', subject: subject(target), actor, capturePrev: read,
-        apply: async () => { await writeRoutineSnap(tx, workspaceId, target.installSlug, target.name, next); return next; },
-        revertTo: snap => writeRoutineSnap(tx, workspaceId, target.installSlug, target.name, snap),
-        verify: async snap => ({ ok: routineSnapEqual(await read(), snap) }),
-      }, {}, { writeAudit: strictWriter(tx, id, { maintenanceOperationId: plan.operationId, index }) });
-      if (!outcome.applied || outcome.verify?.ok !== true || outcome.auditId !== id) throw new Error('Pause did not verify');
+    pause: (plan, target, index) => transaction(plan.operationId, tx => pauseInTransaction(tx, plan, target, index)),
+    pauseFresh: (plan, index) => transaction(plan.operationId, async tx => {
+      const target = await previewInTransaction(tx, plan, index);
+      await pauseInTransaction(tx, plan, target, index);
     }),
     previewTarget,
     previewCanonical: plan => previewTarget(plan, plan.others.length),

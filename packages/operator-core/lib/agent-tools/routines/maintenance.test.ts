@@ -31,6 +31,28 @@ function fixture() {
 }
 
 describe('bounded routine maintenance', () => {
+  it('uses one atomic refresh/pause for every target when the store supports it', async () => {
+    const { plan, store, phases, events } = fixture();
+    store.pauseFresh = vi.fn(async (_plan, index) => {
+      const target = [...plan.others, plan.canonical][index]!;
+      events.push('atomic:' + target.installSlug);
+    });
+    expect((await runRoutineMaintenance(plan, store, phases)).ok).toBe(true);
+    expect(vi.mocked(store.pauseFresh).mock.calls.map(call => call[1])).toEqual([0, 1, 2]);
+    expect(store.pause).not.toHaveBeenCalled();
+    expect(store.previewCanonical).not.toHaveBeenCalled();
+    expect(events).toEqual(['intent', 'atomic:calendar', 'atomic:crm', 'publication', 'atomic:papercusp', 'adoption', 'seal']);
+  });
+  it('cleans up an atomic pause refusal without falling back to separate preview and pause', async () => {
+    const { plan, store, phases } = fixture();
+    store.pauseFresh = vi.fn(async () => { throw new Error('atomic pause refused'); });
+    expect(await runRoutineMaintenance(plan, store, phases)).toMatchObject({
+      ok: false, failure: expect.stringContaining('atomic pause refused'), cleanup: { ok: true },
+    });
+    expect(store.pauseFresh).toHaveBeenCalledOnce();
+    expect(store.pause).not.toHaveBeenCalled();
+    expect(phases.publication).not.toHaveBeenCalled();
+  });
   it('refreshes each noncanonical target immediately before its pause', async () => {
     const { plan, store, phases, events } = fixture();
     store.previewTarget = vi.fn(async (_plan, index) => {

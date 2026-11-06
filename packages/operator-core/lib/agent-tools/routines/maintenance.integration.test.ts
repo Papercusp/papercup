@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { maintenancePgStore } from './maintenance-pg';
 import { recoverRoutineMaintenance, runRoutineMaintenance, type MaintenancePlan, type MaintenanceRecoveryAuthority } from './maintenance';
@@ -20,7 +21,7 @@ let plan: MaintenancePlan;
 let runtime: Pick<MaintenanceRecoveryAuthority, 'cgroupSha256' | 'sourceSha256'>;
 
 beforeAll(async () => {
-  org = await createOrgTestDb();
+  org = await createOrgTestDb({ adminPoolMax: 4 });
   const { stdout } = await exec(process.execPath, ['--import', 'tsx',
     resolve(root, 'scripts/routine-maintenance-recover.mts'), '--check-runtime'], { cwd: root, timeout: 30_000 });
   runtime = JSON.parse(stdout.trim());
@@ -48,10 +49,10 @@ const recovery = (): MaintenanceRecoveryAuthority => ({ ...runtime,
 
 describe('maintenance atomicity and recovery (real private PG)', () => {
   it('refreshes a later target changed during the pause window and restores that exact fresh state', async () => {
-    const port = store(), pause = port.pause;
-    port.pause = async (...args) => {
+    const port = store(), pause = port.pauseFresh!;
+    port.pauseFresh = async (...args) => {
       await pause(...args);
-      if (args[2] === 0) await org.adminSql`UPDATE harness_shared.routines
+      if (args[1] === 0) await org.adminSql`UPDATE harness_shared.routines
         SET metadata = '{"health":{"tick":88}}'::jsonb
         WHERE workspace_id = ${workspaceId} AND install_slug = 'crm'`;
     };
@@ -72,6 +73,64 @@ describe('maintenance atomicity and recovery (real private PG)', () => {
     expect((await snap('calendar')).active).toBe(true);
     expect((await recoverRoutineMaintenance(port, plan.operationId, 10_000)).ok).toBe(true);
   });
+  it.each([['noncanonical', 0, 'calendar'], ['canonical', 3, 'papercusp']] as const)(
+    'holds the %s row lock across fresh preview and pause against a real concurrent writer', async (_kind, index, slug) => {
+      const port = store();
+      await port.prepare(plan);
+      let releasePreview!: () => void;
+      const released = new Promise<void>(resolve => { releasePreview = resolve; });
+      let markPreview!: (pid: number) => void;
+      const previewed = new Promise<number>(resolve => { markPreview = resolve; });
+      // Gate only after the real preview INSERT, before its caller can pause.
+      // The competing UPDATE and pg_blocking_pids observe actual PG locking.
+      const gatedSql = new Proxy(org.adminSql, {
+        get(target, key, receiver) {
+          if (key !== 'begin') return Reflect.get(target, key, receiver);
+          return (fn: (tx: Sql) => Promise<unknown>) => target.begin(raw => fn(new Proxy(raw, {
+            apply(query, self, args) {
+              const pending = Reflect.apply(query, self, args);
+              if (!args.slice(1).includes('gateway-control.routines:maintenance-preview')) return pending;
+              return Promise.resolve(pending).then(async rows => {
+                const [backend] = await raw`SELECT pg_backend_pid() AS pid`;
+                markPreview(Number(backend!.pid));
+                await released;
+                return rows;
+              });
+            },
+          }) as unknown as Sql));
+        },
+      });
+      const peer = await org.adminSql.reserve();
+      let pausing: Promise<void> | undefined;
+      let writing: Promise<unknown> | undefined;
+      try {
+        const [backend] = await peer`SELECT pg_backend_pid() AS pid`;
+        pausing = maintenancePgStore(gatedSql, workspaceId, actor).pauseFresh!(plan, index);
+        const maintenancePid = await Promise.race([previewed, pausing.then(() => {
+          throw new Error('Pause completed without the preview gate');
+        })]);
+        writing = Promise.resolve(peer`UPDATE harness_shared.routines
+          SET metadata = metadata || '{"health":{"tick":99}}'::jsonb
+          WHERE workspace_id = ${workspaceId} AND install_slug = ${slug}`);
+        void writing.catch(() => undefined);
+        await expect.poll(async () => {
+          const [row] = await org.adminSql`SELECT ${maintenancePid} = ANY(pg_blocking_pids(${Number(backend!.pid)})) AS blocked`;
+          return row!.blocked;
+        }, { timeout: 2_000 }).toBe(true);
+        releasePreview();
+        await pausing;
+        await writing;
+        expect(await snap(slug)).toMatchObject({ active: false, metadata: {
+          health: { tick: 99 }, pause: { maintenanceOperationId: plan.operationId },
+        } });
+        expect((await recoverRoutineMaintenance(port, plan.operationId, 10_000)).ok).toBe(true);
+        expect(await snap(slug)).toMatchObject({ active: true, metadata: { health: { tick: 99 } } });
+      } finally {
+        releasePreview();
+        await Promise.allSettled([pausing, writing]);
+        peer.release();
+      }
+    });
   it('publishes immutable recovery on the existing intent without a file or routine effects', async () => {
     const port = store(), authority = recovery();
     await expect(port.publishRecovery(authority)).rejects.toThrow('Unknown or sealed');
