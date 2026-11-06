@@ -458,6 +458,8 @@ describe('original build observations without runtime qualification', () => {
     expect(() => resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + built.sha256,
       '--prepared-receipt-sha=' + built.receiptSha256], join(f.dir, 'execute'))).toThrow();
     expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    expect(() => f.produceObserved()).toThrow(/archive symlink escapes source root/);
+    rmSync(join(f.dir, 'prepare/node_modules'));
     expect(() => f.produceObserved()).toThrow(/fresh preparation directory/);
   });
 
@@ -527,6 +529,8 @@ describe('retained committed reader producer and consumer', () => {
       'asset.sql', 'hono-host.mjs', 'hono-host.mjs.builds', 'hono-host.mjs.meta.json',
       'operator-api-build-result.json', 'operator-api-build.log',
     ]);
+    expect(() => f.produce()).toThrow(/archive symlink escapes source root/);
+    rmSync(join(f.dir, 'prepare/node_modules'));
     expect(() => f.produce()).toThrow(/fresh allocated/);
     expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
   });
