@@ -89,6 +89,25 @@ export function prepareNativeRuntimeReader(root: string, commit: string | null):
   return read;
 }
 
+/** Run the owned launch guard where host proc access is available. */
+export function assertNativeRuntimeLiveness(root: string, commit: string | null): RecordedRuntimeEnvironment {
+  const identity = nativeIdentity(root, commit);
+  const socket = process.env.PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET;
+  if (socket) {
+    const response = requestNativeRuntimeObserver(socket, { ...identity, action: 'liveness' });
+    if (response.alive !== true || !response.witness)
+      throw new Error('native liveness observer did not verify custody');
+    return response.witness;
+  }
+  const check = process.env.VERIFY_TAURI_LIVENESS_CHECK;
+  if (!check) throw new Error('native liveness check is unavailable');
+  const read = prepareLocalNativeRuntimeReader(root, commit);
+  execFileSync('bash', [check], { encoding: 'utf8', timeout: 5000, maxBuffer: 8192 });
+  const witness = read();
+  if (!witness) throw new Error('native process changed during liveness check');
+  return witness;
+}
+
 export function serveNativeRuntimeObserver(socket: string) {
   const root = process.env.OPERATOR_SOURCE_ROOT!;
   const commit = process.env.VERIFY_TAURI_SOURCE_REF!;
@@ -168,8 +187,7 @@ if (isCliEntry(import.meta.url)) {
       const socket = process.env.PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET;
       if (!socket) throw new Error('native liveness observer is unavailable');
       const identity = nativeIdentity(process.env.OPERATOR_SOURCE_ROOT!, process.env.VERIFY_TAURI_SOURCE_REF!);
-      const response = requestNativeRuntimeObserver(socket, { ...identity, action: 'liveness' });
-      if (response.alive !== true || !response.witness) throw new Error('native liveness observer did not verify custody');
+      assertNativeRuntimeLiveness(identity.root, identity.commit);
       console.log(`verifier bridge alive: pid=${identity.pid} (host provenance verified)`);
     }
   } catch (error) { console.error(`Native runtime observer failed: ${String(error)}`); process.exitCode = 1; }
