@@ -725,10 +725,12 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(cmd).toContain('--agent=codex');
     expect(cmd).toContain('--resume=sess-1');
     expect(cmd).not.toContain('--fork');
-    // A conversion continues the SOURCE identity (the port's authority
-    // invariant), so there is nothing to pre-pin and nothing pinned.
+    // A conversion ports the transcript into a fresh answering identity.
+    // Reusing the live source owner makes bootstrap reject the candidate as
+    // already bound, so the port must carry the newly minted owner id.
     expect(cmd).toContain('--owner-id=su-answer-1');
     expect(r.answeringOwnerId).toBe('su-answer-1');
+    expect(r.answeringOwnerId).not.toBe(OPTS.sourceOwnerId);
   });
 
   it('does not start a reviewer when the consult closes during async capacity preflight', async () => {
