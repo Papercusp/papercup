@@ -258,7 +258,7 @@ export function localKindGate(item: { deliverable: string | null }, before: { de
   if (item.deliverable === 'code') return 1;
   if (['doc', 'research'].includes(item.deliverable ?? '')) return 2;
   if (DELIVERABLE_KINDS.includes(item.deliverable as never)) return 3;
-  if (item.deliverable !== before.deliverable) return 4;
+  if (item.deliverable === wantedKind) return 4;
   switch (item.deliverable) { case 'decision': return 5; }
   if (isDeliverableKind(item.deliverable)) return 6;
   return MODULES_BY_KIND[item.deliverable ?? ''] ?? wanted;
@@ -294,6 +294,17 @@ export function routedKindGate(item: { deliverable: string | null; codeDeliverab
 }
 `;
     expect(scanSourceForKindBranches('packages/operator-core/lib/plan-acceptance-gate.ts', routed)).toEqual([]);
+  });
+
+  it('does not treat deliverable-to-deliverable change detection as a kind-policy branch', () => {
+    const changeDetection = `
+if (before.deliverable !== item.deliverable) changed.add(item.id);
+`;
+    expect(scanSourceForKindBranches('packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts', changeDetection)).toEqual([]);
+  });
+
+  it('skips generated dist-verify trees under the app scan root', () => {
+    expect(isKindScanPath('apps/operator/dist-verify/build/packages/operator-core/lib/plan-acceptance-gate.ts')).toBe(false);
   });
 
   it('the real tree has no deliverable-kind branch outside the resolver and the shrink-only baseline', () => {

@@ -48,7 +48,7 @@ export const KIND_POLICY_OWNERS: readonly RegExp[] = [
 
 /** Directory names the walk never descends into, at any depth below a root. */
 export const KIND_SKIPPED_DIRS: ReadonlySet<string> = new Set([
-  'node_modules', '.vitest-tmp', 'dist', 'coverage', '__snapshots__',
+  'node_modules', '.vitest-tmp', 'dist', 'dist-verify', 'coverage', '__snapshots__',
   'dist-host', '.next', 'sidecar', 'target', 'public', 'e2e', 'src-tauri', 'out',
 ]);
 
@@ -169,13 +169,14 @@ export function scanSourceForKindBranches(relPath: string, text: string): KindBr
   };
   const visit = (node: ts.Node): void => {
     if (ts.isBinaryExpression(node) && EQUALITY_OPERATORS.has(node.operatorToken.kind)) {
-      // `item.deliverable === 'code'` / `before.deliverable !== after.deliverable` / `deliverable === wanted`
+      // A kind compared with a built-in literal or another policy value can classify it;
+      // comparing two deliverables only detects a changed field.
       for (const [kindSide, other] of [[node.left, node.right], [node.right, node.left]] as const) {
         if (!isKindOperand(kindSide)) continue;
         const literal = literalValue(unwrap(other));
         if (literal !== null) {
           if (KIND_LITERALS.has(literal)) record(node, 'literal-equality');
-        } else if (!isNullishLiteral(other) && !ts.isTypeOfExpression(unwrap(other))) {
+        } else if (!isKindOperand(other) && !isNullishLiteral(other) && !ts.isTypeOfExpression(unwrap(other))) {
           record(node, 'kind-comparison');
         }
         break;
