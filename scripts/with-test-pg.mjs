@@ -747,6 +747,10 @@ if (isolatedRuntime) {
     // Verifier ownership identifies the enclosing managed task, not the private
     // product identity. Its receipt must survive runtime isolation for cleanup.
     'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID',
+    // The enclosing test door admitted this run before product DB/identity
+    // isolation. Its decision is execution provenance, not a product endpoint.
+    // Dropping it repeats shared-tree policy against the private product DB.
+    'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT',
     // Optional receipts from the existing committed-source loader are evidence,
     // not an operator identity or endpoint. Retain them in the profile child.
     'PAPERCUSP_COMMITTED_SOURCE_AUDIT', 'PAPERCUSP_COMMITTED_SOURCE_NOTICES',
