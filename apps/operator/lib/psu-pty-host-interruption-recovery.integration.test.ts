@@ -56,10 +56,10 @@ beforeAll(async () => { db = await createOrgTestDb(); m.sql = db.adminSql; }, 18
 afterAll(async () => { await db?.cleanup(); });
 
 async function eventually<T>(read: () => T | undefined,
-  diagnostic: () => string = () => 'host observation unavailable'): Promise<T> {
-  return vi.waitFor(() => {
+  diagnostic: () => string | Promise<string> = () => 'host observation unavailable'): Promise<T> {
+  return vi.waitFor(async () => {
     const value = read();
-    expect(value, value == null ? diagnostic() : undefined).toBeDefined();
+    expect(value, value == null ? await diagnostic() : undefined).toBeDefined();
     return value as T;
   }, { timeout: 15_000, interval: 30 });
 }
@@ -136,7 +136,8 @@ describe('lost host to restored native conversation', () => {
           timestamp:new Date().toISOString(),payload:${JSON.stringify(startedPayload)}})+String.fromCharCode(10));},100);
         ${completes ? `setTimeout(()=>fs.appendFileSync(${JSON.stringify(transcript)},
           JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:${JSON.stringify(completedPayload)}})+String.fromCharCode(10)),200);` : ''}
-        process.stdout.write('READY'+String.fromCharCode(10)); setInterval(()=>process.stdout.write('.'),100);`;
+        process.stdout.write('\x1b[6nmodel: GPT-6.1-Sol xhigh'+String.fromCharCode(10)+
+          'Ready · GPT-6.1-Sol xhigh · Context 100% left'+String.fromCharCode(10));`;
       const hostCode = `import {hostThroughPty} from ${JSON.stringify(hostModule)};
         import {EventEmitter} from 'node:events';
         const stdin=Object.assign(new EventEmitter(),{isTTY:false,resume(){},pause(){}});
@@ -290,12 +291,15 @@ describe('lost host to restored native conversation', () => {
             expect(await waits.listRecentDeliveries(owner)).toHaveLength(0);
             expect(await fireBoundary()).toHaveLength(1);
           }
-          await pumpWakeDeliveries(ws);
+          const pumped = await pumpWakeDeliveries(ws);
           const starts = () => readFileSync(transcript, 'utf8').split('\n').filter(line => line &&
             JSON.parse(line).payload?.type === 'task_started' &&
             JSON.parse(line).payload?.turn_id === 'original-wait-boundary').length;
           await eventually(() => starts() === 1 ? true : undefined,
-            () => JSON.stringify({ transcript: readFileSync(transcript, 'utf8'), meta: readMeta() }));
+            async () => JSON.stringify({ pumped,
+              deliveries: (await waits.listRecentDeliveries(owner)).map(row => ({
+                id: row.id, status: row.status, channel: row.channel, lastError: row.lastError })),
+              execution: readMeta()?.execution, transcript: readFileSync(transcript, 'utf8') }));
           const deliveries = await waits.listRecentDeliveries(owner);
           expect(deliveries).toHaveLength(1);
           expect(deliveries[0]).toMatchObject({ awaitId: originalAwaitId, status: 'delivered' });

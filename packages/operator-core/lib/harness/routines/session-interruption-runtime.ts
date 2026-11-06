@@ -249,7 +249,8 @@ export async function createSessionInterruptionRuntime(ctx: SystemActionCtx, dry
     },
     finish: async (candidate, key, result) => {
       const s = candidate.interruption!;
-      const marker = { ...s, key, leaseKey: null, state: result.verified ? 'restored' : result.terminal || s.attempts >= SESSION_RECOVERY_MAX_ATTEMPTS ? 'blocked' : 'pending',
+      const marker = { ...s, key, leaseKey: null, settledLeaseKey: s.leaseKey,
+        state: result.verified ? 'restored' : result.terminal || s.attempts >= SESSION_RECOVERY_MAX_ATTEMPTS ? 'blocked' : 'pending',
         nextAttemptAt: Date.now() + Math.max(1, s.attempts) * SESSION_RECOVERY_LEASE_MS, reason: result.reason };
       const rows = await sql`UPDATE harness_shared.session_briefs SET control_state = jsonb_set(control_state,
         '{lifecycle,interruption}', ${JSON.stringify(marker)}::jsonb || jsonb_build_object(
@@ -260,7 +261,17 @@ export async function createSessionInterruptionRuntime(ctx: SystemActionCtx, dry
           AND (control_state #>> '{lifecycle,interruption,attempts}')::int = ${s.attempts}
           AND control_state #>> '{lifecycle,interruption,state}' = 'recovering'
         RETURNING owner_id`;
-      return rows.length > 0;
+      if (rows.length) return true;
+      // SQL can commit before DBOS checkpoints the settlement result. Reconcile
+      // only this exact lease/outcome, without rewriting the absolute deadline.
+      const settled = await sql`SELECT owner_id FROM harness_shared.session_briefs
+        WHERE owner_id = ${candidate.ownerId} AND workspace_id = ${ctx.workspaceId}
+          AND control_state #>> '{lifecycle,interruption,key}' = ${key}
+          AND control_state #>> '{lifecycle,interruption,settledLeaseKey}' = ${s.leaseKey!}
+          AND (control_state #>> '{lifecycle,interruption,attempts}')::int = ${s.attempts}
+          AND control_state #>> '{lifecycle,interruption,state}' = ${marker.state}
+          AND control_state #>> '{lifecycle,interruption,reason}' = ${result.reason}`;
+      return settled.length === 1;
     },
   };
   return deps;
