@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { basename, dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
@@ -132,6 +132,18 @@ export async function qualifyPreparedGradingAuditSource(input: { sourceRoot: str
   const checked = await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha, artifactRoot });
   if (checked.status !== 'measured' || checked.manifestSha256 !== artifact.manifestSha256) {
     throw new Error('Rematerialized audit compiler provenance differs');
+  }
+  if (external) {
+    // ESM resolves unbundled packages from the entry, not from the child's cwd.
+    // Reuse the retained source's dependencies without copying or modifying it.
+    const sourceModules = realpathSync(join(sourceRoot, 'node_modules'));
+    if (!statSync(sourceModules).isDirectory()) throw new Error('Prepared audit dependencies are not a directory');
+    const runtimeModules = join(dirname(bundlePath), 'node_modules');
+    try { symlinkSync(sourceModules, runtimeModules, 'dir'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    if (realpathSync(runtimeModules) !== sourceModules) {
+      throw new Error('Prepared audit dependencies differ from the retained source');
+    }
   }
   return { sourceSha, artifactManifestSha256: artifact.manifestSha256,
     source: { schemaVersion: 1 as const, sourceRoot, bundlePath, evaluatorBuild: build,

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
@@ -93,6 +93,7 @@ async function rebuiltFixture(external = false) {
   git('add', 'entry.ts');
   git('-c', 'user.name=Runtime test', '-c', 'user.email=runtime@test.invalid', 'commit', '--quiet', '-m', 'exact source');
   const sourceSha = git('rev-parse', 'HEAD');
+  if (external) mkdirSync(join(sourceRoot, 'node_modules'));
   writeFileSync(bundlePath, 'rebuilt evaluator ' + requestOnlyIdentityGuardMarker());
   writeFileSync(bundlePath + '.meta.json', JSON.stringify({ inputs: { 'entry.ts': {} } }));
   const artifact = await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha,
@@ -349,6 +350,30 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(f.stop).toHaveBeenCalledWith(first.taskId);
     expect(readGradingAuditSourcePin(built.sourceRoot, locator.ownerRef, 1000)).toBeNull();
     expect(built.git('status', '--porcelain', '--untracked-files=no')).toBe('');
+  });
+
+  it('prepares external ESM dependency resolution from retained source before spawning', async () => {
+    const built = await rebuiltFixture(true);
+    const dependency = join(built.sourceRoot, 'node_modules/runtime-fixture-dep');
+    mkdirSync(dependency);
+    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
+    writeFileSync(join(dependency, 'index.mjs'), 'export default 42;');
+    const output = dirname(built.bundlePath);
+    const probe = () => execFileSync(process.execPath, ['--input-type=module', '--eval',
+      "console.log((await import('runtime-fixture-dep')).default)"], { cwd: output, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    expect(probe).toThrow();
+    await qualifyPreparedGradingAuditSource(built, built.evaluatorBuild);
+    expect(realpathSync(join(output, 'node_modules'))).toBe(join(built.sourceRoot, 'node_modules'));
+    expect(probe().trim()).toBe('42');
+    await qualifyPreparedGradingAuditSource(built, built.evaluatorBuild);
+    const f = fixture(built.evaluatorBuild);
+    rmSync(join(output, 'node_modules'));
+    const foreign = join(built.root, 'foreign-modules');
+    mkdirSync(foreign);
+    symlinkSync(foreign, join(output, 'node_modules'), 'dir');
+    await expect(ensureGradingAuditRuntime({ ...f.input, preparedSource: built }, f.deps))
+      .rejects.toThrow('dependencies differ');
+    expect(f.deps.spawn).not.toHaveBeenCalled();
   });
 
   it('recovers the external pin before task registration and refuses expiry or replaced output', async () => {
