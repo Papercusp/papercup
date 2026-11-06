@@ -95,10 +95,12 @@ async function activationAudit(sql: postgres.Sql, planSlug = SLUG) {
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
        activation, audited_plan_revision_id, audited_plan_revision_seq,
        audited_plan_content_hash, items, findings)
-    VALUES
-      (${fx.workspaceId}, ${HARNESS}, ${planSlug}, 1, 'su-test', 'activation',
+    SELECT
+      ${fx.workspaceId}, ${HARNESS}, ${planSlug}, COALESCE(MAX(audit_seq), 0) + 1, 'su-test', 'activation',
        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
-       1, 1, ${'a'.repeat(64)}, '[]'::jsonb, '[]'::jsonb)`;
+       1, 1, ${'a'.repeat(64)}, '[]'::jsonb, '[]'::jsonb
+      FROM harness_shared.plan_audits
+     WHERE workspace_id=${fx.workspaceId} AND harness_slug=${HARNESS} AND plan_slug=${planSlug}`;
 }
 
 async function appendPlanRevision(sql: postgres.Sql, body: string) {
@@ -125,10 +127,12 @@ async function activationAuditAt(
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
        activation, audited_plan_revision_id, audited_plan_revision_seq,
        audited_plan_content_hash, items, findings)
-    VALUES
-      (${fx.workspaceId}, ${HARNESS}, ${SLUG}, 1, 'su-test', 'activation',
+    SELECT
+      ${fx.workspaceId}, ${HARNESS}, ${SLUG}, COALESCE(MAX(audit_seq), 0) + 1, 'su-test', 'activation',
        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
-       ${anchor.id}, ${anchor.seq}, ${anchor.contentHash}, '[]'::jsonb, '[]'::jsonb)`;
+       ${anchor.id}, ${anchor.seq}, ${anchor.contentHash}, '[]'::jsonb, '[]'::jsonb
+      FROM harness_shared.plan_audits
+     WHERE workspace_id=${fx.workspaceId} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
 }
 
 const flipReady = (body: string) => body.replace('status: draft', 'status: ready');
