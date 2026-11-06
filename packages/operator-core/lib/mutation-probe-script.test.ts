@@ -4153,6 +4153,56 @@ fi
     expect(read()).toBe(ORIGINAL);
   });
 
+  it.each([
+    { name: 'accepts the measured npm-install-safe parent', noticePid: 41, reportedParentPid: 41, code: 0 },
+    { name: 'refuses an npm-install-safe notice from a different process', noticePid: 41, reportedParentPid: 43, code: 2 },
+  ])('$name while preserving mutation-probe classification', testCase => {
+    const guard = join(dir, 'npm-install-safe-router.sh');
+    const top = resolve(__dirname, '../../../');
+    const parentNotice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'scripts/lib/fs-mutex.mjs',
+      top,
+      pid: testCase.noticePid,
+      entry: 'scripts/npm-install-safe.mjs',
+    });
+    const runnerNotice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'scripts/test-files.mjs',
+      top,
+      pid: 42,
+      entry: 'scripts/test-files.mjs',
+    });
+    const prefix = parentNotice + '\n' + runnerNotice + '\n';
+    const lines = [
+      '#!/usr/bin/env bash',
+      `printf '%s' '${prefix}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+      `printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0 childNoticeOffsetBytes=${Buffer.byteLength(prefix)} launcherParentPid=${testCase.reportedParentPid} skippedTests=0\\n'`,
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then',
+      `  printf 'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"\\n'`,
+      '  exit 1',
+      'fi',
+    ];
+    writeFileSync(guard, lines.join('\n'));
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(testCase.code);
+    if (testCase.code === 0) {
+      expect(out).toContain('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=2 gitReaders=0 unclassified=0 launcherNotices=2 childRecords=0');
+      expect(out).toContain('verdict=caught');
+    } else {
+      expect(out).toContain('launcher-entry-unverified');
+      expect(out).toContain('verdict=harness-error');
+      expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    }
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('accepts only the verified built-ins-only Git reader receipt while still catching the mutant', () => {
     const guard = join(dir, 'git-reader-router.sh');
     const top = resolve(__dirname, '../../../libs/test-config');
