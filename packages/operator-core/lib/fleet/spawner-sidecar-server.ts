@@ -75,7 +75,7 @@ import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lif
 import { armSpawnerSidecarOrphanWatchdog } from './spawner-sidecar-orphan-watchdog';
 import { createAdmissionWedgeBreaker, createAdmissionWedgeExitHandler } from './sidecar-admission-wedge';
 import { getBuildInfo } from '../build-info';
-import { createSpawnerSidecarLoopDelay } from './spawner-sidecar-loop-delay';
+import { createSidecarLoopDelay } from '../sidecar-loop-delay';
 import { forkserverContainmentIdentity, prepareForkserverContainment } from './forkserver/forkserver-client';
 
 const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
@@ -163,7 +163,7 @@ export function runSpawnerSidecarServer(deps: {
   // Resolve inside this loaded server, once at boot. A diagnostic reader must
   // never import the checkout's current build-info to label an older process.
   const processExecIdentity = { pid: process.pid, buildInfo: getBuildInfo() };
-  const loopDelay = createSpawnerSidecarLoopDelay();
+  const loopDelay = createSidecarLoopDelay();
 
   if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, { recursive: true });
   // No unconditional unlink of our own path here: `listenUnixSocketExclusive` below

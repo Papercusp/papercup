@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beginAcquire, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
-import { createSpawnerSidecarLoopDelay } from './spawner-sidecar-loop-delay';
+import { createSidecarLoopDelay } from '../sidecar-loop-delay';
 
 const invocation = vi.hoisted(() => ({ loaded: vi.fn(), run: vi.fn() }));
 vi.mock('../flag-override-store-boot-effect', () => ({}));
@@ -21,7 +21,7 @@ import { SpawnerIpcClient } from './spawner-ipc-client';
 
 describe('spawner sidecar health', () => {
   it('reports a loop stall and resets the measurement window', async () => {
-    const health = createSpawnerSidecarLoopDelay(1);
+    const health = createSidecarLoopDelay(1);
     try {
       await new Promise((resolve) => setTimeout(resolve, 10));
       const end = performance.now() + 80;
