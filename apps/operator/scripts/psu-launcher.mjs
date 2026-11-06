@@ -8142,29 +8142,112 @@ export function codexRolloutModelProvider(rolloutPath) {
   }
 }
 
+// Cross-provider resume behavior is native-version-specific. Codex 0.152.0
+// was measured to permit a route switch; Codex 0.166.0 emitted
+// modelProviderMismatch for an openai chat resumed with the gateway provider
+// (EI-27980900843240037). Unknown versions fail closed until measured.
+const CODEX_RESUME_PROVIDER_SWITCH_COMPATIBILITY = Object.freeze({
+  "0.152.0": "verified-supported",
+  "0.166.0": "known-rejected",
+});
+
+/** Resolve and query the exact Codex executable this launcher would start.
+ * Failure to identify a version is deliberately represented as null so the
+ * provider-switch preflight can refuse an unverified transition.
+ */
+export function installedCodexCliVersion(env = process.env) {
+  try {
+    const backend = resolveBackendLaunch("codex", { env });
+    if (!backend?.bin) return null;
+    const result = spawnSync(backend.bin, ["--version"], {
+      encoding: "utf8",
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5_000,
+    });
+    if (result.error || result.status !== 0) return null;
+    return String(result.stdout ?? "").match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function codexResumeTargetProvider(accountRoute) {
+  if (accountRoute?.mode === "auto" || accountRoute?.mode === "pin")
+    return CODEX_GATEWAY_PROVIDER_ID;
+  if (accountRoute?.mode === "default") return "openai";
+  return null;
+}
+
+/** Read-only guard for a provider change on an existing Codex conversation.
+ * Versions absent from the measured compatibility set are not assumed safe.
+ */
+export function codexResumeProviderSwitchPreflight(
+  boundProvider,
+  accountRoute,
+  { env = process.env, readVersion = installedCodexCliVersion } = {},
+) {
+  const targetProvider = codexResumeTargetProvider(accountRoute);
+  const required = Boolean(
+    boundProvider && targetProvider && targetProvider !== boundProvider,
+  );
+  if (!required)
+    return {
+      allowed: true,
+      required: false,
+      boundProvider: boundProvider ?? null,
+      targetProvider,
+      version: null,
+      compatibility: "not-needed",
+    };
+  const version = readVersion(env);
+  const compatibility =
+    CODEX_RESUME_PROVIDER_SWITCH_COMPATIBILITY[version] ?? "unverified";
+  return {
+    allowed: compatibility === "verified-supported",
+    required: true,
+    boundProvider,
+    targetProvider,
+    version,
+    compatibility,
+  };
+}
+
+/** User-facing reason for refusing a native provider change that has not been
+ * verified. The caller runs this before any CODEX_HOME repair or route write.
+ */
+export function codexResumeProviderSwitchRefusal(
+  preflight,
+  { fork = false, sessionId = null } = {},
+) {
+  if (!preflight?.required || preflight.allowed) return null;
+  const operation = fork ? "fork" : "resume";
+  const thread = sessionId ? " " + sessionId : "";
+  const version = preflight.version ?? "unknown";
+  const detail =
+    preflight.compatibility === "known-rejected"
+      ? "Codex " + version + " rejects this with modelProviderMismatch."
+      : "Cross-provider resume support is unverified for installed Codex " +
+        version +
+        "; only Codex 0.152.0 has been measured to accept it.";
+  return (
+    "psu: refusing to " +
+    operation +
+    " Codex thread" +
+    thread +
+    " from provider '" +
+    preflight.boundProvider +
+    "' through '" +
+    preflight.targetProvider +
+    "'. " +
+    detail +
+    " No CODEX_HOME repair, auth sync, or route write was performed, and no native process was spawned. Retry with the thread's original provider, or use a supported successor recovery only after exact terminal session custody is confirmed. Do not edit rollout provider metadata."
+  );
+}
+
 /**
- * Codex does NOT bind a thread to the provider stamped in its rollout. At
- * resume/fork it uses the CURRENT config's `model_provider` and sends that in
- * the thread/resume request (codex exec/src/lib.rs: `model_provider:
- * Some(config.model_provider_id.clone())`); the stamped
- * `session_meta.model_provider` is never compared. Measured on Codex 0.152.0
- * (EI-22086713788860638): a thread born on direct `openai` resumed under a
- * `papercusp-codex-gateway` config reported `provider: papercusp-codex-gateway`
- * and sent its turn to the gateway URL — via both `codex exec resume` and the
- * TUI `codex resume` psu spawns; a gateway-born thread resumed with the provider
- * TABLE kept and the root key dropped reported `provider: openai`. The only real
- * constraint is WI-38706's: the provider id the rollout names must still
- * RESOLVE in the config — which `keepProviderTableWhenUnrouted` guarantees.
- *
- * Until EI-22086713788860638 this function REFUSED any cross-family switch,
- * asserting that Codex "does not permit changing model providers on
- * resume/fork" — an inference EI-22039056757537981 drew from WI-38706's
- * missing-table failure and enforced as fact. It stranded a system-login thread
- * on an account at its usage wall when the owner asked to move it to the pool.
- * What remains is the DISCLOSURE half of EI-22039: the route the owner picked is
- * applied, and when it differs from the family the thread was born on, say so
- * before spawning. A missing binding (legacy rollout) says nothing.
- *
+ * Build disclosure text after the installed Codex version passed the provider
+ * switch compatibility preflight.
  * @param {string | null} boundProvider
  * @param {{ mode?: string, id?: string | null } | null} accountRoute
  * @param {{ fork?: boolean, sessionId?: string | null }} [opts]
@@ -8186,7 +8269,7 @@ export function codexResumeRouteNotice(
   const operation = fork ? "forking" : "resuming";
   const thread = sessionId ? ` ${sessionId}` : "";
   const tail =
-    "Codex resumes with the current config's model_provider (verified 0.152.0), so the switch is applied.";
+    "The installed Codex version passed the provider-switch compatibility preflight.";
   if (boundToGateway) {
     return (
       `psu: ${operation} Codex thread${thread} on the default system account (inference gateway skipped) — ` +
@@ -14989,6 +15072,39 @@ async function launchResume(
       processHolder: argvProbeHolder,
     });
   }
+  // Codex 0.166 rejects cross-provider resumes before kickoff. Read the
+  // rollout binding and probe the exact backend binary before reserving the
+  // session or repairing/auth-syncing/rewriting CODEX_HOME.
+  let codexResumeBoundProvider = null;
+  if (session.agent === "codex" && session.sessionId) {
+    const codexHome = codexResumeHome(session);
+    const rollout = codexHome
+      ? findCodexRollout(join(codexHome, "sessions"), session.sessionId)
+      : null;
+    codexResumeBoundProvider = rollout
+      ? codexRolloutModelProvider(rollout)
+      : null;
+    const resumeEnv = prepareSuLaunchEnvironment(
+      buildResumeEnv(session, {
+        fork,
+        brain,
+        accountEnv,
+        ownerId,
+        launchedBy,
+      }),
+      process.env,
+    );
+    const providerSwitch = codexResumeProviderSwitchPreflight(
+      codexResumeBoundProvider,
+      accountEnv,
+      { env: resumeEnv },
+    );
+    const refusal = codexResumeProviderSwitchRefusal(providerSwitch, {
+      fork,
+      sessionId: session.sessionId,
+    });
+    if (refusal) throw new Error(refusal);
+  }
   let resumeClaimed = false;
   // Consume the opt-in so it cannot leak to the native child or later launches.
   const allowRetiredResume = !fork && process.env.PSU_ALLOW_RETIRED_RESUME === "1";
@@ -15240,14 +15356,9 @@ async function launchResume(
       // (chooseResumeAccount does not inherit the session's original pin), so an
       // unguarded patch strips the very `[model_providers.…]` table the rollout
       // names. The ROOT `model_provider` key, by contrast, follows the route the
-      // owner picked THIS launch — codex resumes with the current config's
-      // provider, in either direction (EI-22086713788860638) — so a cross-family
-      // switch is applied and disclosed, never refused.
-      const rollout = findCodexRollout(
-        join(env.CODEX_HOME, "sessions"),
-        session.sessionId ?? "",
-      );
-      const boundProvider = rollout ? codexRolloutModelProvider(rollout) : null;
+      // owner picked THIS launch. Cross-family switches have already passed
+      // the exact installed-version preflight before any home repair.
+      const boundProvider = codexResumeBoundProvider;
       const routeNotice = codexResumeRouteNotice(boundProvider, accountEnv, {
         fork,
         sessionId: session.sessionId ?? null,

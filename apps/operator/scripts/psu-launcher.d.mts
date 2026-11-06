@@ -2148,29 +2148,35 @@ export function codexGatewayConfigPatch(configText: string, account?: string | n
  *  remove a provider the thread needs. Pure-ish (one file read); exported for
  *  tests. */
 export function codexRolloutModelProvider(rolloutPath: any): string | null;
+/** Resolve and query the exact Codex executable this launcher would start.
+ * Failure to identify a version is deliberately represented as null so the
+ * provider-switch preflight can refuse an unverified transition.
+ */
+export function installedCodexCliVersion(env?: NodeJS.ProcessEnv): string | null;
+/** Read-only guard for a provider change on an existing Codex conversation.
+ * Versions absent from the measured compatibility set are not assumed safe.
+ */
+export function codexResumeProviderSwitchPreflight(boundProvider: any, accountRoute: any, { env, readVersion }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    readVersion?: typeof installedCodexCliVersion | undefined;
+}): {
+    allowed: boolean;
+    required: boolean;
+    boundProvider: any;
+    targetProvider: string | null;
+    version: string | null;
+    compatibility: any;
+};
+/** User-facing reason for refusing a native provider change that has not been
+ * verified. The caller runs this before any CODEX_HOME repair or route write.
+ */
+export function codexResumeProviderSwitchRefusal(preflight: any, { fork, sessionId }?: {
+    fork?: boolean | undefined;
+    sessionId?: null | undefined;
+}): string | null;
 /**
- * Codex does NOT bind a thread to the provider stamped in its rollout. At
- * resume/fork it uses the CURRENT config's `model_provider` and sends that in
- * the thread/resume request (codex exec/src/lib.rs: `model_provider:
- * Some(config.model_provider_id.clone())`); the stamped
- * `session_meta.model_provider` is never compared. Measured on Codex 0.152.0
- * (EI-22086713788860638): a thread born on direct `openai` resumed under a
- * `papercusp-codex-gateway` config reported `provider: papercusp-codex-gateway`
- * and sent its turn to the gateway URL — via both `codex exec resume` and the
- * TUI `codex resume` psu spawns; a gateway-born thread resumed with the provider
- * TABLE kept and the root key dropped reported `provider: openai`. The only real
- * constraint is WI-38706's: the provider id the rollout names must still
- * RESOLVE in the config — which `keepProviderTableWhenUnrouted` guarantees.
- *
- * Until EI-22086713788860638 this function REFUSED any cross-family switch,
- * asserting that Codex "does not permit changing model providers on
- * resume/fork" — an inference EI-22039056757537981 drew from WI-38706's
- * missing-table failure and enforced as fact. It stranded a system-login thread
- * on an account at its usage wall when the owner asked to move it to the pool.
- * What remains is the DISCLOSURE half of EI-22039: the route the owner picked is
- * applied, and when it differs from the family the thread was born on, say so
- * before spawning. A missing binding (legacy rollout) says nothing.
- *
+ * Build disclosure text after the installed Codex version passed the provider
+ * switch compatibility preflight.
  * @param {string | null} boundProvider
  * @param {{ mode?: string, id?: string | null } | null} accountRoute
  * @param {{ fork?: boolean, sessionId?: string | null }} [opts]
