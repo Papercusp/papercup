@@ -1790,11 +1790,14 @@ export type ScorecardEvidenceCriterion = ObservationRatings[string] & {
 export interface ScorecardEvidenceRow {
   purpose?: 'diagnostic' | 'grading';
   barSetHash?: string | null;
+  baselineRef?: string;
+  supersedes?: string;
   issueId: string;
   createdAt: string;
   createdBy: string | null;
   rubricRef: string;
   rubricRevision?: number;
+  rubricMeaningRevision?: number;
   criteriaHash?: string;
   /** Read-time comparison of the graded rubric with the live rubric identity. */
   rubricCurrentness?: ScorecardRubricCurrentness;
@@ -1905,6 +1908,11 @@ interface ScorecardEvidenceDb {
   created_by: string | null;
   created_at: string | Date;
   rubric_ref: string | null;
+  purpose: unknown;
+  bar_set_hash: unknown;
+  has_bar_set_hash: boolean;
+  baseline_ref: string | null;
+  supersedes: string | null;
   rubric_revision: unknown;
   rubric_meaning_revision: unknown;
   criteria_hash: string | null;
@@ -2138,6 +2146,11 @@ async function readScorecard(
              scorecard.created_by,
              scorecard.created_at,
              scorecard.payload -> 'observation' ->> 'rubricRef' AS rubric_ref,
+             scorecard.payload -> 'observation' ->> 'purpose' AS purpose,
+             scorecard.payload -> 'observation' -> 'barSetHash' AS bar_set_hash,
+             (scorecard.payload -> 'observation') ? 'barSetHash' AS has_bar_set_hash,
+             scorecard.payload -> 'observation' ->> 'baselineRef' AS baseline_ref,
+             scorecard.payload -> 'observation' ->> 'supersedes' AS supersedes,
              scorecard.payload -> 'observation' -> 'rubricRevision' AS rubric_revision,
              scorecard.payload -> 'observation' -> 'rubricMeaningRevision' AS rubric_meaning_revision,
              scorecard.payload -> 'observation' ->> 'criteriaHash' AS criteria_hash,
@@ -2268,6 +2281,12 @@ async function readScorecard(
 
   const observation = asStructuredObservation({
     rubricRef: row.rubric_ref,
+    purpose: row.purpose,
+    // SQL NULL represents both an absent property and explicit JSON null.
+    // Preserve that distinction so legacy cards do not acquire a BAR identity.
+    ...(row.has_bar_set_hash ? { barSetHash: row.bar_set_hash } : {}),
+    baselineRef: row.baseline_ref,
+    supersedes: row.supersedes,
     rubricRevision: row.rubric_revision,
     rubricMeaningRevision: row.rubric_meaning_revision,
     criteriaHash: row.criteria_hash,
@@ -2338,6 +2357,8 @@ async function readScorecard(
     rubricRef: observation.rubricRef,
     ...(observation.purpose ? { purpose: observation.purpose } : {}),
     ...(observation.barSetHash !== undefined ? { barSetHash: observation.barSetHash } : {}),
+    ...(observation.baselineRef ? { baselineRef: observation.baselineRef } : {}),
+    ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
     ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
     rubricCurrentness,
     ...(observation.rubricMeaningRevision != null

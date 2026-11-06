@@ -65,6 +65,8 @@ import {
   planAdvisoryLockKey,
 } from './agent-tools/plans/plan-lock-key';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
+import { evaluateDiscoveryReadiness, type DiscoveryReadiness,
+  type DiscoveryReadinessContext } from './agent-tools/plans/plan-declarations';
 import {
   loadHarnessRegistry,
   resolveHarnessContentPath,
@@ -236,8 +238,55 @@ export interface AuditFinding {
   ref?: string;
 }
 
-export const PLAN_AUDIT_KINDS = ['completion', 'activation'] as const;
+export const PLAN_AUDIT_KINDS = ['completion', 'activation', 'discovery'] as const;
 export type PlanAuditKind = (typeof PLAN_AUDIT_KINDS)[number];
+
+/** Derived views in the existing audit ledger, pinned to the canonical plan revision. */
+export interface DiscoveryAuditPayload {
+  schemaVersion: 1;
+  requestKey: string;
+  subjectHash: string;
+  targets: Record<string, string>;
+  evidence: Array<{ ref: string; state: 'current' | 'stale' | 'historical' | 'unknown';
+    usable: boolean; fingerprint: string | null; reason?: string }>;
+  readiness: Pick<DiscoveryReadiness, 'ready' | 'state' | 'blockers' | 'evidenceRefs' | 'supportedTargets' | 'nextAction'>;
+}
+
+/** Whitespace and lifecycle bookkeeping do not change an implementation proposal. */
+export function discoverySubjectSnapshot(content: string): Record<string, string> {
+  const digest = (value: string) => createHash('sha256').update(value.replace(/\s+/g, ' ').trim()).digest('hex');
+  const parsed = parsePlan(content);
+  const targets: Record<string, string> = {};
+  for (const item of parsed.items) targets[item.id] = digest(JSON.stringify({
+    text: item.text.replace(NOTE_SUFFIX_RE, ''), blockedBy: item.blockedBy, decisionRefs: item.decisionRefs,
+    phase: item.phase, deliverable: item.deliverable, authority: item.authority, riskTier: item.riskTier }));
+  for (const decision of parsed.decisions) targets[decision.id] = digest(JSON.stringify({ ...decision, lineNumber: undefined }));
+  for (const section of splitPlanSections(content).filter(section => section.level === 2 && section.heading !== 'Now')) {
+    const body = section.body.replace(/^- \*\*P-\d+\*\*.*$/gm, '').trim();
+    if (body) targets[`section:${section.heading}`] = digest(body);
+    for (const match of section.body.matchAll(/^\*\*(R-\d+)\s+[—–-].*?(?=^\*\*R-\d+\s+[—–-]|$(?![\s\S]))/gms)) {
+      targets[match[1]!] = digest(match[0]);
+    }
+  }
+  return Object.fromEntries(Object.entries(targets).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+export interface DiscoveryAuditContext {
+  evidence: DiscoveryAuditPayload['evidence'];
+  targets: DiscoveryReadinessContext['targets'];
+}
+
+export function assessDiscovery(content: string, context: DiscoveryAuditContext): DiscoveryAuditPayload {
+  const targets = discoverySubjectSnapshot(content);
+  const subjectHash = createHash('sha256').update(JSON.stringify(targets)).digest('hex');
+  const { ready, state, blockers, evidenceRefs, supportedTargets, nextAction } = evaluateDiscoveryReadiness(content, {
+    targets: context.targets, evidence: new Map(context.evidence.map(row => [row.ref, row])),
+  });
+  const evidence = [...context.evidence].sort((a, b) => a.ref.localeCompare(b.ref));
+  const requestKey = createHash('sha256').update(JSON.stringify({ subjectHash, evidence, targets: context.targets })).digest('hex');
+  return { schemaVersion: 1, requestKey, subjectHash, targets, evidence,
+    readiness: { ready, state, blockers, evidenceRefs, supportedTargets, nextAction } };
+}
 
 export interface ActivationAuditSourceRange {
   sourceKind: string;
@@ -572,6 +621,7 @@ export interface PlanAudit {
   auditKind: PlanAuditKind;
   auditedSha: string | null;
   activation: ActivationAuditPayload | null;
+  discovery?: DiscoveryAuditPayload | null;
   auditedPlanRevision: AuditedPlanRevision | null;
   items: AuditItemEntry[];
   findings: AuditFinding[];
@@ -1849,6 +1899,7 @@ interface PlanAuditRow {
   audit_kind?: string;
   audited_sha: string | null;
   activation?: ActivationAuditPayload | null;
+  discovery?: DiscoveryAuditPayload | null;
   audited_plan_revision_id?: number | string | null;
   audited_plan_revision_seq?: number | null;
   audited_plan_content_hash?: string | null;
@@ -1864,9 +1915,10 @@ function rowToAudit(row: PlanAuditRow): PlanAudit {
     auditSeq: row.audit_seq,
     createdBy: row.created_by,
     createdAt: typeof row.created_at === 'string' ? row.created_at : new Date(row.created_at).toISOString(),
-    auditKind: row.audit_kind === 'activation' ? 'activation' : 'completion',
+    auditKind: row.audit_kind === 'activation' || row.audit_kind === 'discovery' ? row.audit_kind : 'completion',
     auditedSha: row.audited_sha,
     activation: row.activation ?? null,
+    discovery: row.discovery ?? null,
     auditedPlanRevision:
       row.audited_plan_revision_id != null && row.audited_plan_revision_seq != null && row.audited_plan_content_hash
         ? {
@@ -2288,7 +2340,17 @@ export interface RecordActivationAuditInput {
   summary?: string | null;
 }
 
-export type RecordAuditInput = RecordCompletionAuditInput | RecordActivationAuditInput;
+export interface RecordDiscoveryAuditInput {
+  auditKind: 'discovery';
+  planSlug: string;
+  harnessSlug: string;
+  createdBy: string;
+  discovery: DiscoveryAuditPayload;
+  auditedPlanRevision: AuditedPlanRevision;
+  summary?: string | null;
+}
+
+export type RecordAuditInput = RecordCompletionAuditInput | RecordActivationAuditInput | RecordDiscoveryAuditInput;
 
 export interface RecordCurrentActivationAuditInput {
   workspaceId: string;
@@ -2621,9 +2683,9 @@ async function insertPlanAudit(
   let auditedPlanRevision: AuditedPlanRevision | null;
   let auditedSha: string | null;
   let findings: AuditFinding[];
-  if (input.auditKind === 'activation') {
+  if (input.auditKind === 'activation' || input.auditKind === 'discovery') {
     items = [];
-    activation = input.activation;
+    activation = input.auditKind === 'activation' ? input.activation : null;
     auditedPlanRevision = input.auditedPlanRevision;
     auditedSha = null;
     findings = [];
@@ -2643,12 +2705,13 @@ async function insertPlanAudit(
   const rows = await sql<PlanAuditRow[]>`
     INSERT INTO harness_shared.plan_audits
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind, audited_sha,
-       activation, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash,
+       activation, discovery, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash,
        items, findings, summary)
     SELECT ${workspaceId}, ${input.harnessSlug}, ${input.planSlug},
            COALESCE(MAX(a.audit_seq), 0) + 1,
            ${input.createdBy}, ${auditKind}, ${auditedSha},
            ${activation ? JSON.stringify(activation) : null}::text::jsonb,
+           ${input.auditKind === 'discovery' ? JSON.stringify(input.discovery) : null}::text::jsonb,
            ${auditedPlanRevision?.id ?? null},
            ${auditedPlanRevision?.seq ?? null},
            ${auditedPlanRevision?.contentHash ?? null},
@@ -2663,7 +2726,7 @@ async function insertPlanAudit(
      WHERE a.workspace_id = ${workspaceId}
        AND a.plan_slug = ${input.planSlug}
     RETURNING plan_slug, harness_slug, audit_seq, created_by, created_at, audit_kind, audited_sha,
-              activation, audited_plan_revision_id, audited_plan_revision_seq,
+              activation, discovery, audited_plan_revision_id, audited_plan_revision_seq,
               audited_plan_content_hash, items, findings, summary`;
   return rowToAudit(rows[0]);
 }
@@ -2672,7 +2735,7 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
   // Preserve the pure fail-fast boundary: unit callers with malformed completion
   // entries must be rejected before getOrgPg is even resolved. insertPlanAudit
   // repeats this assertion because the atomic activation path calls it directly.
-  if (input.auditKind !== 'activation') {
+  if (input.auditKind !== 'activation' && input.auditKind !== 'discovery') {
     const problems = validatePersistedAuditEntries(input.items);
     if (problems.length > 0) {
       throw new Error(`plan audit provenance invalid: ${problems.map((problem) => problem.detail).join('; ')}`);
@@ -2680,6 +2743,65 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
   }
   const { sql } = getOrgPg();
   return insertPlanAudit(input, sql as unknown as AuditSql, activeWorkspaceId());
+}
+
+/** One logical finalization: resolve facts, lock/re-read the subject, append or reuse.
+ * This path never seeds a BAR, promotes an item, activates or dispatches review. */
+export async function recordCurrentDiscoveryAudit(input: {
+  workspaceId: string; harnessSlug: string; planSlug: string; createdBy: string; dryRun?: boolean;
+}, effects?: {
+  context: (content: string, previous: string | null) => Promise<DiscoveryAuditContext>;
+}) {
+  const { sql } = getOrgPg();
+  const context = effects?.context ?? (async (content: string, previous: string | null) => {
+    const { resolveDiscoveryAuditContext } = await import('./agent-tools/plans/plan-declaration-resolvers');
+    const citation = await repoCitationContextForHarness(input.harnessSlug);
+    const admitted = citation && !isCitationContextFailure(citation) ? citation : null;
+    return resolveDiscoveryAuditContext(content, previous, { repoRoot: admitted?.repoRoot ?? null,
+      citationDeps: admitted?.deps, workspaceId: input.workspaceId, sql,
+      harnessSlug: input.harnessSlug, ownerId: input.createdBy, planSlug: input.planSlug });
+  });
+  return sql.begin(async tx => {
+    const executor = tx as unknown as AuditSql;
+    const [lock] = await executor<Array<{ ok: boolean }>>`SELECT pg_try_advisory_xact_lock(
+      hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}), hashtext(${planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug)})) AS ok`;
+    if (!lock?.ok) return { ok: false as const, error: 'plan_busy', nextAction: 'Retry discovery after the current plan write.' };
+    const [plan] = await executor<Array<{ content: string; content_hash: string; version: number }>>`
+      SELECT content, content_hash, version FROM harness_shared.harness_plans
+       WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}`;
+    if (!plan) return { ok: false as const, error: 'plan_not_found' };
+    const [revision] = await executor<Array<{ id: string; seq: number; content_hash: string }>>`
+      SELECT id, seq, content_hash FROM harness_shared.plan_revisions
+       WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}
+         AND content_hash=${plan.content_hash} AND content_snapshot=${plan.content}
+       ORDER BY seq DESC LIMIT 1`;
+    if (!revision) return { ok: false as const, error: 'plan_revision_unavailable', nextAction: 'Repair the canonical revision spine before finalizing discovery.' };
+    const [previous] = await executor<Array<{ content_snapshot: string }>>`
+      SELECT content_snapshot FROM harness_shared.plan_revisions
+       WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}
+         AND seq < ${revision.seq} ORDER BY seq DESC LIMIT 1`;
+    const facts = await context(plan.content, previous?.content_snapshot ?? null);
+    const discovery = assessDiscovery(plan.content, facts);
+    const confirmed = assessDiscovery(plan.content, await context(plan.content, previous?.content_snapshot ?? null));
+    const [current] = await executor<Array<{ version: number; content_hash: string }>>`
+      SELECT version, content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}`;
+    if (!current || current.version !== plan.version || current.content_hash !== plan.content_hash ||
+      confirmed.requestKey !== discovery.requestKey) return { ok: false as const, error: 'discovery_subject_moved',
+      previousIdentity: { plan: plan.content_hash, evidence: discovery.requestKey },
+      currentIdentity: { plan: current?.content_hash ?? null, evidence: confirmed.requestKey },
+      nextAction: 'Reconcile the changed plan or evidence; retry discovery against the current revision.' };
+    const [prior] = await executor<PlanAuditRow[]>`
+      SELECT * FROM harness_shared.plan_audits WHERE workspace_id=${input.workspaceId}
+        AND plan_slug=${input.planSlug} AND audit_kind='discovery'
+        AND discovery->>'requestKey'=${discovery.requestKey} ORDER BY audit_seq DESC LIMIT 1`;
+    const auditedPlanRevision = { id: Number(revision.id), seq: revision.seq, contentHash: revision.content_hash };
+    if (prior && !input.dryRun) return { ok: true as const, reused: true, audit: rowToAudit(prior), discovery, auditedPlanRevision };
+    if (input.dryRun) return { ok: true as const, preview: true, dryRun: true, discovery, auditedPlanRevision };
+    const audit = await insertPlanAudit({ auditKind: 'discovery', ...input, discovery, auditedPlanRevision,
+      summary: discovery.readiness.nextAction }, executor, input.workspaceId);
+    return { ok: true as const, reused: false, audit, discovery, auditedPlanRevision };
+  });
 }
 
 /**

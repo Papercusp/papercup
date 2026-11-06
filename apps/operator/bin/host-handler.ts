@@ -44,8 +44,13 @@ import { isServedOnExternalIngress, notServedOnExternalIngress } from './externa
 import { MCP_OAUTH_WELL_KNOWN } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
 import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
 import { registerRuntimeSecurityCapture } from '@papercusp/operator-core/lib/observability/runtime';
+import { enterGuardHttpRequest, markGuardHttpStage } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
 
 const host = new Hono<{ Bindings: HttpBindings | Http2Bindings }>();
+host.use('/api/*', async (c, next) => {
+  markGuardHttpStage(c.req.raw, 'middleware_enter');
+  await next();
+});
 const desktopPortal = createDesktopPortalLifecycle({ operator: (request, bindings) => app.fetch(request, bindings) });
 export const stopDesktopPortalHost = () => desktopPortal.stop();
 
@@ -191,7 +196,12 @@ export async function handler(
   // ad-hoc isLoopbackRequest callers) reads the verdict this establishes. A no-op on
   // single-user hosts — see loopbackPeerUidPolicyActive().
   const socket = env?.incoming?.socket ?? null;
-  return runWithLoopbackPeerVerdict(socket, () => host.fetch(req, env));
+  enterGuardHttpRequest(req, env?.incoming as import('node:http').IncomingMessage | undefined);
+  try {
+    return await runWithLoopbackPeerVerdict(socket, () => host.fetch(req, env));
+  } finally {
+    markGuardHttpStage(req, 'hono_response');
+  }
 }
 
 /**
