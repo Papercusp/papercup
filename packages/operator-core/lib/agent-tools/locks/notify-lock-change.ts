@@ -88,6 +88,7 @@ export function notifyPlanLockChange(paths: readonly string[]): void {
     .then(({ notifySyncInvalidate }) =>
       Promise.all(
         planPaths.map((path) =>
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/notify-lock-change.ts#<module>/notifyPlanLockChange/<callback>/<callback>:18fd69a9a6a9b2400ffb:1","classification":"safe-to-lose","reason":"Only invalidates the planLock.byPath banner query after a plan-file lock changes; lock enforcement remains in the lock store. usePlanLock in apps/operator/app/admin/plans/plans-api.ts invokes the current rows.refresh on window focus and when the document becomes visible, recovering a dropped banner invalidation."}
           notifySyncInvalidate(PLAN_LOCK_QUERY, { path }, undefined, {
             dedupeWindowMs: PLAN_LOCK_DEDUPE_MS,
           }),

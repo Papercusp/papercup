@@ -352,11 +352,11 @@ function persistIsolatedProgress(record) {
   }
 }
 function cleanupStage(stage, detail = {}) {
-  // Cleanup is operational evidence for every isolated CLI. The proof flag
-  // gates original-worker admission and detailed /proc sampling, not whether
-  // a caller can distinguish a finished child from a still-stopping database.
-  if (!isolatedRuntime) return;
+  // Every invocation owns a private PG, including the ordinary test router.
+  // Keep its stop/removal receipts too; only proof IPC and detailed /proc
+  // sampling require the isolated-runtime flags.
   const message = { kind: 'isolated-runtime-cleanup', stage,
+    observedAtMs: Date.now(),
     elapsedMs: Date.now() - cleanupStartedAt,
     supervisorPid: process.pid, workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, ...detail };
   persistIsolatedProgress({ kind: 'cleanup', stage, elapsedMs: message.elapsedMs,

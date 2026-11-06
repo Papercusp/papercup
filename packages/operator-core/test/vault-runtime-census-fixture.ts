@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { stopAllManaged } from '@papercusp/scheduled-registry';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
@@ -264,9 +264,45 @@ catch (error) {
   process.exitCode = 1;
 }
 finally {
-  await stopHost();
   // The source-route preflight imports the real catalog and its managed
-  // observers. This disposable producer owns their lifetime as well as PG.
+  // observers, including LISTEN clients outside the ordinary org pool. Retire
+  // their owners before closing pools, just as the private HTTP fixture does.
+  // Attempt every cleanup even if one fails, retaining each result so a hang
+  // cannot masquerade as an authentication failure on the next investigation.
+  const cleanup: Array<{ phase: string; ok: boolean; error?: string }> = [];
+  const step = async (phase: string, close: () => void | Promise<void>) => {
+    console.log('VAULT_CENSUS_CLEANUP_START ' + phase);
+    try { await close(); cleanup.push({ phase, ok: true }); }
+    catch (error) {
+      cleanup.push({ phase, ok: false, error: String(error) });
+      process.exitCode = 1;
+    }
+    writeFileSync(join(evidenceDir, 'cleanup.json'), JSON.stringify({ steps: cleanup }));
+  };
+  await step('host', stopHost);
+  await step('managed-observers', async () => { stopAllManaged(); });
+  await step('principal-invalidation', async () => {
+    const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
+    await _stopInvalidationListenerForTests();
+  });
+  await step('sync-invalidation', async () => {
+    const { stopInvalidationListener } = await import('../lib/sync-sse');
+    await stopInvalidationListener();
+  });
+  await step('listen-hub', async () => {
+    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
+    await _stopHubForTests();
+  });
+  await step('database-pools', _resetForTests);
   stopAllManaged();
-  await getOrgPg().sql.end({ timeout: 5 });
+  await new Promise<void>(done => setImmediate(done));
+  const report = process.report!.getReport() as { libuv?: Array<Record<string, unknown>> };
+  const referencedTcp = (report.libuv ?? []).filter(handle => handle.type === 'tcp'
+    && handle.is_active && handle.is_referenced).map(handle => ({
+    local: handle.localEndpoint, remote: handle.remoteEndpoint,
+  }));
+  const receipt = { steps: cleanup, activeResources: process.getActiveResourcesInfo(),
+    referencedTcp, exitCode: process.exitCode ?? 0 };
+  writeFileSync(join(evidenceDir, 'cleanup.json'), JSON.stringify(receipt));
+  console.log('VAULT_CENSUS_CLEANUP ' + JSON.stringify(receipt));
 }

@@ -187,6 +187,20 @@ vi.mock('../plan-start-critique-gate', () => ({
   evaluatePlanStartBarCritique: (...args: unknown[]) => barCritiqueMock(...args),
 }));
 
+// plans:start's readiness gate checks current discovery before its own
+// admission preflight. This unit suite covers receipt shaping, so satisfy that
+// seam without opening the live plan-audits database.
+vi.mock('../../../plan-audits', async (orig) => {
+  const actual = await orig<typeof import('../../../plan-audits')>();
+  return {
+    ...actual,
+    withCurrentDiscovery: async (_input: unknown, run: () => Promise<unknown>) => ({
+      ok: true,
+      value: await run(),
+    }),
+  };
+});
+
 // Auto-approve runs inside withPlanLock after a successful start — stub it to
 // a no-op so the proceed-case test doesn't need the real lock side-database.
 vi.mock('../with-plan-lock', async (orig) => {
