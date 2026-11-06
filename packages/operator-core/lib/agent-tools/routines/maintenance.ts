@@ -13,8 +13,34 @@ export type MaintenancePlan = {
   cleanupTimeoutMs: number;
 };
 export type MaintenanceResidue = { ref: string; ownerId: string; workItemId: string; error: string };
+export type MaintenanceRecoveryAuthority = {
+  schemaVersion: 'routine-maintenance-recovery-v1';
+  operationId: string;
+  ownerId: string;
+  workspaceId: string;
+  timeoutMs: number;
+  deadlineMs: number;
+  cgroupSha256: string;
+  sourceSha256: Record<string, string>;
+};
+
+export function validateMaintenanceRecoveryAuthority(authority: MaintenanceRecoveryAuthority): void {
+  if (!authority || authority.schemaVersion !== 'routine-maintenance-recovery-v1' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authority.operationId) ||
+      !authority.ownerId?.trim() || !authority.workspaceId?.trim() ||
+      !Number.isSafeInteger(authority.timeoutMs) || authority.timeoutMs <= 0 || authority.timeoutMs > 600_000 ||
+      !Number.isSafeInteger(authority.deadlineMs) || !/^[0-9a-f]{64}$/i.test(authority.cgroupSha256) ||
+      !authority.sourceSha256 || Array.isArray(authority.sourceSha256) ||
+      !Object.keys(authority.sourceSha256).length ||
+      Object.values(authority.sourceSha256).some(value => typeof value !== 'string' || !/^[0-9a-f]{64}$/i.test(value)))
+    throw new Error('Invalid maintenance recovery authority');
+}
+
 export type MaintenanceStore = {
   prepare(plan: MaintenancePlan): Promise<void>;
+  /** Immutable authority on the existing intent, before any pause effects. */
+  publishRecovery(authority: MaintenanceRecoveryAuthority): Promise<void>;
+  readRecovery(operationId: string): Promise<MaintenanceRecoveryAuthority | undefined>;
   pause(plan: MaintenancePlan, target: MaintenanceTarget, index: number): Promise<void>;
   previewCanonical(plan: MaintenancePlan): Promise<MaintenanceTarget>;
   assertCohort(plan: MaintenancePlan, canonicalActive: boolean): Promise<void>;
@@ -94,6 +120,8 @@ export async function runRoutineMaintenance(
   plan: MaintenancePlan,
   store: MaintenanceStore,
   phases: {
+    /** Publish durable recovery and await the separately qualified guardian. */
+    recovery?(signal: AbortSignal): Promise<void>;
     /** Consume an existing qualifying canonical pass; this must not fire Git. */
     publication(signal: AbortSignal): Promise<void>;
     /** Exactly one ordinary guarded adoption; no overrides or force route. */
@@ -110,6 +138,7 @@ export async function runRoutineMaintenance(
   let failure: string | undefined;
   try {
     await step(() => store.prepare(plan));
+    if (phases.recovery) await step(phases.recovery);
     for (const [index, target] of plan.others.entries()) await step(() => store.pause(plan, target, index));
     await step(() => store.assertCohort(plan, true));
     await step(phases.publication);

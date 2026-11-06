@@ -1,12 +1,14 @@
 /** Standalone recovery/guardian. Run in a separately qualified scope outside
  * bg-host. No HTTP endpoint or automatic database discovery is used.
- * --check-runtime is read-only. --manifest FILE [--watch] seals and restores
+ * --check-runtime is read-only. --manifest FILE or
+ * --operation UUID --workspace ID --owner ID [--watch] seals and restores
  * exactly one operation, immediately or at the manifest's absolute deadline.
  * The publisher must retain the emitted receipt and own any unresolved residue. */
 import { readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateMaintenanceRecoveryAuthority, type MaintenanceRecoveryAuthority } from '../packages/operator-core/lib/agent-tools/routines/maintenance.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sourcePaths = [
@@ -27,15 +29,19 @@ const runtime = {
 if (process.argv.includes('--check-runtime')) {
   process.stdout.write(JSON.stringify({ ...runtime, executionReady: false, note: 'Source census only; qualify scope, runtime import closure and cleanup before execution.' }) + '\n');
 } else {
-  const manifestPath = process.argv[process.argv.indexOf('--manifest') + 1];
-  if (!process.argv.includes('--manifest') || !manifestPath) throw new Error('Requires --manifest FILE or --check-runtime');
-  const manifest = JSON.parse(readFileSync(realpathSync(manifestPath), 'utf8'));
-  if (manifest.schemaVersion !== 'routine-maintenance-recovery-v1' ||
-      !/^[0-9a-f-]{36}$/i.test(manifest.operationId) || !manifest.ownerId || !manifest.workspaceId ||
-      !Number.isSafeInteger(manifest.timeoutMs) || manifest.timeoutMs <= 0 || manifest.timeoutMs > 600_000 ||
-      !Number.isSafeInteger(manifest.deadlineMs) || manifest.cgroupSha256 !== runtime.cgroupSha256 ||
-      /bg-host/i.test(cgroup) || sourcePaths.some(path => manifest.sourceSha256?.[path] !== runtime.sourceSha256[path]))
-    throw new Error('Recovery manifest/runtime qualification mismatch');
+  const arg = (flag: string) => {
+    const index = process.argv.indexOf(flag);
+    const value = index < 0 ? undefined : process.argv[index + 1];
+    return value && !value.startsWith('--') ? value : undefined;
+  };
+  const manifestPath = arg('--manifest');
+  const operationId = arg('--operation'), workspaceId = arg('--workspace'), ownerId = arg('--owner');
+  if ((Boolean(manifestPath) === Boolean(operationId)) ||
+      (operationId && (!workspaceId || !ownerId || !/^[0-9a-f-]{36}$/i.test(operationId))) ||
+      (manifestPath && (workspaceId || ownerId)))
+    throw new Error('Requires --manifest FILE or --operation UUID --workspace ID --owner ID');
+  let manifest: MaintenanceRecoveryAuthority | undefined = manifestPath
+    ? JSON.parse(readFileSync(realpathSync(manifestPath), 'utf8')) : undefined;
   const dsn = process.env.PAPERCUSP_MAINTENANCE_DATABASE_URL;
   if (!dsn) throw new Error('Explicit PAPERCUSP_MAINTENANCE_DATABASE_URL is required; no database discovery');
   const { default: postgres } = await import('postgres');
@@ -44,14 +50,21 @@ if (process.argv.includes('--check-runtime')) {
   const sql = postgres(dsn, { max: 2, prepare: false, connect_timeout: 5,
     connection: { statement_timeout: 5_000, application_name: 'routine-maintenance-recovery' } });
   try {
+    if (!manifest) manifest = await maintenancePgStore(sql, workspaceId!, ownerId!).readRecovery(operationId!);
+    if (!manifest) throw new Error('No published recovery authority for this operation');
+    validateMaintenanceRecoveryAuthority(manifest);
+    if (manifest.cgroupSha256 !== runtime.cgroupSha256 || /bg-host/i.test(cgroup) ||
+        sourcePaths.some(path => manifest!.sourceSha256[path] !== runtime.sourceSha256[path]))
+      throw new Error('Recovery manifest/runtime qualification mismatch');
     // Reachability is checked before the guardian announces it is armed.
     await sql`SELECT 1`;
-    if (process.argv.includes('--watch') && Date.now() < manifest.deadlineMs) {
-      if (manifest.deadlineMs - Date.now() > 3_600_000) throw new Error('Guardian deadline exceeds one hour');
-      process.stdout.write(JSON.stringify({ armed: true, operationId: manifest.operationId, deadlineMs: manifest.deadlineMs, cgroupSha256: runtime.cgroupSha256 }) + '\n');
+    const deadlineMs = manifest.deadlineMs;
+    if (process.argv.includes('--watch') && Date.now() < deadlineMs) {
+      if (deadlineMs - Date.now() > 3_600_000) throw new Error('Guardian deadline exceeds one hour');
+      process.stdout.write(JSON.stringify({ armed: true, operationId: manifest.operationId, deadlineMs, cgroupSha256: runtime.cgroupSha256 }) + '\n');
       await new Promise<void>(done => {
         const finish = () => { clearTimeout(timer); process.off('SIGINT', finish); process.off('SIGTERM', finish); done(); };
-        const timer = setTimeout(finish, Math.max(1, manifest.deadlineMs - Date.now()));
+        const timer = setTimeout(finish, Math.max(1, deadlineMs - Date.now()));
         process.once('SIGINT', finish); process.once('SIGTERM', finish);
       });
     }

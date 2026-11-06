@@ -14,6 +14,8 @@ function fixture() {
   const applied: { auditId: string; index: number }[] = [];
   const store: MaintenanceStore = {
     prepare: vi.fn(async () => { events.push('intent'); }),
+    publishRecovery: vi.fn(async () => {}),
+    readRecovery: vi.fn(async () => undefined),
     pause: vi.fn(async (_plan, target, index) => { events.push(target.installSlug); applied.push({ auditId: target.installSlug, index }); }),
     previewCanonical: vi.fn(async () => { events.push('fresh-canonical'); return plan.canonical; }),
     assertCohort: vi.fn(async () => {}),
@@ -29,6 +31,20 @@ function fixture() {
 }
 
 describe('bounded routine maintenance', () => {
+  it('awaits recovery publication and guardian readiness before the first pause', async () => {
+    const { plan, store, phases, events } = fixture();
+    const result = await runRoutineMaintenance(plan, store, {
+      ...phases, recovery: async () => { events.push('guardian-ready'); },
+    });
+    expect(result.ok).toBe(true);
+    expect(events.slice(0, 3)).toEqual(['intent', 'guardian-ready', 'calendar']);
+    const failed = fixture();
+    expect(await runRoutineMaintenance(failed.plan, failed.store, {
+      ...failed.phases, recovery: async () => { throw new Error('guardian unavailable'); },
+    })).toMatchObject({ ok: false, cleanup: { ok: true } });
+    expect(failed.store.pause).not.toHaveBeenCalled();
+    expect(failed.phases.publication).not.toHaveBeenCalled();
+  });
   it('publishes before canonical pause, adopts once and restores in reverse order', async () => {
     const { plan, store, phases, events } = fixture();
     expect((await runRoutineMaintenance(plan, store, phases)).ok).toBe(true);

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { maintenancePgStore } from './maintenance-pg';
-import { recoverRoutineMaintenance, runRoutineMaintenance, type MaintenancePlan } from './maintenance';
+import { recoverRoutineMaintenance, runRoutineMaintenance, type MaintenancePlan, type MaintenanceRecoveryAuthority } from './maintenance';
 import { readRoutineSnap } from './routine-snapshot';
 
 const workspaceId = 'ws-routine-maintenance-test';
@@ -17,8 +17,14 @@ const root = fileURLToPath(new URL('../../../../../', import.meta.url));
 const exec = promisify(execFile);
 let org: OrgTestDb;
 let plan: MaintenancePlan;
+let runtime: Pick<MaintenanceRecoveryAuthority, 'cgroupSha256' | 'sourceSha256'>;
 
-beforeAll(async () => { org = await createOrgTestDb(); });
+beforeAll(async () => {
+  org = await createOrgTestDb();
+  const { stdout } = await exec(process.execPath, ['--import', 'tsx',
+    resolve(root, 'scripts/routine-maintenance-recover.mts'), '--check-runtime'], { cwd: root, timeout: 30_000 });
+  runtime = JSON.parse(stdout.trim());
+});
 afterAll(async () => { await org?.cleanup(); });
 beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.audit_log WHERE workspace_id = ${workspaceId}`;
@@ -36,8 +42,64 @@ beforeEach(async () => {
 });
 const store = () => maintenancePgStore(org.adminSql, workspaceId, actor);
 const snap = (slug: string) => readRoutineSnap(org.adminSql, workspaceId, slug, 'git-sync');
+const recovery = (): MaintenanceRecoveryAuthority => ({ ...runtime,
+  schemaVersion: 'routine-maintenance-recovery-v1', workspaceId, ownerId: actor,
+  operationId: plan.operationId, timeoutMs: plan.cleanupTimeoutMs, deadlineMs: plan.deadlineMs });
 
 describe('maintenance atomicity and recovery (real private PG)', () => {
+  it('publishes immutable recovery on the existing intent without a file or routine effects', async () => {
+    const port = store(), authority = recovery();
+    await expect(port.publishRecovery(authority)).rejects.toThrow('Unknown or sealed');
+    await port.prepare(plan);
+    await port.publishRecovery(authority);
+    await port.publishRecovery(authority);
+    expect(await port.readRecovery(plan.operationId)).toEqual(authority);
+    expect(await snap('calendar')).toEqual(plan.others[0]!.before);
+    const rows = await org.adminSql`SELECT id FROM harness_shared.audit_log
+      WHERE workspace_id = ${workspaceId} AND action = 'gateway-control.routines:maintenance-recovery'`;
+    expect(rows).toHaveLength(1);
+    await expect(port.publishRecovery({ ...authority, cgroupSha256: 'a'.repeat(64) })).rejects.toThrow('immutable');
+  });
+  it('binds recovery to the exact owner, workspace, operation and reserved cleanup bounds', async () => {
+    const port = store();
+    await port.prepare(plan);
+    for (const patch of [
+      { ownerId: 'su-another' }, { workspaceId: 'another-workspace' },
+      { operationId: randomUUID() }, { deadlineMs: plan.deadlineMs + 1 },
+      { timeoutMs: plan.cleanupTimeoutMs + 1 },
+    ]) await expect(port.publishRecovery({ ...recovery(), ...patch })).rejects.toThrow();
+    expect(await port.readRecovery(plan.operationId)).toBeUndefined();
+    await port.publishRecovery(recovery());
+    await expect(maintenancePgStore(org.adminSql, workspaceId, 'su-another')
+      .readRecovery(plan.operationId)).rejects.toThrow('another actor');
+    expect(await maintenancePgStore(org.adminSql, 'another-workspace', actor)
+      .readRecovery(plan.operationId)).toBeUndefined();
+    expect((await snap('calendar')).active).toBe(true);
+  });
+  it('refuses first publication after any pause and after the operation is sealed', async () => {
+    const port = store();
+    await port.prepare(plan);
+    await port.pause(plan, plan.others[0]!, 0);
+    await expect(port.publishRecovery(recovery())).rejects.toThrow('before pause');
+    expect((await recoverRoutineMaintenance(port, plan.operationId, 10_000)).ok).toBe(true);
+    await expect(port.publishRecovery(recovery())).rejects.toThrow('sealed');
+  });
+  it('refuses mismatched guardian source pins without sealing or changing routines', async () => {
+    const port = store();
+    await port.prepare(plan);
+    const authority = recovery();
+    await port.publishRecovery({ ...authority, sourceSha256: {
+      ...authority.sourceSha256, 'scripts/routine-maintenance-recover.mts': '0'.repeat(64),
+    } });
+    await expect(exec(process.execPath, ['--import', 'tsx', resolve(root, 'scripts/routine-maintenance-recover.mts'),
+      '--operation', plan.operationId, '--workspace', workspaceId, '--owner', actor, '--watch'], {
+      cwd: root, timeout: 30_000, env: { ...process.env, PAPERCUSP_MAINTENANCE_DATABASE_URL: org.adminDsn },
+    })).rejects.toMatchObject({ code: 1 });
+    const seals = await org.adminSql`SELECT id FROM harness_shared.audit_log
+      WHERE workspace_id = ${workspaceId} AND action = 'gateway-control.routines:maintenance-sealed'`;
+    expect(seals).toHaveLength(0);
+    expect(await snap('calendar')).toEqual(plan.others[0]!.before);
+  });
   it('commits intent before effects, restores exact snapshots and preserves existing pauses', async () => {
     const port = store();
     await port.prepare(plan);
@@ -132,23 +194,27 @@ describe('maintenance atomicity and recovery (real private PG)', () => {
     expect(adoptionCalls).toBe(1);
     expect(await snap('papercusp')).toMatchObject({ active: true, metadata: { gitPass: 'qualified' } });
   });
-  it.each(['immediate', 'guardian-interruption'])('cleans up from a separate native process with no operator HTTP server: %s', async mode => {
+  it.each(['file-immediate', 'file-guardian-interruption', 'control-immediate', 'control-guardian-interruption'])('cleans up from a separate native process with no operator HTTP server: %s', async mode => {
+    const control = mode.startsWith('control'), watch = mode.endsWith('interruption');
     const port = store();
     await port.prepare(plan);
-    await port.pause(plan, plan.others[0]!, 0);
+    if (control) await port.publishRecovery(recovery());
+    if (!(control && watch)) await port.pause(plan, plan.others[0]!, 0);
     const script = resolve(root, 'scripts/routine-maintenance-recover.mts');
     const { stdout } = await exec(process.execPath, ['--import', 'tsx', script, '--check-runtime'], { cwd: root, timeout: 30_000 });
     const runtime = JSON.parse(stdout.trim());
     const dir = await mkdtemp(join(tmpdir(), 'maintenance-recovery-test-'));
     try {
       const manifest = join(dir, 'manifest.json');
-      await writeFile(manifest, JSON.stringify({ ...runtime, schemaVersion: 'routine-maintenance-recovery-v1',
+      if (!control) await writeFile(manifest, JSON.stringify({ ...runtime, schemaVersion: 'routine-maintenance-recovery-v1',
         workspaceId, ownerId: actor, operationId: plan.operationId, timeoutMs: 10_000,
-        deadlineMs: Date.now() + (mode === 'immediate' ? 0 : 60_000) }));
-      const args = ['--import', 'tsx', script, '--manifest', manifest, ...(mode === 'immediate' ? [] : ['--watch'])];
+        deadlineMs: Date.now() + (watch ? 60_000 : 0) }));
+      const args = ['--import', 'tsx', script, ...(control
+        ? ['--operation', plan.operationId, '--workspace', workspaceId, '--owner', actor]
+        : ['--manifest', manifest]), ...(watch ? ['--watch'] : [])];
       const env = { ...process.env, PAPERCUSP_MAINTENANCE_DATABASE_URL: org.adminDsn };
       let output: string;
-      if (mode === 'immediate') {
+      if (!watch) {
         output = (await exec(process.execPath, args, { cwd: root, env, timeout: 45_000, maxBuffer: 128_000 })).stdout;
       } else {
         output = await new Promise<string>((done, fail) => {
@@ -160,7 +226,11 @@ describe('maintenance atomicity and recovery (real private PG)', () => {
             stdout += bytes;
             if (!interrupted && stdout.split('\n').some(line => { try { return JSON.parse(line).armed === true; } catch { return false; } })) {
               interrupted = true;
-              child.kill('SIGTERM');
+              // The control-path guardian must arm before the first pause.
+              const pause = control ? port.pause(plan, plan.others[0]!, 0) : Promise.resolve();
+              void pause.then(() => child.kill('SIGTERM')).catch(error => {
+                clearTimeout(timer); child.kill('SIGKILL'); fail(error);
+              });
             }
           });
           child.stderr.setEncoding('utf8'); child.stderr.on('data', bytes => { stderr += bytes; });

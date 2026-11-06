@@ -2,7 +2,7 @@ import type { Sql } from 'postgres';
 import { runControlMutation, type ControlAuditRecord } from '../../gateway-control/control-harness';
 import { revertRoutineAudit } from './revert';
 import { readRoutineSnap, writeRoutineSnap, routineSnapEqual, stableJson } from './routine-snapshot';
-import { validateMaintenancePlan, type MaintenancePlan, type MaintenanceStore, type MaintenanceTarget } from './maintenance';
+import { validateMaintenancePlan, validateMaintenanceRecoveryAuthority, type MaintenancePlan, type MaintenanceRecoveryAuthority, type MaintenanceStore, type MaintenanceTarget } from './maintenance';
 
 const rootId = (id: string) => `routine-maintenance:${id}`;
 const subject = (t: MaintenanceTarget) => `${t.installSlug}/${t.name}`;
@@ -42,6 +42,21 @@ export function maintenancePgStore(sql: Sql, workspaceId: string, actor: string,
     const rows = await tx`SELECT id FROM harness_shared.audit_log WHERE workspace_id = ${workspaceId} AND id = ${rootId(id) + ':sealed'}`;
     return rows.length > 0;
   }
+  async function recoveryAt(tx: Sql, id: string): Promise<MaintenanceRecoveryAuthority | undefined> {
+    const rows = await tx<{ actor: string; details: { recovery: MaintenanceRecoveryAuthority } }[]>`
+      SELECT actor, details FROM harness_shared.audit_log
+       WHERE workspace_id = ${workspaceId} AND id = ${rootId(id) + ':recovery'}`;
+    if (!rows[0]) return undefined;
+    if (rows[0].actor !== actor) throw new Error('Maintenance recovery belongs to another actor');
+    const authority = rows[0].details.recovery;
+    validateMaintenanceRecoveryAuthority(authority);
+    const plan = await planAt(tx, id);
+    if (!plan || authority.operationId !== id || authority.workspaceId !== workspaceId ||
+        authority.ownerId !== actor || authority.deadlineMs !== plan.deadlineMs ||
+        authority.timeoutMs !== plan.cleanupTimeoutMs)
+      throw new Error('Maintenance recovery differs from its intent');
+    return authority;
+  }
   async function assertCohort(tx: Sql, expected: MaintenanceTarget[]) {
     const rows = await tx<{ install_slug: string; name: string }[]>`
       SELECT install_slug, name FROM harness_shared.routines
@@ -70,6 +85,28 @@ export function maintenancePgStore(sql: Sql, workspaceId: string, actor: string,
       }
       await audit(tx, rootId(plan.operationId), 'gateway-control.routines:maintenance-intent', plan.operationId, { plan });
     }),
+    publishRecovery: authority => {
+      validateMaintenanceRecoveryAuthority(authority);
+      return transaction(authority.operationId, async tx => {
+        const plan = await planAt(tx, authority.operationId);
+        if (!plan || await isSealed(tx, authority.operationId)) throw new Error('Unknown or sealed maintenance intent');
+        if (authority.workspaceId !== workspaceId || authority.ownerId !== actor ||
+            authority.deadlineMs !== plan.deadlineMs || authority.timeoutMs !== plan.cleanupTimeoutMs)
+          throw new Error('Maintenance recovery differs from its intent');
+        const prior = await recoveryAt(tx, authority.operationId);
+        if (prior) {
+          if (!equal(prior, authority)) throw new Error('Maintenance recovery authority is immutable');
+          return;
+        }
+        const effects = await tx`SELECT id FROM harness_shared.audit_log WHERE workspace_id = ${workspaceId}
+          AND actor = ${actor} AND action = 'gateway-control.routines:set'
+          AND details->>'maintenanceOperationId' = ${authority.operationId}`;
+        if (effects.length) throw new Error('Recovery authority must be published before pause effects');
+        await audit(tx, rootId(authority.operationId) + ':recovery',
+          'gateway-control.routines:maintenance-recovery', authority.operationId, { recovery: authority });
+      });
+    },
+    readRecovery: id => transaction(id, tx => recoveryAt(tx, id)),
     pause: (plan, target, index) => transaction(plan.operationId, async tx => {
       const stored = await planAt(tx, plan.operationId);
       if (!stored || !equal(stored, plan) || await isSealed(tx, plan.operationId)) throw new Error('Maintenance intent missing, changed or sealed');
