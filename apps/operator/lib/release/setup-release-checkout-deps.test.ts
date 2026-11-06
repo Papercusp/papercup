@@ -980,6 +980,74 @@ describe('setup-release-checkout.sh pinned submodule node_modules survive the re
 });
 
 describe('setup-release-checkout.sh generation package copy-up', () => {
+  it.each([
+    { cloneAvailable: true, lockResult: 76, expectedStatus: 0, expectedLock: false },
+    { cloneAvailable: false, lockResult: 76, expectedStatus: 76, expectedLock: true },
+    { cloneAvailable: false, lockResult: 0, expectedStatus: 0, expectedLock: true },
+  ])('uses an independent clone before bulk-copy allocation ($cloneAvailable, $lockResult)', ({
+    cloneAvailable, lockResult, expectedStatus, expectedLock,
+  }) => {
+    const work = mkdtempSync(join(tmpdir(), 'generation-copy-up-allocation-'));
+    const donor = join(work, 'generation/example');
+    const target = join(work, 'checkout/example');
+    mkdirSync(donor, { recursive: true });
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(join(donor, 'index.js'), 'frozen dependency\n');
+    chmodSync(join(donor, 'index.js'), 0o444);
+    try {
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', [
+        'source "$GENERATION_SCRIPT"',
+        'source <(sed -n "/^copy_up_generation_dependency_path()/,/^}/p" "$SETUP_SCRIPT")',
+        // Model strict-clone availability independently of the fixture filesystem.
+        // Both successful branches still copy real bytes into independent inodes.
+        'dependency_generation_copy_with_progress() {',
+        '  if [ "${3:-}" = --reflink=always ]; then',
+        '    printf "clone\\n" >> "$WORK/trace"',
+        '    [ "$CLONE_AVAILABLE" = 1 ] || return 1',
+        '  fi',
+        '  cp -a "$1" "$2"',
+        '}',
+        'dependency_generation_acquire_copy_lock() { printf "lock\\n" >> "$WORK/trace"; return "$LOCK_RESULT"; }',
+        'dependency_generation_release_copy_lock() { :; }',
+        'cp -al "$DONOR" "$TARGET"',
+        'copy_up_generation_dependency_path "$TARGET"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT,
+          SETUP_SCRIPT: SCRIPT_PATH,
+          PINNED_DEPENDENCY_GENERATION_ID: 'fixture-generation',
+          DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1',
+          DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+          DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+          CLONE_AVAILABLE: cloneAvailable ? '1' : '0',
+          LOCK_RESULT: String(lockResult),
+          WORK: work,
+          DONOR: donor,
+          TARGET: target,
+        },
+      });
+      expect(result.status, result.stderr).toBe(expectedStatus);
+      const trace = readFileSync(join(work, 'trace'), 'utf8');
+      expect(trace.startsWith('clone\n')).toBe(true);
+      expect(trace.includes('lock\n')).toBe(expectedLock);
+      expect(readFileSync(join(target, 'index.js'), 'utf8')).toBe('frozen dependency\n');
+      expect(statSync(join(donor, 'index.js')).mode & 0o777).toBe(0o444);
+      if (expectedStatus === 0) {
+        expect(statSync(join(target, 'index.js')).ino).not.toBe(statSync(join(donor, 'index.js')).ino);
+        expect(statSync(join(target, 'index.js')).mode & 0o200).toBe(0o200);
+        writeFileSync(join(target, 'index.js'), 'patched dependency\n');
+        expect(readFileSync(join(donor, 'index.js'), 'utf8')).toBe('frozen dependency\n');
+      } else {
+        expect(statSync(join(target, 'index.js')).ino).toBe(statSync(join(donor, 'index.js')).ino);
+      }
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
   it('preserves frozen donor modes and snapshot while retiring hardlinked patch targets', () => {
     const work = mkdtempSync(join(tmpdir(), 'generation-copy-up-'));
     const donor = join(work, 'generation/node_modules/example');

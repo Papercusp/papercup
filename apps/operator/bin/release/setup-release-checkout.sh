@@ -1691,7 +1691,11 @@ copy_up_generation_dependency_path() {
   tmp="${path}.copy-up.$$"
   old="${path}.copy-up-old.$$"
   rm -rf "$tmp" "$old"
-  dependency_generation_copy_independent "$path" "$tmp"
+  # A strict same-filesystem clone needs no bulk-copy allocation. Reuse the
+  # materializer's clone-first path, retaining its locked physical-copy fallback.
+  # Copy-up must never share donor inodes, even when admission opts into hardlinks.
+  DEPENDENCY_GENERATION_FORCE_COPY=1 \
+    dependency_generation_materialize_tree "$path" "$tmp" || return $?
   chmod -R u+w "$tmp"
   mv "$path" "$old"
   mv "$tmp" "$path"

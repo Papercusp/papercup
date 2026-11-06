@@ -120,7 +120,7 @@ async function collect(fixture: Fixture): Promise<Proof> {
     // ledger. A caller cannot omit inconvenient bindings through the fixture.
     const rows = await sql<Binding[]>`SELECT v.id::int, v.created_by AS author,
       b.created_by AS "originalAuthor", b.id::int AS verified, v.source_fingerprint AS source,
-      b.source_fingerprint AS "originalSource", b.details->'measurementPin' AS pin
+      b.source_fingerprint AS "originalSource", v.details->'measurementPin' AS pin
       FROM harness_shared.spec_evidence_bindings v
       JOIN harness_shared.spec_evidence_bindings b ON b.id=v.verifies_binding_id
         AND b.workspace_id=v.workspace_id AND b.harness_slug=v.harness_slug AND b.plan_slug=v.plan_slug
