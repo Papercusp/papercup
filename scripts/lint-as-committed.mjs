@@ -50,8 +50,9 @@
  * tmpdir. `--local --shared` means the clone borrows the source object store via
  * alternates instead of copying it, so this costs ~3s and almost no disk beyond the
  * checked-out files, and it touches the shared checkout only for reads. node_modules
- * is independently copied with the existing generation materializer; the donor
- * reader ends before any build or command. Missing workspace runtime exports are
+ * is independently materialized from a leased immutable generation when its
+ * exact inputs are available; otherwise a bounded donor reader ends before any
+ * build or command. Missing workspace runtime exports are
  * built with each package's committed build command inside the disposable tree.
  *
  * The alternates borrow is safe for a run of this length but is a borrow: if the
@@ -96,6 +97,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   lstatSync,
   mkdtempSync,
@@ -343,47 +345,74 @@ export function committedWorkRootDependencyDonor(workRoot) {
 }
 
 /**
- * Freeze dependency bytes under the donor reader, using the maintained generation
- * copier (independent inodes/CoW, headroom and copy admission). Builds and tests
- * run after this bounded reader is released. Retained roots own their copies;
- * they need neither a live donor lease nor a second dependency cache.
+ * Prefer an exact-input immutable generation, leased across materialization.
+ * This permits independent CoW snapshots on the temporary filesystem even when
+ * the mutable install is on another device. Small/unpublished installs retain
+ * the bounded donor-reader fallback. Retained roots own their resulting bytes;
+ * no generation pin or donor reader must outlive materialization.
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
  */
 export async function materializeIndependentDependencies(repoRoot, workRoot) {
   const donor = committedWorkRootDependencyDonor(repoRoot);
   const materializer = fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
-  return withFsMutexRead(installLockNameForRoot(donor), async () => {
+  const materialize = (useGeneration) => {
     const result = spawnSync('bash', ['-c', `
 set -euo pipefail
 source "$1"
-dependency_generation_configure_workspace_dirs "$2"
-sources="$(dependency_generation_enumerate_node_modules "$2")"
+source_root="$2"
+if [ "$4" = generation ]; then
+  generation_root="$(dependency_generation_resolve_root "$2" '' 1)"
+  input="$(dependency_generation_input_fingerprint "$3")"
+  [ -f "$generation_root/.inputs/$input" ] || exit 75
+  dependency_generation_select_inputs "$3" "$generation_root"
+  dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN"
+  trap 'dependency_generation_release_selector_lease' EXIT
+  source_root="$DEPENDENCY_GENERATION_TREE"
+  sources="$(cut -f1 "$DEPENDENCY_GENERATION_PATH/.tree-manifest")"
+else
+  dependency_generation_configure_workspace_dirs "$2"
+  sources="$(dependency_generation_enumerate_node_modules "$2")"
+fi
+printf '%s\\n' "$source_root"
 while IFS= read -r source; do
   [ -n "$source" ] || continue
-  rel="\${source#"$2"/}"
+  if [ "$4" = generation ]; then
+    rel="$source"
+    case "$rel" in /*|../*|*/../*|*/..|..) exit 74 ;; esac
+    source="$source_root/$rel"
+  else
+    rel="\${source#"$source_root"/}"
+  fi
   [ -d "$3/$(dirname "$rel")" ] || continue
   [ ! -L "$source" ] || { echo "dependency root must be physical: $source" >&2; exit 1; }
   dependency_generation_materialize_tree "$source" "$3/$rel"
   printf '%s\\n' "$rel"
 done <<< "$sources"
-`, 'committed-dependencies', materializer, donor, workRoot], {
+`, 'committed-dependencies', materializer, donor, workRoot, useGeneration ? 'generation' : 'donor'], {
       encoding: 'utf8', env: { ...process.env, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0' },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
+    // Only an absent exact-input selector is a miss. Corruption or lease failure
+    // must not silently fall back to mutable dependencies.
+    if (useGeneration && result.status === 75 && !result.error) return null;
     if (result.error || result.status !== 0) {
       throw new Error(`independent dependency materialization failed (${result.error?.message ?? `exit ${result.status}, signal ${result.signal}`})`);
     }
-    const paths = (result.stdout ?? '').trim().split('\n').filter(Boolean);
+    const [sourceRoot, ...paths] = (result.stdout ?? '').trim().split('\n').filter(Boolean);
+    if (!sourceRoot || !isAbsolute(sourceRoot)) throw new Error('invalid dependency snapshot source');
     const workspacePaths = new Set();
     const links = [];
     const visit = directory => {
+      // Published generations are read-only; copied directories/files have
+      // independent inodes and may safely become writable in this clone.
+      chmodSync(directory, statSync(directory).mode | 0o700);
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);
         if (entry.isSymbolicLink()) {
-          const original = join(donor, relative(workRoot, path));
+          const original = join(sourceRoot, relative(workRoot, path));
           const target = resolve(dirname(original), readlinkSync(path));
-          const mapped = cloneWorkspaceTarget(target, donor, workRoot);
-          const rel = relative(donor, target);
+          const mapped = cloneWorkspaceTarget(target, sourceRoot, workRoot);
+          const rel = relative(sourceRoot, target);
           if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
             throw new Error(`dependency symlink escapes its snapshot: ${relative(workRoot, path)}`);
           }
@@ -397,6 +426,7 @@ done <<< "$sources"
           symlinkSync(relative(dirname(path), join(workRoot, rel)), path);
           links.push(path);
         } else if (entry.isDirectory()) visit(path);
+        else if (entry.isFile()) chmodSync(path, statSync(path).mode | 0o600);
       }
     };
     for (const path of paths) {
@@ -429,6 +459,13 @@ done <<< "$sources"
       renameSync(temporary, markerPath);
     } finally { rmSync(temporary, { force: true }); }
     return { paths, workspacePaths };
+  };
+  const generation = materialize(true);
+  if (generation) return generation;
+  return withFsMutexRead(installLockNameForRoot(donor), async () => {
+    const snapshot = materialize(false);
+    if (!snapshot) throw new Error('missing independent dependency snapshot');
+    return snapshot;
   });
 }
 

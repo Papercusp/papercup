@@ -54,10 +54,11 @@ export function writePreparedWorkRootReceipt(workRoot: any, expectedSha: any, re
 /** A shadow install is a source reader, not a physical dependency donor. */
 export function committedWorkRootDependencyDonor(workRoot: any): string;
 /**
- * Freeze dependency bytes under the donor reader, using the maintained generation
- * copier (independent inodes/CoW, headroom and copy admission). Builds and tests
- * run after this bounded reader is released. Retained roots own their copies;
- * they need neither a live donor lease nor a second dependency cache.
+ * Prefer an exact-input immutable generation, leased across materialization.
+ * This permits independent CoW snapshots on the temporary filesystem even when
+ * the mutable install is on another device. Small/unpublished installs retain
+ * the bounded donor-reader fallback. Retained roots own their resulting bytes;
+ * no generation pin or donor reader must outlive materialization.
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
  */
 export function materializeIndependentDependencies(repoRoot: any, workRoot: any): Promise<{
