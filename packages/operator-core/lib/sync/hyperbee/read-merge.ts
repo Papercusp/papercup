@@ -961,6 +961,7 @@ export interface SnapshotScanMemo {
    *  store that is slow but serving never looks stuck. */
   unreadableAtIndex?: number;
   unreadableSinceMs?: number;
+  unreadableCause?: 'timeout' | 'read-error';
 }
 
 /** P-004: how long an unreadable snapshot scan is remembered before a retry. */
@@ -1083,6 +1084,7 @@ function scanBackwardWindowed(
   log: AdmittedLog,
   floor: number,
   getTimeoutMs: number,
+  cursor?: MergeCursor,
 ): (i: number) => Promise<BoundedReadResult> {
   let size = SNAPSHOT_SCAN_WINDOW_MIN;
   let hintedDownTo = Number.POSITIVE_INFINITY;
@@ -1098,8 +1100,24 @@ function scanBackwardWindowed(
       sinceYield = 0;
       await yieldToEventLoop();
     }
-    return readOpBoundedDetailed(log, i, getTimeoutMs);
+    return readSnapshotOp(log, i, getTimeoutMs, cursor);
   };
+}
+
+/** Reuse the merge cursor's one late result per blocked position. A scan must
+ * consume a slow-but-served block rather than issuing the same slow read forever. */
+async function readSnapshotOp(log: AdmittedLog, index: number, timeoutMs: number, cursor?: MergeCursor) {
+  if (!cursor) return readOpBoundedDetailed(log, index, timeoutMs);
+  const id = `${log.keyHex}:${index}`;
+  const cached = cursor.lateReadResults?.get(id);
+  cursor.lateReadResults?.delete(id);
+  return cached ?? readOpBoundedDetailed(log, index, timeoutMs, (result) => {
+    if (cursor.snapshotScans?.get(log.keyHex)?.unreadableAtIndex !== index) return;
+    const previous = cursor.lateReadResults?.get(id);
+    if (!previous || (previous.kind === 'read-error' && result.kind === 'op')) {
+      (cursor.lateReadResults ??= new Map()).set(id, result);
+    }
+  });
 }
 
 /**
@@ -1119,6 +1137,8 @@ async function verifySnapshotSet(
   coversUpTo: number,
   chunkCount: number,
   getTimeoutMs: number,
+  cursor?: MergeCursor,
+  seen?: { index: number; op: PeerLogOp },
 ): Promise<VerifySetResult> {
   if (coversUpTo < 0 || chunkCount < 1) return { ok: false, reason: 'torn' };
   if (coversUpTo + chunkCount > log.length) return { ok: false, reason: 'torn' }; // extends past the tail → incomplete
@@ -1128,7 +1148,9 @@ async function verifySnapshotSet(
   tryPrefetch(log, coversUpTo, coversUpTo + chunkCount);
   for (let j = 0; j < chunkCount; j++) {
     const idx = coversUpTo + j;
-    const r = await readOpBoundedDetailed(log, idx, getTimeoutMs);
+    const r = seen?.index === idx
+      ? { kind: 'op' as const, op: seen.op }
+      : await readSnapshotOp(log, idx, getTimeoutMs, cursor);
     // WI-37553 — UNREADABLE IS NOT TORN. A bounded get that timed out (or threw) says
     // NOTHING about whether the chunk is present; reporting it as `torn` made a COMPLETE
     // set look broken. Readers tolerate that (they just fold from 0), but the seed CUTTER
@@ -1229,11 +1251,36 @@ export async function findLatestCompleteSnapshotDetailed(
      *  nothing from a set below it, so the far-behind jump passes its position.
      *  Combined with `maxLookback` by taking the higher of the two floors. */
     floor?: number;
+    /** Retain the verified scan frontier and late reads across retries. Use a
+     * dedicated cursor when discovering the producer's raw own-log anchor. */
+    cursor?: MergeCursor;
+    /** A previously recorded set location, never trusted as evidence: verify
+     * its complete span on THIS log before using it. Any complete set is a safe
+     * producer seed; a stale/torn hint falls back to ordinary discovery. */
+    hintIndex?: number;
   },
 ): Promise<SnapshotScanOutcome> {
   const len = log.length;
   const lookbackFloor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
   const floor = Math.max(lookbackFloor, Math.max(0, Math.floor(opts?.floor ?? 0)));
+  const hintIndex = opts?.hintIndex;
+  if (Number.isSafeInteger(hintIndex) && hintIndex! >= floor && hintIndex! < len) {
+    const hinted = await scanForCompleteSnapshot(log, { from: hintIndex!, floor: hintIndex!, getTimeoutMs });
+    if (hinted.kind === 'found') return { kind: 'found', seed: hinted.seed };
+    if (hinted.kind === 'unreadable') {
+      return { kind: 'unreadable', atIndex: hinted.atIndex, cause: hinted.cause };
+    }
+  }
+  if (opts?.cursor && maxLookback <= 0) {
+    const answer = await latestCompleteSnapshotMemoized(log, opts.cursor, floor, maxLookback, getTimeoutMs, 0);
+    if (answer.set) return { kind: 'found', seed: answer.set.seed };
+    // The reader may advance past a gate-dropped null; a producer must still
+    // refuse an unknown anchor. Never turn that answer into "no snapshot".
+    if (answer.stuckAtIndex !== undefined) {
+      return { kind: 'unreadable', atIndex: answer.stuckAtIndex, cause: answer.cause ?? 'timeout' };
+    }
+    return { kind: 'none-in-window', scannedFrom: len - 1, floor };
+  }
   const r = await scanForCompleteSnapshot(log, { from: len - 1, floor, getTimeoutMs });
   if (r.kind === 'found') return { kind: 'found', seed: r.seed };
   // The internal P-522 `gateDropped` mark stays internal.
@@ -1279,10 +1326,10 @@ type InternalSnapshotScanOutcome =
  */
 async function scanForCompleteSnapshot(
   log: AdmittedLog,
-  args: { from: number; floor: number; getTimeoutMs: number; deadlineAt?: number },
+  args: { from: number; floor: number; getTimeoutMs: number; deadlineAt?: number; cursor?: MergeCursor },
 ): Promise<InternalSnapshotScanOutcome> {
   const { from, floor, getTimeoutMs, deadlineAt } = args;
-  const read = scanBackwardWindowed(log, floor, getTimeoutMs);
+  const read = scanBackwardWindowed(log, floor, getTimeoutMs, args.cursor);
   let i = Math.min(from, log.length - 1);
   while (i >= floor) {
     if (deadlineAt !== undefined && Date.now() >= deadlineAt) return { kind: 'budget', resumeBelow: i + 1 };
@@ -1298,7 +1345,7 @@ async function scanForCompleteSnapshot(
       const p = op.value as SnapshotPayload | undefined;
       const coversUpTo = p?.coversUpTo ?? 0;
       const chunkCount = p?.chunkCount ?? 1;
-      const v = await verifySnapshotSet(log, coversUpTo, chunkCount, getTimeoutMs);
+      const v = await verifySnapshotSet(log, coversUpTo, chunkCount, getTimeoutMs, args.cursor, { index: i, op });
       if (v.ok) {
         return {
           kind: 'found',
@@ -1667,6 +1714,9 @@ async function latestCompleteSnapshotMemoized(
   let memo = memos.get(log.keyHex);
   if (memo && len < memo.scannedTo) {
     memos.delete(log.keyHex); // the log shrank under the memo: it describes other blocks
+    for (const id of cursor.lateReadResults?.keys() ?? []) {
+      if (id.startsWith(`${log.keyHex}:`)) cursor.lateReadResults!.delete(id);
+    }
     memo = undefined;
   }
   if (
@@ -1679,6 +1729,7 @@ async function latestCompleteSnapshotMemoized(
       set: memo.set,
       conclusive: gateDropped,
       unreadable: !gateDropped,
+      cause: memo.unreadableCause,
       ...(memo.unreadableSinceMs !== undefined
         ? { stuckAtIndex: memo.unreadableAtIndex, stuckForMs: Date.now() - memo.unreadableSinceMs }
         : {}),
@@ -1695,20 +1746,23 @@ async function latestCompleteSnapshotMemoized(
   const key = log.keyHex;
   const known = memo?.set ?? null;
   const deadlineAt = budgetMs > 0 ? Date.now() + budgetMs : undefined;
-  const unreadable = (atIndex: number, gateDropped: boolean): SnapshotScanAnswer => {
+  const unreadable = (atIndex: number, gateDropped: boolean, cause: 'timeout' | 'read-error'): SnapshotScanAnswer => {
     // Not evidence about any set. Keep what is known and retry later. The stuck clock
     // runs only while the scan keeps stopping on the SAME block.
     const now = Date.now();
     const sinceMs =
       memo?.unreadableAtIndex === atIndex && memo.unreadableSinceMs !== undefined ? memo.unreadableSinceMs : now;
     memos.set(key, {
-      scannedTo: memo?.scannedTo ?? 0,
+      scannedTo: len,
       set: known,
-      ...(memo?.resumeBelow !== undefined ? { resumeBelow: memo.resumeBelow } : {}),
+      // Every position above this one was already scanned. Restarting at the
+      // moving tail discarded minutes of progress after each transient timeout.
+      resumeBelow: atIndex + 1,
       unreadableAtLength: len,
       unreadableAtMs: now,
       unreadableAtIndex: atIndex,
       unreadableSinceMs: sinceMs,
+      unreadableCause: cause,
       ...(gateDropped ? { unreadableGateDropped: true as const } : {}),
     });
     return {
@@ -1717,6 +1771,7 @@ async function latestCompleteSnapshotMemoized(
       unreadable: !gateDropped,
       stuckAtIndex: atIndex,
       stuckForMs: now - sinceMs,
+      cause,
     };
   };
 
@@ -1729,13 +1784,14 @@ async function latestCompleteSnapshotMemoized(
       floor: Math.max(floor, memo?.scannedTo ?? 0),
       getTimeoutMs,
       deadlineAt,
+      cursor,
     });
     if (top.kind === 'found') {
       const set = { seed: top.seed, meta: top.meta };
       memos.set(key, { scannedTo: len, set });
       return { set, conclusive: true };
     }
-    if (top.kind === 'unreadable') return unreadable(top.atIndex, top.gateDropped === true);
+    if (top.kind === 'unreadable') return unreadable(top.atIndex, top.gateDropped === true, top.cause);
     if (top.kind === 'budget') {
       // Out of time inside the new region. Resume below it next pass. Keep a known
       // older set as the answer meanwhile: any complete set is a correct seed.
@@ -1746,8 +1802,8 @@ async function latestCompleteSnapshotMemoized(
 
   // 2. An earlier scan ran out of time: continue it downward from where it stopped.
   if (resumeBelow !== undefined) {
-    const rest = await scanForCompleteSnapshot(log, { from: resumeBelow - 1, floor, getTimeoutMs, deadlineAt });
-    if (rest.kind === 'unreadable') return unreadable(rest.atIndex, rest.gateDropped === true);
+    const rest = await scanForCompleteSnapshot(log, { from: resumeBelow - 1, floor, getTimeoutMs, deadlineAt, cursor });
+    if (rest.kind === 'unreadable') return unreadable(rest.atIndex, rest.gateDropped === true, rest.cause);
     if (rest.kind === 'budget') {
       memos.set(key, { scannedTo: len, set: known, resumeBelow: rest.resumeBelow });
       return { set: known, conclusive: false };
@@ -1771,6 +1827,7 @@ interface SnapshotScanAnswer {
    *  stopped on that same block. `stuckForMs` is absent for an unmemoized scan. */
   stuckAtIndex?: number;
   stuckForMs?: number;
+  cause?: 'timeout' | 'read-error';
 }
 
 /* ------------------------------------------------------------------ *

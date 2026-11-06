@@ -435,6 +435,9 @@ export interface BootHarnessOpts {
    * Default `OWN_COMPACTION_PROGRESS_INTERVAL_MS`. Tests pass 0 to record every window.
    */
   ownCompactionProgressIntervalMs?: number;
+  /** Test/embedding seam for the existing durable boot-history hint. A hint
+   * only chooses a seek location; discovery must verify the whole actual set. */
+  loadOwnCompactionAnchorHint?: () => Promise<number | null>;
   /**
    * WI-10002836 test seams: the fold-worker factory (default `SnapshotFoldWorker.open`) and
    * the first backoff after a failed own compaction (default
@@ -2574,6 +2577,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   /** Epoch ms before which the anchor discovery is not retried (0 = no backoff). */
   let ownCompactionAnchorRetryAt = 0;
   let ownCompactionAnchorFailures = 0;
+  // Separate from projection cursors: the producer reads the raw own log and
+  // must never inherit a version-gated null or lose its scan on a re-fold.
+  const ownCompactionAnchorCursor = createMergeCursor();
+  const ownCompactionAnchorHintIndex = await (opts.loadOwnCompactionAnchorHint ?? (async () => {
+    // applyOverride boots intentionally have no production PG dependency.
+    if (opts.applyOverride || ownLog.length === 0) return null;
+    const { findOwnCompactionAnchorHintPg } = await import('./boot-history-pg-store');
+    return findOwnCompactionAnchorHintPg({ workspaceId: opts.workspaceId, harnessSlug: slug });
+  }))().catch(() => null);
   /**
    * WI-10002836 — epoch ms before which a FAILED compaction is not re-run (0 = no backoff).
    * Without it a compaction that fails deterministically (a worker OOM on a live set larger
@@ -2586,7 +2598,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   /** Discover the cadence anchor (own-compaction-anchor.ts). Returns the boot-row token. */
   async function discoverOwnCompactionAnchor(): Promise<string> {
-    const anchor = await discoverOwnCompactionAnchorOf(ownLog);
+    const anchor = await discoverOwnCompactionAnchorOf(ownLog, {
+      cursor: ownCompactionAnchorCursor,
+      ...(ownCompactionAnchorHintIndex !== null ? { hintIndex: ownCompactionAnchorHintIndex } : {}),
+    });
     if (anchor.known) {
       ownCompactionAnchorKnown = true;
       lastSnapshotCoversUpTo = anchor.lastCoversUpTo;

@@ -129,3 +129,20 @@ export async function listBootHistoryEventsPg(
     ts: Number(r.ts),
   }));
 }
+
+/** Reuse the existing real, scoped history as a seek hint, not as proof that a
+ * snapshot exists on the current own core (the key may have changed). The
+ * consumer re-verifies every chunk before accepting the hinted anchor. */
+export async function findOwnCompactionAnchorHintPg(
+  opts: { workspaceId: string; harnessSlug: string },
+  sqlIn?: postgres.Sql,
+): Promise<number | null> {
+  const entries = await listBootHistoryEventsPg({ ...opts, kinds: ['own_log_compaction'], limit: 500 }, sqlIn);
+  for (const entry of entries) {
+    if (!entry.message?.includes('anchor=found(')) continue;
+    const match = /\blastCoversUpTo=(\d+)\b/.exec(entry.message);
+    const index = match ? Number(match[1]) : NaN;
+    if (Number.isSafeInteger(index) && index > 0) return index;
+  }
+  return null;
+}

@@ -14,7 +14,7 @@
  * index, so they don't depend on that ordering.
  */
 import { describe, expect, it } from 'vitest';
-import { insertBootHistoryEventPg, isVitestOrigin, listBootHistoryEventsPg } from './boot-history-pg-store';
+import { findOwnCompactionAnchorHintPg, insertBootHistoryEventPg, isVitestOrigin, listBootHistoryEventsPg } from './boot-history-pg-store';
 import type { BootHistoryEntry } from './boot-history';
 
 interface Call {
@@ -87,6 +87,31 @@ describe('insertBootHistoryEventPg', () => {
     await insertBootHistoryEventPg({ ...entry, origin: 'real' }, sql);
     expect(callsOf(sql)[0]!.values).toContain('real');
     expect(callsOf(sql)[0]!.values).not.toContain('test');
+  });
+});
+
+describe('own compaction anchor history hints', () => {
+  it('skips newer failed attempts and returns the recorded successful seek index from real scoped history', async () => {
+    const sql = fakeSql([
+      { workspace_id: 'ws-1', harness_slug: 'h1', kind: 'own_log_compaction', ts: 3,
+        message: 'anchor=unreadable(atIndex=99,cause=timeout) lastCoversUpTo=0' },
+      { workspace_id: 'ws-1', harness_slug: 'h1', kind: 'own_log_compaction', ts: 2,
+        message: 'anchor=found(excludes=presence) failures=0 lastCoversUpTo=42 lastRows=100' },
+    ]);
+    expect(await findOwnCompactionAnchorHintPg({ workspaceId: 'ws-1', harnessSlug: 'h1' }, sql)).toBe(42);
+    expect(allText(sql)).toContain("AND origin = 'real'");
+    expect(allValues(sql)).toEqual(expect.arrayContaining(['ws-1', 'h1', ['own_log_compaction'], 500]));
+  });
+
+  it('returns no hint for absent, malformed or unsafe recorded indices', async () => {
+    const sql = fakeSql([
+      { workspace_id: 'ws-1', harness_slug: 'h1', kind: 'own_log_compaction', ts: 3,
+        message: 'anchor=found(excludes=none) lastCoversUpTo=9007199254740993' },
+      { workspace_id: 'ws-1', harness_slug: 'h1', kind: 'own_log_compaction', ts: 2,
+        message: 'anchor=found(excludes=none) lastCoversUpTo=0' },
+      { workspace_id: 'ws-1', harness_slug: 'h1', kind: 'own_log_compaction', ts: 1, message: null },
+    ]);
+    expect(await findOwnCompactionAnchorHintPg({ workspaceId: 'ws-1', harnessSlug: 'h1' }, sql)).toBeNull();
   });
 });
 

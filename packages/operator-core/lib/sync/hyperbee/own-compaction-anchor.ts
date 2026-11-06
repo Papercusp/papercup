@@ -17,7 +17,7 @@
  */
 import type { OwnLog } from './peer-log';
 import { describeSnapshotSet, isSeedableForUnfilteredFold } from './log-snapshot';
-import { findLatestCompleteSnapshotDetailed, type AdmittedLog, type SnapshotScanOutcome } from './read-merge';
+import { findLatestCompleteSnapshotDetailed, type AdmittedLog, type MergeCursor, type SnapshotScanOutcome } from './read-merge';
 
 export type OwnCompactionAnchor =
   | {
@@ -39,9 +39,12 @@ export type OwnCompactionAnchor =
 
 export async function discoverOwnCompactionAnchor(
   log: AdmittedLog & Pick<OwnLog, 'get'>,
-  opts: { maxLookback?: number; getTimeoutMs?: number; describeBudgetMs?: number } = {},
+  opts: { maxLookback?: number; getTimeoutMs?: number; describeBudgetMs?: number; cursor?: MergeCursor; hintIndex?: number } = {},
 ): Promise<OwnCompactionAnchor> {
-  const scan = await findLatestCompleteSnapshotDetailed(log, opts.maxLookback, opts.getTimeoutMs).catch(
+  const scan = await findLatestCompleteSnapshotDetailed(log, opts.maxLookback, opts.getTimeoutMs, {
+    cursor: opts.cursor,
+    hintIndex: opts.hintIndex,
+  }).catch(
     (): SnapshotScanOutcome => ({ kind: 'unreadable', atIndex: -1, cause: 'read-error' }),
   );
   if (scan.kind === 'unreadable') {
