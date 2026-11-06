@@ -25,8 +25,8 @@ import type { CodeIntelBackend, CodeIntelIntent } from './contracts.ts';
  * The commit the ground truth below was measured against.
  * Re-pin this together with any fixture re-measurement.
  */
-export const CORPUS_BASELINE_COMMIT = 'b77ca3bca0c0242702e011a467f5f0392310037a';
-export const CORPUS_BASELINE_MEASURED_AT = '2026-11-06T11:07:57Z';
+export const CORPUS_BASELINE_COMMIT = '4d15f28ae04e854154f8b8278a248fc3ce7e7691';
+export const CORPUS_BASELINE_MEASURED_AT = '2026-11-06T11:22:41Z';
 
 /**
  * A location this corpus asserts exists in the tree, ONE-indexed.

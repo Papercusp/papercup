@@ -1404,6 +1404,7 @@ console.log('CLONE_PREREQUISITES_OK');
     const workRoot = join(parent, 'snapshot');
     const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
     const priorStore = process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+    const priorMutexRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
     const makeWritable = (path: string) => {
       if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !statSync(path).isDirectory()) return;
       chmodSync(path, 0o700);
@@ -1457,12 +1458,17 @@ console.log('CLONE_PREREQUISITES_OK');
         'retention-fixture', helper, store, f.root], { encoding: 'utf8', timeout: 30000 });
       expect(swept.status, swept.stdout + swept.stderr).toBe(0);
       expect(existsSync(generation)).toBe(false);
+      // The retention directory selects records, while its writer uses the
+      // global papercusp-disk-retention name. Isolate that mutex as well.
+      process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(parent, 'mutexes');
       expect(await mod.cleanupCommittedWorkRoot(workRoot, false, { dir: join(parent, 'retention-pins') })).toBe(false);
       delete requireClone.cache[requireClone.resolve('transitive/index.cjs')];
       expect(requireClone('transitive/index.cjs')).toBe('clone-only');
     } finally {
       if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
       else process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = priorStore;
+      if (priorMutexRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = priorMutexRoot;
       makeWritable(parent);
       rmSync(parent, { recursive: true, force: true });
       rmSync(f.root, { recursive: true, force: true });
