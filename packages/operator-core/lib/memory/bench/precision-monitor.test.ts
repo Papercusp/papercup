@@ -421,6 +421,53 @@ describe('precision bench worker protocol', () => {
     )).toMatchObject({ phase: 'seed-corpus', status: 'started', expectedRows: 114 });
   });
 
+  it('preserves the first seed error and last phase on a bounded, redacted worker failure', async () => {
+    const childEmitter = new EventEmitter();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const secret = 'openai-secret-for-worker-failure-test';
+    const child = Object.assign(childEmitter, {
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+    });
+    const spawnProcess = (() => {
+      process.nextTick(() => {
+        stdout.end(`${PRECISION_BENCH_PROGRESS_MARKER}${JSON.stringify({
+          phase: 'seed-corpus',
+          status: 'started',
+          at: '2026-11-06T09:00:00.000Z',
+          expectedRows: 114,
+        })}\n`);
+        stderr.end(`Error: corpus seed rejected: primary seed cause\n${'stack frame\n'.repeat(300)}LAST_STACK_FRAME ${secret}`);
+        setImmediate(() => childEmitter.emit('close', 1, null));
+      });
+      return child;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    let failure: unknown;
+    try {
+      await runBenchInWorker({
+        spawnProcess,
+        embedderMode: 'local',
+        resolveWorkerCredentials: async () => ({ openai_api_key: secret }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain('precision bench worker exited with code 1');
+    expect(message).toContain('last phase: seed-corpus/started');
+    expect(message).toContain('expectedRows=114');
+    expect(message).toContain('Error: corpus seed rejected: primary seed cause');
+    expect(message).toContain('LAST_STACK_FRAME');
+    expect(message).not.toContain(secret);
+    expect(message).toContain('middle chars omitted');
+    expect(message.length).toBeLessThan(2_000);
+  });
+
   it('fails loudly when the child exits without a result marker', () => {
     expect(() => parsePrecisionBenchWorkerOutput('seed failed\n')).toThrow(/no result marker/);
   });

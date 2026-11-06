@@ -121,6 +121,8 @@ const PRECISION_BENCH_PROGRESS_STATES = new Set<PrecisionBenchProgress['status']
   'failed',
 ]);
 const WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS = 1_200;
+const WORKER_FAILURE_DIAGNOSTIC_HEAD_CHARS = 800;
+const WORKER_FAILURE_DIAGNOSTIC_TAIL_CHARS = 800;
 
 function nonnegativeCount(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
@@ -170,16 +172,33 @@ function formatPrecisionBenchProgress(progress: PrecisionBenchProgress | null): 
   return `${progress.phase}/${progress.status} at ${progress.at}${counts.length ? ` (${counts.join(', ')})` : ''}`;
 }
 
-function boundedWorkerOutputTail(output: string, secrets: readonly string[]): string {
-  let tail = output.slice(-WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS);
+function redactWorkerOutput(output: string, secrets: readonly string[]): string {
+  let redacted = output;
   for (const secret of secrets) {
-    if (secret.length >= 4) tail = tail.replaceAll(secret, '[redacted]');
+    if (secret.length >= 4) redacted = redacted.replaceAll(secret, '[redacted]');
   }
-  tail = tail.replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+[^\s]+)/gi, '[redacted]');
-  if (output.length > WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS) {
-    tail = `[... ${output.length - WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS} earlier chars omitted ...]\n${tail}`;
+  return redacted.replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+[^\s]+)/gi, '[redacted]');
+}
+
+function boundedWorkerOutputTail(output: string, secrets: readonly string[]): string {
+  const redacted = redactWorkerOutput(output, secrets);
+  let tail = redacted.slice(-WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS);
+  if (redacted.length > WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS) {
+    tail = `[... ${redacted.length - WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS} earlier chars omitted ...]\n${tail}`;
   }
   return tail.trim() || '<empty>';
+}
+
+function boundedWorkerFailureOutput(output: string, secrets: readonly string[]): string {
+  const redacted = redactWorkerOutput(output, secrets).trim();
+  const maxChars = WORKER_FAILURE_DIAGNOSTIC_HEAD_CHARS + WORKER_FAILURE_DIAGNOSTIC_TAIL_CHARS;
+  if (redacted.length <= maxChars) return redacted || '<empty>';
+  const omitted = redacted.length - maxChars;
+  return [
+    redacted.slice(0, WORKER_FAILURE_DIAGNOSTIC_HEAD_CHARS),
+    `[... ${omitted} middle chars omitted ...]`,
+    redacted.slice(-WORKER_FAILURE_DIAGNOSTIC_TAIL_CHARS),
+  ].join('\n');
 }
 
 /** How one bench run is asked to measure. */
@@ -419,12 +438,12 @@ export async function runBenchInWorker(opts: {
             return;
           }
           if (code !== 0) {
-            reject(
-              new Error(
-                `precision bench worker exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}` +
-                  (errorOutput.trim() ? `: ${errorOutput.trim().slice(-1_000)}` : ''),
-              ),
-            );
+            const progress = parsePrecisionBenchWorkerProgress(output);
+            reject(new Error([
+              `precision bench worker exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}`,
+              `last phase: ${formatPrecisionBenchProgress(progress)}`,
+              `stderr:\n${boundedWorkerFailureOutput(errorOutput, diagnosticSecrets)}`,
+            ].join('\n')));
             return;
           }
           resolve(parsePrecisionBenchWorkerOutput(output));
