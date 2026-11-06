@@ -589,11 +589,22 @@ function resolveExpectedMcpBuildSha(env = process.env) {
   return typeof sha === 'string' && sha.trim() ? sha.trim() : null;
 }
 
-async function probeMcpBuildIdentity(port, expectedSha) {
+async function probeMcpBuildIdentity(port, expectedSha, { pinned = false } = {}) {
   let response;
   try {
-    response = await fetch('http://localhost:' + port + '/api/health', {
-      signal: AbortSignal.timeout(2000),
+    // A retained evaluator can recycle after the audit starts. Its identity
+    // preflight must honor the same explicit-pin recovery policy as the MCP
+    // request; otherwise it exits before that existing recovery can run.
+    response = await fetchWithConnectionRecovery('http://localhost:' + port + '/api/health', {}, {
+      retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+      // Each attempt owns its timeout. Reusing one signal would abort the
+      // recovery window after two seconds, including time spent between probes.
+      fetchImpl: (url) => fetch(url, { signal: AbortSignal.timeout(2000) }),
+      onRetry: ({ attempt, delayMs, remainingMs }) => {
+        if (attempt === 1 || attempt % 10 === 0) {
+          console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+        }
+      },
     });
   } catch (error) {
     const code = error?.cause?.code ?? error?.code;
@@ -1159,7 +1170,7 @@ async function main() {
   const verifiedMcpBuildPorts = [];
   if (expectedMcpBuildSha && transport === 'uds') {
     for (const port of candidatePorts) {
-      const identity = await probeMcpBuildIdentity(port, expectedMcpBuildSha);
+      const identity = await probeMcpBuildIdentity(port, expectedMcpBuildSha, { pinned });
       if (identity.matches) verifiedMcpBuildPorts.push(port);
       else mcpBuildMismatches.push({ port, actual: identity.actual, reason: identity.reason });
     }
@@ -1267,7 +1278,7 @@ async function main() {
       responseTokenPath = tokenCandidate.path;
       try {
         if (expectedMcpBuildSha) {
-          const identity = await probeMcpBuildIdentity(port, expectedMcpBuildSha);
+          const identity = await probeMcpBuildIdentity(port, expectedMcpBuildSha, { pinned });
           if (!identity.matches) {
             mcpBuildMismatches.push({ port, actual: identity.actual, reason: identity.reason });
             tryNextEndpoint = hasEndpointFallback;
