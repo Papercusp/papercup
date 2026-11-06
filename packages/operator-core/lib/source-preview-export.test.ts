@@ -1665,9 +1665,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(runPhase).not.toHaveBeenCalled();
   });
 
-  it.each(['copy', 'copy-lock'])('lets advancing %s progress cross the initial watchdog deadline', async kind => {
+  it.each(['copy', 'copy-lock', 'census'])('lets advancing %s progress cross the initial watchdog deadline', async kind => {
     const progressLine = kind === 'copy'
       ? "'copy progress: fixture written=' + (++written) + 'MiB'"
+      : kind === 'census'
+        ? "'verifier census progress: scan=123:1 checked=' + (++written)"
       : "'copy lock progress: fixture advances=' + (++written)";
     const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
       let written = 0;
@@ -1715,7 +1717,22 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(output).toContain('copy-complete');
   });
 
-  it.each(['copy', 'copy-lock', 'snapshot'])('rejects chattering stalled %s and joins a TERM-resistant descendant before cleanup', async kind => {
+  it.each([false, true])('keeps repeated source censuses scoped to actual progress (scoped=%s)', async scoped => {
+    const run = runVerifierDependencyCommand(process.execPath, ['-e', `
+      let tick = 0;
+      const timer = setInterval(() => {
+        const scan = Math.floor(tick / 10) + 1, checked = tick % 10 + 1;
+        tick++;
+        console.log('verifier census progress: scan=123:' + (${scoped} ? scan : 1) + ' checked=' + checked);
+        if (tick === 30) { clearInterval(timer); console.log('census-complete'); }
+      }, 100);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1700, maxMs: 6000,
+      stallWindowMs: 500, extensionMs: 500 });
+    if (!scoped) await expect(run).rejects.toThrow('progress-stalled');
+    else expect(await run).toContain('census-complete');
+  });
+
+  it.each(['copy', 'copy-lock', 'snapshot', 'census'])('rejects chattering stalled %s and joins a TERM-resistant descendant before cleanup', async kind => {
     const destination = join(tmp, 'dependency-copy-writer');
     const pidPath = join(tmp, 'dependency-copy-writer.pid');
     await fsPromises.mkdir(destination);
@@ -1731,7 +1748,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         { stdio: 'ignore' });
       setInterval(() => console.log(${JSON.stringify(kind === 'copy'
         ? 'copy progress: fixture written=1MiB' : kind === 'copy-lock'
-          ? 'copy lock progress: fixture advances=1' : 'snapshot progress: completed=1 tree=fixture')}), 100);
+          ? 'copy lock progress: fixture advances=1' : kind === 'census'
+            ? 'verifier census progress: scan=123:1 checked=1' : 'snapshot progress: completed=1 tree=fixture')}), 100);
     `], { cwd: tmp, env: childEnv(), timeoutMs: 1500, maxMs: 5000,
       stallWindowMs: 500, extensionMs: 500 })).rejects.toThrow('progress-stalled');
     expect(existsSync(pidPath)).toBe(true);
@@ -1745,12 +1763,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
   });
 
-  it.each(['absolute', 'task'])('keeps advancing snapshot progress inside the %s deadline', async boundary => {
+  it.each([
+    ['absolute', 'snapshot'], ['task', 'snapshot'],
+    ['absolute', 'census'], ['task', 'census'],
+  ] as const)('keeps advancing %s deadline bounded for %s progress', async (boundary, kind) => {
     const env = childEnv();
     if (boundary === 'task') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + 11_000);
     await expect(runVerifierDependencyCommand(process.execPath, ['-e', `
       let completed = 0;
-      setInterval(() => console.log('snapshot progress: completed=' + (++completed)), 100);
+      setInterval(() => console.log(${JSON.stringify(kind === 'census'
+        ? 'verifier census progress: scan=123:1 checked=' : 'snapshot progress: completed=')} + (++completed)), 100);
     `], { cwd: tmp, env, timeoutMs: 500, maxMs: boundary === 'task' ? 5000 : 1000,
       stallWindowMs: 400, extensionMs: 300 })).rejects.toThrow('absolute-ceiling');
   });
@@ -1834,6 +1856,34 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const restrictedTemp = join(tmp, 'materialized-source-only-temp-' + caseId);
     await fsPromises.mkdir(restrictedTemp);
     vi.stubEnv('TMPDIR', restrictedTemp);
+    let archiveDelayMs = 0;
+    let firstArchiveReadPhases: { phase: string; event: string }[] | undefined;
+    const originalRead = nativeFs.readFileSync;
+    const archiveReadSpy = pinnedAuthority ? vi.spyOn(nativeFs, 'readFileSync') : undefined;
+    if (archiveReadSpy) {
+      const estimate = estimateVerifierCommandBudget(budgetPhases, 0);
+      const budgetFrom = join(tmp, 'materialized-archive-budget-' + caseId + '.jsonl');
+      let elapsedMs = 0;
+      writeFileSync(budgetFrom, Object.entries(budgetPhases).flatMap(([phase, durationMs], index) => [
+        { schemaVersion: 'verifier-phase-v1', sequence: index * 2 + 1, phase, event: 'started', elapsedMs },
+        { schemaVersion: 'verifier-phase-v1', sequence: index * 2 + 2, phase, event: 'completed', durationMs,
+          elapsedMs: elapsedMs += durationMs },
+      ]).map(row => JSON.stringify(row)).join('\n'));
+      Object.assign(options, { budgetFrom, clock: { now: () => Date.now() + archiveDelayMs, setTimeout, clearTimeout },
+        env: { ...process.env, PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + estimate.requiredTimeoutMs) } });
+      archiveReadSpy.mockImplementation((...args) => {
+        if (args[0] === join(archiveRoot, '.verifier-source.json') && firstArchiveReadPhases === undefined) {
+          const journal = `${receiptPath}.phases.jsonl`;
+          firstArchiveReadPhases = existsSync(journal)
+            ? String(originalRead(journal, 'utf8')).trim().split('\n').map(line => JSON.parse(line)) : [];
+          // V80 spent 126s on a duplicate census before the first admission.
+          // Advance the absolute clock without sleeping or relaxing a guard.
+          archiveDelayMs = 126_000;
+        }
+        return Reflect.apply(originalRead, nativeFs, args);
+      });
+      syncBuiltinESMExports();
+    }
     try {
       if (pinnedAuthority) {
         await expect(runVerifierCommand({ ...options, sourceArchive: undefined,
@@ -1843,7 +1893,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       trace('verifier-command-start');
       expect(await runVerifierCommand(options)).toBe(0);
       trace('verifier-command-complete');
-    } finally { vi.unstubAllEnvs(); }
+      if (pinnedAuthority) {
+        expect(firstArchiveReadPhases).toEqual([
+          expect.objectContaining({ phase: 'source.admission', event: 'started' }),
+          expect.objectContaining({ phase: 'source.admission', event: 'completed' }),
+          expect.objectContaining({ phase: 'source.freeze', event: 'started' }),
+        ]);
+        expect(archiveDelayMs).toBe(126_000);
+      }
+    } finally {
+      archiveReadSpy?.mockRestore();
+      syncBuiltinESMExports();
+      vi.unstubAllEnvs();
+    }
     expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
     if (archiveReceipt) {
       expect(JSON.parse(readFileSync(receiptPath, 'utf8')).files).toEqual(archiveReceipt.files);

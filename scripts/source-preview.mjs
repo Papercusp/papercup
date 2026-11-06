@@ -1047,6 +1047,7 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
     for (const line of lines) {
       const counter = /((?:checksum read|copy) progress:.*?) (?:written|read)=(\d+)MiB/.exec(line)
         ?? /(copy lock progress:.*?) advances=(\d+)/.exec(line)
+        ?? /^(verifier census progress: scan=\d+:\d+) checked=(\d+)(?: |$)/.exec(line)
         ?? /^(snapshot progress:) completed=(\d+)(?: |$)/.exec(line);
       if (counter && Number(counter[2]) > (counters.get(counter[1]) ?? 0)) {
         counters.set(counter[1], Number(counter[2]));
@@ -2682,11 +2683,9 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
   if (preparationMaxMs !== undefined && (!Number.isSafeInteger(preparationMaxMs) || preparationMaxMs <= 0 || readTaskDeadlineEpochMs(env) === null))
     throw new PreviewError('explicit verifier preparation allowance needs positive integer milliseconds and a finite caller task deadline', 2);
   const sourceCommit = resolveCommit(sourceRepo, ref);
-  if (sourceArchive) {
-    readPinnedVerifierArchive(sourceArchive.root, sourceCommit, sourceArchive.receiptSha256);
-    await validateVerifierInputs({ repo: sourceArchive.root, ref: sourceCommit, inputs, inputsFile,
-      tauriInputs, receiptSha256: sourceArchive.receiptSha256 });
-  }
+  // prepareVerifierSource validates the pinned archive and its complete census
+  // inside source.freeze. Repeating it here spends the absolute task deadline
+  // before source admission and leaves that work outside the budget journal.
   const explicitGeneration = Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
   const donor = explicitGeneration ? sourceRepo : committedWorkRootDependencyDonor(sourceRepo);
   // A frozen Git source may consume an immutable dependency generation while

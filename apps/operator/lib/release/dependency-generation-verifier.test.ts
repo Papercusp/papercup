@@ -245,6 +245,42 @@ describe('D012 native generation closure', () => {
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
   }, 120_000);
 
+  it.each([32, 300])('reports advancing source and input censuses without changing custody (%s files)', async count => {
+    const f = fixture();
+    for (let index = 0; index < count; index++) write(f.donor, 'inputs/' + index + '.txt', String(index));
+    execFileSync('git', ['add', '.'], { cwd: f.donor });
+    execFileSync('git', ['commit', '-qm', 'source census progress fixture'], { cwd: f.donor });
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    const archive = join(f.root, 'progress-archive'), receiptPath = join(f.root, 'progress-archive.json');
+    const receipt = await prepareVerifierSource({ repo: f.donor, ref, dest: archive,
+      inputs: ['inputs/0.txt'] });
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const run = () => spawnSync(process.execPath,
+      [join(repo, 'apps/operator/bin/release/dependency-generation-verifier.mjs'), 'fingerprint', archive], {
+        encoding: 'utf8', timeout: 30_000, env: { ...process.env,
+          VERIFY_TAURI_SOURCE_RECEIPT: receiptPath, VERIFY_TAURI_SOURCE_REF: ref },
+      });
+    const first = run(), second = run();
+    expect(first.status, first.stderr).toBe(0);
+    expect(second.status, second.stderr).toBe(0);
+    expect(first.stdout.trim()).toMatch(/^[0-9a-f]{64}$/);
+    expect(second.stdout).toBe(first.stdout);
+    const scans = new Map<string, number>();
+    for (const line of first.stderr.trim().split('\n')) {
+      const match = /^verifier census progress: scan=(\d+:\d+) checked=(\d+)$/.exec(line);
+      expect(match, line).not.toBeNull();
+      const completed = Number(match![2]);
+      expect(completed).toBeGreaterThan(scans.get(match![1]) ?? 0);
+      expect(completed).toBeLessThanOrEqual(receipt.files.length);
+      scans.set(match![1], completed);
+    }
+    expect(scans.size).toBeGreaterThanOrEqual(2);
+    write(archive, 'inputs/0.txt', 'changed');
+    const tampered = run();
+    expect(tampered.status).toBe(74);
+    expect(tampered.stderr).toContain('tampered verification source archive');
+  });
+
   it.each(['missing-pin', 'internal-pin', 'wrong-ref', 'receipt', 'source', 'extra'])
     ('refuses %s archive custody before measuring native build inputs', async defect => {
       const f = fixture('packages/omp-plugin');

@@ -14,6 +14,22 @@ import { readVerifierSourceReceiptSync } from '../../../../libs/test-config/src/
 const RECEIPT = '.papercusp-workspace-build.json';
 const CLOSURE = '.verifier-closure.json';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+let censusSequence = 0;
+
+// A closure check can hash the full source several times after tree copying
+// finishes. Report completed work, with a new scope for each census; repeated
+// counters and a blocked read must still let the parent's watchdog expire.
+function censusProgress() {
+  const scan = process.pid + ':' + (++censusSequence);
+  let reported = 0, nextReportAt = 0;
+  return (completed, final = false) => {
+    if (!Number.isSafeInteger(completed) || completed <= reported) return;
+    if (!final && completed - reported < 256 && Date.now() < nextReportAt) return;
+    process.stderr.write('verifier census progress: scan=' + scan + ' checked=' + completed + '\n');
+    reported = completed;
+    nextReportAt = Date.now() + 5_000;
+  };
+}
 const fail = message => { throw new Error('verifier-generation:' + message); };
 
 // Keep the existing materializer's admission, progress and cancellation boundary.
@@ -117,7 +133,10 @@ function archiveSource(root) {
   if (existsSync(join(root, '.git'))) return null;
   // An internal marker alone cannot attest itself. Reuse the same external
   // receipt, selected ref and full byte census as the native test reporters.
-  return readVerifierSourceReceiptSync(root);
+  const progress = censusProgress();
+  return readVerifierSourceReceiptSync(root, undefined, {
+    progress: record => progress(record.completedFiles),
+  });
 }
 function sourcePaths(root) {
   const archive = archiveSource(root);
@@ -142,7 +161,16 @@ function sourcePaths(root) {
 
 export function buildInputs(root) {
   const paths = sourcePaths(root);
-  if (paths.length < 128) return paths.map(path => identity(root, path));
+  if (paths.length < 128) {
+    const progress = censusProgress();
+    const result = paths.map((path, index) => {
+      const input = identity(root, path);
+      progress(index + 1);
+      return input;
+    });
+    progress(result.length, true);
+    return result;
+  }
   // Keep this synchronous producer API, but overlap file reads in the existing
   // helper. Every build still measures the full population both before and after
   // execution; neither a metadata cache nor a previous receipt supplies hashes.
@@ -157,7 +185,8 @@ async function readInputCensus(root, paths) {
   root = realpathSync(root);
   if (!Array.isArray(paths)) fail('invalid-input-census');
   const result = new Array(paths.length);
-  let next = 0;
+  const progress = censusProgress();
+  let next = 0, completed = 0;
   await Promise.all(Array.from({ length: Math.min(16, paths.length) }, async () => {
     while (next < paths.length) {
       const index = next++, path = paths[index];
@@ -167,8 +196,10 @@ async function readInputCensus(root, paths) {
         if (!stat.isFile()) fail('non-file:' + path);
         result[index] = { path, sha256: digest(await readFileAsync(file)), executable: Boolean(stat.mode & 0o111) };
       }
+      progress(++completed);
     }
   }));
+  progress(completed, true);
   return result;
 }
 
@@ -242,7 +273,13 @@ function manifests(root) {
 }
 function checkInputs(root, inputs) {
   if (!Array.isArray(inputs) || !inputs.length) fail('missing-build-inputs');
-  for (const input of inputs) equal(identity(root, input.path), input, 'stale-build-input:' + input.path);
+  const progress = censusProgress();
+  let completed = 0;
+  for (const input of inputs) {
+    equal(identity(root, input.path), input, 'stale-build-input:' + input.path);
+    progress(++completed);
+  }
+  progress(completed, true);
 }
 function checkWorkspace(root, entry, sourceRoot = root) {
   checkInputs(sourceRoot, entry.inputs);
