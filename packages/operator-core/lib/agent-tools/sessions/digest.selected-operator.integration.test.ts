@@ -48,6 +48,68 @@ const RECOVERY_STOP_REFS = [
   'session_turn:claude:1205c31b-3da8-473e-964a-81fe978b97ef:75',
 ];
 
+function sanitizeDiagnosticText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,})\b/g, '[redacted credential]')
+    .replace(/\b((?:[A-Za-z][A-Za-z0-9]*[_-])*(?:authorization|token|(?:access|refresh)[_-]?token|api[_-]?key|secret|password|credential))\s*([:=])\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1$2[redacted]')
+    .slice(0, 800);
+}
+
+function summarizeMcpError(error: unknown) {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const cause = record.cause && typeof record.cause === 'object'
+    ? record.cause as Record<string, unknown>
+    : null;
+  const data = record.data && typeof record.data === 'object'
+    ? record.data as Record<string, unknown>
+    : null;
+  const code = record.code;
+  return {
+    name: sanitizeDiagnosticText(record.name ?? 'Error'),
+    ...(typeof code === 'string' ? { code: sanitizeDiagnosticText(code) }
+      : typeof code === 'number' ? { code } : {}),
+    message: sanitizeDiagnosticText(record.message ?? error),
+    ...(typeof data?.message === 'string' ? { dataMessage: sanitizeDiagnosticText(data.message) } : {}),
+    ...(typeof cause?.message === 'string' ? { causeMessage: sanitizeDiagnosticText(cause.message) } : {}),
+  };
+}
+
+function summarizeMcpResultError(result: {
+  isError?: boolean;
+  content?: Array<{ type?: string; text?: string }>;
+}) {
+  return {
+    isError: result.isError === true,
+    content: (result.content ?? []).slice(0, 5).map(block => ({
+      type: block.type ?? 'unknown',
+      ...(typeof block.text === 'string' ? { text: sanitizeDiagnosticText(block.text) } : {}),
+    })),
+  };
+}
+
+describe('sessions:digest selected-operator diagnostics', () => {
+  it('redacts credentials and bounds MCP error text', () => {
+    expect(sanitizeDiagnosticText('MCP timeout Bearer abc123 token=secret api_key:"never-emit-me"'))
+      .toBe('MCP timeout Bearer [redacted] token=[redacted] api_key:[redacted]');
+    expect(sanitizeDiagnosticText('x'.repeat(900))).toHaveLength(800);
+  });
+
+  it.each(['OPENAI_API_KEY', 'PAPERCUSP_API_KEY', 'PAPERCUSP_ACCESS_TOKEN', 'service-refresh-token'])(
+    'redacts prefixed diagnostic credential %s', key => {
+      expect(sanitizeDiagnosticText(`${key}=unit-fixture-value`)).toBe(`${key}=[redacted]`);
+    },
+  );
+
+  it('sanitizes and bounds string error codes while preserving numeric codes', () => {
+    expect(summarizeMcpError({ code: 'PAPERCUSP_API_KEY=unit-fixture-value' }).code)
+      .toBe('PAPERCUSP_API_KEY=[redacted]');
+    expect(summarizeMcpError({ code: 'x'.repeat(900) }).code).toHaveLength(800);
+    expect(summarizeMcpError({ code: -32000 }).code).toBe(-32000);
+    expect(summarizeMcpError({ code: 'ETIMEDOUT' }).code).toBe('ETIMEDOUT');
+  });
+});
+
 function summarizeTimings(
   setupTimings: Array<{ phase: string; elapsedMs: number }>,
   measuredCalls: Array<{ tool: string; elapsedMs: number }>,
@@ -153,7 +215,18 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
             servingGeneration: requireServingGeneration(entry) }), {
               maxAttempts: 3, timeoutMs: remaining(), totalTimeoutMs: remaining(),
             })
+          .catch(error => {
+            process.stdout.write('SESSION_RECOVERY_MCP_REQUEST_ERROR ' + JSON.stringify({
+              tool, elapsedMs: performance.now() - before, error: summarizeMcpError(error),
+            }) + '\n');
+            throw error;
+          })
           .finally(() => measuredCalls.push({ tool, args, elapsedMs: performance.now() - before }));
+        if (wire.isError) {
+          process.stdout.write('SESSION_RECOVERY_MCP_RESPONSE_ERROR ' + JSON.stringify({
+            tool, elapsedMs: performance.now() - before, error: summarizeMcpResultError(wire),
+          }) + '\n');
+        }
         CallToolResultSchema.parse(wire);
         expect(wire.isError, `${tool} returned an MCP error`).not.toBe(true);
         const payload = JSON.parse(resultToText(wire, { raw: true }));
