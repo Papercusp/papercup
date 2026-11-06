@@ -486,6 +486,9 @@ dependency_generation_configure_workspace_dirs() {
 # measured by the generated closure, never as a newly installed source tree.
 # An ignored standalone install lock cannot bind a frozen source generation.
 # Keep its private tree out of the snapshot too; never delete the donor's files.
+# A removed app can leave an ignored node_modules without any package manifest
+# or local lock. Omit that orphan only when readable ancestor locks prove it is
+# outside their install closure; missing or unreadable custody stays visible.
 # npm-shrinkwrap takes precedence, just as it does for the install itself.
 dependency_generation_filter_install_trees() {
   local root="$1"
@@ -524,20 +527,24 @@ function keep(tree) {
   // Missing ignored locks still describe leftover installs. An existing
   // nonignored lock above wins, including npm-shrinkwrap precedence.
   localIgnored ||= names.some(name => ignored(join(dirname(tree), name)));
-  if (!localIgnored) return true;
+  const orphan = hasGit && !isFile(join(dirname(tree), 'package.json'));
+  if (!localIgnored && !orphan) return true;
+  let measuredAncestor = false;
   for (let dir = dirname(dirname(tree)); dir === root || dir.startsWith(root + '/'); dir = dirname(dir)) {
     for (const name of names) {
       const file = join(dir, name);
       if (!existsSync(file)) continue;
       if (ignored(file)) break;
       const keys = packages(file), prefix = relative(dir, tree).split('\\').join('/') + '/';
+      const member = relative(dir, dirname(tree)).split('\\').join('/');
       // Unreadable custody is never permission to omit a tree.
-      if (keys === null || keys.some(key => key.startsWith(prefix))) return true;
+      if (keys === null || keys.some(key => key === member || key.startsWith(prefix))) return true;
+      measuredAncestor = true;
       break;
     }
     if (dir === root) break;
   }
-  return false;
+  return orphan && !localIgnored && !measuredAncestor;
 }
 for (const tree of readFileSync(3, 'utf8').split('\n').filter(Boolean))
   if (keep(resolve(tree))) console.log(tree);

@@ -538,6 +538,42 @@ describe('dependency source checkout boundaries', () => {
     expect(readFileSync(join(foreign, 'node_modules/foreign/index.js'), 'utf8')).toBe('unrelated\n');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('excludes manifestless orphan installs only when ancestor locks prove they are outside the source closure', () => {
+    const integration = makeIntegration();
+    const candidates = ['apps/retired', 'apps/declared', 'apps/locked', 'apps/standalone'];
+    for (const dir of candidates) {
+      mkdirSync(join(integration, dir, 'node_modules/local'), { recursive: true });
+      writeFileSync(join(integration, dir, 'node_modules/local/package.json'), '{"name":"local","version":"1.0.0"}\n');
+    }
+    const lockPath = join(integration, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['apps/declared'] = { name: 'declared' };
+    lock.packages['apps/locked/node_modules/local'] = { version: '1.0.0' };
+    writeFileSync(lockPath, JSON.stringify(lock));
+    writeFileSync(join(integration, 'apps/standalone/package-lock.json'), '{"packages":{}}\n');
+    writeFileSync(join(integration, '.gitignore'), 'node_modules/\n');
+    commitAllFixture(integration, 'record source install ownership');
+    const enumerate = (selected: boolean) => spawnSync('bash', ['-c', [
+      'set -euo pipefail', 'source "$SCRIPT"',
+      ...(selected ? ['DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+        'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a packages/b apps/retired apps/declared apps/locked apps/standalone)'] : []),
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    for (const selected of [false, true]) {
+      const result = enumerate(selected);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('apps/retired/node_modules');
+      for (const dir of candidates.slice(1)) expect(result.stdout).toContain(`${dir}/node_modules`);
+      expect(result.stdout).toContain('packages/a/node_modules');
+    }
+    // A malformed or absent enclosing lock is unknown custody, never proof of an orphan.
+    writeFileSync(lockPath, '{broken');
+    expect(enumerate(false).stdout).toContain('apps/retired/node_modules');
+    rmSync(lockPath);
+    expect(enumerate(false).stdout).toContain('apps/retired/node_modules');
+    expect(existsSync(join(integration, 'apps/retired/node_modules/local/package.json'))).toBe(true);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('EI-27267673632472358: filters 98 install candidates in one Node process and rechecks ancestor locks on the next census', () => {
     const integration = makeIntegration();
     const lockPath = join(integration, 'package-lock.json');
