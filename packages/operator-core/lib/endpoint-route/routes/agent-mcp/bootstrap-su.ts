@@ -2782,7 +2782,14 @@ export const bootstrapSu = defineTool({
         400,
       );
     }
-    const launchedBy = launchedByRaw;
+    const blindPortAuthority = sessionPortContext && sessionId != null
+      ? await (await import('../../../blind-review-continuation-custody')).authorizeBlindReviewPortBootstrap({
+          workspaceId: workspace, portId: sessionPortContext.row.id, targetAdvSessionId: sessionId,
+          agent, model: model ?? null, account: body.account?.trim() || null, headless,
+        }) : null;
+    if (blindPortAuthority && launchedByRaw && launchedByRaw !== blindPortAuthority.launchParentOwner)
+      return jsonRes({ status: 'error', error: 'blind-review port recruiter provenance mismatch' }, 409);
+    const launchedBy = blindPortAuthority?.launchParentOwner ?? launchedByRaw;
 
     // The prompt OVERLAYS (codex launch-context, launcher provenance, AUTO/DRAIN
     // activation, instruction precedence) are applied together further down, once
@@ -3382,6 +3389,12 @@ export const bootstrapSu = defineTool({
       const launchSpecRecorded = await recordSuLaunchSpec(sessionId, sid, launchSpecRecord);
       if (!launchSpecRecorded) {
         return jsonRes({ status: 'error', error: 'session launch specification receipt was not persisted' }, 500);
+      }
+      if (blindPortAuthority) {
+        // This commit precedes returning any command/home to the native host.
+        // A later bootstrap failure remains uncertain, never ordinary retry.
+        await (await import('../../../blind-review-continuation-custody'))
+          .reserveBlindReviewContinuation(blindPortAuthority);
       }
       try {
         await requestSessionIdentityActivation({

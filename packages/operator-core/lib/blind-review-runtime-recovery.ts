@@ -48,10 +48,10 @@ export async function retireRuntimeNamespacesForNativeEnd(input: {
   const leases = await sql<RuntimeLease[]>`UPDATE harness_shared.blind_review_runtime_leases AS lease
     SET state = 'releasing', revoked_at = COALESCE(lease.revoked_at, clock_timestamp()),
       release_reason = COALESCE(lease.release_reason, 'reviewer-native-ended'), updated_at = clock_timestamp()
-    FROM harness_shared.plan_blind_review_sessions AS binding
-    WHERE lease.workspace_id = ${input.workspaceId} AND binding.workspace_id = lease.workspace_id
-      AND binding.id = lease.binding_id AND binding.adv_session_id = ${input.advSessionId}
-      AND binding.native_session_id = ${input.nativeSessionId}
+    FROM harness_shared.adv_sessions AS native
+    WHERE lease.workspace_id = ${input.workspaceId} AND native.workspace_id = lease.workspace_id
+      AND native.id = ${input.advSessionId} AND native.session_id = ${input.nativeSessionId}
+      AND native.coord_owner_id = lease.admission->>'reviewerOwnerId'
       AND lease.admission->>'nativeSessionId' = ${input.nativeSessionId}
       AND lease.state IN ('allocating','ready','releasing') RETURNING lease.*`;
   return release(leases, 'reviewer-native-ended', { ...deps, sql });

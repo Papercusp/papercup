@@ -2618,6 +2618,9 @@ const sessionPortDelivery = defineTool({
         metadata: { persistenceProof: proof, persistenceVerifiedAt: new Date().toISOString() },
       });
       await updateAdvSessionPortStatus(targetAdvSessionId, workspaceId, 'delivered', { persistenceProof: proof });
+      await (await import('../../../blind-review-continuation-custody')).finalizeBlindReviewPortCustody({
+        workspaceId, portId, targetAdvSessionId,
+      });
       const artifactDeleted = await artifact.deleteSessionPortArtifact(current.artifactPath);
       await recordSessionPortTelemetry({
         workspaceId,

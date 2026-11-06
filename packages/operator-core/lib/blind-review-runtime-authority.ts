@@ -2,6 +2,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 import { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
+import { resolveBlindReviewEndpoint } from './blind-review-continuation-custody';
 import { blindReviewerConfinement } from './blind-reviewer-mint';
 import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
 import { createRuntimeCustodyStore, runtimeCustodyFingerprint, type RuntimeAuthorityCheck } from './blind-review-runtime-custody';
@@ -40,7 +41,7 @@ export const checkRuntimeReviewerAuthority: RuntimeAuthorityCheck = async (tx, i
   if (!binding || binding.harness_slug !== scope.harness_slug || binding.plan_slug !== scope.plan_slug ||
       binding.status !== 'ready' || binding.activation_audit_seq !== identity.activationAuditSeq ||
       binding.attempt_seq !== identity.replacementEpoch || binding.reviewer_owner_id !== identity.reviewerOwnerId ||
-      binding.native_session_id !== identity.nativeSessionId || binding.launch_parent_owner !== BLIND_GAP_REVIEW_ACTOR ||
+      binding.launch_parent_owner !== BLIND_GAP_REVIEW_ACTOR ||
       binding.account_route !== 'auto') return false;
   const [activation] = await tx<Array<{ audit_seq: number }>>`
     SELECT audit_seq FROM harness_shared.plan_audits WHERE workspace_id = ${identity.workspaceId}
@@ -56,15 +57,21 @@ export const checkRuntimeReviewerAuthority: RuntimeAuthorityCheck = async (tx, i
       AND id <> ${identity.bindingId} AND status <> 'failed'
       AND (attempt_seq > ${identity.replacementEpoch} OR replacement_of = ${identity.bindingId}) LIMIT 1`;
   if (successor) return false;
+  const endpoint = await resolveBlindReviewEndpoint(tx, { id: identity.bindingId, workspaceId: identity.workspaceId,
+    harnessSlug: scope.harness_slug, planSlug: scope.plan_slug, activationAuditSeq: binding.activation_audit_seq,
+    reviewerOwnerId: binding.reviewer_owner_id, advSessionId: Number(binding.adv_session_id),
+    nativeSessionId: binding.native_session_id, modelSpec: binding.model_spec,
+    confinementSnapshot: binding.confinement_snapshot });
+  if (!endpoint || endpoint.nativeSessionId !== identity.nativeSessionId) return false;
   const [native] = await tx<Array<{
     coord_owner_id: string | null; session_id: string | null; agent: string | null;
     ended_at: unknown; launch_spec: { account?: string; model?: string; headless?: boolean; launchedBy?: string } | null;
   }>>`SELECT coord_owner_id, session_id, agent, ended_at, launch_spec FROM harness_shared.adv_sessions
-    WHERE workspace_id = ${identity.workspaceId} AND id = ${binding.adv_session_id} FOR SHARE`;
+    WHERE workspace_id = ${identity.workspaceId} AND id = ${endpoint.advSessionId} FOR SHARE`;
   if (!native || native.ended_at !== null || !isBlindReviewerBackendAgent(native.agent) ||
       native.coord_owner_id !== identity.reviewerOwnerId || native.session_id !== identity.nativeSessionId ||
       native.launch_spec?.launchedBy !== BLIND_GAP_REVIEW_ACTOR || native.launch_spec.headless !== true ||
-      native.launch_spec.account !== binding.account_route || (native.launch_spec.model ?? null) !== binding.model_spec) return false;
+      native.launch_spec.account !== binding.account_route || (native.launch_spec.model ?? null) !== endpoint.modelSpec) return false;
   const [policy] = await tx<Array<{ confinement: SessionToolConfinement | null; live: boolean | null }>>`
     SELECT payload->'sessions'->${identity.reviewerOwnerId}->'confinement' AS confinement,
       (payload->'sessions'->${identity.reviewerOwnerId}->>'expiresAt')::timestamptz > clock_timestamp() AS live

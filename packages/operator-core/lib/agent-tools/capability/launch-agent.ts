@@ -33,6 +33,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { isBlindReviewerBackendAgent } from '../../blind-reviewer-backends';
+import { blindReviewProviderWall, withBlindReviewNativeLaunch } from '../../blind-review-continuation-custody';
 import { SCOPED_INFERENCE_GATEWAY_ENV, snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
@@ -907,6 +908,15 @@ export default defineTool({
       });
   })(),
   async handler(args, ctx) {
+    const nativePermit = (ctx as unknown as Record<PropertyKey, unknown>)[INTERNAL_BLIND_REVIEW_RESUME] as BlindReviewResumePermit | undefined;
+    try {
+      return await withBlindReviewNativeLaunch({ permit: nativePermit, request: args,
+        workspaceId: typeof ctx.workspaceId === 'string' ? ctx.workspaceId : '',
+        actor: nativePermit ? resolveAgentIdentity(ctx).ownerId : null,
+        systemRecruiter: ctx.principal?.kind === 'system' && ctx.principal.slug === BLIND_GAP_REVIEW_ACTOR,
+        confinement: (ctx as unknown as Record<PropertyKey, unknown>)[INTERNAL_SCOPED_SESSION_CONFINEMENT],
+      }, async blindNative => {
+    const requestedBlindProfile = { agent: args.agent, model: args.model, effort: args.effort, account: args.account };
     const interruptionRecovery = (args as typeof args & {
       [INTERNAL_INTERRUPTION_RECOVERY]?: { ownerId: string; nativeSessionId: string; wait: boolean;
         beforeNativeCreate?: () => Promise<void> };
@@ -1282,7 +1292,8 @@ export default defineTool({
       if (target.advSessionId && target.ownerId && workspaceId) {
         let blindSource: Awaited<ReturnType<typeof inspectBlindReviewResumeTarget>>;
         try {
-          blindSource = await inspectBlindReviewResumeTarget({
+          blindSource = blindNative ? { binding: blindNative.binding, endpoint: blindNative.endpoint, recruiterLaunch: true }
+            : await inspectBlindReviewResumeTarget({
             workspaceId, reviewerOwnerId: target.ownerId, advSessionId: target.advSessionId,
           });
         } catch (error) {
@@ -1291,21 +1302,33 @@ export default defineTool({
         const permit = blindResumePermit;
         if (blindSource.binding || blindSource.recruiterLaunch || permit) {
           const binding = blindSource.binding;
+          const endpoint = blindSource.endpoint;
+          const recoveryBackend = permit?.recoveryBackend;
+          const { BLIND_REVIEWER_BACKENDS } = await import('../../blind-reviewer-backends');
+          const canonicalBackend = recoveryBackend && BLIND_REVIEWER_BACKENDS.find(backend =>
+            backend.agent === recoveryBackend.agent && backend.model === recoveryBackend.model &&
+            backend.effort === recoveryBackend.effort);
+          const exactProfile = recoveryBackend
+            ? !!canonicalBackend && target.agent !== canonicalBackend.agent &&
+              requestedBlindProfile.agent === canonicalBackend.agent &&
+              requestedBlindProfile.model === canonicalBackend.model &&
+              requestedBlindProfile.effort === canonicalBackend.effort && requestedBlindProfile.account === 'auto'
+            : args.agent === undefined && args.account === undefined && args.model === undefined && args.effort === undefined;
           const exactRecruiterResume = recruiterResume && callerOwnerId === BLIND_GAP_REVIEW_ACTOR &&
-            !!binding && isResume && !isSuccessor && args.fork === false &&
-            args.resume?.agentId === undefined && args.resume?.sessionId === binding.nativeSessionId &&
-            target.sessionId === binding.nativeSessionId && binding.status === 'resuming' &&
+            !!binding && !!endpoint && isResume && !isSuccessor && args.fork === false &&
+            args.resume?.agentId === undefined && args.resume?.sessionId === endpoint.nativeSessionId &&
+            target.sessionId === endpoint.nativeSessionId && binding.status === 'resuming' &&
             !!binding.resumeLeaseExpiresAt && Date.parse(binding.resumeLeaseExpiresAt) > Date.now() &&
             target.live === false && target.ownerId === binding.reviewerOwnerId &&
-            target.advSessionId === binding.advSessionId && target.binding?.coordOwnerId === binding.reviewerOwnerId &&
-            target.binding?.sessionId === binding.nativeSessionId && !!target.binding?.startedAt &&
+            target.advSessionId === endpoint.advSessionId && target.binding?.coordOwnerId === binding.reviewerOwnerId &&
+            target.binding?.sessionId === endpoint.nativeSessionId && !!target.binding?.startedAt &&
             isBlindReviewerBackendAgent(target.agent) && target.account === binding.accountRoute && target.headless === true &&
-            slug === binding.harnessSlug && args.headless === true && args.agent === undefined &&
-            args.account === undefined && args.model === undefined && args.originalRouting === undefined &&
+            slug === binding.harnessSlug && args.headless === true && exactProfile &&
+            args.originalRouting === undefined && args.extraArgs === undefined &&
             !!permit && permit.bindingId === binding.id && permit.leaseId === binding.resumeLeaseId &&
             permit.workspaceId === binding.workspaceId && permit.planSlug === binding.planSlug &&
             permit.activationAuditSeq === binding.activationAuditSeq && permit.reviewerOwnerId === binding.reviewerOwnerId &&
-            permit.advSessionId === binding.advSessionId && permit.nativeSessionId === binding.nativeSessionId;
+            permit.advSessionId === endpoint.advSessionId && permit.nativeSessionId === endpoint.nativeSessionId;
           if (!exactRecruiterResume) {
             return err('blind_review_recovery_recruiter_only: a bound blind reviewer may be recovered only by the recruiter using its exact native sessionId with fork:false. No process was opened.');
           }
@@ -1315,9 +1338,13 @@ export default defineTool({
           if (!isDeepStrictEqual(privateConfinement, binding.confinementSnapshot)) {
             return err('blind_review_session_binding_invalid: confinement_mismatch. No process was opened.');
           }
-          const verified = await verifyBlindReviewSessionResumeBinding(binding);
+          const verified = blindNative ? { ok: true as const } : await verifyBlindReviewSessionResumeBinding(binding);
           if (!verified.ok) return err(`blind_review_session_binding_invalid: ${verified.code}: ${verified.message}. No process was opened.`);
           blindReviewResumeAuthorized = true;
+          const wall = await blindReviewProviderWall(binding.workspaceId, recoveryBackend?.agent ?? target.agent ?? '');
+          if (wall) return { isError: true, data: { error: 'provider_unavailable', message: wall.reason,
+            launchFailure: { stage: 'pre-spawn', processesOpened: 0, reason: 'provider-unavailable',
+              binding: wall.binding, accountIds: wall.accountIds } } };
         }
       }
       if (privateConfinement && !blindReviewResumeAuthorized) {
@@ -2113,6 +2140,11 @@ export default defineTool({
             : 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
         });
         if (!savedLaunchSpec.ok) return err(savedLaunchSpec.message);
+        if (!savedLaunchSpec.found) {
+          return err(
+            `No saved launch profile is available for fleet ${fleetSlug}; refusing to resume without its placement, model, account and carry settings.`,
+          );
+        }
         if (savedLaunchSpec.found) {
           persistedHeadcountProfile = {
             workspaceId,
@@ -2178,10 +2210,9 @@ export default defineTool({
       }
     }
 
-    // An exact continuation keeps its recorded placement when no canonical
-    // fleet profile supplies one. Explicit caller placement and saved fleet
-    // configuration retain precedence; forks and fresh successors keep their
-    // own launch defaults.
+    // An exact continuation outside a fleet keeps its recorded placement.
+    // Fleet resumes have already required a canonical saved profile above;
+    // forks and fresh successors keep their own launch defaults.
     if (isResume && !fork) args.headless ??= resumeHeadless;
 
     let base;
@@ -2370,7 +2401,8 @@ export default defineTool({
       // A successor is a fresh process even though it has a source identity.
       // Apply the same Codex model policy as an ordinary fresh launch; otherwise
       // a model-less predecessor reaches the command builder and cannot wake.
-      if (sourceAction && !isSuccessor) return flatBase;
+      if (sourceAction && !isSuccessor && !(blindReviewResumeAuthorized && args.agent && args.agent !== resumeAgent))
+        return flatBase;
       // D-016 (WI-38048): this used to fold `settings.roles[memberSpecs[i].role]`
       // — i.e. it looked the goal's launch profiles up by psu `--role`. That is
       // the defect, not a feature that was lost here: a launch SLOT is a function
@@ -2628,8 +2660,12 @@ export default defineTool({
               // back to recorded launch metadata only if no transcript exists.
               agent: resumeAgent,
               targetAgent: args.agent ?? null,
-              model: args.model ?? (resumeAgent === 'codex' ? null : resumeModel),
-              modelSource: args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
+              model: args.agent && args.agent !== resumeAgent
+                ? composeModelSpec(folded.model, folded.effort)
+                : args.model ?? (resumeAgent === 'codex' ? null : resumeModel),
+              modelSource: args.agent && args.agent !== resumeAgent
+                ? folded.modelSource ?? (folded.model ? 'explicit' : 'configured-default')
+                : args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
               headless: !!args.headless,
               carry: savedLaunchCarry ?? null,
               launchMode: args.originalRouting || args.restoreOriginalMember ? null : launchMode,
@@ -3076,7 +3112,11 @@ export default defineTool({
           // The owner liveness scan may already see a dormant source as ended
           // before ADV has a terminal stamp. Its verified in-place resume needs
           // the same bounded reservation to keep that scan from taking its lease.
-          if (isResume && !fork && resumeNeedsStartupReservation) {
+          // Blind cross-backend recovery uses the exclusive logical recruiter
+          // lease plus pre-native port custody. A generic source-native claim
+          // would contradict the port's required terminal, unclaimed source.
+          if (isResume && !fork && resumeNeedsStartupReservation &&
+              !(blindReviewResumeAuthorized && args.agent && args.agent !== resumeAgent)) {
             if (!resumeSourceAdvSessionId || !targetOwnerId || !callerOwnerId)
               throw new Error('Ended-source resume requires exact source and launcher identities before admission.');
             const claimKey = `governed-resume:${randomUUID()}`;
@@ -3089,7 +3129,8 @@ export default defineTool({
           const result = await spawnGovernedAgentProcess(
           {
             workspaceId,
-            idempotencyKey: `agent-spawn:${callerOwnerId ?? 'operator'}:${spawnStartedAt}:${spawnAdmissionNonce}:${i}`,
+            idempotencyKey: blindNative ? `blind-review-native:${nativePermit!.nativeAttempt!.key}`
+              : `agent-spawn:${callerOwnerId ?? 'operator'}:${spawnStartedAt}:${spawnAdmissionNonce}:${i}`,
             owner: targetOwnerId ?? `launcher:${callerOwnerId ?? 'operator'}`,
             payloadRef: `capability:launch-agent:${fleetSlug ?? args.plan ?? 'ad-hoc'}:${i}`,
             metadata: {
@@ -3097,6 +3138,7 @@ export default defineTool({
               targetOwnerId,
               fleetSlug,
               headless: !!foldedConfigs[i].headless,
+              ...(blindNative ? { blindReviewAttemptKey: nativePermit!.nativeAttempt!.key } : {}),
               ...(startupReservation ? {
                 resumeAdvSessionId: startupReservation.advSessionId,
                 resumeClaimKey: startupReservation.claimKey,
@@ -3144,6 +3186,7 @@ export default defineTool({
                   await interruptionRecovery?.beforeNativeCreate?.();
                   if (startupReservation && startupReservation.expiresAtMs <= Date.now())
                     throw new Error('Ended-source resume startup reservation expired before process start.');
+                  await blindNative?.beforeNativeCreate(startupReservation?.claimKey ?? null, admissionContext.receiptId ?? '');
                   await markNativeSpawnAttempted(i);
                   return true;
                 },
@@ -3159,6 +3202,9 @@ export default defineTool({
                   : callerOwnerId ?? undefined,
                 fleetSlug,
                 ...(args.workItem?.trim() ? { workItemId: args.workItem.trim() } : {}),
+                ...(blindNative ? { ledgerDetail: { blindReviewAttemptKey: nativePermit!.nativeAttempt!.key,
+                  blindReviewAdmissionReceiptId: admissionContext.receiptId,
+                  blindReviewNativeSessionId: blindNative.endpoint.nativeSessionId } } : {}),
                 ...(gradingAuditTaskDetail
                   ? { ledgerDetail: { gradingAudit: gradingAuditTaskDetail, ...(auditRuntime ? { gradingAuditRuntimeBinding: auditRuntime } : {}) } }
                   : auditRuntime ? { ledgerDetail: { gradingAuditRuntimeBinding: auditRuntime } } : {}),
@@ -3485,6 +3531,12 @@ export default defineTool({
     }
 
     // ── P-003: kill the false "Launched" for a FRESH/FORK launch ─────────────
+    if (blindNative && resumeVerified === true && resumeVerification?.actualSessionId === blindNative.endpoint.nativeSessionId) {
+      const openedResult = results[0];
+      if (openedResult?.status === 'ok' && openedResult.admissionContext?.receiptId && openedResult.taskId)
+        await blindNative.confirmedStart({ nativeSessionId: resumeVerification.actualSessionId,
+          admissionReceiptId: openedResult.admissionContext.receiptId, taskId: openedResult.taskId });
+    }
     //
     // A clean spawn is not proof an agent is running — the 4th recurrence of this
     // class (EI-11543, WI-4752, EI-18696184925888288, and the measured acceptance
@@ -3791,5 +3843,9 @@ export default defineTool({
         ? { isError: true as const }
         : {}),
     };
+      });
+    } catch (error) {
+      return err(`blind_review_native_attempt: ${error instanceof Error ? error.message : String(error)}`);
+    }
   },
 });

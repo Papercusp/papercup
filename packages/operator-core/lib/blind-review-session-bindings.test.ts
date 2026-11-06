@@ -177,6 +177,15 @@ describe('exact blind reviewer backend continuation receipt', () => {
 function configureSql() {
   sqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.join(' ').replace(/\s+/g, ' ').toLowerCase();
+    // Real lock ordering and custody behavior are exercised by the private-PG
+    // continuation suite; this fixture models the original, untransferred row.
+    if (query.includes('pg_advisory_xact_lock') || query.includes('set_config(')) return [];
+    if (query.includes("to_regclass('harness_shared.blind_review_continuation_custody')"))
+      return [{ installed: false }];
+    if (query.includes('harness_shared.harness_plans')) return [{ content_hash: 'plan-hash' }];
+    if (query.includes('harness_shared.plan_audits')) return [{ audit_seq: 4,
+      audited_plan_content_hash: 'plan-hash', revision_hash: 'plan-hash' }];
+    if (query.includes('harness_shared.operator_session_confinements')) return [{ confinement: CONFINEMENT }];
     if (query.includes('from harness_shared.adv_sessions')) return state.adv ? [state.adv] : [];
     if (query.includes('insert into harness_shared.plan_blind_review_sessions')) {
       if (state.binding) return [];
@@ -189,6 +198,9 @@ function configureSql() {
       return [state.binding];
     }
     if (query.trimStart().startsWith('select') && query.includes('from harness_shared.plan_blind_review_sessions')) {
+      if (query.includes('id >')) return [];
+      if (query.includes('where id =') || query.includes('and id ='))
+        return state.binding && Number(state.binding.id) === Number(values.at(-1)) ? [{ ...state.binding }] : [];
       const workspaceIndex = values[1] === 'ws-1' ? 1 : 2;
       const workspaceId = values[workspaceIndex];
       if (!state.binding || state.binding.workspace_id !== workspaceId) return [];

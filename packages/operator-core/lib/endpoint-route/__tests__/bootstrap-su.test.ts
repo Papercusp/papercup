@@ -26,6 +26,11 @@ vi.mock('@papercusp/agent-mcp', async () => ({
 }));
 
 const nativeFork = vi.hoisted(() => ({ complete: vi.fn(), resolveSource: vi.fn() }));
+const blindPort = vi.hoisted(() => ({ authorize: vi.fn(), reserve: vi.fn() }));
+vi.mock('../../blind-review-continuation-custody', () => ({
+  authorizeBlindReviewPortBootstrap: blindPort.authorize,
+  reserveBlindReviewContinuation: blindPort.reserve,
+}));
 vi.mock('../../su-session-tracked-codex-fork', () => ({
   completeTrackedCodexFork: nativeFork.complete,
   resolveTrackedCodexForkSource: nativeFork.resolveSource,
@@ -732,6 +737,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   nativeFork.complete.mockReset();
   nativeFork.resolveSource.mockReset();
+  blindPort.authorize.mockReset().mockResolvedValue(null);
+  blindPort.reserve.mockReset().mockResolvedValue({ reservationId: 1 });
   vi.stubEnv('HOME', TEST_CODEX_AUTH_HOME);
   vi.stubEnv('OPENAI_API_KEY', '');
   sessionAllowsAmbientContextMock.mockReset().mockResolvedValue(true);
@@ -1296,6 +1303,39 @@ describe('bootstrap-su', () => {
       portId: '22222222-2222-4222-8222-222222222222',
       targetAdvSessionId: 42,
     }));
+  });
+
+  it('inherits blind recruiter provenance from the locked binding and reserves custody before returning a launch', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRow());
+    const permit = { workspaceId: 'default', bindingId: 17, leaseId: 'lease-1',
+      portId: SESSION_PORT_ID, launchParentOwner: 'system:blind-gap-review' };
+    blindPort.authorize.mockResolvedValueOnce(permit);
+    const response = await callPost({ agent: 'codex', model: 'gpt-5.5', owner_id: 'su-source-owner',
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: SESSION_PORT_PROTOCOL_VERSION, session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+      session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}` });
+    expect(response.status, JSON.stringify(await response.json())).toBe(200);
+    const { recordSuLaunchSpec } = await import('../../adv-sessions');
+    expect(recordSuLaunchSpec).toHaveBeenCalledWith(42, 'su-source-owner',
+      expect.objectContaining({ launchedBy: permit.launchParentOwner }));
+    expect(blindPort.reserve).toHaveBeenCalledWith(permit);
+    expect(vi.mocked(recordSuLaunchSpec).mock.invocationCallOrder[0])
+      .toBeLessThan(blindPort.reserve.mock.invocationCallOrder[0]!);
+    expect(blindPort.reserve.mock.invocationCallOrder[0])
+      .toBeLessThan(recordSessionPortBootstrapReceiptMock.mock.invocationCallOrder[0]!);
+  });
+
+  it('refuses a caller recruiter override at the blind port boundary', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRow());
+    blindPort.authorize.mockResolvedValueOnce({ launchParentOwner: 'system:blind-gap-review' });
+    const response = await callPost({ agent: 'codex', model: 'gpt-5.5', owner_id: 'su-source-owner',
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      launched_by: 'su-other', session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+      session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}` });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'blind-review port recruiter provenance mismatch' });
+    expect(blindPort.reserve).not.toHaveBeenCalled();
   });
 
   // consult-backed-parking-2026-10-12#P-010 (R-10): 16 measured cross-backend port

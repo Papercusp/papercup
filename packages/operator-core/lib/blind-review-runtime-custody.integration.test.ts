@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
@@ -196,11 +197,18 @@ describe('runtime cutoff hooks and restart recovery', () => {
 async function canonicalFixture() {
   const f = await fixture();
   const slug = 'custody-fixture-' + serial;
-  await seedPlan(fx.admin, 'default', 'custody-fixture', slug, `---\ntitle: Custody\nslug: ${slug}\nstatus: active\n---\n`);
+  const content = `---\ntitle: Custody\nslug: ${slug}\nstatus: active\n---\n`;
+  const planHash = hashPlanContent(content);
+  await seedPlan(fx.admin, 'default', 'custody-fixture', slug, content);
+  await fx.admin`UPDATE harness_shared.harness_plans SET content_hash = ${planHash}
+    WHERE workspace_id = 'default' AND harness_slug = 'custody-fixture' AND plan_slug = ${slug}`;
+  const [revision] = await fx.admin`INSERT INTO harness_shared.plan_revisions
+    (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,author_kind,author_id,created_at)
+    VALUES ('default','custody-fixture',${slug},1,${planHash},${content},'agent','custody-author',${Date.now()}) RETURNING id`;
   await fx.admin`INSERT INTO harness_shared.plan_audits
     (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind, activation,
      audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash)
-    VALUES ('default', 'custody-fixture', ${slug}, 1, 'custody-author', 'activation', '{}', 1, 1, ${'a'.repeat(64)})`;
+    VALUES ('default', 'custody-fixture', ${slug}, 1, 'custody-author', 'activation', '{}', ${revision!.id}, 1, ${planHash})`;
   const confinement = JSON.parse(JSON.stringify(blindReviewerConfinement(slug)));
   f.identity.confinementFingerprint = runtimeCustodyFingerprint(confinement);
   await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET account_route = 'auto',

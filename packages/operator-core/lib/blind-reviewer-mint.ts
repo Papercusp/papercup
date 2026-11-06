@@ -17,7 +17,7 @@
  * Out of scope (D-041 (4)): reads that are not MCP calls (native Read, or capability:bash
  * `cat` of a plan file). The ceiling closes the MCP half only.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   SCRATCH_PLAN_TOOLS,
@@ -28,6 +28,7 @@ import {
   type SessionToolConfinement,
 } from './capability-envelope/session-confinement';
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
+import { reserveBlindReviewNativeAttempt, verifyBlindReviewNativeNoOpen } from './blind-review-continuation-custody';
 import { BLIND_REVIEW_TOOL, loadBlindReviewBrief } from './blind-review-gate';
 import { briefTurnCount, type BlindReviewBrief } from './blind-review-brief';
 import {
@@ -91,8 +92,20 @@ export function launchProvablyNotStarted(value: unknown): boolean {
   const failure = receiptRecord(data?.launchFailure);
   if (failure?.stage === 'pre-spawn' && failure.processesOpened === 0) return true;
   const launch = receiptRecord(data?.launch) ?? receiptRecord(env?.launch) ?? env;
-  return !!launch && launch.mode !== 'deduped' && launch.opened === 0 && launch.partial === false
+  return !!launch && launch.mode !== 'deduped' && launch.launchState !== 'reconciliation-required'
+    && launch.opened === 0 && launch.partial === false
     && Array.isArray(launch.tasks) && launch.tasks.length === 0;
+}
+
+/** Only an explicit provider refusal plus zero-spawn proof may change backend.
+ * Authority, confinement, transcript and ambiguous transport errors never do. */
+export function blindReviewProviderRefused(value: unknown): boolean {
+  if (!launchProvablyNotStarted(value)) return false;
+  const env = receiptRecord(value);
+  const data = receiptRecord(env?.data) ?? receiptRecord(env?.structuredContent);
+  const failure = receiptRecord(data?.launchFailure);
+  return failure?.reason === 'provider-unavailable' ||
+    typeof data?.error === 'string' && /^(?:account_walled|all_accounts_walled|provider_unavailable|no_available_accounts)$/.test(data.error);
 }
 
 export type BlindReviewLaunchReceipt =
@@ -290,6 +303,8 @@ export interface MintBlindGapReviewerDeps {
   killTask?: (taskId: string) => Promise<ControlOutcome>;
   acquireSessionResume?: typeof acquireBlindReviewSessionResume;
   releaseSessionResume?: typeof releaseBlindReviewSessionResume;
+  reserveNativeAttempt?: typeof reserveBlindReviewNativeAttempt;
+  verifyNativeNoOpen?: typeof verifyBlindReviewNativeNoOpen;
   /** Registered tool names for the howToRun ceiling check; injected in tests. */
   knownTools?: () => Promise<ReadonlySet<string>>;
   /** Re-read the original launch cohort when its verifier returned no identity receipt. */
@@ -569,11 +584,17 @@ export async function resumeBlindGapReviewer(
   let result: ResumeBlindGapReviewerResult;
   try {
     const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
-    const permit: BlindReviewResumePermit = {
+    let permit: BlindReviewResumePermit = {
       bindingId: acquired.binding.id, leaseId: acquired.leaseId, workspaceId, planSlug: input.slug,
       activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId: acquired.binding.reviewerOwnerId,
-      advSessionId: acquired.binding.advSessionId, nativeSessionId: acquired.binding.nativeSessionId,
+      advSessionId: acquired.endpoint.advSessionId, nativeSessionId: acquired.endpoint.nativeSessionId,
     };
+    const request = {
+      resume: { sessionId: acquired.endpoint.nativeSessionId }, fork: false, headless: true,
+      harness: input.harness, brief: buildBlindReviewerKickoff(brief),
+      idempotencyKey: `blind-review-resume:${randomUUID()}`,
+    };
+    permit = await (deps.reserveNativeAttempt ?? reserveBlindReviewNativeAttempt)({ permit, request });
     const systemCtx = {
       ...input.ctx, harnessSlug: input.harness, uiClientId: null, isSuperuser: false, isPowerUser: false,
       principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId },
@@ -581,11 +602,21 @@ export async function resumeBlindGapReviewer(
       [confinementKey]: acquired.binding.confinementSnapshot,
       [INTERNAL_BLIND_REVIEW_RESUME]: permit,
     };
-    const launch = await handler({
-      resume: { sessionId: acquired.binding.nativeSessionId },
-      fork: false, headless: true, harness: input.harness,
-      brief: buildBlindReviewerKickoff(brief),
-    }, systemCtx as never);
+    let launch = await handler(request, systemCtx as never);
+    if (blindReviewProviderRefused(launch) &&
+        await (deps.verifyNativeNoOpen ?? verifyBlindReviewNativeNoOpen)(permit)) {
+      for (const backend of BLIND_REVIEWER_BACKENDS) {
+        if (backend.agent === acquired.backend) continue;
+        // Every rung carries the original logical identity, native transcript,
+        // lease and ceiling. The launcher validates this private selection.
+        launch = await handler({
+          resume: { sessionId: acquired.endpoint.nativeSessionId }, fork: false,
+          headless: true, harness: input.harness, brief: buildBlindReviewerKickoff(brief),
+          ...backend, account: BLIND_GAP_REVIEW_ACCOUNT,
+        }, { ...systemCtx, [INTERNAL_BLIND_REVIEW_RESUME]: { ...permit, recoveryBackend: backend } } as never);
+        if (!blindReviewProviderRefused(launch)) break;
+      }
+    }
     result = (launch as { isError?: unknown } | null)?.isError === true
       ? { ok: false, code: 'resume_failed', message: resumeLaunchRefusal(launch) }
       : { ok: true, launch, activationAuditSeq: brief.activationAuditSeq,

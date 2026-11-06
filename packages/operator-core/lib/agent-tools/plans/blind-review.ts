@@ -31,8 +31,8 @@ import { replaceBlindGapReviewer } from '../../blind-review-replacement';
 import {
   findLatestBlindReviewSessionBindingByReviewer,
   recordBlindReviewSessionPost,
-  verifyBlindReviewSessionBinding,
 } from '../../blind-review-session-bindings';
+import { withAuthenticatedBlindReviewEndpoint } from '../../blind-review-continuation-custody';
 import { blindReviewPostedEventKey } from '../../blind-review-post-event';
 
 const text =(payload: Record<string, unknown>, isError = false) => ({
@@ -213,28 +213,35 @@ export default defineTool({
           return text({ error: 'review_session_closed', slug: args.slug,
             message: 'This reviewer session is no longer allowed to post.' }, true);
         }
-        const verified = await verifyBlindReviewSessionBinding(reviewerBinding);
-        if (!verified.ok) return text({ error: verified.code, slug: args.slug, message: verified.message }, true);
       }
     }
 
-    const written = args.op === 'post'
-      ? await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [],
-          activationAuditSeq: reviewerBinding?.activationAuditSeq ?? args.activationAuditSeq, summary: args.summary, outcome: args.outcome! })
-      : await recordBlindGapDispositions({ ...scope, createdBy, dispositions: args.dispositions ?? [], summary: args.summary });
+    let written: Awaited<ReturnType<typeof recordBlindReview>>;
+    try {
+      written = args.op === 'post' && reviewerBinding
+        ? await withAuthenticatedBlindReviewEndpoint({ workspaceId, bindingId: reviewerBinding.id,
+            reviewerOwnerId: createdBy, authenticatedAdvSessionId: ctx.advSessionId }, async (tx, binding) => {
+            const post = await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [],
+              activationAuditSeq: binding.activationAuditSeq, summary: args.summary, outcome: args.outcome! }, { sql: tx });
+            if (post.ok && !await recordBlindReviewSessionPost({ workspaceId, planSlug: args.slug,
+              activationAuditSeq: post.activationAuditSeq, reviewerOwnerId: createdBy, reviewId: post.id },
+            { sql: tx, deferRuntimeCleanup: true })) throw new Error('review_session_receipt_failed');
+            return post;
+          })
+        : args.op === 'post'
+          ? await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [],
+              activationAuditSeq: args.activationAuditSeq, summary: args.summary, outcome: args.outcome! })
+          : await recordBlindGapDispositions({ ...scope, createdBy, dispositions: args.dispositions ?? [], summary: args.summary });
+    } catch (error) {
+      return text({ error: 'review_session_post_refused', slug: args.slug,
+        message: error instanceof Error ? error.message : String(error) }, true);
+    }
     if (!written.ok) return text({ error: written.code, slug: args.slug, message: written.message }, true);
     if (args.op === 'post' && reviewerBinding) {
-      let receiptRecorded = false;
-      try {
-        receiptRecorded = await recordBlindReviewSessionPost({
-          workspaceId, planSlug: args.slug, activationAuditSeq: written.activationAuditSeq,
-          reviewerOwnerId: createdBy, reviewId: written.id,
-        });
-      } catch {
-        receiptRecorded = false;
-      }
-      if (!receiptRecorded) return text({ error: 'review_session_receipt_pending', slug: args.slug, id: written.id,
-        message: 'The review is saved idempotently, but its session receipt did not persist. Retry the same post; do not mint or repost with a new session.' }, true);
+      // Authority and receipt already committed. Resource cleanup cannot grant it back.
+      await import('../../blind-review-runtime-recovery').then(({ retireRuntimeNamespacesForBinding }) =>
+        retireRuntimeNamespacesForBinding({ workspaceId, bindingId: reviewerBinding!.id, reason: 'review-posted' }))
+        .catch(() => console.warn('[blind-review-runtime] committed post cleanup pending'));
     }
 
     if (args.op === 'post' && reviewerBinding) {

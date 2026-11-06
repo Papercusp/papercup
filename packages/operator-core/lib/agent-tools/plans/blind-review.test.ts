@@ -33,7 +33,11 @@ const evaluateBlindReviewGate = vi.fn();
 const archiveBlindReviewScratchPlans = vi.fn();
 const findLatestBlindReviewSessionBindingByReviewer = vi.fn();
 const recordBlindReviewSessionPost = vi.fn();
-const verifyBlindReviewSessionBinding = vi.fn();
+const withAuthenticatedBlindReviewEndpoint = vi.fn();
+vi.mock('../../blind-review-continuation-custody', () => ({
+  withAuthenticatedBlindReviewEndpoint: (...a: unknown[]) => withAuthenticatedBlindReviewEndpoint(...a),
+}));
+vi.mock('../../blind-review-runtime-recovery', () => ({ retireRuntimeNamespacesForBinding: vi.fn(async () => ({})) }));
 const emitAwaitedEvent = vi.fn();
 vi.mock('../../events/await/engine', () => ({
   emitAwaitedEvent: (...args: unknown[]) => emitAwaitedEvent(...args),
@@ -41,7 +45,6 @@ vi.mock('../../events/await/engine', () => ({
 vi.mock('../../blind-review-session-bindings', () => ({
   findLatestBlindReviewSessionBindingByReviewer: (...a: unknown[]) => findLatestBlindReviewSessionBindingByReviewer(...a),
   recordBlindReviewSessionPost: (...a: unknown[]) => recordBlindReviewSessionPost(...a),
-  verifyBlindReviewSessionBinding: (...a: unknown[]) => verifyBlindReviewSessionBinding(...a),
 }));
 vi.mock('../../blind-review-gate', async (importOriginal) => ({
   ...await importOriginal<object>(),
@@ -85,7 +88,7 @@ const SLUG = 'demo-plan-2026-10-11';
 const CTX = { workspaceId: '*', ownerId: 'su-author' };
 
 // op 'post' and 'dispose' attribute the record to the caller, so they need a resolvable identity.
-const REVIEWER_CTX = { workspaceId: '*', uiClientId: 'su-reviewer', isSuperuser: true };
+const REVIEWER_CTX = { workspaceId: '*', uiClientId: 'su-reviewer', isSuperuser: true, advSessionId: 42 };
 
 async function call(args: Record<string, unknown>, ctx: Record<string, unknown> = CTX) {
   const parsed = tool.args.safeParse({ ...(args.op === 'post' ? { outcome: 'conclusive' } : {}), ...args });
@@ -107,7 +110,8 @@ beforeEach(() => {
   archiveBlindReviewScratchPlans.mockReset();
   findLatestBlindReviewSessionBindingByReviewer.mockReset().mockResolvedValue(null);
   recordBlindReviewSessionPost.mockReset().mockResolvedValue(true);
-  verifyBlindReviewSessionBinding.mockReset().mockResolvedValue({ ok: true });
+  withAuthenticatedBlindReviewEndpoint.mockReset().mockImplementation(async (_input, write) =>
+    write({ testTransaction: true }, await findLatestBlindReviewSessionBindingByReviewer()));
   emitAwaitedEvent.mockReset().mockResolvedValue({ fired: true });
 });
 
@@ -172,11 +176,11 @@ describe('blind review posted event', () => {
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
   });
 
-  it('does not emit while the required session receipt is pending', async () => {
+  it('refuses the transaction and emits nothing when the required session receipt fails', async () => {
     findLatestBlindReviewSessionBindingByReviewer.mockResolvedValue({ activationAuditSeq: 3, status: 'ready' });
     recordBlindReviewSessionPost.mockResolvedValue(false);
     expect((await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX)).body)
-      .toMatchObject({ error: 'review_session_receipt_pending' });
+      .toMatchObject({ error: 'review_session_post_refused', message: 'review_session_receipt_failed' });
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
   });
 
@@ -246,10 +250,13 @@ describe('plans:blind-review op post — scratch-plan cleanup', () => {
     const { body, isError } = await call({ slug: SLUG, op: 'post', gaps: [] }, REVIEWER_CTX);
     expect(isError).toBe(false);
     expect(body).toMatchObject({ ok: true, id: 9 });
-    expect(recordBlindReview).toHaveBeenCalledWith(expect.objectContaining({ activationAuditSeq: 3 }));
+    expect(withAuthenticatedBlindReviewEndpoint).toHaveBeenCalledWith({ workspaceId: 'ws-resolved',
+      bindingId: 17, reviewerOwnerId: 'su-reviewer', authenticatedAdvSessionId: 42 }, expect.any(Function));
+    expect(recordBlindReview).toHaveBeenCalledWith(expect.objectContaining({ activationAuditSeq: 3 }),
+      { sql: { testTransaction: true } });
     expect(recordBlindReviewSessionPost).toHaveBeenCalledWith({
       workspaceId: 'ws-resolved', planSlug: SLUG, activationAuditSeq: 3, reviewerOwnerId: 'su-reviewer', reviewId: 9,
-    });
+    }, { sql: { testTransaction: true }, deferRuntimeCleanup: true });
     expect(recordBlindReviewSessionPost.mock.invocationCallOrder[0]).toBeLessThan(archiveBlindReviewScratchPlans.mock.invocationCallOrder[0]!);
   });
 

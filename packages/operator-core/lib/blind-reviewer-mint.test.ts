@@ -19,12 +19,14 @@ import {
   BLIND_GAP_REVIEW_ACCOUNT,
   BLIND_REVIEWER_BACKENDS,
   launchProvablyNotStarted,
+  blindReviewProviderRefused,
   BLIND_GAP_REVIEW_ACTOR,
   BLIND_REVIEWER_TOOL_CEILING,
   blindReviewerConfinement,
   buildBlindReviewerKickoff,
   mintBlindGapReviewer,
   resumeBlindGapReviewer,
+  type MintBlindGapReviewerDeps,
 } from './blind-reviewer-mint';
 import { INTERNAL_BLIND_REVIEW_RESUME } from './blind-review-session-bindings';
 import type { createBlindReviewSessionBinding } from './blind-review-session-bindings';
@@ -489,17 +491,24 @@ describe('mintBlindGapReviewer', () => {
     }));
     const findSessionBinding = vi.fn(async () => null as typeof binding | null);
     const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
-    const acquireSessionResume = vi.fn(async () => ({ ok: true as const, binding: { ...binding, status: 'resuming' as const, resumeLeaseId: 'lease-1' }, leaseId: 'lease-1' }));
+    const acquireSessionResume = vi.fn(async () => ({ ok: true as const,
+      backend: 'claude',
+      binding: { ...binding, status: 'resuming' as const, resumeLeaseId: 'lease-1' }, leaseId: 'lease-1',
+      endpoint: { advSessionId: binding.advSessionId, nativeSessionId: binding.nativeSessionId,
+        modelSpec: binding.modelSpec, continuationId: null } }));
     const releaseSessionResume = vi.fn(async () => true);
+    const reserveNativeAttempt = vi.fn<NonNullable<MintBlindGapReviewerDeps['reserveNativeAttempt']>>(async ({ permit }) =>
+      ({ ...permit, nativeAttempt: { id: 21, key: 'attempt-1', requestHash: 'a'.repeat(64) } }));
+    const verifyNativeNoOpen = vi.fn(async () => true);
     const readConfinement = vi.fn(async (): Promise<ReturnType<typeof blindReviewerConfinement> | null> => {
       const call = handler.mock.calls.at(-1) as unknown as [unknown, Record<symbol, ReturnType<typeof blindReviewerConfinement>>];
       return call?.[1][KEY] ?? null;
     });
     const knownTools = async () => new Set(['capability:bash', 'testing:run', 'work_items:create', 'coord:send', 'events:emit']);
     return { handler, loadBrief, launcher, binding, findSessionBinding, createSessionBinding, killTask,
-      acquireSessionResume, releaseSessionResume, readConfinement,
+      acquireSessionResume, releaseSessionResume, readConfinement, reserveNativeAttempt, verifyNativeNoOpen,
       deps: { loadBrief, launcher, findSessionBinding, createSessionBinding, killTask,
-        acquireSessionResume, releaseSessionResume, readConfinement, knownTools } };
+        acquireSessionResume, releaseSessionResume, reserveNativeAttempt, verifyNativeNoOpen, readConfinement, knownTools } };
   }
 
   // EI-27120299877087815: review #109 was told to call tools its ceiling refuses.
@@ -830,6 +839,7 @@ describe('mintBlindGapReviewer', () => {
     [{ data: { launchFailure: { stage: 'pre-spawn', processesOpened: 1 } } }, false],
     [{ data: { launch: { mode: 'deduped', opened: 0, partial: false, tasks: [] } } }, false],
     [{ data: { launch: { opened: 0, partial: true, tasks: [] } } }, false],
+    [{ data: { launch: { launchState: 'reconciliation-required', opened: 0, partial: false, tasks: [] } } }, false],
     [{ data: { launch: { opened: 1, ownerIds: ['su-x'] } } }, false],
     [null, false],
   ])('launchProvablyNotStarted(%j) is %s', (receipt, expected) => {
@@ -907,6 +917,64 @@ describe('mintBlindGapReviewer', () => {
     expect(result).toMatchObject({ ok: false, code: 'recruiter_only' });
     expect(d.launcher).not.toHaveBeenCalled();
     expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it('commits the exact attempt before handler entry and preserves uncertainty after a thrown handler', async () => {
+    const d = deps();
+    d.handler.mockRejectedValueOnce(new Error('handler threw after possible spawn'));
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      recruiterOwnerId: 'su-author', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(false);
+    expect(d.reserveNativeAttempt.mock.invocationCallOrder[0]).toBeLessThan(d.handler.mock.invocationCallOrder[0]);
+    expect(d.reserveNativeAttempt.mock.calls[0][0].request).toEqual(d.handler.mock.calls[0][0]);
+    expect(d.handler).toHaveBeenCalledTimes(1);
+    expect(d.verifyNativeNoOpen).not.toHaveBeenCalled();
+  });
+
+  it('does not port on a forged no-spawn return without canonical attempt settlement', async () => {
+    const d = deps();
+    d.handler.mockResolvedValueOnce({ isError: true, data: { error: 'all_accounts_walled',
+      launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    d.verifyNativeNoOpen.mockResolvedValue(false);
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      recruiterOwnerId: 'su-author', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(false);
+    expect(d.handler).toHaveBeenCalledTimes(1);
+    expect(d.verifyNativeNoOpen).toHaveBeenCalledWith(expect.objectContaining({ nativeAttempt: { id: 21,
+      key: 'attempt-1', requestHash: 'a'.repeat(64) } }));
+  });
+
+  it('ports only the bound original transcript after a proven no-spawn provider refusal', async () => {
+    const d = deps();
+    d.handler.mockResolvedValueOnce({ isError: true, data: { error: 'all_accounts_walled',
+      launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      recruiterOwnerId: 'su-author', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    expect(d.handler).toHaveBeenCalledTimes(2);
+    const [args, ctx] = d.handler.mock.calls[1] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
+    expect(args).toMatchObject({ resume: { sessionId: 'native-review-1' }, fork: false,
+      headless: true, agent: 'codex', account: 'auto' });
+    expect(args).not.toHaveProperty('model');
+    expect(ctx[INTERNAL_BLIND_REVIEW_RESUME]).toMatchObject({ bindingId: 7, leaseId: 'lease-1',
+      reviewerOwnerId: 'su-reviewer-1', recoveryBackend: { agent: 'codex' } });
+    expect(ctx[KEY]).toEqual(CONFINEMENT);
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { isError: true, data: { error: 'confinement_mismatch', launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } },
+    { isError: true, data: { error: 'all_accounts_walled' } },
+    { isError: true, data: { error: 'all_accounts_walled', launch: { launchState: 'reconciliation-required',
+      opened: 0, partial: false, tasks: [] } } },
+  ])('never changes backend for authority drift or ambiguous provider refusal: %j', async launch => {
+    expect(blindReviewProviderRefused(launch)).toBe(false);
+    const d = deps();
+    d.handler.mockResolvedValueOnce(launch);
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      recruiterOwnerId: 'su-author', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(false);
+    expect(d.handler).toHaveBeenCalledTimes(1);
   });
 
   it.each([

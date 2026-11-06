@@ -85,6 +85,13 @@ const codexThreadWriterHolderMock = vi.hoisted(() =>
 const originalRoutingGuardMock = vi.hoisted(() => vi.fn());
 const inspectBlindReviewResumeTargetMock = vi.hoisted(() => vi.fn());
 const verifyBlindReviewSessionResumeBindingMock = vi.hoisted(() => vi.fn());
+const withBlindNativeMock = vi.hoisted(() => vi.fn());
+const blindProviderWallMock = vi.hoisted(() => vi.fn());
+vi.mock('../../blind-review-continuation-custody', async orig => ({
+  ...(await orig<typeof import('../../blind-review-continuation-custody')>()),
+  withBlindReviewNativeLaunch: (...args: unknown[]) => withBlindNativeMock(...args),
+  blindReviewProviderWall: (...args: unknown[]) => blindProviderWallMock(...args),
+}));
 const sessionProcessHolderMock = vi.hoisted(() => vi.fn());
 vi.mock('../../blind-review-session-bindings', async (orig) => ({
   ...(await orig<typeof import('../../blind-review-session-bindings')>()),
@@ -376,6 +383,14 @@ const spawnedCommand = (mock = spawnConsoleMock): string =>
   (mock.mock.calls[0][0] as unknown as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
 const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
   (mock.mock.calls[0][0] as unknown as { envelope: { env: Record<string, string> } }).envelope.env;
+const claimTokenFor = (idempotencyKey: string, occurrence = 0): string => {
+  const matchingClaims = claimAgentLaunchMock.mock.calls
+    .map(([options]) => options as { idempotencyKey?: string; initialSummary?: { claimToken?: unknown } })
+    .filter(options => options.idempotencyKey === idempotencyKey);
+  const token = matchingClaims[occurrence]?.initialSummary?.claimToken;
+  expect(token).toEqual(expect.any(String));
+  return token as string;
+};
 
 beforeEach(() => {
   originalRoutingGuardMock.mockReset();
@@ -452,6 +467,8 @@ beforeEach(() => {
     actualSessionId: 'sid-dead',
     mismatch: false,
   });
+  withBlindNativeMock.mockReset().mockImplementation(async (_input, run) => run(null));
+  blindProviderWallMock.mockReset().mockResolvedValue(null);
   shutdownViaPtyMock.mockResolvedValue('sent');
   findLiveHostMock.mockReturnValue({ ownerId: 'su-a1a71', pid: 42, sock: '/run/host.sock' });
   windowScopeVerdictMock.mockReturnValue('dead');
@@ -2300,6 +2317,17 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(command).toContain('--profile=engineer');
       expect(command).not.toContain('--headless');
       expect(command).not.toContain('--fork');
+      expect(dataOf(result)?.launch).toMatchObject({
+        mode: 'resume',
+        fleet: 'target-fleet',
+        resumedOwnerId: source.ownerId,
+        headcountProfile: {
+          applied: true,
+          target: 1,
+          provenance: { source: 'adv_sessions.launch_spec.originalMemberLaunch', fleetSlug: 'target-fleet' },
+          reusePath: 'exact native original-member receipt -> capability:launch-agent resume',
+        },
+      });
       expect(originalRoutingGuardMock).not.toHaveBeenCalled();
       expect(spawnedEnv()).not.toHaveProperty('PAPERCUSP_ORIGINAL_CODEX_ROUTING');
       expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith(source.ownerId, 'ws-test',
@@ -2801,7 +2829,8 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('failed to invalidate predecessor context pressure');
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
-      workspaceId: 'ws-test', idempotencyKey: 'cold-wake:failed-clear', claimToken: expect.any(String),
+      workspaceId: 'ws-test', idempotencyKey: 'cold-wake:failed-clear',
+      claimToken: claimTokenFor('cold-wake:failed-clear'),
     });
   });
 
@@ -3016,7 +3045,10 @@ describe('resume + fork (D-004/D-007)', () => {
       const noSpawn = () => {
         expect(spawnConsoleMock).not.toHaveBeenCalled();
         expect(spawnHeadlessMock).not.toHaveBeenCalled();
-        expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
+        expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+          workspaceId: 'ws-test', idempotencyKey: 'successor-cas',
+          claimToken: claimTokenFor('successor-cas'),
+        });
       };
 
       it('qualifies only the newest exact row when older terminal history exists', async () => {
@@ -3212,7 +3244,10 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('positive terminal evidence is required');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
-      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+        workspaceId: 'ws-test', idempotencyKey: 'successor-cas',
+        claimToken: claimTokenFor('successor-cas'),
+      });
     });
 
     it.each([null, dead.endedAt])('an active native Codex writer blocks a successor with endedAt=%s before terminal reconciliation', async (endedAt) => {
@@ -3245,7 +3280,10 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('active native Codex writer appeared');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
-      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+        workspaceId: 'ws-test', idempotencyKey: 'successor-cas',
+        claimToken: claimTokenFor('successor-cas'),
+      });
     });
 
     it.each([
@@ -3306,7 +3344,10 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(isError(res)).toBe(true);
       expect(textOf(res)).toContain('reconciliation failed');
       expect(spawnConsoleMock).not.toHaveBeenCalled();
-      expect(releaseAgentLaunchClaimMock).toHaveBeenCalled();
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+        workspaceId: 'ws-test', idempotencyKey: 'successor-cas',
+        claimToken: claimTokenFor('successor-cas'),
+      });
     });
 
     it('does not reconcile an idempotency replay', async () => {
@@ -3571,7 +3612,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
-  it("preserves the resumed target's durable fleet instead of inheriting the caller's fleet", async () => {
+  it("refuses to fall back to the caller fleet when the resumed target profile is missing", async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
     fetchPresenceFleetMock.mockResolvedValue(
@@ -3580,11 +3621,12 @@ describe('resume + fork (D-004/D-007)', () => {
 
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
 
+    expect(isError(res), textOf(res)).toBe(true);
+    expect(textOf(res)).toContain('No saved launch profile is available for fleet target-fleet');
     expect(latestFleetMembershipMock).toHaveBeenCalledWith('ws-test', 'su-a1a71');
     expect(fetchPresenceFleetMock).not.toHaveBeenCalled();
-    expect(spawnedCommand()).toContain('--fleet=target-fleet');
-    expect(spawnedCommand()).not.toContain('--fleet=caller-fleet');
-    expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', resumedOwnerId: 'su-a1a71' });
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('authorizes retirement clearing only on explicit exact resumes', async () => {
@@ -3603,7 +3645,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedEnv()).not.toHaveProperty('PSU_ALLOW_RETIRED_RESUME');
   });
 
-  it('preserves resumed target membership when independent is supplied', async () => {
+  it('fails closed for independent resume when the target fleet profile is missing', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
     fetchPresenceFleetMock.mockResolvedValue(
@@ -3615,14 +3657,15 @@ describe('resume + fork (D-004/D-007)', () => {
       ctx,
     );
 
+    expect(isError(res), textOf(res)).toBe(true);
+    expect(textOf(res)).toContain('No saved launch profile is available for fleet target-fleet');
     expect(latestFleetMembershipMock).toHaveBeenCalledWith('ws-test', 'su-a1a71');
     expect(fetchPresenceFleetMock).not.toHaveBeenCalled();
-    expect(spawnedCommand()).toContain('--fleet=target-fleet');
-    expect(spawnedCommand()).not.toContain('--fleet=caller-fleet');
-    expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', independent: true, mode: 'resume' });
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
-  it('preserves recorded headless placement on an exact resume without a fleet launch profile', async () => {
+  it('refuses a fleet resume when its canonical launch profile is unavailable', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue({ ...dead, headless: true });
     latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
@@ -3631,11 +3674,10 @@ describe('resume + fork (D-004/D-007)', () => {
       { resume: { agentId: dead.ownerId }, fork: false, brief: 'recover the original member' }, ctx,
     );
 
-    expect(isError(res), textOf(res)).toBe(false);
-    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('No saved launch profile is available for fleet target-fleet');
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();
-    expect(spawnedCommand(spawnHeadlessMock)).toContain('--resume=sid-dead');
-    expect(spawnedCommand(spawnHeadlessMock)).toContain('--headless');
   });
 
   it('honors an explicit visible placement when resuming a recorded headless source without a fleet profile', async () => {
@@ -4967,9 +5009,10 @@ describe('failure reporting', () => {
       .map(([call]) => (call as { summary: Record<string, unknown> }).summary);
     expect(summaries.every(summary => Array.isArray(summary.nativeSpawnAttempted) &&
       summary.nativeSpawnAttempted.length === 0)).toBe(true);
-    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith(expect.objectContaining({
-      idempotencyKey: 'pre-install-failure',
-    }));
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-test', idempotencyKey: 'pre-install-failure',
+      claimToken: claimTokenFor('pre-install-failure'),
+    });
   });
 
   it('releases a claimed key after governed admission fails before any process opens, allowing the same-key retry', async () => {
@@ -5008,9 +5051,10 @@ describe('failure reporting', () => {
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
       workspaceId: 'ws-test',
       idempotencyKey: 'retry-after-admission-failure',
-      claimToken: expect.any(String),
+      claimToken: claimTokenFor('retry-after-admission-failure'),
     });
     expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      claimToken: claimTokenFor('retry-after-admission-failure'),
       idempotencyKey: 'retry-after-admission-failure',
       summary: expect.objectContaining({
         launchState: 'spawning',
@@ -5029,6 +5073,7 @@ describe('failure reporting', () => {
     expect(isError(retry)).toBe(false);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      claimToken: claimTokenFor('retry-after-admission-failure', 1),
       idempotencyKey: 'retry-after-admission-failure',
       summary: expect.objectContaining({ opened: 1, failed: 0 }),
     }));
@@ -5049,7 +5094,7 @@ describe('failure reporting', () => {
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
       workspaceId: 'ws-test',
       idempotencyKey: 'retry-after-governed-rejection',
-      claimToken: expect.any(String),
+      claimToken: claimTokenFor('retry-after-governed-rejection'),
     });
     expect(textOf(res)).toContain('governed spawn failed: durable admission record could not be persisted');
   });
@@ -5126,6 +5171,7 @@ describe('failure reporting', () => {
 });
 
 describe('blind-review resume is recruiter-only', () => {
+  const endpoint = { advSessionId: 79, nativeSessionId: 'blind-native-1', modelSpec: null, continuationId: null };
   const binding = {
     id: 17, workspaceId: 'ws-test', harnessSlug: 'papercusp', planSlug: 'blind-plan', activationAuditSeq: 4,
     reviewerOwnerId: 'su-reviewer', advSessionId: 79, nativeSessionId: 'blind-native-1',
@@ -5143,7 +5189,7 @@ describe('blind-review resume is recruiter-only', () => {
 
   it('rejects generic exact resume even when the reviewer has ended', async () => {
     resolveResumeTargetMock.mockResolvedValue(source);
-    inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
+    inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, endpoint, recruiterLaunch: true });
     const result = await launchAgent.handler({
       resume: { sessionId: 'blind-native-1' }, fork: false, headless: true, brief: 'continue',
     }, ctx);
@@ -5159,7 +5205,7 @@ describe('blind-review resume is recruiter-only', () => {
     spawnHeadlessMock.mockResolvedValueOnce(headlessSpawnResult());
     resolveResumeTargetMock.mockResolvedValue({ ...source, agent });
     findLiveHostMock.mockReturnValue(null);
-    inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
+    inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, endpoint, recruiterLaunch: true });
     verifyBlindReviewSessionResumeBindingMock.mockResolvedValue({ ok: true });
     const permit = {
       bindingId: binding.id, leaseId: 'lease-1', workspaceId: binding.workspaceId, planSlug: binding.planSlug,
@@ -5190,16 +5236,51 @@ describe('blind-review resume is recruiter-only', () => {
     expect(verifyBlindReviewSessionResumeBindingMock.mock.invocationCallOrder[0]).toBeLessThan(declareConfinementMock.mock.invocationCallOrder[0]!);
     expect(declareConfinementMock.mock.invocationCallOrder[0]).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]!);
   });
+  it.each(['canonical', 'missing-permit', 'forged-profile', 'account-drift', 'model-drift'])
+    ('admits backend conversion only for the canonical private recruiter selection: %s', async kind => {
+      spawnHeadlessMock.mockReset().mockResolvedValue(headlessSpawnResult());
+      callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
+      resolveResumeTargetMock.mockResolvedValue({ ...source, agent: 'claude' });
+      findLiveHostMock.mockReturnValue(null);
+      inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, endpoint, recruiterLaunch: true });
+      verifyBlindReviewSessionResumeBindingMock.mockResolvedValue({ ok: true });
+      const permit = { bindingId: binding.id, leaseId: 'lease-1', workspaceId: binding.workspaceId,
+        planSlug: binding.planSlug, activationAuditSeq: binding.activationAuditSeq,
+        reviewerOwnerId: binding.reviewerOwnerId, advSessionId: endpoint.advSessionId,
+        nativeSessionId: endpoint.nativeSessionId,
+        ...(kind === 'missing-permit' ? {} : { recoveryBackend: kind === 'forged-profile'
+          ? { agent: 'codex', model: 'unapproved' } : { agent: 'codex' } }) };
+      const result = await launchAgent.handler({ resume: { sessionId: endpoint.nativeSessionId }, fork: false,
+        headless: true, brief: 'continue the original review', agent: 'codex',
+        account: kind === 'account-drift' ? 'default' : 'auto',
+        ...(kind === 'model-drift' ? { model: 'gpt-5.5' } : {}),
+      }, { ...(ctx as unknown as Record<string, unknown>), ownerId: BLIND_GAP_REVIEW_ACTOR,
+        principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: binding.workspaceId },
+        [INTERNAL_BLIND_REVIEW_RESUME]: permit,
+        [INTERNAL_SCOPED_SESSION_CONFINEMENT]: binding.confinementSnapshot } as never);
+      if (kind === 'canonical') {
+        expect(isError(result), textOf(result)).toBe(false);
+        expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+        expect(spawnedCommand(spawnHeadlessMock)).toContain('--resume=blind-native-1');
+        expect(spawnedCommand(spawnHeadlessMock)).toContain('--agent=codex');
+        expect(spawnedCommand(spawnHeadlessMock)).toContain('--account=auto');
+      } else {
+        expect(isError(result), textOf(result)).toBe(true);
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+        expect(declareConfinementMock).not.toHaveBeenCalled();
+      }
+    });
+
   it.each(['wrong-principal', 'wrong-lease', 'expired-lease', 'unbound-target', 'unknown-backend', 'missing-ceiling', 'changed-ceiling', 'changed-declaration', 'renewal-failure'])
     ('refuses recruiter recovery for %s before spawn', async (failure) => {
       callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
       resolveResumeTargetMock.mockResolvedValue(source);
       findLiveHostMock.mockReturnValue(null);
-      inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, recruiterLaunch: true });
+      inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, endpoint, recruiterLaunch: true });
       if (failure === 'unbound-target') resolveResumeTargetMock.mockResolvedValue({ ...source, advSessionId: null });
       if (failure === 'unknown-backend') resolveResumeTargetMock.mockResolvedValue({ ...source, agent: 'other' });
       if (failure === 'expired-lease') inspectBlindReviewResumeTargetMock.mockResolvedValue({
-        binding: { ...binding, resumeLeaseExpiresAt: new Date(Date.now() - 1).toISOString() }, recruiterLaunch: true });
+        binding: { ...binding, resumeLeaseExpiresAt: new Date(Date.now() - 1).toISOString() }, endpoint, recruiterLaunch: true });
       const permit = { bindingId: binding.id, leaseId: failure === 'wrong-lease' ? 'other' : 'lease-1',
         workspaceId: binding.workspaceId, planSlug: binding.planSlug, activationAuditSeq: binding.activationAuditSeq,
         reviewerOwnerId: binding.reviewerOwnerId, advSessionId: binding.advSessionId, nativeSessionId: binding.nativeSessionId };
@@ -5219,4 +5300,63 @@ describe('blind-review resume is recruiter-only', () => {
       expect(spawnHeadlessMock).not.toHaveBeenCalled();
       if (failure !== 'renewal-failure') expect(declareConfinementMock).not.toHaveBeenCalled();
     });
+
+  it('returns a structured provider refusal before invoking a native spawner', async () => {
+    callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
+    resolveResumeTargetMock.mockResolvedValue(source);
+    inspectBlindReviewResumeTargetMock.mockResolvedValue({ binding, endpoint, recruiterLaunch: true });
+    blindProviderWallMock.mockResolvedValue({ kind: 'deferred', binding: 'usage-wall',
+      reason: 'fresh provider pool is walled', accountIds: ['account-1'] });
+    const result = await launchAgent.handler({ resume: { sessionId: source.sessionId }, fork: false,
+      headless: true, brief: 'continue' }, {
+      ...(ctx as unknown as Record<string, unknown>), ownerId: BLIND_GAP_REVIEW_ACTOR,
+      principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: binding.workspaceId },
+      [INTERNAL_BLIND_REVIEW_RESUME]: { bindingId: binding.id, leaseId: binding.resumeLeaseId,
+        workspaceId: binding.workspaceId, planSlug: binding.planSlug, activationAuditSeq: binding.activationAuditSeq,
+        reviewerOwnerId: binding.reviewerOwnerId, advSessionId: endpoint.advSessionId, nativeSessionId: endpoint.nativeSessionId },
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: binding.confinementSnapshot,
+    } as never);
+    expect(dataOf(result)?.launchFailure).toMatchObject({ stage: 'pre-spawn', processesOpened: 0,
+      reason: 'provider-unavailable' });
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('rechecks exact native custody after install and settles only its managed-host proof (lost=%s)', async lost => {
+    callerIdentity.current.ownerId = BLIND_GAP_REVIEW_ACTOR;
+    resolveResumeTargetMock.mockResolvedValue(source);
+    findLiveHostMock.mockReturnValue(null);
+    const beforeNativeCreate = vi.fn(async () => { if (lost) throw new Error('resume_lease_lost'); });
+    const confirmedStart = vi.fn(async () => {});
+    withBlindNativeMock.mockImplementationOnce(async (_input, run) => run({ binding, endpoint,
+      beforeNativeCreate, confirmedStart }));
+    verifyResumeStartedMock.mockResolvedValue({ started: true, waitedMs: 0, expectedSessionId: endpoint.nativeSessionId,
+      actualSessionId: endpoint.nativeSessionId, mismatch: false });
+    let nativeOpened = false;
+    spawnHeadlessMock.mockReset().mockImplementation(async opts => {
+      await (opts as { beforeSpawn: () => Promise<boolean> }).beforeSpawn();
+      nativeOpened = true;
+      return headlessSpawnResult();
+    });
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) => ({
+      ...await spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
+      admissionContext: { receiptId: 'WI-governed-test' },
+    }));
+    const result = await launchAgent.handler({ resume: { sessionId: source.sessionId }, fork: false,
+      headless: true, brief: 'continue' }, {
+      ...(ctx as unknown as Record<string, unknown>), ownerId: BLIND_GAP_REVIEW_ACTOR,
+      principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: binding.workspaceId },
+      [INTERNAL_BLIND_REVIEW_RESUME]: { bindingId: binding.id, leaseId: binding.resumeLeaseId,
+        workspaceId: binding.workspaceId, planSlug: binding.planSlug, activationAuditSeq: binding.activationAuditSeq,
+        reviewerOwnerId: binding.reviewerOwnerId, advSessionId: endpoint.advSessionId, nativeSessionId: endpoint.nativeSessionId,
+        nativeAttempt: { id: 1, key: 'native-attempt', requestHash: 'a'.repeat(64) } },
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: binding.confinementSnapshot,
+    } as never);
+    expect(nativeOpened).toBe(!lost);
+    expect(isError(result)).toBe(lost);
+    expect(beforeNativeCreate).toHaveBeenCalledWith(expect.any(String), 'WI-governed-test');
+    if (lost) expect(confirmedStart).not.toHaveBeenCalled();
+    else expect(confirmedStart).toHaveBeenCalledWith({ nativeSessionId: endpoint.nativeSessionId,
+      admissionReceiptId: 'WI-governed-test', taskId: 'task777' });
+  });
 });

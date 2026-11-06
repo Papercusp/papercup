@@ -4,6 +4,7 @@ import { readDeclaredSessionConfinement, readSessionConfinement } from './capabi
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
 import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
 import type { SessionPortRow } from './session-port/store';
+import type { BlindReviewEndpoint } from './blind-review-continuation-custody';
 
 export const BLIND_GAP_REVIEW_ACTOR = 'system:blind-gap-review';
 export const INTERNAL_BLIND_REVIEW_RESUME = Symbol('internal-blind-review-resume');
@@ -17,6 +18,10 @@ export type BlindReviewResumePermit = {
   reviewerOwnerId: string;
   advSessionId: number;
   nativeSessionId: string;
+  /** Exact durable pre-handler reservation; never accepted as a tool argument. */
+  nativeAttempt?: { id: number; key: string; requestHash: string };
+  /** Private recruiter selection, copied from the canonical backend ladder. */
+  recoveryBackend?: import('./blind-reviewer-backends').BlindReviewerBackend;
 };
 
 type Status = 'ready' | 'resuming' | 'posted' | 'closed' | 'failed';
@@ -117,7 +122,7 @@ async function readAdv(sql: Sql, workspaceId: string, advSessionId: number): Pro
   return row ?? null;
 }
 
-function inspectAdv(row: AdvRow | null, b: Pick<BlindReviewSessionBinding,
+export function inspectBlindReviewAdvProfile(row: AdvRow | null, b: Pick<BlindReviewSessionBinding,
   'workspaceId' | 'reviewerOwnerId' | 'advSessionId' | 'nativeSessionId' | 'launchParentOwner'>):
   { ok: true; accountRoute: string; modelSpec: string | null } |
   { ok: false; code: 'adv_session_mismatch' | 'launch_profile_mismatch'; message: string } {
@@ -136,6 +141,7 @@ function inspectAdv(row: AdvRow | null, b: Pick<BlindReviewSessionBinding,
   }
   return { ok: true, accountRoute, modelSpec };
 }
+const inspectAdv = inspectBlindReviewAdvProfile;
 
 function sameImmutable(a: BlindReviewSessionBinding, b: BlindReviewSessionBinding): boolean {
   return a.workspaceId === b.workspaceId && a.harnessSlug === b.harnessSlug &&
@@ -210,7 +216,7 @@ export async function findBlindReviewSessionBinding(input: {
   return map(row);
 }
 
-export async function findBlindReviewSessionBindingByAdvSession(input: {
+async function findBlindReviewBindingCandidate(input: {
   workspaceId: string; reviewerOwnerId: string; advSessionId: number;
 }, deps: { sql?: Sql } = {}): Promise<BlindReviewSessionBinding | null> {
   const sql = deps.sql ?? getOrgPg().sql;
@@ -220,25 +226,41 @@ export async function findBlindReviewSessionBindingByAdvSession(input: {
        AND reviewer_owner_id = ${input.reviewerOwnerId}
        AND workspace_id = ${input.workspaceId} AND adv_session_id = ${input.advSessionId}
      LIMIT 1`;
-  return map(row);
+  if (row) return map(row);
+  const { blindReviewContinuationStorageInstalled } = await import('./blind-review-continuation-custody');
+  if (!await blindReviewContinuationStorageInstalled(sql)) return null;
+  const [continued] = await sql<Row[]>`
+    SELECT b.* FROM harness_shared.plan_blind_review_sessions b
+    JOIN harness_shared.blind_review_continuation_custody c
+      ON c.workspace_id = b.workspace_id AND c.binding_id = b.id
+    WHERE b.workspace_id = ${input.workspaceId} AND b.reviewer_owner_id = ${input.reviewerOwnerId}
+      AND b.launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
+      AND c.target_adv_session_id = ${input.advSessionId} ORDER BY c.id DESC LIMIT 1`;
+  return map(continued);
+}
+
+export async function findBlindReviewSessionBindingByAdvSession(input: {
+  workspaceId: string; reviewerOwnerId: string; advSessionId: number;
+}, deps: { sql?: Sql } = {}): Promise<BlindReviewSessionBinding | null> {
+  const binding = await findBlindReviewBindingCandidate(input, deps);
+  if (!binding) return null;
+  const endpoint = await resolveBlindReviewSessionResumeEndpoint(binding, deps);
+  return endpoint?.advSessionId === input.advSessionId ? binding : null;
 }
 
 export async function inspectBlindReviewResumeTarget(input: {
   workspaceId: string; reviewerOwnerId: string; advSessionId: number;
 }, deps: { sql?: Sql } = {}): Promise<{
   binding: BlindReviewSessionBinding | null;
+  endpoint: BlindReviewEndpoint | null;
   recruiterLaunch: boolean;
 }> {
   const sql = deps.sql ?? getOrgPg().sql;
   const adv = await readAdv(sql, input.workspaceId, input.advSessionId);
-  const [row] = await sql<Row[]>`
-    SELECT * FROM harness_shared.plan_blind_review_sessions
-     WHERE launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
-       AND reviewer_owner_id = ${input.reviewerOwnerId}
-       AND workspace_id = ${input.workspaceId} AND adv_session_id = ${input.advSessionId}
-     LIMIT 1`;
+  const binding = await findBlindReviewBindingCandidate(input, { sql });
   return {
-    binding: map(row),
+    binding,
+    endpoint: binding ? await resolveBlindReviewSessionResumeEndpoint(binding, { sql }) : null,
     recruiterLaunch: !!adv && adv.coord_owner_id === input.reviewerOwnerId &&
       object(adv.launch_spec)?.launchedBy === BLIND_GAP_REVIEW_ACTOR,
   };
@@ -365,19 +387,55 @@ export function verifyBlindReviewSessionBinding(binding: BlindReviewSessionBindi
 /** Only the external recruiter recovery path compares the original declaration.
  * This grants no tool authority; the exact leased launcher renews it before spawn. */
 export function verifyBlindReviewSessionResumeBinding(binding: BlindReviewSessionBinding, deps: { sql?: Sql } = {}) {
-  return verifyBindingConfinement(binding, readDeclaredSessionConfinement, deps);
+  return (async () => {
+    const endpoint = await resolveBlindReviewSessionResumeEndpoint(binding, deps);
+    if (!endpoint) return { ok: false as const, code: 'binding_unavailable' as const,
+      message: 'The active reviewer endpoint is uncertain or no longer current.' };
+    return verifyBindingConfinement({ ...binding, ...endpoint }, readDeclaredSessionConfinement, deps);
+  })();
+}
+
+/** The immutable binding is a logical identity, never a mutable native pointer. */
+export async function resolveBlindReviewSessionResumeEndpoint(binding: BlindReviewSessionBinding,
+  deps: { sql?: Sql } = {}): Promise<BlindReviewEndpoint | null> {
+  const { lockBlindReviewContinuationScope, resolveBlindReviewEndpoint } = await import('./blind-review-continuation-custody');
+  return (deps.sql ?? getOrgPg().sql).begin(async raw => {
+    const tx = raw as unknown as Sql;
+    const { binding: current } = await lockBlindReviewContinuationScope(tx, binding.workspaceId, binding.id);
+    return resolveBlindReviewEndpoint(tx, current);
+  }) as Promise<BlindReviewEndpoint | null>;
 }
 
 export async function acquireBlindReviewSessionResume(input: {
   workspaceId: string; planSlug: string; activationAuditSeq: number; leaseSec?: number;
-}, deps: { sql?: Sql; makeLeaseId?: () => string } = {}):
-  Promise<{ ok: true; binding: BlindReviewSessionBinding; leaseId: string } |
+}, deps: { sql?: Sql; makeLeaseId?: () => string;
+  readDeclaration?: typeof readDeclaredSessionConfinement } = {}):
+  Promise<{ ok: true; binding: BlindReviewSessionBinding; leaseId: string; endpoint: BlindReviewEndpoint; backend: string } |
     { ok: false; code: 'resume_busy' | 'binding_not_found' | 'binding_unavailable' | 'adv_session_mismatch' | 'launch_profile_mismatch' | 'confinement_mismatch'; message: string }> {
   const sql = deps.sql ?? getOrgPg().sql;
   const leaseId = (deps.makeLeaseId ?? randomUUID)();
   const leaseSec = Math.max(30, Math.min(3600, Math.trunc(input.leaseSec ?? 900)));
   try {
-    const [row] = await sql<Row[]>`
+    const { lockBlindReviewContinuationScope, resolveBlindReviewEndpoint } = await import('./blind-review-continuation-custody');
+    return await sql.begin(async raw => {
+      const tx = raw as unknown as Sql;
+      const existing = await findBlindReviewSessionBinding(input, { sql: tx });
+      if (!existing) return { ok: false as const, code: 'binding_not_found' as const,
+        message: 'No reviewer session is bound to this plan activation.' };
+      const { binding: locked } = await lockBlindReviewContinuationScope(tx, input.workspaceId, existing.id);
+      const endpoint = await resolveBlindReviewEndpoint(tx, locked);
+      // An unpaired reservation denies both endpoints even after lease expiry.
+      if (!endpoint) return { ok: false as const, code: 'binding_unavailable' as const,
+        message: 'The active reviewer endpoint is uncertain or no longer current.' };
+      const source = await readAdv(tx, input.workspaceId, endpoint.advSessionId);
+      const profile = inspectAdv(source, { ...locked, ...endpoint });
+      if (!profile.ok) return profile;
+      if (profile.accountRoute !== locked.accountRoute || profile.modelSpec !== endpoint.modelSpec)
+        return { ok: false as const, code: 'launch_profile_mismatch' as const, message: 'The saved ADV launch profile changed.' };
+      const current = await (deps.readDeclaration ?? readDeclaredSessionConfinement)(locked.reviewerOwnerId, input.workspaceId);
+      if (!current || stable(current) !== stable(locked.confinementSnapshot))
+        return { ok: false as const, code: 'confinement_mismatch' as const, message: 'The authoritative reviewer confinement changed.' };
+      const [row] = await tx<Row[]>`
       UPDATE harness_shared.plan_blind_review_sessions
          SET status = 'resuming', resume_lease_id = ${leaseId},
              resume_lease_expires_at = now() + (${leaseSec} * interval '1 second'), updated_at = now()
@@ -389,19 +447,11 @@ export async function acquireBlindReviewSessionResume(input: {
          AND launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
          AND (status = 'ready' OR (status = 'resuming' AND resume_lease_expires_at <= now()))
        RETURNING *`;
-    const binding = map(row);
-    if (!binding) {
-      const existing = await findBlindReviewSessionBinding(input, { sql });
-      return existing
-        ? { ok: false, code: 'resume_busy', message: 'A recruiter resume is active or this review is no longer resumable.' }
-        : { ok: false, code: 'binding_not_found', message: 'No reviewer session is bound to this plan activation.' };
-    }
-    const verified = await verifyBlindReviewSessionResumeBinding(binding, { sql });
-    if (!verified.ok) {
-      await releaseBlindReviewSessionResume(binding.id, leaseId, { sql });
-      return verified;
-    }
-    return { ok: true, binding, leaseId };
+      const binding = map(row);
+      return binding ? { ok: true as const, binding, leaseId, endpoint, backend: source!.agent! }
+        : { ok: false as const, code: 'resume_busy' as const,
+          message: 'A recruiter resume is active or this review is no longer resumable.' };
+    }) as Awaited<ReturnType<typeof acquireBlindReviewSessionResume>>;
   } catch (error) {
     return { ok: false, code: 'binding_unavailable', message: error instanceof Error ? error.message : String(error) };
   }
@@ -409,17 +459,27 @@ export async function acquireBlindReviewSessionResume(input: {
 
 export async function releaseBlindReviewSessionResume(bindingId: number, leaseId: string, deps: { sql?: Sql } = {}): Promise<boolean> {
   const sql = deps.sql ?? getOrgPg().sql;
-  const rows = await sql<Array<{ id: number | string }>>`
+  const { lockBlindReviewContinuationScope, resolveBlindReviewEndpoint } = await import('./blind-review-continuation-custody');
+  return sql.begin(async raw => {
+    const tx = raw as unknown as Sql;
+    const [scope] = await tx<Array<{ workspace_id: string }>>`
+      SELECT workspace_id FROM harness_shared.plan_blind_review_sessions WHERE id = ${bindingId}`;
+    if (!scope) return false;
+    const { binding } = await lockBlindReviewContinuationScope(tx, scope.workspace_id, bindingId);
+    if (binding.status !== 'resuming' || binding.resumeLeaseId !== leaseId ||
+        !await resolveBlindReviewEndpoint(tx, binding)) return false;
+    const rows = await tx<Array<{ id: number | string }>>`
     UPDATE harness_shared.plan_blind_review_sessions
        SET status = 'ready', resume_lease_id = NULL, resume_lease_expires_at = NULL, updated_at = now()
      WHERE id = ${bindingId} AND resume_lease_id = ${leaseId} AND status = 'resuming'
     RETURNING id`;
-  return rows.length > 0;
+    return rows.length > 0;
+  }) as Promise<boolean>;
 }
 
 export async function recordBlindReviewSessionPost(input: {
   workspaceId: string; planSlug: string; activationAuditSeq: number; reviewerOwnerId: string; reviewId: number;
-}, deps: { sql?: Sql } = {}): Promise<boolean> {
+}, deps: { sql?: Sql; deferRuntimeCleanup?: boolean } = {}): Promise<boolean> {
   const sql = deps.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ id: number | string }>>`
     UPDATE harness_shared.plan_blind_review_sessions
@@ -431,7 +491,7 @@ export async function recordBlindReviewSessionPost(input: {
        AND launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
        AND (status IN ('ready', 'resuming') OR (status = 'posted' AND review_id = ${input.reviewId}))
     RETURNING id`;
-  if (rows.length) {
+  if (rows.length && !deps.deferRuntimeCleanup) {
     // Canonical post commits before resource cleanup takes a lifecycle lock.
     try {
       const { retireRuntimeNamespacesForBinding } = await import('./blind-review-runtime-recovery');
