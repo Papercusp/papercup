@@ -13,10 +13,12 @@
 
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { existsSync, statSync } from 'node:fs';
 import { JsonRpcBridge, type JsonRpcNotification, type JsonRpcRequestHandler } from './jsonrpc-bridge';
 import { buildBwrapArgs, buildProviderBwrapArgs } from './bwrap-args';
+import type { PreparedHandlerRuntime } from './handler-runtime';
 
 const DEFAULT_BWRAP = '/usr/bin/bwrap';
 type ExecFileAsync = (
@@ -168,7 +170,11 @@ export interface StartDaemonOptions {
    * (default) keeps the legacy profile and its unsandboxed fallback.
    * readPaths/writePaths/shareNet are ignored in `provider` mode.
    */
-  sandbox?: 'plugin' | 'provider';
+  sandbox?: 'plugin' | 'provider' | 'handler';
+  /** Host-prepared immutable inventory; required for handler mode. Never from a manifest. */
+  handlerRuntime?: PreparedHandlerRuntime;
+  /** Bounded exact-runtime readiness, repeated on restart. Default 10s. */
+  handlerReadyTimeoutMs?: number;
   /** Interpreter install prefixes the provider profile binds read-only. */
   runtimeDirs?: string[];
   /** bwrap binary for the provider profile. Default /usr/bin/bwrap. */
@@ -203,6 +209,18 @@ export interface DaemonPluginHandle {
 }
 
 export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<DaemonPluginHandle> {
+  const sandbox = opts.sandbox;
+  const handlerMode = sandbox === 'handler';
+  const handlerRuntime = opts.handlerRuntime;
+  if ((sandbox !== undefined && !['plugin', 'provider', 'handler'].includes(sandbox))
+    || (handlerMode && (!handlerRuntime || opts.cmd.length !== 0 || opts.bwrapBinary !== undefined))
+    || (!handlerMode && handlerRuntime !== undefined)) {
+    throw new DaemonSandboxUnavailableError('invalid mandatory handler sandbox configuration');
+  }
+  const readyTimeout = opts.handlerReadyTimeoutMs ?? 10_000;
+  if (handlerMode && (!Number.isSafeInteger(readyTimeout) || readyTimeout < 1 || readyTimeout > 60_000)) {
+    throw new DaemonSandboxUnavailableError('invalid handler readiness timeout');
+  }
   const policy = opts.restart?.policy ?? 'on-failure';
   const maxRestarts = opts.restart?.maxRestarts ?? 5;
   const backoffMs = opts.restart?.backoffMs ?? 1000;
@@ -214,6 +232,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
   let stopped = false;
   let healthTimer: ManagedHandle | null = null;
   let diskQuotaTimer: ManagedHandle | null = null;
+  let handlerReady = false;
 
   const audit = (event: DaemonAuditRow['event'], detail?: string): void => {
     if (!opts.onAudit) return;
@@ -232,11 +251,23 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
   };
 
   const spawnOnce = async (): Promise<void> => {
-    const providerMode = opts.sandbox === 'provider';
-    const useBwrap = providerMode ? false : await bwrapWorks();
+    if (stopped) return;
+    handlerReady = false;
+    const providerMode = sandbox === 'provider';
+    const useBwrap = providerMode || handlerMode ? false : await bwrapWorks();
     let binary: string;
     let argv: string[];
-    if (providerMode) {
+    let runtime: Awaited<ReturnType<typeof import('./handler-runtime')['openHandlerRuntime']>> | undefined;
+    if (handlerMode) {
+      try {
+        const { openHandlerRuntime } = await import('./handler-runtime');
+        runtime = openHandlerRuntime(handlerRuntime!);
+        binary = runtime.binary;
+        argv = runtime.argv;
+      } catch (error) {
+        throw new DaemonSandboxUnavailableError(`handler runtime refused: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } else if (providerMode) {
       const probe = await probeProviderSandbox({
         bwrapBinary: opts.bwrapBinary,
         pluginDir: opts.cwd,
@@ -284,13 +315,16 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       opts.onLog?.(`[supervisor] bwrap unavailable; spawning unsandboxed: ${opts.pluginName}`);
     }
 
-    child = spawn(binary, argv, {
-      cwd: opts.cwd,
+    try {
+      child = spawn(binary, argv, {
+      cwd: handlerMode ? '/' : opts.cwd,
       // Provider mode: nothing of the host env reaches even the bwrap process.
-      env: providerMode ? { PATH: '/usr/bin:/bin' } : { PATH: process.env.PATH ?? '/usr/bin:/bin' },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+      env: handlerMode ? {} : providerMode ? { PATH: '/usr/bin:/bin' } : { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      stdio: ['pipe', 'pipe', 'pipe', ...(runtime?.descriptors ?? [])],
+      });
+    } finally { runtime?.close(); }
     const spawned = child;
+    let admitted = !handlerMode;
     child.on('error', (e: Error) => {
       opts.onLog?.(`[supervisor] ${opts.pluginName}: spawn error: ${e.message}`);
       // A process that never started emits no 'exit': fail pending calls now
@@ -310,22 +344,23 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     });
 
     bridge = new JsonRpcBridge(child.stdout, child.stdin);
+    const connection = bridge;
     bridge.onNotification((n: JsonRpcNotification) => {
       // Daemon-emitted events arrive here. Operator wires onAudit + onLog
       // to surface them; no event bus integration in v1 (deferred).
       opts.onLog?.(`[notify] ${n.method} ${JSON.stringify(n.params ?? {})}`);
     });
-    for (const [method, handler] of Object.entries(opts.requestHandlers ?? {})) {
-      bridge.onRequest(method, handler);
-    }
+    const attachHandlers = () => {
+      for (const [method, handler] of Object.entries(opts.requestHandlers ?? {})) connection.onRequest(method, handler);
+    };
+    if (!handlerMode) attachHandlers();
 
     child.on('exit', (code: number | null) => {
       lastExitCode = code;
       audit('exit', `code=${code}`);
-      bridge?.shutdown(new Error(`daemon exited code=${code}`));
-      bridge = null;
-      child = null;
-      if (stopped) return;
+      connection.shutdown(new Error(`daemon exited code=${code}`));
+      if (child === spawned) { bridge = null; child = null; handlerReady = false; }
+      if (stopped || !admitted) return;
       const failed = code !== 0;
       const shouldRestart =
         policy === 'always' || (policy === 'on-failure' && failed);
@@ -338,6 +373,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       const delay = backoffMs * Math.min(2 ** (restartCount - 1), 60);
       audit('restart', `attempt=${restartCount} delay=${delay}ms`);
       setTimeout(() => {
+        if (stopped) return;
         spawnOnce().catch((e: unknown) => {
           opts.onLog?.(`[supervisor] ${opts.pluginName}: respawn refused: ${e instanceof Error ? e.message : String(e)}`);
         });
@@ -345,6 +381,27 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     });
 
     audit('spawn', `binary=${binary}`);
+
+    if (handlerMode) {
+      try {
+        const nonce = randomUUID();
+        const ready = await connection.call<{
+          sha256: string; nonce: string; receipt: { profile: string; arch: string; noNewPrivileges: boolean; synchronizedThreads: boolean; ioUringDisabled: boolean };
+        }>('papercup.handlerInitialize', { sha256: handlerRuntime!.sha256, nonce }, readyTimeout);
+        if (child !== spawned || ready.sha256 !== handlerRuntime!.sha256 || ready.nonce !== nonce
+          || ready.receipt?.profile !== 'linux-handler-process-v1' || ready.receipt.arch !== process.arch
+          || ready.receipt.noNewPrivileges !== true || ready.receipt.synchronizedThreads !== true || ready.receipt.ioUringDisabled !== true) {
+          throw new Error('exact handler runtime readiness mismatch');
+        }
+        admitted = true;
+        handlerReady = true;
+        attachHandlers();
+      } catch (error) {
+        connection.shutdown(new Error('handler bootstrap refused'));
+        spawned.kill('SIGKILL');
+        throw new DaemonSandboxUnavailableError(`handler bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
 
     // Daemon's first message must be a notification: { method: 'ready', params: { pluginInfo } }.
     // We don't enforce a handshake schema in v1 — caller's first action call effectively
@@ -374,7 +431,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
   if (healthInterval > 0) {
     let consecutiveFails = 0;
     healthTimer = managedSetInterval('plugin-health-check', healthInterval, async () => {
-      if (stopped || !bridge) return;
+      if (stopped || !bridge || (handlerMode && !handlerReady)) return;
       try {
         await bridge.call('papercup.ping', undefined, 5_000);
         consecutiveFails = 0;
@@ -391,7 +448,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
 
   return {
     async callAction(name: string, payload: Uint8Array) {
-      if (!bridge) {
+      if (!bridge || (handlerMode && !handlerReady)) {
         return { ok: false as const, error: { tag: 'plugin-error' as const, message: 'daemon not running' } };
       }
       audit('action', `name=${name} payload_len=${payload.length}`);
@@ -415,11 +472,12 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       }
     },
     async request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
-      if (!bridge) throw new Error(`daemon ${opts.pluginName} is not running`);
+      if (!bridge || (handlerMode && !handlerReady)) throw new Error(`daemon ${opts.pluginName} is not running`);
       return bridge.call<T>(method, params, timeoutMs);
     },
     async shutdown() {
       stopped = true;
+      handlerReady = false;
       if (healthTimer) healthTimer.stop();
       if (diskQuotaTimer) diskQuotaTimer.stop();
       bridge?.shutdown();
