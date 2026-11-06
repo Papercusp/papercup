@@ -100,7 +100,7 @@ describe('buildConverseMcpMount', () => {
   it('owner trust: superuser=1 + the disk token; the legacy param order is kept', () => {
     const m = buildConverseMcpMount({ ...base, hostTrust: 'owner', superuserToken: 'su-tok', principalToken: null });
     expect(m).toEqual({
-      url: 'http://localhost:3070/api/mcp?superuser=1&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
+      url: 'http://localhost:3070/api/mcp?superuser=1&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&tools_compact=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
       bearer: 'su-tok',
     });
     expect(buildConverseMcpMount({ ...base, hostTrust: 'owner', superuserToken: '', principalToken: 'x' })).toBeNull();
@@ -111,7 +111,7 @@ describe('buildConverseMcpMount', () => {
     expect(m).not.toBeNull();
     expect(m!.url).not.toContain('superuser');
     expect(m!.url).toBe(
-      'http://localhost:3070/api/mcp?principal=pi&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
+      'http://localhost:3070/api/mcp?principal=pi&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&tools_compact=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
     );
     expect(m!.bearer).toBe('user-bearer');
     // Fail-closed: no boundary bearer ⇒ no mount, even though a superuser token exists.
@@ -145,7 +145,7 @@ describe('buildConverseMcpMount', () => {
       agentRunsAsCustomer: true,
     });
     expect(m).toEqual({
-      url: 'http://localhost:3070/api/mcp?principal=pi&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
+      url: 'http://localhost:3070/api/mcp?principal=pi&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&tools_compact=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
       bearer: 'customer-pi-bearer',
     });
     expect(m?.url).not.toContain('superuser');

@@ -22,7 +22,7 @@ const fetchPresenceFleet =
   vi.fn<(owners: string[]) => Promise<Map<string, { fleetSlug: string | null; fleetRole: string | null }>>>();
 const getFleet = vi.fn<(ws: string, slug: string) => Promise<{ leaderOwnerId: string | null } | null>>();
 const listFleetsLedBy = vi.fn<(ws: string, owner: string) => Promise<Array<{ fleetSlug: string }>>>();
-const buildLeaderBrief = vi.fn<() => Promise<{ data: unknown }>>();
+const buildLeaderBrief = vi.fn<(...args: unknown[]) => Promise<{ data: unknown }>>();
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => activeWorkspaceId() }));
 vi.mock('./agent-tools/coordination/presence-fleet', () => ({
@@ -34,10 +34,14 @@ vi.mock('./agent-fleets-store', () => ({
   listFleetsLedBy: (ws: string, owner: string) => listFleetsLedBy(ws, owner),
 }));
 vi.mock('./agent-tools/fleet/leader-brief', () => ({
-  buildLeaderBrief: () => buildLeaderBrief(),
+  buildLeaderBrief: (...args: unknown[]) => buildLeaderBrief(...args),
 }));
 
 import { getAgentLeaderBrief } from './adv-agent-leader-brief';
+import {
+  namedQueryStageTimings,
+  withNamedQueryDiagnosticContext,
+} from './agent-tools/db-diagnostic-correlation-wiring';
 
 /** Presence places `owner` in `fleetSlug` with `fleetRole`; null = no fleet. */
 function presence(fleetSlug: string | null, fleetRole: string | null = null) {
@@ -53,6 +57,47 @@ beforeEach(() => {
 });
 
 describe('getAgentLeaderBrief — the registry cross-check runs before "leads nothing"', () => {
+  it('retains the pending builder stage for resolver timeout diagnostics without taking leadership', async () => {
+    presence('p2p-release', 'leader');
+    listFleetsLedBy.mockResolvedValue([{ fleetSlug: 'p2p-release' }]);
+    getFleet.mockResolvedValue({ leaderOwnerId: 'su-me' });
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    buildLeaderBrief.mockImplementationOnce(async () => {
+      entered();
+      await pending;
+      return { data: { ok: true, fleetMetrics: { snapshotId: 'same-snapshot' } } };
+    });
+
+    await withNamedQueryDiagnosticContext('agentLeaderBrief.byOwner', async () => {
+      const reading = getAgentLeaderBrief('su-me');
+      await started;
+      try {
+        expect(namedQueryStageTimings()?.stages).toEqual([
+          expect.objectContaining({ stage: 'agent-leader-brief-presence', outcome: 'fulfilled' }),
+          expect.objectContaining({ stage: 'agent-leader-brief-store-import', outcome: 'fulfilled' }),
+          expect.objectContaining({ stage: 'agent-leader-brief-led-fleets', outcome: 'fulfilled' }),
+          expect.objectContaining({ stage: 'agent-leader-brief-fleet-record', outcome: 'fulfilled' }),
+          expect.objectContaining({ stage: 'agent-leader-brief-build', outcome: 'pending' }),
+        ]);
+        expect(buildLeaderBrief).toHaveBeenCalledWith(
+          { fleet: 'p2p-release', workspace: 'ws-1' },
+          expect.objectContaining({
+            ownerId: 'su-me', allowLeadershipWrites: false, resolveCallerMembership: false,
+          }),
+        );
+      } finally {
+        release();
+      }
+      const result = await reading;
+      expect(result.brief).toMatchObject({ fleetMetrics: { snapshotId: 'same-snapshot' } });
+      expect(namedQueryStageTimings()?.stages.at(-1)?.outcome).toBe('fulfilled');
+    });
+    expect(namedQueryStageTimings()).toBeNull();
+  });
+
   it('reports drift and BUILDS the brief when presence has no fleet but the registry says it leads one', async () => {
     // The original failure, and the reason this cross-check exists.
     presence(null);

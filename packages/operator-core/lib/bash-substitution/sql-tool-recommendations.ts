@@ -5,6 +5,7 @@
  * A registry pair retrieves a candidate; it does not certify its current contract.
  */
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
 import { SQL_READ_PAIRS, SQL_READ_NO_PAIR_DECISIONS } from './pairs/sql-reads';
 import { sqlPairClaimsAtom } from './sql-corpus';
 import { fingerprintSqlIntent, type SqlIntentFeatures, type SqlIntentScope } from './sql-intent-fingerprint';
@@ -70,6 +71,8 @@ export interface SqlToolRecommendation {
   kind: SqlRecommendationKind;
   reason: string;
   toolName: string | null;
+  /** Material contract/decision identity for review editions, independent of run receipts. */
+  contractRef?: string;
   /** Only route-existing is immediately callable; SQL/args are never emitted. */
   immediatelyCallable: boolean;
   fingerprint: string | null;
@@ -128,18 +131,18 @@ export function recommendSqlTool(input: SqlRecommendationInput): SqlToolRecommen
   for (const tool of [...input.served.tools].sort((a, b) => a.name.localeCompare(b.name))) {
     const audit = auditFor(tool);
     if (audit?.verdict === 'exact') return answer('route-existing', 'tested-served-contract', {
-      toolName: tool.name, immediatelyCallable: true, evidenceRefs: proofRefs(audit),
+      toolName: tool.name, contractRef: audit.contractRef, immediatelyCallable: true, evidenceRefs: proofRefs(audit),
     });
   }
   for (const tool of [...input.current.tools].sort((a, b) => a.name.localeCompare(b.name))) {
     const audit = auditFor(tool);
     if (audit?.verdict === 'exact') return answer('availability-gap', 'tested-current-contract-not-served', {
-      toolName: tool.name, evidenceRefs: proofRefs(audit),
+      toolName: tool.name, contractRef: audit.contractRef, evidenceRefs: proofRefs(audit),
     });
   }
   if (input.keepSql?.fingerprint === shape.fingerprint && input.keepSql.decisionRef) {
     return answer('keep-sql', 'reviewed-exact-shape-decision', {
-      evidenceRefs: [...refs, input.keepSql.decisionRef],
+      contractRef: input.keepSql.decisionRef, evidenceRefs: [...refs, input.keepSql.decisionRef],
     });
   }
   // Table-level historical no-pair decisions remain hints, never exact-shape rulings.
@@ -150,7 +153,7 @@ export function recommendSqlTool(input: SqlRecommendationInput): SqlToolRecommen
     const tool = input.current.tools.find(t => t.name === name);
     const audit = tool && auditFor(tool);
     if (audit?.verdict === 'partial') return answer('extend-existing', 'tested-contract-feature-gap', {
-      toolName: name, evidenceRefs: proofRefs(audit), missingFeatures: [...audit.missingFeatures],
+      toolName: name, contractRef: audit.contractRef, evidenceRefs: proofRefs(audit), missingFeatures: [...audit.missingFeatures],
     });
   }
   // No new-tool proposal until every retrieved candidate has measured noncoverage
@@ -160,6 +163,8 @@ export function recommendSqlTool(input: SqlRecommendationInput): SqlToolRecommen
     return contracts.length > 0 && contracts.every(t => auditFor(t)?.verdict === 'none');
   });
   if (evaluated) return answer('new-tool', 'tested-candidate-noncoverage', {
+    contractRef: 'sql-compared-contracts:' + createHash('sha256').update(JSON.stringify(
+      [...new Set(audits.map(a => JSON.stringify([a.toolName, a.contractRef])))].sort())).digest('hex'),
     evidenceRefs: [...new Set([...refs, ...audits.flatMap(a => [a.fixtureRef, a.resultRef])])],
   });
   return answer('insufficient-evidence', 'unmeasured-exact-coverage', { evidenceRefs: refs });

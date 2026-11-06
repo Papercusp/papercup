@@ -7,7 +7,7 @@ vi.mock('@papercusp/plugin-loader/daemon', async original => ({
   ...await original<typeof import('@papercusp/plugin-loader/daemon')>(),
   invokeApprovedHandler: vi.fn(), prepareInstalledHandlerRuntime: vi.fn(),
 }));
-afterEach(() => vi.resetAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 
 function fixture() {
   const installation = { version: '1.0.0', path: '/installed/fixture', source: 'global' as const };
@@ -53,6 +53,30 @@ describe('confined plugin installation binding', () => {
 describe('installed confined plugin binding', () => {
   const handler = () => ({ path: '/handler/entry.cjs', contents: Buffer.from('untrusted guest'),
     sha256: 'b'.repeat(64), executable: false });
+
+  it.each(['empty', 'population', 'file-bytes', 'total-bytes', 'contents'] as const)(
+    'refuses %s before copying guest bytes or starting installed admission', async axis => {
+      const f = fixture();
+      const sized = (size: number) => {
+        const file = handler();
+        // A synthetic length exercises allocation admission without consuming
+        // hundreds of MiB. No copy may occur for any refused population.
+        Object.defineProperty(file.contents, 'byteLength', { value: size });
+        return file;
+      };
+      let files = [handler()];
+      if (axis === 'empty') files = [];
+      if (axis === 'population') files = Array.from({ length: 1024 }, handler);
+      if (axis === 'file-bytes') files = [sized(256 * 1024 * 1024 + 1)];
+      if (axis === 'total-bytes') files = Array.from({ length: 3 }, () => sized(200 * 1024 * 1024));
+      if (axis === 'contents') files[0]!.contents = null as unknown as ReturnType<typeof handler>['contents'];
+      const copy = vi.spyOn(Buffer, 'from');
+      await expect(createInstalledConfinedPluginInvoker({ ...f.options,
+        runtimeDirectory: '/installed/runtime', handlerFiles: files })).rejects.toThrow(/handler snapshot/);
+      expect(copy).not.toHaveBeenCalled();
+      expect(prepareInstalledHandlerRuntime).not.toHaveBeenCalled();
+      expect(invokeApprovedHandler).not.toHaveBeenCalled();
+    });
 
   it('uses only the runtime returned by installed admission and retains checked service binding', async () => {
     const f = fixture(), file = handler(), runtime = { sha256: 'c'.repeat(64) };

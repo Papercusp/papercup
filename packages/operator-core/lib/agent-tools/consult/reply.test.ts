@@ -109,13 +109,19 @@ describe('consult:reply stance on decision-review consults (R-4, R-15)', () => {
 
   function harness(flavor: string | null) {
     const queries: Array<{ text: string; values: unknown[] }> = [];
+    let exchangesUsed = 0;
     const sqlFn = (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       queries.push({ text, values });
       if (/SELECT[\s\S]*FROM harness_shared\.consult_state/.test(text)) return Promise.resolve([stateRow(flavor)]);
+      if (text.includes('RETURNING exchanges_used')) {
+        exchangesUsed += Number(values[1]);
+        return Promise.resolve([{ exchanges_used: exchangesUsed }]);
+      }
       return Promise.resolve([]);
     };
     const sql = Object.assign(sqlFn, { json: (v: unknown) => ({ __json: v }) });
+    Object.assign(sql, { begin: async <T>(run: (tx: typeof sql) => Promise<T>) => run(sql) });
     const post = vi.fn(async () => ({ post: { id: 4242 } }));
     const deps = {
       getSql: () => sql as never,
@@ -210,6 +216,7 @@ describe('consult:reply parkResponse on decision-review consults (R-6, R-16)', (
 
   function harness(flavor: string | null, opts: { resolverThrows?: boolean } = {}) {
     const queries: Array<{ text: string; values: unknown[] }> = [];
+    let exchangesUsed = 1;
     const sqlFn = (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       queries.push({ text, values });
@@ -240,9 +247,14 @@ describe('consult:reply parkResponse on decision-review consults (R-6, R-16)', (
           },
         ]);
       }
+      if (text.includes('RETURNING exchanges_used')) {
+        exchangesUsed += Number(values[1]);
+        return Promise.resolve([{ exchanges_used: exchangesUsed }]);
+      }
       return Promise.resolve([]);
     };
     const sql = Object.assign(sqlFn, { json: (v: unknown) => ({ __json: v }) });
+    Object.assign(sql, { begin: async <T>(run: (tx: typeof sql) => Promise<T>) => run(sql) });
     const post = vi.fn(async () => ({ post: { id: 5151 } }));
     const onDecisionReviewReply = vi.fn(async () => {
       if (opts.resolverThrows) throw new Error('resolver down');

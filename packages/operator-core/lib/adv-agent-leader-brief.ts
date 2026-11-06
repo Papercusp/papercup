@@ -57,6 +57,7 @@
 
 import { activeWorkspaceId } from './workspace-registry';
 import { buildLeaderBrief } from './agent-tools/fleet/leader-brief';
+import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
 /** The brief payload, taken from the producer so it cannot drift from it. */
 export type LeaderBriefData = Awaited<ReturnType<typeof buildLeaderBrief>>['data'];
@@ -170,12 +171,16 @@ export async function getAgentLeaderBrief(owner: string): Promise<AgentLeaderBri
     const workspaceId = activeWorkspaceId();
     if (!workspaceId || workspaceId === '*') return empty(owner, 'no-workspace');
 
-    const { fetchPresenceFleet } = await import('./agent-tools/coordination/presence-fleet');
-    const membership = (await fetchPresenceFleet([owner])).get(owner) ?? null;
+    const membership = await traceNamedQueryStage('agent-leader-brief-presence', async () => {
+      const { fetchPresenceFleet } = await import('./agent-tools/coordination/presence-fleet');
+      return (await fetchPresenceFleet([owner])).get(owner) ?? null;
+    });
     const presenceFleetSlug = membership?.fleetSlug ?? null;
     const presenceFleetRole = membership?.fleetRole ?? null;
 
-    const { getFleet, listFleetsLedBy } = await import('./agent-fleets-store');
+    const { getFleet, listFleetsLedBy } = await traceNamedQueryStage(
+      'agent-leader-brief-store-import', () => import('./agent-fleets-store'),
+    );
 
     // ── The registry cross-check (P-013) ──────────────────────────────────────
     // This used to be gated behind `if (!presenceFleetSlug) return no-fleet`,
@@ -186,7 +191,9 @@ export async function getAgentLeaderBrief(owner: string): Promise<AgentLeaderBri
     // agent whose own orient was shouting drift at it. The registry read is one
     // indexed lookup on (workspace_id, leader_owner_id), so it is cheap enough
     // to take before concluding an agent leads nothing.
-    const led = await listFleetsLedBy(workspaceId, owner);
+    const led = await traceNamedQueryStage(
+      'agent-leader-brief-led-fleets', () => listFleetsLedBy(workspaceId, owner),
+    );
     const ledSlugs = led.map((f) => f.fleetSlug);
     // Prefer the fleet presence already agrees about, so a multi-fleet leader's
     // pane does not jump to another of its fleets on an unrelated drift.
@@ -224,7 +231,9 @@ export async function getAgentLeaderBrief(owner: string): Promise<AgentLeaderBri
     const fleetSlug = ledFleet ?? presenceFleetSlug;
     if (!fleetSlug) return empty(owner, 'no-fleet');
 
-    const record = await getFleet(workspaceId, fleetSlug);
+    const record = await traceNamedQueryStage(
+      'agent-leader-brief-fleet-record', () => getFleet(workspaceId, fleetSlug),
+    );
     const registeredLeader = record?.leaderOwnerId ?? null;
     const isLeader = registeredLeader === owner || presenceFleetRole === 'leader';
 
@@ -257,7 +266,7 @@ export async function getAgentLeaderBrief(owner: string): Promise<AgentLeaderBri
       });
     }
 
-    const result = await buildLeaderBrief(
+    const result = await traceNamedQueryStage('agent-leader-brief-build', () => buildLeaderBrief(
       { fleet: fleetSlug, workspace: workspaceId },
       {
         // Computed AS the viewed leader: this is what scopes `directives` to
@@ -270,7 +279,7 @@ export async function getAgentLeaderBrief(owner: string): Promise<AgentLeaderBri
         allowLeadershipWrites: false,
         resolveCallerMembership: false,
       },
-    );
+    ));
     return {
       ownerId: owner,
       fleetSlug,

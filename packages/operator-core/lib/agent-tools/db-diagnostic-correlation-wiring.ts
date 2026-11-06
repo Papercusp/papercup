@@ -30,6 +30,8 @@ type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-ho
   'work-item-detail-dimensions' | 'work-item-detail-reporter' | 'work-item-detail-presentation' |
   'work-item-dependencies-import' | 'work-item-dependencies-sql' |
   'work-item-dependency-waits-import' | 'work-item-dependency-waits-sql' |
+  'agent-leader-brief-presence' | 'agent-leader-brief-store-import' |
+  'agent-leader-brief-led-fleets' | 'agent-leader-brief-fleet-record' | 'agent-leader-brief-build' |
   'scorecards-get-evidence-read' | 'scorecards-get-rubric-read' |
   'rubric-plan-row-read' | 'rubric-row-map' | 'rubric-first-party-seed' |
   'dream-dependencies-import' | 'dream-observation-import' | 'dream-journal-dependencies-import' |

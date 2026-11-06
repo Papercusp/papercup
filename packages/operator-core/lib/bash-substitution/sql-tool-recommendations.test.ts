@@ -36,6 +36,23 @@ function fixture(sql = queries.proof, name = 'testing:runs'): SqlRecommendationI
 }
 
 describe('SQL tool recommendations', () => {
+  it('P006 review editions follow material compared contracts and ignore fresh result receipts', () => {
+    const input = fixture();
+    input.audits = [{ ...input.audits[0]!, verdict: 'none', missingFeatures: ['output:id'] }];
+    const first = recommendSqlTool(input);
+    expect(first).toMatchObject({ kind: 'new-tool', contractRef: expect.stringMatching(/^sql-compared-contracts:/) });
+    const refreshed = recommendSqlTool({ ...input, audits: [{ ...input.audits[0]!, resultRef: 'fixture-new-run' }] });
+    expect(refreshed.contractRef).toBe(first.contractRef);
+    const next = 'fixture-contract-v3';
+    const changed = recommendSqlTool({ ...input,
+      current: { ...input.current, tools: input.current.tools.map(t => ({ ...t, contractRef: next })) },
+      served: { ...input.served, tools: input.served.tools.map(t => ({ ...t, contractRef: next })) },
+      audits: input.audits.map(a => ({ ...a, contractRef: next })) });
+    expect(changed.kind).toBe('new-tool');
+    expect(changed.contractRef).not.toBe(first.contractRef);
+    expect(recommendSqlTool(fixture())).toMatchObject({ contractRef: 'fixture-contract-v2' });
+  });
+
   it('binds an immediately callable recommendation to its exact served contract OUTCOME-P-005', () => {
     const input = fixture();
     expect(recommendSqlTool(input)).toMatchObject({ kind: 'route-existing', toolName: 'testing:runs',

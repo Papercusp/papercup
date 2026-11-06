@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 actual Windows WPF/PUI/canonical staging read integration",
+  "framework": "powershell",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -Phase operator -Interactive -PuiExecutable pui-current.exe -OperatorUrl http://10.0.2.2:3170 -ExpectedWorkspace papercusp-workspace -ExpectedPlan quick-access-search-launcher-2026-10-26",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-bridge.ps1 -Phase fixture -BridgeSource PuiReadBridge.cs",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-bridge.ps1 -Phase operator -BridgeSource PuiReadBridge.cs -PuiExecutable pui-current.exe -OperatorUrl http://10.0.2.2:3170 -ExpectedWorkspace papercusp-workspace"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T22:22:43.199Z",
+  "finishedAt": "2026-11-06T22:25:04.897Z",
+  "summary": "29 assertions passed on the native Windows VM: 11 actual resident WPF checks against the real PUI and canonical staging operator, 6 direct bridge/operator checks including a changed-workspace refusal, and 12 existing framing/lifetime regressions. No account writes were performed. This is current-build native integration proof; terminal resume, installed-artifact acceptance and shipment remain separate.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "nativeRunDirectory": "C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9",
+  "environment": {
+    "endpoint": "http://10.0.2.2:3170",
+    "workspaceId": "papercusp-workspace",
+    "storeId": "pg-a9c7b890119f",
+    "agentChatScope": "workspace:papercusp-workspace",
+    "buildSha": "93b6fcdbbc",
+    "puiSha256": "c82519c31e841628c8e4b4e90095d37d65c0b93fcb8c8a50fb7ad4b47318ef32"
+  },
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "be214408266d0ca5bb8787b31053128d89c674a5d46829f19f9ec45a8909e051",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "3257c9bc2f962ac3e89c171eb592679002d47e175438795f1e5253060312539e",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "e793de341a189ec7982fbe57095ce4c308230052787c2e5084af450397954f1a",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "32e7ef427220b548d904f7c998a48247d9d6acdd15a17f1e6fa8bfaa59911634",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "e76c79e0327d10c35070a70b9689d3c86cb9e1296259954a7dbc19f62312f0c6"
+  },
+  "prerequisites": {
+    "runtime": "Native Windows PowerShell/.NET WPF; interactive signed-in Session1 for host; SSH is control transport only.",
+    "custody": "Native Get-FileHash matched each local source and the real PUI SHA256; retained /tmp/wb-p005-windows-actual-read-source-custody-20261106.json.",
+    "operator": "Explicit PUI_OPERATOR and PAPERCUSP_OPERATOR_URL select the real canonical staging endpoint; expected workspace and plan required by fixture."
+  },
+  "targets": [
+    {
+      "name": "native WPF host operator phase",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "native bridge operator phase",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "native bridge framing/lifetime fixture",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "cases": [
+    "actual WPF helper selects the expected operator workspace",
+    "actual WPF plans canonical rows loaded",
+    "actual WPF agents canonical rows loaded",
+    "actual WPF reports canonical rows loaded",
+    "actual WPF goals canonical rows loaded",
+    "actual canonical results are rendered in the resident WPF HWND",
+    "actual WPF list retains the canonical result identities",
+    "actual Workbench plan is present in the canonical native results",
+    "actual Goals portfolio loads in its independent native panel",
+    "actual Goals rows retain canonical identities including valid empty results",
+    "actual native read panel retains its resident window and pin across toggles",
+    "actual PUI selects the expected endpoint workspace and store",
+    "actual canonical plans.list envelope and version preserved",
+    "actual canonical advRoster.list envelope and version preserved",
+    "actual canonical reports.list envelope and version preserved",
+    "actual canonical goals.list envelope and version preserved",
+    "actual PUI refuses a different selected workspace before reading",
+    "literal executable path and Unicode identity round-trip",
+    "canonical empty result preserved",
+    "reject malformed",
+    "reject missing",
+    "reject badrows",
+    "reject denied",
+    "reject exit",
+    "reject oversize",
+    "large stderr drains concurrently",
+    "timeout reaps only owned PUI helper",
+    "cancellation reaps owned helper",
+    "oversized request and mutation rejected before spawn"
+  ],
+  "assertions": [
+    {
+      "id": "real-native-and-canonical",
+      "passed": true,
+      "evidence": "Host operator phase passed11 with production native C# sources and actual Windows PUI. Real HWND and rendered keys checked; current Workbench plan present; Goals independent panel ready."
+    },
+    {
+      "id": "selected-workspace-negative-control",
+      "passed": true,
+      "evidence": "Actual PUI returned selected environment changed when the supplied expected workspace was altered; accepted four canonical models with the real identity."
+    },
+    {
+      "id": "framing-and-helper-lifetime-regressions",
+      "passed": true,
+      "evidence": "All12 maintained native fixture cases passed after catching synchronous unsupported-model refusal within Assert-Fails."
+    }
+  ],
+  "fixtureRepair": {
+    "rootCause": "The existing negative mutation assertion evaluated ReadAsync before entering Assert-Fails, so its synchronous Unsupported native read model exception escaped the expected-failure boundary.",
+    "fix": "Assert-Fails accepts a scriptblock and invokes it inside try; the unsupported model is supplied as a scriptblock. Production rejection behavior is unchanged.",
+    "recurrenceGuard": "Maintained native fixture's existing unsupported goals.pause case now executes and passes; standard Node Windows test invokes that fixture."
+  },
+  "logs": {
+    "host": {
+      "path": "/tmp/wb-p005-windows-actual-read-host-20261106-v1.json",
+      "sha256": "047b4339561483545555e114bd56b65a2c0eeb08da92ac938f52eca9c16d125c"
+    },
+    "bridge": {
+      "path": "/tmp/wb-p005-windows-actual-read-bridge-20261106-v2.json",
+      "sha256": "f753fd81d83b19b9908a25201f006e7416a70c8e04857e8ff92e3771ddce6067"
+    },
+    "regressions": {
+      "path": "/tmp/wb-p005-windows-bridge-regression-20261106-v3.json",
+      "sha256": "060b3558938faaba31983a9f1565cc36eb31a39684ab8def5412c01e1950b755"
+    }
+  },
+  "limits": [
+    "No actual Windows vendor-terminal foreground or resume pass: WSL execution remains blocked, owned EI-28077674637451429.",
+    "Organizer, Papercup, Inbox and complete Goals lifecycle acceptance remain open.",
+    "Native macOS implementation, independent full three-OS exact installed-artifact acceptance and final shipment remain open.",
+    "The Linux Node test runner passed packaging1 and skipped9 native/opt-in cases; it is not counted in these29 native assertions."
+  ]
+}

@@ -52,8 +52,17 @@ export async function createInstalledConfinedPluginInvoker(options:
   const { runtimeDirectory, pluginName, effects } = options;
   const installation = { ...options.installation };
   const tools = [...options.tools];
+  // Apply the runtime builder's ceilings BEFORE allocating any guest copies.
+  // Its later validation cannot protect this earlier admission snapshot.
+  if (!Array.isArray(options.handlerFiles) || !options.handlerFiles.length || options.handlerFiles.length > 1023) {
+    throw new Error('invalid handler snapshot population');
+  }
+  let total = 0;
+  for (const file of options.handlerFiles) {
+    if (!(file?.contents instanceof Uint8Array) || file.contents.byteLength > 256 * 1024 * 1024
+      || (total += file.contents.byteLength) > 512 * 1024 * 1024) throw new Error('handler snapshot size exceeded');
+  }
   const handlerFiles = options.handlerFiles.map(file => {
-    if (!(file.contents instanceof Uint8Array)) throw new Error('invalid handler file contents');
     return { path: file.path, sha256: file.sha256, executable: file.executable, contents: Buffer.from(file.contents) };
   });
   const runtime = await prepareInstalledHandlerRuntime(runtimeDirectory, handlerFiles);
