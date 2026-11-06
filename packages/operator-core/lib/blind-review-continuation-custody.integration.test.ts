@@ -16,7 +16,9 @@ import { authorizeBlindReviewPortBootstrap, finalizeBlindReviewContinuation, fin
   resolveBlindReviewEndpoint, verifyBlindReviewEndpointCaller,
   withAuthenticatedBlindReviewEndpoint } from './blind-review-continuation-custody';
 import { reserveBlindReviewNativeAttempt, verifyBlindReviewNativeNoOpen,
-  withBlindReviewNativeLaunch } from './blind-review-continuation-custody';
+  withBlindReviewNativeLaunch, reconcileBlindReviewNativeStart } from './blind-review-continuation-custody';
+import { newTaskId, scopeUnitForTask } from './task-manager/types';
+import type { PsuPtyHost } from './events/await/psu-pty-discovery';
 import { BLIND_GAP_REVIEW_ACTOR, type BlindReviewResumePermit } from './blind-review-session-bindings';
 import { Governor } from './resource-governor/admission';
 import { PgAdmissionLedgerQueueStore } from './resource-governor/admission-ledger-store';
@@ -125,11 +127,11 @@ describe('blind reviewer continuation custody, real transaction boundaries', () 
           blindReviewAttemptKey: permit.nativeAttempt!.key } }, { owner: f.owner }, { driver, governor: new Governor(driver) });
     };
     const task = async (receiptId: string) => {
-      const taskId = 'native-' + randomUUID();
+      const taskId = newTaskId();
       await fx.admin`INSERT INTO harness_shared.task_ledger
-        (task_id, root_task_id, workspace_id, class, title, launched_by, pid, detail)
+        (task_id, root_task_id, workspace_id, class, title, launched_by, pid, scope_unit, state, detail)
         VALUES (${taskId}, ${taskId}, ${b.workspaceId}, 'agent-session', 'native attempt fixture',
-          ${BLIND_GAP_REVIEW_ACTOR}, 123, ${JSON.stringify({ coordOwnerId: f.owner,
+          ${BLIND_GAP_REVIEW_ACTOR}, 123, ${scopeUnitForTask(taskId)}, 'running', ${JSON.stringify({ coordOwnerId: f.owner,
             blindReviewAttemptKey: permit.nativeAttempt!.key, blindReviewAdmissionReceiptId: receiptId,
             blindReviewNativeSessionId: f.sourceNative })}::jsonb)`;
       return taskId;
@@ -185,6 +187,37 @@ describe('blind reviewer continuation custody, real transaction boundaries', () 
       throw new Error('must not create a process');
     })).rejects.toThrow('resume_lease_lost');
     await f.denied();
+    await execution.cancel('fixture cleanup');
+  });
+
+  it('reconciles an exact surviving start after host loss and expiry, never owner/native identity alone', async () => {
+    const f = await nativeFixture(), execution = await f.admission();
+    await expect(f.run(f.launchInput, async control => {
+      await control!.beforeNativeCreate(null, execution.receiptId);
+      throw new Error('launcher host lost before settlement');
+    })).rejects.toThrow('launcher host lost');
+    const taskId = await f.task(execution.receiptId);
+    await fx.admin`UPDATE harness_shared.adv_sessions SET ended_at = NULL WHERE id = ${f.sourceId}`;
+    await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET resume_lease_expires_at =
+      clock_timestamp() - interval '1 second' WHERE id = ${f.input.bindingId}`;
+    const host: PsuPtyHost = { ownerId: f.owner, advSessionId: String(f.sourceId), pid: 456, ptyPid: 457,
+      startedAt: Date.now(), childGeneration: 1, sock: '/fixture', command: 'claude',
+      args: ['--resume', f.sourceNative] };
+    const reconcile = (cgroup: string | null, findHost = async () => host) => f.inScope((tx, b) =>
+      reconcileBlindReviewNativeStart(tx, b, { findHost, readCgroup: () => cgroup }));
+    expect(await reconcile(null)).toBeNull();
+    expect(await reconcile('/wrong-task.scope')).toBeNull();
+    const cgroup = `/papercusp.slice/${scopeUnitForTask(taskId)}`;
+    let reads = 0;
+    expect(await reconcile(cgroup, async () => ({ ...host, childGeneration: ++reads }))).toBeNull();
+    await f.denied();
+    expect(await reconcile(cgroup)).toMatchObject({ advSessionId: f.sourceId,
+      nativeSessionId: f.sourceNative, continuationId: expect.any(Number) });
+    expect(await reconcile(cgroup)).toBeNull();
+    const rows = await fx.admin`SELECT event_kind FROM harness_shared.blind_review_continuation_custody
+      WHERE binding_id = ${f.input.bindingId} ORDER BY id`;
+    expect(rows.map(r => r.event_kind)).toEqual(['native-reserved', 'native-admitted', 'native-settled']);
+    expect(await releaseBlindReviewSessionResume(f.input.bindingId, f.input.leaseId, f.deps)).toBe(true);
     await execution.cancel('fixture cleanup');
   });
 

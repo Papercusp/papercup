@@ -471,7 +471,7 @@ describe('mintBlindGapReviewer', () => {
 
   function deps(brief: BlindReviewBrief | null = BRIEF) {
     // Returns unknown, like the real launcher envelope, so a case can install a refusal.
-    const handler = vi.fn(async (): Promise<unknown> => ({ data: { launch: {
+    const handler = vi.fn(async (_args: unknown, _ctx: unknown): Promise<unknown> => ({ data: { launch: {
       opened: 1,
       ownerIds: ['su-reviewer-1'],
       freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },

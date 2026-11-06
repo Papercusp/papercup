@@ -416,14 +416,14 @@ export async function acquireBlindReviewSessionResume(input: {
   const leaseId = (deps.makeLeaseId ?? randomUUID)();
   const leaseSec = Math.max(30, Math.min(3600, Math.trunc(input.leaseSec ?? 900)));
   try {
-    const { lockBlindReviewContinuationScope, resolveBlindReviewEndpoint } = await import('./blind-review-continuation-custody');
+    const { lockBlindReviewContinuationScope, resolveBlindReviewEndpoint, reconcileBlindReviewNativeStart } = await import('./blind-review-continuation-custody');
     return await sql.begin(async raw => {
       const tx = raw as unknown as Sql;
       const existing = await findBlindReviewSessionBinding(input, { sql: tx });
       if (!existing) return { ok: false as const, code: 'binding_not_found' as const,
         message: 'No reviewer session is bound to this plan activation.' };
       const { binding: locked } = await lockBlindReviewContinuationScope(tx, input.workspaceId, existing.id);
-      const endpoint = await resolveBlindReviewEndpoint(tx, locked);
+      const endpoint = await resolveBlindReviewEndpoint(tx, locked) ?? await reconcileBlindReviewNativeStart(tx, locked);
       // An unpaired reservation denies both endpoints even after lease expiry.
       if (!endpoint) return { ok: false as const, code: 'binding_unavailable' as const,
         message: 'The active reviewer endpoint is uncertain or no longer current.' };

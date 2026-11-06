@@ -8,6 +8,10 @@ import { BLIND_GAP_REVIEW_ACTOR, inspectBlindReviewAdvProfile, verifyBlindReview
   type BlindReviewSessionBinding as Binding, type BlindReviewResumePermit } from './blind-review-session-bindings';
 import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
 import type { SessionPortRow } from './session-port/store';
+import { findLiveHostAsync } from './events/await/psu-pty-discovery';
+import { nativeSessionIdFromHost } from './agent-launch-core';
+import { readProcessCgroupPath } from './task-manager/cgroup-read';
+import { taskIdFromScopeUnit } from './task-manager/types';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 type Native = Parameters<typeof verifyBlindReviewRecoveryPort>[0]['target'] & { resume_claim_key: string | null };
@@ -19,7 +23,7 @@ type Snapshot = { activation: number; owner: string; planHash: string; confineme
 type Entry = { id: number | string; workspace_id: string; binding_id: number | string;
   reservation_id: number | string | null; event_kind: 'reserved' | 'transferred'; resume_lease_id: string;
   source_adv_session_id: number | string; target_adv_session_id: number | string; port_id: string;
-  snapshot: Snapshot; evidence: Record<string, unknown> };
+  snapshot: Snapshot; evidence: Record<string, unknown>; created_at: Date | string };
 type NativeSnapshot = Pick<Snapshot, 'activation' | 'owner' | 'planHash' | 'confinement' | 'source' | 'backend'> & {
   actor: string; requestHash: string; profile: { spec: unknown; argv: unknown };
 };
@@ -227,6 +231,78 @@ export type BlindReviewNativeLaunchControl = {
   beforeNativeCreate: (claimKey: string | null, admissionReceiptId: string) => Promise<void>;
   confirmedStart: (proof: { nativeSessionId: string; admissionReceiptId: string; taskId: string }) => Promise<void>;
 };
+
+/** Reconcile a surviving exact native start after the launcher's host lost its
+ * closure. This is a read/prove path, never effect admission or no-open proof.
+ * Kernel cgroup membership joins the current managed host to the enrolled task;
+ * owner/native identity alone cannot distinguish another same-owner process.
+ * An unavailable local witness leaves the reservation unresolved. */
+export async function reconcileBlindReviewNativeStart(tx: Sql, binding: Binding, deps: {
+  findHost?: typeof findLiveHostAsync; readCgroup?: typeof readProcessCgroupPath;
+} = {}): Promise<BlindReviewEndpoint | null> {
+  const { binding: b, planHash } = await lockBlindReviewContinuationScope(tx, binding.workspaceId, binding.id);
+  const entries = await tx<CustodyEntry[]>`SELECT * FROM harness_shared.blind_review_continuation_custody
+    WHERE workspace_id = ${b.workspaceId} AND binding_id = ${b.id} ORDER BY id LIMIT 65 FOR SHARE`;
+  const r = entries.at(-2), a = entries.at(-1);
+  if (entries.length > 63 || r?.event_kind !== 'native-reserved' || a?.event_kind !== 'native-admitted' ||
+      b.status !== 'resuming' || b.resumeLeaseId !== r.resume_lease_id ||
+      typeof a.evidence.admissionReceiptId !== 'string') return null;
+  const receiptId = a.evidence.admissionReceiptId;
+  const [receipt] = await tx`SELECT receipt_id FROM harness_shared.resource_governor_admissions
+    WHERE workspace_id = ${b.workspaceId} AND receipt_id = ${receiptId}
+      AND namespace = 'agent-process' AND admission_class = 'agent' AND state = 'running'
+      AND idempotency_key = ${`blind-review-native:${r.attempt_key}`}
+      AND record->'metadata'->>'launchedBy' = ${BLIND_GAP_REVIEW_ACTOR}
+      AND record->'metadata'->>'targetOwnerId' = ${b.reviewerOwnerId}
+      AND record->'metadata'->>'blindReviewAttemptKey' = ${r.attempt_key} FOR SHARE`;
+  const tasks = await tx<Array<{ task_id: string; scope_unit: string | null }>>`
+    SELECT task_id, scope_unit FROM harness_shared.task_ledger
+    WHERE workspace_id = ${b.workspaceId} AND launched_by = ${BLIND_GAP_REVIEW_ACTOR}
+      AND class = 'agent-session' AND state = 'running' AND ended_at IS NULL AND pid > 0
+      AND started_at >= ${r.created_at}
+      AND detail->>'coordOwnerId' = ${b.reviewerOwnerId}
+      AND detail->>'blindReviewAttemptKey' = ${r.attempt_key}
+      AND detail->>'blindReviewAdmissionReceiptId' = ${receiptId}
+      AND detail->>'blindReviewNativeSessionId' = ${r.snapshot.source.nativeSessionId}
+    LIMIT 2 FOR SHARE`;
+  const task = tasks[0];
+  if (!receipt || tasks.length !== 1 || !task?.scope_unit ||
+      taskIdFromScopeUnit(task.scope_unit) !== task.task_id) return null;
+  const source = await native(tx, b.workspaceId, Number(r.source_adv_session_id));
+  if (!source || source.ended_at !== null || source.resume_claim_key !== null ||
+      source.agent !== r.snapshot.backend || !profile(source, b.reviewerOwnerId, r.snapshot.source) ||
+      !equal({ spec: source.launch_spec, argv: source.launch_argv }, r.snapshot.profile)) return null;
+  const findHost = deps.findHost ?? findLiveHostAsync, readCgroup = deps.readCgroup ?? readProcessCgroupPath;
+  const host = await findHost(b.reviewerOwnerId);
+  if (!host || host.ownerId !== b.reviewerOwnerId || Number(host.advSessionId) !== Number(source.id) ||
+      !Number.isSafeInteger(host.ptyPid) || host.ptyPid! <= 0 ||
+      !(host.startedAt >= new Date(r.created_at).getTime()) ||
+      nativeSessionIdFromHost(host) !== r.snapshot.source.nativeSessionId ||
+      !readCgroup(host.pid)?.split('/').includes(task.scope_unit)) return null;
+  const again = await findHost(b.reviewerOwnerId);
+  if (!again || !equal({ pid: host.pid, adv: host.advSessionId, start: host.startedAt,
+      child: host.ptyPid, generation: host.childGeneration, native: nativeSessionIdFromHost(host) },
+    { pid: again.pid, adv: again.advSessionId, start: again.startedAt,
+      child: again.ptyPid, generation: again.childGeneration, native: nativeSessionIdFromHost(again) }) ||
+      !readCgroup(again.pid)?.split('/').includes(task.scope_unit)) return null;
+  const evidence = { outcome: 'native-started', attemptKey: r.attempt_key, requestHash: r.snapshot.requestHash,
+    nativeSessionId: r.snapshot.source.nativeSessionId, advSessionId: Number(source.id),
+    admissionReceiptId: receiptId, taskId: task.task_id,
+    reconciledHost: { pid: host.pid, startedAt: host.startedAt, childGeneration: host.childGeneration ?? null } };
+  // Reuse the product replay validator for every immutable reservation/admission
+  // pin. No special ignore-pending flag reaches posting/runtime resolution.
+  const endpoint = replayCustody([...entries, { ...r, id: -1, reservation_id: r.id,
+    event_kind: 'native-settled', evidence }], b, planHash, { advSessionId: b.advSessionId,
+    nativeSessionId: b.nativeSessionId, modelSpec: b.modelSpec, continuationId: null });
+  if (!endpoint) return null;
+  const [settled] = await tx<Array<{ id: number | string }>>`INSERT INTO harness_shared.blind_review_continuation_custody
+    (workspace_id, binding_id, reservation_id, event_kind, attempt_key, resume_lease_id,
+     source_adv_session_id, target_adv_session_id, port_id, snapshot, evidence)
+    VALUES (${b.workspaceId}, ${b.id}, ${r.id}, 'native-settled', ${r.attempt_key}, ${r.resume_lease_id},
+      ${r.source_adv_session_id}, ${r.target_adv_session_id}, NULL, ${tx.json(r.snapshot as never)},
+      ${tx.json(evidence)}) RETURNING id`;
+  return { ...endpoint, continuationId: Number(settled!.id) };
+}
 
 /** A return-shaped provider refusal is not proof. The recruiter must read the
  * canonical exact-attempt settlement before it can move to a port backend. */
