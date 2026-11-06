@@ -327,7 +327,8 @@ describe('rubric amend receipts in shared Postgres', () => {
     // Dead reviewer that DID answer (a later post on the thread): replayed.
     await ledger('rev-answered', 'exited');
     await runWith('answered', preview('rev-answered'));
-    await h.sql`INSERT INTO harness_shared.coord_thread_posts (id, thread_id, workspace_id) VALUES (990002, ${thread}, ${ws})`;
+    await h.sql`INSERT INTO harness_shared.coord_thread_posts (id, thread_id, workspace_id, author_id)
+      VALUES (990002, ${thread}, ${ws}, 'owner-rev-answered')`;
     expect(await trackAmendRun('answered', rubric, async () => {
       executions++;
       return { ok: false, error: 'duplicate reviewer' };
@@ -335,6 +336,60 @@ describe('rubric amend receipts in shared Postgres', () => {
       taskId: 'rev-answered', nativeRef: '/retained/rev-answered.jsonl', previewPostRef: 'thread-post:990001',
     }) })).toEqual(preview('rev-answered'));
     expect(executions).toBe(4);
+  });
+
+  it.each([false, true])('recovers an unanswered reviewer despite other posts (evidence boundary: %s)', async withEvidence => {
+    const ws = activeWorkspaceId();
+    const suffix = `${withEvidence}-${Date.now()}`;
+    const rubric = `acceptance-recovery-other-posts-${suffix}`;
+    const thread = `recovery-other-posts-${suffix}`;
+    const ownerId = `retained-reviewer-${suffix}`;
+    const taskId = `retained-task-${suffix}`;
+    const post = async (author: string, body: string) => {
+      const [row] = await h.sql`INSERT INTO harness_shared.coord_thread_posts
+        (workspace_id, thread_id, author_id, body, origin)
+        VALUES (${ws}, ${thread}, ${author}, ${body}, 'local') RETURNING id`;
+      return `thread-post:${row!.id}`;
+    };
+    const previewPostRef = await post('applier', 'Original exact preview');
+    let reviewEvidencePost: string | undefined;
+    if (withEvidence) {
+      await post(ownerId, 'Earlier objection');
+      reviewEvidencePost = await post('applier', 'New verification evidence');
+    }
+    await post('applier', 'Saved reconstruction and carry checkpoint');
+    await post('unrelated-peer', 'Unrelated thread note');
+    const preview = {
+      ok: true, dryRun: true,
+      review: {
+        state: 'no-eligible-reviewer', previewPostRef,
+        ...(reviewEvidencePost ? { reviewEvidencePost } : {}),
+        freshReviewer: { state: 'launched', taskId, ownerId },
+      },
+    };
+    const recovery = { taskId, previewPostRef };
+    await trackAmendRun('recover', rubric, async () => preview);
+    let executions = 0;
+    const replacement = { ok: true, dryRun: true, review: { state: 'routed', previewPostRef } };
+    const retries = await Promise.all([1, 2].map(() => trackAmendRun('recover', rubric, async (_phase, retained) => {
+      executions++;
+      expect(retained).toEqual(recovery);
+      return replacement;
+    }, { reclaimPreviewedReview: async () => recovery })));
+    expect(executions).toBe(1);
+    expect(retries).toContainEqual(replacement);
+    expect(await getAmendReceipt(rubric, 'recover')).toMatchObject({ state: 'previewed', result: replacement });
+
+    // A reply arriving after the health read still fences the atomic reclaim.
+    await trackAmendRun('answer-race', rubric, async () => preview);
+    const duplicate = vi.fn(async () => replacement);
+    expect(await trackAmendRun('answer-race', rubric, duplicate, {
+      reclaimPreviewedReview: async () => {
+        await post(ownerId, 'Answer after health inspection');
+        return recovery;
+      },
+    })).toEqual(preview);
+    expect(duplicate).not.toHaveBeenCalled();
   });
 
   it('status rechecks reviewer custody against the retained evidence boundary in Postgres', async () => {

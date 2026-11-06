@@ -267,12 +267,19 @@ export async function trackAmendRun(
            AND result_json #>> '{review,freshReviewer,nativeRef}' IS NOT DISTINCT FROM ${previewedReviewReclaim?.nativeRef ?? null}::text
            AND result_json #>> '{review,previewPostRef}' = ${previewedReviewReclaim?.previewPostRef ?? ''}
            AND result_json #>> '{review,previewPostRef}' ~ '^thread-post:[1-9][0-9]*$'
+           AND length(COALESCE(result_json #>> '{review,freshReviewer,ownerId}', '')) > 0
            AND NOT EXISTS (
              SELECT 1 FROM harness_shared.coord_thread_posts pv
                JOIN harness_shared.coord_thread_posts p
                  ON p.workspace_id = pv.workspace_id AND p.thread_id = pv.thread_id AND p.id > pv.id
               WHERE pv.workspace_id = ${workspaceId}
-                AND pv.id = substring(result_json #>> '{review,previewPostRef}' from '^thread-post:([0-9]+)$')::bigint))
+                AND pv.id = substring(result_json #>> '{review,previewPostRef}' from '^thread-post:([0-9]+)$')::bigint
+                AND p.author_id = result_json #>> '{review,freshReviewer,ownerId}'
+                AND p.id > CASE
+                  WHEN result_json #>> '{review,reviewEvidencePost}' ~ '^thread-post:[1-9][0-9]*$'
+                    THEN substring(result_json #>> '{review,reviewEvidencePost}' from '^thread-post:([0-9]+)$')::bigint
+                  ELSE pv.id
+                END))
          OR (state = 'running' AND started_at < now() - make_interval(secs => ${leaseSeconds})))
     RETURNING idempotency_key
     `;
