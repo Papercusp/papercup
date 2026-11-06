@@ -110,11 +110,15 @@ export const FROZEN_REPAIR_LEG_CONDITION_PREFIX = 'frozen-repair-leg:';
  */
 export const DEGRADATION_CONDITION_PREFIX = 'degraded:';
 
+export const DISK_SPACE_ALARM_CONDITION_KEY = 'alarm:disk-space';
+
 /**
  * The opt-in catalog. See {@link ActionableCondition.harnessFrom} for why the
  * harness derivation is explicit per-entry rather than parsed.
  */
 export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
+  // Disk recovery is an operational incident, independent of live gate custody.
+  { prefix: DISK_SPACE_ALARM_CONDITION_KEY, harnessFrom: 'ambient', severity: 'critical', lifecycleOwnedBySource: true },
   // `assignTo: 'live-gate-owner'` on the gate and repair-queue entries below: see
   // ActionableCondition.assignTo (gate-repair-plane-on-current-build-2026-10-15 P-004).
   { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical', assignTo: 'live-gate-owner' },

@@ -1,6 +1,10 @@
 /** Pure disk policy shared by the alarm, writer admission and standalone health recorder. */
 const GIB = 1024 ** 3;
 
+/** Recovery hysteresis: 400 GiB is partial recovery; aim for 500 GiB. */
+export const DISK_RECOVERY_MIN_BYTES = 400 * GIB;
+export const DISK_RECOVERY_TARGET_BYTES = 500 * GIB;
+
 function envNum(name: string, fallback: number): number {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v > 0 ? v : fallback;
@@ -46,7 +50,7 @@ export interface DiskAlarmPolicy {
 
 export const DEFAULT_DISK_POLICY: DiskAlarmPolicy = {
   freePctMin: 0.1, // 10%
-  freeBytesMin: 100 * GIB,
+  freeBytesMin: 200 * GIB,
   freeInodesPctMin: 0.05, // 5%
   criticalFreePctMin: 0.02, // 2%
   criticalFreeBytesMin: 2 * GIB,
