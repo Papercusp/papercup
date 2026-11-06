@@ -35,6 +35,7 @@ const setWorkItemCheckpointWithPrior = vi.fn();
 const getWorkItemCheckpoint = vi.fn();
 const attestWorkItemCheckpointUnchanged = vi.fn();
 const getWorkItem = vi.fn();
+const commentWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 const resolveCurrentTokens = vi.hoisted(() => vi.fn());
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
@@ -83,6 +84,7 @@ vi.mock('../../work-items', async (importOriginal) => {
   return {
     ...actual,
     getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+    commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
     // checkpoint.ts fire-and-forgets markFeatureProgress + markIssueProgress; keep these
     // side effects isolated while inheriting every other canonical module export.
     markFeatureProgress: () => Promise.resolve(true),
@@ -108,6 +110,11 @@ import { readFileSync } from 'node:fs';
 import * as workItemsMocked from '../../work-items';
 import { continuityProbeRevision } from '../../continuity-probes';
 import { LIMITS } from '../limits';
+
+type LockedCheckpointTransform = NonNullable<NonNullable<Parameters<
+  typeof import('../../work-item-checkpoint').setWorkItemCheckpointWithPrior
+>[2]>['transform']>;
+const checkpointTransaction = {} as Parameters<LockedCheckpointTransform>[2];
 
 const WORK_ITEM_CONTINUITY_TEST_TOOL = 'test:work-item-continuity-read';
 const WORK_ITEM_LONG_CONTINUITY_TEST_TOOL = `test:${'x'.repeat(167 - 'test:'.length)}`;
@@ -179,6 +186,8 @@ beforeEach(() => {
   unresolvedPlanDecisionRefs.mockReset();
   verifyTurnRefs.mockReset();
   readFrozenRepairMarker.mockReturnValue(null);
+  commentWorkItem.mockReset();
+  commentWorkItem.mockResolvedValue({ id: 5894 });
   readSuccessfulActionInvocations.mockResolvedValue([]);
   resolveCurrentTokens.mockResolvedValue(new Map());
   // Provenance verification is an I/O dependency. Keep this unit suite on its
@@ -230,6 +239,47 @@ beforeEach(() => {
 });
 
 describe('work_items:checkpoint (bulk keyed-array)', () => {
+  it.each([false, true])('WI-6554700010045894: locked archive callback preserves exact-cap append (checks=%s)', async withChecks => {
+    const checks = withChecks ? [{ id: 'archive-check', claim: 'retained checked evidence' }] : [];
+    const overhead = withCarryNoteChecks('x', checks).length - 1;
+    const body = 'O'.repeat(CHECKPOINT_BODY_CAP_CHARS - 2 - overhead);
+    const prior = withCarryNoteChecks(body, checks);
+    const fresh = 'fresh current authority';
+    const transaction = {};
+    let stored: string | null = prior;
+    setWorkItemCheckpointWithPrior.mockImplementation(async (_ref, incoming, opts) => {
+      const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+      if (blockedReason) return { stored: prior, priorLength: prior.length, blockedReason };
+      stored = await opts.transform(prior, incoming, transaction);
+      return { stored, priorLength: prior.length };
+    });
+    getWorkItemCheckpoint.mockImplementation(async () => stored);
+    expect(prior.length).toBe(CHECKPOINT_BODY_CAP_CHARS - 2);
+    const result = await one({ id: 'WI-5894', checkpoint: fresh, append: true, confirmShrink: true });
+    expect(result).toMatchObject({ ok: true });
+    expect(stored).toContain(fresh);
+    expect(stored!.length).toBeLessThanOrEqual(CHECKPOINT_BODY_CAP_CHARS);
+    expect(stored).toContain('thread-post:5894');
+    expect(splitCarryNoteChecks(stored).checks.map(row => row.id)).toEqual(checks.map(row => row.id));
+    expect(commentWorkItem).toHaveBeenCalledWith('WI-5894', prior, expect.any(String),
+      expect.objectContaining({ transaction }));
+  });
+
+  it('WI-6554700010045894: append guard previews synchronously without an archive write', async () => {
+    const prior = 'retained prior';
+    let stored: string | null = prior;
+    setWorkItemCheckpointWithPrior.mockImplementation(async (_ref, incoming, opts) => {
+      expect(opts.guard(prior, prior.length)).toBeNull();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+      stored = await opts.transform(prior, incoming, {});
+      return { stored, priorLength: prior.length };
+    });
+    getWorkItemCheckpoint.mockImplementation(async () => stored);
+    expect(await one({ id: 'WI-5894', checkpoint: 'fresh update', append: true })).toMatchObject({ ok: true });
+    expect(stored).toBe('retained prior\n\n---\nfresh update');
+    expect(commentWorkItem).not.toHaveBeenCalled();
+  });
+
   it('opts out of the ambient workspace transaction because the handler owns its DB scopes', () => {
     expect((checkpoint as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
@@ -246,9 +296,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     const body = 'Messaged fleet leader su-bce40c51 [turn:self]';
 
     setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string | null | undefined, opts: unknown) => {
-      const transform = (opts as { transform?: (prior: string | null, incoming: string | null | undefined) => string | null | undefined })
+      const transform = (opts as { transform?: LockedCheckpointTransform })
         .transform;
-      return { stored: transform?.(null, note) ?? note ?? null, priorLength: 0 };
+      return { stored: await transform?.(null, note, checkpointTransaction) ?? note ?? null, priorLength: 0 };
     });
 
     const result = await one({ items: [{ id: 'WI-7', checkpoint: body, append: true }] }, ctx);
@@ -284,10 +334,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     const body = 'Checkpoint write with a deliberately slow store phase.';
 
     setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string | null | undefined, opts: unknown) => {
-      const transform = (opts as { transform?: (prior: string | null, incoming: string | null | undefined) => string | null | undefined })
+      const transform = (opts as { transform?: LockedCheckpointTransform })
         .transform;
       await new Promise((resolve) => setTimeout(resolve, 2_100));
-      return { stored: transform?.(null, note) ?? note ?? null, priorLength: 0 };
+      return { stored: await transform?.(null, note, checkpointTransaction) ?? note ?? null, priorLength: 0 };
     });
 
     const result = await one({ id: 'WI-7', checkpoint: body }, ctx);
@@ -424,7 +474,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         checkpointText: string | null | undefined,
         opts?: Parameters<typeof import('../../work-item-checkpoint').setWorkItemCheckpointWithPrior>[2],
       ) => {
-        const stored = opts?.transform ? opts.transform(stale, checkpointText) : checkpointText;
+        const stored = opts?.transform ? await opts.transform(stale, checkpointText, checkpointTransaction) : checkpointText;
         await setWorkItemCheckpoint(ref, stored);
         return { stored, priorLength: stale.length };
       },
@@ -458,7 +508,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         checkpointText: string | null | undefined,
         opts?: Parameters<typeof import('../../work-item-checkpoint').setWorkItemCheckpointWithPrior>[2],
       ) => {
-        const stored = opts?.transform ? opts.transform(prior, checkpointText) : checkpointText;
+        const stored = opts?.transform ? await opts.transform(prior, checkpointText, checkpointTransaction) : checkpointText;
         await setWorkItemCheckpoint(ref, stored);
         return { stored, priorLength: prior.length };
       },
@@ -1304,7 +1354,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     let stored: string | null = null;
     setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string, opts) => {
       const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-      stored = blockedReason ? prior : opts?.transform?.(prior, note) ?? note;
+      stored = blockedReason ? prior : await opts?.transform?.(prior, note, checkpointTransaction) ?? note;
       return { stored, priorLength: prior.length, blockedReason };
     });
     getWorkItemCheckpoint.mockRejectedValueOnce(new Error('bounded verifier read timed out'));
@@ -1581,8 +1631,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     // the handler submits only the addendum and must not pre-read the body.
     const withLockedPrior = (priorNote: string | null) => {
       setWorkItemCheckpointWithPrior.mockImplementation(
-        async (_ref: unknown, note: string | null | undefined, opts?: { transform?: (prior: string | null, incoming: string | null | undefined) => string | null | undefined }) => {
-          const transformed = opts?.transform ? opts.transform(priorNote, note) : note;
+        async (_ref: unknown, note: string | null | undefined, opts?: { transform?: LockedCheckpointTransform }) => {
+          const transformed = opts?.transform ? await opts.transform(priorNote, note, checkpointTransaction) : note;
           const trimmed = (transformed ?? '').trim();
           return { stored: trimmed.length > 0 ? trimmed : null, priorLength: priorNote?.length ?? 0 };
         },
@@ -1698,7 +1748,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       let stored = '';
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
         const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        stored = blockedReason ? prior : await opts?.transform?.(prior, text, checkpointTransaction) ?? text;
         return { stored, priorLength: prior.length, blockedReason };
       });
       getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
@@ -1708,10 +1758,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(storedArg.length).toBeLessThanOrEqual(32000);
       // The measured baseline at the head survives; only superseded prior bytes are
       // represented by the visible marker before the new addendum.
-      expect(storedArg.startsWith('## MEASURED BASELINE\n')).toBe(true);
-      expect(storedArg).toContain('…[older checkpoint content truncated]…');
+      expect(storedArg).toContain('Earlier full checkpoint: thread-post:5894');
+      const activeBody = storedArg.replace(/^Earlier full checkpoint: [^\n]+\n\n/, '');
+      expect(activeBody.startsWith('## MEASURED BASELINE\n')).toBe(true);
+      expect(activeBody).toContain('…[older checkpoint content truncated]…');
       // The newest addendum — the part the caller just wrote — remains complete.
-      expect(storedArg.endsWith(addendum)).toBe(true);
+      expect(activeBody.endsWith(addendum)).toBe(true);
     });
 
     it('confirmShrink:true cannot truncate the newly submitted append', async () => {
@@ -1724,7 +1776,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       let stored = prior;
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
         const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        stored = blockedReason ? prior : await opts?.transform?.(prior, text, checkpointTransaction) ?? text;
         return { stored, priorLength: prior.length, blockedReason };
       });
 
@@ -1746,7 +1798,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       let stored = prior;
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
         const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        stored = blockedReason ? prior : await opts?.transform?.(prior, text, checkpointTransaction) ?? text;
         return { stored, priorLength: prior.length, blockedReason };
       });
 
@@ -2153,7 +2205,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       let stored = '';
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
         const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        stored = blockedReason ? prior : await opts?.transform?.(prior, text, checkpointTransaction) ?? text;
         return { stored, priorLength: prior.length, blockedReason };
       });
       getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
@@ -2216,7 +2268,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           incoming: string | null | undefined,
           opts?: {
             guard?: (priorNote: string | null, priorLength: number) => string | null;
-            transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+            transform?: LockedCheckpointTransform;
           },
         ) => {
           calls += 1;
@@ -2224,7 +2276,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
             return Promise.resolve({ stored: prior, priorLength: prior.length, blockedReason });
           }
-          const next = opts?.transform ? opts.transform(prior, incoming) : incoming;
+          const next = opts?.transform ? await opts.transform(prior, incoming, checkpointTransaction) : incoming;
           stored = (next ?? '').trim() || null;
           return Promise.resolve({ stored, priorLength: prior.length });
         },
@@ -2269,7 +2321,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           incoming: string | null | undefined,
           opts?: {
             guard?: (priorNote: string | null, priorLength: number) => string | null;
-            transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+            transform?: LockedCheckpointTransform;
           },
         ) => {
           calls += 1;
@@ -2277,7 +2329,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
             return Promise.resolve({ stored: prior, priorLength: prior.length, blockedReason });
           }
-          const next = opts?.transform ? opts.transform(prior, incoming) : incoming;
+          const next = opts?.transform ? await opts.transform(prior, incoming, checkpointTransaction) : incoming;
           stored = (next ?? '').trim() || null;
           return Promise.resolve({ stored, priorLength: prior.length });
         },
@@ -2378,7 +2430,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       let stored = '';
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
         const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        stored = blockedReason ? prior : await opts?.transform?.(prior, text, checkpointTransaction) ?? text;
         return { stored, priorLength: prior.length, blockedReason };
       });
       getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
@@ -2445,7 +2497,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         let stored: string | null = null;
         setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string, opts) => {
           const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-          stored = blockedReason ? prior : opts?.transform?.(prior, note) ?? note;
+          stored = blockedReason ? prior : await opts?.transform?.(prior, note, checkpointTransaction) ?? note;
           return { stored, priorLength: prior.length, blockedReason };
         });
         // Before the fix this read ran BEFORE the write to construct the joined note
@@ -2494,14 +2546,14 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             text: string | undefined,
             opts?: {
               guard?: (n: string | null, l: number) => string | null;
-              transform?: (n: string | null, text: string) => string | null | undefined;
+              transform?: LockedCheckpointTransform;
             },
           ) => {
             const blockedReason = opts?.guard ? (opts.guard(priorNote, priorNote.length) ?? undefined) : undefined;
             // The body is preserved by the store's transform, which reads the
             // authoritative prior itself — the caller sent no `checkpoint` text.
             expect(text).toBeUndefined();
-            const stored = blockedReason ? priorNote : (opts?.transform?.(priorNote, priorNote) ?? priorNote);
+            const stored = blockedReason ? priorNote : (await opts?.transform?.(priorNote, priorNote, checkpointTransaction) ?? priorNote);
             return { stored, priorLength: priorNote.length, blockedReason };
           },
         );
@@ -2537,13 +2589,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           text: string,
           opts?: {
             guard?: (n: string | null, l: number) => string | null;
-            transform?: (n: string | null, text: string) => string | null | undefined;
+            transform?: LockedCheckpointTransform;
           },
         ) => {
           const prior = text === 'clobber' ? 'P'.repeat(19348) : null;
           const priorLength = prior?.length ?? 0;
           const blockedReason = opts?.guard ? (opts.guard(prior, priorLength) ?? undefined) : undefined;
-          const stored = blockedReason ? prior : opts?.transform ? opts.transform(prior, text) : text;
+          const stored = blockedReason ? prior : opts?.transform ? await opts.transform(prior, text, checkpointTransaction) : text;
           storedById.set(ref.workItemId, stored ?? '');
           return { stored, priorLength, blockedReason };
         },
@@ -2584,9 +2636,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         async (
           _ref: unknown,
           cp: string | null | undefined,
-          opts?: { transform?: (p: string | null, n: string | null | undefined) => string | null | undefined },
+          opts?: { transform?: LockedCheckpointTransform },
         ) => {
-          const effective = opts?.transform ? opts.transform(priorNote, cp) : cp;
+          const effective = opts?.transform ? await opts.transform(priorNote, cp, checkpointTransaction) : cp;
           const trimmed = (effective ?? '').trim();
           return { stored: trimmed.length > 0 ? trimmed : null, priorLength: (priorNote ?? '').length };
         },
@@ -3344,13 +3396,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           incoming: string | null | undefined,
           opts?: {
             guard?: (priorNote: string | null, priorLength: number) => string | null;
-            transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+            transform?: LockedCheckpointTransform;
           },
         ) => {
           const blockedReason = opts?.guard?.(current, current.length) ?? undefined;
           if (blockedReason) return { stored: current, priorLength: current.length, blockedReason };
           writes += 1;
-          const next = opts?.transform ? opts.transform(current, incoming) : incoming;
+          const next = opts?.transform ? await opts.transform(current, incoming, checkpointTransaction) : incoming;
           current = typeof next === 'string' && next.trim().length > 0 ? next : '';
           return { stored: current || null, priorLength: prior.length };
         },
@@ -3853,10 +3905,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         async (
           ref: { workItemId: string },
           cp: string | null | undefined,
-          opts?: { transform?: (p: string | null, n: string | null | undefined) => string | null | undefined },
+          opts?: { transform?: LockedCheckpointTransform },
         ) => {
           const prior = current.get(ref.workItemId) ?? null;
-          const next = opts?.transform ? opts.transform(prior, cp) : cp;
+          const next = opts?.transform ? await opts.transform(prior, cp, checkpointTransaction) : cp;
           const stored = typeof next === 'string' && next.trim().length > 0 ? next.trim() : null;
           current.set(ref.workItemId, stored ?? '');
           return { stored, priorLength: prior?.length ?? 0 };
@@ -4001,9 +4053,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             async (
               _ref: unknown,
               cp: string | null | undefined,
-              opts?: { transform?: (p: string | null, n: string | null | undefined) => string | null | undefined },
+              opts?: { transform?: LockedCheckpointTransform },
             ) => {
-              const effective = opts?.transform ? opts.transform(prior, cp) : cp;
+              const effective = opts?.transform ? await opts.transform(prior, cp, checkpointTransaction) : cp;
               const trimmed = (effective ?? '').trim();
               const stored = trimmed.length > 0 ? trimmed : null;
               current = stored;
@@ -4027,12 +4079,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
               incoming: string | null | undefined,
               opts?: {
                 guard?: (priorNote: string | null, priorLength: number) => string | null;
-                transform?: (priorNote: string | null, next: string | null | undefined) => string | null | undefined;
+                transform?: LockedCheckpointTransform;
               },
             ) => {
               const blockedReason = opts?.guard?.(current, current?.length ?? 0) ?? undefined;
               if (blockedReason) return { stored: current, priorLength: prior.length, blockedReason };
-              const next = opts?.transform ? opts.transform(current, incoming) : incoming;
+              const next = opts?.transform ? await opts.transform(current, incoming, checkpointTransaction) : incoming;
               current = typeof next === 'string' && next.trim().length > 0 ? next : null;
               return { stored: current, priorLength: prior.length };
             },
@@ -5214,7 +5266,7 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
       options?: Parameters<typeof import('../../work-item-checkpoint').setWorkItemCheckpointWithPrior>[2],
     ) => {
       const priorLength = stored?.length ?? 0;
-      stored = (options?.transform ? options.transform(stored, checkpointText) : checkpointText) ?? null;
+      stored = (options?.transform ? await options.transform(stored, checkpointText, checkpointTransaction) : checkpointText) ?? null;
       return { stored, priorLength };
     });
     getWorkItemCheckpoint.mockImplementation(async () => stored);
