@@ -664,6 +664,8 @@ describe('evaluatePlanSpecQuality', () => {
     'Reuse current verification evidence through the existing runtime.',
     'Reuse prior test results from verification.ts.',
     'Reuse prior clean receipts to implement the workflow.',
+    'Opening the persisted notification in the current-build Tauri shell expands the existing shared report card in place through exact reports:get resolution, exposes the exact pinned report body and three exact owner actions with observed/measured/read timestamps, successful receipt evidence, historical kills, partial coverage and explicit unknowns visibly labelled, and needs no fabricated plan rows or parallel Reports viewer.',
+    'Opening the persisted notification expands the existing shared ReportBlockCard in place.',
   ])('detects reuse prescriptions in both item and sourceBar contracts: %s', (behavior) => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
@@ -689,6 +691,7 @@ describe('evaluatePlanSpecQuality', () => {
     'The customer completes a job with the reported provider cost.',
     'A change is requested by the existing customer.',
     'An invitation is accepted by the existing account holder.',
+    'Opening the persisted notification expands in place to show the pinned report body and owner actions.',
     'Reuse of an expired invitation is refused.',
   ])('keeps observable existing-customer and reuse outcomes independent: %s', (behavior) => {
     const result = evaluatePlanSpecQuality({
@@ -874,6 +877,18 @@ describe('evaluatePlanSpecQuality', () => {
     expect(controls).toContainEqual({
       behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.',
       expected: 'coupled', actual: 'coupled', passed: true,
+    });
+    expect(controls).toContainEqual({
+      behavior: 'Opening the persisted notification expands the existing shared report card in place.',
+      expected: 'coupled', actual: 'coupled', passed: true,
+    });
+    expect(controls).toContainEqual({
+      behavior: 'Opening the persisted notification expands the existing shared ReportBlockCard in place.',
+      expected: 'coupled', actual: 'coupled', passed: true,
+    });
+    expect(controls).toContainEqual({
+      behavior: 'Opening the persisted notification expands in place to show the pinned report body and owner actions.',
+      expected: 'independent', actual: 'independent', passed: true,
     });
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceClauseDiagnostics');
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceDetectorControls');

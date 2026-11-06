@@ -471,7 +471,8 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
     return 'names an internal operation ' + JSON.stringify(operationReference[0]);
   }
   const existingSurfaceReuse =
-    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability)\b/i.exec(behavior);
+    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates|expand|expands|render|renders|mount|mounts)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability|report\s+cards?)\b/i.exec(behavior) ??
+    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates|expand|expands|render|renders|mount|mounts)\b[^.\n]{0,80}\bexisting\s+shared\s+[A-Z][A-Za-z0-9]*(?:Card|Component|Widget|Panel|View|Block)\b/.exec(behavior);
   if (existingSurfaceReuse) {
     return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
   }
@@ -1011,6 +1012,9 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'GET /architecture/index.html returns 200 with the map.', expected: 'independent' as const },
     { behavior: 'A visitor who opts out/in keeps that choice after a reload.', expected: 'independent' as const },
     { behavior: 'The customer reuses an existing account when accepting an invitation.', expected: 'independent' as const },
+    { behavior: 'Opening the persisted notification expands the existing shared report card in place.', expected: 'coupled' as const },
+    { behavior: 'Opening the persisted notification expands the existing shared ReportBlockCard in place.', expected: 'coupled' as const },
+    { behavior: 'Opening the persisted notification expands in place to show the pinned report body and owner actions.', expected: 'independent' as const },
     { behavior: 'A change is requested by the existing customer.', expected: 'independent' as const },
     { behavior: 'An invitation is accepted by the existing account holder.', expected: 'independent' as const },
     { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
@@ -1022,7 +1026,7 @@ export function evaluatePlanSpecQuality(input: {
   const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
     ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
-    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including shared UI components/report cards, runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
     ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +
