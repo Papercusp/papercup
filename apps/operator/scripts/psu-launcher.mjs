@@ -81,9 +81,12 @@ const nativeMcpRequire = createRequire(import.meta.url);
 /** Explicit owned-OMP path only; stock Claude/Codex never receive this adapter. */
 export function nativeOmpExtensionArgs(backend, env = process.env, platform = process.platform, available = existsSync) {
   const mode = env.PAPERCUSP_MCP_TRANSPORT || "http";
-  if (backend !== "omp" || mode === "http" && env.PAPERCUSP_NATIVE_HOOK_FD !== "3" || !["linux", "darwin"].includes(platform) ||
-      env.WSL_INTEROP || env.WSL_DISTRO_NAME || env.PAPERCUSP_IPC_TCP === "1") return [];
+  if (backend !== "omp") return [];
   if (!["http", "uds", "auto"].includes(mode)) throw new Error("Invalid MCP transport; expected http, uds or auto");
+  // Managed HTTP launches need the same catalog metadata propagation as UDS.
+  // Keep the existing UDS platform boundary; HTTP uses the portable SDK path.
+  if (mode !== "http" && (!["linux", "darwin"].includes(platform) ||
+      env.WSL_INTEROP || env.WSL_DISTRO_NAME || env.PAPERCUSP_IPC_TCP === "1")) return [];
   if (!available(nativeMcpExtension) || !available(nativeMcpBundle))
     throw new Error("Native MCP bundle missing; run npm run build:native -w @papercusp/omp");
   return ["-e", fileURLToPath(nativeMcpExtension)];
@@ -8330,8 +8333,11 @@ export function prepareCodexGatewayLaunch(env, args = []) {
   // host adoption must enforce the recorded role before every native child,
   // including launches that use the default account and need no route patch.
   const role = env.PAPERCUSP_AGENT_ROLE;
-  if (role && role !== "su" && codexHomeLaunchReadiness(env.CODEX_HOME, env.PAPERCUSP_SID, role))
-    throw new Error("Codex launch requires its recorded owner and restricted role MCP profile");
+  const roleHomeReadiness = role && role !== "su"
+    ? codexHomeLaunchReadiness(env.CODEX_HOME, env.PAPERCUSP_SID, role)
+    : null;
+  if (roleHomeReadiness)
+    throw new Error(`Codex launch requires its recorded owner and restricted role MCP profile: ${roleHomeReadiness}`);
   const mode = env[ACCOUNT_ROUTING_MODE_ENV];
   if (mode !== "auto" && mode !== "pin") return args;
   if (!env.CODEX_HOME || (mode === "pin" && !env.PAPERCUSP_ACCOUNT_ID))

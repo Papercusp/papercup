@@ -91,8 +91,12 @@ async function measureLifecycle(url: string, token: string, policy: CapabilityPo
   writeFileSync(extension, provider, { mode: 0o600 });
   const mcpUrl = new URL(url);
   mcpUrl.searchParams.set('tools', 'tools:invoke');
+  const tokenFile = join(home, 'mcp-token');
+  writeFileSync(tokenFile, token, { mode: 0o600 });
   writeFileSync(join(home, '.mcp.json'), JSON.stringify({ mcpServers: {
-    papercusp: { type: 'http', url: mcpUrl.href, headers: { Authorization: 'Bearer ' + token } },
+    papercusp: { type: 'stdio', command: process.execPath,
+      args: [join(root, 'apps/operator/scripts/ptool.mjs'), 'tools:invoke', '--stdio',
+        '--url', mcpUrl.href, '--token-file', tokenFile] },
   } }), { mode: 0o600 });
   const env = { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
     XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
@@ -214,9 +218,9 @@ async function measureLifecycle(url: string, token: string, policy: CapabilityPo
 
 /** Cheap native MCP preflight before paying for private API/PG setup. */
 async function localPreflight(evidenceDir: string) {
-  const requests: { method: string; rpc?: string }[] = [];
+  const requests: { method: string; rpc?: string; generation?: string }[] = [];
   const server = createServer(async (req, res) => {
-    const request: { method: string; rpc?: string } = { method: req.method ?? '' };
+    const request: { method: string; rpc?: string; generation?: string } = { method: req.method ?? '' };
     requests.push(request);
     if (req.method !== 'POST') { res.writeHead(405).end(); return; }
     if (req.headers.authorization !== 'Bearer local-only') { res.writeHead(401).end(); return; }
@@ -226,13 +230,17 @@ async function localPreflight(evidenceDir: string) {
     try { message = JSON.parse(Buffer.concat(chunks).toString()); }
     catch { res.writeHead(400).end(); return; }
     request.rpc = message.method;
+    request.generation = message.params?._meta?.['papercusp/servingGeneration'];
     if (message.id == null) { res.writeHead(202).end(); return; }
     const tool = { name: 'tools:invoke', description: 'Local preflight dispatcher',
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:omp-preflight' },
       inputSchema: { type: 'object', properties: { name: { type: 'string' }, args: { type: 'object' } },
         required: ['name', 'args'] } };
     const result = message.method === 'initialize' ? { protocolVersion: '2025-06-18',
       capabilities: { tools: {} }, serverInfo: { name: 'omp-local-preflight', version: '1' } }
       : message.method === 'tools/list' ? { tools: [tool] }
+      : request.generation !== tool._meta['papercusp/servingGeneration']
+        ? { isError: true, content: [{ type: 'text', text: 'stale_tool_contract' }] }
       : message.params?.arguments?.name === 'capability:bash'
         ? { content: [{ type: 'text', text: 'OMP_MANAGED_OK' }] }
         : { isError: true, content: [{ type: 'text', text: 'unknown tool negative control' }] };
@@ -243,13 +251,16 @@ async function localPreflight(evidenceDir: string) {
   try {
     const address = server.address() as { port: number };
     try {
-      const url = 'http://127.0.0.1:' + address.port + '/mcp';
+      const url = 'http://127.0.0.1:' + address.port + '/api/mcp';
       // The retained-native control exercises OMP's real bash before paying
       // for the private build; restricted-only preflight never covered it.
       const retained = await measureLifecycle(url, 'local-only', { ...admitted, cutoverStaging: {} }, false,
         { expectRestricted: false, evidenceDir });
       const lifecycle = await measureLifecycle(url, 'local-only', admitted, true, { evidenceDir });
       const invoked = await measureLifecycle(url, 'local-only', admitted, false, { viaInvoke: true, evidenceDir });
+      const calls = requests.filter(request => request.rpc === 'tools/call');
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every(request => request.generation === 'serving-generation-v1:omp-preflight')).toBe(true);
       return { retained, lifecycle, invoked };
     } catch (error) {
       throw new Error('Native MCP preflight requests=' + JSON.stringify(requests), { cause: error });

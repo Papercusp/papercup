@@ -1974,12 +1974,16 @@ describe("native OMP capability selection", () => {
     for (const backend of ["claude", "codex"]) {
       expect(nativeOmpExtensionArgs(backend, env, "linux", () => true)).toEqual([]);
     }
-    expect(nativeOmpExtensionArgs("omp", {}, "linux", () => true)).toEqual([]);
+    expect(nativeOmpExtensionArgs("omp", {}, "linux", () => true)).toEqual(args);
+    expect(nativeOmpExtensionArgs("omp", {}, "win32", () => true)).toEqual(args);
+    expect(nativeOmpExtensionArgs("omp", { WSL_INTEROP: "1" }, "linux", () => true)).toEqual(args);
+    expect(nativeOmpExtensionArgs("omp", { PAPERCUSP_IPC_TCP: "1" }, "linux", () => true)).toEqual(args);
     expect(nativeOmpExtensionArgs("omp", { PAPERCUSP_NATIVE_HOOK_FD: "3" }, "linux", () => true)).toEqual(args);
     expect(nativeOmpExtensionArgs("codex", { PAPERCUSP_NATIVE_HOOK_FD: "3" }, "linux", () => true)).toEqual([]);
     expect(nativeOmpExtensionArgs("omp", env, "win32", () => true)).toEqual([]);
     expect(nativeOmpExtensionArgs("omp", { ...env, WSL_INTEROP: "1" }, "linux", () => true)).toEqual([]);
     expect(() => nativeOmpExtensionArgs("omp", env, "linux", () => false)).toThrow("bundle missing");
+    expect(() => nativeOmpExtensionArgs("omp", {}, "linux", () => false)).toThrow("bundle missing");
   });
 });
 
@@ -2204,7 +2208,9 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
       const session = { agent: "omp", role: "su", id: "http", ompThreadId: "http-thread" };
       const env = ompTrackedResumeEnv(session, { home });
       expect(env.PAPERCUSP_MCP_TRANSPORT).toBe("http");
-      expect(resumeArgsFor(session, { env }).args.join(" ")).not.toContain("native-extension.mjs");
+      // Adapter selection is independent of the transport. Loading the
+      // generation-aware HTTP adapter must not inherit the parent's UDS mode.
+      expect(resumeArgsFor(session, { env }).args.join(" ")).toContain("native-extension.mjs");
     } finally { vi.unstubAllEnvs(); }
   });
 

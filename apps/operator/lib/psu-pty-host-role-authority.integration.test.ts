@@ -69,7 +69,7 @@ it.each(['scoper', 'judge'])('keeps the %s predecessor alive after a privileged 
       deliveryId: `role-authority-${role}` })).toMatchObject({ ok: true, reason: 'accepted' });
     await vi.waitFor(() => expect(events()).toContainEqual(expect.objectContaining({
       kind: 'respawn-failed', mode: 'carry-respawn', reason: 'argv-build-failed',
-      detail: 'Codex launch requires its recorded owner and restricted role MCP profile',
+      detail: 'Codex launch requires its recorded owner and restricted role MCP profile: config.toml has no matching restricted role MCP profile',
     })), { timeout: 6500 });
     expect(repair).toHaveBeenCalledTimes(1);
     expect(mint).toHaveBeenCalledTimes(1);

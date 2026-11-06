@@ -354,6 +354,63 @@ describe('Codex managed child preserves its recorded role authority', () => {
     return profile;
   }
 
+  it('launches a freshly materialized restricted judge home and names the failed readiness check', async () => {
+    const owner = 'su-role-fresh-judge';
+    const savedEnv = new Map([
+      ['PAPERCUSP_HOME', process.env.PAPERCUSP_HOME],
+      ['PAPERCUSP_SU_CODEX_HOMES_DIR', process.env.PAPERCUSP_SU_CODEX_HOMES_DIR],
+      ['PAPERCUSP_CODEX_SQLITE_HOMES_DIR', process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR],
+    ]);
+    try {
+      const papercuspHome = join(dir, 'papercusp');
+      process.env.PAPERCUSP_HOME = papercuspHome;
+      process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(dir, 'role-codex-homes');
+      process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(dir, 'codex-sqlite-homes');
+      mkdirSync(join(papercuspHome, 'hooks', 'cc'), { recursive: true });
+      writeFileSync(join(papercuspHome, 'hooks', 'cc', 'lifecycle-report.sh'), '#!/bin/sh\n');
+
+      const { writeRoleCodexHome } = await import('@papercusp/operator-core/lib/role-codex-home');
+      const mcpUrl = `http://operator/api/mcp?role=judge&client=${owner}&sig=fixture-signature`;
+      const home = writeRoleCodexHome({
+        sessionKey: 'fresh-judge-readiness',
+        sid: owner,
+        mcpUrl,
+        promptText: '# Judge role prompt\n',
+        model: 'gpt-5.5',
+        codexGatewayAuto: true,
+      });
+      const env = {
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_AGENT_ROLE: 'judge',
+        PAPERCUSP_SID: owner,
+        CODEX_HOME: home.codexHome,
+      };
+      const args = ['resume', 'fresh-role-fixture'];
+
+      expect(codexHomeLaunchReadiness(home.codexHome, owner, 'judge')).toBeNull();
+      expect(readFileSync(home.configPath, 'utf8')).toContain('[mcp_servers.papercusp]');
+      expect(readFileSync(home.configPath, 'utf8')).not.toContain('papercusp-su');
+      expect(prepareCodexGatewayLaunch(env, args)).toEqual(args);
+
+      const hooksPath = join(home.codexHome, 'hooks.json');
+      const hooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+      hooks.hooks.Stop = hooks.hooks.Stop.filter((group: { hooks?: { command?: string }[] }) =>
+        !group.hooks?.some(hook => hook.command?.includes('lifecycle-report.sh')),
+      );
+      writeFileSync(hooksPath, JSON.stringify(hooks));
+      const reason = 'hooks.json lacks the SessionStart/SessionEnd/Stop lifecycle hooks';
+      expect(codexHomeLaunchReadiness(home.codexHome, owner, 'judge')).toBe(reason);
+      expect(() => prepareCodexGatewayLaunch(env, args)).toThrow(
+        `Codex launch requires its recorded owner and restricted role MCP profile: ${reason}`,
+      );
+    } finally {
+      for (const [key, value] of savedEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it.each(cases)('starts a valid $role child on the $mode account route', ({ role, mode }) => {
     const owner = 'su-role-carry';
     roleHome(role, owner);
