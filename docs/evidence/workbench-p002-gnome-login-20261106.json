@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Recovered Workbench GNOME login lifecycle and current notice verification",
+  "framework": "operational",
+  "command": ["node", "papercusp-desktop/bin/run-node-test-suite.mjs", "--test-global-setup=test/monorepo-host-preflight.mjs", "test/native-workbench-gnome-live.test.mjs"],
+  "startedAt": "2026-11-06T11:55:25Z",
+  "finishedAt": "2026-11-06T13:12:20Z",
+  "timestampScope": "Bounds spanning retained lifecycle/installer runs and current notice rerun, not one uninterrupted command. Exact invocation filters were not retained in the recovered logs.",
+  "exitCode": 0,
+  "summary": "Recovered production extension lifecycle passed eight assertions across private real GNOME 46 Shell logins. Fresh-login upgrade and preserving a disabled extension passed. Actual GNOME 46 refuses ReloadExtension; the desktop notice communicates the required sign-out. Installer preservation passed separately. Notice source changed after its original test, so two focused current-source Cargo tests were rerun successfully, recording all three ledger rows. This is current-build/private desktop evidence with fixture PUI, not final installed three-OS acceptance.",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "parentWorkItem": "WI-6554700010044395",
+  "logs": [
+    {"path":"/tmp/wb-login-lifecycle-20261106-v2.log","sha256":"e118357466a44434ec92a82b06fa9b849637a6774df3d992b5b0d4b0954d2351"},
+    {"path":"/tmp/wb-login-install-20261106-v1.log","sha256":"20f93e71e2956a6f361dde8c4109a0a3238513ff3ef0cbb03f4723b90489849a"},
+    {"path":"/tmp/wb-login-notice-cargo-20261106-v1.log","sha256":"3b61ec7543734e6b882afd5d3c08c02912baa88c3ffd2af77f7729fa02c9f21d"},
+    {"path":"/tmp/wb-login-notice-cargo-20261106-v2.log","sha256":"aef25af9e793d094017dbdeabaa4d9315205af81b57a473bfc7849eb063587c0"}
+  ],
+  "sourceSha256AtRecording": {
+    "papercusp-desktop/native/linux/install-workbench.js":"119fb9c7f89637b6e197af8b0ebfac7280fce2c316c577b035e0d54dfcf9d17a",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs":"b2b633b6bc577409b03e7859cb8b9bdda90b39baab9370f06cebf038ae48b15e",
+    "papercusp-desktop/src-tauri/src/native_workbench.rs":"adbef8a6da0802055d860a25f0e5f3efc2f1a1f282de8b7b6f0b96190e0ac646"
+  },
+  "custody": "Source hashes measured at recovery. Historical lifecycle logs do not independently pin every source byte at execution; current notice rerun covers the newer native_workbench.rs. Original lifecycle result JSON remains /tmp/wb-login-lifecycle-20261106-v2/gnome-login-lifecycle.json; installer result remains /tmp/wb-login-install-20261106-v1/gnome-distribution-install.json.",
+  "noticeRerun": {
+    "command":["node","scripts/report-cargo-tests.mjs","--manifest-path","papercusp-desktop/src-tauri/Cargo.toml","--","native_workbench::tests"],
+    "runGroup":"workbench-p002-login-notice-20261106-v2",
+    "testRunIds":[23478698,23478699,23478700],
+    "pass":2,
+    "fail":0,
+    "ledgerInserted":3,
+    "ledgerExpected":3,
+    "receipts":"/tmp/wb-login-notice-cargo-20261106-v2-receipts.jsonl",
+    "oldLedgerGap":"Original v1 reporter inserted 0/3 despite passing Cargo. Cause remains unproven; existing reporter work-item EI-28014269895588946 retains responsibility. Successful rerun does not resolve the historical reporter defect."
+  },
+  "assertions": [
+    {"id":"prelogin-registration","passed":true,"evidence":"Production lifecycle retained assertion: prelogin install registers next login without claiming live activation."},
+    {"id":"first-login","passed":true,"evidence":"Production lifecycle retained assertion: first login enables unchanged production extension."},
+    {"id":"upgrade-archive","passed":true,"evidence":"Production lifecycle retained assertion: production upgrade replaces installed archive."},
+    {"id":"real-reload-api","passed":true,"evidence":"Production lifecycle addresses actual Shell reload API; GNOME 46 reports NotSupported: ReloadExtension is deprecated and does not work."},
+    {"id":"honest-reload-status","passed":true,"evidence":"Upgrade result has loginRequired:true with the actual Shell refusal, rather than claiming live activation."},
+    {"id":"upgrade-login","passed":true,"evidence":"Production lifecycle retained assertion: fresh Shell login loads persisted upgrade."},
+    {"id":"disable","passed":true,"evidence":"Production lifecycle retained assertion: GNOME disables production extension."},
+    {"id":"disabled-login","passed":true,"evidence":"Production lifecycle retained assertion: disabled production extension remains disabled at next login."},
+    {"id":"installer-preservation","passed":true,"evidence":"Separate production installer test passed preservation of enabled extensions, disabled choice, custom PUI path and Goals shortcut through upgrade and repair."},
+    {"id":"current-notice","passed":true,"evidence":"Focused Cargo rerun passed two tests, with numeric ledger receipts 23478698 through 23478700 including aggregate."}
+  ],
+  "limitations": ["Fixture PUI; canonical operator/ACL journeys remain pending.","No claim of final installer identity, installed three-OS acceptance, independent acceptance or shipment.","No observed desktop notification delivery; Cargo verifies selection of the notice text."]
+}
