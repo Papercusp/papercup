@@ -468,12 +468,23 @@ const server = createServer((socket) => {
         namedNotInProgram: [], counts: {} });
       return;
     }
-    socket.write(`${JSON.stringify({ kind: 'progress', requestId, identity, phase: draining ? 'queued' : 'accepted' })}\n`);
+    const clientPhase = draining ? 'queued' : 'accepted';
+    socket.write(`${JSON.stringify({ kind: 'progress', requestId, identity, phase: clientPhase })}\n`);
     const arrivedAt = Date.now();
-    const trace = (phase) => log(
-      `requestId=${requestId} project=${relative(ROOT, request.project)} named=${request.files.length} ` +
-        `phase=${phase} elapsedMs=${Date.now() - arrivedAt}`,
-    );
+    const trace = (requestPhase) => {
+      const elapsedMs = Date.now() - arrivedAt;
+      log(
+        `requestId=${requestId} project=${relative(ROOT, request.project)} named=${request.files.length} ` +
+          `phase=${requestPhase} elapsedMs=${elapsedMs}`,
+      );
+      // Keep the legacy phase field stable so older clients still recognize this
+      // as non-terminal progress. Newer clients can record where the server is
+      // working even when it never sends the final result before their deadline.
+      if (!socket.destroyed && !replied) {
+        socket.write(`${JSON.stringify({ kind: 'progress', requestId, identity, phase: clientPhase,
+          requestPhase, elapsedMs })}\n`);
+      }
+    };
     item = { request, reply, arrivedAt, cancelled: false, trace };
     queue.push(item);
     trace('queued');

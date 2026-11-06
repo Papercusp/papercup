@@ -140,20 +140,33 @@ describe('runGate', () => {
     return { code, lines };
   }
 
-  it('retains input collection and census timeout evidence outside redirected process output', () => {
+  it.each([
+    { launcher: 'local', green: undefined, heavy: undefined, github: undefined },
+    { launcher: 'release gate', green: '1', heavy: '1', github: undefined },
+    { launcher: 'GitHub Actions', green: undefined, heavy: undefined, github: 'true' },
+  ])('retains input collection and census timeout evidence under $launcher', ({ green, heavy, github }) => {
+    vi.stubEnv('GREEN_CHECKPOINT', green);
+    vi.stubEnv('PC_HEAVY_RELEASE_GATE', heavy);
+    vi.stubEnv('GITHUB_ACTIONS', github);
     snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
     rebuild();
     const journal = join(work, 'steps.jsonl');
     vi.stubEnv('BUNDLE_HOST_STEP_LOG', journal);
     const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
+    const spawn = vi.fn(() => ({ status: null, signal: 'SIGKILL', error: new Error('ETIMEDOUT'),
+      pid: 0, output: [], stdout: '', stderr: '' }));
     let inputsFile: string | undefined;
     const { code } = gate(opts => {
       inputsFile = opts.inputsFile;
       return runBundleRestrictedHoldPreflight({ ...opts,
-        spawn: (() => ({ status: null, signal: 'SIGKILL', error: new Error('ETIMEDOUT'),
-          pid: 0, output: [], stdout: '', stderr: '' })) as unknown as typeof spawnSync,
+        // This fixture exercises the census failure, independently of the
+        // launcher's legitimate production skip. Preserve its journal setting.
+        env: { ...process.env, GREEN_CHECKPOINT: undefined,
+          PC_HEAVY_RELEASE_GATE: undefined, GITHUB_ACTIONS: undefined },
+        spawn: spawn as unknown as typeof spawnSync,
       });
     }, [main]);
+    expect(spawn).toHaveBeenCalledOnce();
     expect(code).toBe(GATE_EXIT.refuse);
     expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
     expect(existsSync(snapshotDir)).toBe(false);

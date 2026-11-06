@@ -1104,7 +1104,16 @@ export async function typecheckViaService({
       socketPath,
       request: { v: 1, root, project, files, ...(scope === undefined ? {} : { scope }) },
       timeoutMs: resolveTscServiceTimeoutMs(timeoutMs),
-      onProgress: (response) => log(`TSC_SERVICE state=${response.phase} requestId=${response.requestId} resultOrigin=pending`),
+      onProgress: (response) => {
+        const serverPhase = typeof response.requestPhase === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(response.requestPhase)
+          ? response.requestPhase
+          : null;
+        const elapsedMs = Number.isFinite(response.elapsedMs) ? Math.max(0, Math.floor(response.elapsedMs)) : null;
+        const trace = serverPhase === null
+          ? ''
+          : ` serverPhase=${serverPhase} elapsedMs=${elapsedMs ?? 'unknown'}`;
+        log(`TSC_SERVICE state=${response.phase} requestId=${response.requestId}${trace} resultOrigin=pending`);
+      },
     });
   } catch (error) {
     const state = ['ENOENT', 'ECONNREFUSED'].includes(error?.code) ? 'unavailable' : error?.code ?? 'request-failed';

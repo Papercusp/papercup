@@ -635,12 +635,18 @@ describe('service request phase correlation', () => {
         child.once('error', (error) => { clearTimeout(timer); reject(error); });
         child.once('exit', () => { clearTimeout(timer); reject(new Error(`service exited: ${output}`)); });
       });
+      const clientProgress: Array<{ phase?: string; requestPhase?: string; elapsedMs?: number }> = [];
       const response = await requestTscService({
         socketPath,
         request: { v: 1, requestId: 'trace-test-123', root: dir, project, files: ['a.ts'] },
         timeoutMs: 10_000,
+        onProgress: (entry) => clientProgress.push(entry),
       });
       expect(response.ok).toBe(true);
+      const tracedProgress = clientProgress.filter((entry) => typeof entry.requestPhase === 'string');
+      expect(tracedProgress.some((entry) => entry.requestPhase === 'snapshot-update')).toBe(true);
+      expect(tracedProgress.every((entry) => ['accepted', 'queued'].includes(entry.phase ?? ''))).toBe(true);
+      expect(tracedProgress.every((entry) => Number.isFinite(entry.elapsedMs) && (entry.elapsedMs ?? -1) >= 0)).toBe(true);
       if (response.ok) {
         expect(response.errorCount).toBe(1);
         expect(response.output).toContain('TS2322');
@@ -790,6 +796,19 @@ describe('focused service protocol', () => {
     });
   });
 
+  it('logs server request phase and elapsed time in the CLI progress line', async () => {
+    await withSocket((request, socket) => {
+      socket.write(frame(request, { kind: 'progress', phase: 'queued' }));
+      socket.write(frame(request, { kind: 'progress', phase: 'queued', requestPhase: 'snapshot-update', elapsedMs: 123 }));
+      socket.end(frame(request, { ok: false, reason: 'test-terminal' }));
+    }, async ({ call, lines }) => {
+      expect(await call(1000)).toBeNull();
+      expect(lines.join('\n')).toContain(
+        'serverPhase=snapshot-update elapsedMs=123',
+      );
+    });
+  });
+
   it('distinguishes unavailable, unsupported and timed-out requests', async () => {
     await expect(requestTscService({ socketPath: join(tmpdir(), `absent-${Date.now()}.sock`), request: {} }))
       .rejects.toMatchObject({ code: 'ENOENT' });
@@ -870,16 +889,21 @@ describe('focused service protocol', () => {
         message: expect.stringContaining('expectedRequestId="live-protocol" actualRequestId="live-protocol" changedIdentityFields=["namedSources"] responseKind="result" serverReason="identity-mismatch"'),
       });
       const phases: string[] = [];
+      let sourceChanged = false;
       await expect(requestTscService({ socketPath, request,
         onProgress: progress => {
           phases.push(progress.phase);
-          writeFileSync(join(root, 'a.ts'), 'export const a = 3;');
+          if (!sourceChanged) {
+            sourceChanged = true;
+            writeFileSync(join(root, 'a.ts'), 'export const a = 3;');
+          }
         },
       })).rejects.toMatchObject({
         code: 'identity-mismatch',
         message: expect.stringContaining('changedIdentityFields=["namedSources"] responseKind="result" serverReason="identity-mismatch" serverDetail="source or config changed during the request"'),
       });
-      expect(phases).toEqual(['accepted']);
+      expect(phases.length).toBeGreaterThan(0);
+      expect(phases.every(phase => phase === 'accepted')).toBe(true);
     });
   }, 15_000);
 
