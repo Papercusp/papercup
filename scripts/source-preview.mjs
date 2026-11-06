@@ -2499,12 +2499,13 @@ function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
- *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
+ *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
 export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
-  releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease,
+  releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease, signal,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
+  if (signal?.aborted) throw new PreviewError('verifier command canceled before launch', 143);
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
   if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
@@ -2572,10 +2573,13 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   };
   const onInt = () => cancel('SIGINT'), onTerm = () => cancel('SIGTERM'), onHup = () => cancel('SIGHUP');
   process.on('SIGINT', onInt); process.on('SIGTERM', onTerm); process.on('SIGHUP', onHup);
+  signal?.addEventListener('abort', onTerm, { once: true });
+  if (signal?.aborted) onTerm();
   let owned;
   try { owned = await fs.mkdtemp(join(scratch, 'verifier-command-')); }
   catch (error) {
     process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); process.off('SIGHUP', onHup);
+    signal?.removeEventListener('abort', onTerm);
     throw error;
   }
   const root = join(owned, 'invoked-source');
@@ -2945,6 +2949,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         }
       } finally {
         process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); process.off('SIGHUP', onHup);
+        signal?.removeEventListener('abort', onTerm);
       }
     }
     checkCancellation();

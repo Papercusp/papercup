@@ -189,9 +189,11 @@ describe('router native custody population (P002)', () => {
     const detail = session.detail('group-0', 0, 'file-0.test.ts', join(producer, 'detail.json'));
     for (const id of ['group-0', 'group-1', detail]) produce(session, id);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const finalizationSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const result = session.finish();
+      const result = await session.finish();
       expect(result.status).toBe('complete');
+      expect(finalizationSpy).toHaveBeenCalledWith(expect.stringContaining('"phase":"capture-start"'));
       const contract = { identity: session.identity, expected: structuredClone(session.expected) };
       rmSync(producer, { recursive: true });
       const read = verifyNativeProofPacket(session.directory, result.locator, contract);
@@ -199,19 +201,21 @@ describe('router native custody population (P002)', () => {
       const stdout = read.manifest.groups[0].auxiliary.find(row => row.role === 'stdout')!.artifact!;
       expect(readFileSync(join(session.directory, 'objects', stdout.ref))).toEqual(Buffer.from([0, 255, 10]));
       expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
-    } finally { log.mockRestore(); }
+    } finally { finalizationSpy.mockRestore(); log.mockRestore(); }
   });
   it('retains an expected group which never started instead of shrinking the population', async () => {
     const { session } = await setup();
     produce(session, 'group-0');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const finalizationSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const result = session.finish();
+      const result = await session.finish();
       expect(result.status).toBe('partial');
+      expect(finalizationSpy).toHaveBeenCalledWith(expect.stringContaining('"phase":"capture-start"'));
       expect(result.manifest.groups.map((group: { id: string }) => group.id)).toEqual(['group-0', 'group-1']);
       expect(result.manifest.gaps).toContain('group-population-mismatch');
       expect(JSON.parse(readFileSync(join(session.directory, 'expected.json'), 'utf8')).expected).toHaveLength(2);
-    } finally { log.mockRestore(); }
+    } finally { finalizationSpy.mockRestore(); log.mockRestore(); }
   });
 
   it.each(['enabled', 'disabled', 'missing-root', 'relative-root', 'missing-workspace'] as const)
@@ -233,18 +237,20 @@ describe('router native custody population (P002)', () => {
         expect(existsSync(group.out + '.processes')).toBe(mode === 'enabled');
       }
       const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const finalizationSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
-        const result = session.finish();
+        const result = await session.finish();
         expect(result.status).toBe('complete');
+        expect(finalizationSpy).toHaveBeenCalledWith(expect.stringContaining('"phase":"capture-start"'));
         expect(result.manifest.groups[0].families.find((family: { family: string }) => family.family === 'D')!.state)
           .toBe(mode === 'enabled' ? 'produced' : 'not-requested');
         if (mode === 'enabled') {
           rmSync(session.expected[0].out + '.processes', { recursive: true });
-          expect(session.finish().status).toBe('partial');
+          expect((await session.finish()).status).toBe('partial');
           mkdirSync(session.expected[0].out + '.processes');
-          expect(session.finish().status).toBe('partial');
+          expect((await session.finish()).status).toBe('partial');
         }
-      } finally { log.mockRestore(); }
+      } finally { finalizationSpy.mockRestore(); log.mockRestore(); }
     });
 });
 
@@ -4082,8 +4088,9 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     const saved = keys.map(key => [key, process.env[key]] as const);
     for (const key of keys) delete process.env[key];
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const finish = vi.fn(() => {
+    const finish = vi.fn(async () => {
       expect(logSpy.mock.calls.some(([line]: unknown[]) => String(line).startsWith('TEST_FILE_RESULT'))).toBe(false);
+      await new Promise<void>(resolve => setImmediate(resolve));
       throw new Error('custody fixture budget exceeded');
     });
     try {
