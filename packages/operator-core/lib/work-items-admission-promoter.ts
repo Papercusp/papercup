@@ -3886,6 +3886,8 @@ interface EndpointProtectionOptions {
   readOnlyClaimedComparison?: boolean;
   /** D-340: audited, unassigned local agent parks only; never combines with a claim. */
   readOnlyAgentParkComparison?: boolean;
+  /** Signed component screening may inspect a narrowly typed human-blocked reference, never mutate it. */
+  readOnlyHumanBlockerComparison?: boolean;
 }
 
 function endpointProtection(
@@ -3917,6 +3919,8 @@ function endpointProtection(
   const explicitReview = options.admissionReview === true &&
     (role === 'promote' || role === 'hold' || role === 'reference') &&
     admissionReviewCustodyEligible(snapshot);
+  const readOnlyHumanBlockerComparison = role === 'reference' &&
+    options.readOnlyHumanBlockerComparison === true && qualifiedHumanBlockerComparison(snapshot);
   if (
     !terminalTwin &&
     snapshot.assignee &&
@@ -3934,7 +3938,7 @@ function endpointProtection(
   if (
     (snapshot.state === 'blocked' || snapshot.state === 'needs-human') &&
     !(snapshot.state === 'blocked' && overdueClaimedReview)
-    && !explicitReview
+    && !explicitReview && !readOnlyHumanBlockerComparison
   ) {
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
   }
@@ -3980,7 +3984,7 @@ function endpointProtection(
       };
     }
   }
-  if (hasStrictOwnerAction(snapshot.payload)) {
+  if (hasStrictOwnerAction(snapshot.payload) && !readOnlyHumanBlockerComparison) {
     return { reason: 'owner-blocked', detail: `${role} ${snapshot.id} requires a strict owner capability` };
   }
   // EI-26635063332991604: completion retains blocker history. Execution-only
@@ -3992,6 +3996,7 @@ function endpointProtection(
   // removing the marker or reopening the work; other dependencies and merge roles
   // retain their protections.
   const blockers = activeExternalBlockers(snapshot.payload).filter((blocker) =>
+    !(readOnlyHumanBlockerComparison && blocker.kind === 'human') &&
     (!terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency') &&
     !((overdueClaimedReview || explicitReview) && blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
       blocker.capabilitySource === 'explicit' &&
@@ -4219,6 +4224,32 @@ function agentParkMetadata(value: unknown) {
   return { payload, actor, reason, atMs, watchdogCreated };
 }
 
+/**
+ * A signed component-screened target may compare against a local needs-human row only when
+ * its protection is exactly an explicit owner action backed by typed active human blockers.
+ * This proves reference safety; it grants no review, claim, blocker-clear, or mutation authority.
+ */
+function qualifiedHumanBlockerComparison(snapshot: AdmissionMergeSnapshot): boolean {
+  const payload = recordValue(snapshot.payload);
+  const raw = payload.externalBlockers;
+  if (snapshot.origin !== 'local' || snapshot.assignee || snapshot.state !== 'needs-human' ||
+      payload.needsOwnerAction !== true || payload.humanCapability !== undefined ||
+      String(payload._claimHold) === 'true' ||
+      Object.keys(payload).some((key) => key.startsWith('held_open_')) ||
+      !Array.isArray(raw) || raw.length === 0) return false;
+  if (raw.some((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true;
+    const status = (entry as Record<string, unknown>).status;
+    return status !== 'active' && status !== 'cleared';
+  })) return false;
+  const rawActiveCount = raw.filter((entry) =>
+    !!entry && typeof entry === 'object' && !Array.isArray(entry) &&
+    (entry as Record<string, unknown>).status === 'active').length;
+  const blockers = activeExternalBlockers(payload);
+  return rawActiveCount > 0 && blockers.length === rawActiveCount &&
+    blockers.every((blocker) => blocker.kind === 'human');
+}
+
 function qualifiedAgentPark(snapshot: AdmissionMergeSnapshot) {
   const park = agentParkMetadata(snapshot.payload), audit = snapshot.agentParkAudit;
   if (!park || !audit || snapshot.origin !== 'local' || snapshot.assignee || snapshot.state !== 'open') return false;
@@ -4309,14 +4340,34 @@ function agentParkComparisonEndpoint(a: string, b: string,
   return undefined;
 }
 
+/** Only a verified signed component-screening target may read this human-blocked reference. */
+function humanBlockerComparisonEndpoint(a: string, b: string,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>, componentScreeningItemIds: readonly string[]) {
+  for (const [itemId, comparisonId] of [[a, b], [b, a]] as const) {
+    if (!componentScreeningItemIds.includes(itemId)) continue;
+    const item = snapshots.get(itemId), comparison = snapshots.get(comparisonId);
+    if (!item || !comparison || item.origin !== 'local' || item.assignee ||
+        endpointProtection(item, 'promote') ||
+        item.workspaceId !== comparison.workspaceId || item.harnessSlug !== comparison.harnessSlug ||
+        !qualifiedHumanBlockerComparison(comparison)) continue;
+    if (!endpointProtection(comparison, 'reference', { readOnlyHumanBlockerComparison: true })) {
+      return comparisonId;
+    }
+  }
+  return undefined;
+}
+
 function readOnlyComparisonEndpoint(a: string, b: string,
   snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>, componentScreeningItemIds: readonly string[] = []) {
   return claimedComparisonEndpoint(a, b, snapshots, componentScreeningItemIds) ??
-    agentParkComparisonEndpoint(a, b, snapshots, componentScreeningItemIds);
+    agentParkComparisonEndpoint(a, b, snapshots, componentScreeningItemIds) ??
+    humanBlockerComparisonEndpoint(a, b, snapshots, componentScreeningItemIds);
 }
 
 function readOnlyComparisonOptions(snapshot: AdmissionMergeSnapshot | undefined): EndpointProtectionOptions {
-  return snapshot?.assignee ? { readOnlyClaimedComparison: true } : { readOnlyAgentParkComparison: true };
+  if (snapshot?.assignee) return { readOnlyClaimedComparison: true };
+  if (snapshot && qualifiedHumanBlockerComparison(snapshot)) return { readOnlyHumanBlockerComparison: true };
+  return { readOnlyAgentParkComparison: true };
 }
 
 /**
