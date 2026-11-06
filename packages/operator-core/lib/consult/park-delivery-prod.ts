@@ -6,7 +6,7 @@
  *  - finds parks whose latest verdict needs the parked agent to act
  *    (proceed / consider-alternative / owner-decided — 'adopted' is the parker's own act and
  *    'owner-deciding' waits on the owner, not the parker);
- *  - builds the state from consult_state.park_state, the parker's latest tool invocation and
+ *  - builds the state from consult_state.park_state, verdict-specific wake pickup proof and
  *    the shared liveness oracle;
  *  - binds the three effects: re-wake (inbox row + wake), resume (capability:launch-agent
  *    { resume }) and owner notification (a coord message to `human`);
