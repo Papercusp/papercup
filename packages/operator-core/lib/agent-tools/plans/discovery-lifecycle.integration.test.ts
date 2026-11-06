@@ -20,8 +20,15 @@ import { persistResearchBatch } from '../../code-intelligence/research-trail';
 import { acceptFeedbackRequestCore, getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from '../../consult/get-feedback-core';
 import { BAR_CRITIQUE_POLICY } from '../../consult/selection-policies';
 
-// Verbatim P-001, read from the original plan's canonical revision 3.
-const ORIGINAL_CENSUS = 'Establish the existing-behavior and prior-work census. Re-read WI-6554700010030941 and associated plans; identify reused implementations and unresolved gaps. Bind baseline/check procedures to existing rubric/results records, with full manifests and source/runtime identity. Measure proof selection plus actual child consumption, retained work after interruption, optional lock occupancy and candidate completion phases. Before edits, resolve graph impact/similarity and current-build test routes.';
+// Exact quoted owner text, including indentation and line breaks. The later
+// plan revision is a different fixture and cannot stand in for this source.
+const ORIGINAL_CENSUS_SOURCE_REF = 'session_turn:codex:01a1ad43-3ec6-7ce2-aa28-c27483998798:15';
+const ORIGINAL_CENSUS_QUOTE = `  1. P-001 — Establish the baseline and identify actual gaps.
+     Inventory existing implementations and related work before changing them. Measure
+     whether proofs are actually consumed, how much valid work survives interruption, how
+     long optional warming holds the qualification resource, and where candidate completion
+     time goes. A property already implemented and proven gets adopted rather than rebuilt.`;
+const ORIGINAL_CENSUS = ORIGINAL_CENSUS_QUOTE.slice('  1. P-001 — '.length);
 const OWNER = 'su-discovery-lifecycle-fixture';
 let fx: PlanPgFixture;
 let root: string;
@@ -117,6 +124,15 @@ beforeEach(async () => {
 });
 
 describe('original proof-warming discovery before review and implementation', () => {
+  it('pins the exact motivating owner quote and source before exercising its correction', () => {
+    expect(ORIGINAL_CENSUS_SOURCE_REF).toBe('session_turn:codex:01a1ad43-3ec6-7ce2-aa28-c27483998798:15');
+    expect(createHash('sha256').update(ORIGINAL_CENSUS_QUOTE).digest('hex'))
+      .toBe('b32d209c99a9c56e40843ef0cd422106ca474d572f3ddb0afbb8fc6d0b1f21ce');
+    expect(content).toContain(ORIGINAL_CENSUS);
+    expect(plan(revisedFindings(), true)).not.toContain(ORIGINAL_CENSUS);
+    expect(plan(revisedFindings(), true)).toContain('Reuse the existing keyed cache at the missing child-consumption caller');
+  });
+
   it('refuses a barrier-controlled source change before an actual review request can route, open or persist', async () => {
     await revision(plan(revisedFindings(), true));
     expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });

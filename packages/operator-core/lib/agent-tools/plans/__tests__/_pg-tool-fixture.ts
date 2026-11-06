@@ -27,6 +27,7 @@ import { _resetForTests } from '@papercusp/db-org';
 import { createOrgTestDb } from '../../../../test/_org-test-db';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
 import { stopInvalidationListener } from '../../../sync-sse';
+import { fallbackObservationCounters, flushFallbackObservations } from '../../../degradation/fallback-observations';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 // eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's jsonb serializer (see restoreRawJsonbSerializer's doc)
@@ -105,6 +106,13 @@ export async function setupPlanPgFixture(options: { isolated?: boolean } = {}): 
       // test mutation returns. Flush it while getOrgPg() still resolves to this
       // fixture; otherwise its timer can publish after ambient live URLs return.
       await stopInvalidationListener();
+      // Fallback telemetry is also deferred. Persist it with the owned client
+      // before restoring ambient routing or closing any fixture pool.
+      const failedBefore = fallbackObservationCounters().failed;
+      const flush = await flushFallbackObservations({ sql: admin });
+      if (flush.failed > 0 || fallbackObservationCounters().failed > failedBefore) {
+        throw new Error('Plan fixture cleanup lost fallback observations while draining telemetry');
+      }
     } finally {
       await admin.end({ timeout: 5 }).catch(() => {});
       if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;

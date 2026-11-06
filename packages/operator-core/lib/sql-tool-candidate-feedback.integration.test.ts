@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { readLatestRubricCheckResults } from './check-results-ledger';
@@ -11,9 +11,18 @@ import { continuityProbeSchema } from './continuity-probes';
 import { buildTenantScopeAdvisory } from './pg-read-query';
 import { readFile } from 'node:fs/promises';
 import type { Rubric } from './rubrics';
+import { fallbackObservationCounters, flushFallbackObservations } from './degradation/fallback-observations';
 
 let db: OrgTestDb;
 beforeAll(async () => { db = await createOrgTestDb(); }, 180_000);
+afterEach(async () => {
+  // These cases use an explicit client without process-wide URL pinning. Drain
+  // deferred telemetry before the next case can await another private fixture.
+  const failedBefore = fallbackObservationCounters().failed;
+  const flush = await flushFallbackObservations({ sql: db.adminSql });
+  expect(flush.failed).toBe(0);
+  expect(fallbackObservationCounters().failed).toBe(failedBefore);
+});
 afterAll(async () => { await db?.cleanup(); });
 const input = (): SqlCandidateFeedbackInput => ({
   workspaceId: 'sql-feedback-fixture', harnessSlug: 'papercusp', measuredAt: '2026-10-25T00:00:00Z',

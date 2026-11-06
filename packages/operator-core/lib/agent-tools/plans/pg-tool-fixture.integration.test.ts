@@ -4,6 +4,7 @@ import { getTestPg } from '@papercusp/test-config/pg';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_BRIDGE_COALESCE_WINDOW_MS } from '@papercusp/sync/server';
 import { notifySyncInvalidate } from '../../sync-sse';
+import { fallbackObservationCounters, observeFallback } from '../../degradation/fallback-observations';
 import { setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 
 const failedProbe = vi.hoisted(() => ({ error: undefined as Error | undefined, dsn: '' }));
@@ -65,6 +66,34 @@ it('drains trailing sync invalidations before restoring ambient database URLs', 
   } finally {
     await fixture?.dispose();
     error.mockRestore();
+  }
+}, 120_000);
+
+it('persists pending fallback observations before closing the plan fixture client', async () => {
+  let fixture: PlanPgFixture | undefined;
+  try {
+    fixture = await setupPlanPgFixture({ isolated: true });
+    const admin = fixture.admin;
+    const failedBefore = fallbackObservationCounters().failed;
+    let persisted: unknown[] = [];
+    const end = admin.end.bind(admin);
+    vi.spyOn(admin, 'end').mockImplementation(async options => {
+      persisted = await admin`
+        SELECT eligible, applied, reason FROM harness_shared.fallback_observations
+         WHERE mechanism = 'plan-fixture-dispose-probe'
+      `;
+      await end(options);
+    });
+    expect(observeFallback('plan-fixture-dispose-probe', {
+      eligible: 3, applied: 1, reason: 'controlled-pending-observation',
+    }, { workspaceId: fixture.workspaceId })).toBe(true);
+
+    await fixture.dispose();
+    fixture = undefined;
+    expect(persisted).toEqual([{ eligible: 3, applied: 1, reason: 'controlled-pending-observation' }]);
+    expect(fallbackObservationCounters().failed).toBe(failedBefore);
+  } finally {
+    await fixture?.dispose();
   }
 }, 120_000);
 
