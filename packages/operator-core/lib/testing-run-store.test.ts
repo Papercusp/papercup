@@ -858,6 +858,31 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
     },
   ];
 
+  it('returns classified insert failures without leaking SQL values or raw messages', async () => {
+    const sql = vi.fn().mockRejectedValue(Object.assign(new Error('private query payload'), { code: '42501' }));
+    const result = await store.persistHarnessTestRunsWithIds({ harnessSlug: 'papercusp', workspaceId: 'ws',
+      rows: oneRow(), runGroupId: 'failed-insert', sql });
+    expect(result).toEqual({ written: 0, ids: [],
+      failure: { phase: 'insert', rowIndex: 0, errorName: 'Error', errorCode: '42501' } });
+    expect(JSON.stringify(result)).not.toContain('private query payload');
+  });
+
+  it('retains successful row receipts when a later row fails', async () => {
+    const sql = vi.fn().mockResolvedValueOnce([{ id: 123 }])
+      .mockRejectedValueOnce(Object.assign(new Error('second row failed'), { code: '23514' }));
+    expect(await store.persistHarnessTestRunsWithIds({ harnessSlug: 'papercusp', workspaceId: 'ws',
+      rows: [...oneRow(), ...oneRow()], runGroupId: 'partial-insert', sql })).toEqual({
+      written: 1, ids: [123], failure: { phase: 'insert', rowIndex: 1, errorName: 'Error', errorCode: '23514' },
+    });
+  });
+
+  it('distinguishes an insert response without a usable row id from a rejected insert', async () => {
+    expect(await store.persistHarnessTestRunsWithIds({ harnessSlug: 'papercusp', workspaceId: 'ws',
+      rows: oneRow(), runGroupId: 'missing-id', sql: vi.fn().mockResolvedValue([]) })).toEqual({
+      written: 1, ids: [], failure: { phase: 'receipt', rowIndex: 0, errorName: 'MissingInsertId' },
+    });
+  });
+
   it('defaults worktree_dirty to false when the caller omits it', async () => {
     let captured: Record<string, unknown> = {};
     const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {

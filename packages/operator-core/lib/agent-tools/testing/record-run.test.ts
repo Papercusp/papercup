@@ -431,6 +431,40 @@ describe('native operational execution witnesses', () => {
     expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: false, error: 'ledger_write_failed' });
   });
 
+  it('preserves a thrown native scenario when the ledger returns no receipt', async () => {
+    const f = fixture();
+    f.definition.run.mockRejectedValue(new Error('native subject never picked up the verdict'));
+    f.deps.persist.mockResolvedValue({ written: 0, ids: [] });
+    const result = await executeOperationalRun(f.definition, f.ctx, f.deps);
+    expect(result).toMatchObject({ ok: false, error: 'ledger_write_failed',
+      observed: { status: 'fail', artifact: { exitCode: 1, assertions: [{
+        id: 'native-check-exception', passed: false, evidence: 'native subject never picked up the verdict',
+      }] } }, persistence: { written: 0, ids: [] } });
+    expect(result).not.toHaveProperty('testRunIds');
+    expect(f.definition.run).toHaveBeenCalledOnce();
+  });
+
+  it('preserves a passing observation without promoting an unrecorded run to success', async () => {
+    const f = fixture();
+    f.deps.persist.mockResolvedValue({ written: 1, ids: [] });
+    expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({
+      ok: false, error: 'ledger_write_failed', observed: { status: 'pass', artifact: {
+        exitCode: 0, summary: 'Actual assertions passed.', assertions: [{ id: 'actual-result', passed: true }],
+      } }, persistence: { written: 1, ids: [] },
+    });
+  });
+
+  it('keeps sanitized diagnostics and the scenario when an injected writer throws', async () => {
+    const f = fixture();
+    f.definition.run.mockRejectedValue(new Error('native assertion failed'));
+    f.deps.persist.mockRejectedValue(Object.assign(new Error('SQL contains private payload'), { code: '42501' }));
+    const result = await executeOperationalRun(f.definition, f.ctx, f.deps);
+    expect(result).toMatchObject({ ok: false, observed: { status: 'fail' },
+      persistence: { written: 0, ids: [], failure: { phase: 'insert', errorName: 'Error', errorCode: '42501' } } });
+    expect(JSON.stringify(result)).not.toContain('private payload');
+    expect(f.definition.run).toHaveBeenCalledOnce();
+  });
+
   it('records a source-only execution under its committed check identity without inventing a runtime witness', async () => {
     const f = fixture();
     const result = await executeOperationalRun({ ...f.definition, runtimeUnits: [] }, f.ctx, f.deps);

@@ -46,8 +46,23 @@ function mutate(sql: string, origin: string, expectedRows: number) {
   return value;
 }
 
+async function recorderPreflight() {
+  const measured = await executeOperationalRun({
+    filePath: 'packages/operator-core/lib/consult/park.live.e2e.test.ts',
+    name: 'Native park recorder preflight (no native subject)', framework: 'operational',
+    command: ['native-park-recorder-preflight'], runtimeUnits: [],
+    run: async () => ({ exitCode: 0, summary: 'Recorder reached the assertion callback.',
+      assertions: [{ id: 'recorder-callback', passed: true, evidence: 'No subject was launched.' }] }),
+  }, { workspaceId: workspace, harnessSlug: 'papercusp', projectDir: root });
+  console.info('CBP_NATIVE_RECORDER_PREFLIGHT', JSON.stringify(measured));
+  expect(measured, JSON.stringify(measured)).toMatchObject({ ok: true, status: 'pass' });
+}
+
 describe.skipIf(!profilePath)('consult-backed parking on the loaded staging operator', () => {
+  it('native recorder preflight writes a receipt before any native subject launches', recorderPreflight, 120_000);
+
   it('public park door resumes a real native subject after deadline and alternative verdicts', async () => {
+    await recorderPreflight();
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     const origin = String(profile.origin);
     expect(['http://127.0.0.1:3170', 'http://127.0.0.1:3070']).toContain(origin);

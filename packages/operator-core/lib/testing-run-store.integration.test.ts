@@ -143,4 +143,23 @@ describe('native operational execution provenance (real PG and kernel)', () => {
       WHERE workspace_id = ${workspaceId} AND file_path = 'docs/evidence/future-output.json'`;
     expect(rows).toHaveLength(0);
   });
+
+  it('preserves the native failure and server error classification when real PG rejects persistence', async () => {
+    const result = await executeOperationalRun({
+      filePath: 'lib/testing-run-store.integration.test.ts', name: 'failed native scenario and ledger',
+      command: ['native', 'failed-scenario'], framework: 'operational', runtimeUnits: [],
+      run: async () => { throw new Error('subject did not pick up the verdict'); },
+    }, { workspaceId, harnessSlug: 'operational-harness', projectDir: process.cwd() }, {
+      snapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }), verifyDefinition: async () => true,
+      persist: params => persistHarnessTestRunsWithIds({ ...params,
+        sql: () => db.adminSql`SELECT * FROM harness_shared.native_recorder_missing_table` }),
+    });
+    expect(result).toMatchObject({ ok: false, error: 'ledger_write_failed', observed: { status: 'fail',
+      artifact: { exitCode: 1, assertions: [{ id: 'native-check-exception', passed: false,
+        evidence: 'subject did not pick up the verdict' }] } },
+      persistence: { written: 0, ids: [], failure: { phase: 'insert', rowIndex: 0, errorCode: '42P01' } },
+    });
+    expect(result).not.toHaveProperty('testRunIds');
+    expect(JSON.stringify(result)).not.toContain('native_recorder_missing_table');
+  });
 });

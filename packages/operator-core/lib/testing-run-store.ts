@@ -3217,6 +3217,25 @@ export interface PersistHarnessTestRunsParams {
 export interface PersistHarnessTestRunsResult {
   written: number;
   ids: number[];
+  /** First failure only; no SQL, parameter values, or raw database messages. */
+  failure?: HarnessTestRunPersistenceFailure;
+}
+
+export interface HarnessTestRunPersistenceFailure {
+  phase: 'client' | 'row' | 'insert' | 'receipt';
+  rowIndex?: number;
+  errorName: string;
+  errorCode?: string;
+}
+
+export function classifyTestRunPersistenceFailure(
+  error: unknown,
+  phase: HarnessTestRunPersistenceFailure['phase'],
+  rowIndex?: number,
+): HarnessTestRunPersistenceFailure {
+  const { errorName, errorCode } = snapshotQueryFailure(error, 'query');
+  return { phase, ...(rowIndex === undefined ? {} : { rowIndex }), errorName,
+    ...(errorCode ? { errorCode } : {}) };
 }
 
 export interface HarnessTestRunIdQuery {
@@ -3523,12 +3542,17 @@ async function persistHarnessTestRunsInternal(
   const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
   let written = 0;
   const ids: number[] = [];
+  let failure: HarnessTestRunPersistenceFailure | undefined;
+  let phase: HarnessTestRunPersistenceFailure['phase'] = 'client';
+  let rowIndex: number | undefined;
   try {
     let sql = params.sql;
     if (!sql) {
       sql = getOrgPg().sql as unknown as SqlLike;
     }
-    for (const row of rows) {
+    for (const [index, row] of rows.entries()) {
+      rowIndex = index;
+      phase = 'row';
       const runStartedAt = isRecordedInstant(row.execution?.runStartedAt)
         ? row.execution.runStartedAt
         : isRecordedInstant(params.runStartedAt) ? params.runStartedAt : undefined;
@@ -3550,6 +3574,7 @@ async function persistHarnessTestRunsInternal(
             worktreeDirty,
           })
         : undefined;
+      phase = 'insert';
       const insert = Promise.resolve(
         sql`
           INSERT INTO harness_shared.test_runs
@@ -3574,19 +3599,22 @@ async function persistHarnessTestRunsInternal(
           written++;
           return result;
         })
-        .catch(() => {
-          /* swallow — D-007 */
+        .catch((error: unknown) => {
+          failure ??= classifyTestRunPersistenceFailure(error, 'insert', rowIndex);
           return null;
         });
       const id = Array.isArray(inserted)
         ? positiveSafeInteger((inserted[0] as { id?: unknown } | undefined)?.id)
         : null;
       if (id !== null) ids.push(id);
+      else if (inserted !== null) failure ??= {
+        phase: 'receipt', rowIndex, errorName: 'MissingInsertId',
+      };
     }
-  } catch {
-    /* swallow — D-007 */
+  } catch (error) {
+    failure ??= classifyTestRunPersistenceFailure(error, phase, rowIndex);
   }
-  return { written, ids };
+  return { written, ids, ...(failure ? { failure } : {}) };
 }
 
 /** INTERNAL — test-only. Wipe the store. */

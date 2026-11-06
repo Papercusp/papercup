@@ -35,11 +35,13 @@ import { runGit } from '../../harness/docs/git-runner';
 import {
   findHarnessTestRunIds,
   persistHarnessTestRunsWithIds,
+  classifyTestRunPersistenceFailure,
   type HarnessTestFileRow,
   type PersistHarnessTestRunsParams,
   type PersistHarnessTestRunsResult,
 } from '../../testing-run-store';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { redactSensitiveValue } from '../../sensitive-text';
 import { harnessArg, harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -615,16 +617,23 @@ export async function executeOperationalRun(
     ...(runtimeEnvironmentBefore ? { runtimeEnvironmentBefore } : {}),
     ...(runtimeEnvironmentAfter ? { runtimeEnvironmentAfter } : {}),
   };
-  const persisted = await deps.persist({
+  const persisted: PersistHarnessTestRunsResult = await deps.persist({
     workspaceId, harnessSlug, root, runGroupId, source: 'local',
     commit: after.commit, worktreeDirty: computeWorktreeDirty(before, after),
     rows: [{ filePath: path.split(sep).join('/'), framework: artifact.framework,
       status: derivedVerdict(artifact), startedAt, finishedAt,
       durationMs: finishedAt.getTime() - startedAt.getTime(),
       outputTail: operationalOutputTail(artifact), execution }],
-  });
+  }).catch((error: unknown) => ({
+    written: 0, ids: [], failure: classifyTestRunPersistenceFailure(error, 'insert'),
+  }));
   if (persisted.written !== 1 || persisted.ids.length !== 1) {
-    return { ok: false, error: 'ledger_write_failed' as const, runGroupId };
+    // The scenario has already run, possibly for many minutes. A ledger
+    // outage must not erase its result or make callers repeat native work to
+    // diagnose it. This observation is explicitly NOT a bindable ledger receipt.
+    return { ok: false, error: 'ledger_write_failed' as const, runGroupId,
+      observed: { status: derivedVerdict(artifact), artifact: redactSensitiveValue(artifact) },
+      persistence: persisted };
   }
   return { ok: true, runGroupId, testRunIds: persisted.ids, status: derivedVerdict(artifact),
     runtimeEnvironmentMeasured: Boolean(stableRecordedRuntimeEnvironment(runtimeEnvironmentBefore, runtimeEnvironmentAfter)) };
@@ -690,7 +699,7 @@ export async function recordOperationalRun(
           outputTail: `ARCHIVED MUTATION: original_test_run_id=${archive.originalTestRunId}; artifact=${evidence.filePath}; artifact_sha256=${evidence.sha256}; raw_log_sha256=${archive.rawLogSha256}. No new test execution.`,
           execution: { ...execution, failedCaseTitles: recovered.titles } }],
       });
-      if (persisted.written !== 1 || persisted.ids.length !== 1) return { ok: false, error: 'ledger_write_failed' as const, runGroupId };
+      if (persisted.written !== 1 || persisted.ids.length !== 1) return { ok: false, error: 'ledger_write_failed' as const, runGroupId, persistence: persisted };
       return { ok: true, alreadyRecorded: false, runGroupId, testRunIds: persisted.ids, status: 'fail' as const,
         recoveredFromTestRunId: archive.originalTestRunId,
         evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: evidence.commit } };
@@ -778,7 +787,7 @@ export async function recordOperationalRun(
     worktreeDirty: false,
   });
   if (persisted.written !== 1 || persisted.ids.length !== 1) {
-    return { ok: false, error: 'ledger_write_failed' as const, runGroupId };
+    return { ok: false, error: 'ledger_write_failed' as const, runGroupId, persistence: persisted };
   }
   return {
     ok: true,
