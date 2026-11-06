@@ -320,6 +320,8 @@ describe('immutable generation verifier snapshots', () => {
         { recursive: true });
       const cliEntryPath = 'packages/operator-core/lib/util/cli-entry.ts';
       write(root, cliEntryPath, readFileSync(join(SOURCE_ROOT, cliEntryPath), 'utf8'));
+      const sourceVerifierPath = 'libs/test-config/src/verifier-source.ts';
+      write(root, sourceVerifierPath, readFileSync(join(SOURCE_ROOT, sourceVerifierPath), 'utf8'));
       git(root, ['init', '-q']);
       git(root, ['add', '.']);
       git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'current generation tooling']);
@@ -359,6 +361,7 @@ describe('immutable generation verifier snapshots', () => {
         for (const tree of [donor, dest]) {
           cpSync(join(root, 'apps/operator/bin/release'), join(tree, 'apps/operator/bin/release'), { recursive: true });
           write(tree, cliEntryPath, readFileSync(join(root, cliEntryPath), 'utf8'));
+          write(tree, sourceVerifierPath, readFileSync(join(root, sourceVerifierPath), 'utf8'));
           write(tree, '.gitignore', 'node_modules/\ndist/\n.verifier-source.json\n');
           write(tree, 'scripts/npm-install-safe.mjs', 'process.stderr.write("DONOR_READ_FORBIDDEN");process.exit(91);');
           git(tree, ['init', '-q']);

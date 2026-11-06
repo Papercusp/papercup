@@ -2844,17 +2844,21 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref: sourceCommit, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
+    // Native generation selection also needs independently pinned archive
+    // custody before dependency materialization, using the reporter contract.
+    const sourceEnv = { ...env, VERIFY_TAURI_SOURCE_RECEIPT: resolve(receiptPath),
+      VERIFY_TAURI_SOURCE_REF: receipt.sourceCommit };
     if (snapshotSelection.command === 'snapshot-generation-locked') {
       await runPhase('deps.preflight', () => {
         const check = spawnSync('bash', [join(root, helperPath), 'preflight-generation', donor, root],
-          { env: verifierDependencyEnv(env), encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+          { env: verifierDependencyEnv(sourceEnv), encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
         if (check.error || check.status !== 0)
           throw new PreviewError('verifier generation preflight failed: ' +
             (check.error?.message || check.stderr || check.status), 2);
       });
     }
     const dependencies = await prepareVerifierDependencies({ donor, runtimeAssetDonor: runtimeDonor, dest: root, receipt, runPhase,
-      signal: cancellation.signal, env, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now, resourceInventory });
+      signal: cancellation.signal, env: sourceEnv, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now, resourceInventory });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
     const childEstimate = estimateVerifierCommandBudget({ ...previousMeasurements, ...measurements }, childEstimateMs,

@@ -4,9 +4,11 @@
  */
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, posix, relative } from 'node:path';
 import { promisify } from 'node:util';
+import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 
 let execMemo: typeof execFile.__promisify__ | null = null;
 const exec = ((...args: unknown[]) =>
@@ -51,6 +53,16 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
   try { pinBytes = await readFile(pinPath, 'utf8'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const verifier = pinBytes !== undefined;
+  const readArchiveSource = () => {
+    const source = readVerifierSourceReceiptSync(root);
+    if (source.sourceCommit !== sourceCommit) throw new Error('frozen archive source ref mismatch');
+    return source;
+  };
+  const archive = verifier && !existsSync(join(root, '.git')) ? readArchiveSource() : null;
+  const assertArchiveSource = () => {
+    if (archive && JSON.stringify(readArchiveSource()) !== JSON.stringify(archive))
+      throw new Error('frozen archive source provenance changed while binding');
+  };
   if (verifier) custody.push([pinPath, pinBytes!]);
   const marker = verifier ? fields(pinBytes!)
     : await readCustody(join(root, 'node_modules/.papercusp-dependency-generation'));
@@ -62,7 +74,11 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
   // Verification must not create ignored bookkeeping in the clean source tree.
   const generationRoot = await shell(root, 'dependency_generation_resolve_root "$1" "" 1', root);
   const generation = join(generationRoot, dependencyGeneration);
-  const dependencyInputSha256 = await shell(root, 'dependency_generation_input_fingerprint_ref "$1" "$2"', root, sourceCommit);
+  // The independently checked archive has no Git objects. Reuse the same
+  // filesystem lock/patch census that its publisher and materializer recorded.
+  const dependencyInputSha256 = archive
+    ? await shell(root, 'dependency_generation_input_fingerprint "$1"', root)
+    : await shell(root, 'dependency_generation_input_fingerprint_ref "$1" "$2"', root, sourceCommit);
   if (!HEX.test(dependencyInputSha256)) throw new Error('invalid committed dependency input fingerprint');
   if (verifier && marker.get('input') !== dependencyInputSha256) throw new Error('frozen dependency input mismatch');
   const selectorKey = verifier ? marker.get('selector') ?? dependencyInputSha256 : dependencyInputSha256;
@@ -122,7 +138,9 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
       if (kind === 'l') links.push(posix.join(tree, path));
     }
   }
-  const manifest = await shell(root, 'dependency_generation_input_manifest_ref "$1" "$2" | LC_ALL=C sort', root, sourceCommit);
+  const manifest = archive
+    ? await shell(root, 'dependency_generation_input_manifest "$1" | LC_ALL=C sort', root)
+    : await shell(root, 'dependency_generation_input_manifest_ref "$1" "$2" | LC_ALL=C sort', root, sourceCommit);
   const locks: { path: string; packages: Record<string, DependencyLockEntry> }[] = [];
   const inputs: [string, string][] = [];
   for (const line of manifest.split('\n')) {
@@ -138,6 +156,7 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
     }
   }
   const assertUnchanged = async () => {
+    assertArchiveSource();
     for (const [path, bytes] of custody) {
       if (await readFile(path, 'utf8') !== bytes) throw new Error('frozen dependency provenance changed while binding');
     }
@@ -150,6 +169,7 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
     for (const [tree, digest] of projections) {
       if (hash(await projection(join(root, tree))) !== digest) throw new Error('materialized dependency tree changed while binding');
     }
+    assertArchiveSource();
   };
   await assertUnchanged();
   return { identity: { dependencyInputSha256, dependencyGeneration, dependencyGenerationSnapshotSha256,

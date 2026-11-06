@@ -229,6 +229,18 @@ describe('D012 native generation closure', () => {
     expect(copied.status, copied.stderr).toBe(0);
     expect(spawnSync(process.execPath, [join(archive, 'node_modules/.bin/probe')], { encoding: 'utf8' }).stdout)
       .toBe('frozen-workspace\n');
+    vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', f.store);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receiptPath);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', ref);
+    try {
+      const binding = await bindFrozenDependencyGeneration(archive, ref);
+      expect(binding.identity.dependencyGeneration).toBe(generation.split('/').pop());
+      await binding.assertUnchanged();
+      await expect(bindFrozenDependencyGeneration(archive, '0'.repeat(40)))
+        .rejects.toThrow('source ref');
+      write(archive, workspace + '/src/cli.cjs', 'changed after binding');
+      await expect(binding.assertUnchanged()).rejects.toThrow('tampered verification source archive');
+    } finally { vi.unstubAllEnvs(); }
     expect(readdirSync(join(f.store, '.papercusp/dependency-exact-ref'))).toEqual([]);
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
   }, 120_000);
@@ -443,7 +455,7 @@ describe('D012 native generation closure', () => {
     expect(existsSync(join(f.dest, 'node_modules'))).toBe(false);
   }, 120_000);
 
-  it('runs the source-preview command from a generation without a physical dependency donor', async () => {
+  it.each([false, true])('runs the source-preview command from a generation without a physical dependency donor (archive=%s)', async archiveMode => {
     const workspace = 'packages/omp-plugin';
     const f = fixture(workspace);
     write(f.donor, '.gitignore', 'node_modules/\ndist/\n/.papercusp/scratch/\n');
@@ -457,11 +469,27 @@ describe('D012 native generation closure', () => {
     write(f.donor, 'node_modules/tsx/package.json',
       '{"name":"tsx","version":"4.0.0","type":"module","exports":"./index.mjs"}');
     write(f.donor, 'node_modules/tsx/index.mjs', 'export {};\n');
+    const runtime = 'papercusp-desktop/src-tauri/resources/workbench-install.js';
+    if (archiveMode) write(f.donor, runtime, 'historical generated runtime');
     execFileSync('git', ['add', '.gitignore', 'package-lock.json', 'scripts/source-preview.mjs'], { cwd: f.donor });
+    if (archiveMode) execFileSync('git', ['add', runtime], { cwd: f.donor });
     execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
       'commit', '-qm', 'source-preview generation command inputs'], { cwd: f.donor });
     buildWorkspace(f.donor, workspace, [process.execPath, 'build.cjs']);
-    const generation = f.publish();
+    let generation = f.publish();
+    if (archiveMode) {
+      const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+      const archive = join(f.root, 'prewarm-source'), pin = join(f.root, 'prewarm.json');
+      const receipt = await prepareVerifierSource({ repo: f.donor, ref, dest: archive,
+        inputs: ['scripts/source-preview.mjs'] });
+      writeFileSync(pin, JSON.stringify(receipt));
+      const prewarm = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+        '--ensure-ref', ref, '--verifier-source', archive], {
+        VERIFY_TAURI_SOURCE_RECEIPT: pin, VERIFY_TAURI_SOURCE_REF: ref,
+      });
+      expect(prewarm.status, prewarm.stderr).toBe(0);
+      generation = prewarm.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    }
     for (const path of ['node_modules', workspace + '/dist', 'papercusp-desktop/node_modules'])
       rmSync(join(f.donor, path), { recursive: true });
     const receiptPath = join(f.root, 'command.json');
@@ -471,6 +499,11 @@ describe('D012 native generation closure', () => {
       inputs: ['scripts/source-preview.mjs'], env,
       command: [process.execPath, 'node_modules/.bin/probe'],
       prepareChildEnv: async ({ sourceRoot }) => {
+        if (archiveMode) {
+          expect(existsSync(join(sourceRoot, '.git'))).toBe(false);
+          expect(existsSync(join(sourceRoot, runtime))).toBe(false);
+          write(sourceRoot, runtime, 'new private runtime');
+        }
         for (const path of ['node_modules/pkg/index.js', workspace + '/dist/cli.cjs',
           'papercusp-desktop/node_modules/@tauri-apps/cli/tauri.js'])
           expect(statSync(join(sourceRoot, path)).ino).not.toBe(statSync(join(generation, 'tree', path)).ino);
