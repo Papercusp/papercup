@@ -29046,7 +29046,7 @@
           "POST"
         ]
       },
-      "description": "Deterministic graduation worklist for code:run RECIPES: ranked PROMOTE candidates (recipes worth building into a tool, scored by run-frequency + distinct-agent reuse + success-rate + tool-set cohesion, 1-tool/duplicate ones excluded) + near-duplicate MERGE clusters. No LLM — counting only; YOU decide promote/merge. Read-only.",
+      "description": "Deterministic graduation worklist for code:run RECIPES: ranked PROMOTE candidates (recipes worth building into a tool, scored by run-frequency + distinct-agent reuse + success-rate + tool-set cohesion, 1-tool/duplicate ones excluded) + near-duplicate MERGE clusters. No LLM — counting only; YOU decide promote/merge. Includes currently authorized SQL opportunities with existing review history; source authority unavailable means UNKNOWN. Read-only.",
       "capabilities": [
         "recipes:read"
       ],

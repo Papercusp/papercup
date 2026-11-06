@@ -24,16 +24,20 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
   const frames: Frame[] = [];
   const observedAtCall: Frame[][] = [];
   const hookCalls: Frame[] = [];
+  const servingGeneration = 'serving-generation-v1:installed-omp-carrier';
   const servers = new Set<Server>();
   const http = createServer((request, response) => {
     const server = new Server({ name: 'native-carrier', version: '1' }, { capabilities: { tools: {} } });
     servers.add(server);
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'echo',
+      _meta: { 'papercusp/servingGeneration': servingGeneration },
       description: 'Local identity proof', inputSchema: { type: 'object' as const,
         properties: { value: { type: 'string' } }, required: ['value'] }, annotations: { readOnlyHint: true } }] }));
     server.setRequestHandler(CallToolRequestSchema, async message => {
       calls.push(message.params);
       observedAtCall.push([...frames]);
+      if (message.params._meta?.['papercusp/servingGeneration'] !== servingGeneration)
+        return { isError: true, content: [{ type: 'text', text: 'stale_tool_contract' }] };
       return { content: [{ type: 'text', text: String(message.params.arguments?.value) }] };
     });
     const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
@@ -150,8 +154,10 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
       tool: 'mcp__papercusp_su_echo', arguments: { value: `proof-${index}` } })));
     expect(calls.map(call => call.arguments)).toEqual([{ value: 'proof-1' }, { value: 'proof-2' }]);
     expect(calls.map(call => call._meta)).toEqual([
-      expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-1' }),
-      expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-2' }),
+      expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-1',
+        'papercusp/servingGeneration': servingGeneration }),
+      expect.objectContaining({ threadId: nativeSessionId, callId: 'native-call-2',
+        'papercusp/servingGeneration': servingGeneration }),
     ]);
     // An attached host must independently see the accepted root input and
     // exact model call. MCP metadata alone cannot grant retained authority.
