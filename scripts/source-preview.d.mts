@@ -73,10 +73,11 @@ export function listGitlinks(repo: any, sha: any): {
 }[];
 /** The shared top-level allowlist, read from the selection library itself. */
 export function allowlistTops(selectionLib?: string): Set<string>;
+/** @param {{ repo: string, ref: string, receiptSha256?: string }} options */
 export function measureVerifierSourceBytes({ repo, ref, receiptSha256 }: {
-    repo: any;
-    ref: any;
-    receiptSha256: any;
+    repo: string;
+    ref: string;
+    receiptSha256?: string;
 }): number;
 /**
  * Materialize `sha` of `repo` into `dest` from git objects only (no working-tree

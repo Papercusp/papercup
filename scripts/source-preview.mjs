@@ -474,6 +474,7 @@ function measureVerifierArchiveSourceBytes({ repo, ref, receiptSha256 }) {
   return bytes;
 }
 
+/** @param {{ repo: string, ref: string, receiptSha256?: string }} options */
 export function measureVerifierSourceBytes({ repo, ref, receiptSha256 }) {
   if (receiptSha256 !== undefined) return measureVerifierArchiveSourceBytes({ repo, ref, receiptSha256 });
   const measure = (source, sha, prefix = '') => {
