@@ -62,9 +62,17 @@ function guardRequest(port: number, id: string | string[] = GUARD_ID, path = '/a
   return req;
 }
 
-function guardTraceRows(log: ReturnType<typeof vi.spyOn>) {
+interface GuardTraceRow {
+  guardRequestId: string;
+  event: string;
+  elapsedMs: number;
+  stagesMs: Record<string, number>;
+  headersSent: boolean;
+  writableFinished: boolean;
+}
+function guardTraceRows(log: { mock: { calls: readonly (readonly unknown[])[] } }): GuardTraceRow[] {
   return log.mock.calls.filter(([label]) => label === '[tool-guard-http-timing]')
-    .map(([, body]) => JSON.parse(String(body)));
+    .map(([, body]) => JSON.parse(String(body)) as GuardTraceRow);
 }
 
 describe('guard HTTP outer timing', () => {

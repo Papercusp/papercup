@@ -377,7 +377,7 @@ describe('POST /agent-mcp/tool-guard', () => {
   });
 
   it('keeps extended plan timings bounded and rejects invalid labels and durations', async () => {
-    const stages = Array.from({ length: 32 }, (_, index) =>
+    const stages = Array.from({ length: 40 }, (_, index) =>
       `stage_${String.fromCharCode(97 + Math.floor(index / 26), 97 + index % 26)}`);
     planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
       for (const stage of ['private-plan-content', 'start_gate_snapshot_private-content', 'x'.repeat(33),

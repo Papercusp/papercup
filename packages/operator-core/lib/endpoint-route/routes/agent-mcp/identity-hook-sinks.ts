@@ -214,8 +214,9 @@ const toolGuard = defineTool({
       if (!(/^[a-z_]{1,32}$/.test(stage) ||
           /^start_gate_snapshot_(?:plan-items|work-contracts|lineage-parties)$/.test(stage)) ||
           !Number.isFinite(durationMs) || durationMs < 0) return;
-      // The current guard emits 15 outer stages plus 10 snapshot source stages.
-      if (!(stage in planStages) && Object.keys(planStages).length >= 32) return;
+      // Keep room for the current 24 guard stages plus five goal legs and four
+      // pool-acquisition measurements; bound untrusted future labels at 40.
+      if (!(stage in planStages) && Object.keys(planStages).length >= 40) return;
       planStages[stage] = (planStages[stage] ?? 0) + durationMs;
     };
     const workspaceId = await resolveWorkspace(body);

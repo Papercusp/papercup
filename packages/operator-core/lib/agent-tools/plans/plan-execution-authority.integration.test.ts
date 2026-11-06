@@ -56,7 +56,7 @@ vi.mock('./source', async original => ({
 
 import { preservePlanExecutionProgress, readExecutionPlanRow, readPlanExecutionStart,
   recordPlanExecutionStart } from './plan-execution-authority';
-import { checkExecutionPlan, checkPlanExecutionGuard } from './plan-execution-guard';
+import { checkExecutionPlan, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
 import { gcOldPlanRevisions } from './revisions-gc';
 
 let db: FreshPgDb;
@@ -102,7 +102,7 @@ beforeAll(async () => {
       audit_kind text,audit_seq integer,audited_plan_content_hash text,audited_plan_revision_id bigint);
     CREATE TABLE harness_shared.session_briefs (owner_id text, workspace_id text,current_plan_slug text,harness_slug text,control_state jsonb);
     CREATE TABLE harness_shared.adv_sessions (coord_owner_id text,workspace_id text,plan_slug text,ended_at timestamptz);
-    CREATE TABLE harness_shared.plan_item_claims (owner text,workspace_id text,harness_slug text,plan_slug text);
+    CREATE TABLE harness_shared.plan_item_claims (owner text,workspace_id text,harness_slug text,plan_slug text,item_id text);
     CREATE TABLE harness_shared.work_items (taken_by text,workspace_id text,harness_slug text,source_plan_slug text,status text,
       feature_id text,item_kind text,plan_slug text,plan_line_id text,plan_line_text text,plan_importance text,
       plan_phase text,plan_decision_refs text[],plan_deliverable text,plan_owner_gate_marker text,plan_seq integer);
@@ -207,6 +207,11 @@ describe('canonical successful-start revision authority (real PG)', () => {
   it('refuses fully ready never-started plans and permits native write admission only after a strict receipt, without op_status', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${identity.ownerId},${scope.workspaceId},'feature','project',NULL)`;
     const input = { ownerId: identity.ownerId, workspaceId: scope.workspaceId, toolName: 'apply_patch', args: {} };
+    // Exercise the real census query explicitly so fixture/schema drift reports
+    // its SQL error instead of only the guard's intentionally opaque refusal.
+    await expect(readExecutionPlanBindings(identity.ownerId, scope.workspaceId)).resolves.toEqual([
+      { planSlug: scope.planSlug, harnessSlug: scope.harnessSlug, source: 'session-brief', sourceRef: scope.planSlug },
+    ]);
     expect(await checkPlanExecutionGuard(input)).toMatchObject({ blockers: ['plan_not_started'] });
     const receipt = await issue();
     expect(receipt.seq).toBe(1);

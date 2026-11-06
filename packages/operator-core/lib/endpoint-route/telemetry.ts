@@ -64,7 +64,7 @@ export function installGuardHttpDiagnostics(server: Server): void {
       receivedAt: new Date().toISOString(), stages: {}, outgoing, closed: false, lateResponseLogged: false };
     guardHttpDiagnostics.incoming.set(incoming, trace);
     const writeHead = outgoing.writeHead;
-    outgoing.writeHead = function (...args: Parameters<ServerResponse['writeHead']>) {
+    outgoing.writeHead = function (this: ServerResponse, ...args: Parameters<ServerResponse['writeHead']>) {
       trace.stages.headers_write ??= Math.round(performance.now() - trace.startedAt);
       return writeHead.apply(this, args);
     } as ServerResponse['writeHead'];

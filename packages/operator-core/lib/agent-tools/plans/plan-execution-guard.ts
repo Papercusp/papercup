@@ -247,7 +247,7 @@ async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
   return runWithWorkspace(workspaceId, async () => {
     const { resolveOwnerGoalWithAssessment } = await measurePlanStage('goal_module', observe,
       () => import('../coordination/agent-goal-sources'));
-    return measurePlanStage('goal_read', observe, () => resolveOwnerGoalWithAssessment(ownerId, 'self'));
+    return measurePlanStage('goal_read', observe, () => resolveOwnerGoalWithAssessment(ownerId, 'self', observe));
   });
 }
 
@@ -264,14 +264,24 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
   observe?: PlanExecutionTimingObserver): Promise<string[]> {
   return runWithWorkspace(workspaceId, async () => {
     const { sql } = getOrgPg();
-    const rows = await measurePlanStage('scope', observe, () => sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null; created_at: Date | string | null }>>`
+    // A known harness already scopes the canonical rendered read. Start it with
+    // the independent census, but interpret the census first (including errors).
+    // No authority is cached: their hashes and the final revision recheck still
+    // fence drift. Unscoped bindings must resolve their harness before reading.
+    const [scopeRead, renderedRead] = await Promise.allSettled([
+      measurePlanStage('scope', observe, () => sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null; created_at: Date | string | null }>>`
       SELECT harness_slug, content, content_hash, op_status, created_at FROM harness_shared.harness_plans
        WHERE workspace_id=${workspaceId} AND plan_slug=${binding.planSlug}
-         AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`);
+         AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`),
+      binding.harnessSlug ? measurePlanStage('plan_row', observe,
+        () => getPlanRow(binding.planSlug, { harnessSlug: binding.harnessSlug!, workspaceId })) : Promise.resolve(null),
+    ]);
+    const rows = settledPlanValue(scopeRead);
     if (rows.length !== 1) return [rows.length ? 'plan_scope_ambiguous' : 'bound_plan_missing'];
     const row = rows[0]!;
     const opts = { harnessSlug: row.harness_slug, workspaceId };
-    const plan = await measurePlanStage('plan_row', observe, () => getPlanRow(binding.planSlug, opts));
+    const plan = binding.harnessSlug ? settledPlanValue(renderedRead)
+      : await measurePlanStage('plan_row', observe, () => getPlanRow(binding.planSlug, opts));
     if (!plan || plan.contentHash !== row.content_hash) return ['plan_revision_changed'];
     const parsed = parsePlan(plan.content);
     if (!['ready', 'active', 'awaiting-acceptance'].includes(parsed.frontmatter.status ?? ''))

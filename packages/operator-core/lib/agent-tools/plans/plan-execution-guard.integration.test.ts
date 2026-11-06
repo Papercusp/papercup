@@ -118,6 +118,55 @@ beforeEach(async () => {
 });
 
 describe('real write-boundary bypass regression', () => {
+  it('starts the canonical scoped read before the scope census settles and refuses mismatched revisions', async () => {
+    const source = await import('./source');
+    const originalRead = source.getPlanRow;
+    let entered!: () => void, rendered!: () => void, release!: () => void;
+    const scopeEntered = new Promise<void>(resolve => { entered = resolve; });
+    const rowRendered = new Promise<void>(resolve => { rendered = resolve; });
+    const holdScope = new Promise<void>(resolve => { release = resolve; });
+    const read = vi.spyOn(source, 'getPlanRow').mockImplementation(async (...args) => {
+      const row = await originalRead(...args);
+      rendered();
+      return row;
+    });
+    connection.sql = new Proxy(db.sql, {
+      apply(target, thisArg, args) {
+        const template = args[0];
+        if (Array.isArray(template) && template.join(' ').includes('SELECT harness_slug, content, content_hash, op_status, created_at')) {
+          entered();
+          return holdScope.then(() => Reflect.apply(target, thisArg, args));
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+    const attempt = checkPlanExecutionReadiness(binding, WS);
+    try {
+      await scopeEntered;
+      expect(read).toHaveBeenCalledWith(binding.planSlug, { harnessSlug: binding.harnessSlug, workspaceId: WS });
+      await rowRendered;
+      await db.sql`UPDATE harness_shared.harness_plans SET content_hash='changed-during-scoped-read'`;
+      release();
+      expect(await attempt).toEqual(['plan_revision_changed']);
+    } finally {
+      release();
+      await attempt.catch(() => {});
+      connection.sql = db.sql;
+      read.mockRestore();
+    }
+  });
+
+  it('retains missing-scope refusal when the concurrent rendered read rejects', async () => {
+    await db.sql`DELETE FROM harness_shared.harness_plans`;
+    const source = await import('./source');
+    const read = vi.spyOn(source, 'getPlanRow').mockRejectedValue(new Error('rendered read unavailable'));
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['bound_plan_missing']);
+    } finally { read.mockRestore(); }
+  });
+
   it('separates goal module and read timing without allowing a broken diagnostic sink to change refusal', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
       ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;
@@ -128,7 +177,12 @@ describe('real write-boundary bypass regression', () => {
         throw new Error('diagnostic sink unavailable');
       } });
     expect(result).toMatchObject({ planSlug: 'draft-feature', blockers: ['plan_status:draft'] });
-    expect(timings.map(timing => timing.stage)).toEqual(expect.arrayContaining(['goal_module', 'goal_read', 'goal']));
+    expect(timings.map(timing => timing.stage)).toEqual(expect.arrayContaining([
+      'goal_module', 'goal_read', 'goal',
+      'goal_leg_work_items', 'goal_leg_plan_items', 'goal_leg_fleet', 'goal_leg_override', 'goal_leg_links',
+      'goal_pool_acquire_work_items', 'goal_pool_acquire_plan_items',
+      'goal_pool_acquire_fleet', 'goal_pool_acquire_override',
+    ]));
     expect(timings.every(timing => Number.isFinite(timing.durationMs) && timing.durationMs >= 0)).toBe(true);
   });
   it('denies native patches and shell writes despite an unrelated held WI and no worn identity', async () => {
