@@ -64,6 +64,7 @@ describe('identity template reader through canonical cell and read-only dispatch
     expect(dispatched.gateBypass).toBeUndefined();
     expect(dispatched.isSuperuser).toBe(false);
     expect(dispatched.runId).toBe(ctx.runId);
+    expect(dispatched.quotaSubject).toBe('wearer:wearer-1');
     expect(ctx.principal!.capabilities.size).toBe(3);
   });
 
@@ -139,8 +140,9 @@ describe('identity template reader through canonical cell and read-only dispatch
     };
     mocks.lookup.mockReturnValue(projected);
     let used = 0;
+    const windows: string[] = [];
     mocks.dispatch.mockImplementation((tool, name, args, ctx) => realDispatch(tool, name, args, ctx, {
-      readQuotaState: async () => ({ count: used }),
+      readQuotaState: async (_name, _ctx, window) => { windows.push(window); return { count: used }; },
     }));
     const ctx = context();
     const make = (needs: string[]) => createIdentityTemplateCellReader({
@@ -152,11 +154,13 @@ describe('identity template reader through canonical cell and read-only dispatch
     expect(handler).toHaveBeenCalledTimes(1);
     expect(await make([])(ref, new AbortController().signal)).toMatchObject({ status: 'unknown', unknown: { code: 'not-measured' } });
     used = 1;
+    ctx.runId = 'fresh-run-cannot-reset-wearer-quota';
     expect(await make(['read:status'])(ref, new AbortController().signal)).toMatchObject({ status: 'unknown', unknown: { code: 'resolver-failed', detail: expect.stringContaining('quota_exceeded') } });
     used = 0;
     ctx.role = 'worker';
     expect(await make(['read:status'])(ref, new AbortController().signal)).toMatchObject({ status: 'unknown', unknown: { code: 'not-measured' } });
     expect(handler).toHaveBeenCalledTimes(1);
+    expect(new Set(windows)).toEqual(new Set(['subject:wearer:wearer-1']));
   });
 
   it('refuses a cancelled wearer context even when the template signal is still live', async () => {

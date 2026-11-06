@@ -1,8 +1,7 @@
 /**
  * The wearer authority shared by every host path that runs identity work as its
  * wearer (portable-identity-packages-2026-09-26 P-018; D-008, D-028, D-031):
- * async rule reactions (`events/identity-reaction.ts`) and turn-start recipe
- * providers (`turn-start-package-sink.ts`).
+ * async rule reactions, turn-start tool/recipe providers and template cell reads.
  *
  * A leaf on purpose: it imports no store and no dispatcher, so both the emit
  * path and the turn-start sink can load it statically.
@@ -68,6 +67,47 @@ export function identityCeilingRefusal(
  */
 export function wearerQuotaSubject(ownerId: string): string {
   return `wearer:${ownerId}`;
+}
+
+/** Grants = wearer ∩ declared needs ∩ pot/role ceiling; '*' in one set admits
+ * whatever the others name. Shared by inspection and every wearer runtime. */
+export function narrowIdentityCapabilities(
+  wearer: ReadonlySet<string>, declaredNeeds: readonly string[], ceiling: ReadonlySet<string>,
+): Set<string> {
+  const sets = [wearer, new Set(declaredNeeds), ceiling];
+  const candidates = new Set(sets.flatMap((set) => [...set]));
+  return new Set([...candidates].filter((cap) => sets.every((set) => set.has(cap) || set.has('*'))));
+}
+
+type ValidatedWearerContext = UnifiedToolContext & {
+  workspaceId: string;
+  role: NonNullable<UnifiedToolContext['role']>;
+  principal: NonNullable<UnifiedToolContext['principal']>;
+};
+
+/** Intersect current authority, declared needs and the live ceiling without
+ * mutating the caller. Identity work always keeps normal gates and charges the
+ * wearer across invocations, including template reads with fresh run ids. */
+export function narrowWearerToolContext(input: {
+  ownerId: string;
+  context: UnifiedToolContext;
+  declaredNeeds: readonly string[];
+  capabilityCeiling: ReadonlySet<string>;
+  signal: AbortSignal;
+}): ValidatedWearerContext | null {
+  const ctx = input.context;
+  if (!input.ownerId || !ctx.principal || !ctx.workspaceId || !ctx.role ||
+      ctx.principal.workspaceId !== ctx.workspaceId || input.signal.aborted || ctx.signal.aborted) return null;
+  const capabilities = narrowIdentityCapabilities(
+    ctx.principal.capabilities, input.declaredNeeds, input.capabilityCeiling,
+  );
+  return {
+    ...ctx, gateBypass: undefined, isSuperuser: false,
+    workspaceId: ctx.workspaceId, role: ctx.role,
+    quotaSubject: wearerQuotaSubject(input.ownerId),
+    signal: AbortSignal.any([input.signal, ctx.signal]),
+    principal: { ...ctx.principal, capabilities },
+  };
 }
 
 /** See {@link wearerQuotaSubject}. */

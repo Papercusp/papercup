@@ -14,6 +14,9 @@ import { currentCallerRecipeCatalog, inspectScriptContract,
   ORCHESTRATION_RECURSION_EXCLUSIONS } from '../agent-tools/orchestration/contract-preflight';
 import type { SavedRecipeAdapter, SavedRecipeSelector } from '../agent-tools/orchestration/saved-recipe-adapter';
 import { orchestrationSourceArgsSchema } from '../agent-tools/orchestration/public-contract';
+import { narrowIdentityCapabilities } from './wearer-authority';
+
+export { narrowIdentityCapabilities } from './wearer-authority';
 
 const pinSchema = orchestrationSourceArgsSchema.options[0].shape.inspectionPin.unwrap().extend({
   recipeRevision: z.string().regex(/^[0-9a-f]{64}$/),
@@ -200,16 +203,6 @@ async function hasIndirectFacadeUse(source: string): Promise<boolean> {
   }
   visit(file);
   return indirect;
-}
-
-/** Grants = wearer ∩ declared needs ∩ pot/role ceiling; '*' in one set admits
- * whatever the others name. Shared by inspection and the runtime (P-013). */
-export function narrowIdentityCapabilities(
-  wearer: ReadonlySet<string>, declaredNeeds: readonly string[], ceiling: ReadonlySet<string>,
-): Set<string> {
-  const sets = [wearer, new Set(declaredNeeds), ceiling];
-  const candidates = new Set(sets.flatMap((set) => [...set]));
-  return new Set([...candidates].filter((cap) => sets.every((set) => set.has(cap) || set.has('*'))));
 }
 
 type IdentityRecipeInspectionInput = {

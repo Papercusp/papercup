@@ -1,7 +1,8 @@
 /** portable-identity-packages P-010 / PORTABLE-P-010@1 — the turn-start sink
  * invocation over REAL control-anchor rows, the REAL identity source catalog, the
- * REAL capability-class registry and the REAL output validator. Only the final
- * read-only tool dispatch is replaced (there is no projected tool to run here).
+ * REAL capability-class registry and the REAL output validator. Allocation cases
+ * substitute provider output; authority cases use the real read-only bridge and
+ * projected dispatcher with controlled grant/quota ports and a protected handler.
  *
  * Normal case: every due contribution of every worn identity shares ONE sink
  * budget and ONE per-turn ceiling. Counterexample (the falsifier): adding
@@ -17,7 +18,8 @@ import { stringify as stringifyYaml } from 'yaml';
 import type { Sql } from 'postgres';
 import { layerContentHash } from '@papercusp/orchestrator/blueprint';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import type { ProjectedTool, WrapDispatch } from '@papercusp/tooldef';
+import type { DispatchProjectedDeps, ProjectedTool, WrapDispatch } from '@papercusp/tooldef';
+import type { ReadOnlyDispatchEnv } from '../events/await/predicate-watch';
 import type { SavedRecipeAdapter } from '../agent-tools/orchestration/saved-recipe-adapter';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { DEFAULT_SINK_HOST_LIMITS, resetSinkEvaluatorForTests } from './sink-evaluator';
@@ -36,18 +38,26 @@ const pg = vi.hoisted(() => ({ sql: null as Sql | null }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: pg.sql }),
+  withWorkspace: async (_workspace: string, fn: (tx: unknown) => unknown) => fn(pg.sql),
 }));
 const dispatch = vi.hoisted(() => ({
-  calls: [] as Array<{ tool: string; env: { role: string; spawnId: string; signal?: AbortSignal } }>,
+  calls: [] as Array<{ tool: string; env: ReadOnlyDispatchEnv }>,
   impl: null as null | ((tool: string) => Promise<unknown>),
+  real: false,
+  lookup: vi.fn(),
+  projectedDeps: {} as DispatchProjectedDeps,
 }));
-vi.mock('../events/await/predicate-watch', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../events/await/predicate-watch')>()),
-  dispatchReadOnlyTool: async (tool: string, _args: unknown, env: { role: string; spawnId: string; signal?: AbortSignal }) => {
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), lookupByMcpName: dispatch.lookup,
+}));
+vi.mock('../projected-tool-deps', () => ({ PROJECTED_DEPS: dispatch.projectedDeps }));
+vi.mock('../events/await/predicate-watch', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../events/await/predicate-watch')>();
+  return { ...real, dispatchReadOnlyTool: async (tool: string, args: Record<string, unknown>, env: ReadOnlyDispatchEnv) => {
     dispatch.calls.push({ tool, env });
-    return dispatch.impl!(tool);
-  },
-}));
+    return dispatch.real ? real.dispatchReadOnlyTool(tool, args, env) : dispatch.impl!(tool);
+  } };
+});
 
 const WS = 'pkg-sink-ws';
 const POT = 'pkg-sink-pot';
@@ -67,7 +77,7 @@ const LIMITS = {
 // A real read-only tool and a saved recipe over it. The recipe provider's
 // evidence comes from the canonical inspector, never hand-written.
 const RECIPE_REVISION = 'a'.repeat(64);
-const readNotes = vi.fn(async () => ({ notes: 'from the recipe' }));
+const readNotes = vi.fn(async () => ({ content: [], structuredContent: { notes: 'from the recipe' } }));
 const notesTool: ProjectedTool = { pluginName: 'notes-plugin', description: 'read notes', effect: 'read',
   expose: { mcp: { name: 'notes:read' } }, capabilities: ['notes:read'], inputSchema: {},
   fn: readNotes as unknown as ProjectedTool['fn'] };
@@ -105,6 +115,9 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     { ceilings: [], protectedAdditions: [] }) => defaultTurnStartPackageSinkDeps({
     runtime: { tools: [notesTool], recipes, dispatchDeps: {}, wrapDispatch: recordCall },
     readCeiling: async () => ceiling,
+  });
+  const toolSinkDeps = () => defaultTurnStartPackageSinkDeps({
+    readCeiling: async () => ({ ceilings: [], protectedAdditions: [] }),
   });
 
   async function registerClass(id: string, provider: string | null, kind: 'tool' | 'recipe' = 'tool') {
@@ -180,6 +193,9 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     resetSinkEvaluatorForTests();
     dispatch.calls = [];
     dispatch.impl = async () => ({ notes: 'x'.repeat(4_000) });
+    dispatch.real = false;
+    dispatch.lookup.mockReset().mockReturnValue(notesTool);
+    for (const key of Object.keys(dispatch.projectedDeps)) delete (dispatch.projectedDeps as Record<string, unknown>)[key];
     recipeCalls.length = 0;
     readNotes.mockClear();
   });
@@ -193,7 +209,7 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
 
   it('shares ONE aggregate budget across every worn identity, in priority order, and renders it', async () => {
     await wear('owner-agg', ['domain:pkg-a', 'domain:pkg-b']);
-    const sink = await evaluateTurnStartPackageSink({ ownerId: 'owner-agg', workspaceId: WS, deps: { limits: LIMITS }, turnId:'t1' });
+    const sink = await evaluateTurnStartPackageSink({ ownerId: 'owner-agg', workspaceId: WS, deps: { ...toolSinkDeps(), limits: LIMITS }, turnId:'t1' });
     const result = sink.result!;
     expect(result.budget.tokens).toBe(DEFAULT_SINK_HOST_LIMITS.sinkBudget.tokens);
     // Three requests of 300 against a 400 pool: allocation never exceeds the pool.
@@ -233,13 +249,13 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
 
   it('adding providers never multiplies the sink, and the turn ceiling caps a second invocation', async () => {
     await wear('owner-one', ['domain:pkg-a']);
-    const alone = (await evaluateTurnStartPackageSink({ ownerId: 'owner-one', workspaceId: WS, deps: { limits: LIMITS }, turnId:'solo' })).result!;
+    const alone = (await evaluateTurnStartPackageSink({ ownerId: 'owner-one', workspaceId: WS, deps: { ...toolSinkDeps(), limits: LIMITS }, turnId:'solo' })).result!;
     await wear('owner-many', ['domain:pkg-a', 'domain:pkg-b', 'domain:pkg-unbound']);
-    const many = (await evaluateTurnStartPackageSink({ ownerId: 'owner-many', workspaceId: WS, deps: { limits: LIMITS }, turnId:'m1' })).result!;
+    const many = (await evaluateTurnStartPackageSink({ ownerId: 'owner-many', workspaceId: WS, deps: { ...toolSinkDeps(), limits: LIMITS }, turnId:'m1' })).result!;
     expect(many.budget.tokens).toBe(alone.budget.tokens);
     expect(many.allocation.reduce((sum, row) => sum + row.allowance, 0)).toBeLessThanOrEqual(many.budget.tokens);
     // Same session, same turn: the second sink invocation gets only what the ceiling has left.
-    const again = (await evaluateTurnStartPackageSink({ ownerId: 'owner-many', workspaceId: WS, deps: { limits: LIMITS }, turnId:'m1' })).result!;
+    const again = (await evaluateTurnStartPackageSink({ ownerId: 'owner-many', workspaceId: WS, deps: { ...toolSinkDeps(), limits: LIMITS }, turnId:'m1' })).result!;
     expect(again.budget.tokens).toBe(Math.min(
       DEFAULT_SINK_HOST_LIMITS.sinkBudget.tokens,
       DEFAULT_SINK_HOST_LIMITS.turnCeiling.tokens - many.deliveredTokens,
@@ -254,7 +270,7 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
       await wear('owner-fence', ['domain:pkg-a'], { specificationRevision: 'spec-2', stateRevision: 'state-2' });
       return { notes: 'late' };
     };
-    const sink = await evaluateTurnStartPackageSink({ ownerId: 'owner-fence', workspaceId: WS, deps: { limits: LIMITS }, turnId:'f1' });
+    const sink = await evaluateTurnStartPackageSink({ ownerId: 'owner-fence', workspaceId: WS, deps: { ...toolSinkDeps(), limits: LIMITS }, turnId:'f1' });
     expect(sink.result?.invocation.attachmentRevision).toBe('spec-1:state-1');
     expect(sink.classes).toEqual([]);
     expect(packageSinkReceipt(sink)).toMatchObject({ status: 'fenced' });
@@ -326,6 +342,71 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     await expect(resolve(['domain:pkg-recipe'], null)).rejects.toThrow('capability-class:recipe-wearer-unscoped');
   });
 
+  it.each(['tool', 'recipe'] as const)('%s providers enforce the live grant, ceiling, role and wearer quota through real dispatch', async (kind) => {
+    const ownerId = `owner-authority-${kind}`;
+    const identityId = kind === 'tool' ? 'pkg-a' : 'pkg-recipe';
+    await wear(ownerId, [`domain:${identityId}`]);
+    dispatch.real = true;
+    const contexts: UnifiedToolContext[] = [], windows: string[] = [];
+    let revoked = false, used = 0, deniedCeiling = false;
+    const guarded: ProjectedTool = { ...notesTool, agentRoles: ['su'], rolesQuota: { su: { perRun: 1 } } };
+    dispatch.lookup.mockReturnValue(guarded);
+    const grantCheck = vi.fn<NonNullable<DispatchProjectedDeps['checkCapabilityEnvelope']>>(async ({ ctx }) => {
+      contexts.push(ctx);
+      return { decision: revoked ? 'deny' : 'allow', applied: true,
+        posture: revoked ? 'rejected' : 'auto', reason: 'fixture live grant revoked' };
+    });
+    dispatch.projectedDeps.checkCapabilityEnvelope = grantCheck;
+    dispatch.projectedDeps.readQuotaState = async (_name, _ctx, window) => { windows.push(window); return { count: used }; };
+    const deps = defaultTurnStartPackageSinkDeps({
+      runtime: { tools: [guarded], recipes, dispatchDeps: dispatch.projectedDeps, wrapDispatch: recordCall },
+      readCeiling: async () => ({ ceilings: deniedCeiling ? [{ denyCapabilities: ['notes:*'] }] : [], protectedAdditions: [] }),
+    });
+    let turn = 0;
+    const run = () => evaluateTurnStartPackageSink({ ownerId, workspaceId: WS, turnId: `${kind}-${++turn}`,
+      deps: { ...deps, limits: LIMITS } });
+    const omitted = (sink: Awaited<ReturnType<typeof run>>) => {
+      expect(sink.result!.deliveries).toEqual([]);
+      expect(sink.result!.omissions).toEqual([expect.objectContaining({ reason: 'provider-error' })]);
+      expect(projectPackageOrientationRows(sink.classes, 'turn-start')[0]!.text).toContain('omitted: provider-error');
+      expect(readNotes).toHaveBeenCalledTimes(1);
+    };
+    expect((await run()).result!.omissions).toEqual([]);
+    expect(readNotes).toHaveBeenCalledTimes(1);
+    revoked = true; omitted(await run());
+    expect(grantCheck).toHaveBeenCalledTimes(2);
+    revoked = false; deniedCeiling = true; omitted(await run());
+    deniedCeiling = false; used = 1; omitted(await run());
+    expect(new Set(contexts.map(ctx => ctx.runId)).size).toBeGreaterThan(1);
+    expect(new Set(windows)).toEqual(new Set([`subject:wearer:${ownerId}`]));
+    expect(contexts.every(ctx => ctx.principal?.slug === ownerId && ctx.role === 'su' &&
+      ctx.quotaSubject === `wearer:${ownerId}` && ctx.gateBypass === undefined && !ctx.isSuperuser)).toBe(true);
+    expect(contexts.every(ctx => [...ctx.principal!.capabilities].join(',') === 'notes:read')).toBe(true);
+    used = 0;
+    await db.adminSql`INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec)
+      VALUES (${WS}, 'console', ${ownerId}, ${db.adminSql.json({ v: 1, workspaceId: WS, harnessSlug: POT, role: 'judge' })})`;
+    omitted(await run());
+  }, 120_000);
+
+  it('re-reads tool attachment and cancellation before dispatching the protected handler', async () => {
+    const ownerId = 'owner-tool-fresh';
+    await wear(ownerId, ['domain:pkg-a']);
+    dispatch.real = true;
+    const deps = toolSinkDeps();
+    const call = { workspaceId: WS, potSlug: POT, ownerId, identityId: 'pkg-a',
+      contribution: { id: 'brief', ref: 'context.notes@1', verb: 'read',
+        injection: { sinks: ['turn-start'] as ['turn-start'], trigger: 'every-turn' as const,
+          tokenBudget: 300, priority: 90, overBudget: 'truncate' as const } },
+      signal: new AbortController().signal, deadlineAt: Date.now() + 15_000, wearerRole: 'su' };
+    await wear(ownerId, ['domain:pkg-other']);
+    await expect(deps.produceContext(call)).rejects.toThrow('tool-wearer-detached');
+    await wear(ownerId, ['domain:pkg-a']);
+    const abort = new AbortController(); abort.abort();
+    await expect(deps.produceContext({ ...call, signal: abort.signal })).rejects.toThrow('tool-wearer-cancelled');
+    expect(readNotes).not.toHaveBeenCalled();
+    expect(dispatch.calls).toEqual([]);
+  }, 120_000);
+
   it('is a no-op for a wearer that declares nothing due, and for an unknown session', async () => {
     await wear('owner-builtin', ['autonomy:su.mode-auto']);
     const builtin = await evaluateTurnStartPackageSink({ ownerId: 'owner-builtin', workspaceId: WS, deps: { limits: LIMITS }, turnId:'n1' });
@@ -360,7 +441,7 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
       await wear('owner-judge-tool', ['domain:pkg-a']);
       await launchRecord('owner-judge-tool', 'judge', ['domain:pkg-a']);
       const sink = await evaluateTurnStartPackageSink({
-        ownerId: 'owner-judge-tool', workspaceId: WS, deps: { limits: LIMITS }, turnId: 'j1',
+        ownerId: 'owner-judge-tool', workspaceId: WS, deps: { ...toolSinkDeps(), limits: LIMITS }, turnId: 'j1',
       });
       expect(sink.result!.omissions).toEqual([]);
       expect(dispatch.calls).toHaveLength(1);

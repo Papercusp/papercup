@@ -45,6 +45,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
 import {
   BlueprintSourceDocumentSchema,
   resolveBlueprintSource,
@@ -61,7 +62,7 @@ import { resolveIdentityClassProvider } from './class-provider';
 import { validateIdentityProviderOutput } from './provider-output';
 import { runIdentityRecipeProvider, type IdentityRecipeRuntimeDeps } from './recipe-provider-runtime';
 import type { IdentityTemplateWearer } from './state-template-reader';
-import { buildWearerToolContext, identityCeilingRefusal, identityWearerRole } from './wearer-authority';
+import { buildWearerToolContext, identityCeilingRefusal, identityWearerRole, narrowWearerToolContext } from './wearer-authority';
 import { wearerLaunchRoleSql } from './wearer-launch-record';
 import { getIdentitySource, localDirs } from './source';
 import {
@@ -285,34 +286,52 @@ export function packageSinkReceipt(sink: TurnStartPackageSink): Record<string, u
  * dispatcher's identity grant kernel then judges the wearer's own grants on
  * every call the recipe makes.
  */
-export async function resolvePackageSinkRecipeWearer(input: {
+export async function resolvePackageSinkWearer(input: {
+  providerKind: 'tool' | 'recipe';
   ownerId: string;
   workspaceId: string;
   identityId: string;
+  expectedPotSlug?: string;
   requiredCapabilities: readonly string[];
   signal: AbortSignal;
 }, deps: {
   readWearer: TurnStartPackageSinkDeps['readWearer'];
   readCeiling: NonNullable<PackageSinkHost['readCeiling']>;
 }): Promise<IdentityTemplateWearer> {
+  const refuse = (reason: string): never => { throw new Error(`capability-class:${input.providerKind}-wearer-${reason}`); };
+  if (input.signal.aborted) refuse('cancelled');
   const wearer = await deps.readWearer(input.ownerId, input.workspaceId);
   if (!wearer || !wearer.stack.some((ref) => stackRefIdentity(ref) === input.identityId)) {
-    throw new Error('capability-class:recipe-wearer-detached');
+    return refuse('detached');
   }
-  if (!wearer.potSlug) throw new Error('capability-class:recipe-wearer-unscoped');
+  if (!wearer.potSlug) return refuse('unscoped');
+  if (input.expectedPotSlug && input.expectedPotSlug !== wearer.potSlug) refuse('scope-changed');
   const role = identityWearerRole(wearer.launchRecord);
   const ceiling = await deps.readCeiling({
     workspaceId: input.workspaceId, harnessSlug: wearer.potSlug, role,
   });
   const capabilities = input.requiredCapabilities.filter((cap) => identityCeilingRefusal(cap, ceiling) === null);
-  return {
-    ownerId: input.ownerId,
-    capabilityCeiling: new Set(capabilities),
+  const capabilityCeiling = new Set(capabilities);
+  const context = narrowWearerToolContext({
+    ownerId: input.ownerId, declaredNeeds: input.requiredCapabilities, capabilityCeiling, signal: input.signal,
     context: buildWearerToolContext({
       workspaceId: input.workspaceId, ownerId: input.ownerId, role,
-      harnessSlug: wearer.potSlug, capabilities, spawnId: PACKAGE_SINK_SPAWN_ID, signal: input.signal,
+      harnessSlug: wearer.potSlug, capabilities: input.requiredCapabilities,
+      spawnId: PACKAGE_SINK_SPAWN_ID, signal: input.signal,
     }),
+  });
+  if (!context) return refuse('cancelled');
+  return {
+    ownerId: input.ownerId, capabilityCeiling, context,
   };
+}
+
+/** Retain the recipe entry point and refusal codes for existing consumers. */
+export function resolvePackageSinkRecipeWearer(
+  input: Omit<Parameters<typeof resolvePackageSinkWearer>[0], 'providerKind'>,
+  deps: Parameters<typeof resolvePackageSinkWearer>[1],
+): Promise<IdentityTemplateWearer> {
+  return resolvePackageSinkWearer({ ...input, providerKind: 'recipe' }, deps);
 }
 
 /** The provider path's host seams. Production passes none: the P-013 runtime's
@@ -413,6 +432,7 @@ export function defaultTurnStartPackageSinkDeps(host: PackageSinkHost = {}): Tur
           deadlineAt: call.deadlineAt, maxBytes: PACKAGE_CONTEXT_OUTPUT_MAX_BYTES, declaredNeeds,
           resolveWearer: () => resolvePackageSinkRecipeWearer({
             ownerId: call.ownerId, workspaceId: call.workspaceId, identityId: call.identityId,
+            expectedPotSlug: call.potSlug,
             requiredCapabilities: declaredNeeds, signal: call.signal,
           }, { readWearer, readCeiling: host.readCeiling ?? readIdentityReactionCeiling }),
         }, host.runtime);
@@ -424,12 +444,19 @@ export function defaultTurnStartPackageSinkDeps(host: PackageSinkHost = {}): Tur
       }
       const tool = resolved.provider.verbBindings[resolved.verb];
       if (typeof tool !== 'string' || !tool.trim()) throw new Error('capability-class:verb-unbound');
-      const value = host.readProviderValue
-        ? await host.readProviderValue({ call, providerKind: 'tool' })
-        : await dispatchReadOnlyTool(tool.trim(), {}, {
-          workspaceId: call.workspaceId, harnessSlug: call.potSlug, role: identityWearerRole({ role: call.wearerRole }),
-          onBehalfOf: call.ownerId, spawnId: PACKAGE_SINK_SPAWN_ID, signal: call.signal,
-        });
+      if (host.readProviderValue) return envelope(await host.readProviderValue({ call, providerKind: 'tool' }), resolved.contract.outputSchema);
+      const projected = lookupByMcpName(tool.trim());
+      if (!projected) throw new Error('capability-class:tool-unavailable');
+      const wearer = await resolvePackageSinkWearer({
+        providerKind: 'tool', ownerId: call.ownerId, workspaceId: call.workspaceId,
+        identityId: call.identityId, expectedPotSlug: call.potSlug,
+        requiredCapabilities: projected.capabilities, signal: call.signal,
+      }, { readWearer, readCeiling: host.readCeiling ?? readIdentityReactionCeiling });
+      const value = await dispatchReadOnlyTool(tool.trim(), {}, {
+        workspaceId: call.workspaceId, harnessSlug: wearer.context.harnessSlug ?? null, role: wearer.context.role!,
+        onBehalfOf: call.ownerId, spawnId: PACKAGE_SINK_SPAWN_ID, signal: wearer.context.signal,
+        callerContext: wearer.context,
+      });
       return envelope(value, resolved.contract.outputSchema);
     },
     // Loaded on call: sync-hook-rules imports this module for its own defaults.
