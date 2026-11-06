@@ -150,8 +150,11 @@ export interface PromoteCandidate {
 }
 
 export interface RecipeUsageSummary {
-  unit: 'execution-rows';
+  unit: 'execution-receipts';
   observations: number;
+  sourceRows: number;
+  verifiedCopiesExcluded: number;
+  conflictingReceipts: number;
   authored: number;
   automaticMatches: number;
   savedReplays: number;
@@ -159,6 +162,19 @@ export interface RecipeUsageSummary {
   unknown: number;
   agentDemand: number;
   reliability: { state: 'measured' | 'unknown'; successes: number; errors: number; refused: number; denominator: number };
+  costs: {
+    source: 'code_recipe_runs.execution_trace.runEvidence';
+    unit: 'utf8-bytes-and-milliseconds';
+    sourceBytes: number | null;
+    intermediateBytes: number | null;
+    elapsedBeforeRecordMs: number | null;
+    sourceMeasuredRows: number;
+    intermediateMeasuredRows: number;
+    elapsedMeasuredRows: number;
+    returnedContextBytes: null;
+    measuredSavings: null;
+  };
+  coverage: { state: 'unknown'; complete: false; reason: string };
 }
 
 export interface MergeCluster {
@@ -279,23 +295,55 @@ export async function recipeCandidates(
   // role/name guess. Missing historical provenance remains explicitly unknown.
   const rows = await sql<(RecipeRow & Record<'distinct_agents' | 'observations' | 'authored'
     | 'automatic_matches' | 'saved_replays' | 'previews' | 'unknown' | 'agent_demand'
-    | 'replay_successes' | 'replay_errors' | 'replay_refused', number | string>)[]>`
+    | 'replay_successes' | 'replay_errors' | 'replay_refused' | 'source_rows' | 'copies_excluded'
+    | 'conflicts' | 'source_bytes' | 'intermediate_bytes' | 'elapsed_ms'
+    | 'source_measured' | 'intermediate_measured' | 'elapsed_measured', number | string>)[]>`
         WITH observed AS (
-          SELECT *, execution_trace->'usage' AS usage
+          SELECT *, execution_trace->'usage' AS usage, execution_trace->'runEvidence' AS evidence,
+            CASE WHEN execution_trace->'runEvidence'->>'version' = '1'
+              AND execution_trace->'runEvidence'->>'invocationId' ~ '^[A-Za-z0-9_.:-]{1,200}$'
+              AND execution_trace->'runEvidence'->>'attempt' ~ '^[0-9]{1,15}$'
+              THEN 'dispatch:' || (execution_trace->'runEvidence'->>'invocationId') || ':' || (execution_trace->'runEvidence'->>'attempt')
+              ELSE 'row:' || id::text END AS receipt_key
             FROM harness_shared.code_recipe_runs
+        ), copies AS (
+          SELECT MIN(id) AS first_id, COUNT(*) AS source_rows,
+            COUNT(DISTINCT jsonb_build_array(execution_trace, success, reused, agent_owner, agent_role)) AS variants
+            FROM observed GROUP BY recipe_id, workspace_id, receipt_key
+        ), receipts AS (
+          SELECT observed.*, copies.source_rows, copies.variants FROM observed
+            JOIN copies ON observed.id = copies.first_id
         ), classified AS (
           SELECT *, COALESCE(
-            usage->>'version' = '1'
+            variants = 1 AND usage->>'version' = '1'
             AND usage->>'selection' IN ('authored', 'automatic-match', 'saved-replay')
             AND usage->>'choice' IN ('agent', 'hook', 'system', 'unknown')
             AND usage->>'mode' IN ('commit', 'preview')
             AND usage->>'settled' = 'true'
             AND usage->>'outcome' IN ('success', 'error', 'refused'), false) AS known
-            FROM observed
+            FROM receipts
+        ), measured AS (
+          SELECT *,
+            CASE WHEN variants = 1 AND evidence->>'version' = '1' AND evidence->>'sourceBytes' ~ '^[0-9]{1,16}$'
+              THEN (evidence->>'sourceBytes')::numeric END AS source_bytes_value,
+            CASE WHEN variants = 1 AND evidence->>'version' = '1' AND evidence->>'intermediateBytes' ~ '^[0-9]{1,16}$'
+              THEN (evidence->>'intermediateBytes')::numeric END AS intermediate_bytes_value,
+            CASE WHEN variants = 1 AND evidence->>'version' = '1' AND evidence->>'elapsedBeforeRecordMs' ~ '^[0-9]{1,16}$'
+              THEN (evidence->>'elapsedBeforeRecordMs')::numeric END AS elapsed_value
+            FROM classified
         )
       SELECT r.id, r.title, r.description, r.status, r.tools_used,
              r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
              COUNT(run.id) AS observations,
+             COALESCE(SUM(run.source_rows), 0) AS source_rows,
+             COALESCE(SUM(run.source_rows - 1) FILTER (WHERE run.variants = 1), 0) AS copies_excluded,
+             COUNT(*) FILTER (WHERE run.variants > 1) AS conflicts,
+             COALESCE(SUM(source_bytes_value), 0) AS source_bytes,
+             COALESCE(SUM(intermediate_bytes_value), 0) AS intermediate_bytes,
+             COALESCE(SUM(elapsed_value), 0) AS elapsed_ms,
+             COUNT(source_bytes_value) AS source_measured,
+             COUNT(intermediate_bytes_value) AS intermediate_measured,
+             COUNT(elapsed_value) AS elapsed_measured,
              COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'authored') AS authored,
              COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'automatic-match') AS automatic_matches,
              COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'saved-replay') AS saved_replays,
@@ -307,11 +355,11 @@ export async function recipeCandidates(
              COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'selection' = 'saved-replay' AND usage->>'choice' = 'agent' AND usage->>'outcome' = 'error') AS replay_errors,
              COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'selection' = 'saved-replay' AND usage->>'choice' = 'agent' AND usage->>'outcome' = 'refused') AS replay_refused
         FROM harness_shared.code_recipes r
-   LEFT JOIN classified run
+   LEFT JOIN measured run
           ON run.recipe_id = r.id
        WHERE r.status = 'active'
-         AND r.run_count >= ${minRunCount}
-    GROUP BY r.id`;
+    GROUP BY r.id
+      HAVING COUNT(run.id) >= ${minRunCount}`;
 
   // Existing-tool lookups for the D-007 name-collision damp (raw names + kebab slugs).
   // A recipe id is a kebab slug, never `ns:verb`, so comparing the id to the RAW tool
@@ -333,10 +381,21 @@ export async function recipeCandidates(
     const denominator = successes + errors + refused;
     const successRate = denominator > 0 ? clamp01(successes / denominator) : 0;
     const usage: RecipeUsageSummary = {
-      unit: 'execution-rows', observations: asInt(r.observations), authored: asInt(r.authored),
+      unit: 'execution-receipts', observations: asInt(r.observations), sourceRows: asInt(r.source_rows),
+      verifiedCopiesExcluded: asInt(r.copies_excluded), conflictingReceipts: asInt(r.conflicts), authored: asInt(r.authored),
       automaticMatches: asInt(r.automatic_matches), savedReplays: asInt(r.saved_replays),
       previews: asInt(r.previews), unknown: asInt(r.unknown), agentDemand: asInt(r.agent_demand),
       reliability: { state: denominator > 0 ? 'measured' : 'unknown', successes, errors, refused, denominator },
+      costs: {
+        source: 'code_recipe_runs.execution_trace.runEvidence', unit: 'utf8-bytes-and-milliseconds',
+        sourceBytes: asInt(r.source_measured) > 0 ? asInt(r.source_bytes) : null,
+        intermediateBytes: asInt(r.intermediate_measured) > 0 ? asInt(r.intermediate_bytes) : null,
+        elapsedBeforeRecordMs: asInt(r.elapsed_measured) > 0 ? asInt(r.elapsed_ms) : null,
+        sourceMeasuredRows: asInt(r.source_measured), intermediateMeasuredRows: asInt(r.intermediate_measured),
+        elapsedMeasuredRows: asInt(r.elapsed_measured), returnedContextBytes: null, measuredSavings: null,
+      },
+      coverage: { state: 'unknown', complete: false,
+        reason: 'Recipe run receipts alone do not establish a completed source/client census or a compatible baseline.' },
     };
 
     // Redundancy (excludes from promote candidates):

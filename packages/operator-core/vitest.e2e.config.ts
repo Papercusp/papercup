@@ -7,6 +7,22 @@ import { resolveExecutedMapPgUrl } from '../../scripts/lib/executed-source-map.m
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+function runtimeWitnessPgOptions(url: string) {
+  const parsed = new URL(url);
+  const tlsConfigured = Boolean(process.env.PGSSL?.trim())
+    || [...parsed.searchParams.keys()].some(key => key.toLowerCase().startsWith('ssl'));
+  // Node's localhost lookup can block in an ADDRCONFIG interface scan, and
+  // postgres.js starts connect_timeout before that lookup. Numeric loopback
+  // avoids that scan only for plain local connections; keeping the URL intact
+  // and retaining the hostname on remote/TLS routes preserves their semantics.
+  return {
+    ...(parsed.hostname === 'localhost' && !tlsConfigured ? { host: '127.0.0.1' } : {}),
+    max: 1,
+    connect_timeout: 1,
+    onnotice: () => {},
+  };
+}
+
 // The e2e layer (EI-24442044145393058): `*.e2e.test.ts` files that drive a live running
 // system. `npm run test:file` routes such a file here, so its test_runs row records
 // testLayer 'e2e' from this config's runtime `provide` — acceptance BAR clauses whose
@@ -62,7 +78,7 @@ export async function prepareRuntimeReader(
     // evidence must read the same ledger the native reporter writes, including
     // the verifier's dedicated shared-ledger override.
     const { url } = resolveExecutedMapPgUrl();
-    const sql = pg(url, { max: 1, connect_timeout: 1, onnotice: () => {} });
+    const sql = pg(url, runtimeWitnessPgOptions(url));
     try {
       const rows = await listRuntimeVintage(process.env.PAPERCUSP_TEST_RUN_WORKSPACE || undefined, sql, units);
       const fingerprint = measureRuntimeVintageEnvironment(rows, units);
