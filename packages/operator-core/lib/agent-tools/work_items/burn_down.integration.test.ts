@@ -333,18 +333,35 @@ describe('default fleet reports over the real current-spec queue', () => {
     expect(current[0]?.failedFloors).not.toContain('claim-hold');
   }, 60_000);
 
-  it('aggregates uncapped terminal stock with exact report, actor and verification-service identity parity', async () => {
+  it('aggregates uncapped terminal stock with exact report, actor and verification-service identity parity', async ({ onTestFailed }) => {
+    const timings: { phase: string; elapsedMs: number }[] = [];
+    let activePhase: { phase: string; startedAt: number } | null = null;
+    const phase = async <T>(name: string, work: () => PromiseLike<T>): Promise<T> => {
+      const startedAt = Date.now();
+      activePhase = { phase: name, startedAt };
+      console.error(`FLEET_AGGREGATE_PHASE ${JSON.stringify({ phase: name, event: 'started' })}`);
+      const result = await work();
+      const timing = { phase: name, elapsedMs: Date.now() - startedAt };
+      timings.push(timing);
+      activePhase = null;
+      console.error(`FLEET_AGGREGATE_PHASE ${JSON.stringify({ ...timing, event: 'completed' })}`);
+      return result;
+    };
+    onTestFailed(() => {
+      console.error(`FLEET_AGGREGATE_FAILURE ${JSON.stringify({ completed: timings,
+        active: activePhase && { phase: activePhase.phase, elapsedMs: Date.now() - activePhase.startedAt } })}`);
+    });
     const filter: FilterNode = { all: [
       { field: 'kind', op: '=', value: 'bug' },
       { any: [{ field: 'id', op: 'in', value: ids },
         { field: 'title', op: 'contains', value: 'aggregate census' }] },
     ] };
-    await seedFleet('verification', filter);
-    await seedQueue();
+    await phase('seed-fleet', () => seedFleet('verification', filter));
+    await phase('seed-queue', () => seedQueue());
     const oldAt = createdAt - 86_400_000;
     // More than the display cap, with large bodies that must be evaluated by
     // the source predicate without crossing the client in terminal rows.
-    await sql`INSERT INTO harness_shared.work_items
+    await phase('seed-terminal-stock', () => sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
        created_ts, updated_ts, closed_ts, terminal_owner, authority, payload)
       SELECT 'default', ${HARNESS}, 'WI-aggregate-' || n, 'aggregate census', repeat('body ', 1000),
@@ -354,11 +371,11 @@ describe('default fleet reports over the real current-spec queue', () => {
           WHEN 3 THEN 'proposed' WHEN 4 THEN 'pending_human' ELSE 'invalid' END,
         jsonb_build_object('_ei', jsonb_build_object('created_by',
           CASE n % 4 WHEN 0 THEN 'system:fixture' WHEN 1 THEN 'su-outsider' WHEN 2 THEN NULL ELSE 'su-member' END))
-      FROM generate_series(1, 2101) n`;
-    await sql`INSERT INTO harness_shared.fleet_membership_events
+      FROM generate_series(1, 2101) n`);
+    await phase('seed-membership', () => sql`INSERT INTO harness_shared.fleet_membership_events
       (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event)
-      VALUES ('default', 'su-member', 'member', ${FLEET}, 'member', 'join')`;
-    await sql`INSERT INTO harness_shared.work_items
+      VALUES ('default', 'su-member', 'member', ${FLEET}, 'member', 'join')`);
+    await phase('seed-controls', () => sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
        created_ts, updated_ts, closed_ts, parent_id, payload)
       VALUES ('default', ${HARNESS}, 'WI-aggregate-old', 'aggregate census', 'old stock', 'done', 'bug',
@@ -372,13 +389,13 @@ describe('default fleet reports over the real current-spec queue', () => {
         ('foreign', ${HARNESS}, 'WI-aggregate-foreign', 'aggregate census', 'excluded workspace', 'done', 'bug',
           ${createdAt}, ${createdAt}, ${createdAt}, NULL, '{}'::jsonb),
         ('default', 'foreign-harness', 'WI-aggregate-other-harness', 'aggregate census', 'excluded harness', 'done', 'bug',
-          ${createdAt}, ${createdAt}, ${createdAt}, NULL, '{}'::jsonb)`;
-    const scope = await resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
-      fleet: FLEET, flowMode: 'current-spec' });
+          ${createdAt}, ${createdAt}, ${createdAt}, NULL, '{}'::jsonb)`);
+    const scope = await phase('resolve-scope', () => resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
+      fleet: FLEET, flowMode: 'current-spec' }));
     if (!scope.ok) throw new Error(scope.reason);
-    const referenceItems = await readFleetMetricSourceItems(scope);
-    const source = await readFleetMetricSource(scope);
-    const groups = await source.terminalContributions;
+    const referenceItems = await phase('read-reference-items', () => readFleetMetricSourceItems(scope));
+    const source = await phase('read-source', () => readFleetMetricSource(scope));
+    const groups = await phase('read-terminal-contributions', () => source.terminalContributions);
     expect(source.items.map(item => item.id).sort()).toEqual([...ids].sort());
     const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
     expect([...source.items].sort(byId)).toEqual(referenceItems
@@ -387,9 +404,9 @@ describe('default fleet reports over the real current-spec queue', () => {
     expect(groups.length).toBeLessThan(30);
     expect(groups.flatMap(group => group.ids)).toContain('WI-aggregate-old');
     expect(groups.some(group => 'body' in group || 'payload' in group)).toBe(false);
-    const floors = await explainIssueClaimFloors(HARNESS, ids, { includeAllFloors: true });
-    const occurrences = await readIssueOccurrenceCounts({ workspaceId: 'default', harnessSlug: HARNESS,
-      since: scope.scope.window.startAt });
+    const floors = await phase('read-floors', () => explainIssueClaimFloors(HARNESS, ids, { includeAllFloors: true }));
+    const occurrences = await phase('read-occurrences', () => readIssueOccurrenceCounts({ workspaceId: 'default', harnessSlug: HARNESS,
+      since: scope.scope.window.startAt }));
     const serviceSelections: string[][] = [];
     const build = (items: typeof source.items, terminalContributions?: typeof source.terminalContributions) =>
       buildFleetMetricsResult(scope, items, { issueOccurrences: occurrences, sourceCapExhausted: false,
@@ -400,8 +417,8 @@ describe('default fleet reports over the real current-spec queue', () => {
           return readAgentReviewService(args, options);
         },
       });
-    const candidate = await build(source.items, Promise.resolve(groups));
-    const reference = await build(referenceItems);
+    const candidate = await phase('build-candidate', () => build(source.items, Promise.resolve(groups)));
+    const reference = await phase('build-reference', () => build(referenceItems));
     expect(candidate).toEqual(reference);
     expect(serviceSelections[0]).toEqual(serviceSelections[1]);
     expect(serviceSelections[0]).toHaveLength(2107);
