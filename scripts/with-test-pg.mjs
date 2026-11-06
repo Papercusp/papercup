@@ -109,6 +109,10 @@ if (durableEvidenceRequested && !process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim())
 // read or bound by the caller's workspace. Nested wrappers retain this pin.
 const callerTestRunWorkspace = (process.env.PAPERCUSP_TEST_RUN_WORKSPACE ||
   process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE)?.trim();
+// Reporter attribution survives isolation without granting the child the
+// caller's operational session identity. Nested wrappers retain this pin.
+const callerTestRunOwnerId = (process.env.PAPERCUSP_TEST_RUN_OWNER_ID ||
+  process.env.PAPERCUSP_SID)?.trim();
 if (isolatedRuntime && (
   (process.env.PAPERCUSP_TEST_RUN_WORKSPACE !== undefined && !process.env.PAPERCUSP_TEST_RUN_WORKSPACE.trim()) ||
   (process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim() && !callerTestRunWorkspace)
@@ -602,6 +606,19 @@ if (isolatedRuntime) {
   const { boundedOrgPoolMax, getResourceProfile } = await import('../libs/generic/resource-profile/src/index.ts');
   const capacitySql = postgres(pg.urls.admin, { max: 1 });
   try {
+    // Both private profiles may sign before a normal spawn lazily creates the
+    // host key (for example background security-census custody). Provision on
+    // this owned connection before either profile admits its first command.
+    const { tsImport } = await import('tsx/esm/api');
+    const { premintSpawnSigningKey } = await tsImport(
+      '../packages/operator-core/lib/gym/gym-db-init.ts', import.meta.url);
+    await premintSpawnSigningKey(capacitySql);
+    const signingRows = await capacitySql`SELECT octet_length(decode(value_b64, 'base64')) AS bytes
+      FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key'`;
+    if (signingRows.length !== 1 || signingRows[0].bytes !== 32) {
+      throw new Error('private spawn-signing key preflight failed');
+    }
+    console.log('[with-test-pg] private spawn-signing key ready');
     const [capacity] = await capacitySql.unsafe("SELECT current_setting('max_connections')::int AS max, current_setting('superuser_reserved_connections')::int AS reserved");
     const poolMax = boundedOrgPoolMax({ desired: getResourceProfile().pgPoolMax,
       maxConnections: capacity.max, superuserReserved: capacity.reserved, expectedProcesses: 3 });
@@ -770,6 +787,7 @@ if (isolatedRuntime) {
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
     'PAPERCUSP_TEST_RUN_WORK_ITEM',
+    'PAPERCUSP_TEST_RUN_OWNER_ID',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
     OWNED_TEST_DB_DIR_ENV,
     'PAPERCUSP_TEST_RUN_COMMIT', 'PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN',
@@ -797,6 +815,7 @@ if (isolatedRuntime) {
     }
   }
   if (callerTestRunWorkspace) childEnv.PAPERCUSP_TEST_RUN_WORKSPACE = callerTestRunWorkspace;
+  if (callerTestRunOwnerId) childEnv.PAPERCUSP_TEST_RUN_OWNER_ID = callerTestRunOwnerId;
 }
 if (operatorApi) {
   // A request journey needs the same isolation as a background test, but must
@@ -875,15 +894,7 @@ if (operatorApi) {
     const registry = await loadHarnessRegistry(id, { fresh: true });
     stage('private-registry:fresh-load-complete', { projectCount: registry.projects.length });
     if (!registry.projects.some(p => p.slug === id && p.path === home)) throw new Error('private home harness was not registered');
-    // The first native spawn signs before an MCP request can lazily mint the
-    // verifier's key. Reuse fresh-database provisioning, before admitting work.
-    stage('private-spawn-signing-key');
-    const { premintSpawnSigningKey } = await trackedImport('imports:spawn-signing-key', './packages/operator-core/lib/gym/gym-db-init.ts');
     const { sql } = getOrgPg();
-    await premintSpawnSigningKey(sql);
-    const signingRows = await sql\`SELECT octet_length(decode(value_b64, 'base64')) AS bytes
-      FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key'\`;
-    if (signingRows.length !== 1 || signingRows[0].bytes !== 32) throw new Error('private spawn-signing key preflight failed');
     // Inbox refuses an unmeasured system source. An empty disposable database
     // has no pipeline at all, so register an explicitly PAUSED fixture through
     // the maintained routine store. Never manufacture a green verdict or arm
