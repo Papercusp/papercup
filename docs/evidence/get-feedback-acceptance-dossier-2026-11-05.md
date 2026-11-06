@@ -8,7 +8,9 @@ The acceptance rubric is acceptance-get-feedback-reliability-usefulness-adoption
 
 **Candidate identity and limits**
 
-The retained, verified source candidate used for the latest core and SID proofs is commit 22509da18a31e043ed7bf84096d0fc0763c44308, root /tmp/pcv/papercusp-lint-as-committed-22509da18a-rLkKED. scripts/lint-as-committed.mjs verifyCommittedWorkRoot verified its marker and HEAD again during this edition. The canonical shared tree is the harness repository root on staging; observed HEAD fbafd5b4753559b67dee470e586dc80e2441649d is a later observation, not a replacement candidate or proof that every receipt covers it.
+The verified source candidate used for the retained core and SID proofs is commit 22509da18a31e043ed7bf84096d0fc0763c44308. Its temporary root /tmp/pcv/papercusp-lint-as-committed-22509da18a-rLkKED was verified in the preceding edition and was absent at the V39 recovery check. Reproducing that snapshot requires rematerializing its recorded commit; the saved ledger receipts remain historical evidence. The canonical shared tree is the harness repository root on staging; observed HEAD fbafd5b4753559b67dee470e586dc80e2441649d is a dated observation, not proof that every receipt covers it.
+
+The V39 receipt refresh uses a separate verified snapshot, commit 0b9ba3b5ca61081508c84edf3ac7b23efad89a8c, root /tmp/pcv/papercusp-lint-as-committed-0b9ba3b5ca-HxeS6z. The maintained materializer retained it against this dossier, and verifyCommittedWorkRoot verified its marker, HEAD and required source/test paths before execution. This snapshot does not replace the source identities of earlier receipts.
 
 Candidate build digest, native runtime identity for this exact candidate, promoted green identity, live release identity and equality/behavior trace are **unestablished**. There is not yet one fully qualified candidate across every obligation. Receipts below come from named source snapshots; their scope and dates remain explicit. A test receipt does not establish a built or deployed artifact.
 
@@ -43,7 +45,17 @@ PTY binding 76195 references clean test_run 23428791 with the original 74 select
 
 The maintained staging loader attempted candidate f415a6affb2fbe3e784343869cd671354991235b, then stopped at 2026-11-06T01:43:09Z before replacing the running process. The migration compatibility check found `mission_continuity` readers while migration 1618 remained a draft. EI-28001349802894000 records that source/migration ordering blocker; its claim was refused while admission screening was pending. The existing mission-continuity source-lane claimant was notified and subsequently observed live; resolution has not been verified. No migration guard was bypassed and no parallel loader, restart or release-gate action was taken.
 
+The existing P-002 owner, holding WI-6554700010045447, confirmed pickup and arming of migration 1618 at 2026-11-06T02:16:03Z. A later reply at 02:30:56Z reported that the original confirmed apply call timed out after 610 seconds and its backend outcome was being reconciled before any duplicate. No migration-ready event or verified apply result has been received. The V39 containment read still measured staging build 3fec47fb7d without the reader repair. This dependency remains with its existing owner.
+
 The V38 canonical staging containment read in /tmp/gf8fe91-case-ledger-route-v38.json measured build 3fec47fb7d and `containsChange:false` for the new reader marker. The saved original retry arguments, /tmp/gf8fe91-pty-unit-bind-v35-args.json, retain 74 distinct titles, including the three multiline titles; their SHA-256 is 89d5a4cac0a829f7ab2a7ed3d49703c820473ed9df413f9f599fbacdde23ddb7. The next acceptance sequence is a containing staging build, a complete canonical read of 76195 with those exact identities, one retry of those unchanged arguments, and verification that 75908 was normally superseded. Until then this repair remains open and GF2 receives no blanket pass.
+
+**V39 receipt integration and mutation refresh**
+
+GF-P003-receipt@1 was refreshed independently of the staging migration dependency. The same three declared cases exercise request-cohort counting after expiry and typed responder `answer`/`new_fact` receipts. Baseline test_run 23439655 and unchanged copy control 23440159 each passed those three cases. Mutant 23440166 failed exactly those three assertions after requiring a non-expired state before recording received feedback. Each leg left 195 other cases unselected; this does not claim a replay of the historical full suite.
+
+The three rows share probe 97ff00ad-132c-4fb7-bb97-995657dd9416 and commit 0b9ba3b5ca61081508c84edf3ac7b23efad89a8c, with canonical `worktreeDirty:false`. The maintained overlay reported contained writes, a parseable mutant, assertion failures and byte-identical source restoration. The complete receipt is .papercusp/scratch/bash-97ee3f06-c95.log. The original two source paths and nine fixture paths remain in the binding recipe.
+
+Canonical bindings 76300/76301 normally superseded the stale same-subject integration/mutation records, including 74157/74158; the distinct current unit binding 75972 was retained. On staging evaluator build 3fec47fb7d, the complete GF-P003-receipt evaluation changed from failing falsifiability, freshness and the plan-class risk floor to `verdict:pass` with no blocking criteria. This is a scoped author-side adequacy result, not independent plan acceptance, native/cohort proof or shipment.
 
 **Ordinary workflow readiness**
 
@@ -58,6 +70,8 @@ D-036 authorizes only the governed pending-delivery review selection for R-7. A 
 **Outstanding author and acceptance obligations**
 
 The full saved V31 adequacy evaluation covers the following active clauses; this dossier preserves its entire failing population rather than treating GF2 freshness as the only unfinished work.
+
+The V39 GF-P003-receipt pass above supersedes that clause's dated V31 failure. The remaining rows retain their original obligations until a separately scoped current evaluation proves otherwise.
 
 | Clause group | Remaining obligation in the saved evaluation |
 | --- | --- |
