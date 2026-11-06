@@ -94,6 +94,7 @@ const h = vi.hoisted(() => {
     captureScratchWriteTimings: false,
     spillWriteGate: null as Promise<void> | null,
     spillWriteEntered: null as (() => void) | null,
+    spillWriteFailure: null as Error | null,
     spillToolGate: null as Promise<void> | null,
     spillToolEntered: null as (() => void) | null,
     spillWritePathSegment: 'deadlinetest:spill',
@@ -135,6 +136,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         h.spillPaths.push(path);
         h.spillWriteEntered?.();
         await h.spillWriteGate;
+        if (h.spillWriteFailure) throw h.spillWriteFailure;
       }
       return actual.writeFile(...args);
     },
@@ -513,6 +515,7 @@ beforeEach(() => {
   h.captureScratchWriteTimings = false;
   h.spillWriteGate = null;
   h.spillWriteEntered = null;
+  h.spillWriteFailure = null;
   h.spillToolGate = null;
   h.spillToolEntered = null;
   h.spillWritePathSegment = 'deadlinetest:spill';
@@ -1316,6 +1319,119 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           sleep(5_000),
         ]);
       }
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true), { timeout: 3_000 });
+      info.mockRestore();
+      warn.mockRestore();
+      _resetScratchUsageForTests();
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('persists failed late-spill status and scratch-write timings after the bounded wait returns', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-failed-late-spill-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    _resetScratchUsageForTests();
+    _setScratchUsageForTests('ws-test', WORKSPACE_QUOTA_BYTES + 1);
+    h.captureScratchWriteTimings = true;
+    h.spillWriteFailure = Object.assign(new Error('controlled late scratch write timeout'), { code: 'ETIMEDOUT' });
+    let releaseWrite!: () => void;
+    h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    h.spillWritePathSegment = 'tools:invoke';
+    const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const traceId = '380e64c3-43d7-4e4b-a802-9bd06a5cfdf7';
+    let responsePromise: Promise<CallResult> | undefined;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      responsePromise = callTool('tools:invoke', { name: 'deadlinetest:spill', args: {} },
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+        { idempotencyKey: 'idem-failed-late-scratch-settlement' });
+      await waitForSignal(enteredWrite, 'late scratch spill write entry');
+      await vi.advanceTimersByTimeAsync(20_001);
+      const response = await responsePromise;
+      expect(response.isError).not.toBe(true);
+      expect(response._meta?.resultDoor).toMatchObject({
+        spillPending: true,
+        spillFailed: false,
+        pendingSpill: { cursor: { kind: 'pending-spill' } },
+      });
+      const timeoutBackfill = h.unsafeCalls.find((call) => {
+        if (!call.sql.includes('UPDATE harness_shared.tool_invocations') || call.params[8] !== traceId) return false;
+        try { return JSON.parse(String(call.params[2])).spillTimeoutCount === 1; } catch { return false; }
+      });
+      expect(timeoutBackfill).toBeDefined();
+
+      vi.useRealTimers();
+      releaseWrite();
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(true));
+      const settled = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled');
+      expect(settled).toMatchObject({
+        traceId,
+        toolName: 'tools:invoke',
+        stage: 'scratch_write_settled',
+        scratchWriteTimings: {
+          quotaWaitMs: expect.any(Number),
+          refreshWaitMs: expect.any(Number),
+          writeMs: expect.any(Number),
+          totalMs: expect.any(Number),
+        },
+      });
+      expect(h.spillPaths).toHaveLength(1);
+      expect(existsSync(h.spillPaths[0])).toBe(false);
+
+      let failedBackfill: { sql: string; params: unknown[] } | undefined;
+      await vi.waitFor(() => {
+        failedBackfill = h.unsafeCalls.find((call) => {
+          if (!call.sql.includes('UPDATE harness_shared.tool_invocations') || call.params[8] !== traceId) return false;
+          try { return JSON.parse(String(call.params[2])).spillSettlementStatus === 'failed'; } catch { return false; }
+        });
+        expect(failedBackfill).toBeDefined();
+      });
+      const metadata = JSON.parse(String(failedBackfill?.params[2])) as Record<string, unknown>;
+      expect(metadata).toEqual(expect.objectContaining({
+        spillPending: false,
+        spillFailed: true,
+        spillErrorCode: 'ETIMEDOUT',
+        spillSettlementStatus: 'failed',
+        spillSettledAt: expect.any(String),
+        scratchWriteTimings: expect.objectContaining({
+          count: 1,
+          perSpill: [expect.objectContaining({
+            writeMs: expect.any(Number),
+            totalMs: expect.any(Number),
+          })],
+          writeMs: expect.any(Number),
+          totalMs: expect.any(Number),
+        }),
+        mcpRequestSettlement: expect.objectContaining({
+          phaseTimingsMs: expect.objectContaining({
+            scratchWrites: expect.objectContaining({
+              count: 1,
+              writeMs: expect.any(Number),
+              totalMs: expect.any(Number),
+            }),
+          }),
+        }),
+      }));
+      expect(failedBackfill?.params[5]).toBe('deadlinetest:spill');
+      expect(failedBackfill?.params[8]).toBe(traceId);
+      expect(warn.mock.calls.some(([message]) =>
+        String(message).includes('backfillResultDoorOutputRef failed'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      releaseWrite();
+      if (responsePromise) await Promise.race([responsePromise.catch(() => undefined), sleep(5_000)]);
       await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true), { timeout: 3_000 });
       info.mockRestore();
