@@ -16,13 +16,14 @@ it('binds scoped enrollment through current-build ingest and both typed completi
   const probe = String.raw`
     import assert from 'node:assert/strict';
     import { readFileSync } from 'node:fs';
+    import { mkdir, writeFile } from 'node:fs/promises';
     import { join } from 'node:path';
     import { createHash } from 'node:crypto';
     import { getOrgPg } from '@papercusp/db-org';
     import { activeWorkspaceId } from './packages/operator-core/lib/workspace-registry.ts';
     import { runWithWorkspace } from './packages/operator-core/lib/workspace-als.ts';
     import { recordAdvSession, recordSuLaunchSpec } from './packages/operator-core/lib/adv-sessions.ts';
-    import { insertTurns } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { insertTurns, ingestFileNow } from './packages/operator-core/lib/search/session-ingest.ts';
     import { getLoopStatus } from './packages/operator-core/lib/harness/routines/loop.ts';
     import { reconcileLoopRoutines } from './packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts';
     import { tagTurnForInjection, readLedgerRows, appendLedgerRow } from './packages/operator-core/lib/turn-provenance/turn-provenance.ts';
@@ -69,6 +70,17 @@ it('binds scoped enrollment through current-build ingest and both typed completi
       const reply = { ...user, turn_idx: 8, ts: new Date().toISOString(), speaker: 'assistant', text: 'Private fixture completed.' };
       return { owner, session, routine, user, reply, ws };
     }
+    async function refreshIndexed(c) {
+      const dir = join(process.env.HOME, '.codex', 'sessions', '2026', '11', '06');
+      await mkdir(dir, { recursive: true });
+      const path = join(dir, 'rollout-' + c.session + '.jsonl');
+      const text = '{}\n';
+      await writeFile(path, text);
+      await sql.unsafe('INSERT INTO harness_shared.session_ingest_state ' +
+        '(source_kind,file_path,byte_offset,turn_count,session_id) VALUES ($1,$2,$3,$4,$5) ' +
+        'ON CONFLICT (source_kind,file_path) DO NOTHING', ['codex', path, Buffer.byteLength(text), 9, c.session]);
+      return ingestFileNow(path, { owner: c.owner, sessionId: c.session });
+    }
     try {
       for (const [label, ws] of [['valid-a', workspace], ['valid-b', workspace + '-b'],
         ...['wrong-owner','wrong-session','wrong-workspace','missing-pin','wrong-directory'].map(label => [label, workspace])]) {
@@ -94,8 +106,23 @@ it('binds scoped enrollment through current-build ingest and both typed completi
             const result = reconciled.loops.find(row => row.id === c.routine);
             assert.equal(result.via, 'loop-turn');
             assert.equal(result.completedAt, Date.parse(c.reply.ts));
+            if (label === 'valid-a') {
+              // Model a native turn indexed before the producer was installed.
+              // Its unchanged source must repair the marker without a new turn.
+              await sql.unsafe('DELETE FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner]);
+              assert.equal((await getLoopStatus(c.owner, { sql })).lastLoopTurnAt, null);
+              assert.equal((await refreshIndexed(c)).inserted, 0);
+              assert.equal((await getLoopStatus(c.owner, { sql })).lastLoopTurnAt, c.reply.ts,
+                'no-new-bytes refresh repairs an already indexed authenticated turn');
+              await Promise.all([refreshIndexed(c), refreshIndexed(c)]);
+              assert.equal((await sql.unsafe('SELECT id FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner])).length, 1);
+            }
             completed.push({ label, routineId: c.routine, wakeCount: 3, turnIdx: 7, via: result.via });
-          } else rejected.push(label);
+          } else {
+            assert.equal((await refreshIndexed(c)).inserted, 0);
+            assert.equal((await sql.unsafe('SELECT id FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner])).length, 0);
+            rejected.push(label);
+          }
         });
       }
       const c = await fixture('rollback');
@@ -120,7 +147,11 @@ it('binds scoped enrollment through current-build ingest and both typed completi
   expect(runtimeText, result.stdout.slice(-2000) + result.stderr.slice(-2000)).toBeTruthy();
   const runtime = JSON.parse(runtimeText!);
   expect(existsSync(runtime.home)).toBe(false);
-  expect(result.status, result.stdout.slice(-5000) + result.stderr.slice(-5000)).toBe(0);
+  // Cleanup can append more than 5KB after the assertion. Keep the originating
+  // error first so a failed probe reports its cause rather than PG shutdown.
+  const childError = result.stderr.match(/(?:AssertionError|Error:)[\s\S]{0,2000}/)?.[0];
+  expect(result.status, childError ?? result.error?.message ??
+    (result.stdout.slice(-2000) + result.stderr.slice(-2000))).toBe(0);
   const evidenceText = result.stdout.match(/^LOOP_NAMESPACE_RESULT (.+)$/m)?.[1];
   expect(evidenceText).toBeTruthy();
   const evidence = JSON.parse(evidenceText!);

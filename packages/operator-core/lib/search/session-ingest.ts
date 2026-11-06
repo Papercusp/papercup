@@ -49,7 +49,7 @@ import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { recordIndexedLoopTurnStarts, type IndexedNativeLoopTurn } from '../harness/routines/loop-turn-start-stamp';
+import { recordIndexedLoopTurnStarts, reconcileIndexedLoopTurnStarts, type IndexedNativeLoopTurn } from '../harness/routines/loop-turn-start-stamp';
 import { listAllProjectedTools } from '@papercusp/tooldef';
 import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
@@ -3413,6 +3413,11 @@ export async function ingestFileNow(
       sessionId: opts.sessionId ?? meta.sessionId,
     });
   }
+  if (owner) await reconcileIndexedLoopTurnStarts(sql, {
+    owner,
+    sourceKind: adapter.sourceKind,
+    sessionId: opts.sessionId?.trim() || meta.sessionId,
+  });
   return { inserted };
 }
 

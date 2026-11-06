@@ -252,7 +252,7 @@ export async function recordLoopTurnStart(
   }
 }
 
-/** Only rows returned by the normal transcript INSERT may enter this producer. */
+/** Only persisted native transcript rows may enter this producer. */
 export interface IndexedNativeLoopTurn {
   workspace_id: string;
   source_kind: string;
@@ -372,4 +372,43 @@ export async function recordIndexedLoopTurnStarts(sql: Sql, turns: IndexedNative
   // not use the hook adapter's default global connection or backdate created_at.
   const store = createPgTelemetryStore(sql);
   for (const record of records) await store.append(record);
+}
+
+/** Read-time refresh also repairs turns indexed before their marker producer or
+ * launch receipt was available. Lock persisted rows so concurrent refreshes
+ * cannot append the same marker; enrollment still uses the exact launch pin. */
+export async function reconcileIndexedLoopTurnStarts(
+  sql: Sql,
+  input: { owner: string; sourceKind: string; sessionId: string },
+): Promise<void> {
+  if (!input.owner || !input.sessionId || !['claude', 'codex', 'omp'].includes(input.sourceKind)) return;
+  const workspaceId = activeWorkspaceId();
+  const reconcile = async (client: Sql): Promise<void> => {
+    const turns = await client<IndexedNativeLoopTurn[]>`
+      SELECT st.workspace_id, st.source_kind, st.session_id, st.turn_idx, st.ts,
+             st.owner, st.harness_slug, st.cwd, st.speaker, st.text, st.turn_origin
+        FROM harness_shared.session_turns st
+       WHERE st.workspace_id IN ('default', ${workspaceId})
+         AND st.source_kind = ${input.sourceKind}
+         AND st.session_id = ${input.sessionId}
+         AND st.owner = ${input.owner}
+         AND st.speaker = 'user'
+         AND st.turn_origin IN ('loop-fire', 'self-compaction')
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.agent_activity activity
+            WHERE activity.workspace_id = st.workspace_id
+              AND activity.owner_id = st.owner
+              AND activity.summary = ${LOOP_TURN_START_MARKER}
+              AND activity.detail->'indexedTurn' = jsonb_build_object(
+                'workspaceId', st.workspace_id, 'sourceKind', st.source_kind,
+                'sessionId', st.session_id, 'turnIdx', st.turn_idx)
+         )
+       ORDER BY st.turn_idx DESC
+       LIMIT 64
+       FOR UPDATE OF st SKIP LOCKED
+    `;
+    await recordIndexedLoopTurnStarts(client, turns);
+  };
+  if (typeof sql.begin === 'function') await sql.begin(tx => reconcile(tx as unknown as Sql));
+  else await reconcile(sql);
 }
