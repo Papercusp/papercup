@@ -6100,6 +6100,25 @@ verify_assertion_input_integrity || exit $?
 # the operator host, rather than loading a second version from the shared tree.
 export OPERATOR_SOURCE_ROOT
 
+# Keep execution evidence in the caller's ledger before the application identity
+# below switches to a disposable database. Match run-operator-e2e-isolated.sh:
+# reporters use these ledger-only overrides without exposing the shared DB to
+# the app or to fixture writes through HARNESS_ADMIN_DATABASE_URL.
+preserve_assertion_ledger_identity() {
+  local default_ledger_url='postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp'
+  export PAPERCUSP_TEST_RUNS_DB_URL="${PAPERCUSP_TEST_RUNS_DB_URL:-${HARNESS_ADMIN_DATABASE_URL:-$default_ledger_url}}"
+  export PAPERCUSP_TEST_RUN_GROUP="${PAPERCUSP_TEST_RUN_GROUP:-verify-tauri-headless-${VH_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}}"
+  export PAPERCUSP_TEST_RUN_HARNESS="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-papercusp}}}"
+  PAPERCUSP_TEST_RUN_WORKSPACE="${PAPERCUSP_TEST_RUN_WORKSPACE:-${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}}"
+  if [ -n "$PAPERCUSP_TEST_RUN_WORKSPACE" ]; then
+    export PAPERCUSP_TEST_RUN_WORKSPACE
+  else
+    unset PAPERCUSP_TEST_RUN_WORKSPACE
+    echo 'verify-tauri-headless: WARNING no caller workspace; ledger rows will use the disposable workspace' >&2
+  fi
+  unset PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
+}
+
 # EI-22622028658305763: assertion commands are part of the isolated verifier
 # boundary too. The generated Tauri launcher already receives this exact
 # disposable identity, but the parent shell previously retained its ambient
@@ -6108,6 +6127,7 @@ export OPERATOR_SOURCE_ROOT
 # an "isolated" banner. Override only in explicit isolated mode and export the
 # same already-verified per-run values before handing control to the caller.
 if [ "$ISOLATED_DB" = "1" ]; then
+  preserve_assertion_ledger_identity
   export PAPERCUSP_HOME="$ISOLATED_HOME"
   export PAPERCUSP_SU_CODEX_HOMES_DIR="$ISOLATED_CODEX_HOMES_DIR"
   export PAPERCUSP_PSU_PTY_DIR="$ISOLATED_HOME/psu-pty"
