@@ -72,6 +72,9 @@ impl ResumeSelection {
         let ended = roster["ended"]
             .as_array()
             .ok_or_else(|| anyhow!("ended roster unavailable"))?;
+        let active = roster["active"]
+            .as_array()
+            .ok_or_else(|| anyhow!("active roster unavailable"))?;
         let id = |row: &serde_json::Value| {
             row.get("id")
                 .or_else(|| row.get("advSessionId"))
@@ -86,6 +89,10 @@ impl ResumeSelection {
         };
         let matches: Vec<_> = ended
             .iter()
+            // This tier is presence-backed: a positively ended session can
+            // remain here until presence cleanup. Use the canonical oracle,
+            // while an unknown/parked/live row must never authorize a resume.
+            .chain(active.iter().filter(|row| row["sessionState"] == "ended"))
             .filter(|row| id(row) == Some(self.id))
             .collect();
         ensure!(
@@ -117,8 +124,13 @@ impl ResumeSelection {
                 _ => anyhow::bail!("{tier} roster unavailable"),
             };
             ensure!(
-                !values.iter().any(|other| id(other) == Some(self.id)
-                    || (self.owner.is_some() && owner(other) == self.owner)),
+                !values.iter().any(|other| {
+                    // Only the exact positively ended presence row selected
+                    // above is exempt; another incarnation still vetoes it.
+                    !std::ptr::eq(other, row)
+                        && (id(other) == Some(self.id)
+                            || (self.owner.is_some() && owner(other) == self.owner))
+                }),
                 "selected session is running or starting; refresh the results"
             );
         }
@@ -179,6 +191,68 @@ mod native_resume_tests {
         }
         .resolve(&ownerless, "desktop")
         .is_ok());
+    }
+
+    #[test]
+    fn native_resume_accepts_positive_ended_presence_with_exact_identity() {
+        let mut p = payload();
+        let mut row = p["rows"][0]["ended"][0].take();
+        row.as_object_mut().unwrap().remove("id");
+        row["advSessionId"] = json!(41);
+        row["ownerId"] = row["coordOwnerId"].take();
+        row.as_object_mut().unwrap().remove("coordOwnerId");
+        row["host"] = row["hostname"].take();
+        row["sessionState"] = json!("ended");
+        p["rows"][0]["ended"] = json!([]);
+        p["rows"][0]["active"] = json!([row]);
+        let selected = selection();
+        assert_eq!(
+            selected.resolve(&p, "desktop").unwrap().argv,
+            ["psu", "--resume", "41"]
+        );
+        for state in [
+            Value::Null,
+            json!("unknown"),
+            json!("parked"),
+            json!("live"),
+            json!("starting"),
+            json!("suspect"),
+        ] {
+            let mut changed = p.clone();
+            changed["rows"][0]["active"][0]["sessionState"] = state;
+            assert!(selected.resolve(&changed, "desktop").is_err());
+        }
+        for (key, value) in [
+            ("ownerId", json!("replacement")),
+            ("host", json!("other")),
+            ("pidAlive", json!(true)),
+            ("revoked", json!(true)),
+        ] {
+            let mut changed = p.clone();
+            changed["rows"][0]["active"][0][key] = value;
+            assert!(selected.resolve(&changed, "desktop").is_err());
+        }
+        for tier in ["active", "pending", "starting", "ended"] {
+            let mut changed = p.clone();
+            let mut duplicate = changed["rows"][0]["active"][0].clone();
+            duplicate["advSessionId"] = json!(42);
+            let rows = changed["rows"][0]
+                .as_object_mut()
+                .unwrap()
+                .entry(tier)
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .unwrap();
+            rows.push(duplicate);
+            // An ended historical sibling does not veto this incarnation.
+            assert_eq!(
+                selected.resolve(&changed, "desktop").is_ok(),
+                tier == "ended"
+            );
+        }
+        let duplicate = p["rows"][0]["active"][0].clone();
+        p["rows"][0]["ended"] = json!([duplicate]);
+        assert!(selected.resolve(&p, "desktop").is_err());
     }
 
     #[test]
