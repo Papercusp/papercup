@@ -2824,7 +2824,9 @@ dependency_generation_copy_with_progress() (
     # bits subject to umask; clear it locally so executable dependencies survive.
     # --preserve=links preserves aliases INSIDE the copy, never links to src.
     umask 000
-    cp -R -P --preserve=links "$reflink" "$src" "$dest" 2>/dev/null &
+    "${DEPENDENCY_GENERATION_NODE:-node}" \
+      "${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}" \
+      copy-tree "$src" "$dest" "$reflink" &
   elif [ -n "$reflink" ]; then
     cp -a "$reflink" "$src" "$dest" 2>/dev/null &
   else
