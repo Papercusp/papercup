@@ -162,6 +162,10 @@ impl Companion {
     /// work-area group so agents pile up tab-like instead of tiling thinner
     /// (dockview-workbench D-008).
     pub fn open_pane(&self, spec: &PaneSpec) {
+        if let Some(command) = session_tab_command(spec) {
+            self.send(command);
+            return;
+        }
         self.send(spec_to_open_command(spec, true));
     }
 
@@ -284,6 +288,21 @@ fn spec_to_open_command(spec: &PaneSpec, stack: bool) -> Command {
     }
 }
 
+fn session_tab_command(spec: &PaneSpec) -> Option<Command> {
+    let pui = std::env::current_exe().ok()?;
+    let layout = crate::layout::session_tab_kdl(spec, pui.to_str()?)?;
+    let (program, args) = spec.argv.split_first()?;
+    let command = std::iter::once(crate::remote_connect::pane_program(program))
+        .chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
+    Some(Command::NewTab {
+        name: spec.title.clone(),
+        layout: Some(layout),
+        session: Some(pui_companion_proto::TabSession {
+            adv_session_id: spec.adv_session_id?, command,
+        }),
+    })
+}
+
 /// Normalise one plugin event into the app's [`Event`] stream.
 fn map_plugin_event(ev: PluginEvent) -> Event {
     match ev {
@@ -297,6 +316,18 @@ fn map_plugin_event(ev: PluginEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_tab_command_retains_exact_launch_binding() {
+        let spec = PaneSpec::new(["vendor", "--native", "argument with spaces"]).for_session(41);
+        let Command::NewTab { session: Some(session), layout: Some(layout), .. } = session_tab_command(&spec).unwrap() else {
+            panic!("expected session tab");
+        };
+        assert_eq!(session.adv_session_id, 41);
+        assert_eq!(session.command, "vendor --native argument with spaces");
+        assert!(layout.contains("\"argument with spaces\""));
+        assert!(session_tab_command(&spec.stacked_autoclose()).is_none());
+    }
     use pui_companion_proto::{PaneNode, TabNode, Topology};
 
     /// WI-10004247 class A: a blanked `$ZELLIJ` is outside zellij, so a bare

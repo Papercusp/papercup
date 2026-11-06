@@ -85,6 +85,8 @@ struct PuiCompanion {
     /// A zero budget means the pane has appeared in a manifest. Once observed,
     /// its absence invalidates the binding; an unobserved open expires too.
     session_bindings: BTreeMap<u32, (i64, u8)>,
+    /// Stable host-returned tab id, exact command and bounded manifest budget.
+    pending_session_tabs: Vec<(usize, pui_companion_proto::TabSession, u8)>,
     /// One-shot latch for the EI-9 self-hide retry. zellij launches a
     /// `zellij pipe -p` plugin in a focused **floating** pane by default (the
     /// CLI's `floating_plugin` defaults to floating) — but this companion is
@@ -97,6 +99,26 @@ struct PuiCompanion {
 }
 
 impl PuiCompanion {
+    fn reconcile_session_tabs(&mut self) {
+        let mut bindings = Vec::new();
+        self.pending_session_tabs.retain_mut(|(tab_id, session, remaining)| {
+            let matches: Vec<_> = self.tabs.iter().find(|tab| tab.tab_id == *tab_id)
+                .and_then(|tab| self.panes.panes.get(&tab.position))
+                .into_iter().flatten()
+                .filter(|pane| !pane.is_plugin && !pane.exited && pane.terminal_command.as_deref() == Some(session.command.as_str()))
+                .map(|pane| pane.id).collect();
+            if let [pane_id] = matches.as_slice() {
+                bindings.push((*pane_id, session.adv_session_id));
+                return false;
+            }
+            *remaining = remaining.saturating_sub(1);
+            *remaining > 0
+        });
+        for (pane_id, id) in bindings {
+            self.bind_opened_session(pane_id, Some(id));
+        }
+    }
+
     fn bind_opened_session(&mut self, pane_id: u32, adv_session_id: Option<i64>) {
         self.session_bindings.remove(&pane_id);
         if let Some(id) = adv_session_id.filter(|id| *id > 0) {
@@ -144,6 +166,50 @@ impl PuiCompanion {
     /// native-testable; the `hide_self()` host call it gates is wasm-only.
     fn should_retry_self_hide(&mut self) -> bool {
         !std::mem::replace(&mut self.self_hide_retried, true)
+    }
+}
+
+#[cfg(test)]
+mod session_tab_tests {
+    use super::*;
+    use zellij_tile::prelude::PaneInfo;
+
+    #[test]
+    fn session_tab_waits_for_both_manifests_and_binds_only_host_returned_tab() {
+        let mut p = PuiCompanion::default();
+        p.pending_session_tabs.push((77, pui_companion_proto::TabSession {
+            adv_session_id: 41, command: "vendor argument with spaces".into(),
+        }, 64));
+        let command_pane = |id| PaneInfo { id, terminal_command: Some("vendor argument with spaces".into()), ..Default::default() };
+        p.panes.panes.insert(0, vec![command_pane(1)]);
+        p.reconcile_session_tabs();
+        assert!(p.session_bindings.is_empty());
+        p.tabs = vec![TabInfo { position: 3, tab_id: 77, ..Default::default() }];
+        p.reconcile_session_tabs();
+        assert!(p.session_bindings.is_empty());
+        p.panes.panes.insert(3, vec![command_pane(2)]);
+        p.reconcile_session_tabs();
+        assert_eq!(p.session_bindings.get(&2).map(|x| x.0), Some(41));
+        assert!(!p.session_bindings.contains_key(&1));
+        assert!(p.pending_session_tabs.is_empty());
+    }
+
+    #[test]
+    fn session_tab_rejects_ambiguous_matches_and_expires_missing_panes() {
+        let mut p = PuiCompanion::default();
+        p.tabs = vec![TabInfo { position: 0, tab_id: 77, ..Default::default() }];
+        p.pending_session_tabs.push((77, pui_companion_proto::TabSession {
+            adv_session_id: 41, command: "same".into(),
+        }, 2));
+        p.panes.panes.insert(0, vec![
+            PaneInfo { id: 1, terminal_command: Some("same".into()), ..Default::default() },
+            PaneInfo { id: 2, terminal_command: Some("same".into()), ..Default::default() },
+        ]);
+        p.reconcile_session_tabs();
+        assert!(p.session_bindings.is_empty());
+        p.panes.panes.clear();
+        p.reconcile_session_tabs();
+        assert!(p.pending_session_tabs.is_empty());
     }
 }
 
@@ -298,6 +364,7 @@ impl ZellijPlugin for PuiCompanion {
         match event {
             Event::PaneUpdate(manifest) => {
                 self.panes = manifest;
+                self.reconcile_session_tabs();
                 self.reconcile_session_bindings();
                 // EI-9 race insurance: if our floating pane wasn't part of the
                 // session yet when `load()` fired `hide_self()`, it is now.
@@ -311,6 +378,7 @@ impl ZellijPlugin for PuiCompanion {
             }
             Event::TabUpdate(tabs) => {
                 self.tabs = tabs;
+                self.reconcile_session_tabs();
                 // Drive any in-flight SelectSwapLayout toward its target: each
                 // next_swap_layout fires a fresh TabUpdate, so this re-enters
                 // until the active preset matches (or the budget runs out).
@@ -435,13 +503,21 @@ impl PuiCompanion {
                     }
                 }
             }
-            Command::NewTab { name, layout } => {
+            Command::NewTab { name, layout, session } => {
                 // new_tabs_with_layout needs a stringified KDL layout. An explicit
                 // layout wins; a bare name → synthesize a minimal single-pane tab
                 // so `{name}` alone still opens a usable named tab.
                 match layout {
                     Some(l) => {
-                        new_tabs_with_layout(&l);
+                        let tabs = new_tabs_with_layout(&l);
+                        if let Some(session) = session.filter(|s| s.adv_session_id > 0 && !s.command.is_empty()) {
+                            // A session layout creates exactly one tab. Bind only
+                            // inside that host-returned tab, never a same-label tab.
+                            if let [tab_id] = tabs.as_slice() {
+                                self.pending_session_tabs.push((*tab_id, session, 64));
+                                self.reconcile_session_tabs();
+                            }
+                        }
                     }
                     None => {
                         if let Some(n) = name {

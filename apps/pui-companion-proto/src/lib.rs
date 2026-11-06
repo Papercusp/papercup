@@ -15,6 +15,25 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Exact launch binding for the command pane in a newly created session tab.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TabSession {
+    pub adv_session_id: i64,
+    pub command: String,
+}
+
+#[cfg(test)]
+mod session_tab_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_tab_commands_remain_compatible() {
+        let cmd = Command::from_line(r#"{"cmd":"new_tab","name":"legacy","layout":"layout { pane }"}"#).unwrap();
+        assert!(matches!(cmd, Command::NewTab { session: None, .. }));
+        assert!(!cmd.to_line().contains("session"));
+    }
+}
+
 /// A command `pui` sends to the plugin (stdin → `pipe()`).
 ///
 /// Serialized with an internal `cmd` tag, e.g. `{"cmd":"focus_pane","pane_id":12}`.
@@ -66,6 +85,8 @@ pub enum Command {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layout: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<TabSession>,
     },
     /// Rename a tab by id.
     RenameTab { tab_id: u32, name: String },
@@ -237,6 +258,7 @@ mod tests {
             Command::NewTab {
                 name: Some("papercup".into()),
                 layout: Some("layout { pane }".into()),
+                session: Some(TabSession { adv_session_id: 41, command: "psu --resume 41".into() }),
             },
             Command::RenameTab {
                 tab_id: 2,
