@@ -432,8 +432,27 @@ function withoutPublicContractIdentifiers(behavior: string): string {
   // Timestamp properties describe an externally visible row shape when the
   // contract observes a stamped record, not the implementation that wrote it.
   text = text.replace(
-    /\b([a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*)-(?:stamped|timestamped)\s+(?:row|record|entry|receipt|assessment)\b/gi,
+    /\b([a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*)-(?:stamped|timestamped)\s+(?:evidence\s+)?(?:row|record|entry|receipt|assessment)\b/gi,
     (_match, field: string) => ' '.repeat(field.length),
+  );
+  // Canonical data contracts often describe lists of identity fields by what a
+  // scorecard preserves or what an obligation is keyed by. Mask only those
+  // public-field-list clauses; a later private helper in the same observation
+  // remains visible to the implementation-coupling scan.
+  const blankPublicFieldNames = (fieldList: string) => fieldList.replace(
+    /\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g,
+    (field) => ' '.repeat(field.length),
+  );
+  text = text.replace(
+    /\b(?:scorecard|assessment|receipt|record|row|obligation)\b[^.;\n]{0,160}?\b(?:preserves?|retains?|keeps?|keyed\s+by)\b[^.;\n]*?(?=\s+(?:while|whereas|but|because|which|that|function|class|method|variable|private|implementation)\b|[.;\n]|$)/gi,
+    blankPublicFieldNames,
+  );
+  // A criterion falsifier can enumerate fields after saying a row lacks one.
+  // Treat that bounded missing-field list as observable data shape, without
+  // masking a later explanatory clause or implementation symbol.
+  text = text.replace(
+    /\b(?:criterion|criteria|assessment|scorecard|receipt|record|row|evidence)\b[^.;\n]{0,180}?\b(?:lacks?|omits?|drops?)\b[^.;\n]{0,50}\bfields?\s*,?[^.;\n]*?(?=\s+(?:because|which|that|function|class|method|variable|private|implementation)\b|[.;\n]|$)/gi,
+    blankPublicFieldNames,
   );
   // Catalog/schema parameter lists and classifications expose data to callers.
   // Bound each match to its sentence so it cannot hide a later helper call.

@@ -802,6 +802,44 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   it.each([
+    {
+      specId: 'AUTO-BAR-R-1-P-001',
+      behavior: 'A diagnostic assessment is ineligible to satisfy any finalized gating or default-history role.',
+      observation: [
+        'An explicitly diagnostic scorecard preserves purpose, exact subject/scope/window, rubric id, revision, criteriaHash, barSetHash, evidence and unknown reasons while remaining excluded from vetting, independent acceptance, promotion and shipment.',
+        'Default bounded history/latest/trend/comparison selects complete finalized audited compatible assessments before limiting, including finalized failures; explicit diagnostic history shows purpose, incompleteness and exclusion reasons.',
+        'Violation: Any diagnostic receipt changes vetting, independent acceptance, promotion or shipment to satisfied; persisted identity/evidence/unknown reasons are lost; a default mixed-history reader admits an excluded card before limiting, hides finalized failure, or compares incompatible revisions, scopes or windows without a reason.',
+      ].join(' '),
+    },
+    {
+      specId: 'AUTO-BAR-R-2-P-001',
+      behavior: 'Each current criterion exposes a complete measured evidence-applicability record.',
+      observation: [
+        'Every applicable current criterion has an evaluatedAt-stamped evidence row, including zero bindings, with target/window, spec identity, evidence plane, receipts, applicable source/test/fixture/environment/rubric fingerprints, measured currentness, bounded coverage, exact reason and next evidence action.',
+        'The row distinguishes current, stale, missing, incompatible, unavailable and rejected/withdrawn proof. Missing applicable identity, failed instruments and indeterminate freshness produce unknown. Ad-hoc work retains its actual plan association.',
+        'Violation: An applicable criterion has no row or lacks an applicable field, evaluatedAt, exact state reason, coverage or next action; any missing, stale, incompatible, unavailable or rejected receipt is displayed as current pass; or unrelated plan association is fabricated.',
+      ].join(' '),
+    },
+    {
+      specId: 'AUTO-BAR-R-3-P-001',
+      behavior: 'An author-only obligation admits only an authorized verdict for its exact rubric revision identity.',
+      observation: [
+        'Repeated author-only requests resolve to one restart-durable canonical obligation keyed by rubric id, revision, criteriaHash and barSetHash.',
+        'Observable queued, picked-up, blocked, completed and superseded receipts include the final verdict. Authorization is checked at pickup and settlement under existing recovery/reassignment policy; only the current exact-tuple authorized verdict settles vetting.',
+        'Obsolete or revoked receipts remain readable without settling the current rubric.',
+        'Violation: Retries or restart create duplicate/lost obligations; queued delivery is represented as pickup; an absent author is silently completed; a required receipt state is absent; or a slug-only, obsolete, unauthorized-at-pickup or unauthorized-at-settlement verdict settles the current tuple.',
+      ].join(' '),
+    },
+  ])('accepts canonical public identity/evidence fields in $specId observations', ({ behavior, observation }) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior, falsifier: { observation } })],
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it.each([
     "A goal scorecard criterion the grader has not yet assessed is recorded with unknownReason 'not-assessed', and rubrics:trend counts it separately from 'instrument-unavailable'.",
     "The public response is returned with reviewState 'pending'.",
     'An assessment is stored with resultCode "not-assessed".',
