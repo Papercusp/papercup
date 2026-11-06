@@ -1259,6 +1259,26 @@ exec "$PROBE_TEST_REAL_GIT" "$@"
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('enables reporter-stage tracing in every supervised guard phase', () => {
+    const markerLog = join(dir, 'reporter-stage-trace.log');
+    const priorTrace = process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE;
+    const { code, out } = runProbeIO([
+      '--file', subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "$PAPERCUSP_TEST_REPORTER_STAGE_TRACE" >> ${JSON.stringify(markerLog)}; if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi; grep -q '^beta$' {}`,
+    ], { ...process.env, PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '' });
+    expect(code, out).toBe(0);
+    expect(readFileSync(markerLog, 'utf8').trim().split('\n').sort()).toEqual([
+      'baseline=1',
+      'copy-baseline=1',
+      'mutant=1',
+    ]);
+    expect(process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe(priorTrace);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('retries ONCE on a transient pc-heavy after-ready-marker EEXIST, then still reaches a genuine verdict (EI-22133917471532652)', () => {
     // Simulates the observed harness noise: a --test wrapping `npm run
     // test:file` can rarely fail with TEST_FILE_ROUTE_ERROR (EEXIST on the
