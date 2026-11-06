@@ -11,11 +11,14 @@
  */
 import { createHash } from 'node:crypto';
 import { builtinModules } from 'node:module';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { posix } from 'node:path';
+import koffi from 'koffi';
 import { build, version as compilerVersion, type Loader } from '@papercusp/host-esbuild';
 import { parseTauriUpdateEnvelope, parseTauriUpdateCandidate, verifyTauriUpdateAuthorization,
   type TauriUpdateCandidate, type TauriUpdateEnvelope, type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
 import { createHandlerRuntimeCandidate, handlerRuntimeConfigurationDigest, handlerRuntimeDigest,
+  createCurrentHandlerRuntimeApproval, prepareApprovedHandlerRuntime,
   withCurrentHandlerRuntimeTrust, type HandlerRuntimeBuildIdentity, type HandlerRuntimeFile } from './handler-runtime';
 
 export interface HandlerBuildInput extends HandlerRuntimeFile {
@@ -23,6 +26,119 @@ export interface HandlerBuildInput extends HandlerRuntimeFile {
   authorizations: readonly TauriUpdateEnvelope[];
 }
 export type HandlerBuildIdentity = Omit<HandlerRuntimeBuildIdentity, 'authorIds'>;
+
+/** Extends the existing package inventory; unsigned measurement alone never
+ * issues a production runtime. Sources live at their signed /src paths beside
+ * the measured assets. The installer supplies this directory, never a manifest.
+ */
+export async function prepareInstalledHandlerRuntime(directory: string, handlerFiles: readonly HandlerRuntimeFile[]) {
+  if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)
+    || typeof directory !== 'string' || !directory.startsWith('/') || directory !== posix.normalize(directory)) {
+    throw new Error('invalid installed handler runtime directory or platform');
+  }
+  const exact = (value: unknown, fields: readonly string[]): value is Record<string, unknown> => !!value
+    && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === fields.length
+    && fields.every(field => Object.hasOwn(value, field));
+  const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | 0x80000;
+  const libc = koffi.load('libc.so.6');
+  const openat = libc.func('openat', 'int', ['int', 'str', 'int']);
+  const root = openSync(directory, flags | constants.O_DIRECTORY);
+  let total = 0;
+  const read = (path: string, limit: number) => {
+    const parts = path.split('/');
+    if (!parts.length || parts.some(part => !/^[A-Za-z0-9_@+.\-]+$/.test(part) || part === '.' || part === '..')) {
+      throw new Error('invalid installed handler file path');
+    }
+    const descriptors: number[] = [];
+    try {
+      let parent = root;
+      for (let i = 0; i < parts.length; i++) {
+        const directory = i < parts.length - 1;
+        const fd: number = openat(parent, parts[i]!, flags | (directory ? constants.O_DIRECTORY : 0));
+        if (fd < 0) throw new Error('installed handler file absent, symlinked or unreadable');
+        descriptors.push(fd);
+        const before = fstatSync(fd, { bigint: true });
+        if (directory) { if (!before.isDirectory()) throw new Error('invalid installed handler directory'); parent = fd; continue; }
+        if (!before.isFile() || before.nlink !== 1n || before.size > BigInt(limit)
+          || (total += Number(before.size)) > 512 * 1024 * 1024) throw new Error('invalid installed handler file size or type');
+        const bytes = Buffer.alloc(Number(before.size) + 1);
+        let size = 0;
+        while (size < bytes.length) {
+          const count = readSync(fd, bytes, size, bytes.length - size, null);
+          if (!count) break;
+          size += count;
+        }
+        const after = fstatSync(fd, { bigint: true });
+        if (BigInt(size) !== before.size || !(['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'] as const)
+          .every(field => before[field] === after[field])) throw new Error('installed handler file changed during snapshot');
+        return bytes.subarray(0, size);
+      }
+      throw new Error('installed handler file absent');
+    } finally { for (const fd of descriptors.reverse()) closeSync(fd); }
+  };
+  // Complete synchronous snapshot before signature verification/compilation.
+  let buildOptions: Parameters<typeof buildAuthenticatedHandlerRuntime>[0];
+  let measured: { sha256: string; bootstrapSha256: string; files: HandlerRuntimeFile[] };
+  let envelope: TauriUpdateEnvelope;
+  try {
+    const manifest: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(read('inventory.json', 16 * 1024 * 1024)));
+    if (!exact(manifest, ['schema', 'platform', 'arch', 'sha256', 'bootstrapSha256', 'files', 'build'])
+      || manifest.schema !== 'handler-runtime-files-v1' || manifest.platform !== 'linux' || manifest.arch !== process.arch
+      || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length > 1022
+      || !exact(manifest.build, ['entryPoint', 'identity', 'sources', 'assets', 'authorization'])) {
+      throw new Error('authenticated installed handler inventory required');
+    }
+    const build = manifest.build;
+    if (!exact(build.identity, ['sourceRevision', 'version', 'rollbackCounter'])
+      || !Array.isArray(build.sources) || !build.sources.length || !Array.isArray(build.assets)
+      || !build.assets.length || build.sources.length + manifest.files.length > 1023) throw new Error('invalid installed build population');
+    const file = (value: unknown): HandlerRuntimeFile => {
+      if (!exact(value, ['path', 'sha256', 'executable']) || typeof value.path !== 'string' || !value.path.startsWith('/')
+        || value.path !== posix.normalize(value.path) || typeof value.sha256 !== 'string'
+        || !/^[a-f0-9]{64}$/.test(value.sha256) || typeof value.executable !== 'boolean') throw new Error('invalid installed file record');
+      const contents = read(value.path.slice(1), 256 * 1024 * 1024);
+      if (digest(contents) !== value.sha256) throw new Error('installed handler digest mismatch');
+      return { path: value.path, sha256: value.sha256, executable: value.executable, contents };
+    };
+    const files = manifest.files.map(file);
+    const assets = new Map(files.filter(file => file.path !== '/runtime/bootstrap.cjs').map(file => [file.path, file]));
+    if (assets.size !== files.length - 1 || files.some(file => file.path.startsWith('/src/') || file.path.startsWith('/handler/'))
+      || build.assets.length !== assets.size) throw new Error('installed runtime population mismatch');
+    const authorizations = (value: unknown): TauriUpdateEnvelope[] => {
+      if (!Array.isArray(value) || !value.length || value.length > 64) throw new Error('installed input authors required');
+      return value.map(parseTauriUpdateEnvelope);
+    };
+    const sources = build.sources.map((source: unknown) => {
+      if (!exact(source, ['path', 'sha256', 'executable', 'authorizations'])) throw new Error('invalid installed source record');
+      const { authorizations: receipts, ...record } = source;
+      return { ...file(record), authorizations: authorizations(receipts) };
+    });
+    const inputs = build.assets.map((asset: unknown) => {
+      if (!exact(asset, ['path', 'authorizations']) || typeof asset.path !== 'string' || !assets.has(asset.path)) {
+        throw new Error('installed asset provenance mismatch');
+      }
+      const file = assets.get(asset.path)!; assets.delete(asset.path);
+      return { ...file, authorizations: authorizations(asset.authorizations) };
+    });
+    envelope = parseTauriUpdateEnvelope(build.authorization);
+    measured = { files, sha256: manifest.sha256 as string, bootstrapSha256: manifest.bootstrapSha256 as string };
+    buildOptions = { entryPoint: build.entryPoint as string, identity: { ...build.identity } as HandlerBuildIdentity,
+      sources, assets: inputs, handlerFiles: handlerFiles.map(file => ({ ...file, contents: Buffer.from(file.contents) })) };
+  } finally { closeSync(root); }
+  if (handlerRuntimeDigest(measured.files) !== measured.sha256) throw new Error('installed inventory digest mismatch');
+  const produced = await buildAuthenticatedHandlerRuntime(buildOptions);
+  if (produced.inventory.bootstrapSha256 !== measured.bootstrapSha256
+    || handlerRuntimeDigest(produced.inventory.files.filter(file => !file.path.startsWith('/handler/'))) !== measured.sha256) {
+    throw new Error('installed bootstrap differs from authenticated source build');
+  }
+  // Authenticate issuance now, then recheck CURRENT protected trust at each
+  // actual spawn via the existing approval object (never cache the verdict).
+  await withCurrentHandlerRuntimeTrust(async ({ trust, now }) => {
+    const result = await verifyTauriUpdateAuthorization(trust, envelope, produced.candidate, now);
+    if (!result.valid) throw new Error(`installed runtime approval refused: ${result.reason ?? result.error}`);
+  });
+  return prepareApprovedHandlerRuntime(produced.inventory, createCurrentHandlerRuntimeApproval(envelope, produced.candidate));
+}
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 const builtins = new Set(builtinModules.map(name => name.replace(/^node:/, '')));
 const loaders: Record<string, Loader> = { '.ts': 'ts', '.js': 'js', '.cjs': 'js', '.mjs': 'js', '.json': 'json' };

@@ -45,6 +45,8 @@ import type {
 import type { ObservedSurface } from '@papercusp/testing-shell/census';
 
 import { papercuspRoot } from './papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import {
   appendLogEventSync,
   installConsoleInterceptor,
@@ -387,7 +389,10 @@ async function discover(onProvidersRegistered: () => void = () => {}): Promise<H
 
   try {
     const bundled = findBundledPluginsParent();
+    let metadataOnly = true;
+    try { metadataOnly = await getFlag(FLAGS.PLUGIN_INVOCATION_POLICY, 'system'); } catch { /* fail closed */ }
     const r = await loadPlugins({
+      metadataOnly,
       harnessSlugs,
       // Pick up bundled in-repo plugins (Repomix, fetch-plus, code2prompt,
       // firecrawl-bridge, etc) without requiring symlinks into ~/.papercusp.

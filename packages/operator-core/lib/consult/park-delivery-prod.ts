@@ -145,9 +145,10 @@ export async function recordParkDelivery(
 
 /** Reuse the wake engine's verdict-specific pickup proof, never unrelated tool activity. */
 async function parkerLastTurnAt(sql: Sql, state: ParkDeliveryState): Promise<string | null> {
+  let observedDeliveryAt: number | null = null;
   if (await turnProofColumnsReady()) {
-    const rows = await sql<Array<{ turn_started_at: Date | string }>>`
-      SELECT turn_started_at FROM harness_shared.event_wake_deliveries
+    const rows = await sql<Array<{ turn_started_at: Date | string; delivered_at: Date | string; turn_proof: string }>>`
+      SELECT turn_started_at, delivered_at, turn_proof FROM harness_shared.event_wake_deliveries
        WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
          AND subscriber_id = ${state.parkerId}
          AND event_key = ${parkVerdictEventKey(state.consultId)}
@@ -156,22 +157,28 @@ async function parkerLastTurnAt(sql: Sql, state: ParkDeliveryState): Promise<str
          AND turn_proof = ANY(${[...TURN_PROOF_CONFIRMED]})
          AND delivered_at >= ${state.emittedAt}::timestamptz
          AND turn_started_at >= delivered_at
-       ORDER BY turn_started_at DESC
+       ORDER BY (turn_proof = 'host-attested') DESC, turn_started_at DESC
        LIMIT 1`;
-    const at = rows[0]?.turn_started_at;
-    if (at != null) return at instanceof Date ? at.toISOString() : new Date(at).toISOString();
+    const proof = rows[0];
+    if (proof?.turn_proof === 'host-attested') {
+      return new Date(proof.turn_started_at).toISOString();
+    }
+    // The canonical 'observed' writer can timestamp an MCP call from a turn
+    // already running before delivery. Corroborate it with the native host.
+    if (proof?.turn_proof === 'observed') observedDeliveryAt = new Date(proof.delivered_at).getTime();
   }
 
   // A re-wake uses the inbox channel and an exact resume need not create another
   // verdict delivery. In those cases use the host's existing native turn witness
   // after the recovery attempt; an older running turn still proves nothing.
   const recoveryAt = state.resumeAttemptedAt ?? state.rewakeAttemptedAt;
-  if (recoveryAt) {
+  if (recoveryAt || observedDeliveryAt !== null) {
     const { readPickupHostView } = await import('../events/await/pickup-sweep');
     const host = await readPickupHostView(state.parkerId);
     const startedAt = host?.execution?.turnStartedAt;
+    const requiredAt = observedDeliveryAt ?? Date.parse(recoveryAt!);
     if (typeof startedAt === 'number' && Number.isFinite(startedAt)
-      && startedAt >= Math.max(Date.parse(recoveryAt), Date.parse(state.emittedAt))) {
+      && startedAt >= Math.max(requiredAt, Date.parse(state.emittedAt))) {
       return new Date(startedAt).toISOString();
     }
   }

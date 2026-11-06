@@ -65,8 +65,8 @@ it('native retention proof reaches canonical candidate intake through the produc
   await demand(); await installedBeforeWindow();
   expect(await readSqlIntentRetention(window())).toBe('complete');
   let reviewId: string | null = null;
-  const result = await runSqlIntentCensus(opts(), { review: async input => {
-    const receipt = await submitSqlCandidateReview(input, { client: f.db.adminSql,
+  const result = await runSqlIntentCensus(opts(), { review: async (input, reviewDeps) => {
+    const receipt = await submitSqlCandidateReview(input, { ...reviewDeps, client: f.db.adminSql,
       capture: value => captureImprovement(value, { searchIssues: async () => [], createIssue }) });
     expect(receipt).toMatchObject({ status: 'pending', queue: 'agent-review', owner: null });
     reviewId = receipt.workItemId;

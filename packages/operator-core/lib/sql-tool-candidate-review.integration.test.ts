@@ -69,7 +69,7 @@ const input = () => ({ workspaceId: WS, harnessSlug: HARNESS, submittedBy: 'su-s
 const capture = vi.fn(async (value: Parameters<typeof captureImprovement>[0]) =>
   captureImprovement(value, { searchIssues: async () => [], createIssue }));
 const enroll = vi.fn(enterAgentReview);
-const deps = () => ({ client: db.adminSql, capture, enroll });
+const deps = () => ({ client: db.adminSql, capture, enroll, authorize: async () => true });
 const recommendation = (kind: SqlToolRecommendation['kind']): SqlToolRecommendation => ({
   kind, reason: 'maintained-fixture', toolName: null, immediatelyCallable: false,
   fingerprint: 'opaque-shape', requiredFeatures: null, evidenceRefs: [], missingFeatures: [],
@@ -164,6 +164,54 @@ it('suppressed and ineligible candidates never file work R5-CONTRACT', async () 
   const rows = await db.adminSql`SELECT feature_id FROM harness_shared.work_items WHERE workspace_id=${WS}`;
   expect(rows).toHaveLength(0);
 });
+it('SQL intake requires fresh source authority before reserving even a suppressed edition R5-CONTRACT', async () => {
+  capture.mockClear(); enroll.mockClear();
+  for (const authorize of [undefined, async () => false,
+    async () => { throw new Error('private authority failure'); }]) {
+    for (const kind of ['extend-existing', 'keep-sql'] as const) {
+      expect(await submitSqlCandidateReview({ ...input(), recommendation: recommendation(kind) },
+        { ...deps(), authorize })).toMatchObject({ status: 'UNKNOWN', workItemId: null, owner: null, queue: null });
+    }
+  }
+  expect(capture).not.toHaveBeenCalled(); expect(enroll).not.toHaveBeenCalled();
+  expect(await db.adminSql`SELECT 1 FROM harness_shared.sql_candidate_reviews`).toHaveLength(0);
+});
+it.each(['reservation', 'capture', 'enroll', 'final-read'] as const)(
+  'SQL intake renews source authority after %s and restores the same edition R5-CONTRACT', async stage => {
+    let allowed = true, reads = 0;
+    const client = new Proxy(db.adminSql, { apply: async (target, _this, args) => {
+      const rows = await Reflect.apply(target, target, args);
+      if (stage === 'reservation' && (args[0] as TemplateStringsArray).join('')
+        .includes('INSERT INTO harness_shared.sql_candidate_reviews')) allowed = false;
+      return rows;
+    } });
+    const captureCurrent = vi.fn(async (value: Parameters<typeof captureImprovement>[0]) => {
+      const result = await capture(value);
+      if (stage === 'capture') allowed = false;
+      return result;
+    });
+    const enrollCurrent: typeof enterAgentReview = async value => {
+      const result = await enterAgentReview(value);
+      if (stage === 'enroll') allowed = false;
+      return result;
+    };
+    const read = async (id: string, harness: string) => {
+      const item = await getWorkItem(id, harness);
+      if (++reads === 3 && stage === 'final-read') allowed = false;
+      return item;
+    };
+    expect(await submitSqlCandidateReview(input(), { ...deps(), client, read,
+      capture: captureCurrent, enroll: enrollCurrent, authorize: async () => allowed }))
+      .toMatchObject({ status: 'UNKNOWN', workItemId: null, owner: null, queue: null });
+    expect(allowed).toBe(false);
+    if (stage === 'reservation') expect(captureCurrent).not.toHaveBeenCalled();
+    const [reserved] = await db.adminSql`SELECT artifact_id FROM harness_shared.sql_candidate_reviews`;
+    expect(reserved).toBeDefined();
+    const restored = await submitSqlCandidateReview(input(), deps());
+    expect(restored).toMatchObject({ status: 'pending', workItemId: reserved!.artifact_id, queue: 'agent-review' });
+    expect(await db.adminSql`SELECT 1 FROM harness_shared.sql_candidate_reviews`).toHaveLength(1);
+    expect(await db.adminSql`SELECT 1 FROM harness_shared.work_items WHERE workspace_id=${WS}`).toHaveLength(1);
+  });
 it('a crash after reservation resumes the same actual intake R5-CONTRACT', async () => {
   const fail = vi.fn(async () => { throw new Error('interrupted before capture'); });
   await expect(submitSqlCandidateReview(input(), { ...deps(), capture: fail })).rejects.toThrow('interrupted');

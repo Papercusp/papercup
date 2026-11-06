@@ -1391,7 +1391,20 @@ export async function recordIntentTaskBrief(input: { workspace: string; owner: s
 
 /** Legs that deliver through a tool RESULT instead of this hook. Their rows feed the outcome
  * and liveness instruments but are never charged to the per-turn hook spend. */
-export const TOOL_RESULT_LEGS = ['intent', 'completion'] as const satisfies readonly PushLegId[];
+export const TOOL_RESULT_LEGS = ['intent', 'completion', 'claim-brief'] as const;
+
+/** P-008: every claim has its own outcome, including an explicit reason when no brief was issued.
+ * JSON subjects extend the existing outcome ledger; no parallel outcome store or hook flag. */
+export async function recordClaimTimeBrief(input: { workspace: string; owner: string; workItem: string; invocation: string },
+  brief: TaskBrief | null): Promise<boolean> {
+  const delivered = brief?.status === 'current';
+  const reason = delivered ? null : brief?.exclusions[0]?.slice(0, 200) ?? 'No repository paths or code links were available for this claim.';
+  return recordToolResultBrief(input, { leg: 'claim-brief',
+    subject: JSON.stringify({ schema: 'claim-brief-v1', workItem: input.workItem, invocation: input.invocation,
+      outcome: delivered ? 'delivered' : 'skipped', reason }),
+    commit: brief?.commit ?? null, paths: brief?.files.map(file => file.path) ?? [],
+    recover: brief?.recover, chars: delivered ? JSON.stringify(brief).length : 0 });
+}
 
 /** code-intel-delivery-and-outcomes-2026-10-26 P-002: the completion leg also delivers through a
  * tool result: work_items:complete returns getCompletionTimeBrief as `completionBrief`. Its reuse

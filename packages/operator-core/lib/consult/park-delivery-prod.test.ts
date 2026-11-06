@@ -94,12 +94,14 @@ describe('parkDeliveryStateFromRow', () => {
 });
 
 /** A tagged-template stand-in for postgres.js: SELECTs return `rows`, every call is recorded. */
-function fakeSql(rows: ParkDeliveryRow[], pickupRows: Array<{ turn_started_at: string }> = []) {
+function fakeSql(rows: ParkDeliveryRow[], pickupRows: Array<{ turn_started_at: string; delivered_at?: string; turn_proof?: string }> = []) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     calls.push({ text, values });
-    if (/SELECT.*turn_started_at/.test(text)) return Promise.resolve(pickupRows);
+    if (/SELECT.*turn_started_at/.test(text)) return Promise.resolve(pickupRows.map(r => ({
+      delivered_at: VERDICT_AT, turn_proof: 'host-attested', ...r,
+    })));
     // This deliberately resembles activity from an old turn after the verdict.
     // The production reader must not use it as proof of verdict pickup.
     if (/FROM harness_shared\.tool_invocations/.test(text)) return Promise.resolve([{ invoked_at: AFTER_GRACE }]);
@@ -156,6 +158,19 @@ describe('sweepParkDeliveries', () => {
     const deps = fakeDeps();
     const r = await sweepParkDeliveries({ sql, depsFor: () => deps, sessionState: async () => 'parked', now: AFTER_GRACE });
     expect(r.checked).toEqual([{ consultId: 'conv-1', action: 'rewake' }]);
+  });
+
+  it.each(['missing', 'old', 'fresh'] as const)('corroborates observed activity with a %s native host turn', async host => {
+    const deliveredAt = '2026-10-13T01:01:00.000Z';
+    const { sql } = fakeSql([row({ outcomes: [{ verdict: 'proceed', at: VERDICT_AT }] })], [{
+      turn_proof: 'observed', delivered_at: deliveredAt, turn_started_at: AFTER_GRACE,
+    }]);
+    mocks.pickupHost.mockResolvedValueOnce(host === 'missing' ? null : {
+      execution: { turnStartedAt: Date.parse(host === 'fresh' ? AFTER_GRACE : VERDICT_AT) },
+    });
+    const r = await sweepParkDeliveries({ sql, depsFor: fakeDeps, sessionState: async () => 'parked', now: AFTER_GRACE });
+    expect(r.checked).toEqual([{ consultId: 'conv-1', action: host === 'fresh' ? 'none' : 'rewake',
+      ...(host === 'fresh' ? { reason: 'delivered' } : {}) }]);
   });
 
   it.each([false, true])('requires a new native turn after the re-wake (new turn: %s)', async fresh => {

@@ -127,3 +127,27 @@ it('failed review delivery keeps the durable callback pending for retry R5-CONTR
   expect(await runSqlIntentCensus(opts, { review })).toMatchObject({ status: 'UNKNOWN', stage: 'alert' });
   expect(review).toHaveBeenCalledTimes(2);
 });
+it('SQL census review authority rejects a source deleted during intake R5-CONTRACT OUTCOME-P-006', async () => {
+  const ids: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const id = await f.seed('SELECT id FROM jobs', i % 2 ? '2026-10-23T12:00:00Z' : '2026-10-24T12:00:00Z');
+    ids.push(id);
+    await f.db.adminSql`UPDATE harness_shared.tool_invocations SET coord_owner_id=${'su-agent-' + i % 3}
+      WHERE id=${id}::bigint`;
+  }
+  let checked = false;
+  const result = await runSqlIntentCensus(f.opts({ rowBudget: 100, timeBudgetMs: 30_000 }), {
+    review: async (_input, reviewDeps) => {
+      expect(await reviewDeps?.authorize?.()).toBe(true);
+      await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${ids[0]!}::bigint`;
+      expect(await reviewDeps?.authorize?.()).toBe(false);
+      checked = true;
+      return { status: 'UNKNOWN', lifecycleId: 'opaque', editionId: 'edition',
+        workItemId: null, owner: null, queue: null };
+    },
+  });
+  expect(checked).toBe(true);
+  expect(result).toMatchObject({ status: 'UNKNOWN', stage: 'alert' });
+  const [history] = await f.db.adminSql`SELECT alerted_revision FROM harness_shared.sql_intent_history`;
+  expect(history!.alerted_revision).toBeNull();
+});

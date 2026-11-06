@@ -402,7 +402,17 @@ export async function runSqlIntentCensus(
             submittedBy: 'system:sql-read-census', candidate,
             sourceRef: { scopeId: packet.scopeId, ranOn: packet.ranOn },
             contractRef: `sql-review-demand-v1:${candidate.parserVersion}:${SQL_DEMAND_SCORE_VERSION}`,
-          }, { client: opts.client });
+          }, { client: opts.client, authorize: async () => {
+            // Intake awaits reservation, capture and enrollment. Renew the exact
+            // contributing snapshot before and after those writes; its saved
+            // pointer cannot authorize a deleted/revoked/replaced population.
+            const current = await readSqlCandidates({ ...miningOpts, ranOn: packet.ranOn,
+              authorizeSource: async () => miningOpts.authorize({ workspaceId: opts.workspaceId,
+                harnessSlug: opts.harnessSlug, sourceBoundary: scope.sourceBoundary }) });
+            return current.some(row => row.ranOn === snapshot.ranOn
+              && JSON.stringify(row.sourceIds) === JSON.stringify(snapshot.sourceIds)
+              && JSON.stringify(row.summary) === JSON.stringify(snapshot.summary));
+          } });
           if (reviewed.status === 'UNKNOWN') throw new Error('sql_candidate_review_unavailable');
           await (deps.feedback ?? recordSqlCandidateFeedback)({ workspaceId: opts.workspaceId,
             harnessSlug: opts.harnessSlug, review: reviewed,

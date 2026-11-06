@@ -8,6 +8,7 @@ import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun, parseOperationalEvidenceArtifact, type OperationalEvidenceArtifact } from '../agent-tools/testing/record-run';
 import { updateExternalBlockerHistory } from '../external-blockers';
 import { DECISION_REVIEW_CASCADE_FLAVOR } from './decision-review';
+import { readPickupHostView } from '../events/await/pickup-sweep';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
@@ -46,6 +47,132 @@ function mutate(sql: string, origin: string, expectedRows: number) {
 }
 
 describe.skipIf(!profilePath)('consult-backed parking on the loaded staging operator', () => {
+  it('public park door resumes a real native subject after deadline and alternative verdicts', async () => {
+    const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
+    const origin = String(profile.origin);
+    expect(['http://127.0.0.1:3170', 'http://127.0.0.1:3070']).toContain(origin);
+    const runtime = origin.endsWith(':3170') ? 'staging-operator' : 'release-operator';
+    for (const path of ['packages/operator-core/lib/consult/park-door.ts',
+      'packages/operator-core/lib/consult/park-delivery-prod.ts']) {
+      const position = call('dev:pipeline_position', { path, sourceRuntimeOnly: true,
+        expectedSourceSha256: createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex'),
+        projection: { pick: ['acceptedSource'] } }, origin);
+      const evidence = JSON.stringify({ path, runtime, acceptedSource: position.acceptedSource });
+      console.info('CBP_NATIVE_SOURCE_PREFLIGHT', evidence);
+      expect(position.acceptedSource.matches, evidence).toBe(true);
+      expect(position.acceptedSource.runtimeContainment[runtime], evidence).toBe(true);
+    }
+    const seed = `park-native-${randomUUID()}`;
+    const flows = ['proceed', 'adopted', 'owner-hold'] as const;
+    const observations: Array<Record<string, unknown>> = [];
+    const brief = [
+      `You are the real native SUBJECT of acceptance test ${seed} for WI-6554700010046115.`,
+      'Authorized bounded acceptance fixture; execution route this one session. No source edits, fleet, loop, or unrelated work.',
+      `Use supported public tools on your configured ${origin} MCP target. Verify coord:whoami first.`,
+      'Create three private task work-items in harness papercusp, assigned to self, state wip, with these EXACT titles:',
+      ...flows.map(flow => `${seed} ${flow}`),
+      'For EACH task call work_items:set_blocker with kind product-decision, a unique ref, defaultIfUnanswered, and decideBy 16 minutes in the future. Do not write database fixtures or shorten deadlines.',
+      `For proceed: summary "Acceptance note spelling; use the default unless there is an objection". Default is to comment "PARK_NATIVE_PICKUP ${seed} proceed" on its own task.`,
+      `For adopted: summary "Controlled alternative-branch acceptance: reviewer, please object with basis alternative, reason testing the alternative branch, alternative use the reviewed note spelling. This is a harmless note, not an owner-authority decision." Default keep current spelling. On consider-alternative adopt the actual alternative with consult:reply parkResponse, then comment "PARK_NATIVE_PICKUP ${seed} adopted" AFTER its blocker clears.`,
+      'For owner-hold: same harmless note default, ownerAuthorityTopic security. Never perform its default, answer its owner question, or clear its blocker.',
+      'Checkpoint work-item/consult ids and deadlines, then END the initial turn immediately. Do not act on verdicts in that initial turn.',
+      'On a later verdict wake read the actual park and work-item state. Post each exact pickup comment only after its blocker clears; alternative first needs supported adoption. Leave owner-deciding blocked.',
+      'Keep tasks/evidence for the test driver. Do not claim shipment or manufacture pickup times.',
+    ].join('\n');
+    let taskId: string | undefined;
+    let subjectId: string | undefined;
+    const fixtures = new Set<string>();
+    const measured = await executeOperationalRun({
+      filePath: 'packages/operator-core/lib/consult/park.live.e2e.test.ts',
+      name: 'Public park door, native pickup, alternative adoption and authority hold',
+      framework: 'operational', command: ['npm', 'run', 'test:file', '--',
+        'packages/operator-core/lib/consult/park.live.e2e.test.ts', '-t', 'public park door resumes'],
+      runtimeUnits: profile.runtimeUnits,
+      run: async () => {
+        try {
+          const launched = call('capability:launch-agent', { brief, harness: 'papercusp',
+            agent: 'codex', model: 'sol', account: 'auto', headless: true, mcpTarget: 'spawn-host',
+            label: seed, idempotencyKey: seed, members: [{ effort: 'high', contextSize: 'trimmed' }] }, origin);
+          const task = launched.launch?.tasks?.[0] ?? launched.data?.launch?.tasks?.[0];
+          taskId = task?.taskId;
+          subjectId = task?.ownerId;
+          expect(taskId, JSON.stringify(launched)).toBeTruthy();
+          expect(subjectId, JSON.stringify(launched)).toBeTruthy();
+          console.info('CBP_NATIVE_SUBJECT', JSON.stringify({ seed, taskId, subjectId, origin }));
+          const stopAt = Date.now() + 30 * 60_000;
+          const completed = new Set<string>();
+          while (Date.now() < stopAt && completed.size < flows.length) {
+            for (const flow of flows) {
+              if (completed.has(flow)) continue;
+              const [fixture] = rows(`SELECT feature_id, payload FROM harness_shared.work_items
+                WHERE workspace_id = ${literal(workspace)} AND harness_slug = 'papercusp'
+                  AND title = ${literal(`${seed} ${flow}`)}`, origin);
+              if (!fixture) continue;
+              fixtures.add(fixture.feature_id);
+              const blocker = fixture.payload.externalBlockers?.find((b: { ref: string }) => b.ref?.startsWith('consult:'));
+              if (!blocker) continue;
+              const consultId = blocker.ref.slice('consult:'.length);
+              const [park] = rows(`SELECT routing, park_state FROM harness_shared.consult_state
+                WHERE workspace_id = ${literal(workspace)} AND conversation_id = ${literal(consultId)}`, origin);
+              const outcomes = park?.park_state?.outcomes ?? [];
+              const outcome = outcomes.at(-1);
+              if (!outcome) continue;
+              expect(park.routing.cascade).toMatchObject({ setterId: subjectId, workItemId: fixture.feature_id });
+              if (flow === 'owner-hold') {
+                expect(outcome.verdict).toBe('owner-deciding');
+                expect(blocker.status).toBe('active');
+                observations.push({ flow, consultId, workItemId: fixture.feature_id, outcome, blocker });
+                completed.add(flow);
+                continue;
+              }
+              const item = call('work_items:get', { id: fixture.feature_id, harness: 'papercusp', threadLimit: 10 }, origin);
+              const pickup = item.results?.[0]?.threadWindow?.posts?.find((p: { author_id: string; body: string }) =>
+                p.author_id === subjectId && p.body.includes(`PARK_NATIVE_PICKUP ${seed} ${flow}`));
+              if (!pickup) continue;
+              expect(outcome.verdict).toBe(flow);
+              expect(blocker.status).toBe('cleared');
+              const verdict = flow === 'adopted'
+                ? outcomes.findLast((o: { verdict: string }) => o.verdict === 'consider-alternative') : outcome;
+              expect(verdict).toBeDefined();
+              const [delivery] = rows(`SELECT id, payload, delivered_at, turn_proof, turn_started_at
+                FROM harness_shared.event_wake_deliveries
+                WHERE workspace_id = 'default' AND subscriber_id = ${literal(subjectId!)}
+                  AND event_key = ${literal(`consult:park-verdict:${consultId}`)} AND status = 'delivered'
+                  AND payload->>'verdict' = ${literal(verdict.verdict)}
+                  AND delivered_at >= ${literal(verdict.at)}::timestamptz
+                ORDER BY delivered_at DESC LIMIT 1`, origin);
+              if (!delivery?.turn_started_at) continue;
+              const host = await readPickupHostView(subjectId!);
+              const nativeStart = host?.execution?.turnStartedAt;
+              const freshObserved = delivery.turn_proof === 'observed' && typeof nativeStart === 'number'
+                && nativeStart >= Date.parse(delivery.delivered_at) && nativeStart <= Date.parse(pickup.created_ts);
+              expect(delivery.turn_proof === 'host-attested' || freshObserved).toBe(true);
+              expect(Date.parse(delivery.turn_started_at)).toBeGreaterThanOrEqual(Date.parse(verdict.at));
+              expect(Date.parse(pickup.created_ts)).toBeGreaterThanOrEqual(Date.parse(delivery.turn_started_at));
+              observations.push({ flow, consultId, workItemId: fixture.feature_id, verdict, outcome,
+                pickup, delivery, nativeStart, taskId, subjectId });
+              completed.add(flow);
+            }
+            console.info('CBP_NATIVE_PARK_PROGRESS', JSON.stringify({ seed, taskId, completed: [...completed] }));
+            if (completed.size < flows.length) await new Promise(resolve => setTimeout(resolve, 15_000));
+          }
+          expect([...completed].sort(), JSON.stringify({ seed, taskId, subjectId, observations })).toEqual([...flows].sort());
+          console.info('CBP_NATIVE_PARK_PROOF', JSON.stringify(observations));
+          return { exitCode: 0, summary: 'Public parks produced native pickup and adoption while retaining the authority hold',
+            assertions: observations.map(o => ({ id: `public-native-${o.flow}`, passed: true,
+              evidence: JSON.stringify(o).slice(0, 2000) })) };
+        } finally {
+          console.info('CBP_NATIVE_FIXTURE_CUSTODY', JSON.stringify({ seed, taskId, subjectId, fixtures: [...fixtures] }));
+          // Preserve ledger proof for grading and later disposition; stop only
+          // this test's native subject. Its fixture ids remain explicitly named.
+          if (taskId) call('processes:kill', { taskId }, origin);
+        }
+      },
+    }, { workspaceId: workspace, harnessSlug: 'papercusp', projectDir: root });
+    console.info('CBP_NATIVE_PARK_RUN', JSON.stringify(measured));
+    expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
+  }, 2_100_000);
+
   it('adopts an alternative and proceeds at a silent deadline, clearing blockers and recording verdict wakes', async () => {
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     expect(profile.origin).toBe('http://127.0.0.1:3170');
@@ -71,8 +198,10 @@ describe.skipIf(!profilePath)('consult-backed parking on the loaded staging oper
         expectedSourceSha256: createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex'),
         projection: { pick: ['acceptedSource', 'currentBuildTestRoute'] } }, origin);
       expect(route.currentBuildTestRoute.readiness).toBe('ready');
-      expect(route.acceptedSource.matches).toBe(true);
-      expect(route.acceptedSource.runtimeContainment['staging-operator']).toBe(true);
+      const evidence = JSON.stringify({ path, acceptedSource: route.acceptedSource });
+      console.info('CBP_LIVE_SOURCE_PREFLIGHT', evidence);
+      expect(route.acceptedSource.matches, evidence).toBe(true);
+      expect(route.acceptedSource.runtimeContainment['staging-operator'], evidence).toBe(true);
     }
 
     const measured = await executeOperationalRun({

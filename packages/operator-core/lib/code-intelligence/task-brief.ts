@@ -26,6 +26,7 @@ import type { EngineeringQuery, readEngineeringEvidence } from './engineering-ev
 import { withBoundedTimeout } from '../bounded-timeout';
 import type { CoverageScopeData } from './test-coverage-map';
 import { canCall, readRecipientToolset, type RecipientToolset } from './push-toolset';
+import { readTaskAnchorContext, taskAnchors, type TaskAnchorContext, type TaskAnchorDeps } from './task-brief-anchors';
 
 export const TASK_BRIEF_BUDGET_MS = 6_000;
 export const TASK_BRIEF_MAX_CHARS = 3_000;
@@ -87,6 +88,8 @@ export interface TaskBrief {
   graph: { status: 'measured' | 'unknown'; consumers: string[]; relationships: string[]; reason?: string };
   incident?: TaskIncidentBrief;
   engineering?: TaskEngineeringEvidence;
+  /** P-008: function-specific evidence, independent of whole-file task scope. */
+  anchors?: TaskAnchorContext;
   exclusions: string[];
   /** P-006 (SPEC-P-006-B): every recovery call in a delivered brief is withheld unless the
    * recipient session was listed its tool (see gateTaskBriefRecover). */
@@ -95,6 +98,9 @@ export interface TaskBrief {
     | { tool: 'coord:declare-intent'; args: { intent: string; current_files: string[]; harness?: string } };
 }
 export interface TaskBriefDeps {
+  anchors?: TaskAnchorDeps;
+  recordClaim?: (input: { workspace: string; owner: string; workItem: string; invocation: string },
+    brief: TaskBrief | null) => Promise<boolean>;
   root: (workspaceId: string, harness: string) => Promise<string | null>;
   effects: PackerEffects;
   pack: typeof packerFacade;
@@ -241,6 +247,15 @@ export function compactTaskBrief(input: TaskBrief, maxChars = TASK_BRIEF_MAX_CHA
       while (oversized() && brief.engineering[axis].length) brief.engineering[axis].pop();
     if (oversized()) brief.engineering.gaps = ['Inline evidence omitted; use the scoped graph reader.'];
   }
+  if (brief.anchors) {
+    for (const subject of [...brief.anchors.subjects].reverse()) {
+      for (const key of ['impact', 'callers', 'tests', 'removedSincePlanning', 'addedSincePlanning'] as const)
+        while (oversized() && (subject[key]?.length ?? 0) > 1) subject[key]!.pop();
+    }
+    for (const key of ['docs', 'specs', 'locks'] as const)
+      while (oversized() && (brief.anchors[key]?.length ?? 0) > 1) brief.anchors[key]!.pop();
+    while (oversized() && brief.anchors.subjects.length > 1) brief.anchors.subjects.pop();
+  }
   return brief;
 }
 
@@ -316,11 +331,13 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
   const wi = ref.workItem;
   const harness = wi?.harness ?? ref.harness ?? null;
   const payload = wi?.payload as { paths?: unknown } | null;
-  const stored = Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [...(ref.paths ?? [])];
+  const anchors = taskAnchors(payload);
+  const stored = anchors ? anchors.flatMap(anchor => typeof anchor.path === 'string' ? [anchor.path] : [])
+    : Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [...(ref.paths ?? [])];
   // WI-6554700010030367: most plan-created items never carry payload.paths, so
   // fall back to the repository paths their own text names (re-checked against
   // the registered root below, so a not-yet-created file is dropped, never read).
-  const scopeFromText = stored.length === 0 && Boolean(wi?.id);
+  const scopeFromText = !anchors && stored.length === 0 && Boolean(wi?.id);
   let requested = scopeFromText ? itemTextPaths(wi) : stored;
   const recover: TaskBrief['recover'] = wi?.id
     ? { tool: 'work_items:get', args: { id: wi.id, ...(harness ? { harness } : {}) } }
@@ -341,7 +358,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
       bounded.files = []; bounded.excerpts = []; bounded.scope.paths = [];
       bounded.status = 'unknown'; bounded.sourceFingerprint = null; bounded.commit = null;
       bounded.graph = { status: 'unknown', consumers: [], relationships: [], reason: 'Task scope could not fit the inline budget.' };
-      delete bounded.repository; delete bounded.decisions; delete bounded.incident;
+      delete bounded.repository; delete bounded.decisions; delete bounded.incident; delete bounded.anchors;
       bounded.exclusions = ['Task scope exceeded the inline brief budget; use the recovery reader.'];
       bounded.recover = recover;
     }
@@ -448,7 +465,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     // when its answer could fit the whole brief deadline. Publish its result only
     // after safe packing and the final source-byte recheck both succeed.
     const compilerMs = Math.max(0, deadline - Date.now() - 250);
-    const compiler = implementation && name && compilerMs > 0
+    const compiler = !anchors && implementation && name && compilerMs > 0
       ? deps.graph(root, name, implementation, brief.scope.paths, compilerMs).catch(() => null)
       : Promise.resolve(null);
     const failures = wi?.id && deps.failures
@@ -473,7 +490,17 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
       }
     }
     for (const path of texts.keys()) if (!included.has(path)) brief.exclusions.push('A scoped file was excluded by the safe packer.');
-    if (implementation && brief.files.some(file => file.path === implementation)) {
+    if (anchors) {
+      phase.current = 'compiler-wait';
+      brief.anchors = await readTaskAnchorContext({ workspace: workspaceId, harness, root,
+        owner: ref.reuse?.owner ?? ref.owner ?? '', anchors,
+        texts: new Map([...texts].filter(([path]) => included.has(path))), deadline, effects }, deps.anchors);
+      const subjects = brief.anchors.subjects;
+      brief.graph = { status: subjects.every(subject => subject.status === 'measured') ? 'measured' : 'unknown',
+        consumers: [...new Set(subjects.flatMap(subject => subject.callers))],
+        relationships: subjects.flatMap(subject => subject.impact.map(path => `static-impact:${subject.path}#${subject.symbol}->${path}`)) };
+      brief.exclusions.push('Linked-function callers and impact are static lower bounds; planning deltas compare captured caller sites only.');
+    } else if (implementation && brief.files.some(file => file.path === implementation)) {
       brief.excerpts.sort((a, b) => Number(b.path === implementation) - Number(a.path === implementation));
       if (name) {
         // Compiler enrichment is optional. Reserve time to recheck the captured
@@ -531,21 +558,37 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     remaining();
     if (hash(JSON.stringify(final)) !== before) throw new Error('task source changed during compiler capture; re-read the brief');
     brief.status = 'current';
-    brief.exclusions.push('Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution.');
+    brief.exclusions.push(anchors
+      ? 'Source excerpts cover the linked files; function impact may name consumers outside them. Runtime execution is unmeasured.'
+      : 'Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution.');
     return finish();
   } catch (error) {
-    brief.files = []; brief.excerpts = []; brief.sourceFingerprint = null; delete brief.incident;
+    brief.files = []; brief.excerpts = []; brief.sourceFingerprint = null; delete brief.incident; delete brief.anchors;
     brief.graph = { status: 'unknown', consumers: [], relationships: [], reason: 'No current compiler evidence.' };
     brief.exclusions.push(error instanceof Error ? error.message.slice(0, 220) : 'task brief unavailable');
     return finish();
   }
 }
 
+const CLAIM_RECORD_RESERVE_MS = 200;
+async function recordTaskClaim(ref: Ref, brief: TaskBrief | null, deps: TaskBriefDeps, deadline: number): Promise<void> {
+  if (!ref.workItem?.id || !ref.reuse) return;
+  const input = { workspace: ref.workspaceId ?? activeWorkspaceId(), owner: ref.reuse.owner,
+    workItem: ref.workItem.id, invocation: ref.reuse.invocation };
+  await withBoundedTimeout(() => deps.recordClaim ? deps.recordClaim(input, brief)
+    : import('./push-channel').then(m => m.recordClaimTimeBrief(input, brief)),
+  { timeoutMs: Math.max(1, Math.min(CLAIM_RECORD_RESERVE_MS, deadline - Date.now())),
+    fallback: false, label: 'task-brief:claim-record', warn: false });
+}
+
 export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
   const payload = ref.workItem?.payload as { paths?: unknown } | null;
-  if (ref.workItem?.id ? (!Array.isArray(payload?.paths) || payload.paths.length === 0) && !taskItemQuery(ref.workItem)
+  if (ref.workItem?.id ? !taskAnchors(payload) && (!Array.isArray(payload?.paths) || payload.paths.length === 0) && !taskItemQuery(ref.workItem)
     && itemTextPaths(ref.workItem).length === 0
-    : !ref.intent || !ref.paths?.length) return null;
+    : !ref.intent || !ref.paths?.length) {
+    await recordTaskClaim(ref, null, deps, Date.now() + CLAIM_RECORD_RESERVE_MS);
+    return null;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Each phase transition is timed so a deadline fallback says how the window
   // was spent, not only where it ended (WI-6554700010018774: a claim-path
@@ -566,7 +609,8 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
     .map(([name, ms]) => `${name} ${ms}ms`).join(', ');
   const toolset = readBriefToolset(deps.toolset, ref.workspaceId ?? activeWorkspaceId(), ref.reuse?.owner ?? ref.owner);
   try {
-    const deadline = started + TASK_BRIEF_BUDGET_MS;
+    const finalDeadline = started + TASK_BRIEF_BUDGET_MS;
+    const deadline = finalDeadline - (ref.workItem?.id && ref.reuse ? CLAIM_RECORD_RESERVE_MS : 0);
     const base = await Promise.race([buildTaskBrief(ref, deps, phase, deadline), new Promise<TaskBrief>(resolve => {
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
@@ -578,7 +622,7 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
         ],
         recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
-            ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);
+            ...(ref.harness ? { harness: ref.harness } : {}) } } }), Math.max(0, deadline - Date.now()));
     })]);
     timingOutcome = base.status === 'unknown' ? 'unknown' : 'ok';
     clearTimeout(timer);
@@ -612,6 +656,7 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
     // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/task-brief.ts#<module>/getClaimTimeTaskBrief:fa78d302a2e17cd5d2de:1","classification":"durable","reason":"Re-keyed from getClaimTimeTaskBrief:19e65e51 (WI-6554700010042548). No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const result = { taskBrief: await enrichTaskBriefWithReuse(mandatory, ref, deps, deadline) };
     timingOutcome = result.taskBrief.status === 'unknown' ? 'unknown' : 'ok';
+    await recordTaskClaim(ref, result.taskBrief, deps, finalDeadline);
     return result;
   } finally {
     clearTimeout(timer);

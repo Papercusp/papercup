@@ -37,6 +37,9 @@ export function sqlCandidateReviewIdentity(input: SqlCandidateReviewInput) {
 }
 export interface SqlCandidateReviewDeps {
   client?: ReturnType<typeof getOrgPg>['sql'];
+  /** Fresh canonical source/candidate check at every intake boundary. A saved
+   * worklist, source pointer or workspace grant is not an authorization. */
+  authorize?: () => Promise<boolean>;
   capture?: (input: CaptureImprovementInput) => Promise<unknown>;
   enroll?: typeof enterAgentReview;
   read?: (id: string, harness: string) => Promise<WorkItem | null>;
@@ -65,6 +68,7 @@ export async function submitSqlCandidateReview(
   const identity = sqlCandidateReviewIdentity(input);
   return submitCandidateReview(input, {
     identity, eligible: input.candidate.eligible && input.recommendation?.kind !== 'insufficient-evidence',
+    authorize: deps.authorize ?? (async () => false),
     suppressed: ['keep-sql', 'route-existing'].includes(input.recommendation?.kind ?? ''),
     title: 'Review recurring SQL intent ' + identity.lifecycleId.slice(0, 12),
     body: 'Passive recurring SQL demand. Review scoped evidence and current contracts before proposing implementation. No tool is generated or executed.\n'

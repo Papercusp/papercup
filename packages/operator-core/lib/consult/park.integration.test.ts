@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
   ws: 'ws-park-it',
   sendMessage: vi.fn(async () => ({ msg_id: 'm-park-it' })),
   admitSpawn: vi.fn(async () => ({ admitted: true })),
+  pickupHost: vi.fn(async () => null),
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
@@ -49,6 +50,7 @@ vi.mock('../fleet/governor', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../fleet/governor')>()),
   admitSpawn: h.admitSpawn,
 }));
+vi.mock('../events/await/pickup-sweep', () => ({ readPickupHostView: h.pickupHost }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const awaitStore = await import('../events/await/store');
@@ -182,10 +184,12 @@ const seams = (ws: string) => makeProdParkSeams(sql, ws);
 
 describe('consult-backed parking against real Postgres (R-9)', () => {
   it('requires matching verdict pickup proof despite unrelated post-verdict tool activity', async () => {
-    const park = await seedPark(new Date(Date.now() - 60_000).toISOString());
+    const deadline = Date.now() + 3_600_000;
+    const park = await seedPark(new Date(deadline).toISOString());
     const awaits = await awaitStore.listActiveAwaitsForKey(park.eventKey);
     expect(awaits).toHaveLength(1);
-    const triggered = await runParkTriggersForConsult(sql, WS, park.consultId, seams(WS));
+    const triggered = await runParkTriggersForConsult(sql, WS, park.consultId, seams(WS),
+      new Date(deadline + 1_000).toISOString());
     expect(triggered?.applied).toContain('clear-blocker');
     const stored = await loadParkState(sql, WS, park.consultId);
     const outcomeAt = stored!.outcomes.at(-1)!.at;
@@ -230,6 +234,11 @@ describe('consult-backed parking against real Postgres (R-9)', () => {
 
     await sql`UPDATE harness_shared.event_wake_deliveries
       SET turn_started_at = ${startedAt}::timestamptz
+      WHERE subscriber_id = ${park.setterId} AND event_key = ${park.eventKey}`;
+    // Canonical observed proof can be an unrelated call from an older turn.
+    expect((await check()).checked).toContainEqual({ consultId: park.consultId, action: 'rewake' });
+    await sql`UPDATE harness_shared.event_wake_deliveries
+      SET turn_proof = 'host-attested'
       WHERE subscriber_id = ${park.setterId} AND event_key = ${park.eventKey}`;
     const pickedUp = await check();
     expect(pickedUp.failures).toEqual([]);

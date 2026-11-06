@@ -36,3 +36,8 @@ export async function buildAuthenticatedHandlerRuntime(
 ) {
   return (await import('./handler-runtime-build')).buildAuthenticatedHandlerRuntime(...args);
 }
+export async function prepareInstalledHandlerRuntime(
+  ...args: Parameters<typeof import('./handler-runtime-build').prepareInstalledHandlerRuntime>
+) {
+  return (await import('./handler-runtime-build')).prepareInstalledHandlerRuntime(...args);
+}

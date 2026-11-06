@@ -44,11 +44,17 @@ const postRoute = defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { forcedAccounts?: unknown; excludeAccounts?: unknown; defaultAccountId?: unknown; clear?: unknown; confirmCollapse?: unknown };
+    let body: { workspaceId?: unknown; forcedAccounts?: unknown; excludeAccounts?: unknown; defaultAccountId?: unknown; clear?: unknown; confirmCollapse?: unknown };
     try {
       body = await req.json();
     } catch {
       return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
+    }
+    // Native controls carry the scope actually displayed, checked at the write
+    // boundary so a changed discovery target cannot steer another workspace.
+    const ws = activeWorkspaceId();
+    if (body?.workspaceId !== undefined && body.workspaceId !== ws) {
+      return Response.json({ ok: false, error: 'Account environment changed; refresh before applying this control' }, { status: 409 });
     }
     const patch: AccountSessionOverridePatch = {};
     if (Array.isArray(body?.forcedAccounts)) patch.forcedAccounts = body.forcedAccounts.filter((x): x is string => typeof x === 'string');
@@ -62,7 +68,6 @@ const postRoute = defineTool({
       typeof body?.defaultAccountId === 'string' ? body.defaultAccountId : null;
     try {
       // Workspace-level — no home hive required (D-015).
-      const ws = activeWorkspaceId();
       if (wantsDefault) {
         const { setDefaultAccount } = await import('../../../deployment/account-pool-store');
         if (Object.keys(patch).length > 0) await setAccountOverride(ws, patch);

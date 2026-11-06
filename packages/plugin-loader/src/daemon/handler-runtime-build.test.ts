@@ -3,10 +3,13 @@
  * Fixture authorities do not qualify production source history or shipment.
  */
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateEnvelope, type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
-import { buildAuthenticatedHandlerRuntime, handlerBuildInputCandidate, type HandlerBuildInput } from './handler-runtime-build';
+import { buildAuthenticatedHandlerRuntime, handlerBuildInputCandidate, prepareInstalledHandlerRuntime, type HandlerBuildInput } from './handler-runtime-build';
+import { handlerRuntimeDigest, requireApprovedHandlerRuntime } from './handler-runtime';
 
 const current = vi.hoisted(() => ({ trust: null as TauriUpdateTrust | null, held: false, before: null as (() => void) | null }));
 vi.mock('./handler-runtime', async importOriginal => ({ ...await importOriginal<typeof import('./handler-runtime')>(),
@@ -57,6 +60,86 @@ function fixture() {
 afterEach(() => { current.trust = null; current.before = null; current.held = false; vi.restoreAllMocks(); });
 
 describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch))('authenticated handler build producer', () => {
+  async function installed() {
+    const f = fixture();
+    const produced = await buildAuthenticatedHandlerRuntime(f.options);
+    const directory = mkdtempSync(join(tmpdir(), 'handler-installed-'));
+    const files = produced.inventory.files.filter(file => !file.path.startsWith('/handler/'));
+    for (const file of [...files, ...f.options.sources]) {
+      const target = join(directory, file.path.slice(1));
+      mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, file.contents);
+    }
+    const payload = encodeTauriUpdateAuthorization({ ...produced.candidate, schema: 'tauri-update-authorization-v2',
+      signerId: f.authors[0]!.id, signerEpoch: 1, approverId: f.reviewer.id, approverEpoch: 1,
+      rootEpoch: 2, issuedAt: 1000, expiresAt: 3000 });
+    const manifest = { schema: 'handler-runtime-files-v1', platform: 'linux', arch: process.arch,
+      sha256: handlerRuntimeDigest(files), bootstrapSha256: produced.inventory.bootstrapSha256,
+      files: files.map(({ path, sha256, executable }) => ({ path, sha256, executable })),
+      build: { entryPoint: f.options.entryPoint, identity: f.identity,
+        sources: f.options.sources.map(({ contents: _, ...source }) => source),
+        assets: f.options.assets.map(({ path, authorizations }) => ({ path, authorizations })),
+        authorization: { payload, signature: f.authors[0]!.sign(payload), approvalSignature: f.reviewer.sign(payload) } } };
+    const save = () => writeFileSync(join(directory, 'inventory.json'), JSON.stringify(manifest));
+    save();
+    return { ...f, directory, manifest, save, dispose: () => rmSync(directory, { recursive: true, force: true }) };
+  }
+
+  it('issues an approved installed runtime only from actual source signatures and matching compiled bytes', async () => {
+    const f = await installed();
+    try {
+      const runtime = await prepareInstalledHandlerRuntime(f.directory, f.options.handlerFiles);
+      expect(() => requireApprovedHandlerRuntime(runtime)).not.toThrow();
+      expect(current.held).toBe(false);
+    } finally { f.dispose(); }
+  });
+
+  it.each(['unsigned', 'missing-author', 'revoked-author', 'revoked-reviewer', 'forged-build', 'staged-bootstrap',
+    'asset-bytes', 'source-bytes', 'symlink-file', 'symlink-directory', 'traversal', 'duplicate-assets', 'extra-field'] as const)
+    ('refuses %s installed inventory before issuing a runtime', async change => {
+      const f = await installed();
+      try {
+        if (change === 'unsigned') delete (f.manifest as Partial<typeof f.manifest>).build;
+        if (change === 'missing-author') f.manifest.build.sources[0]!.authorizations = f.manifest.build.sources[0]!.authorizations.slice(0, 1);
+        if (change === 'revoked-author') f.authors[0]!.revoked = true;
+        if (change === 'revoked-reviewer') f.reviewer.revoked = true;
+        if (change === 'forged-build') f.manifest.build.authorization.approvalSignature = f.authors[0]!.sign(f.manifest.build.authorization.payload);
+        if (change === 'staged-bootstrap') {
+          const bytes = Buffer.from('different bootstrap');
+          writeFileSync(join(f.directory, 'runtime/bootstrap.cjs'), bytes);
+          f.manifest.files.find(file => file.path === '/runtime/bootstrap.cjs')!.sha256 = digest(bytes);
+          f.manifest.bootstrapSha256 = digest(bytes); f.manifest.sha256 = handlerRuntimeDigest(f.manifest.files);
+        }
+        if (change === 'asset-bytes') writeFileSync(join(f.directory, 'runtime/node'), 'changed asset');
+        if (change === 'source-bytes') writeFileSync(join(f.directory, 'src/entry.ts'), 'changed source');
+        if (change === 'symlink-file') {
+          const target = join(f.directory, 'runtime/node'); rmSync(target);
+          symlinkSync(join(f.directory, 'src/entry.ts'), target);
+        }
+        if (change === 'symlink-directory') {
+          const target = join(f.directory, 'runtime'); rmSync(target, { recursive: true });
+          symlinkSync(join(f.directory, 'src'), target);
+        }
+        if (change === 'traversal') f.manifest.files[0]!.path = '/runtime/../../etc/passwd';
+        if (change === 'duplicate-assets') f.manifest.build.assets[0]!.path = '/runtime/not-in-inventory';
+        if (change === 'extra-field') Object.assign(f.manifest.build.identity, { authorIds: ['forged-author'] });
+        f.save();
+        await expect(prepareInstalledHandlerRuntime(f.directory, f.options.handlerFiles)).rejects.toThrow();
+        expect(current.held).toBe(false);
+      } finally { f.dispose(); }
+    });
+
+  it('pins installed and handler bytes before asynchronous trust admission', async () => {
+    const f = await installed();
+    try {
+      current.before = () => {
+        writeFileSync(join(f.directory, 'runtime/node'), 'concurrent replacement');
+        f.options.handlerFiles[0]!.contents.fill(0);
+      };
+      const runtime = await prepareInstalledHandlerRuntime(f.directory, f.options.handlerFiles);
+      expect(() => requireApprovedHandlerRuntime(runtime)).not.toThrow();
+    } finally { f.dispose(); }
+  });
+
   it('compiles the real imported closure without executing it and derives every author from protected key principals', async () => {
     const f = fixture();
     const log = vi.spyOn(console, 'log');
