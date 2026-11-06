@@ -21,7 +21,8 @@ import {
   lookupByMcpName,
   readJsonResult,
 } from '@papercusp/agent-mcp';
-import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
+import { applyPayloadTier, PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
+import { encode } from '@papercusp/result-encoding';
 import type { Rubric } from '../../rubrics';
 import { asStructuredObservation, scorecardAdmissionExclusion } from '../../harness/improvements/observation-types';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
@@ -564,7 +565,8 @@ describe('emitScorecard', () => {
   // EI-25880885804871835: plans:evaluate-spec-quality returns a terminal draft
   // without identity fields; scorecards:emit must stamp the reviewed rubric
   // revision/hash before persistence so scorecards:get can classify currentness.
-  it('stamps rubric identity on evaluator-produced spec-quality cards', async () => {
+  it.each(['unwrapped', 'compact-json', 'compact-toon'])(
+    'stamps rubric identity and preserves ratings on evaluator-produced spec-quality cards (%s)', async representation => {
     const criteriaHash = 'a'.repeat(64);
     getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-quality' });
     getRubricPlanRevisionM.mockResolvedValue(5);
@@ -585,8 +587,17 @@ describe('emitScorecard', () => {
       },
     }, { createdBy: 'su-evaluator' }, {
       getEvaluatorBuild: () => build,
-      dispatchTool: vi.fn(async () => ({ ok: true, specSetHash: 'b'.repeat(64), specSetHashVersion: 2,
-        evaluatorBuild: build, scorecardDraft: { subject, ratings: RATINGS } })),
+      dispatchTool: vi.fn(async (_name, replayArgs) => {
+        expect(replayArgs).toMatchObject({ detail: 'summary', payloadTier: 'full' });
+        const payload = { ok: true, specSetHash: 'b'.repeat(64), specSetHashVersion: 2, evaluatorBuild: build,
+          ...(representation === 'unwrapped' ? { scorecardDraft: { subject, ratings: RATINGS } }
+            : { scorecardBinding: { subject, evidenceFingerprint: scorecardEvidenceFingerprint({ rubricRef: 'spec-quality', ratings: RATINGS }) } }) };
+        if (representation === 'unwrapped') return payload;
+        const tiered = applyPayloadTier({ toolName: 'plans:evaluate-spec-quality', shape: undefined,
+          response: { data: payload }, tier: 'full', explicitFullRequest: true, args: replayArgs });
+        return { content: [{ type: 'text', text: representation === 'compact-json'
+          ? JSON.stringify(tiered.data) : 'format: toon\n' + encode(tiered.data, 'toon') }] };
+      }),
       resolveSpecQualityPlanSubject: async () => ({ planSlug: 'quality-plan', harnessSlug: 'papercusp' }),
       withCurrentDiscovery: async (_input, accept) => ({
         ok: true,
@@ -601,6 +612,7 @@ describe('emitScorecard', () => {
         rubricRef: 'spec-quality',
         rubricRevision: 5,
         criteriaHash,
+        ratings: RATINGS,
       } },
     });
   });

@@ -6,6 +6,7 @@ import { judgePortalPlaywrightRows, mergeCriterionTestRuns, partitionCriterionTe
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
 import { SCORECARD_EMIT_TIMEOUT_SEC } from './emit-timeout-budget.mjs';
+import { withScorecardAuditDispatchLease } from './repair';
 import { isNonCodeAuditVerdict } from '../../plan-verification-profile';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import {
@@ -2090,18 +2091,29 @@ export async function emitScorecard(
     let replay: {
       ok?: boolean; specSetHash?: string; evaluatorBuild?: { sha: string | null; version: string };
       specSetHashVersion?: number; scorecardDraft?: { subject?: { kind?: string; ref?: string }; ratings?: ObservationRatings }; error?: string;
+      scorecardBinding?: { subject?: { kind?: string; ref?: string }; evidenceFingerprint?: string };
     } | null;
     try {
-      replay = unwrapSpecTestAdequacyReplay(await deps.dispatchTool(pin.evaluator, pin.args)) as typeof replay;
+      // Reuse the adequacy replay's compact, full-tier transport. The evaluator
+      // hashes every rating/evidence byte before shaping; a default bounded
+      // response can omit the draft entirely or trim its evidence narratives.
+      replay = unwrapSpecTestAdequacyReplay(await deps.dispatchTool(
+        pin.evaluator, compactSpecTestAdequacyReplayArgs(pin.args),
+      )) as typeof replay;
     } catch (error) {
       return invalid(`Quality evaluator replay failed (${error instanceof Error ? error.message : String(error)}); no card or audit was created.`);
     }
+    const replaySubject = replay?.scorecardBinding?.subject ?? replay?.scorecardDraft?.subject;
+    const replayFingerprint = replay?.scorecardBinding
+      ? replay.scorecardBinding.evidenceFingerprint
+      : replay?.scorecardDraft?.ratings
+        ? scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: replay.scorecardDraft.ratings })
+        : undefined;
     if (replay?.ok !== true || replay.specSetHash !== pin.args.expectedSpecSetHash ||
         replay.specSetHashVersion !== pin.specSetHashVersion || !replay.evaluatorBuild ||
         specQualityIdentityRefusal(replay, pin.evaluatorBuild) ||
-        replay.scorecardDraft?.subject?.kind !== args.subject?.kind ||
-        replay.scorecardDraft?.subject?.ref !== args.subject?.ref || !replay.scorecardDraft?.ratings ||
-        scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: replay.scorecardDraft.ratings }) !==
+        replaySubject?.kind !== args.subject?.kind || replaySubject?.ref !== args.subject?.ref ||
+        replayFingerprint !==
           scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: args.ratings ?? {} })) {
       return invalid(`Quality replay did not reproduce the exact subject, ratings and evaluator identity (${replay?.error ?? 'mismatch'}); no card or audit was created.`);
     }
@@ -4429,11 +4441,17 @@ export async function emitScorecard(
         ? { ...input.launchContext, gradingLaunch: args.gradingLaunch }
         : input.launchContext;
       void trackDetached(
-        dispatchAudits({
-          targetIds: [result.issue.id],
-          ctx: auditLaunchContext,
-          harness: input.ctxHarness,
-        }).then(() => undefined),
+        withScorecardAuditDispatchLease(
+          auditLaunchContext,
+          'scorecards:emit dispatches its persisted card through the staging runtime',
+          () => dispatchAudits({
+            targetIds: [result.issue!.id],
+            ctx: auditLaunchContext,
+            harness: input.ctxHarness,
+          }),
+        ).then((outcome) => {
+          if (!outcome.acquired) console.warn(`Scorecard audit dispatch deferred: staging-server ${outcome.reason}`);
+        }),
       ).catch(() => {});
     }
     // unified-responder-selection-critique-and-grading-2026-08-30 D-003 [owner]:

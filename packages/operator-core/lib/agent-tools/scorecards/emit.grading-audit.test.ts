@@ -12,6 +12,9 @@ import { scorecardRatingEntrySchema } from './evaluate';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { PgReadQueryTimeoutError } from '../../pg-read-query';
 
+const guardResource = vi.hoisted(() => vi.fn());
+vi.mock('../locks/resource-lock-guard', () => ({ guardResource }));
+
 const getRubric = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
 const listScorecards = vi.fn();
@@ -391,6 +394,9 @@ beforeEach(() => {
   isCurrentSourceAuditResponder.mockReset().mockResolvedValue(true);
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
+  guardResource.mockReset().mockImplementation(async (_spec: unknown, run: () => Promise<unknown>) => ({
+    acquired: true, result: await run(),
+  }));
   readRunningGeneration.mockReset().mockResolvedValue(null);
   replaySpecTestAdequacyForHistoricalAudit.mockReset().mockResolvedValue(historicalTargetReplay('pass'));
 });
@@ -692,6 +698,52 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
       ctx: launchContext,
       harness: 'papercusp',
     });
+  });
+
+  it('holds the staging-server lease until detached dispatch settles without delaying the card', async () => {
+    let held = false;
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    guardResource.mockImplementationOnce(async (_spec: unknown, run: () => Promise<unknown>) => {
+      held = true;
+      try { return { acquired: true, result: await run() }; }
+      finally { held = false; }
+    });
+    dispatchPendingGradingAudits.mockImplementationOnce(async () => {
+      expect(held).toBe(true);
+      await pending;
+      expect(held).toBe(true);
+      return { requestedTargetIds: ['EI-AUDIT-1'], receipts: [] };
+    });
+    const res = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp',
+        launchContext: { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never },
+    );
+    expect(res.ok).toBe(true);
+    await vi.waitFor(() => expect(dispatchPendingGradingAudits).toHaveBeenCalledOnce());
+    expect(held).toBe(true);
+    expect(guardResource).toHaveBeenCalledWith(expect.objectContaining({
+      resource: 'staging-server', mode: 'shared', ttlSec: 960,
+    }), expect.any(Function));
+    finish();
+    await vi.waitFor(() => expect(held).toBe(false));
+  });
+
+  it('defers automatic dispatch during host drain while preserving the pending card', async () => {
+    guardResource.mockResolvedValueOnce({ acquired: false, reason: 'held_exclusive', holders: [] });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await emitScorecard(
+        { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+        { createdBy: 'su-grader', ctxHarness: 'papercusp',
+          launchContext: { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never },
+      );
+      expect(res).toMatchObject({ ok: true, issueId: 'EI-AUDIT-1', gradingAuditPending: true });
+      await vi.waitFor(() => expect(warning).toHaveBeenCalledWith(
+        'Scorecard audit dispatch deferred: staging-server held_exclusive'));
+      expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
+    } finally { warning.mockRestore(); }
   });
 
   it('names targeted repair instead of promising automatic dispatch without a launch context', async () => {

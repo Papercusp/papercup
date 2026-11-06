@@ -1,6 +1,6 @@
 /** scorecards:repair — immediately reconcile pending grading-integrity audits. */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
@@ -28,6 +28,25 @@ export const SCORECARD_REPAIR_TIMEOUT_SEC = 15 * 60;
  */
 export const SCORECARD_REPAIR_RESOURCE = 'staging-server';
 export const SCORECARD_REPAIR_LOCK_TTL_SEC = SCORECARD_REPAIR_TIMEOUT_SEC + 60;
+
+/** Keep both callable repair and detached post-emit dispatch on their live host. */
+export function withScorecardAuditDispatchLease<T>(ctx: UnifiedToolContext, reason: string, run: () => Promise<T>) {
+  const coordIdentity = resolveAgentIdentity(ctx);
+  const { ownerId, ownerLabel } = readIdentity(ctx);
+  return guardResource(
+    {
+      coordinationDomain: resourceLockDomain(SCORECARD_REPAIR_RESOURCE),
+      ownerId,
+      ownerLabel,
+      coordIdentity,
+      resource: SCORECARD_REPAIR_RESOURCE,
+      mode: 'shared',
+      ttlSec: SCORECARD_REPAIR_LOCK_TTL_SEC,
+      reason,
+    },
+    run,
+  );
+}
 
 /**
  * What an omitted `targetIds` actually selects (WI-10005150). The dispatcher
@@ -95,19 +114,9 @@ export default defineTool({
   timeoutSec: SCORECARD_REPAIR_TIMEOUT_SEC,
   args: scorecardRepairArgs,
   async handler(args, ctx) {
-    const coordIdentity = resolveAgentIdentity(ctx);
-    const { ownerId, ownerLabel } = readIdentity(ctx);
-    const outcome = await guardResource(
-      {
-        coordinationDomain: resourceLockDomain(SCORECARD_REPAIR_RESOURCE),
-        ownerId,
-        ownerLabel,
-        coordIdentity,
-        resource: SCORECARD_REPAIR_RESOURCE,
-        mode: 'shared',
-        ttlSec: SCORECARD_REPAIR_LOCK_TTL_SEC,
-        reason: 'scorecards:repair reads and dispatches through the staging runtime',
-      },
+    const outcome = await withScorecardAuditDispatchLease(
+      ctx,
+      'scorecards:repair reads and dispatches through the staging runtime',
       async () => {
         const input: DispatchPendingGradingAuditsInput = {
           ctx: (args.gradingLaunch ? { ...ctx, gradingLaunch: args.gradingLaunch } : ctx) as DispatchPendingGradingAuditsInput['ctx'],

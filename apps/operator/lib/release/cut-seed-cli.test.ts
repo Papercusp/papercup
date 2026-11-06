@@ -52,15 +52,23 @@ import {
   exportSeedUuidIdempotencyCensus,
 } from "./cut-seed-cli";
 
-function spawnCutSeedCli(args: string[], options: { env?: NodeJS.ProcessEnv; timeout?: number } = {}) {
+function spawnCutSeedCli(args: string[], options: {
+  env?: NodeJS.ProcessEnv;
+  timeout?: number;
+  forbiddenImports?: string[];
+} = {}) {
   // test:file runs under committed-source-loader. Keep that loader in the child, but force the
   // TypeScript CLI through its ESM path: tsx otherwise classifies this CommonJS-package .ts file
   // as CJS and the source guard correctly refuses tsx's transformed Module._compile input.
   const cliPath = fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url));
   const cliUrl = pathToFileURL(cliPath).href;
+  const { forbiddenImports = [], ...spawnOptions } = options;
   const esmTypeScriptResolver = [
+    `const forbiddenImports = ${JSON.stringify(forbiddenImports)};`,
     'export async function resolve(specifier, context, nextResolve) {',
     '  const resolved = await nextResolve(specifier, context);',
+    '  if (forbiddenImports.includes(resolved.url))',
+    '    throw new Error("CLI_STARTUP_FORBIDDEN_IMPORT " + resolved.url);',
     '  if (resolved.url.startsWith("file:") &&',
     '      (new URL(resolved.url).pathname.endsWith(".ts") || new URL(resolved.url).pathname.endsWith(".tsx")) &&',
     '      !resolved.url.includes("/node_modules/"))',
@@ -74,9 +82,9 @@ function spawnCutSeedCli(args: string[], options: { env?: NodeJS.ProcessEnv; tim
     `process.argv = [process.execPath, ${JSON.stringify(cliPath)}, ...${JSON.stringify(args)}];`,
     `await import(${JSON.stringify(cliUrl)});`,
   ].join('\n');
-  const env = options.env ? { ...options.env } : { ...process.env };
+  const env = spawnOptions.env ? { ...spawnOptions.env } : { ...process.env };
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', bootstrap], {
-    encoding: 'utf8', ...options, env,
+    encoding: 'utf8', ...spawnOptions, env,
   });
   expect(result.error, result.error?.message).toBeUndefined();
   expect(result.signal).toBeNull();
@@ -276,7 +284,12 @@ describe('D166 private row-drop plan transport', () => {
       await writeFile(join(out, 'manifest.json'), 'prior bytes');
       const result = spawnCutSeedCli(['--out', out,
         '--uuid-idempotency-drop-plans', join(dir, 'missing.json'),
-        '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64)], { timeout: 30_000 });
+        '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64)], {
+        timeout: 30_000,
+        // Refusal must precede optional holder diagnostics even when a warm
+        // module cache would let the eager service-health graph fit in 30s.
+        forbiddenImports: [new URL('../../../../packages/operator-core/lib/service-health.ts', import.meta.url).href],
+      });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('fresh cut with --skip-corestore-refresh');
       expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
