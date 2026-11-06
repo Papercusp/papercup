@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-001 native Windows integration and audio tests",
+  "framework": "cargo",
+  "command": [
+    "cli_help-tests.exe --test-threads=4",
+    "install_contract-tests.exe --test-threads=4",
+    "network_readmodel_contract-tests.exe --test-threads=4",
+    "testing_contract-tests.exe --test-threads=4",
+    "pui-audio-tests.exe --test-threads=4"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T08:41:32.526Z",
+  "finishedAt": "2026-11-06T08:41:41.982Z",
+  "summary": "All five remaining Windows Cargo test executables ran natively: 25 passed, 0 failed, 3 pre-existing hardware/audio tests ignored. Four edited integration targets also passed 16 Linux tests. Native CLI checks launched the actual copied PUI executable; manifest checks executed the embedded canonical Python writer. This is test executable evidence, not installed-app acceptance or shipment.",
+  "workItem": "WI-6554700010029572",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "nativeRunDirectory": "workbench-p001-portable-20261106T0727-b3cf9",
+  "targets": [
+    {
+      "name": "cli_help",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "install_contract",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "network_readmodel_contract",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "testing_contract",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "pui-audio",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 3
+    }
+  ],
+  "artifactSha256": {
+    "cli_help-tests.exe": "ea0879560daeb06cc75502bbf4bba3f31df8dc2b22f27322cb388811b8c3452d",
+    "install_contract-tests.exe": "d4f147d18ae5abbae5f04ce3fdc2cc361fbf138fe0abd45f53686358c130a2f0",
+    "network_readmodel_contract-tests.exe": "d8d020e933b73c4f571c16cefe83442d65a2fa597f049a56df6f3bf2907d5703",
+    "testing_contract-tests.exe": "9293e159d1821dae6cda2f6f3dd8567c757c09d0531d42bec015c620035a908a",
+    "pui-audio-tests.exe": "bdea9b96fd8456f4c56f1276a78648125bd32ec9a2b15123fbf5e6cf4ed49006",
+    "pui.exe": "457eaf8a21a944f4d5ee71e10016b1d8c88c00472391d50d3f333a5cadb08f75"
+  },
+  "sourceSha256": {
+    "apps/tui/tests/cli_help.rs": "aa87b32926528aad591a84d43e9b69c728b8838c337b03447aad79653140c8fb",
+    "apps/tui/tests/install_contract.rs": "f769ea04ef507cf8d8a18e4f71cc7f01ddbfe2c1a60f9362c0ca4ca633127642",
+    "apps/tui/tests/network_readmodel_contract.rs": "a2bf01bd1d3331c53ecb5e5811da76b8394ed47fb0ab736d2c6787a9c543fc41",
+    "apps/tui/tests/testing_contract.rs": "6449b2db01c088e0a4ef94987fd25b375da6e8e58f3554eb02aadb3ae8576046"
+  },
+  "prerequisites": {
+    "target": "x86_64-pc-windows-msvc",
+    "linkage": "static CRT",
+    "python": "Official Python 3.13.9 Windows embeddable package, isolated in run directory",
+    "pythonSource": "https://www.python.org/ftp/python/3.13.9/python-3.13.9-embed-amd64.zip",
+    "pythonArchiveSha256": "91d828c2da3a029b41699e918674a0cb379c02cf20dab9c501306885f837402a",
+    "custody": "SHA-256 of every copied executable and Python archive verified on the native Windows host before execution"
+  },
+  "logs": {
+    "native": "/tmp/wb-p001-windows-integration-native-20261106-v1.log",
+    "linux": "/tmp/wb-p001-integration-linux-20261106-v1.log",
+    "build": "/tmp/wb-p001-windows-integration-build-20261106-v1.log",
+    "custody": "/tmp/wb-p001-windows-integration-custody-20261106-v1.json"
+  },
+  "logSha256": {
+    "native": "b4565828417f1d43709ccd76dae931f42c44610f55b9a3f741efb7b678655e76",
+    "linux": "c45e839a826c5d7e5f1fe20b429919f474ae30c806aa35e4a79caa754297c9af"
+  },
+  "assertions": [
+    {
+      "id": "native-cli",
+      "passed": true,
+      "evidence": "Three CLI help/version checks launched actual pui.exe through runtime CARGO_BIN_EXE_pui without a controlling terminal."
+    },
+    {
+      "id": "portable-source-guards",
+      "passed": true,
+      "evidence": "Source guards use compile-time snapshots of the tested source, scripts and documentation, without runtime access to the Linux build tree."
+    },
+    {
+      "id": "real-manifest-writer",
+      "passed": true,
+      "evidence": "Canonical embedded Python writer wrote relative native paths, verified hashes, and passed native Path comparison on Windows."
+    },
+    {
+      "id": "linux-installer",
+      "passed": true,
+      "evidence": "All six installer tests passed on Linux, including both Unix Bash execution cases."
+    },
+    {
+      "id": "windows-targets",
+      "passed": true,
+      "evidence": "Native target exits all zero: cli_help3, install_contract4, network_readmodel_contract3, testing_contract4, pui-audio11 passed; audio3 ignored."
+    }
+  ],
+  "rootCause": "Integration fixtures coupled native execution to build-host absolute source/binary paths and Unix path spelling. The cross-compilation check could compile these assumptions without exercising them.",
+  "recurrenceGuard": "Existing maintained Cargo integration tests embed exact source inputs, accept the standard runtime CARGO_BIN_EXE_pui variable, and execute the canonical Python writer with native path comparisons. Unix Bash installer checks remain exercised on Unix.",
+  "scopeLimits": [
+    "Not installed Ubuntu/macOS/Windows app acceptance",
+    "Not a release or shipment certificate",
+    "Two Unix Bash installer execution tests are Unix-only; all six installer cases passed on Linux",
+    "Three existing native audio hardware smokes remain ignored",
+    "Previously retained Windows main-target proof is separate and was not replayed"
+  ]
+}

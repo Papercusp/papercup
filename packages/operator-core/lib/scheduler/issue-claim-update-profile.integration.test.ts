@@ -334,21 +334,7 @@ describe('scheduler issue-claim revision 23 selector vs update profile', () => {
     expect(updatePlan).toBeDefined();
     expect(updatePlan?.Triggers?.some((trigger) => trigger['Trigger Name'] === 'capture_work_items_issue_upd_trg')).toBe(true);
 
-    const phases: Array<{ step: string; ms: number }> = [];
-    const claimed = await getNextWorkItem(LIVE_SPEC, BEE, {
-      harness: HARNESS,
-      workspaceId: WORKSPACE,
-      fleetSlug: FLEET,
-      client: sql as never,
-      onResolutionStep: (step, event) => {
-        if (event.phase === 'end' && (step === 'candidate-issue-claim-update' || step === 'candidate-issue-post-claim-reread')) {
-          phases.push({ step, ms: event.elapsedMs });
-        }
-      },
-    });
-    expect(claimed?.workItem.id).toBe(CANDIDATE_ID);
-
-    console.info('ISSUE_CLAIM_PROFILE ' + JSON.stringify({
+    const profile = {
       spec: `${LIVE_SPEC.specId}@${LIVE_SPEC.revision}`,
       noiseRows: NOISE_ROWS,
       candidate: {
@@ -366,7 +352,40 @@ describe('scheduler issue-claim revision 23 selector vs update profile', () => {
         wal: updatePlan?.WAL,
         triggers: updatePlan?.Triggers,
       },
-      productionClaimPhases: phases,
-    }));
+    };
+    // Preserve the isolated measurements even if the real claim path times out below.
+    console.info('ISSUE_CLAIM_PROFILE_BEFORE_PRODUCTION_CLAIM ' + JSON.stringify(profile));
+
+    const phases: Array<{ step: string; phase: string; elapsedMs?: number }> = [];
+    let claimed: Awaited<ReturnType<typeof getNextWorkItem>> = null;
+    let claimError: unknown;
+    try {
+      claimed = await getNextWorkItem(LIVE_SPEC, BEE, {
+        harness: HARNESS,
+        workspaceId: WORKSPACE,
+        fleetSlug: FLEET,
+        client: sql as never,
+        onResolutionStep: (step, event) => {
+          if (step === 'candidate-issue-claim-update' || step === 'candidate-issue-post-claim-reread') {
+            phases.push({
+              step,
+              phase: event.phase,
+              ...(event.phase === 'end' ? { elapsedMs: event.elapsedMs } : {}),
+            });
+          }
+        },
+      });
+    } catch (error) {
+      claimError = error;
+    } finally {
+      console.info('ISSUE_CLAIM_PROFILE_PRODUCTION_CLAIM ' + JSON.stringify({
+        productionClaimPhases: phases,
+        claimError: claimError instanceof Error
+          ? { name: claimError.name, message: claimError.message }
+          : claimError === undefined ? null : String(claimError),
+      }));
+    }
+    if (claimError !== undefined) throw claimError;
+    expect(claimed?.workItem.id).toBe(CANDIDATE_ID);
   }, 240_000);
 });

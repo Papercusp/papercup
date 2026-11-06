@@ -386,11 +386,14 @@ describe('native hook operation fence', () => {
     expect(saved.operation.authority).toBe(authority);
     expect(persistedBeforeHttp).toBe(true);
     expect(requests.filter(r => r.name === 'locks:acquire')).toHaveLength(2);
+    const health = () => JSON.parse(fs.readFileSync(join(cache, `owner-${owner}-last-success.json`), 'utf8'));
+    expect(health().nativeReleaseConfirmed).not.toBe(true);
     await hook('posttooluse-locks-release.sh', success());
     expect(grants.size).toBe(0);
     expect(proofs.get(saved.operation.id)).toEqual({ success: true, source: 'codex', tool: 'apply_patch', paths: ['sub/one.ts'], sessionId: 'native-operation-session' });
     expect(requests.at(-1)?.url).toContain(`native_session=${session}`);
     expect(record().terminal).toBe('completed');
+    expect(health()).toMatchObject({ owner, mode: 'operation-finish', nativeReleaseConfirmed: true });
   });
 
   it('settles an empty Codex apply_patch result for a multi-file nested submodule edit', async () => {
@@ -500,6 +503,8 @@ describe('native hook operation fence', () => {
     expect(mutations.get(saved.operation.id)?.state).toBe('cancelled');
     expect(grants.size).toBe(0); expect(proofs.size).toBe(0);
     expect(requests.at(-1)?.name).toBe('locks:cancel_wait');
+    expect(JSON.parse(fs.readFileSync(join(cache, `owner-${owner}-last-success.json`), 'utf8')))
+      .not.toMatchObject({ nativeReleaseConfirmed: true });
   });
 
   it('duplicate acquire reuses UUID, fixed deadline and pin; duplicate completion sends no second proof', async () => {
@@ -693,6 +698,8 @@ describe('native hook operation fence', () => {
     await hook('posttoolbatch-locks-release.sh', result);
     expect(grants.size).toBe(0);
     expect([...proofs.values()]).toEqual([{ success: true, source: 'claude', tools: ['Edit', 'Write'], paths: ['sub/one.ts', 'sub/two.ts'], sessionId: 'native-operation-session' }]);
+    expect(JSON.parse(fs.readFileSync(join(cache, `owner-${owner}-last-success.json`), 'utf8')))
+      .toMatchObject({ owner, nativeReleaseConfirmed: true });
     await hook('posttoolbatch-locks-release.sh', result);
     expect(requests.filter(r => r.name === 'locks:release')).toHaveLength(1);
   });

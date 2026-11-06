@@ -1,7 +1,13 @@
 use std::process::{Command, Stdio};
 
+fn pui_binary() -> std::ffi::OsString {
+    // Cargo's compiled path belongs to the build host. Native runners can
+    // supply the same variable at runtime after copying the binary.
+    std::env::var_os("CARGO_BIN_EXE_pui").unwrap_or_else(|| env!("CARGO_BIN_EXE_pui").into())
+}
+
 fn assert_help_is_side_effect_free(args: &[&str]) {
-    let output = Command::new(env!("CARGO_BIN_EXE_pui"))
+    let output = Command::new(pui_binary())
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -36,7 +42,7 @@ fn workbench_help_is_side_effect_free_without_a_controlling_tty() {
 
 #[test]
 fn version_is_side_effect_free_without_a_controlling_tty() {
-    let output = Command::new(env!("CARGO_BIN_EXE_pui"))
+    let output = Command::new(pui_binary())
         .arg("--version")
         .stdin(Stdio::null())
         .output()

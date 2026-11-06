@@ -4,20 +4,9 @@
 //! source contract test prevents a future documentation edit from restoring
 //! Cargo's invalid `--lib` target selection.
 
-use std::path::PathBuf;
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("apps/tui lives below repo root")
-        .to_path_buf()
-}
-
 #[test]
 fn live_http_smoke_targets_the_pui_binary() {
-    let source = std::fs::read_to_string(repo_root().join("apps/tui/src/http.rs"))
-        .expect("read HTTP client source");
+    let source = include_str!("../src/http.rs");
     let command = source
         .lines()
         .find(|line| line.contains("cargo test") && line.contains("http_live"))
@@ -68,11 +57,8 @@ fn table_first_column(markdown: &str, heading: &str) -> Vec<String> {
 
 #[test]
 fn public_release_ux_maps_every_native_capability_exactly_once() {
-    let root = repo_root();
-    let inventory = std::fs::read_to_string(root.join("apps/tui/NATIVE_CAPABILITIES.md"))
-        .expect("read native capability inventory");
-    let ux = std::fs::read_to_string(root.join("apps/tui/PUBLIC_RELEASE_UX.md"))
-        .expect("read public-release UX contract");
+    let inventory = include_str!("../NATIVE_CAPABILITIES.md");
+    let ux = include_str!("../PUBLIC_RELEASE_UX.md");
 
     let required = table_first_column(&inventory, "## Required replacement matrix");
     let mapped = table_first_column(&ux, "## Capability replacement interaction map");
@@ -90,9 +76,7 @@ fn public_release_ux_maps_every_native_capability_exactly_once() {
 
 #[test]
 fn public_release_ux_ir_freezes_the_wide_and_80x24_contracts() {
-    let source =
-        std::fs::read_to_string(repo_root().join("docs/mockups/pui-public-release-ux.ir.json"))
-            .expect("read PUI public-release UI IR");
+    let source = include_str!("../../../docs/mockups/pui-public-release-ux.ir.json");
     let ir: serde_json::Value = serde_json::from_str(&source).expect("UI IR is valid JSON");
 
     assert_eq!(ir["irVersion"], "0.1");
@@ -137,8 +121,7 @@ fn public_release_ux_ir_freezes_the_wide_and_80x24_contracts() {
 
 #[test]
 fn public_release_ux_resolves_launcher_and_release_matrix() {
-    let ux = std::fs::read_to_string(repo_root().join("apps/tui/PUBLIC_RELEASE_UX.md"))
-        .expect("read public-release UX contract");
+    let ux = include_str!("../PUBLIC_RELEASE_UX.md");
 
     assert!(ux.contains("First run and Sessions > New open the same in-PUI New session form."));
     assert!(ux.contains("Open advanced PSU launcher remains available under Advanced"));

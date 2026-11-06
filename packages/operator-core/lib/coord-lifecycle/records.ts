@@ -747,11 +747,12 @@ export const CompletionVerificationEvidenceSchema = z.object({
   verifiedHow: CompletionVerifiedHowSchema.optional(),
   /**
    * Whether this close introduced a durable change, as DECLARED by its closer.
-   * Optional for older callers; omission means unknown, never "introduced-change".
+   * Optional for historical records and progress notes. New successful closes
+   * require it unless a structured disposition establishes the result.
    * Evidence sufficiency (`completionAuthority`) is a separate dimension.
    */
   workOutcome: CompletionWorkOutcomeSchema.optional().describe(
-    'Caller-declared result. Pass it as `completion.verification.workOutcome` to `work_items:complete`; `work_items:completion_stats` counts declarations at this path.',
+    'Result required on new successful closes: pass `completion.verification.workOutcome` to `work_items:complete`. Structured duplicate/discard dispositions can derive it; historical omissions remain unknown. `work_items:completion_stats` counts this path independently of authority.',
   ),
   /** Whether this completion added or changed tests. */
   addedTests: z

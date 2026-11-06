@@ -1626,15 +1626,24 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       expect(r).toEqual({ held: false, elapsedSec: null });
     });
 
-    it('reports held:false for an over-age live PID when procfs identity is unavailable', () => {
-      const lockStartedAt = Date.now() - CHECKPOINT_RUN_LOCK_STALE_MS - 1_000;
+    it.each(['unknown', 'matching'] as const)('retains an old live lock with %s process identity beyond timer horizons', identity => {
+      const lockStartedAt = Date.now() - 3 * (2 ** 31 - 1);
       const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }));
       const r = isCheckpointRunLockHeldCheap(
         '/tree',
         vi.fn(() => true),
         readLockOwner,
-        () => null,
+        () => identity === 'unknown' ? null : lockStartedAt - 60_000,
       );
+      expect(r.held).toBe(true);
+      expect(r.pid).toBe(9999);
+      expect(r.elapsedSec).toBeGreaterThan(CHECKPOINT_RUN_LOCK_STALE_MS / 1000);
+    });
+
+    it.each(['dead', 'recycled'] as const)('releases an old lock only with measured %s owner evidence', identity => {
+      const lockStartedAt = Date.now() - 3 * (2 ** 31 - 1);
+      const r = isCheckpointRunLockHeldCheap('/tree', () => identity !== 'dead',
+        () => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }), () => Date.now());
       expect(r).toEqual({ held: false, elapsedSec: null });
     });
 
@@ -1859,10 +1868,11 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       expect(maxInFlight).toBeLessThanOrEqual(4);
     });
 
-    it('ignores an authority-stamped residue beyond the run-lock stale horizon', async () => {
+    it('retains exact process custody beyond the run-lock review horizon', async () => {
       await expect(
-        probe({ readProcessStartMs: () => now - CHECKPOINT_RUN_LOCK_STALE_MS - 1_000 }),
-      ).resolves.toMatchObject({ active: false, probeFailed: false });
+        probe({ readProcessStartMs: () => now - 3 * (2 ** 31 - 1) }),
+      ).resolves.toMatchObject({ active: true, probeFailed: false, pid: 4242,
+        cgroupPath: checkpointCgroupPath });
     });
   });
 

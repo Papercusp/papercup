@@ -23,15 +23,9 @@
 //! main.rs alone decides what that action spawns. No pure `App` test can
 //! observe it, which is precisely why the gap survived a green suite.
 
-use std::path::PathBuf;
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("apps/tui lives below repo root")
-        .to_path_buf()
-}
+// Carry the exact sources being tested to a native cross-build runner.
+const MAIN_RS: &str = include_str!("../src/main.rs");
+const APP_RS: &str = include_str!("../src/app.rs");
 
 /// Return the `{ .. }` block that follows `marker`, brace-balanced.
 fn block_after<'a>(src: &'a str, marker: &str) -> &'a str {
@@ -63,9 +57,8 @@ fn block_after<'a>(src: &'a str, marker: &str) -> &'a str {
 
 #[test]
 fn network_entry_action_fetches_every_read_model_it_absorbed() {
-    let root = repo_root();
-    let main_rs = std::fs::read_to_string(root.join("apps/tui/src/main.rs")).unwrap();
-    let app_rs = std::fs::read_to_string(root.join("apps/tui/src/app.rs")).unwrap();
+    let main_rs = MAIN_RS;
+    let app_rs = APP_RS;
 
     // Entering Network is what triggers the fetch, and the reducer's entry
     // action for the tab is `FetchNetworkBoard`.
@@ -112,9 +105,8 @@ fn code_only(src: &str) -> String {
 
 #[test]
 fn no_action_variant_is_left_without_an_emitter() {
-    let root = repo_root();
-    let main_rs = code_only(&std::fs::read_to_string(root.join("apps/tui/src/main.rs")).unwrap());
-    let app_rs = code_only(&std::fs::read_to_string(root.join("apps/tui/src/app.rs")).unwrap());
+    let main_rs = code_only(MAIN_RS);
+    let app_rs = code_only(APP_RS);
 
     // `Action::FetchHives` was the emitter-less variant that hid the bug above:
     // main.rs handled it, so the code looked wired, but no reducer path ever

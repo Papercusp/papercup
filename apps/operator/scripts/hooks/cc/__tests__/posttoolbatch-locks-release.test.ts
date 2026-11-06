@@ -277,6 +277,8 @@ describe('posttoolbatch-locks-release.sh', () => {
       });
       expectClean(batchId, [toolUseId]);
       expect(fs.existsSync(join(cache, 'owner-batch-owner-last-success.json'))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(join(cache, 'owner-batch-owner-last-success.json'), 'utf8')))
+        .toMatchObject({ owner: 'batch-owner', nativeReleaseConfirmed: true });
       expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
     } finally {
       primaryNoText = false;
@@ -640,6 +642,8 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
       expect(fs.existsSync(join(cache, toolUseId + '.paths'))).toBe(false);
       expect(fs.existsSync(join(cache, toolUseId + '.domain'))).toBe(false);
       expect(fs.existsSync(join(cache, 'owner-codex-owner-last-success.json'))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(join(cache, 'owner-codex-owner-last-success.json'), 'utf8')))
+        .toMatchObject({ owner: 'codex-owner', nativeReleaseConfirmed: true });
       expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
     } finally {
       primaryNoText = false;

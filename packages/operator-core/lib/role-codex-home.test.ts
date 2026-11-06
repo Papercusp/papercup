@@ -180,7 +180,7 @@ function installOwnerRuntimeProof(owner: string) {
     join(dir, `owner-${safe}-last-decision.json`),
     JSON.stringify({ ts: new Date().toISOString(), owner, decision: 'granted' }),
   );
-  writeFileSync(join(dir, `owner-${safe}-last-success.json`), JSON.stringify({ ts: new Date().toISOString(), owner }));
+  writeFileSync(join(dir, `owner-${safe}-last-success.json`), JSON.stringify({ ts: new Date().toISOString(), owner, nativeReleaseConfirmed: true }));
 }
 
 describe('fresh Codex home transcript custody', () => {

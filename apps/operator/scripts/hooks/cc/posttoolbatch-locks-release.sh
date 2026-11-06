@@ -131,6 +131,12 @@ def owner_marker_name(kind):
     return 'owner-' + safe + '-last-' + kind + '.json'
 
 
+def mark_native_release_success():
+    value = {'ts': now_iso(), 'owner': owner, 'nativeReleaseConfirmed': True}
+    write_marker('last-success.json', value)
+    write_marker(owner_marker_name('success'), value)
+
+
 def regenerate_declarations(state):
     """Regenerate selected enrolled sources before releasing the batch union."""
     root = state.get('coordination_domain')
@@ -580,6 +586,8 @@ for batch_id in groups:
             if proof:
                 regenerate_declarations(state)
             if settle_lock_operation(expected_path, record, operation_call, proof):
+                if proof is not None:
+                    mark_native_release_success()
                 cleanup_batch(batch_id, state_path, processing_path)
             else:
                 os.replace(processing_path, state_path)
@@ -592,8 +600,7 @@ for batch_id in groups:
             if proof is not None:
                 regenerate_declarations(state)
                 if release_batch(state, proof):
-                    write_marker('last-success.json', {'ts': now_iso(), 'owner': owner})
-                    write_marker(owner_marker_name('success'), {'ts': now_iso(), 'owner': owner})
+                    mark_native_release_success()
             try:
                 attest_batch(state)
             except Exception:

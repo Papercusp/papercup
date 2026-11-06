@@ -1,10 +1,11 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(unix)]
 use tempfile::tempdir;
 
+#[cfg(unix)]
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -15,9 +16,7 @@ fn repo_root() -> PathBuf {
 
 #[test]
 fn canonical_installer_owns_both_artifacts_and_never_kills_sessions() {
-    let root = repo_root();
-    let canonical_path = root.join("apps/tui/scripts/install-update.sh");
-    let canonical = std::fs::read_to_string(&canonical_path).unwrap();
+    let canonical = include_str!("../scripts/install-update.sh");
     assert!(canonical.contains("cargo install --path \"$ROOT/apps/tui\""));
     assert!(
         canonical.contains("cargo install"),
@@ -34,29 +33,26 @@ fn canonical_installer_owns_both_artifacts_and_never_kills_sessions() {
         );
     }
 
-    let legacy =
-        std::fs::read_to_string(root.join("apps/pui-zellij-plugin/scripts/build-install.sh"))
-            .unwrap();
+    let legacy = include_str!("../../pui-zellij-plugin/scripts/build-install.sh");
     assert!(legacy.contains("tui/scripts/install-update.sh"));
     assert!(!legacy.contains("cargo build"));
 
-    let launcher = std::fs::read_to_string(
-        root.join("packages/operator-core/lib/endpoint-route/routes/adv/launch-pui.ts"),
-    )
-    .unwrap();
+    let launcher =
+        include_str!("../../../packages/operator-core/lib/endpoint-route/routes/adv/launch-pui.ts");
     assert!(launcher.contains("./apps/tui/scripts/install-update.sh"));
     assert!(!launcher.contains("cd apps/tui && cargo install --path ."));
 }
 
 #[test]
 fn public_packager_stages_audio_as_a_sibling_and_rejects_alsa_on_pui() {
-    let script =
-        std::fs::read_to_string(repo_root().join("apps/tui/scripts/package-release.sh")).unwrap();
+    let script = include_str!("../scripts/package-release.sh");
     assert!(script.contains("$UNIT/bin/pui-audio"));
     assert!(script.contains("audio must stay isolated in bin/pui-audio"));
     assert!(script.contains("readelf -d \"$UNIT/bin/pui\""));
 }
 
+// This is the Unix source installer; native Windows has no bash prerequisite.
+#[cfg(unix)]
 #[test]
 fn installer_help_is_side_effect_free_and_names_the_generation_manifest() {
     let script = repo_root().join("apps/tui/scripts/install-update.sh");
@@ -75,8 +71,7 @@ fn installer_help_is_side_effect_free_and_names_the_generation_manifest() {
 
 #[test]
 fn installer_verifies_artifacts_before_downgrading_guidance_only_doctor_findings() {
-    let script =
-        std::fs::read_to_string(repo_root().join("apps/tui/scripts/install-update.sh")).unwrap();
+    let script = include_str!("../scripts/install-update.sh");
     let verify = script
         .find("python3 \"$MANIFEST_WRITER\" verify")
         .expect("installer must verify the written manifest and artifact hashes");
@@ -185,16 +180,28 @@ esac
 
 #[test]
 fn shared_manifest_writer_supports_release_relative_paths_and_verification() {
-    let root = repo_root();
-    let helper = root.join("apps/tui/scripts/write-install-manifest.py");
-    let scratch = std::env::temp_dir().join(format!("pui-manifest-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
+    let directory = tempdir().unwrap();
+    let scratch = directory.path();
+    let helper = scratch.join("write-install-manifest.py");
+    std::fs::write(
+        &helper,
+        include_str!("../scripts/write-install-manifest.py"),
+    )
+    .unwrap();
     std::fs::create_dir_all(scratch.join("bin")).unwrap();
     std::fs::write(scratch.join("bin/pui"), b"binary").unwrap();
     std::fs::write(scratch.join("pui-companion.wasm"), b"wasm").unwrap();
     let manifest = scratch.join("pui-install.json");
 
-    let write = Command::new("python3")
+    let python = std::env::var_os("PUI_TEST_PYTHON").unwrap_or_else(|| {
+        if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python3"
+        }
+        .into()
+    });
+    let write = Command::new(&python)
         .arg(&helper)
         .args([
             "write",
@@ -220,10 +227,14 @@ fn shared_manifest_writer_supports_release_relative_paths_and_verification() {
         String::from_utf8_lossy(&write.stderr)
     );
     let body = std::fs::read_to_string(&manifest).unwrap();
-    assert!(body.contains("\"binaryPath\": \"bin/pui\""));
-    assert!(body.contains("\"companionPath\": \"pui-companion.wasm\""));
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        std::path::Path::new(body["binaryPath"].as_str().unwrap()),
+        std::path::Path::new("bin/pui")
+    );
+    assert_eq!(body["companionPath"], "pui-companion.wasm");
 
-    let verify = Command::new("python3")
+    let verify = Command::new(&python)
         .arg(&helper)
         .args([
             "verify",
@@ -241,5 +252,4 @@ fn shared_manifest_writer_supports_release_relative_paths_and_verification() {
         "{}",
         String::from_utf8_lossy(&verify.stderr)
     );
-    std::fs::remove_dir_all(scratch).unwrap();
 }
