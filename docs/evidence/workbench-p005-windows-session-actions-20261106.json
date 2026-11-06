@@ -2,7 +2,10 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "Workbench P-005 Windows exact session actions and nonoverlapping pinned panels",
-  "command": "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase all -Interactive",
+  "framework": "shell",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase all -Interactive"
+  ],
   "startedAt": "2026-11-06T20:04:52.234Z",
   "finishedAt": "2026-11-06T20:05:08.293895Z",
   "exitCode": 0,
