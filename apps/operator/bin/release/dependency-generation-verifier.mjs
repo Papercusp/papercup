@@ -3,9 +3,9 @@
  * already existing dist directory. Normal dependency-only generations remain
  * usable by release consumers; native consumers require a complete closure. */
 import { createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
-  realpathSync, renameSync, rmSync, writeFileSync, cpSync } from 'node:fs';
+  realpathSync, renameSync, rmSync, writeFileSync, cpSync, chmodSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +13,61 @@ const RECEIPT = '.papercusp-workspace-build.json';
 const CLOSURE = '.verifier-closure.json';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = message => { throw new Error('verifier-generation:' + message); };
+
+// Keep the existing materializer's admission, progress and cancellation boundary.
+// Its owned child runs a bounded number of cp workers, rather than serializing
+// hundreds of thousands of independent reflinks through one metadata walker.
+// Cross-package hardlinks must travel in the SAME cp invocation: splitting them
+// between workers would silently change the install's aliasing semantics.
+export async function copyDependencyTree(source, destination, reflink) {
+  source = realpathSync(source);
+  destination = resolve(destination);
+  if (destination === source || destination.startsWith(source + sep)) fail('copy-inside-source');
+  if (!['--reflink=always', '--reflink=auto'].includes(reflink)) fail('invalid-copy-mode');
+  const names = readdirSync(source).sort();
+  const parents = new Map(names.map(name => [name, name]));
+  const root = name => {
+    let parent = name;
+    while (parents.get(parent) !== parent) parent = parents.get(parent);
+    return parent;
+  };
+  const owners = new Map();
+  const links = execFileSync('find', [source, '-type', 'f', '-links', '+1',
+    '-printf', '%D:%i\\0%P\\0'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0');
+  links.pop();
+  if (links.length % 2) fail('invalid-copy-link-census');
+  for (let i = 0; i < links.length; i += 2) {
+    const name = links[i + 1].split('/')[0];
+    if (!parents.has(name)) fail('copy-source-changed');
+    const previous = owners.get(links[i]);
+    if (previous !== undefined) parents.set(root(name), root(previous));
+    else owners.set(links[i], name);
+  }
+  const groups = new Map();
+  for (const name of names) {
+    const key = root(name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(name);
+  }
+  const batches = Array.from({ length: Math.min(8, groups.size) }, () => []);
+  for (const group of [...groups.values()].sort((a, b) => b.length - a.length)) {
+    const batch = batches.reduce((smallest, next) => next.length < smallest.length ? next : smallest);
+    batch.push(...group);
+  }
+  mkdirSync(destination, { mode: 0o700 });
+  const results = await Promise.allSettled(batches.map(batch => new Promise((done, reject) => {
+    const child = spawn('cp', ['-R', '-P', '--preserve=links', reflink,
+      '--target-directory', destination, '--', ...batch.map(name => './' + name)],
+    { cwd: source, stdio: ['ignore', 'ignore', 'inherit'] });
+    child.once('error', reject);
+    child.once('close', (code, signal) => code === 0 ? done() :
+      reject(new Error('verifier-generation:copy-worker-failed:status=' + code + ':signal=' + signal)));
+  })));
+  const failed = results.find(result => result.status === 'rejected');
+  if (failed) throw failed.reason;
+  chmodSync(destination, lstatSync(source).mode & 0o777);
+}
+
 function safe(root, path) {
   if (typeof path !== 'string' || !path || path.includes('\\') || path.split('/').some(p => !p || p === '.' || p === '..'))
     fail('unsafe-path:' + path);
@@ -263,6 +318,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else if (command === 'check-source') checkSource(root, dest);
     else if (command === 'same-source') equal(buildInputs(root), buildInputs(dest), 'copied-source-mismatch');
     else if (command === 'build-closure') buildClosure(root);
+    else if (command === 'copy-tree') await copyDependencyTree(root, dest, process.argv[5]);
     else fail('unknown-command');
   } catch (error) { console.error(error.message); process.exitCode = 74; }
 }

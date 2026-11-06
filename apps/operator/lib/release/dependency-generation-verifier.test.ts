@@ -1,10 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildWorkspace, captureClosure } from '../../bin/release/dependency-generation-verifier.mjs';
+import { buildWorkspace, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
 import { nativeVerifierEnv } from '../../../../scripts/lib/verify-tauri-native-env.mjs';
 import { bindFrozenDependencyGeneration } from '../../../../packages/operator-core/lib/dependency-generation-proof';
 import { runVerifierCommand, selectVerifierDependencySnapshot } from '../../../../scripts/source-preview.mjs';
@@ -89,6 +89,55 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
   return { root, donor, dest, store, env, shell, publish, snapshotHelper, generationScript };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+describe('bounded independent verifier copy', () => {
+  it('preserves cross-package aliases, executable files and literal symlinks without borrowing source inodes', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'verifier-copy-')); roots.push(parent);
+    const source = join(parent, 'source'), dest = join(parent, 'copy');
+    for (let i = 0; i < 24; i++) write(source, `pkg-${i}/index.js`, `module.exports = ${i};\n`);
+    write(source, 'pkg-0/cli', '#!/bin/sh\nprintf COPY_EXEC_OK\n');
+    chmodSync(join(source, 'pkg-0/cli'), 0o555);
+    linkSync(join(source, 'pkg-0/cli'), join(source, 'pkg-23/alias with\nnewline'));
+    symlinkSync('../pkg-0/cli', join(source, 'pkg-12/bin'));
+    await copyDependencyTree(source, dest, '--reflink=auto');
+    const cli = join(dest, 'pkg-0/cli'), alias = join(dest, 'pkg-23/alias with\nnewline');
+    expect(statSync(cli).ino).not.toBe(statSync(join(source, 'pkg-0/cli')).ino);
+    expect(statSync(cli).ino).toBe(statSync(alias).ino);
+    expect(statSync(cli).mode & 0o777).toBe(0o555);
+    expect(readlinkSync(join(dest, 'pkg-12/bin'))).toBe('../pkg-0/cli');
+    expect(execFileSync(cli, { encoding: 'utf8' })).toBe('COPY_EXEC_OK');
+    chmodSync(cli, 0o755);
+    writeFileSync(alias, 'private copy');
+    expect(readFileSync(cli, 'utf8')).toBe('private copy');
+    expect(readFileSync(join(source, 'pkg-0/cli'), 'utf8')).toContain('COPY_EXEC_OK');
+    expect(readdirSync(dest).sort()).toEqual(readdirSync(source).sort());
+  });
+
+  it('rejects nesting into the source and retains empty trees', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'verifier-copy-empty-')); roots.push(parent);
+    const source = join(parent, 'source'); mkdirSync(source);
+    await expect(copyDependencyTree(source, join(source, 'nested'), '--reflink=auto')).rejects.toThrow('copy-inside-source');
+    expect(existsSync(join(source, 'nested'))).toBe(false);
+    const dest = join(parent, 'copy');
+    await copyDependencyTree(source, dest, '--reflink=auto');
+    expect(readdirSync(dest)).toEqual([]);
+  });
+
+  it('uses the bounded copy through the maintained materializer and refuses a missing source', () => {
+    const f = fixture();
+    const source = join(f.donor, 'node_modules'), dest = join(f.root, 'materialized');
+    const run = (input: string, output: string) => spawnSync('bash', ['-c',
+      'set -euo pipefail; source "$1"; dependency_generation_materialize_tree "$2" "$3" verifier',
+      'verifier-copy', f.generationScript, input, output], { env: f.env, encoding: 'utf8', timeout: 30000 });
+    const result = run(source, dest);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('published dependency');
+    expect(statSync(join(dest, 'pkg/index.js')).ino).not.toBe(statSync(join(source, 'pkg/index.js')).ino);
+    const absent = join(f.root, 'not-published');
+    expect(run(join(f.root, 'missing'), absent).status).not.toBe(0);
+    expect(existsSync(absent)).toBe(false);
+  }, 60000);
+});
 
 describe('D012 native generation closure', () => {
   it.each(['source-stale', 'incomplete'])('rebuilds a %s exact-ref native closure with unchanged locks, then reuses it', async defect => {
