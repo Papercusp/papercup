@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -123,6 +123,10 @@ describe('startEventLoopSentinel', () => {
     { name: 'split diagnostic report filename', startupArgs: ['--report-filename', 'sentinel-test.json'] },
     { name: 'fatal error diagnostic report', startupArgs: ['--report-on-fatalerror'] },
     { name: 'disabled fatal error diagnostic report', startupArgs: ['--no-report-on-fatalerror'] },
+    { name: 'V8 profiling', startupArgs: ['--prof', '--logfile=<profile-log>'] },
+    { name: 'V8 profiling options', startupArgs: [
+      '--prof', '--logfile=<profile-log>', '--no-logfile-per-isolate', '--prof-sampling-interval=1000',
+    ] },
     { name: 'inline module with diagnostic reports', startupArgs: [
       '--input-type=module', `--report-directory=${tmpdir()}`,
       '--report-filename=sentinel-test.json', '--report-on-fatalerror',
@@ -131,6 +135,7 @@ describe('startEventLoopSentinel', () => {
     // Exercise the host constructor, not a Worker with test-only execArgv: [].
     // EI-25465494437288816: inherited --input-type rejects a file-backed worker.
     // EI-25526230785366035: process-wide report flags reject explicit worker argv.
+    // EI-28035321670356878: V8 profiler flags must stay on the parent too.
     const hostUrl = pathToFileURL(resolve(__dirname, 'event-loop-sentinel-host.ts')).href;
     const script = `
       import { startEventLoopSentinel } from ${JSON.stringify(hostUrl)};
@@ -148,12 +153,21 @@ describe('startEventLoopSentinel', () => {
         await h.stop();
       }
     `;
-    const result = spawnSync(process.execPath, [
-      '--import=tsx', '--no-warnings', ...startupArgs, '--eval', script,
-    ], {
-      cwd: resolve(__dirname, '../../..'),
-      encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
-    });
+    const profileDirectory = mkdtempSync(join(tmpdir(), 'sentinel-profiler-'));
+    const result = (() => {
+      try {
+        return spawnSync(process.execPath, [
+          '--import=tsx', '--no-warnings',
+          ...startupArgs.map(arg => arg.replace('<profile-log>', join(profileDirectory, 'v8.log'))),
+          '--eval', script,
+        ], {
+          cwd: resolve(__dirname, '../../..'),
+          encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
+        });
+      } finally {
+        rmSync(profileDirectory, { recursive: true, force: true });
+      }
+    })();
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
     const state = JSON.parse(result.stdout.trim().split('\n').at(-1)!);

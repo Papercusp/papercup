@@ -296,15 +296,22 @@ export function startEventLoopSentinel(
     };
     // --input-type describes the parent's inline/STDIN entry. This worker loads
     // a file, so inheriting it fails asynchronously with ERR_INPUT_TYPE_NOT_ALLOWED.
-    // Report paths and fatal-error reporting are process-wide Node options:
+    // Report paths, fatal-error reporting and V8 profiling are parent options:
     // explicit Worker execArgv rejects them with ERR_WORKER_INVALID_EXEC_ARGV.
     // Keep loaders and worker-supported diagnostics (signal/exception reports).
     // Remove both spellings of value options, including their separate values.
-    const parentOnlyValueFlags = ['--input-type', '--report-directory', '--report-filename'];
+    const parentOnlyValueFlags = [
+      '--input-type', '--report-directory', '--report-filename',
+      '--logfile', '--prof-sampling-interval',
+    ];
+    const parentOnlyFlags = new Set([
+      '--report-on-fatalerror', '--no-report-on-fatalerror',
+      '--prof', '--prof-auto', '--logfile-per-isolate', '--no-logfile-per-isolate',
+    ]);
     const execArgv = process.execArgv.filter((arg, i, args) =>
       !parentOnlyValueFlags.some(flag =>
         arg === flag || arg.startsWith(`${flag}=`) || (i > 0 && args[i - 1] === flag),
-      ) && arg !== '--report-on-fatalerror' && arg !== '--no-report-on-fatalerror',
+      ) && !parentOnlyFlags.has(arg.split('=', 1)[0]),
     );
     worker = new Worker(opts.workerPath ?? workerPath(), { workerData: data, execArgv });
   } catch (err) {
