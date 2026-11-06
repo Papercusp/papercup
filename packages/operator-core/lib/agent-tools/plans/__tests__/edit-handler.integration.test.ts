@@ -28,6 +28,8 @@ import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { setupPlanPgFixture, seedPlan, cleanupPlans, type PlanPgFixture } from './_pg-tool-fixture';
 import { recordGoalLocalPlanOrigin, recordGoalReviewFeedback } from '../../../scout/goal-feedback';
 import { recordRoutedIdea } from '../../../scout/routed-ledger';
+import { deriveIndexFromContent } from '../source';
+import { writePlanLineNodes } from '../plan-line-graph';
 
 const HARNESS = `zzz-edit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SLUG = 'zzz-edit-plan-2026-06-04';
@@ -108,6 +110,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await admin`DELETE FROM harness_shared.scout_routed_ideas
     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+  await admin`DELETE FROM harness_shared.work_items
+    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
   await fx?.dispose();
 });
@@ -116,6 +120,8 @@ beforeEach(async () => {
   // Fresh single plan row, no revisions, for every case.
   await admin`DELETE FROM harness_shared.scout_routed_ideas
     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+  await admin`DELETE FROM harness_shared.work_items
+    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
   await seedPlan(admin, WS, HARNESS, SLUG, validPlan());
 });
@@ -196,6 +202,50 @@ describe('plans:edit handler — successful edit', () => {
     `;
     expect(content).toContain('Ship the widget.');
     expect(content).not.toContain('The next concrete action.');
+  });
+
+  it('preserves canonical item text on a Now-only edit when graph text has drifted', async () => {
+    const canonicalP002 = 'Implement the stable action-scoped DBOS workflow with checkpointed launch identity settlement and bounded retries.';
+    const canonicalP003 = 'Verify real DBOS controller crash/replay using native-process tests.';
+    const staleP002 = 'Legacy workflow implementation wording.';
+    const staleP003 = 'Legacy restart test wording.';
+    const body = `---\ntitle: Edit Handler Plan\nslug: ${SLUG}\ncreated: 2026-06-04\nupdated: 2026-06-04\nstatus: draft\n---\n\n# Edit Handler Plan\n\n## Now\n\n**State:** Preparing the recovery work.\n\n**Next:** The next concrete action.\n\n## Phase 1 — Recovery\n\n- **P-002** \x60todo\x60 ${canonicalP002}\n- **P-003** \x60todo\x60 ${canonicalP003}\n\n## Decisions\n`;
+    await seedPlan(admin, WS, HARNESS, SLUG, body);
+    await admin.begin(async (tx) => {
+      await writePlanLineNodes(tx as never, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG }, [],
+        deriveIndexFromContent(body).items);
+    });
+
+    // Model a stale graph projection while the plan markdown remains canonical.
+    await admin`UPDATE harness_shared.work_items SET plan_line_text = ${staleP002}
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG} AND plan_line_id = 'P-002'`;
+    await admin`UPDATE harness_shared.work_items SET plan_line_text = ${staleP003}
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG} AND plan_line_id = 'P-003'`;
+
+    const { data, isError } = await runEdit({
+      old_string: 'The next concrete action.',
+      new_string: 'Reproduce the stale projection before changing the writer.',
+    });
+
+    expect(isError).toBe(false);
+    expect(data.ok).toBe(true);
+    const [{ content }] = await admin<{ content: string }[]>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    expect(content).toContain(canonicalP002);
+    expect(content).toContain(canonicalP003);
+    expect(content).not.toContain(staleP002);
+    expect(content).not.toContain(staleP003);
+    const indexed = await admin<{ item_id: string; item_text: string }[]>`
+      SELECT item_id, item_text FROM harness_shared.plan_items
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+       ORDER BY item_id
+    `;
+    expect([...indexed]).toEqual([
+      { item_id: 'P-002', item_text: canonicalP002 },
+      { item_id: 'P-003', item_text: canonicalP003 },
+    ]);
   });
 });
 

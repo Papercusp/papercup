@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { invokeApprovedHandler, prepareInstalledHandlerRuntime } from '@papercusp/plugin-loader/daemon';
+import { invokeApprovedHandler, prepareInstalledHandlerRuntime, snapshotInstalledHandlerFiles } from '@papercusp/plugin-loader/daemon';
 import { createConfinedPluginInvoker, createInstalledConfinedPluginInvoker } from './plugin-handler-execution';
 import type { PluginHandlerExecutor } from './plugin-invocation-policy';
 
 vi.mock('@papercusp/plugin-loader/daemon', async original => ({
   ...await original<typeof import('@papercusp/plugin-loader/daemon')>(),
-  invokeApprovedHandler: vi.fn(), prepareInstalledHandlerRuntime: vi.fn(),
+  invokeApprovedHandler: vi.fn(), prepareInstalledHandlerRuntime: vi.fn(), snapshotInstalledHandlerFiles: vi.fn(),
 }));
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 
@@ -82,6 +82,25 @@ describe('confined plugin installation binding', () => {
 describe('installed confined plugin binding', () => {
   const handler = () => ({ path: '/handler/entry.cjs', contents: Buffer.from('untrusted guest'),
     sha256: 'b'.repeat(64), executable: false });
+
+  it('snapshots only the host-bound installation before asynchronous runtime admission', async () => {
+    const f = fixture(), file = handler();
+    vi.mocked(snapshotInstalledHandlerFiles).mockReturnValue([file]);
+    vi.mocked(prepareInstalledHandlerRuntime).mockResolvedValue({ sha256: 'c'.repeat(64) });
+    await createInstalledConfinedPluginInvoker({ ...f.options, runtimeDirectory: '/installed/runtime', entryPoint: 'dist/index.cjs' });
+    expect(snapshotInstalledHandlerFiles).toHaveBeenCalledWith('/installed/fixture', 'dist/index.cjs', { name: 'fixture', version: '1.0.0' });
+    expect(prepareInstalledHandlerRuntime).toHaveBeenCalledWith('/installed/runtime', [file]);
+    expect(invokeApprovedHandler).not.toHaveBeenCalled();
+  });
+
+  it('never admits or imports a guest when the installed snapshot is refused', async () => {
+    const f = fixture();
+    vi.mocked(snapshotInstalledHandlerFiles).mockImplementation(() => { throw new Error('changing installation'); });
+    await expect(createInstalledConfinedPluginInvoker({ ...f.options, runtimeDirectory: '/installed/runtime', entryPoint: 'index.cjs' }))
+      .rejects.toThrow(/changing installation/);
+    expect(prepareInstalledHandlerRuntime).not.toHaveBeenCalled();
+    expect(invokeApprovedHandler).not.toHaveBeenCalled();
+  });
 
   it.each(['empty', 'population', 'file-bytes', 'total-bytes', 'contents'] as const)(
     'refuses %s before copying guest bytes or starting installed admission', async axis => {

@@ -28,7 +28,8 @@ import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-po
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
-  freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
+  freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_LIMIT,
+  serveCurrentSuNativeModelDiscovery } from './current-su-native-http-protocol';
 
 const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
 
@@ -218,6 +219,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   const transport = guardedCurrentSuNativeHandler(async (req, res) => {
     requests.push({ method: req.method, path: req.url, at: new Date().toISOString() });
     progress('model-transport-request', { request: requests.at(-1), modelRequests: bodies.length });
+    if (serveCurrentSuNativeModelDiscovery(req, res)) return;
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     if (req.url?.endsWith('/responses')) {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;

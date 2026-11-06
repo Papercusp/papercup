@@ -40,7 +40,7 @@ import { papercuspPath, papercuspPtyPath } from '@papercusp/host-platform/home';
  */
 
 import { createRequire } from 'node:module';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { constants as osConstants, homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

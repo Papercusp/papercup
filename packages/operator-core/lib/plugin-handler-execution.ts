@@ -2,7 +2,7 @@
  * No registry/store: the packaging owner supplies the exact approved runtime.
  */
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
-import { invokeApprovedHandler, prepareInstalledHandlerRuntime,
+import { invokeApprovedHandler, prepareInstalledHandlerRuntime, snapshotInstalledHandlerFiles,
   type HandlerRuntimeFile, type PreparedHandlerRuntime } from '@papercusp/plugin-loader/daemon';
 import type { PluginHandlerExecutor } from './plugin-invocation-policy';
 
@@ -76,24 +76,26 @@ export function createConfinedPluginInvoker(options: {
 export async function createInstalledConfinedPluginInvoker(options:
   Omit<Parameters<typeof createConfinedPluginInvoker>[0], 'runtime'> & {
     runtimeDirectory: string;
-    handlerFiles: readonly HandlerRuntimeFile[];
-  }): Promise<PluginHandlerExecutor> {
+  } & ({ handlerFiles: readonly HandlerRuntimeFile[]; entryPoint?: never }
+    | { entryPoint: string; handlerFiles?: never })): Promise<PluginHandlerExecutor> {
   // Pin BEFORE the lazy compiler import or signature IO: a caller mutation
   // during admission must not bind an approved runtime to another installation.
   const { runtimeDirectory, pluginName, effects } = options;
   const installation = { ...options.installation };
   const tools = Array.isArray(options.tools) ? [...options.tools] : { ...options.tools };
+  const supplied = options.handlerFiles ?? snapshotInstalledHandlerFiles(installation.path, options.entryPoint!,
+    { name: pluginName, version: installation.version });
   // Apply the runtime builder's ceilings BEFORE allocating any guest copies.
   // Its later validation cannot protect this earlier admission snapshot.
-  if (!Array.isArray(options.handlerFiles) || !options.handlerFiles.length || options.handlerFiles.length > 1023) {
+  if (!Array.isArray(supplied) || !supplied.length || supplied.length > 1023) {
     throw new Error('invalid handler snapshot population');
   }
   let total = 0;
-  for (const file of options.handlerFiles) {
+  for (const file of supplied) {
     if (!(file?.contents instanceof Uint8Array) || file.contents.byteLength > 256 * 1024 * 1024
       || (total += file.contents.byteLength) > 512 * 1024 * 1024) throw new Error('handler snapshot size exceeded');
   }
-  const handlerFiles = options.handlerFiles.map(file => {
+  const handlerFiles = supplied.map(file => {
     return { path: file.path, sha256: file.sha256, executable: file.executable, contents: Buffer.from(file.contents) };
   });
   const runtime = await prepareInstalledHandlerRuntime(runtimeDirectory, handlerFiles);

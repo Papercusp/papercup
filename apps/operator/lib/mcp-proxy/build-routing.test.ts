@@ -339,7 +339,10 @@ describe("MCP proxy build routing (end to end)", () => {
 // current-build defaults, including the final release:test-downgrade rung.
 describe("current-build defaults for release repair-plane tools", () => {
   it("enumerates the full repair-plane set", () => {
-    expect(CURRENT_BUILD_DEFAULT_TOOLS).toEqual(["release:repair-queue", "release:test-downgrade"]);
+    expect(CURRENT_BUILD_DEFAULT_TOOLS).toEqual([
+      "release:repair-queue", "release:test-downgrade",
+      "consult:get_feedback", "consult:reply", "consult:decline", "consult:close", "consult:routing-health",
+    ]);
   });
 
   it.each(["application/json", "text/event-stream"] as const)(
@@ -419,6 +422,52 @@ describe("current-build defaults for release repair-plane tools", () => {
 
   it("recognizes test-downgrade as a current-build default", () => {
     expect(currentBuildDefaultTool({ name: "release:test-downgrade", arguments: { op: "list" } })).not.toBeNull();
+  });
+
+  it.each(["get_feedback", "reply", "decline", "close", "routing-health"])(
+    "routes the consult %s contract to the current build for direct, wrapped and script calls",
+    (verb) => {
+      const forms = [
+        call(`consult:${verb}`, {}),
+        call(`consult_${verb.replace(/-/g, "_")}`, {}),
+        call("tools:invoke", { name: `consult:${verb}`, args: {} }),
+        call("code:run", { script: `return tools.consult['${verb}']({});` }),
+      ];
+      for (const form of forms) {
+        expect(applyMcpBuildSelector(buf(form), { defaultToCurrentBuild: true }))
+          .toMatchObject({ kind: "routed", build: "staging" });
+      }
+      expect(applyMcpBuildSelector(buf(call(`consult:${verb}`, { build: "main" })), {
+        defaultToCurrentBuild: true,
+      })).toMatchObject({ kind: "routed", build: "main" });
+    },
+  );
+
+  it("does not route unrelated scripts because they use short consult verb names", () => {
+    for (const script of ["return tools.work_items.close({});", "return tools.mail.reply({});"]) {
+      expect(applyMcpBuildSelector(buf(call("code:run", { script })), { defaultToCurrentBuild: true }).kind)
+        .toBe("none");
+    }
+    expect(applyMcpBuildSelector(buf(call("code:run", { script: "return tools.consult.getFeedback({});" })), {
+      defaultToCurrentBuild: true,
+    })).toMatchObject({ kind: "routed", build: "staging" });
+  });
+
+  it("serves consult calls on staging while retaining explicit main and unrelated tool routes", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const staging = await listen(stubOperator("staging", seen));
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+    for (const name of ["consult:get_feedback", "consult:reply", "consult:routing-health"]) {
+      const response = await post(p, JSON.stringify(call(name, {})));
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body).result.servedBy).toBe("staging");
+    }
+    const explicit = await post(p, JSON.stringify(call("consult:get_feedback", { build: "main" })));
+    expect(JSON.parse(explicit.body).result.servedBy).toBe("main");
+    const other = await post(p, JSON.stringify(call("coord:presence", {})));
+    expect(JSON.parse(other.body).result.servedBy).toBe("main");
+    expect(seen.map(entry => entry.label)).toEqual(["staging", "staging", "staging", "main", "main"]);
   });
 
   it("routes selector-less test-downgrade calls to staging, directly or wrapped in tools:invoke", () => {

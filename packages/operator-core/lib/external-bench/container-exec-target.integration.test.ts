@@ -7,10 +7,10 @@
  * only allowlisted env. The last case runs the static musl Codex resolved from the
  * host install, mounted where the FrontierSWE seam mounts it.
  *
- * Requires docker and the local `alpine` image (repo convention: integration suites
- * need Docker). Run: npm run test:file -- <this file>
+ * Requires the isolated benchmark Docker engine and local `alpine` image.
+ * Run: npm run test:file -- <this file>
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -26,6 +26,8 @@ import { codexContainerProcessForPty, codexNativeIdForPty, codexThreadWriterHold
 import { backendBinOverrideEnvKey, resolveBackendLaunch } from '../backend-bin-resolve.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../inference-gateway/codex-cli-bridge';
 import { startBenchEgress } from './bench-egress';
+import { serveCurrentSuNativeModelDiscovery } from '../../test/current-su-native-http-protocol';
+import { privateNativeDockerHost } from '../../test/private-http-workspace-preflight';
 import {
   CONTAINER_CODEX_BIN_PATH,
   materializeDockerExecWrapper,
@@ -113,6 +115,12 @@ async function removeContainer(id: string, primaryError?: unknown): Promise<void
 }
 
 beforeAll(async () => {
+  // The background testing route need not inherit a shell's DOCKER_HOST. Match
+  // the maintained private native fixture instead of allocating on the fleet's
+  // main daemon when this exact startup probe is run through that route.
+  vi.stubEnv('DOCKER_HOST', privateNativeDockerHost([
+    '--native-docker-host=' + (process.env.DOCKER_HOST ?? 'unix:///run/docker-bench.sock'),
+  ]));
   root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'cexec-int-'));
   const daemon = await command('docker', ['info', '--format', '{{json .ID}} {{json .DockerRootDir}}']);
   expect(daemon.status, JSON.stringify(daemon)).toBe(0);
@@ -125,13 +133,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Only partial creates remain. Each gets one bounded cleanup attempt; retain
-  // earlier cleanup failures rather than retrying and overwriting their verdict.
-  await Promise.allSettled([...containers].map(id => removeContainer(id)));
-  // Keep fixture files on cleanup failure for inspection; Vitest retains the
-  // primary assertion independently of this hook's complete cleanup verdict.
-  if (cleanupFailures.length) throw new Error(JSON.stringify({ root, cleanupFailures }));
-  if (root) rmSync(root, { recursive: true, force: true });
+  try {
+    // Only partial creates remain. Each gets one bounded cleanup attempt; retain
+    // earlier cleanup failures rather than retrying and overwriting their verdict.
+    await Promise.allSettled([...containers].map(id => removeContainer(id)));
+    // Keep fixture files on cleanup failure for inspection; Vitest retains the
+    // primary assertion independently of this hook's complete cleanup verdict.
+    if (cleanupFailures.length) throw new Error(JSON.stringify({ root, cleanupFailures }));
+    if (root) rmSync(root, { recursive: true, force: true });
+  } finally { vi.unstubAllEnvs(); }
 });
 
 describe('container exec target against a live container', () => {
@@ -731,9 +741,15 @@ describe('container exec target against a live container', () => {
     // before MCP traffic, which obscured the path this case is meant to prove.
     for (const dir of [home, perHomes]) mkdirSync(dir, { recursive: true });
     const methods: string[] = [];
+    const modelDiscovery: string[] = [];
+    const inferenceRequests: string[] = [];
     const server = createServer(async (req, res) => {
-      if (req.url?.includes('/models')) {
-        res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"models":[]}'); return;
+      if (serveCurrentSuNativeModelDiscovery(req, res)) {
+        modelDiscovery.push(req.url!); return;
+      }
+      if (req.url?.split('?', 1)[0] === '/v1/responses') {
+        inferenceRequests.push(req.url);
+        res.writeHead(400); res.end(); return;
       }
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
       let body: { id?: number; method?: string };
@@ -801,23 +817,39 @@ describe('container exec target against a live container', () => {
           { from: `http://127.0.0.1:${codexGatewayPort()}`, to: egress.originFor('gw') },
         ] } : {}) },
       { dir: mkdtempSync(join(root, 'mcp-wrapper-')) });
+      // Current native versions may use their installed catalog without a
+      // discovery request. Probe this contract explicitly from the same task
+      // network, and keep that observation separate from native CLI traffic.
+      const discoveryPath = '/v1/models?client_version=private-startup-probe';
+      const discovery = await command('docker', ['exec', cid, 'wget', '-qO-',
+        egress.originFor('gw') + discoveryPath]);
+      expect(discovery.status, JSON.stringify(discovery)).toBe(0);
+      expect(JSON.parse(discovery.stdout)).toEqual({ models: [] });
+      expect(modelDiscovery).toEqual([discoveryPath]);
       const child = createRequire(import.meta.url)('@lydell/node-pty').spawn(wrapperPath,
         ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust'],
         { env: { PATH: process.env.PATH, CODEX_HOME: home, TERM: 'xterm-256color' }, cwd: base, cols: 120, rows: 30 });
-      const output = await new Promise<string>((resolve, reject) => {
-        let output = '', probes = '';
+      const result = await new Promise<{ output: string; frame: boolean }>((resolve, reject) => {
+        let output = '', probes = '', frame = false;
         const timer = setTimeout(() => child.kill('SIGTERM'), 8000);
         const cleanupTimer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('native MCP TUI did not terminate')); }, 10_000);
         const data = child.onData((chunk: string) => {
           output = (output + chunk).slice(-12000); probes = (probes + chunk).slice(-100);
           if (probes.includes('\x1b[6n')) { child.write('\x1b[1;1R'); probes = ''; }
+          frame ||= codexSessionFrameObserved(output, { dims: { cols: 120, rows: 30 } });
         });
-        child.onExit(() => { clearTimeout(timer); clearTimeout(cleanupTimer); data.dispose(); resolve(output); });
+        child.onExit(() => { clearTimeout(timer); clearTimeout(cleanupTimer); data.dispose(); resolve({ output, frame }); });
       });
-      expect(methods, output).toContain('initialize');
-      expect(methods, output).toContain('tools/list');
-      expect(methods, output).not.toContain('unknown');
-      console.info('NATIVE_MCP_FUNCTIONAL_PROOF', JSON.stringify({ generated, cid, methods, at: new Date().toISOString() }));
+      expect(methods, result.output).toContain('initialize');
+      expect(methods, result.output).toContain('tools/list');
+      expect(methods, result.output).not.toContain('unknown');
+      expect(result.frame, result.output).toBe(true);
+      expect(inferenceRequests, result.output).toEqual([]);
+      console.info('NATIVE_MCP_FUNCTIONAL_PROOF', JSON.stringify({ generated, cid, methods,
+        modelDiscoveryProbe: { source: 'task-network-prerequisite', path: discoveryPath },
+        nativeModelDiscovery: modelDiscovery.slice(1), composerReady: result.frame,
+        inferenceRequests, providerForwarding: false,
+        at: new Date().toISOString() }));
     } catch (error) { primaryError = error; throw error; }
     finally {
       const failures: unknown[] = [];

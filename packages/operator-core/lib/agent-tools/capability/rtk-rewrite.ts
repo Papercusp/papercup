@@ -59,6 +59,7 @@ export const RTK_SESSION_ENV: Readonly<Record<string, string>> = Object.freeze({
 export type RtkSkipReason =
   | 'flag-off'
   | 'structured-caller'
+  | 'streaming-test'
   | 'opt-out'
   | 'vitest'
   | 'early-exit-pipe'
@@ -231,6 +232,8 @@ export async function rtkCommandForCapabilityBash(
   opts: {
     cwd: string;
     structuredCaller: boolean;
+    /** Managed tests expose live progress; RTK buffers their output until exit. */
+    streamingTest?: boolean;
     flagEnabled: () => Promise<boolean>;
     env?: NodeJS.ProcessEnv;
     timeoutMs?: number;
@@ -241,6 +244,7 @@ export async function rtkCommandForCapabilityBash(
     outcome: detail ? { kind: 'unchanged', reason, detail } : { kind: 'unchanged', reason },
   });
   if (opts.structuredCaller) return unchanged('structured-caller');
+  if (opts.streamingTest) return unchanged('streaming-test');
   const skip = rtkSkipReasonForCommand(command);
   if (skip) return unchanged(skip);
   // Binary before flag: the filesystem check is cheap and local, and a host

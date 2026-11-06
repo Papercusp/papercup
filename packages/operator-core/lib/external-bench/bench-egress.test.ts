@@ -509,8 +509,8 @@ describe('startBenchEgress', () => {
       startBenchEgress({ runId: 'r', endpoints: [{ name: 'gw', listenPort: 8788, targetPort: upstreamPort }], exec: fake.exec, workRoot }),
     ).rejects.toThrow(/sidecar start failed/);
     // The sidecar is removed by NAME: the daemon may have created it even though the client call failed.
-    expect(fake.calls.map((c) => c.args.slice(0, 2).join(' '))).toEqual(['network create', 'run -d', 'rm -f', 'network rm']);
-    expect(fake.calls[2]!.args).toEqual(['rm', '-f', expect.stringMatching(/^pc-egress-r-[0-9a-f]{6}-sidecar$/)]);
+    expect(fake.calls.map((c) => c.args.slice(0, 2).join(' '))).toEqual(['network create', 'run -d', 'inspect --format', 'rm -f', 'network rm']);
+    expect(fake.calls[3]!.args).toEqual(['rm', '-f', expect.stringMatching(/^pc-egress-r-[0-9a-f]{6}-sidecar$/)]);
     expect((await import('node:fs')).readdirSync(workRoot)).toEqual([]);
   });
 
@@ -527,7 +527,30 @@ describe('startBenchEgress', () => {
     );
     expect((err as Error).message).toMatch(/sidecar start failed/);
     expect((err as Error).message).not.toMatch(/cleanup/);
-    expect(calls.map((a) => a[0])).toEqual(['network', 'run', 'rm', 'network']);
+    expect(calls.map((a) => a[0])).toEqual(['network', 'run', 'inspect', 'rm', 'network']);
+  });
+
+  it.each([false, true])('retains sidecar startup state before cleanup without hiding a timeout (inspectFails=%s)', async inspectFails => {
+    const calls: string[][] = [];
+    const exec: ProcExec = async (_cmd, args) => {
+      calls.push(args);
+      if (args[0] === 'run') return { stdout: '', stderr: 'subprocess timed out after 14947ms', code: 124 };
+      if (args[0] === 'inspect') {
+        if (inspectFails) throw new Error('diagnostic unavailable');
+        return { stdout: '{"Status":"created","Running":false}\n', stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    };
+    const failure = await startBenchEgress({ runId: 'r',
+      endpoints: [{ name: 'gw', listenPort: 8788, targetPort: upstreamPort }], exec, workRoot })
+      .catch((error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('subprocess timed out after 14947ms');
+    expect((failure as Error).message).toContain(inspectFails
+      ? 'sidecar state before cleanup: unavailable: diagnostic unavailable'
+      : 'sidecar state before cleanup: {"Status":"created","Running":false}');
+    expect(calls.map(args => args[0])).toEqual(['network', 'run', 'inspect', 'rm', 'network']);
+    expect(calls[2]!.at(-1)).toBe(calls[3]!.at(-1));
   });
 
   it('sweepBenchEgress removes the run-labelled containers first, then its networks, and reports failures', async () => {

@@ -10,6 +10,18 @@ import { allCapabilities } from '../lib/external-bench/reproducibility/_protocol
 type Body = Record<string, unknown>;
 type Tool = { type: string; name: string; tools?: Tool[] };
 
+/** Match the installed CLI's discovery contract without credentials or inference.
+ * An empty catalog preserves its installed model metadata; this fixture does not
+ * claim provider model availability. Keep the cheap native startup probe and the
+ * full private-host scenario on the same discovery response. */
+export function serveCurrentSuNativeModelDiscovery(req: IncomingMessage, res: ServerResponse): boolean {
+  const path = req.url?.split('?', 1)[0];
+  if (req.method !== 'GET' || (path !== '/models' && path !== '/v1/models')) return false;
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end('{"models":[]}');
+  return true;
+}
+
 function queuedCompactionAcknowledgement(value: unknown): Body | null {
   if (typeof value === 'string') {
     try { return queuedCompactionAcknowledgement(JSON.parse(value)); } catch { /* Try the lossless compact format. */ }

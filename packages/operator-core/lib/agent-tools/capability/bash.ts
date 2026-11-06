@@ -38,6 +38,7 @@ import {
   formatBufferingPipelineAdvice,
   formatSelfRedirectAdvice,
   formatUntrackedShellBackgroundAdvice,
+  isBackgroundTestCommand,
   MAX_BACKGROUND_TIMEOUT_MS,
   snapshotJobResult,
   startBackground,
@@ -663,6 +664,7 @@ export default defineTool({
     const rtk = await rtkCommandForCapabilityBash(command, {
       cwd,
       structuredCaller: Boolean(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)),
+      streamingTest: isBackgroundTestCommand(command),
       flagEnabled: () => getFlag(FLAGS.CAPABILITY_BASH_RTK, 'system'),
     });
     const execCommand = rtk.command;

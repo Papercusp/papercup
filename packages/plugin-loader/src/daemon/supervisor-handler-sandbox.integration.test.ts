@@ -4,7 +4,7 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization, type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
 import { createHandlerRuntimeCandidate, handlerRuntimeDigest, prepareApprovedHandlerRuntime, prepareHandlerRuntime, type HandlerRuntimeFile } from './handler-runtime';
 import { invokeApprovedHandler, startDaemonPlugin, type DaemonPluginHandle } from './supervisor';
+import { snapshotInstalledHandlerFiles } from './handler-installation';
 
 const require = createRequire(import.meta.url);
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -58,21 +59,23 @@ describe.runIf(supported)('mandatory handler supervisor (real bwrap + trusted TS
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  function inventory(entry: string, omitSeccomp = false, alternateBootstrap?: Buffer) {
+  function inventory(entry: string | HandlerRuntimeFile[], omitSeccomp = false, alternateBootstrap?: Buffer) {
     const files = [...base.values()].filter(file => !omitSeccomp || file.path !== seccompPath)
       .map(file => ({ ...file }));
     if (alternateBootstrap) {
       const item = files.find(file => file.path === '/runtime/bootstrap.cjs')!;
       item.contents = alternateBootstrap; item.sha256 = digest(alternateBootstrap);
     }
-    const contents = Buffer.from(entry);
-    files.push({ path: '/handler/entry.cjs', contents, executable: false, sha256: digest(contents) });
+    if (typeof entry === 'string') {
+      const contents = Buffer.from(entry);
+      files.push({ path: '/handler/entry.cjs', contents, executable: false, sha256: digest(contents) });
+    } else files.push(...entry);
     return { files, sha256: handlerRuntimeDigest(files), bootstrapSha256: digest(alternateBootstrap ?? bootstrap) };
   }
 
   const simpleEntry = 'console.error("HANDLER_STARTED"); exports.requests = { "fixture.echo": input => input };';
   // Fixture-owned signing authority, not production provenance enrollment.
-  function approved(entry: string) {
+  function approved(entry: string | HandlerRuntimeFile[]) {
     const input = inventory(entry);
     const expected = createHandlerRuntimeCandidate(input, { sourceRevision: 'a'.repeat(40),
       version: '1.0.0', authorIds: ['fixture-author'], rollbackCounter: 1 });
@@ -120,6 +123,36 @@ describe.runIf(supported)('mandatory handler supervisor (real bwrap + trusted TS
   const sdkMetadata = { workspaceId: 'workspace', harnessSlug: 'harness', projectDir: '/project',
     stateDir: '/project/.papercusp', role: 'su', runId: 'run', spawnId: 'spawn',
     featureId: null, chunkId: null, parentSpawnId: null };
+
+  it('runs exact installed entry and transitive dependency bytes inside the real boundary', async () => {
+    const directory = join(root, 'installed-plugin');
+    mkdirSync(join(directory, 'dist'), { recursive: true });
+    mkdirSync(join(directory, 'node_modules', 'dependency'), { recursive: true });
+    writeFileSync(join(directory, 'papercusp.json'), JSON.stringify({ name: 'installed-fixture', version: '1.0.0' }));
+    writeFileSync(join(directory, 'dist', 'index.cjs'), `const dependency = require('dependency');
+      module.exports = { tools: { probe: async (_input, ctx) => ({
+        dependency: dependency(), checked: await ctx.secret('allowed')
+      }) } };`);
+    const dependency = join(directory, 'node_modules', 'dependency', 'index.js');
+    writeFileSync(dependency, 'module.exports = require("./nested.cjs");');
+    writeFileSync(join(dirname(dependency), 'nested.cjs'), `module.exports = () => {
+      let denied = false;
+      try { require('node:fs').readFileSync(${JSON.stringify(sentinel)}, 'utf8'); }
+      catch { denied = true; }
+      return { value: 'installed-pinned', denied };
+    };`);
+    const files = snapshotInstalledHandlerFiles(directory, 'dist/index.cjs', { name: 'installed-fixture', version: '1.0.0' });
+    // The guest consumes the held bytes even if installation files are replaced
+    // before signature admission or supervisor startup.
+    writeFileSync(dependency, 'throw new Error("POST_SNAPSHOT_SUBSTITUTION");');
+    expect(await invokeApprovedHandler({ runtime: approved(files), toolName: 'probe', input: {},
+      signal: new AbortController().signal, effect: (operation, input) => {
+        if (operation === 'sdk.context') return sdkMetadata;
+        if (operation === 'sdk.secret') { expect(input).toEqual({ name: 'allowed' }); return 'host-checked'; }
+        throw new Error('unexpected installed guest effect');
+      } })).toEqual({ dependency: { value: 'installed-pinned', denied: true }, checked: 'host-checked' });
+    expect(readFileSync(sentinel, 'utf8')).toBe('HOST_PRIVATE_CANARY');
+  }, 30_000);
 
   it.each(['default', 'named'])('runs the actual %s SDK tools export under confinement with acknowledged callbacks', async form => {
     const operations: string[] = [];

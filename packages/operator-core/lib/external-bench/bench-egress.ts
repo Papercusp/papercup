@@ -522,7 +522,15 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
       image,
     ]);
     const id = run.out.trim().split('\n').pop() ?? '';
-    if (!run.ok || !id) throw new Error(`bench-egress: sidecar start failed — ${run.err}`);
+    if (!run.ok || !id) {
+      // A timed-out client does not establish whether Docker created or started
+      // the sidecar. Observe that exact name before stop() removes the evidence.
+      // Use the independent diagnostic budget, since setup's deadline may have
+      // expired; an unavailable observation must not replace the original error.
+      const state = await docker(exec, ['inspect', '--format', '{{json .State}}', sidecarName]);
+      throw new Error(`bench-egress: sidecar start failed — ${run.err}; ` +
+        `sidecar state before cleanup: ${state.ok ? state.out.trim() || 'empty' : 'unavailable: ' + state.err}`);
+    }
     sidecarId = id;
 
     // Ready = every endpoint port in LISTEN inside the sidecar. Read from /proc, so readiness sends no request

@@ -122,6 +122,13 @@ type JsonRecord = Record<string, unknown>;
 export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
   "release:repair-queue",
   "release:test-downgrade",
+  // Consult delivery/recovery must share the current request and reply contract.
+  // A release pinned behind the gate cannot supply cross-backend fixes promptly.
+  "consult:get_feedback",
+  "consult:reply",
+  "consult:decline",
+  "consult:close",
+  "consult:routing-health",
 ];
 
 const CURRENT_BUILD_DEFAULT_LOOKUP: ReadonlySet<string> = new Set(
@@ -141,9 +148,16 @@ const CODE_RUN_NAME = normalizeMcpName("code:run");
  */
 const CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS: ReadonlyArray<{ tool: string; pattern: RegExp }> =
   CURRENT_BUILD_DEFAULT_TOOLS.map((tool) => {
+    const namespace = tool.slice(0, tool.indexOf(":"));
     const verb = tool.slice(tool.indexOf(":") + 1);
     const words = verb.split(/[-_]/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    return { tool: normalizeMcpName(tool), pattern: new RegExp(words.join("[-_]?"), "i") };
+    const spelling = words.join("[-_]?");
+    // Short consult verbs such as `close` occur on unrelated tools. Require
+    // their namespace while retaining the established repair-plane spellings.
+    const pattern = namespace === "consult"
+      ? new RegExp(`\\btools(?:\\.consult|\\[['\"]consult['\"]\\])\\s*(?:\\.${spelling}\\b|\\[['\"]${spelling}['\"]\\])|\\bconsult[:_]${spelling}\\b`, "i")
+      : new RegExp(spelling, "i");
+    return { tool: normalizeMcpName(tool), pattern };
   });
 
 /** The current-build-default verb a `code:run` script names, or `null`. */

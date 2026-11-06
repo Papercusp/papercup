@@ -82,12 +82,15 @@ describe('blind-review managed succession before child creation', () => {
     try {
       await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 3000 });
       const result = await injectEnvelope(socketPath, { mode: 'recycle', data: '' });
+      // The socket acknowledges queue admission before the host executes it.
+      expect(result).toMatchObject({ ok: true, reason: 'accepted' });
+      await vi.waitFor(() => expect(readFileSync(eventLog, 'utf8')).toContain(
+        mode === 'refused' ? 'blind-review managed succession admission unconfirmed' : '"kind":"respawned"',
+      ), { timeout: 5000, interval: 10 });
       if (mode === 'refused') {
-        expect(result.ok).toBe(false);
         expect(spawns).toBe(1);
         expect(onRespawn).not.toHaveBeenCalled();
       } else {
-        expect(result.ok).toBe(true);
         expect(spawns).toBe(2);
         expect(onRespawn).toHaveBeenCalled();
       }
@@ -474,11 +477,14 @@ describe('carry-respawn native-turn delivery authority', () => {
       const socketPath = socketPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
+      const busyRoot = mkdtempSync(join(tmpdir(), 'psu-carry-rearm-busy-'));
+      const busyPath = join(busyRoot, 'busy');
+      if (route === 'rearmed') writeFileSync(busyPath, 'busy');
       const childCode = [
         "process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);});",
         "process.stdout.write('READY\\n');",
         route === 'rearmed'
-          ? "const busy=setInterval(()=>process.stdout.write('.'),10);setTimeout(()=>clearInterval(busy),400);"
+          ? `const fs=require('node:fs');setInterval(()=>{if(fs.existsSync(${JSON.stringify(busyPath)}))process.stdout.write('.');},10);`
           : '',
         'setTimeout(()=>process.exit(0),5000);',
       ].join('');
@@ -513,6 +519,13 @@ describe('carry-respawn native-turn delivery authority', () => {
           systemPromptAddendum: 'saved state',
         };
         expect(await injectEnvelope(socketPath, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+        if (route === 'rearmed') {
+          // Keep the child busy until the host proves the rearm path was used.
+          // A wall-clock burst can end before a scheduled test sends its control.
+          await vi.waitFor(() => expect(readFileSync(eventLog, 'utf8'))
+            .toContain('"kind":"respawn-rearm-queued"'), { timeout: 2500, interval: 10 });
+          unlinkSync(busyPath);
+        }
         const failedDeadline = Date.now() + 2500;
         while (mints === 0 && Date.now() < failedDeadline) await sleep(10);
         expect(mints).toBe(1);
@@ -531,6 +544,7 @@ describe('carry-respawn native-turn delivery authority', () => {
         if (existsSync(socketPath)) await injectRaw(socketPath, '\x04');
         await done;
         if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(busyRoot, { recursive: true, force: true });
       }
     },
     10_000,

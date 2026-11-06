@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
-  freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_NOTE, FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
+  freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_NOTE, FROZEN_NATIVE_CARRY_LIMIT,
+  serveCurrentSuNativeModelDiscovery } from './current-su-native-http-protocol';
 import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
 import { currentBenchmarkProtocolSchema } from '../lib/external-bench/reproducibility/schema';
 import { currentBenchLaunchRequest, currentBenchSoloCapabilityControl } from '../lib/external-bench/current-su';
@@ -11,6 +12,35 @@ const tools = [{ type: 'function', name: 'exec_command' },
 const kickoff = { model: 'fixture', tools, input: [{ role: 'user', content: '<cwd>/app</cwd> task' }] };
 const output = (call_id: string, value: string) => ({ type: 'function_call_output', call_id, output: value });
 const proof = { predecessorSessionId: 'predecessor', editApplied: () => true };
+
+it('serves native model discovery without accepting inference or foreign routes', async () => {
+  let refused = 0;
+  const server = createServer((req, res) => {
+    if (serveCurrentSuNativeModelDiscovery(req, res)) return;
+    refused++;
+    res.writeHead(400); res.end();
+  });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const base = 'http://127.0.0.1:' + (server.address() as { port: number }).port;
+  try {
+    for (const path of ['/models', '/v1/models?client_version=0.163.0']) {
+      const response = await fetch(base + path);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe('application/json');
+      expect(await response.json()).toEqual({ models: [] });
+    }
+    for (const [path, method] of [['/v1/models', 'POST'], ['/v1/responses', 'POST'],
+      ['/unrelated/models', 'GET'], ['/v1/models/foreign', 'GET']]) {
+      const response = await fetch(base + path, { method });
+      expect(response.status).toBe(400);
+      await response.text();
+    }
+    expect(refused).toBe(4);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
+  }
+});
 
 it.each(['on', 'off'] as const)('freezes carry %s and the matched threshold before native launch', async mode => {
   const config = currentProtocolFixture();

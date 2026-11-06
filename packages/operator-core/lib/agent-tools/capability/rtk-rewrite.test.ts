@@ -64,7 +64,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 }));
 
 import bashTool, { RTK_RESULT_NOTE } from './bash';
-import { startBackground } from './bash-jobs';
+import { startBackground, runForeground } from './bash-jobs';
 import {
   RTK_BIN_ENV,
   RTK_MAX_COMMAND_CHARS,
@@ -335,7 +335,7 @@ function spawned(): { command: string; originalCommand?: string; env?: Record<st
 }
 
 describe('capability:bash — RTK at the spawn seam', () => {
-  it.each([false, true])('RTK budget identity: passes the authorized original separately from the spawned rewrite (background=%s)', async (run_in_background) => {
+  it.each([false, true])('retains the original test command and budget identity for live output (background=%s)', async (run_in_background) => {
     process.env[RTK_BIN_ENV] = fakeRtk;
     const command = 'npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
     const result = await bash.handler({
@@ -343,9 +343,52 @@ describe('capability:bash — RTK at the spawn seam', () => {
       // This is a server-owned RunOptions field, never trusted from tool input.
       originalCommand: 'printf caller-forged-identity',
     }, makeCtx(root));
-    expect(spawned().command).toBe('rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts');
+    expect(spawned().command).toBe(command);
     expect(spawned().originalCommand).toBe(command);
-    expect(result.content[0]!.text).toContain(RTK_RESULT_NOTE);
+    expect(result.content[0]!.text).not.toContain(RTK_RESULT_NOTE);
+  });
+
+  it.each(['npm run test:file -- case.test.ts', 'cd pkg && npm run test:affected',
+    'env FOO=1 pnpm exec playwright test', 'timeout 60s npm test'])
+  ('preserves streaming test commands without requiring an opt-out: %s', async command => {
+    process.env[RTK_BIN_ENV] = fakeRtk;
+    await bash.handler({ command, cwd: root }, makeCtx(root));
+    expect(spawned().command).toBe(command);
+  });
+
+  it('exposes test progress while the real child remains running', async () => {
+    process.env[RTK_BIN_ENV] = fakeRtk;
+    const release = join(root, 'release-streaming-test');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true,
+      scripts: { 'test:file': 'node progress.mjs' } }));
+    writeFileSync(join(root, 'progress.mjs'), [
+      "import { existsSync } from 'node:fs';",
+      "console.log('test-progress-ready');",
+      'const timer = setInterval(() => { if (existsSync(process.env.TEST_PROGRESS_RELEASE)) clearInterval(timer); }, 20);',
+    ].join('\n'));
+    const command = 'npm run test:file -- case.test.ts';
+    await bash.handler({ command, cwd: root }, makeCtx(root));
+    const chunks: string[] = [];
+    let settled = false;
+    let markProgress!: () => void;
+    const progress = new Promise<void>(resolve => { markProgress = resolve; });
+    const running = runForeground({ command: spawned().command, cwd: root, stateDir: root,
+      env: { TEST_PROGRESS_RELEASE: release },
+      onChunk: chunk => {
+        chunks.push(chunk);
+        if (chunks.join('').includes('test-progress-ready')) markProgress();
+      } }, new AbortController().signal, 10_000)
+      .then(result => { settled = true; return result; });
+    try {
+      await Promise.race([progress, running.then(result => {
+        throw new Error(`Child settled before live progress: ${JSON.stringify(result)}`);
+      })]);
+      expect(settled).toBe(false);
+    } finally {
+      writeFileSync(release, 'release');
+      const result = await running;
+      expect(result, JSON.stringify(result)).toMatchObject({ status: 'completed', exitCode: 0 });
+    }
   });
 
   it('spawns the RTK form, adds the rtk directory to PATH, and says so in the result', async () => {
