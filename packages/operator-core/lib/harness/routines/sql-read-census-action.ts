@@ -301,6 +301,8 @@ export async function runSqlReadCensus(
 export interface SqlIntentCensusDeps extends SqlMiningDeps {
   review?: typeof submitSqlCandidateReview;
   monitoredReview?: typeof submitMonitoredCandidateReview;
+  /** Internal source adapters; production defaults keep canonical authority checks. */
+  monitoredReaders?: Parameters<typeof runMonitoredCensus>[2];
   feedback?: typeof recordSqlCandidateFeedback;
   /** Trusted exposure/coverage adapter; absence is explicitly UNKNOWN in the ledger. */
   repairMeasurement?: (review: Awaited<ReturnType<typeof submitSqlCandidateReview>>) => Promise<SqlRepairMeasurement | null>;
@@ -329,7 +331,7 @@ export async function runSqlOpportunityCensus(opts: Parameters<typeof censusMini
     // tables are unavailable. Share one promise: no second SQL slice on failure.
     sqlWork = runSqlIntentCensus(miningOpts, deps);
     const monitored = await runMonitoredCensus({ ...miningOpts, routineId: opts.routineId, workflowId: opts.workflowId },
-      async () => { sqlResult = await sqlWork!; return sqlResult; });
+      async () => { sqlResult = await sqlWork!; return sqlResult; }, deps.monitoredReaders);
     sqlResult = await sqlWork;
     // The existing reservation/intake workflow owns all families. Diagnostics
     // choose a bounded batch; only a fresh canonical evidence read admits it.

@@ -193,6 +193,143 @@ it('persists elapsed time for the phase that reaches its bounded timeout', async
     WHERE workspace_id=${opts.workspaceId} AND run_id=${run.runId}::uuid AND family='native-operation'`;
   expect(saved!.diagnostics.phaseDurationsMs['continuity-before']).toBeGreaterThanOrEqual(200);
 });
+it('R8 interrupted mining resumes without gaps or duplicates', async () => {
+  for (let i = 0; i < 3; i++) {
+    await f.seed(undefined, `2026-10-24T12:00:0${i}.123456Z`);
+    await f.db.adminSql`INSERT INTO harness_shared.agent_activity
+      (workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,status,created_at)
+      VALUES ('sql-mining-test','mining-test','su-private-resume-agent','codex','private-resume-session',
+        'tool','exec_command','pre',${'private-resume-call-' + i},'{"cmd":"rg private-resume-path src"}'::jsonb,
+        'ok',${`2026-10-24T12:00:0${i}.123456Z`}::timestamptz)`;
+  }
+  const unknownSql = async () => ({ status: 'UNKNOWN' as const, stage: 'source' as const, rows: 0 });
+  const full = await runMonitoredCensus(f.opts({ rowBudget: 100, windowRowBudget: 100, timeBudgetMs: 30_000 }), unknownSql);
+  const expected = full.families.filter(row => row.family !== 'sql');
+  expect(expected.map(row => row.scanned)).toEqual([3, 3, 3, 3]);
+  let final = full;
+  for (let wake = 0; wake < 3; wake++) {
+    final = await runMonitoredCensus(f.opts({ rowBudget: 1, windowRowBudget: 1,
+      timeBudgetMs: 30_000, now: f.now + wake * 60_000 }), unknownSql);
+    for (const row of final.families.filter(row => row.family !== 'sql')) {
+      expect(row.scanned).toBe(wake + 1);
+      expect(row.diagnostics.window).toEqual({ since: new Date(f.now - 7 * 86400_000).toISOString(),
+        until: new Date(f.now).toISOString() });
+      expect(row.diagnostics.backlog).toBe(wake < 2);
+      expect(row.diagnostics).not.toHaveProperty('progress');
+      if (wake < 2) expect(row.coverage).toBe('truncated');
+    }
+    if (wake === 0) {
+      // A restart cannot require the previous process/build to still exist.
+      await f.db.adminSql`UPDATE harness_shared.sql_intent_runs SET runtime_id='exited-previous-runtime',
+        source_sha=${'f'.repeat(40)} WHERE run_id=${final.runId}::uuid`;
+      // New arrivals belong to a later window; they cannot move this watermark.
+      await f.seed(undefined, new Date(f.now + 30_000).toISOString());
+    }
+  }
+  for (const row of final.families.filter(row => row.family !== 'sql')) {
+    const reference = expected.find(other => other.family === row.family)!;
+    expect(row.qualifying).toBe(reference.qualifying);
+    expect(row.diagnostics.candidates).toEqual(reference.diagnostics.candidates);
+    expect(row.diagnostics.sourceRevisions).toEqual(reference.diagnostics.sourceRevisions);
+    expect(row.diagnostics.sourceCoverage).toMatchObject({ scanned: 3, pages: 3, windowExhausted: true });
+  }
+  const saved = await f.db.adminSql`SELECT family,scanned,diagnostics->'progress' AS progress
+    FROM harness_shared.sql_intent_family_runs WHERE run_id=${final.runId}::uuid AND family<>'sql'`;
+  expect(saved).toHaveLength(4);
+  for (const row of saved) expect(row.progress).toMatchObject({ version: 1, complete: true, after: null,
+    coverage: { scanned: row.scanned, windowExhausted: true } });
+  expect(JSON.stringify(saved)).not.toMatch(/private-one|SELECT id|su-private|private-resume/);
+});
+it('P004 a corrupt family checkpoint stays UNKNOWN while other families advance and a new scope starts independently', async () => {
+  for (let i = 0; i < 3; i++) await f.seed(undefined, `2026-10-24T12:00:0${i}.123456Z`);
+  const opts = f.opts({ rowBudget: 1, windowRowBudget: 1, timeBudgetMs: 30_000 });
+  const unknownSql = async () => ({ status: 'UNKNOWN' as const, stage: 'source' as const, rows: 0 });
+  const first = await runMonitoredCensus(opts, unknownSql);
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_family_runs SET diagnostics=
+    jsonb_set(diagnostics,'{progress,signature}','"corrupt"'::jsonb)
+    WHERE run_id=${first.runId}::uuid AND family='search-reformulation'`;
+  const next = await runMonitoredCensus(opts, unknownSql);
+  expect(next.families.find(row => row.family === 'search-reformulation')).toMatchObject({
+    coverage: 'UNKNOWN', scanned: 0, qualifying: 0,
+    diagnostics: { reason: 'sql_mining_source_missing', reviewEligible: false, candidates: [] },
+  });
+  for (const family of ['result-recovery', 'workaround-funnel'])
+    expect(next.families.find(row => row.family === family)).toMatchObject({ scanned: 2,
+      coverage: 'truncated', diagnostics: { backlog: true } });
+  const rotated = await runMonitoredCensus({ ...opts, scope: { ...opts.scope, epoch: 'new-progress-scope' } }, unknownSql);
+  expect(rotated.families.find(row => row.family === 'search-reformulation')).toMatchObject({ scanned: 1,
+    coverage: 'truncated', diagnostics: { backlog: true } });
+  const denied = await runMonitoredCensus({ ...opts, authorize: async () => false }, unknownSql);
+  expect(denied.families.filter(row => row.family !== 'sql').every(row =>
+    row.coverage === 'UNKNOWN' && row.scanned === 0 && row.qualifying === 0)).toBe(true);
+});
+it('P004 rolls back a failed page without separating its evidence from its cursor', async () => {
+  for (let i = 0; i < 3; i++) await f.seed(undefined, `2026-10-24T12:00:0${i}.123456Z`);
+  const unknownSql = async () => ({ status: 'UNKNOWN' as const, stage: 'source' as const, rows: 0 });
+  const full = await runMonitoredCensus(f.opts({ rowBudget: 100, timeBudgetMs: 30_000 }), unknownSql);
+  const reference = full.families.find(row => row.family === 'search-reformulation')!;
+  await f.db.adminSql`CREATE FUNCTION harness_shared.p004_reject_second_page() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN
+      IF NEW.family='search-reformulation' AND NEW.scanned>=2 AND NEW.diagnostics ? 'progress' THEN
+        RAISE EXCEPTION 'private-page-rollback-sentinel';
+      END IF;
+      RETURN NEW;
+    END $$`;
+  let interrupted: Awaited<ReturnType<typeof runMonitoredCensus>>;
+  try {
+    await f.db.adminSql`CREATE TRIGGER p004_reject_second_page AFTER INSERT OR UPDATE
+      ON harness_shared.sql_intent_family_runs FOR EACH ROW EXECUTE FUNCTION harness_shared.p004_reject_second_page()`;
+    interrupted = await runMonitoredCensus(f.opts({ rowBudget: 1, timeBudgetMs: 30_000 }), unknownSql);
+  } finally {
+    await f.db.adminSql`DROP TRIGGER IF EXISTS p004_reject_second_page ON harness_shared.sql_intent_family_runs`;
+    await f.db.adminSql`DROP FUNCTION harness_shared.p004_reject_second_page()`;
+  }
+  expect(interrupted!.families.find(row => row.family === 'search-reformulation')).toMatchObject({
+    scanned: 1, coverage: 'UNKNOWN', qualifying: 0, diagnostics: { backlog: true, candidates: [] },
+  });
+  const [saved] = await f.db.adminSql`SELECT scanned,diagnostics->'progress' AS progress
+    FROM harness_shared.sql_intent_family_runs WHERE run_id=${interrupted!.runId}::uuid AND family='search-reformulation'`;
+  expect(saved).toMatchObject({ scanned: 1, progress: { complete: false, coverage: { scanned: 1, pages: 1 } } });
+  expect(saved!.progress.observations).toHaveLength(1);
+  expect(JSON.stringify(interrupted!)).not.toContain('private-page-rollback-sentinel');
+  const resumed = await runMonitoredCensus(f.opts({ rowBudget: 1, timeBudgetMs: 30_000 }), unknownSql);
+  const actual = resumed.families.find(row => row.family === 'search-reformulation')!;
+  expect(actual).toMatchObject({ scanned: 3, qualifying: reference.qualifying });
+  expect(actual.diagnostics.candidates).toEqual(reference.diagnostics.candidates);
+  expect(actual.diagnostics.sourceRevisions).toEqual(reference.diagnostics.sourceRevisions);
+  expect(actual.diagnostics.sourceCoverage).toMatchObject({ scanned: 3, pages: 3, windowExhausted: true });
+});
+it('P004 concurrent wakes publish one successor of a shared family checkpoint', async () => {
+  for (let i = 0; i < 3; i++) await f.seed(undefined, `2026-10-24T12:00:0${i}.123456Z`);
+  const unknownSql = async () => ({ status: 'UNKNOWN' as const, stage: 'source' as const, rows: 0 });
+  const opts = f.opts({ rowBudget: 1, windowRowBudget: 1, timeBudgetMs: 30_000 });
+  const first = await runMonitoredCensus(opts, unknownSql);
+  const [initial] = await f.db.adminSql`SELECT diagnostics->'progress' AS progress
+    FROM harness_shared.sql_intent_family_runs WHERE run_id=${first.runId}::uuid AND family='search-reformulation'`;
+  let arrivals = 0, release!: () => void;
+  const bothLoaded = new Promise<void>(resolve => { release = resolve; });
+  const deps = { readContinuity: async ({ family }: { family: string }) => {
+    if (family === 'search-reformulation') {
+      if (++arrivals === 2) release();
+      await bothLoaded;
+    }
+    return 'unknown' as const;
+  } };
+  const attempts = await Promise.all([runMonitoredCensus(opts, unknownSql, deps), runMonitoredCensus(opts, unknownSql, deps)]);
+  const search = attempts.map(run => run.families.find(row => row.family === 'search-reformulation')!);
+  expect(search.map(row => row.scanned).sort()).toEqual([1, 2]);
+  expect(search.find(row => row.scanned === 1)).toMatchObject({ coverage: 'UNKNOWN', qualifying: 0,
+    diagnostics: { candidates: [], reviewEligible: false } });
+  const successors = await f.db.adminSql`SELECT diagnostics->'progress' AS progress
+    FROM harness_shared.sql_intent_family_runs WHERE family='search-reformulation'
+      AND (diagnostics->'progress'->>'sequence')::int=${initial!.progress.sequence + 1}`;
+  expect(successors).toHaveLength(1);
+  expect(successors[0]!.progress).toMatchObject({ coverage: { scanned: 2, pages: 2 } });
+  expect(successors[0]!.progress.observations).toHaveLength(2);
+  const completed = await runMonitoredCensus(opts, unknownSql);
+  expect(completed.families.find(row => row.family === 'search-reformulation')).toMatchObject({ scanned: 3,
+    diagnostics: { backlog: false, sourceCoverage: { scanned: 3, pages: 3, windowExhausted: true } } });
+});
 it('P004 persists the frozen SQL window and source phase timings across a later wake', async () => {
   await f.seed(); await f.seed(); await f.seed();
   const first = await mineSqlCandidateSlice(f.opts({ rowBudget: 1 }));
