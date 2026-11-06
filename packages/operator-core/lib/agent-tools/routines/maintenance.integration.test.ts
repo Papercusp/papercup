@@ -47,6 +47,31 @@ const recovery = (): MaintenanceRecoveryAuthority => ({ ...runtime,
   operationId: plan.operationId, timeoutMs: plan.cleanupTimeoutMs, deadlineMs: plan.deadlineMs });
 
 describe('maintenance atomicity and recovery (real private PG)', () => {
+  it('refreshes a later target changed during the pause window and restores that exact fresh state', async () => {
+    const port = store(), pause = port.pause;
+    port.pause = async (...args) => {
+      await pause(...args);
+      if (args[2] === 0) await org.adminSql`UPDATE harness_shared.routines
+        SET metadata = '{"health":{"tick":88}}'::jsonb
+        WHERE workspace_id = ${workspaceId} AND install_slug = 'crm'`;
+    };
+    const result = await runRoutineMaintenance(plan, port, { publication: async () => {}, adoption: async () => {} });
+    expect(result).toMatchObject({ ok: true, cleanup: { ok: true, residue: [] } });
+    expect(await snap('crm')).toMatchObject({ active: true, metadata: { health: { tick: 88 } } });
+    const previews = await org.adminSql`SELECT id FROM harness_shared.audit_log
+      WHERE workspace_id = ${workspaceId} AND action = 'gateway-control.routines:maintenance-preview'`;
+    expect(previews).toHaveLength(4);
+  });
+  it('still refuses a change after the fresh per-target preview', async () => {
+    const port = store();
+    await port.prepare(plan);
+    const target = await port.previewTarget!(plan, 0);
+    await org.adminSql`UPDATE harness_shared.routines SET metadata = '{"health":"newer"}'::jsonb
+      WHERE workspace_id = ${workspaceId} AND install_slug = 'calendar'`;
+    await expect(port.pause(plan, target, 0)).rejects.toThrow('Stale routine preview');
+    expect((await snap('calendar')).active).toBe(true);
+    expect((await recoverRoutineMaintenance(port, plan.operationId, 10_000)).ok).toBe(true);
+  });
   it('publishes immutable recovery on the existing intent without a file or routine effects', async () => {
     const port = store(), authority = recovery();
     await expect(port.publishRecovery(authority)).rejects.toThrow('Unknown or sealed');

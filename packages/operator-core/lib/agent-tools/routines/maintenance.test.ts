@@ -31,6 +31,16 @@ function fixture() {
 }
 
 describe('bounded routine maintenance', () => {
+  it('refreshes each noncanonical target immediately before its pause', async () => {
+    const { plan, store, phases, events } = fixture();
+    store.previewTarget = vi.fn(async (_plan, index) => {
+      const target = plan.others[index]!;
+      events.push('preview:' + target.installSlug);
+      return target;
+    });
+    expect((await runRoutineMaintenance(plan, store, phases)).ok).toBe(true);
+    expect(events.slice(0, 5)).toEqual(['intent', 'preview:calendar', 'calendar', 'preview:crm', 'crm']);
+  });
   it('awaits recovery publication and guardian readiness before the first pause', async () => {
     const { plan, store, phases, events } = fixture();
     const result = await runRoutineMaintenance(plan, store, {

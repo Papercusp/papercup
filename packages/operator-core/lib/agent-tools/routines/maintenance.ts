@@ -42,6 +42,7 @@ export type MaintenanceStore = {
   publishRecovery(authority: MaintenanceRecoveryAuthority): Promise<void>;
   readRecovery(operationId: string): Promise<MaintenanceRecoveryAuthority | undefined>;
   pause(plan: MaintenancePlan, target: MaintenanceTarget, index: number): Promise<void>;
+  previewTarget?(plan: MaintenancePlan, index: number): Promise<MaintenanceTarget>;
   previewCanonical(plan: MaintenancePlan): Promise<MaintenanceTarget>;
   assertCohort(plan: MaintenancePlan, canonicalActive: boolean): Promise<void>;
   /** Seal serializes behind in-flight pause transactions, fencing late effects. */
@@ -139,7 +140,10 @@ export async function runRoutineMaintenance(
   try {
     await step(() => store.prepare(plan));
     if (phases.recovery) await step(phases.recovery);
-    for (const [index, target] of plan.others.entries()) await step(() => store.pause(plan, target, index));
+    for (const [index, target] of plan.others.entries()) {
+      const current = store.previewTarget ? await step(() => store.previewTarget!(plan, index)) : target;
+      await step(() => store.pause(plan, current, index));
+    }
     await step(() => store.assertCohort(plan, true));
     await step(phases.publication);
     const canonical = await step(() => store.previewCanonical(plan));

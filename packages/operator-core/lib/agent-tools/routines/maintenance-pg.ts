@@ -71,6 +71,18 @@ export function maintenancePgStore(sql: Sql, workspaceId: string, actor: string,
     });
     return id;
   };
+  const previewId = (plan: MaintenancePlan, index: number) => rootId(plan.operationId) +
+    (index === plan.others.length ? ':canonical-preview' : ':preview:' + index);
+  const previewTarget = (plan: MaintenancePlan, index: number) => transaction(plan.operationId, async tx => {
+    const stored = await planAt(tx, plan.operationId);
+    if (!stored || !equal(stored, plan) || await isSealed(tx, plan.operationId)) throw new Error('Unknown/changed/sealed operation');
+    const intended = [...stored.others, stored.canonical][index];
+    if (!Number.isSafeInteger(index) || index < 0 || !intended) throw new Error('Preview index is outside the intended cohort');
+    const target = { ...intended, before: await readRoutineSnap(tx, workspaceId, intended.installSlug, intended.name) };
+    if (!target.before.active || target.before.groupSlug === 'release') throw new Error('Schedule no longer eligible');
+    await audit(tx, previewId(stored, index), 'gateway-control.routines:maintenance-preview', subject(target), { target });
+    return target;
+  });
   return {
     prepare: plan => transaction(plan.operationId, async tx => {
       validateMaintenancePlan(plan);
@@ -112,11 +124,9 @@ export function maintenancePgStore(sql: Sql, workspaceId: string, actor: string,
       if (!stored || !equal(stored, plan) || await isSealed(tx, plan.operationId)) throw new Error('Maintenance intent missing, changed or sealed');
       if (Date.now() >= stored.deadlineMs - stored.cleanupTimeoutMs) throw new Error('Maintenance work deadline reached');
       let expected = stored.others[index];
-      if (index === stored.others.length) {
-        const preview = await tx<{ details: { target: MaintenanceTarget } }[]>`SELECT details FROM harness_shared.audit_log
-          WHERE workspace_id = ${workspaceId} AND id = ${rootId(plan.operationId) + ':canonical-preview'}`;
-        expected = preview[0]?.details.target;
-      }
+      const preview = await tx<{ details: { target: MaintenanceTarget } }[]>`SELECT details FROM harness_shared.audit_log
+        WHERE workspace_id = ${workspaceId} AND id = ${previewId(stored, index)}`;
+      if (preview[0] || index === stored.others.length) expected = preview[0]?.details.target;
       if (!expected || !equal(expected, target)) throw new Error('Target is outside the reviewed operation');
       const id = rootId(plan.operationId) + ':pause:' + index;
       const exists = await tx`SELECT id FROM harness_shared.audit_log WHERE workspace_id = ${workspaceId} AND id = ${id}`;
@@ -139,14 +149,8 @@ export function maintenancePgStore(sql: Sql, workspaceId: string, actor: string,
       }, {}, { writeAudit: strictWriter(tx, id, { maintenanceOperationId: plan.operationId, index }) });
       if (!outcome.applied || outcome.verify?.ok !== true || outcome.auditId !== id) throw new Error('Pause did not verify');
     }),
-    previewCanonical: plan => transaction(plan.operationId, async tx => {
-      const stored = await planAt(tx, plan.operationId);
-      if (!stored || !equal(stored, plan) || await isSealed(tx, plan.operationId)) throw new Error('Unknown/changed/sealed operation');
-      const target = { ...stored.canonical, before: await readRoutineSnap(tx, workspaceId, stored.canonical.installSlug, stored.canonical.name) };
-      if (!target.before.active || target.before.groupSlug === 'release') throw new Error('Canonical schedule no longer eligible');
-      await audit(tx, rootId(plan.operationId) + ':canonical-preview', 'gateway-control.routines:maintenance-preview', subject(target), { target });
-      return target;
-    }),
+    previewTarget,
+    previewCanonical: plan => previewTarget(plan, plan.others.length),
     assertCohort: (plan, canonicalActive) => transaction(plan.operationId, async tx => {
       if (await isSealed(tx, plan.operationId)) throw new Error('Maintenance operation sealed');
       await assertCohort(tx, canonicalActive ? [plan.canonical] : []);
