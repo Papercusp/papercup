@@ -1139,6 +1139,11 @@ export async function resubmitAgentReview(
 ): Promise<{ resubmitted: boolean; state?: AgentReviewState; reason?: string }> {
   const workItem = await deps.getWorkItem(input.id);
   if (!workItem) return { resubmitted: false, reason: 'not-found' };
+  // Reviewer pickup accepts only open work. A blocked/terminal resubmit used to
+  // clear the standing grade and publish pending while leaving the row outside
+  // both reviewer claim doors. Resolve the lifecycle restriction explicitly;
+  // resubmission must neither erase that restriction nor report a queued round.
+  if (workItem.state !== 'open') return { resubmitted: false, reason: 'not-open' };
   let current = readAgentReviewState(workItem.payload);
   if (!current) {
     const recovered = await recoverMalformedAgentReview(workItem, deps);

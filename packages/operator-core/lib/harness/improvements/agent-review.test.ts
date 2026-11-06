@@ -1324,6 +1324,46 @@ describe('agent-review grading lifecycle', () => {
     expect(h.deliverRevision).not.toHaveBeenCalled();
   });
 
+  it.each(['blocked', 'done', 'deprecated'])('refuses resubmission from %s before changing the round or grade', async (state) => {
+    const h = harness(issue({
+      state,
+      payload: {
+        agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+        implementationReadiness: { status: 'not-ready', reason: 'agent-review-revision-requested' },
+      },
+    }));
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 2, feedback: 'Revise the evidence', gradedBy: 'su-reviewer' };
+    const before = structuredClone(h.state);
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'not-open',
+    });
+    expect(h.state).toEqual(before);
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.clearLedgerGrade).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('allows review pickup after an explicit unblock and resubmission', async () => {
+    const h = harness(issue({
+      state: 'blocked',
+      payload: {
+        agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      },
+    }));
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false, reason: 'not-open',
+    });
+    // The lifecycle owner resolves the block; resubmit itself must never erase it.
+    h.state.issue.state = 'open';
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: true, state: { status: 'pending', round: 2 },
+    });
+    await expect(claimAgentReview({ id: 'WI-7', reviewer: 'su-independent', harnessSlug: 'papercusp' }, h.deps))
+      .resolves.toMatchObject({ claimed: true, workItem: { assignee: 'su-independent' } });
+  });
+
   it.each([null, 'su-filer'])('resubmission increments the round and releases revision work held by %s', async (assignee) => {
     const h = harness(issue({
       assignee,

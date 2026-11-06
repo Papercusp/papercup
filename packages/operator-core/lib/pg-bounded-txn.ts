@@ -178,6 +178,13 @@ export type CandidateWaitSample =
       phase?: 'acquire' | 'setup' | 'sample' | 'settle';
     };
 
+export type BoundedOrgTxnWaitSnapshot = CandidateWaitSample & {
+  statementTimeoutMs: number;
+  lockTimeoutMs: number;
+  sampleAfterMs: number;
+  sampleRequestedAt: string;
+};
+
 export type CandidateWaitSnapshot = CandidateWaitSample & {
   statementCapMs: number;
   sampleAfterMs: number;
@@ -190,11 +197,12 @@ const CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS = 100;
  * This is an instantaneous observation, not evidence about the full duration
  * of the target statement. The caller owns cancellation when that statement settles.
  */
-export async function sampleCandidateWaitOnce(
+export async function sampleTargetWaitOnce(
   client: OrgSql,
   targetPid: number,
   targetQueryStartedAfter: Date,
   signal: AbortSignal,
+  label = 'boundedOrgTxn:target-wait-observer',
 ): Promise<CandidateWaitSample> {
   type WaitRow = {
     waitEventType: string | null;
@@ -239,7 +247,7 @@ export async function sampleCandidateWaitOnce(
         }),
       {
         ms: CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS,
-        label: 'scheduler:get_next:candidate-wait-observer',
+        label,
       },
     );
     const row = rows[0];
@@ -266,6 +274,98 @@ export async function sampleCandidateWaitOnce(
   }
 }
 
+/** Existing scheduler-facing name; preserve its diagnostic label and contract. */
+export function sampleCandidateWaitOnce(
+  client: OrgSql,
+  targetPid: number,
+  targetQueryStartedAfter: Date,
+  signal: AbortSignal,
+): Promise<CandidateWaitSample> {
+  return sampleTargetWaitOnce(
+    client,
+    targetPid,
+    targetQueryStartedAfter,
+    signal,
+    'scheduler:get_next:candidate-wait-observer',
+  );
+}
+
+/**
+ * Observe top-level statements issued through an opted-in bounded transaction.
+ * SQL fragments created with `unsafe` remain untouched; only executable tag
+ * calls get the one-shot timer and wait sample.
+ */
+function observeBoundedWaits(
+  tx: OrgSql,
+  input: {
+    client: OrgSql;
+    targetPid: number;
+    queryStartedAfter: Date;
+    statementTimeoutMs: number;
+    lockTimeoutMs: number;
+    signal?: AbortSignal;
+    onSnapshot: (snapshot: BoundedOrgTxnWaitSnapshot) => void;
+  },
+): OrgSql {
+  const sampleWindowMs = Math.min(input.statementTimeoutMs, input.lockTimeoutMs);
+  const sampleAfterMs = Math.max(1, Math.floor(sampleWindowMs * 0.8));
+
+  const observe = async (query: unknown): Promise<unknown> => {
+    const queryStartedAtMs = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sampleAbort: AbortController | undefined;
+    let samplePromise: Promise<BoundedOrgTxnWaitSnapshot | undefined> | undefined;
+    let timedOut = false;
+
+    const startSample = () => {
+      if (samplePromise || input.signal?.aborted) return;
+      sampleAbort = new AbortController();
+      const sampleRequestedAt = new Date().toISOString();
+      samplePromise = sampleTargetWaitOnce(
+        input.client,
+        input.targetPid,
+        input.queryStartedAfter,
+        sampleAbort.signal,
+        'boundedOrgTxn:target-wait-observer',
+      ).then((sample) => ({
+        ...sample,
+        statementTimeoutMs: input.statementTimeoutMs,
+        lockTimeoutMs: input.lockTimeoutMs,
+        sampleAfterMs,
+        sampleRequestedAt,
+      })).catch(() => undefined);
+    };
+
+    timer = setTimeout(startSample, sampleAfterMs);
+    try {
+      return await (query as PromiseLike<unknown>);
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code;
+      if (!input.signal?.aborted && (code === '57014' || code === '55P03')) {
+        timedOut = true;
+        // If the host event loop delayed the timer until the PG error arrived,
+        // still record the bounded attempt. A post-timeout sample reports no-active.
+        if (!samplePromise && Date.now() - queryStartedAtMs >= sampleAfterMs) startSample();
+        if (samplePromise) {
+          const snapshot = await samplePromise;
+          if (snapshot) input.onSnapshot(snapshot);
+        }
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (!timedOut && sampleAbort) {
+        sampleAbort.abort(new Error('bounded transaction statement settled'));
+        void samplePromise?.catch(() => undefined);
+      }
+    }
+  };
+
+  const invoke = (...args: unknown[]) =>
+    observe(Reflect.apply(tx as unknown as (...input: unknown[]) => unknown, tx, args));
+  return Object.assign(invoke, tx) as unknown as OrgSql;
+}
+
 /**
  * Thrown when a bounded admin-pool txn can't finish in time: a statement exceeds
  * `statement_timeout` (PG `57014`) or a lock wait exceeds `lock_timeout` (PG `55P03`).
@@ -285,6 +385,8 @@ export class OrgTxnTimeoutError extends Error {
   readonly messageWithoutBlockerHint: string;
   /** Best-effort fresh-connection snapshot; it does not prove this operation waited on that backend. */
   readonly blockerHint?: string;
+  /** Targeted sample from an opted-in bounded transaction; contains no SQL text. */
+  waitSnapshot?: BoundedOrgTxnWaitSnapshot;
   /** One instantaneous, target-PID sample captured for scheduler candidate-tier diagnostics. */
   candidateWaitSnapshot?: CandidateWaitSnapshot;
   /**
@@ -480,6 +582,8 @@ export interface BoundedOrgTxnOptions {
   phase?: string | (() => string);
   /** Start the transaction READ ONLY before applying its local timeouts. */
   readOnly?: boolean;
+  /** Capture one target wait-event sample per timed-out statement. */
+  captureWaitSnapshot?: boolean;
   /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
   client?: OrgSql;
   /** Attribute an injected production client's acquisition to its existing pool registry. */
@@ -531,6 +635,7 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
   const acquirePool = opts.acquirePool ?? (opts.client ? undefined : 'org-admin');
   const acquireMs = opts.acquireTimeoutMs ?? DEFAULT_TX_ACQUIRE_DEADLINE_MS;
   let result: unknown;
+  let waitSnapshot: BoundedOrgTxnWaitSnapshot | undefined;
   try {
     // P-022 / D-020: bound the phase before the caller's handler starts. A
     // postgres-js pool can queue forever before BEGIN when its client pool is
@@ -572,18 +677,48 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
                   // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
                   // WI-10003631: one round trip for both transaction-local settings.
                   acquireLabel = 'boundedOrgTxn:setup-timeouts(admin)';
-                  await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
-                                               set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
+                  let waitTarget: { pid: number; queryStartedAfter: Date } | undefined;
+                  if (opts.captureWaitSnapshot && !nested) {
+                    const setup = await cancellation.tx<{
+                      pid: number;
+                      queryStartedAfter: Date | string;
+                    }[]>`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
+                                set_config('statement_timeout', ${`${stmtMs}ms`}, true),
+                                pg_backend_pid()::int AS pid,
+                                clock_timestamp() AS "queryStartedAfter"`;
+                    const target = setup[0];
+                    const queryStartedAfter = target?.queryStartedAfter instanceof Date
+                      ? target.queryStartedAfter
+                      : target?.queryStartedAfter ? new Date(target.queryStartedAfter) : null;
+                    if (target && Number.isSafeInteger(Number(target.pid)) &&
+                        queryStartedAfter && Number.isFinite(queryStartedAfter.getTime())) {
+                      waitTarget = { pid: Number(target.pid), queryStartedAfter };
+                    }
+                  } else {
+                    await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
+                                                 set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
+                  }
                   assertWithinAcquisitionDeadline();
                   // The caller's work may legitimately run longer than acquisition;
                   // stop the phase clock immediately before entering it. Mark the
                   // retry boundary at the same point: any later error may follow a
                   // partial write and must never replay fn.
                   disarm();
+                  const workTx = waitTarget
+                    ? observeBoundedWaits(cancellation.tx, {
+                        client: sql,
+                        targetPid: waitTarget.pid,
+                        queryStartedAfter: waitTarget.queryStartedAfter,
+                        statementTimeoutMs: stmtMs,
+                        lockTimeoutMs: lockMs,
+                        signal: opts.signal,
+                        onSnapshot: (snapshot) => { waitSnapshot = snapshot; },
+                      })
+                    : cancellation.tx;
                   const work = Promise.resolve().then(() => {
                     cancellation.assertNotAborted();
                     markStarted();
-                    return fn(cancellation.tx);
+                    return fn(workTx);
                   });
                   // If cancellation wins the race, the transaction callback returns early while
                   // the late `fn` promise is still observed and its rejection is suppressed.
@@ -612,7 +747,9 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
       // allowed to throw or hang in place of the real error.
       const blockerHint = await describeContentionAtFailure(sql, acquirePool).catch(() => undefined);
       const phase = typeof opts.phase === 'function' ? opts.phase() : opts.phase;
-      throw new OrgTxnTimeoutError(code, err, blockerHint, 'pg', opts.readOnly ? 'read' : 'write', phase);
+      const timeout = new OrgTxnTimeoutError(code, err, blockerHint, 'pg', opts.readOnly ? 'read' : 'write', phase);
+      if (waitSnapshot) timeout.waitSnapshot = waitSnapshot;
+      throw timeout;
     }
     throw err;
   }
