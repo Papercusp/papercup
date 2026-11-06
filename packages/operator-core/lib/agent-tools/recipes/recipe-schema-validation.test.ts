@@ -208,6 +208,38 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     ]));
   });
 
+  it('accepts optional result.data after a disjunctive guard throws', async () => {
+    const script = [
+      'const p = await tools.capability.read({ file_path: "/tmp/page", byte_offset: 0, byte_limit: 10 });',
+      'if (!p.ok || p.encoding !== "base64" || !p.data) throw new Error("invalid byte page");',
+      'const bytes = Uint8Array.from(atob(p.data), (value) => value.charCodeAt(0));',
+      'return bytes.byteLength;',
+    ].join('\n');
+    const result = await validateRecipeScriptAgainstCatalog(script, [
+      tool('capability:read', {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          byte_offset: { type: 'integer' },
+          byte_limit: { type: 'integer' },
+        },
+        required: ['file_path', 'byte_offset', 'byte_limit'],
+        additionalProperties: false,
+      }, {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          encoding: { type: 'string' },
+          data: { type: 'string' },
+        },
+        required: ['ok', 'encoding'],
+        additionalProperties: true,
+      }),
+    ]);
+
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['capability:read'] });
+  });
+
   it('accepts result fields required throughout the current output schema', async () => {
     const result = await validateRecipeScriptAgainstCatalog(
       'const trace = await tools.release.trace({ path: "packages/example" });\nreturn trace.gate.state;',
