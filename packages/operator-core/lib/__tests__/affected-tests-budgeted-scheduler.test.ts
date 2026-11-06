@@ -5040,13 +5040,16 @@ describe('shared test-process admission queue (WI-1490656)', () => {
   });
 
   it.each([
-    { reason: 'admission-starved', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
-    { reason: 'admission-starved', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
-    { reason: 'admission-deferred', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
-    { reason: 'admission-deferred', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
-    { reason: 'deadline-insufficient', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
-    { reason: 'deadline-insufficient', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
-  ])('retains settled shard evidence on $reason: $completedTasks completed', (sample) => {
+    ['admission-starved', 0, 0, 5],
+    ['admission-starved', 2, 1, 3],
+    ['admission-deferred', 0, 0, 5],
+    ['admission-deferred', 2, 1, 3],
+    ['deadline-insufficient', 0, 0, 5],
+    ['deadline-insufficient', 2, 1, 3],
+  ] as const)('retains settled shard evidence on %s: %i completed', (reason, completedTasks, observedNonzeroExits, remaining) => {
+    // Stable scalar formatting keeps the actual Vitest names identical to the
+    // exact criterion selectors, without object pretty-print quotes or +0.
+    const sample = { reason, completedTasks, observedNonzeroExits, remaining };
     // Execute the production refusal boundary, including its actual result marker.
     // The second case reproduces a failed pure shard followed by a queued shard;
     // a wholly unstarted run is the contrasting control.
