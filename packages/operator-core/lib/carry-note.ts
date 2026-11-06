@@ -3145,6 +3145,8 @@ export async function setCarryNoteWithPrior(
     expectedHash?: string | null;
     /** Internal: use the bounded admin-pool transaction for su loop writes. */
     bounded?: boolean;
+    /** Internal: capture a target wait-event sample for mandatory host snapshots. */
+    captureWaitSnapshot?: boolean;
     /**
      * P-002 / D-006: version stamps for the references the incoming note cites
      * (`stampCarryRefs`). Persisted beside the declared stamps under `deps.refs` and
@@ -3274,7 +3276,13 @@ export async function setCarryNoteWithPrior(
     // `sql` above is getOrgPg().sql, not an injected backend. Let boundedOrgTxn
     // resolve that same pool itself so its acquire ticket is tagged org-admin.
     // Passing it as `client` hid queue/held measurements on a timeout.
-    ? await boundedOrgTxn(write, { acquireTimeoutMs: 8_000 })
+    ? await boundedOrgTxn(write, {
+        acquireTimeoutMs: 8_000,
+        ...(opts.captureWaitSnapshot ? {
+          captureWaitSnapshot: true,
+          phase: 'work-item-checkpoint:set-carry-note',
+        } : {}),
+      })
     : await sql.begin(write);
   return result as SetCarryNoteResult;
 }

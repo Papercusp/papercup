@@ -535,6 +535,48 @@ describe('bounded subject evidence against real transcript SQL', () => {
     expect(result.qualified).toEqual([]);
   }, 15_000);
 
+  it('keeps completed passage evidence when a sibling misses the shared deadline', async () => {
+    const fastText = 'Fixed computer:provision_desktop source receipt; completed sibling.';
+    const slowText = 'Fixed computer:provision_desktop source receipt; pending sibling.';
+    await passage('subject-timeout-fast', fastText, 0);
+    await passage('subject-timeout-slow', slowText, 0.01);
+    let finishSlow!: (scores: Array<number | null>) => void;
+    let slowSettled = false;
+    const result = await routeConsult({ ...baseParams, question, subjectRefs: ['computer:provision_desktop'],
+      subjectEvidenceDeadline: Date.now() + SUBJECT_EVIDENCE_TIMEOUT_MS }, deps(0, {
+      scoreSubjectEvidence: async (_subject, texts, _deadline, _onPhase, onScore) => {
+        expect(texts).toEqual(expect.arrayContaining([fastText, slowText]));
+        return Promise.all(texts.map((text, index) => {
+          if (text === fastText) {
+            onScore?.(index, 0.9);
+            return Promise.resolve(0.9);
+          }
+          return new Promise<Array<number | null>>(resolve => {
+            finishSlow = scores => {
+              onScore?.(index, scores[0] ?? null);
+              slowSettled = true;
+              resolve(scores);
+            };
+          });
+        }));
+      },
+    }));
+
+    const fast = result.snapshot.candidates.find(candidate => candidate.ownerId === 'subject-timeout-fast')!;
+    const slow = result.snapshot.candidates.find(candidate => candidate.ownerId === 'subject-timeout-slow')!;
+    expect(result.qualified.map(candidate => candidate.ownerId)).toContain('subject-timeout-fast');
+    expect(result.qualified.map(candidate => candidate.ownerId)).not.toContain('subject-timeout-slow');
+    expect(fast.subjectEvidence).toMatchObject({ status: 'supported', score: 0.9 });
+    expect(slow.subjectEvidence).toMatchObject({ status: 'unmeasured', score: null });
+    expect(result.snapshot.subjectValidation?.failures).toContainEqual({ reason: 'deadline', count: 1 });
+    const frozenSnapshot = JSON.stringify(result.snapshot);
+
+    finishSlow([0.1]);
+    await vi.waitFor(() => expect(slowSettled).toBe(true));
+    expect(JSON.stringify(result.snapshot)).toBe(frozenSnapshot);
+    expect(result.qualified.map(candidate => candidate.ownerId)).toContain('subject-timeout-fast');
+  }, 15_000);
+
   it('caps scored owners and leaves overflow explicitly unmeasured', async () => {
     for (let i = 0; i < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; i++) await passage(`subject-cap-${i}`, 'virtual screen lease diagnosis', i * 0.01);
     let pairs = 0;

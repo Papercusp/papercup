@@ -517,7 +517,8 @@ export interface ConsultRouteDeps {
   subjectEvidenceDeadline?: number;
   /** Same local crossencoder as prose search; no hosted credential required. */
   scoreSubjectEvidence?: (subject: string, texts: string[], deadline: number,
-    onPhase?: (event: SubjectEvidencePhaseTiming) => void) => Promise<Array<number | null>>;
+    onPhase?: (event: SubjectEvidencePhaseTiming) => void,
+    onScore?: (index: number, score: number | null) => void) => Promise<Array<number | null>>;
   recordTelemetry?: (receipt: ExpertiseRoutingReceipt) => void | Promise<void>;
   monotonicNow?: () => number;
   measure?: <T>(stage: ExpertiseRoutingStage, work: () => Promise<T>) => Promise<T>;
@@ -697,7 +698,8 @@ export interface SubjectEvidenceScoring {
 export async function scoreSubjectEvidence(subject: string, texts: string[], deadline: number,
   deps: { scorer?: RerankScoreFn; contracts?: readonly SubjectContract[];
     onFailure?: (failure: SubjectEvidenceFailure) => void;
-    onPhase?: (event: SubjectEvidencePhaseTiming) => void } = {}): Promise<Array<number | null>> {
+    onPhase?: (event: SubjectEvidencePhaseTiming) => void;
+    onScore?: (index: number, score: number | null) => void } = {}): Promise<Array<number | null>> {
   const report = (failure: SubjectEvidenceFailure) => {
     try { deps.onFailure?.(failure); } catch { /* diagnostics never change qualification */ }
   };
@@ -744,24 +746,32 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
   // Reverse retrieval asks which contract explains THIS passage, avoiding the
   // procedural vocabulary that made broad tool descriptions and natural
   // questions false friends. For a natural question the full query is retained.
-  return phase('inference', () => Promise.all(texts.map(async text => {
-    const contrasts = subjectContrasts(subject, text, contracts);
-    if (!contrasts.length) { report({ reason: 'no-contrasts' }); return null; }
-    if (Date.now() >= deadline) { report({ reason: 'deadline' }); return null; }
-    const scores = await scorer(text, [...targets, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
-      .catch(error => {
-        report({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
-        return null;
-      });
-    if (scores === null) return null;
-    if (scores.length !== contrasts.length + targets.length) { report({ reason: 'score-shape' }); return null; }
-    if (scores.some(score => score === null || !Number.isFinite(score) || score < 0 || score > 1)) {
-      report({ reason: 'invalid-score' });
+  const scoreOne = async (text: string, index: number): Promise<number | null> => {
+    let result: number | null = null;
+    try {
+      const contrasts = subjectContrasts(subject, text, contracts);
+      if (!contrasts.length) { report({ reason: 'no-contrasts' }); return null; }
+      if (Date.now() >= deadline) { report({ reason: 'deadline' }); return null; }
+      const scores = await scorer(text, [...targets, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
+        .catch(error => {
+          report({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
+          return null;
+        });
+      if (scores === null) return null;
+      if (scores.length !== contrasts.length + targets.length) { report({ reason: 'score-shape' }); return null; }
+      if (scores.some(score => score === null || !Number.isFinite(score) || score < 0 || score > 1)) {
+        report({ reason: 'invalid-score' });
+      }
+      const alternatives = scores.slice(targets.length);
+      const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, alternatives));
+      result = qualified.some(score => score === null) ? null : Math.min(...qualified as number[]);
+      return result;
+    } finally {
+      try { deps.onScore?.(index, result); }
+      catch { /* diagnostics never change qualification */ }
     }
-    const alternatives = scores.slice(targets.length);
-    const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, alternatives));
-    return qualified.some(score => score === null) ? null : Math.min(...qualified as number[]);
-  })));
+  };
+  return phase('inference', () => Promise.all(texts.map(scoreOne)));
 }
 
 /** Build a case-insensitive whole-reference matcher for transcript evidence.
@@ -1515,7 +1525,8 @@ async function routeConsultCore(
       record: SubjectEvidenceScoring; started: number;
       phaseStarts: Map<SubjectEvidencePhaseTiming['phase'], number>;
     }> = [];
-    const scoreEvidence = async (subject: string, texts: string[], deadline: number) => {
+    const scoreEvidence = async (subject: string, texts: string[], deadline: number,
+      onScore: (index: number, score: number | null) => void) => {
       const entry = { record: { subject, passages: texts.length,
         textChars: texts.reduce((sum, text) => sum + text.length, 0),
         outcome: 'pending', durationMs: 0, phases: [] } as SubjectEvidenceScoring,
@@ -1532,8 +1543,8 @@ async function routeConsultCore(
       };
       try {
         const scores = await (deps.scoreSubjectEvidence
-          ? deps.scoreSubjectEvidence(subject, texts, deadline, onPhase)
-          : scoreSubjectEvidence(subject, texts, deadline, { onFailure: recordFailure, onPhase }));
+          ? deps.scoreSubjectEvidence(subject, texts, deadline, onPhase, onScore)
+          : scoreSubjectEvidence(subject, texts, deadline, { onFailure: recordFailure, onPhase, onScore }));
         entry.record.outcome = 'returned';
         return scores;
       } catch (error) { entry.record.outcome = 'threw'; throw error; }
@@ -1566,31 +1577,42 @@ async function routeConsultCore(
       : Number.isFinite(deps.subjectEvidenceDeadline) ? deps.subjectEvidenceDeadline : evidenceStartedAt;
     const evidenceBudgetMs = Math.max(0, deadline - evidenceStartedAt);
     if (usable.length && subjectRefs.length) {
+      const partialScores = subjectRefs.map(() => usable.map(() => null as number | null));
       try {
         const { value: scoreBySubject, degraded: deadlineExpired } = await measure('evidence', () => withDeadlineFallback((async () => {
           const all: Array<Array<number | null>> = [];
-          for (const subject of subjectRefs) {
+          for (let subjectIndex = 0; subjectIndex < subjectRefs.length; subjectIndex++) {
+            const subject = subjectRefs[subjectIndex]!;
             const anchorRef = explicitSubjectRefs ? subject : subjectRef;
             const passageIndexes = usable.flatMap((passage, index) =>
               !anchorRef || hasExactSubjectMention(passage.text, anchorRef) ? [index] : []);
             if (passageIndexes.length === 0) {
-              all.push(usable.map(() => null));
+              const unmeasured = usable.map(() => null as number | null);
+              partialScores[subjectIndex] = unmeasured;
+              all.push(unmeasured);
               continue;
             }
             if (Date.now() >= deadline) {
               recordFailure({ reason: 'deadline' });
-              all.push(usable.map(() => null));
+              const unmeasured = usable.map(() => null as number | null);
+              partialScores[subjectIndex] = unmeasured;
+              all.push(unmeasured);
               continue;
             }
             const anchoredTexts = passageIndexes.map(index => usable[index]!.text);
-            const scores = await scoreEvidence(subject, anchoredTexts, deadline)
+            const scores = await scoreEvidence(subject, anchoredTexts, deadline, (scoreIndex, score) => {
+              const passageIndex = passageIndexes[scoreIndex];
+              if (passageIndex !== undefined) partialScores[subjectIndex]![passageIndex] = score;
+            })
               .catch(error => {
                 recordFailure({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
                 return anchoredTexts.map(() => null);
               });
             if (scores.length !== passageIndexes.length) {
               recordFailure({ reason: 'score-shape' });
-              all.push(usable.map(() => null));
+              const unmeasured = usable.map(() => null as number | null);
+              partialScores[subjectIndex] = unmeasured;
+              all.push(unmeasured);
               continue;
             }
             if (scores.some(score => typeof score === 'number' && (!Number.isFinite(score) || score < 0 || score > 1))) {
@@ -1600,10 +1622,11 @@ async function routeConsultCore(
             passageIndexes.forEach((passageIndex, scoreIndex) => {
               aligned[passageIndex] = scores[scoreIndex] ?? null;
             });
+            partialScores[subjectIndex] = aligned;
             all.push(aligned);
           }
           return all;
-        })(), evidenceBudgetMs, () => subjectRefs.map(() => usable.map(() => null))));
+        })(), evidenceBudgetMs, () => partialScores.map(scores => [...scores])));
         if (deadlineExpired) recordFailure({ reason: 'deadline' });
         for (const ownerId of boundedOwners) {
           const evidence = subjectRefs.map((subject, subjectIndex) => {
