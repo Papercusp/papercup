@@ -486,6 +486,7 @@ async fn main() -> Result<()> {
         // remains an unadvertised compatibility alias for existing layouts.
         Some("dock-driver") | Some("wake-pane") | Some("prompt-pane") | Some("mail-pane")
         | Some("work-pane") | Some("orders-pane") | Some("activity-pane")
+        | Some("turns-pane") | Some("fleet-pane")
         | Some("network-pane") | Some("hive-pane") | Some("context-pane")
         | Some("plans-pane") => {}
         _ => {}
@@ -499,7 +500,8 @@ async fn main() -> Result<()> {
         // wake-pane: the staged-wake board (EI-312).
         Some("wake-pane") => Some(app::Tab::Wake),
         Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
-        | Some("orders-pane") | Some("activity-pane") => Some(app::Tab::AgentCtx),
+        | Some("orders-pane") | Some("activity-pane") | Some("turns-pane")
+        | Some("fleet-pane") => Some(app::Tab::AgentCtx),
         // network-pane: the cross-Hive board; hive-pane: one row's dossier
         // (same tab — `network_focus` below selects the mode).
         Some("network-pane") | Some("hive-pane") => Some(app::Tab::Network),
@@ -526,6 +528,8 @@ async fn main() -> Result<()> {
         Some("work-pane") => app::AgentCtxMode::Work,
         Some("orders-pane") => app::AgentCtxMode::Orders,
         Some("activity-pane") => app::AgentCtxMode::Activity,
+        Some("turns-pane") => app::AgentCtxMode::Turns,
+        Some("fleet-pane") => app::AgentCtxMode::Fleet,
         _ => app::AgentCtxMode::Prompt,
     };
     // Hive drill-in pane (hive-network-surface B-09, the B-10 tab seam): the
@@ -5402,6 +5406,7 @@ async fn agent_ctx_loop(
     if matches!(
         mode,
         app::AgentCtxMode::Orders | app::AgentCtxMode::Activity
+            | app::AgentCtxMode::Turns | app::AgentCtxMode::Fleet
     ) {
         // Subscribe before the first snapshot so a change during the gather
         // remains queued. Reuse the GUI's producer invalidations; the interval
@@ -5529,6 +5534,23 @@ async fn fetch_agent_ctx(
             }
             app::AgentCtxMode::Activity => {
                 data.activity = Some(client.agent_activity(&owner).await.map_err(|e| e.to_string())?);
+            }
+            app::AgentCtxMode::Turns => {
+                data.turns = Some(
+                    client
+                        .agent_turns(&owner)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            app::AgentCtxMode::Fleet => {
+                data.fleet_peers = Some(
+                    client
+                        .agent_fleet(&owner)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
+                data.peer_sessions = roster;
             }
         }
         Ok(data)

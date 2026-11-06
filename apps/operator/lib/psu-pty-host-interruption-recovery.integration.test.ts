@@ -35,7 +35,16 @@ vi.mock('../../../packages/operator-core/lib/console-spawn', async original => (
 vi.mock('../../../packages/operator-core/lib/agent-tools/capability/launch-agent', () => ({
   default: { handler: m.launch }, INTERNAL_INTERRUPTION_RECOVERY: Symbol.for('host-journey'),
 }));
-import { sweepSessionInterruptions } from '@papercusp/operator-core/lib/harness/routines/session-interruption-runtime';
+import { runSessionInterruptionPass as sweepSessionInterruptions } from '@papercusp/operator-core/lib/harness/routines/session-interruption-runtime';
+// These are adapter/native-host scenarios, independent of DBOS controller proof.
+// The actual governor's new enqueue seam is drained synchronously in this fixture.
+vi.mock('../../../packages/operator-core/lib/dbos/session-interruption-workflow', () => ({
+  enqueueSessionInterruption: async () => {
+    const { runSessionInterruptionPass } = await import('../../../packages/operator-core/lib/harness/routines/session-interruption-runtime');
+    await runSessionInterruptionPass({ workspaceId: m.ws, installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null });
+    return { workflowId: 'native-adapter-fixture' };
+  },
+}));
 import * as waits from '@papercusp/operator-core/lib/events/await/store';
 import { pumpWakeDeliveries, setAutoPumpEnabledForTests } from '@papercusp/operator-core/lib/events/await/engine';
 import { closeGate, openOrTouchGate } from '@papercusp/operator-core/lib/attention/gate-store';

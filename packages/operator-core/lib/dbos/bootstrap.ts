@@ -555,6 +555,8 @@ async function startDbosOnce(): Promise<void> {
   // one checkpointed step per nested tool call. Registered (ungated) before launch so DBOS
   // recovery resumes an interrupted run; nothing executes until a caller admits a durable run.
   await import('./durable-orchestration-workflow');
+  // Durable recovery actions, with no per-empty-census workflow history.
+  await import('./session-interruption-workflow');
 
   // agent-economy-flywheel-2026-08-30 P-041 (D-024): hourly anchoring of the hash-chained
   // ledgers. Registered ungated before launch; a pass publishes only when an anchor key is
