@@ -8,6 +8,12 @@ import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import type { SqlToolCandidateScore } from './sql-tool-candidate-score';
 import type { SqlToolRecommendation } from './bash-substitution/sql-tool-recommendations';
+import type { SqlRecommendationInput } from './bash-substitution/sql-tool-recommendations';
+import { z } from 'zod';
+import { mineSqlCandidateSlice } from './bash-substitution/sql-tool-candidates';
+import { fingerprintSqlIntent } from './bash-substitution/sql-intent-fingerprint';
+import { readSqlToolCandidateWorklist, submitSqlWorklistCandidateReview,
+  type SqlCandidateWorklistOptions } from './sql-tool-candidate-worklist';
 
 const h = vi.hoisted(() => ({ sql: null as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async orig => ({
@@ -101,6 +107,64 @@ it('unchanged declined editions stay declined; changed contracts reopen for revi
   expect(changed.workItemId).not.toBe(first.workItemId); expect(changed.editionId).not.toBe(first.editionId);
   const rows = await db.adminSql`SELECT feature_id FROM harness_shared.work_items WHERE workspace_id=${WS}`;
   expect(rows).toHaveLength(2);
+});
+it('P006 current audited recommendations use real intake, preserve suppression/history and renew contract authority', async () => {
+  const query = 'SELECT id FROM jobs', now = Date.parse('2026-10-25T12:00:00Z');
+  const scope = { workspaceId: WS, sourceBoundary: 'tool-ledger', epoch: 'review-bridge', key: new Uint8Array(32).fill(79) };
+  const shape = fingerprintSqlIntent(query, scope);
+  if (shape.status !== 'supported') throw new Error('fixture must parse');
+  let contractRef = 'fixture-contract-v1', verdict: 'exact' | 'partial' = 'exact';
+  let allowed = true;
+  const recommendationInput = async (): Promise<SqlRecommendationInput> => {
+    const tool = { name: 'fixture:jobs', contractRef, args: z.object({}) };
+    return { sql: query, scope, sourceAuthorized: allowed, sourceCoverage: 'complete', now,
+      exampleExpiresAt: now + 1000, candidateCoverage: 'complete',
+      current: { ref: 'fixture-current', buildRef: 'fixture-current-build', coverage: 'complete', tools: [tool] },
+      served: { ref: 'fixture-served', buildRef: 'fixture-served-build', coverage: 'complete', tools: [tool] },
+      audits: [{ toolName: tool.name, contractRef, parserVersion: shape.version, fingerprint: shape.fingerprint,
+        requiredFeatures: shape.features, fixtureRef: 'fixture-equivalence', resultRef: 'fixture-result', args: {},
+        verdict, missingFeatures: verdict === 'partial' ? ['output:id'] : [] }] };
+  };
+  const opts: SqlCandidateWorklistOptions = { workspaceId: WS, harnessSlug: HARNESS, scope,
+    client: db.adminSql, authorize: async () => allowed, authorizeSource: async () => allowed, now,
+    rowBudget: 100, timeBudgetMs: 30_000, retainedFrom: '2026-10-01T00:00:00Z', recommendationInput };
+  for (let i = 0; i < 12; i++) await db.adminSql`INSERT INTO harness_shared.tool_invocations
+    (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,invoked_at,status,
+      coord_owner_id,args_json,transport,call_origin,call_origin_source,duration_ms)
+    VALUES (${WS},${HARNESS},'agent-mcp','dev:pg_query','operator','fixture','fixture',
+      ${i % 2 ? '2026-10-23T12:00:00Z' : '2026-10-24T12:00:00Z'}::timestamptz,'ok',
+      ${'su-fixture-' + i % 3},${JSON.stringify({ sql: query })}::jsonb,'mcp','agent','declared',12)`;
+  expect((await mineSqlCandidateSlice(opts)).status).toBe('ok');
+  const entry = (await readSqlToolCandidateWorklist(opts)).candidates[0]!;
+  expect(entry.candidate.eligible).toBe(true);
+  const reviewInput = { workspaceId: WS, harnessSlug: HARNESS, submittedBy: 'su-sql-filer',
+    candidate: entry.candidate, contractRef: 'fallback-demand' };
+  const exact = await submitSqlWorklistCandidateReview(opts, reviewInput, deps());
+  expect(exact).toMatchObject({ status: 'suppressed', workItemId: null });
+  expect(await db.adminSql`SELECT 1 FROM harness_shared.work_items WHERE workspace_id=${WS}`).toHaveLength(0);
+  verdict = 'partial';
+  const partial = await submitSqlWorklistCandidateReview(opts, reviewInput, deps());
+  expect(partial).toMatchObject({ status: 'pending', lifecycleId: exact.lifecycleId });
+  expect(partial.editionId).not.toBe(exact.editionId);
+  expect(await submitSqlWorklistCandidateReview(opts, reviewInput, deps())).toEqual(partial);
+  const saved = await getWorkItem(partial.workItemId!, HARNESS);
+  expect(JSON.stringify(saved)).not.toContain(query);
+  contractRef = 'fixture-contract-v2';
+  const changed = await submitSqlWorklistCandidateReview(opts, reviewInput, deps());
+  expect(changed.workItemId).not.toBe(partial.workItemId);
+  expect(changed.lifecycleId).toBe(partial.lifecycleId);
+  const history = (await readSqlToolCandidateWorklist(opts)).candidates[0]!.decisionHistory;
+  expect(history).toHaveLength(3);
+  expect(history.some(row => row.editionId === exact.editionId && row.suppressed)).toBe(true);
+  contractRef = 'fixture-contract-v3';
+  const captureCurrent: typeof captureImprovement = async value => {
+    const result = await capture(value); allowed = false; return result;
+  };
+  expect(await submitSqlWorklistCandidateReview(opts, reviewInput, { ...deps(), capture: captureCurrent }))
+    .toMatchObject({ status: 'UNKNOWN', workItemId: null });
+  expect((await readSqlToolCandidateWorklist(opts)).status).toBe('UNKNOWN');
+  allowed = true;
+  expect(await submitSqlWorklistCandidateReview(opts, reviewInput, deps())).toMatchObject({ status: 'pending' });
 });
 it('accepted ownership is read from the current review item R5-CONTRACT', async () => {
   const first = await submitSqlCandidateReview(input(), deps());

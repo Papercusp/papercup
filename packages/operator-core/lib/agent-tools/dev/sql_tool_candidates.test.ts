@@ -7,6 +7,11 @@ import { readSqlToolCandidateWorklist } from '../../sql-tool-candidate-worklist'
 import tool from './sql_tool_candidates';
 
 vi.mock('../../sql-tool-candidate-worklist', () => ({ readSqlToolCandidateWorklist: vi.fn() }));
+// Only the scope-grant renewal is unit-tested here. The maintained real-PG
+// integration exercises productionOpportunityReaders and every source query.
+vi.mock('../../agent-opportunities/source-readers', () => ({
+  productionOpportunityReaders: () => ({ authorizeLedgerSource: async () => null }),
+}));
 const ctx: ToolContext = { workspaceId: 'w', harnessSlug: 'h', uiClientId: 'su-fixture', tx: null, log: () => {},
   principal: { kind: 'system', slug: 'fixture', workspaceId: 'w', authMethod: 'process-internal',
     trust: 'trusted', capabilities: new Set(['intel:read']) } };
@@ -18,7 +23,7 @@ const allowed: SqlCandidateWorklist = { status: 'ok', candidates: [], snapshots:
 // Independent public response contract: never build this oracle with the helper under test.
 const unknown: SqlCandidateWorklist = { status: 'UNKNOWN', candidates: [], snapshots: [],
   population: { candidates: 0, returned: 0, omitted: 0, snapshotCap: 120 } };
-afterEach(() => { bindSqlCandidateAuthorityResolver(null); vi.resetAllMocks(); });
+afterEach(() => { bindSqlCandidateAuthorityResolver(null); vi.resetAllMocks(); vi.unstubAllEnvs(); });
 
 it('returns content-free UNKNOWN without a current source-authority adapter', async () => {
   expect(await tool.handler({}, ctx)).toEqual({ data: unknown });
@@ -73,4 +78,36 @@ it('accepts only bounded typed filters and never accepts an argument-supplied AC
   expect(tool.args.safeParse({ limit: 101 }).success).toBe(false);
   expect(tool.args.safeParse({ limit: 0 }).success).toBe(false);
   expect(tool.args.safeParse({ authorizeSource: true }).success).toBe(false);
+});
+
+it('P006 production source composition accepts actual full grants and renews the grant after an await', async () => {
+  vi.stubEnv('PAPERCUSP_DB_ENCRYPTION_KEY', 'maintained-sql-source-composition-fixture-key');
+  for (const viaHostBypass of [false, true]) {
+    const principal = { ...ctx.principal!, capabilities: new Set(viaHostBypass ? [] : ['*']) };
+    const current = { ...ctx, principal, isSuperuser: viaHostBypass,
+      gateBypass: { capability: viaHostBypass } };
+    vi.mocked(readSqlToolCandidateWorklist).mockImplementationOnce(async opts => {
+      const scope = { workspaceId: 'w', harnessSlug: 'h', sourceBoundary: 'authorized-tool-ledger' };
+      expect(await opts.authorize(scope)).toBe(true);
+      expect(await opts.authorize({ ...scope, harnessSlug: 'foreign' })).toBe(false);
+      principal.slug = 'different-principal';
+      expect(await opts.authorize(scope)).toBe(false);
+      principal.slug = ctx.principal!.slug;
+      principal.capabilities.clear();
+      current.gateBypass.capability = false;
+      expect(await opts.authorize(scope)).toBe(false);
+      return unknown;
+    });
+    expect(await tool.handler({}, current)).toEqual({ data: unknown });
+  }
+  expect(readSqlToolCandidateWorklist).toHaveBeenCalledTimes(2);
+});
+
+it('P006 production source composition rejects loopback, power-user bypass and narrowed tool grants', async () => {
+  for (const current of [
+    { ...ctx, principal: { ...ctx.principal!, capabilities: new Set(['*']), trust: 'unverified-loopback' as const } },
+    { ...ctx, isSuperuser: true, isPowerUser: true, gateBypass: { capability: true } },
+    { ...ctx, principal: { ...ctx.principal!, capabilities: new Set(['*']), allowedTools: new Set(['recipes:candidates']) } },
+  ]) expect(await tool.handler({}, current)).toEqual({ data: unknown });
+  expect(readSqlToolCandidateWorklist).not.toHaveBeenCalled();
 });

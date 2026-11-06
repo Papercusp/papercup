@@ -33,6 +33,8 @@ import { mineSqlCandidateSlice, purgeSqlCandidateData, readSqlCandidates, type S
   type SqlMiningResult } from '../../bash-substitution/sql-tool-candidates';
 import { rankSqlToolCandidates, SQL_DEMAND_SCORE_VERSION } from '../../sql-tool-candidate-score';
 import { submitSqlCandidateReview, submitMonitoredCandidateReview } from '../../sql-tool-candidate-review';
+import { readSqlToolCandidateWorklist, submitSqlWorklistCandidateReview,
+  type SqlCandidateWorklistOptions } from '../../sql-tool-candidate-worklist';
 import { recordSqlCandidateFeedback } from '../../sql-tool-candidate-feedback';
 import type { SqlRepairMeasurement } from '../../bash-substitution/sql-census';
 import { miningFailureReason } from '../../agent-opportunities/pipeline';
@@ -299,6 +301,8 @@ export async function runSqlReadCensus(
 /** Same production cadence; source dispatch has no dependency on this background path. */
 export interface SqlIntentCensusDeps extends SqlMiningDeps {
   review?: typeof submitSqlCandidateReview;
+  /** Same trusted catalog/audit adapter used by discovery; never a saved recommendation. */
+  recommendationInput?: SqlCandidateWorklistOptions['recommendationInput'];
   monitoredReview?: typeof submitMonitoredCandidateReview;
   /** Internal source adapters; production defaults keep canonical authority checks. */
   monitoredReaders?: Parameters<typeof runMonitoredCensus>[2];
@@ -393,16 +397,23 @@ export async function runSqlIntentCensus(
           harnessSlug: opts.harnessSlug, sourceBoundary: scope.sourceBoundary }) });
       if (snapshots.length !== 1) throw new Error('sql_candidate_review_source_unavailable');
       for (const snapshot of snapshots) {
-        const candidates = rankSqlToolCandidates(snapshot.summary).candidates.filter(c => c.eligible);
+        const worklistOpts: SqlCandidateWorklistOptions = { ...miningOpts, ranOn: packet.ranOn,
+          recommendationInput: deps.recommendationInput,
+          authorizeSource: async () => miningOpts.authorize({ workspaceId: opts.workspaceId,
+            harnessSlug: opts.harnessSlug, sourceBoundary: scope.sourceBoundary }) };
+        const worklist = await readSqlToolCandidateWorklist({ ...worklistOpts, limit: 100 });
+        if (worklist.status !== 'ok') throw new Error('sql_candidate_review_source_unavailable');
+        const candidates = worklist.candidates.filter(entry => entry.candidate.eligible);
         const selected = candidates.slice(0, SQL_CENSUS_REVIEW_LIMIT);
-        reviewIntake = { selected: selected.length, outsideBatch: candidates.length - selected.length };
-        for (const candidate of selected) {
-          const reviewed = await (deps.review ?? submitSqlCandidateReview)({
+        const eligibleTotal = rankSqlToolCandidates(snapshot.summary).candidates.filter(c => c.eligible).length;
+        reviewIntake = { selected: selected.length, outsideBatch: eligibleTotal - selected.length };
+        for (const { candidate } of selected) {
+          const reviewed = await submitSqlWorklistCandidateReview(worklistOpts, {
             workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
             submittedBy: 'system:sql-read-census', candidate,
             sourceRef: { scopeId: packet.scopeId, ranOn: packet.ranOn },
             contractRef: `sql-review-demand-v1:${candidate.parserVersion}:${SQL_DEMAND_SCORE_VERSION}`,
-          }, { client: opts.client, authorize: async () => {
+          }, { client: opts.client, submit: deps.review, authorize: async () => {
             // Intake awaits reservation, capture and enrollment. Renew the exact
             // contributing snapshot before and after those writes; its saved
             // pointer cannot authorize a deleted/revoked/replaced population.

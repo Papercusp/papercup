@@ -1,9 +1,13 @@
 /** P008: passive pull worklist. Nothing from this read is persisted or executed. */
 import { getOrgPg } from '@papercusp/db-org';
+import { isDeepStrictEqual } from 'node:util';
 import { readSqlCandidates, type SqlCandidateReadOptions } from './bash-substitution/sql-tool-candidates';
+import { fingerprintSqlIntent } from './bash-substitution/sql-intent-fingerprint';
+import { recommendSqlTool, type SqlRecommendationInput, type SqlToolRecommendation } from './bash-substitution/sql-tool-recommendations';
 import { miningScopeId } from './agent-opportunities/privacy';
 import { rankSqlToolCandidates, type SqlToolCandidateScore } from './sql-tool-candidate-score';
-import { sqlCandidateReviewIdentity } from './sql-tool-candidate-review';
+import { sqlCandidateReviewIdentity, submitSqlCandidateReview, type SqlCandidateReviewDeps,
+  type SqlCandidateReviewInput } from './sql-tool-candidate-review';
 
 export interface SqlCandidateDecisionRef {
   editionId: string;
@@ -18,6 +22,9 @@ export interface SqlCandidateWorklistEntry {
   evidenceRefsOmitted: number;
   decisionHistory: SqlCandidateDecisionRef[];
   decisionHistoryTruncated: boolean;
+  /** Ephemeral result of existing exact/partial contract audits; never a recipe
+   * execution certificate. Private SQL, arguments and audit inputs stay local. */
+  recommendation?: SqlToolRecommendation;
 }
 export interface SqlCandidateWorklist {
   status: 'ok' | 'UNKNOWN';
@@ -26,7 +33,15 @@ export interface SqlCandidateWorklist {
   snapshots: Array<{ ranOn: string; coverage: ReturnType<typeof rankSqlToolCandidates>['coverage'];
     residue: ReturnType<typeof rankSqlToolCandidates>['residue'] }>;
 }
-export type SqlCandidateWorklistOptions = SqlCandidateReadOptions & { limit?: number };
+export type SqlCandidateWorklistOptions = SqlCandidateReadOptions & {
+  limit?: number;
+  /** Internal exact candidate selection; authority still covers the contributing snapshot. */
+  candidateId?: string;
+  /** Trusted host composition, never accepted from tool arguments. The host
+   * supplies current/served contracts and maintained audits from their sources. */
+  recommendationInput?: (candidate: SqlToolCandidateScore,
+    opts: SqlCandidateReadOptions) => Promise<SqlRecommendationInput | null>;
+};
 export interface SqlCandidateWorklistDeps {
   read?: typeof readSqlCandidates;
   /** Receives the caller's read options too, so an injected history can stay scope-aware like the default. */
@@ -58,12 +73,16 @@ export async function readSqlToolCandidateWorklist(opts: SqlCandidateWorklistOpt
           decisionHistory: [], decisionHistoryTruncated: false });
       }
     }
-    const selected = [...entries.values()].sort((a, b) => b.candidate.score - a.candidate.score
+    const selected = [...entries.values()].filter(entry => !opts.candidateId || entry.candidate.id === opts.candidateId)
+      .sort((a, b) => b.candidate.score - a.candidate.score
       || a.candidate.id.localeCompare(b.candidate.id)).slice(0, limit);
+    const recommendationInputs = new Map<string, SqlRecommendationInput | null>();
     for (const entry of selected) {
       const history = deps.history ? await deps.history(entry.candidate, opts) : await readHistory(opts, entry.candidate);
       entry.decisionHistory = history.slice(0, 20);
       entry.decisionHistoryTruncated = history.length > 20;
+      if (opts.recommendationInput) recommendationInputs.set(entry.candidate.id,
+        await opts.recommendationInput(entry.candidate, opts));
     }
     // Derivation/history reads may take time. Resolve the contributing sources again
     // before releasing counts, membership, decisions or refs to the caller.
@@ -71,10 +90,57 @@ export async function readSqlToolCandidateWorklist(opts: SqlCandidateWorklistOpt
     if (snapshots.some(snapshot => !current.some(row => row.ranOn === snapshot.ranOn
       && JSON.stringify(row.sourceIds) === JSON.stringify(snapshot.sourceIds)
       && JSON.stringify(row.summary) === JSON.stringify(snapshot.summary)))) return empty();
+    for (const entry of selected) {
+      if (!recommendationInputs.has(entry.candidate.id)) continue;
+      const unavailable = (): SqlToolRecommendation => ({ kind: 'insufficient-evidence',
+        reason: 'source-unavailable', toolName: null, immediatelyCallable: false,
+        fingerprint: null, requiredFeatures: null, evidenceRefs: [], missingFeatures: [] });
+      const input = recommendationInputs.get(entry.candidate.id);
+      const snapshot = current.find(row => row.ranOn === entry.sourceRef.ranOn);
+      if (!input || !snapshot || miningScopeId(input.scope, opts.harnessSlug) !== entry.sourceRef.scopeId) {
+        entry.recommendation = unavailable(); continue;
+      }
+      const shape = fingerprintSqlIntent(input.sql, opts.scope, input.sourceCoverage);
+      // A neighboring shape, foreign key/epoch or expired private example cannot
+      // borrow this candidate's demand/history or a different shape's audit.
+      if (shape.status !== 'supported' || shape.fingerprint !== entry.candidate.fingerprint
+        || shape.version !== entry.candidate.parserVersion || !snapshot.examples.some(example => {
+          if (!example || typeof example !== 'object') return false;
+          const saved = example as { canonical?: unknown; features?: unknown };
+          return saved.canonical === shape.canonical && isDeepStrictEqual(saved.features, shape.features);
+        })) { entry.recommendation = unavailable(); continue; }
+      entry.recommendation = recommendSqlTool({ ...input, scope: opts.scope, now: opts.now ?? Date.now(),
+        sourceCoverage: snapshot.summary.coverage.status === 'complete'
+          && snapshot.summary.coverage.retention === 'complete' ? input.sourceCoverage : 'unknown' });
+    }
     return { status: 'ok', candidates: selected, snapshots: coverage,
       population: { candidates: entries.size, returned: selected.length,
         omitted: entries.size - selected.length, snapshotCap: 120 } };
   } catch { return empty(); }
+}
+
+/** Rehydrate the candidate and recommendation at every intake boundary. Counts
+ * and run receipts do not change the edition; contract/decision changes do. */
+export async function submitSqlWorklistCandidateReview(opts: SqlCandidateWorklistOptions,
+  input: SqlCandidateReviewInput, deps: SqlCandidateReviewDeps & { submit?: typeof submitSqlCandidateReview } = {}) {
+  const read = async () => (await readSqlToolCandidateWorklist({ ...opts,
+    candidateId: input.candidate.id, limit: 1 })).candidates[0];
+  const entry = await read();
+  if (!entry) return { ...sqlCandidateReviewIdentity(input), status: 'UNKNOWN' as const,
+    workItemId: null, owner: null, queue: null };
+  const current = { ...input, candidate: entry.candidate, sourceRef: entry.sourceRef,
+    recommendation: entry.recommendation,
+    contractRef: entry.recommendation?.contractRef ?? input.contractRef };
+  return (deps.submit ?? submitSqlCandidateReview)(current, { ...deps, authorize: async () => {
+    if (deps.authorize && !await deps.authorize()) return false;
+    const renewed = await read();
+    return !!renewed && renewed.sourceRef.scopeId === entry.sourceRef.scopeId
+      && renewed.sourceRef.ranOn === entry.sourceRef.ranOn
+      && isDeepStrictEqual(renewed.evidenceRefs, entry.evidenceRefs)
+      && renewed.evidenceRefsOmitted === entry.evidenceRefsOmitted
+      && isDeepStrictEqual(renewed.candidate, entry.candidate)
+      && isDeepStrictEqual(renewed.recommendation, entry.recommendation);
+  } });
 }
 
 async function readHistory(opts: SqlCandidateReadOptions, candidate: SqlToolCandidateScore): Promise<SqlCandidateDecisionRef[]> {
