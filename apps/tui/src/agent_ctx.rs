@@ -459,6 +459,13 @@ fn turns_lines(app: &App, d: &crate::models::AgentCtxData, lines: &mut Vec<Line<
         text_lines(lines, "turns unavailable");
         return;
     };
+    text_lines(lines, "[ earlier history · ] latest history");
+    if app.agent_ctx_page_request.is_some() {
+        text_lines(lines, "Loading history…");
+    }
+    if app.agent_ctx_history_cursor.is_some() {
+        text_lines(lines, "Earlier history · press ] to follow latest");
+    }
     let Some(turns) = &data.turns else {
         text_lines(lines, "turns unavailable from this operator");
         return;
