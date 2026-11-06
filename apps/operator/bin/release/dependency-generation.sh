@@ -2752,14 +2752,14 @@ dependency_generation_copy_failure_rc() {
 }
 
 dependency_generation_copy_independent() {
-  local src="$1" dest="$2" size_ref="${3:-$1}" rc=0
+  local src="$1" dest="$2" size_ref="${3:-$1}" profile="${4:-archive}" rc=0
   mkdir -p "$(dirname "$dest")"
   dependency_generation_acquire_copy_lock "copy ${dest##*/tree/}" || return $?
   dependency_generation_check_headroom "$size_ref" "$dest" || rc=$?
   if [ "$rc" -eq 0 ]; then
     # GNU cp uses a CoW clone where available and a regular independent copy
     # otherwise. BSD/BusyBox cp reject --reflink; retry with portable `cp -a`.
-    dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto || rc=$?
+    dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto "$profile" || rc=$?
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 73 ] && [ "$rc" -ne 130 ] && [ "$rc" -ne 143 ]; then
       rm -rf -- "$dest"
       rc=0
@@ -2818,6 +2818,13 @@ dependency_generation_copy_with_progress() (
     # Optional filters exclude live caches before traversing them, preserving
     # this helper's existing progress and cancellation contract.
     rsync -aH --checksum --delete --partial --stats "${@:4}" "$src/" "$dest/" &
+  elif [ "${4:-archive}" = verifier ]; then
+    # Disposable verifier roots need bytes, executable bits and internal links,
+    # not archive ownership/timestamps/xattrs. Recursive cp retains source mode
+    # bits subject to umask; clear it locally so executable dependencies survive.
+    # --preserve=links preserves aliases INSIDE the copy, never links to src.
+    umask 000
+    cp -R -P --preserve=links "$reflink" "$src" "$dest" 2>/dev/null &
   elif [ -n "$reflink" ]; then
     cp -a "$reflink" "$src" "$dest" 2>/dev/null &
   else
@@ -3253,8 +3260,9 @@ dependency_generation_prune_ephemeral() {
 # to a live checkout). Hardlinks remain an explicit opt-in for callers that have
 # independently proved the source tree is immutable and never patched.
 dependency_generation_materialize_tree() {
-  local src="$1" dest="$2" tmp old
+  local src="$1" dest="$2" profile="${3:-archive}" tmp old
   local source_device dest_device mode='copy' clone_rc=0
+  case "$profile" in archive|verifier) ;; *) return 2 ;; esac
   tmp="${dest}.generation-tmp.$$"
   old="${dest}.generation-old.$$"
   rm -rf -- "$tmp" "$old"
@@ -3263,6 +3271,7 @@ dependency_generation_materialize_tree() {
   source_device="$(dependency_generation_device "$src")" || return 1
   dest_device="$(dependency_generation_device "$(dirname "$dest")")" || return 1
   if [ "${DEPENDENCY_GENERATION_ALLOW_HARDLINK:-0}" = '1' ] \
+    && [ "$profile" != verifier ] \
     && [ "${DEPENDENCY_GENERATION_FORCE_COPY:-0}" != '1' ] \
     && [ "$source_device" = "$dest_device" ]; then
     if cp -al "$src" "$tmp" 2>/dev/null; then
@@ -3278,7 +3287,7 @@ dependency_generation_materialize_tree() {
     # use the existing locked copier only when strict cloning is unsupported.
     if [ "$source_device" = "$dest_device" ]; then
       dependency_generation_check_headroom "$src" "$tmp" || return $?
-      dependency_generation_copy_with_progress "$src" "$tmp" --reflink=always || clone_rc=$?
+      dependency_generation_copy_with_progress "$src" "$tmp" --reflink=always "$profile" || clone_rc=$?
       if [ "$clone_rc" -ne 0 ]; then
         rm -rf -- "$tmp"
         case "$clone_rc" in 73|130|143) return "$clone_rc" ;; esac
@@ -3288,7 +3297,7 @@ dependency_generation_materialize_tree() {
   if [ ! -d "$tmp" ]; then
     # Propagate the typed lock/headroom exits (76/77) instead of letting the
     # missing tmp tree fail later as a generic mv error.
-    dependency_generation_copy_independent "$src" "$tmp" || return $?
+    dependency_generation_copy_independent "$src" "$tmp" "$src" "$profile" || return $?
   fi
   if [ -e "$dest" ]; then
     mv "$dest" "$old"
