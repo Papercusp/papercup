@@ -110,7 +110,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 
-async function callDigest(args: Record<string, unknown> = {}): Promise<{ count: number; total: number; digests: Digest[] }> {
+async function callDigest(args: Record<string, unknown> = {}, tx: postgres.Sql | postgres.TransactionSql = sql): Promise<{ count: number; total: number; digests: Digest[] }> {
   const result = await (
     digestTool as unknown as {
       handler: (
@@ -119,7 +119,7 @@ async function callDigest(args: Record<string, unknown> = {}): Promise<{ count: 
       ) => Promise<{ data: { count: number; total: number; digests: Digest[];
         coverage?: { snapshotAt?: string; until?: string } } }>;
     }
-  ).handler({ limit: 30, ...args }, { workspaceId: WORKSPACE, tx: sql });
+  ).handler({ limit: 30, ...args }, { workspaceId: WORKSPACE, tx });
   if (typeof args.session === 'string' && result.data.digests.length === 0) {
     // Keep the row and cutoff evidence when a selective read unexpectedly
     // disappears; an undefined-row assertion alone cannot distinguish them.
@@ -307,6 +307,26 @@ describe('sessions:digest narrow CTE + primary-key text join (WI-6843)', () => {
       expect(result.coverage).toMatchObject({ since: '2026-06-01T00:00:00.000Z',
         until: '2026-06-01T01:00:00.000Z', status: 'complete-for-indexed-transcript-window' });
     } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id LIKE 'boundary-%'`; }
+  });
+
+  it('normalizes historical stop timestamps to UTC without rounding microseconds in a non-UTC database session', async () => {
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      VALUES (${WORKSPACE}, 'codex', 'timezone-stop', 0,
+              '2026-05-01T00:02:00.123456Z', 'assistant', 'API Error: 429 Too many requests')`;
+    try {
+      await sql.begin(async tx => {
+        await tx`SET LOCAL TIME ZONE 'America/New_York'`;
+        expect((await tx`SELECT current_setting('TimeZone') AS zone`)[0]!.zone).toBe('America/New_York');
+        const result = await callDigest({ session: 'timezone-stop', since: '2026-05-01',
+          until: '2026-05-02', stopKinds: ['rate_limit'] }, tx);
+        expect(result.digests).toHaveLength(1);
+        expect(result.digests[0]).toMatchObject({
+          asOf: '2026-05-01T00:02:00.123456Z',
+          stopRef: 'session_turn:codex:timezone-stop:0',
+        });
+      });
+    } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'timezone-stop'`; }
   });
 
   it('continues an empty filtered page without claiming unindexed host-only history is covered', async () => {

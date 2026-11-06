@@ -353,7 +353,8 @@ export default defineTool({
              c.turn_idx AS closing_turn_idx,
              tasks.candidates AS task_candidates,
              hosts.events AS host_events,
-             a.stop_text, a.stop_turn_idx, to_json(a.stop_ts) #>> '{}' AS stop_ts,
+             a.stop_text, a.stop_turn_idx,
+             (to_json(a.stop_ts AT TIME ZONE 'UTC') #>> '{}') || 'Z' AS stop_ts,
              a.total_matching
         FROM incidents a
         LEFT JOIN kickoff_key k
