@@ -214,13 +214,16 @@ function censusRow(candidate: CensusCandidate, bytes: Buffer): Source {
       + 'The digest identifies the audited copy; any historical recorded blob is retained separately in refs.' } : {}) };
 }
 function linkedCensusSql(workspace: string, harness: string, planSlug: string) {
-  return `SELECT COALESCE(json_agg(DISTINCT jsonb_build_object('id',wi.feature_id,
+  return `WITH refs AS MATERIALIZED (
+      SELECT DISTINCT src_ref FROM harness_shared.coord_links
+      WHERE workspace_id=${literal(workspace)} AND rel IN ('implements','relates')
+        AND dst_kind='plan_item' AND split_part(dst_ref,'#',1)=${literal(planSlug)}
+    ) SELECT COALESCE(json_agg(DISTINCT jsonb_build_object('id',wi.feature_id,
       'files',wi.payload->'_completionEvidence'->'filesChanged',
       'stamp',wi.payload->'_completionEvidence'->'treeStamp')), '[]') AS census
     FROM harness_shared.work_items wi WHERE wi.workspace_id=${literal(workspace)} AND wi.harness_slug=${literal(harness)}
-      AND (wi.source_plan_slug=${literal(planSlug)} OR EXISTS (SELECT 1 FROM harness_shared.coord_links l
-        WHERE l.workspace_id=wi.workspace_id AND l.src_ref IN (wi.feature_id,wi.harness_slug||'#'||wi.feature_id)
-          AND l.rel IN ('implements','relates') AND l.dst_kind='plan_item' AND split_part(l.dst_ref,'#',1)=${literal(planSlug)}))`;
+      AND (wi.source_plan_slug=${literal(planSlug)} OR wi.feature_id IN (SELECT src_ref FROM refs)
+        OR wi.harness_slug||'#'||wi.feature_id IN (SELECT src_ref FROM refs))`;
 }
 function collectCensus(fixture: Fixture, started: string): Census {
   const proposed = tool('plans:audit', { slug: plan, harness: 'papercusp', phase: 'completion', dryRun: true, proposeCitations: true });

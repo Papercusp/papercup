@@ -204,6 +204,7 @@ dependency_generation_input_manifest() {
       find . \
         \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next -o -name node_modules \
           -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
+          -o -name 'node_modules.generation-tmp.*' -o -name 'node_modules.generation-old.*' \
           -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
           -o -path './papercusp-desktop/src-tauri/sidecar' \
           -o -path './papercusp-desktop/src-tauri/env-sidecars' \
@@ -575,6 +576,7 @@ dependency_generation_enumerate_node_modules() (
   find "$root" -mindepth 1 \
     \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next \
       -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
+      -o -name 'node_modules.generation-tmp.*' -o -name 'node_modules.generation-old.*' \
       -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
       -o -path "$root/apps/operator/dist-verify" \
       -o -path "$root/papercusp-desktop/src-tauri/sidecar" \

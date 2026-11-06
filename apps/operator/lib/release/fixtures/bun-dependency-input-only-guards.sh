@@ -1,10 +1,13 @@
 # Exact portable guard block for the P-006 input-only proposal. The caller sources
-# the pinned maintained helper first and owns the disposable error-file directory.
+# the pinned maintained helper first and owns the disposable error/sort directory.
 # No generation API is called. Keep machine paths and execution admission outside
 # this fixture; its bytes are embedded in the canonical review packet.
 dependency_generation_input_only() (
   set -euo pipefail
-  root="$1" ref="$2" errors="$3"
+  root="$1" ref="$2" errors="$3" sort_dir="$4"
+  [ "$sort_dir" = "${errors%/*}/sort" ] || exit 74
+  [ -d "$sort_dir" ] && [ ! -L "$sort_dir" ] || exit 74
+  export TMPDIR="$sort_dir" TMP="$sort_dir" TEMP="$sort_dir"
   DEPENDENCY_GENERATION_INFLIGHT_PROGRESS=''
   export GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
 
@@ -48,7 +51,7 @@ dependency_generation_input_only() (
 
   resolved="$(git -C "$root" rev-parse --verify "$ref^{commit}")" || exit $?
   [ "$resolved" = "$ref" ] || exit 74
-  manifest="$(dependency_generation_input_manifest_ref "$root" "$ref" | LC_ALL=C sort)" || exit $?
+  manifest="$(dependency_generation_input_manifest_ref "$root" "$ref" | LC_ALL=C sort -T "$sort_dir" --buffer-size=64K)" || exit $?
   [ ! -s "$errors" ] || { cat "$errors" >&2; exit 74; }
   [ -n "$manifest" ] || exit 74
   printf '%s\n' "$manifest" | awk -F '\t' '
@@ -60,4 +63,28 @@ dependency_generation_input_only() (
   [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || exit 74
   printf 'DEPENDENCY_INPUT_MANIFEST_BEGIN\n%s\nDEPENDENCY_INPUT_MANIFEST_END\n' "$manifest"
   printf 'DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=%s input=%s\n' "$ref" "$fingerprint"
+)
+
+# Called only after the bounded measurement child has settled. Unknown contents,
+# symlinks, failed removal or timeout retain the directory and withhold readiness.
+# Do not replace this with recursive deletion or cleanup of a parent directory.
+dependency_generation_input_only_cleanup() (
+  set -uo pipefail
+  scratch="$1" result="$2"
+  case "$scratch" in /*/bun-p006-input-only-confined.*) ;; *) exit 74 ;; esac
+  if timeout --signal=TERM --kill-after=1s 5s bash -euo pipefail -s -- "$scratch" <<'P006_INPUT_CLEANUP'
+scratch="$1"
+[ -d "$scratch" ] && [ ! -L "$scratch" ]
+[ -d "$scratch/sort" ] && [ ! -L "$scratch/sort" ]
+if [ -s "$scratch/errors" ]; then cat "$scratch/errors" >&2; fi
+rm -f -- "$scratch/errors" "$scratch/sort"/sort*
+rmdir -- "$scratch/sort"
+rmdir -- "$scratch"
+P006_INPUT_CLEANUP
+  then
+    printf 'P006_INPUT_ONLY_CLEANUP_COMPLETE status=%s\n' "$result" >&2
+    exit "$result"
+  fi
+  printf 'P006_INPUT_ONLY_CLEANUP_UNKNOWN retained=%s\n' "$scratch" >&2
+  exit 74
 )

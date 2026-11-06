@@ -879,7 +879,9 @@ describe('Bun input-only proposal guards', () => {
     const bin = join(dirname(integration), 'input-only-git-bin');
     const trace = join(dirname(integration), 'input-only-git-trace');
     const errors = join(dirname(integration), 'input-only-errors');
+    const sortDirectory = join(dirname(integration), 'sort');
     mkdirSync(bin);
+    mkdirSync(sortDirectory);
     const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
     writeFileSync(join(bin, 'git'), `#!/bin/bash
 printf '%s\\n' "$*" >> "$INPUT_ONLY_TRACE"
@@ -894,12 +896,12 @@ exec "$INPUT_ONLY_REAL_GIT" "$@"
 `, { mode: 0o755 });
     const result = spawnSync('bash', ['-c', [
       'set -euo pipefail', 'source "$SCRIPT"', 'source "$GUARDS"', override,
-      'dependency_generation_input_only "$INTEGRATION" "$REF" "$ERRORS"',
+      'dependency_generation_input_only "$INTEGRATION" "$REF" "$ERRORS" "$SORT_DIRECTORY"',
       'printf "INPUT_ONLY_READY\\n"',
     ].join('\n')], {
       encoding: 'utf8',
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SCRIPT, GUARDS: guards,
-        INTEGRATION: integration, REF: ref, ERRORS: errors, INPUT_ONLY_MODE: mode,
+        INTEGRATION: integration, REF: ref, ERRORS: errors, SORT_DIRECTORY: sortDirectory, INPUT_ONLY_MODE: mode,
         INPUT_ONLY_TRACE: trace, INPUT_ONLY_REAL_GIT: realGit },
     });
     return { result, integration, ref, trace, errors };
@@ -937,6 +939,70 @@ exec "$INPUT_ONLY_REAL_GIT" "$@"
     expect(readFileSync(errors, 'utf8')).toContain('forbidden git command: fetch');
     expect(readFileSync(trace, 'utf8')).not.toContain('fetch');
     expect(result.stdout).not.toContain('INPUT_ONLY_READY');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  function spillAndCleanup(mode: 'ok' | 'error' | 'timeout' | 'unknown' | 'symlink') {
+    const integration = makeIntegration();
+    const ref = commitAllFixture(integration, 'seed confined input-only guard fixture');
+    const scratch = mkdtempSync(join(dirname(integration), 'bun-p006-input-only-confined.'));
+    const foreign = join(dirname(integration), 'foreign-sort');
+    mkdirSync(foreign);
+    writeFileSync(join(foreign, 'sort-preserve'), 'peer bytes');
+    if (mode === 'symlink') symlinkSync(foreign, join(scratch, 'sort'));
+    else mkdirSync(join(scratch, 'sort'));
+    if (mode === 'unknown') writeFileSync(join(scratch, 'sort/unknown-evidence'), 'retained');
+    // Substitute only the manifest producer, keeping the real GNU sorter and
+    // cleanup function. Pause input until a real spill is visible, then finish,
+    // fail, or let GNU timeout cancel the measurement's whole process group.
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail', 'source "$SCRIPT"', 'source "$GUARDS"',
+      'cleanup() { rc=$?; trap - EXIT; dependency_generation_input_only_cleanup "$SCRATCH" "$rc"; }',
+      'trap cleanup EXIT',
+      'export -f dependency_generation_input_only dependency_generation_sha256',
+      'timeout --signal=TERM --kill-after=1s 3s bash -euo pipefail -s <<\'SPILL_CONTROL\'',
+      'dependency_generation_input_manifest_ref() {',
+      '  awk \'BEGIN { for (i=20000;i>0;i--) printf "locks/%05d/package-lock.json\\t%064d\\n", i, 0 }\'',
+      '  for ((i=0;i<100;i++)); do',
+      '    files=("$SCRATCH/sort"/sort*)',
+      '    if [ -f "${files[0]}" ]; then printf "REAL_SORT_SPILL_SEEN\\n" >&2; break; fi',
+      '    sleep 0.01',
+      '  done',
+      '  [ -f "${files[0]}" ] || return 73',
+      '  case "$MODE" in error) return 42 ;; timeout) sleep 30 ;; esac',
+      '}',
+      'dependency_generation_input_only "$INTEGRATION" "$REF" "$SCRATCH/errors" "$SCRATCH/sort"',
+      'SPILL_CONTROL',
+      'trap - EXIT',
+      'dependency_generation_input_only_cleanup "$SCRATCH" 0',
+      'printf "INPUT_ONLY_READY\\n"',
+    ].join('\n')], {
+      encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 20_000,
+      env: { ...process.env, SCRIPT, GUARDS: guards, INTEGRATION: integration, REF: ref,
+        SCRATCH: scratch, MODE: mode, TMPDIR: foreign },
+    });
+    return { result, scratch, foreign };
+  }
+
+  it.each(['ok', 'error', 'timeout'] as const)('confines real sort spills and cleans up after %s', mode => {
+    const { result, scratch, foreign } = spillAndCleanup(mode);
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toContain('REAL_SORT_SPILL_SEEN');
+    expect(result.status, result.stderr).toBe(mode === 'ok' ? 0 : mode === 'error' ? 42 : 124);
+    expect(result.stderr).toContain('P006_INPUT_ONLY_CLEANUP_COMPLETE');
+    expect(existsSync(scratch)).toBe(false);
+    expect(readdirSync(foreign)).toEqual(['sort-preserve']);
+    expect(readFileSync(join(foreign, 'sort-preserve'), 'utf8')).toBe('peer bytes');
+    expect(result.stdout.includes('INPUT_ONLY_READY')).toBe(mode === 'ok');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['unknown', 'symlink'] as const)('retains %s cleanup evidence and withholds readiness', mode => {
+    const { result, scratch, foreign } = spillAndCleanup(mode);
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain('P006_INPUT_ONLY_CLEANUP_UNKNOWN');
+    expect(existsSync(scratch)).toBe(true);
+    expect(result.stdout).not.toContain('INPUT_ONLY_READY');
+    expect(readFileSync(join(foreign, 'sort-preserve'), 'utf8')).toBe('peer bytes');
+    if (mode === 'unknown') expect(readFileSync(join(scratch, 'sort/unknown-evidence'), 'utf8')).toBe('retained');
   }, NATIVE_SHELL_TIMEOUT_MS);
 });
 
