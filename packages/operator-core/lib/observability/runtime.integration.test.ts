@@ -43,7 +43,7 @@ import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-
 import graphQuery from '../agent-tools/gitnexus/query';
 import { readEngineeringExecution } from './engineering-execution';
 import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
-import { serializeToolResponse } from '@papercusp/tooldef';
+import { runDispatchStack, serializeToolResponse, type DispatchProjectedDeps, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 
 describe('production observability composition', () => {
   let server: http.Server;
@@ -459,4 +459,51 @@ describe('production observability composition', () => {
     await flushRuntimeObservability();
     expect(runtimeObservabilityHealth().tracing).toMatchObject({ active: 0, queuedSpans: 0 });
   }, 20_000);
+
+  it('P005 persists actual managed parent, attempt and poll receipts without copying private output', async () => {
+    const deps: DispatchProjectedDeps = { onDispatchStart: PROJECTED_DEPS.onDispatchStart,
+      aroundInvoke: PROJECTED_DEPS.aroundInvoke, recordInvocation: PROJECTED_DEPS.recordInvocation,
+      recordWithoutWindow: () => true };
+    const callCtx: UnifiedToolContext = { ...ctx, role: 'su', isSuperuser: true,
+      signal: new AbortController().signal, emit: vi.fn(), progress: vi.fn() };
+    const tool = (name: string, fn: ProjectedTool['fn']): ProjectedTool => ({ pluginName: 'p005-fixture',
+      description: 'P005 dispatch persistence control', inputSchema: { type: 'object' }, capabilities: [],
+      effect: 'read', expose: { mcp: { name } }, fn });
+    const shell = tool('capability:bash', async (_args, handlerCtx) => {
+      handlerCtx.metadata?.({ managedOperation: { callId: 'spoofed-parent' } });
+      return { content: [{ type: 'text', text: 'PRIVATE output says exit 0' }],
+        _meta: { shellExecution: { version: 1, bash_id: 'p005-job', task_id: 'p005-task',
+          status: 'failed', exit_code: 7 } } };
+    });
+    const poll = tool('capability:bash_output', async () => ({ content: [{ type: 'text',
+      text: JSON.stringify({ bash_id: 'p005-job', task_id: 'p005-task', exit_code: 7, output: 'PRIVATE result' }) }] }));
+    const parent = tool('synthetic:p005-parent', async () => {
+      // Deliberately do not inherit dispatchCallId; only the active host call
+      // boundary can prove this relationship.
+      await runDispatchStack(shell, 'capability:bash', { command: 'PRIVATE command' }, callCtx, deps);
+      await runDispatchStack(poll, 'capability:bash_output', { task_id: 'p005-task' }, callCtx, deps);
+      return { content: [] };
+    });
+    expect((await runDispatchStack(parent, 'synthetic:p005-parent', {}, callCtx, deps)).ok).toBe(true);
+    await flushPendingTelemetry();
+    const records = await fixture.db!.adminSql<{ tool_name: string; metadata_json: Record<string, unknown> }[]>`
+      SELECT tool_name,metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id='synthetic-workspace' AND plugin_name='p005-fixture' ORDER BY id`;
+    expect(records).toHaveLength(3);
+    const receipts = records.map(row => row.metadata_json.managedOperation as {
+      callId: string; parentCallId?: string; role: string; disposition: string; handlerEntered: boolean;
+      outcome: { status: string; final: boolean }; job?: { bashId: string; taskId: string }; exitCode?: number;
+    });
+    const parentReceipt = receipts[records.findIndex(row => row.tool_name === 'synthetic:p005-parent')]!;
+    const shellReceipt = receipts[records.findIndex(row => row.tool_name === 'capability:bash')]!;
+    const pollReceipt = receipts[records.findIndex(row => row.tool_name === 'capability:bash_output')]!;
+    expect(new Set(receipts.map(receipt => receipt.callId)).size).toBe(3);
+    expect(parentReceipt).not.toHaveProperty('parentCallId');
+    expect(shellReceipt).toMatchObject({ parentCallId: parentReceipt.callId, handlerEntered: true,
+      role: 'operation', disposition: 'ok', exitCode: 7, outcome: { status: 'error', final: true },
+      job: { bashId: 'p005-job', taskId: 'p005-task' } });
+    expect(pollReceipt).toMatchObject({ parentCallId: parentReceipt.callId, role: 'poll', job: shellReceipt.job,
+      outcome: { status: 'error', final: true } });
+    expect(JSON.stringify(receipts)).not.toMatch(/PRIVATE|spoofed/);
+  });
 });
