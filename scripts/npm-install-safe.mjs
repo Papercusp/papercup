@@ -2278,6 +2278,9 @@ function installReaderLockNames(repoRoot) {
     const markerPath = join(root, ".git", "lint-as-committed-owner.json");
     if (!existsSync(markerPath)) break;
     const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+    // These retained roots own independently materialized dependencies. Their
+    // source provenance remains useful, but it is no longer a dependency borrow.
+    if (marker.dependencyMode === "independent-copy-v1") break;
     if (typeof marker.sourceRepoRoot !== "string" || !isAbsolute(marker.sourceRepoRoot)) {
       throw new Error("Missing retained-source dependency donor provenance");
     }

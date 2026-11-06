@@ -2943,6 +2943,28 @@ test("retained-source readers protect every dependency donor through child compl
   }
 });
 
+test("independent retained-source readers do not reacquire their historical donor", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-independent-reader-"));
+  const reader = join(root, "reader"), donor = join(root, "donor");
+  for (const path of [reader, donor]) mkdirSync(join(path, ".git"), { recursive: true });
+  writeFileSync(join(reader, ".git/lint-as-committed-owner.json"), JSON.stringify({
+    sha: "a".repeat(40), sourceRepoRoot: donor, dependencyMode: "independent-copy-v1",
+  }));
+  const acquired = [];
+  try {
+    const status = await runCommandUnderInstallMutex({
+      repoRoot: reader, commandArgs: ["node", "fixture-reader.mjs"], env: {},
+      acquireReadMutex: async (name, run) => { acquired.push(name); return run(); },
+      runCommand: (_command, _args, options) => {
+        assert.ok(!options.env.PAPERCUSP_INSTALL_MUTEX_HELD.split(",").includes(repoLockName(donor)));
+        return { status: 17 };
+      },
+    });
+    assert.equal(status, 17);
+    assert.deepEqual(acquired, [repoLockName(reader)]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("retained-source readers refuse cyclic or missing donor provenance before fork", async () => {
   const root = mkdtempSync(join(tmpdir(), "install-safe-retained-invalid-"));
   mkdirSync(join(root, ".git"));
