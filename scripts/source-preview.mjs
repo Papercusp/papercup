@@ -654,12 +654,27 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
 }
 
 /** Prepare a source snapshot only after all declared inputs match their pin.
- * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
+ * `runtimeOutputs: 'preserve'` retains committed outputs in an independent Git
+ * checkout for read-only consumers (for example a host build with an external
+ * output directory). They remain recorded source: rebuilding them invalidates
+ * the receipt. The default archive/rebuild contract is unchanged.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, runtimeOutputs?: 'rebuild' | 'preserve', tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
  */
-export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, tauriInputs = false, operatorApi }) {
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, runtimeOutputs = 'rebuild', tauriInputs = false, sourceArchive, operatorApi }) {
   repo = realpathSync(repo);
+  if (!['rebuild', 'preserve'].includes(runtimeOutputs) || (runtimeOutputs === 'preserve' && !gitCheckout))
+    throw new PreviewError('preserving verifier runtime outputs requires an independent Git checkout', 2);
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
-  const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs });
+  // Git remains the export authority. A separately pinned archive may supply
+  // the input observation when the shared checkout has advanced during a build.
+  const authority = sourceArchive
+    ? readPinnedVerifierArchive(sourceArchive.root, resolveCommit(repo, ref), sourceArchive.receiptSha256)
+    : undefined;
+  if (authority?.root === repo)
+    throw new PreviewError('verifier source archive must be independent from the Git repository', 2);
+  const { sha, paths } = await validateVerifierInputs({ repo: authority?.root ?? repo,
+    ref: authority?.receipt.sourceCommit ?? ref, inputs, inputsFile, tauriInputs,
+    ...(sourceArchive ? { receiptSha256: sourceArchive.receiptSha256 } : {}) });
   // Observations come from a separately selected root, never this exporter.
   const planned = operatorApi ? readOperatorApiHandoff(operatorApi, sha) : undefined;
   if (operatorApi) {
@@ -699,6 +714,7 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     // A Git checkout must retain its tracked population, so refuse that route
     // rather than removing tracked files or weakening its source attestation.
     for (const path of VERIFIER_REBUILT_OUTPUTS) {
+      if (runtimeOutputs === 'preserve') continue;
       const runtimeOutput = join(dest, path);
       const info = await fs.lstat(runtimeOutput).catch(error => {
         if (error.code === 'ENOENT') return null;
@@ -712,7 +728,7 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     const testedInputs = [];
     for (const path of paths) {
       const archived = join(dest, path);
-      const live = join(repo, path);
+      const live = join(authority?.root ?? repo, path);
       if (!(await fs.lstat(archived)).isFile() || !(await fs.lstat(live)).isFile()) {
         throw new PreviewError(`tested input is not a regular file: ${path}`, 2);
       }
@@ -726,6 +742,14 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     const gitMetadataPaths = checkout ? ['.git', ...submodules.map(row => `${row.path}/.git`)] : [];
     const sourceManifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
       ...(checkout ? { gitCheckout: checkout } : {}), testedInputs, files: verifierSourceFiles(dest, { gitMetadataPaths }) };
+    if (authority) {
+      // Re-read the original pin and census after asynchronous materialization.
+      // Matching tested inputs alone cannot attest unrelated exported source.
+      const current = readPinnedVerifierArchive(authority.root, sha, sourceArchive.receiptSha256).receipt;
+      assert.deepEqual(sourceManifest.files, current.files, 'Pinned source archive census differs from Git export');
+      assert.deepEqual(sourceManifest.submodules, current.submodules, 'Pinned source archive submodules differ from Git export');
+      assert.deepEqual(sourceManifest.testedInputs, current.testedInputs, 'Pinned source archive tested inputs differ from Git export');
+    }
     // Declared, not inferred: the operator-api branch below adds operatorApiInputs after
     // construction, and JS inference would otherwise drop it from the returned receipt type.
     /** @type {typeof sourceManifest & { operatorApiInputs?: { path: string, sha256: string } }} */
@@ -2637,11 +2661,11 @@ function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
+export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, sourceArchive, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
   releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease, signal,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (signal?.aborted) throw new PreviewError('verifier command canceled before launch', 143);
@@ -2658,6 +2682,11 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
   if (preparationMaxMs !== undefined && (!Number.isSafeInteger(preparationMaxMs) || preparationMaxMs <= 0 || readTaskDeadlineEpochMs(env) === null))
     throw new PreviewError('explicit verifier preparation allowance needs positive integer milliseconds and a finite caller task deadline', 2);
   const sourceCommit = resolveCommit(sourceRepo, ref);
+  if (sourceArchive) {
+    readPinnedVerifierArchive(sourceArchive.root, sourceCommit, sourceArchive.receiptSha256);
+    await validateVerifierInputs({ repo: sourceArchive.root, ref: sourceCommit, inputs, inputsFile,
+      tauriInputs, receiptSha256: sourceArchive.receiptSha256 });
+  }
   const explicitGeneration = Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
   const donor = explicitGeneration ? sourceRepo : committedWorkRootDependencyDonor(sourceRepo);
   // A frozen Git source may consume an immutable dependency generation while
@@ -2843,7 +2872,7 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
     const gitCheckout = !VERIFIER_REBUILT_OUTPUTS.some(path =>
       committedVerifierPathTracked(sourceRepo, sourceCommit, path));
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref: sourceCommit, dest: root,
-      inputs, inputsFile, tauriInputs, gitCheckout }));
+      inputs, inputsFile, tauriInputs, gitCheckout, sourceArchive }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     // Native generation selection also needs independently pinned archive
     // custody before dependency materialization, using the reporter contract.
@@ -4355,7 +4384,7 @@ function parseArgs(argv) {
     else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--preparation-max-ms', '--runtime-asset-donor', '--operator-api-root', '--operator-api-source-receipt',
+    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--preparation-max-ms', '--runtime-asset-donor', '--source-archive', '--operator-api-root', '--operator-api-source-receipt',
       '--operator-api-source-sha', '--operator-api-inputs', '--operator-api-inputs-sha'].includes(a)) {
       const path = rest[++i];
       if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
@@ -4437,8 +4466,12 @@ async function main(argv) {
   if (cmd === 'verifier-run') {
     if (!opts.repo || !opts.ref || !opts.receipt || !(opts.inputs || opts['inputs-file']) || !opts.command?.length)
       throw new PreviewError('verifier-run requires --repo, --ref, --receipt, --inputs or --inputs-file and -- <command>', 2);
+    if (Boolean(opts['source-archive']) !== Boolean(opts['receipt-sha256']))
+      throw new PreviewError('verifier-run source archive requires --source-archive and --receipt-sha256 together', 2);
     return runVerifierCommand({ repo: opts.repo, ref: opts.ref, receiptPath: opts.receipt,
       runtimeAssetDonor: opts['runtime-asset-donor'],
+      sourceArchive: opts['source-archive']
+        ? { root: opts['source-archive'], receiptSha256: opts['receipt-sha256'] } : undefined,
       inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
       tauriInputs: opts.tauriInputs === true, command: opts.command,
       budgetFrom: opts['budget-from'], childEstimateMs: opts['child-estimate-ms'] === undefined ? 0 : Number(opts['child-estimate-ms']),

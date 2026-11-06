@@ -1199,6 +1199,93 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(sourceRefusal.stderr).toContain('tampered verification source archive');
   }, 120_000);
 
+  it.each([false, true])('reuses pinned archive input authority after shared source advances (gitCheckout=%s)', async gitCheckout => {
+    const fixture = makeSuperproject(join(tmp, `verifier-authority-${gitCheckout}`));
+    git(fixture.repo, ['commit', '--allow-empty', '-m', 'pinned authority parent fixture']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(path => path.startsWith('apps/'))!;
+    const root = join(tmp, `verifier-authority-archive-${gitCheckout}`);
+    const original = await prepareVerifierSource({ repo: fixture.repo, ref, dest: root, inputs: [input] });
+    const sourceArchive = { root, receiptSha256: createHash('sha256').update(JSON.stringify(original)).digest('hex') };
+    write(fixture.repo, input, 'later shared source');
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref,
+      dest: join(tmp, `verifier-authority-live-refused-${gitCheckout}`), inputs: [input] }))
+      .rejects.toThrow('dirty tested-input mismatch');
+    const dest = join(tmp, `verifier-authority-export-${gitCheckout}`);
+    const result = await prepareVerifierSource({ repo: fixture.repo, ref, dest,
+      inputs: [input], gitCheckout, sourceArchive });
+    expect(result.sourceCommit).toBe(ref);
+    expect(result.files).toEqual(original.files);
+    expect(result.testedInputs).toEqual(original.testedInputs);
+    expect(readFileSync(join(dest, input))).toEqual(readFileSync(join(root, input)));
+    await verifyVerifierSource(dest, result);
+  });
+
+  it.each(['digest', 'ref', 'membership', 'source', 'forged-census'] as const)(
+    'refuses invalid pinned archive authority before a provider can run: %s', async fault => {
+      const fixture = makeSuperproject(join(tmp, `verifier-authority-refusal-${fault}`));
+      const input = SHIPPED.find(path => path.startsWith('apps/'))!;
+      const root = join(tmp, `verifier-authority-refusal-archive-${fault}`);
+      const original = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest: root, inputs: [input] });
+      const receiptFile = join(root, '.verifier-source.json');
+      const sourceArchive = { root, receiptSha256: createHash('sha256').update(JSON.stringify(original)).digest('hex') };
+      if (fault === 'digest') sourceArchive.receiptSha256 = '0'.repeat(64);
+      if (fault === 'ref') {
+        original.sourceCommit = '0'.repeat(40);
+        writeFileSync(receiptFile, JSON.stringify(original));
+        sourceArchive.receiptSha256 = createHash('sha256').update(JSON.stringify(original)).digest('hex');
+      }
+      if (fault === 'source' || fault === 'forged-census') {
+        const file = original.files.find(file => file.kind === 'file' && file.path !== input)!;
+        writeFileSync(join(root, file.path), 'different untested source');
+        if (fault === 'forged-census' && file.kind === 'file') {
+          file.sha256 = createHash('sha256').update('different untested source').digest('hex');
+          writeFileSync(receiptFile, JSON.stringify(original));
+          sourceArchive.receiptSha256 = createHash('sha256').update(JSON.stringify(original)).digest('hex');
+        }
+      }
+      const inputs = fault === 'membership' ? ['not-in-pinned-membership.mjs'] : [input];
+      const dest = join(tmp, `verifier-authority-refusal-export-${fault}`);
+      await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs, sourceArchive }))
+        .rejects.toThrow(/pinned|Pinned|selected source ref|membership|tampered/);
+      expect(existsSync(dest)).toBe(false);
+      const marker = join(tmp, `verifier-authority-provider-${fault}`);
+      await expect(runCli(['verifier-run', '--repo', fixture.repo, '--ref', fixture.commit,
+        '--source-archive', root, '--receipt-sha256', sourceArchive.receiptSha256,
+        '--inputs', inputs.join(','), '--receipt', join(tmp, `verifier-authority-command-${fault}.json`),
+        '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)},'ran')`]))
+        .rejects.toThrow();
+      expect(existsSync(marker)).toBe(false);
+    });
+
+  it('rechecks pinned archive authority after asynchronous export', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-authority-race'));
+    const input = SHIPPED.find(path => path.startsWith('apps/'))!;
+    const root = join(tmp, 'verifier-authority-race-archive');
+    const original = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest: root, inputs: [input] });
+    const sourceArchive = { root, receiptSha256: createHash('sha256').update(JSON.stringify(original)).digest('hex') };
+    const dest = join(tmp, 'verifier-authority-race-export');
+    const other = original.files.find(file => file.kind === 'file' && file.path !== input)!;
+    const read = fsPromises.readFile.bind(fsPromises);
+    const spy = vi.spyOn(fsPromises, 'readFile').mockImplementation((...args: Parameters<typeof fsPromises.readFile>) => {
+      if (args[0] === join(dest, input)) writeFileSync(join(root, other.path), 'changed during export');
+      return read(...args);
+    });
+    try {
+      await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input], sourceArchive }))
+        .rejects.toThrow('tampered verification source archive');
+      expect(existsSync(dest)).toBe(false);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('requires both archive identity fields on verifier-run', async () => {
+    for (const args of [['--source-archive', '/unused'], ['--receipt-sha256', '0'.repeat(64)]]) {
+      await expect(runCli(['verifier-run', '--repo', '/unused', '--ref', 'HEAD', '--receipt', '/unused.json',
+        '--inputs', 'input.mjs', ...args, '--', 'true']))
+        .rejects.toThrow('source archive requires --source-archive and --receipt-sha256 together');
+    }
+  });
+
   it('exports exact gitlinks despite unrelated dirty donor bytes and detects archive tampering', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-fixture'));
     const dest = join(tmp, 'verifier-export');
@@ -1669,11 +1756,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
   });
 
   it.for([
-    { rootDonor: false, generationHelper: false },
-    { rootDonor: true, generationHelper: false },
-    { rootDonor: true, generationHelper: true },
-  ])('freezes materialized committed source without cloning on root (root donor=$rootDonor, generation helper=$generationHelper)', async ({ rootDonor, generationHelper }, context) => {
-    const caseId = `${rootDonor}-${generationHelper}`;
+    { rootDonor: false, generationHelper: false, pinnedAuthority: false },
+    { rootDonor: true, generationHelper: false, pinnedAuthority: false },
+    { rootDonor: true, generationHelper: true, pinnedAuthority: false },
+    { rootDonor: false, generationHelper: false, pinnedAuthority: true },
+  ])('freezes materialized committed source without cloning on root (root donor=$rootDonor, generation helper=$generationHelper, pinned archive=$pinnedAuthority)', async ({ rootDonor, generationHelper, pinnedAuthority }, context) => {
+    const caseId = `${rootDonor}-${generationHelper}-${pinnedAuthority}`;
     const startedAt = performance.now();
     const trace = (stage: string) => {
       process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage,
@@ -1732,19 +1820,36 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     trace('dependency-shadow-complete');
     expect((await fsPromises.lstat(join(materialized, 'node_modules/.bin'))).isSymbolicLink()).toBe(true);
     const receiptPath = join(tmp, 'materialized-dependency-source-receipt-' + caseId + '.json');
+    const archiveRoot = join(tmp, 'materialized-pinned-archive-' + caseId);
+    const archiveReceipt = pinnedAuthority
+      ? await prepareVerifierSource({ repo: materialized, ref: sha, dest: archiveRoot, inputs: [script] })
+      : undefined;
+    const sourceArchive = archiveReceipt ? { root: archiveRoot,
+      receiptSha256: createHash('sha256').update(JSON.stringify(archiveReceipt)).digest('hex') } : undefined;
+    if (pinnedAuthority) write(materialized, script, 'later shared source input');
     const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
-      command: [process.execPath, script, 'verifier-measure'], signal: context.signal };
+      sourceArchive, command: [process.execPath, script, 'verifier-measure'], signal: context.signal };
     // The donor must pass the ignored-source-scratch guard, not accidentally
     // be admitted because both fixture repositories are beneath OS tmpdir.
     const restrictedTemp = join(tmp, 'materialized-source-only-temp-' + caseId);
     await fsPromises.mkdir(restrictedTemp);
     vi.stubEnv('TMPDIR', restrictedTemp);
     try {
+      if (pinnedAuthority) {
+        await expect(runVerifierCommand({ ...options, sourceArchive: undefined,
+          receiptPath: join(tmp, 'materialized-live-refused-' + caseId + '.json') }))
+          .rejects.toThrow('dirty tested-input mismatch');
+      }
       trace('verifier-command-start');
       expect(await runVerifierCommand(options)).toBe(0);
       trace('verifier-command-complete');
     } finally { vi.unstubAllEnvs(); }
     expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
+    if (archiveReceipt) {
+      expect(JSON.parse(readFileSync(receiptPath, 'utf8')).files).toEqual(archiveReceipt.files);
+      await verifyVerifierSource(archiveRoot, archiveReceipt);
+      expect(readFileSync(join(materialized, script), 'utf8')).toBe('later shared source input');
+    }
     const dependencyReceipt = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
     if (copiesDependencies) {
       expect(dependencyReceipt.root).toMatch(/^\/mnt\/data\/tmp\/verifier-command-/);
@@ -2813,6 +2918,33 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       .rejects.toThrow('generated verifier runtime output cannot be a tested source input');
     await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: join(tmp, `refused-runtime-checkout-${suffix}`), inputs: [input], gitCheckout: true }))
       .rejects.toThrow('committed verifier runtime output requires archive export');
+
+    // A consumer that writes outside this source can keep the committed
+    // outputs, preserving real Git origin rather than weakening the bundle fence.
+    const preserved = join(tmp, `preserved-runtime-checkout-${suffix}`);
+    const retained = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: preserved,
+      inputs: [input], gitCheckout: true, runtimeOutputs: 'preserve' });
+    expect(retained.gitCheckout).toBeDefined();
+    expect(retained.files.some(file => file.path === output)).toBe(true);
+    expect(readFileSync(join(preserved, output), 'utf8')).toBe('old generated host');
+    await expect(verifyVerifierSource(preserved, retained, { runtimeArtifacts: true })).resolves.toEqual(retained);
+    const { restrictedHoldBundleRefusal } = await import('./agent-tools/testing/restricted-hold-fence');
+    const originalReceipt = join(tmp, `preserved-runtime-receipt-${suffix}.json`);
+    writeFileSync(originalReceipt, JSON.stringify(retained));
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', originalReceipt);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', retained.sourceCommit);
+    try {
+      await expect(restrictedHoldBundleRefusal(preserved, { files: [join(preserved, input)], dirs: [] }))
+        .resolves.toBeNull();
+      write(preserved, output, 'changed retained output');
+      await expect(verifyVerifierSource(preserved, retained, { runtimeArtifacts: true }))
+        .rejects.toThrow(`changed ${output}`);
+      await expect(restrictedHoldBundleRefusal(preserved, { files: [join(preserved, input)], dirs: [] }))
+        .resolves.toMatchObject({ error: 'restricted_hold_state_unknown' });
+    } finally { vi.unstubAllEnvs(); }
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
+      dest: join(tmp, `refused-preserve-archive-${suffix}`), inputs: [input], runtimeOutputs: 'preserve' }))
+      .rejects.toThrow('preserving verifier runtime outputs requires an independent Git checkout');
   });
 
   it.skipIf(process.platform !== 'linux')('rebuilds ignored Workbench resources in an independent Git snapshot without changing source', async () => {
