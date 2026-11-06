@@ -56,7 +56,13 @@ function sanitizeDiagnosticText(value: unknown): string {
     .slice(0, 800);
 }
 
-function summarizeMcpError(error: unknown) {
+function summarizeMcpError(error: unknown): {
+  name: string;
+  code?: string | number;
+  message: string;
+  dataMessage?: string;
+  causeMessage?: string;
+} {
   const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
   const cause = record.cause && typeof record.cause === 'object'
     ? record.cause as Record<string, unknown>
@@ -162,9 +168,11 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       listAllTools, callToolWithPressureRetry, resultToText, unwrapOutputEnvelope } = await import('../../../../../apps/operator/scripts/ptool.mjs');
     const { connectAgentMcp } = await import('../../agent-mcp-client');
     const { CallToolResultSchema } = await import('@modelcontextprotocol/sdk/types.js');
-    const bearer = resolveTokenPaths().map((path: string) => {
-      try { return readFileSync(path, 'utf8').trim(); } catch { return ''; }
-    }).find(Boolean);
+    const bearer = resolveTokenPaths()
+      .filter((path): path is string => typeof path === 'string' && path.length > 0)
+      .map(path => {
+        try { return readFileSync(path, 'utf8').trim(); } catch { return ''; }
+      }).find(Boolean);
     expect(bearer, 'authenticated operator credential unavailable').toBeTruthy();
     const started = performance.now();
     const remaining = () => {
