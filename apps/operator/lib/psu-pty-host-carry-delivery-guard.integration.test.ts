@@ -9,6 +9,7 @@
  * the tracked host script dirty in the git-sync shared tree.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import {
   existsSync,
   mkdirSync,
@@ -42,6 +43,62 @@ const {
 } = subject;
 
 const sleep = (ms: number) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+describe('blind-review managed succession before child creation', () => {
+  it.each(['admitted', 'refused', 'unbound'] as const)('orders predecessor exit, reservation and fresh spawn: %s', async mode => {
+    const ownerId = `su-prechild-${mode}-${process.pid}-${Math.floor(performance.now())}`;
+    const socketPath = socketPathFor(ownerId), eventLog = eventLogPathForOwner(ownerId);
+    const source = '12345678-1234-4234-8234-123456789abc', target = '87654321-4321-4321-8321-cba987654321';
+    const { io, captured } = fakeIo(), signals = new EventEmitter();
+    let spawns = 0;
+    const permit = { bindingId: 7, reservationId: 8, attemptKey: 'test-attempt', receiptId: 'test-receipt' };
+    const beforeRespawn = vi.fn(async request => {
+      expect(spawns).toBe(1);
+      expect(request).toMatchObject({ ownerId, advSessionId: 42, predecessorExited: true,
+        sourceNativeSessionId: source, successorNativeSessionId: target, predecessorGeneration: 1, successorGeneration: 2 });
+      // The actual PTY child has exited, and host discovery published this
+      // exact reservation request before invoking the authenticated adapter.
+      expect(() => process.kill(request.predecessorPid, 0)).toThrow();
+      expect(JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8')).managedSuccession).toEqual(request);
+      return mode === 'admitted' ? permit : null;
+    });
+    const onRespawn = vi.fn(async (_native, options) => {
+      expect(spawns).toBe(2);
+      if (mode === 'admitted') expect(options.managedSuccessionPermit).toEqual(permit);
+      return true;
+    });
+    const childCode = "process.stdout.write('BOOT:'+process.pid+'\\n');setInterval(()=>{},100);";
+    const args = ['-e', childCode, '--', '--session-id', source];
+    const done = hostThroughPty({ command: execPath, args, cwd: '/tmp', ownerId, advSessionId: 42,
+      io, bridgeTty: false, signalSource: signals,
+      env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        ...(mode === 'unbound' ? {} : { PAPERCUSP_LAUNCHED_BY: 'system:blind-gap-review' }),
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '10' }),
+      beforeRespawn, onRespawn, onExit: () => {},
+      mintRecycleArgs: () => ({ args: ['-e', childCode, '--', '--session-id', target], nativeId: target }),
+      spawnPty: (file, argv, options, realSpawn) => { spawns++; return realSpawn(file, argv, options); },
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 3000 });
+      const result = await injectEnvelope(socketPath, { mode: 'recycle', data: '' });
+      if (mode === 'refused') {
+        expect(result.ok).toBe(false);
+        expect(spawns).toBe(1);
+        expect(onRespawn).not.toHaveBeenCalled();
+      } else {
+        expect(result.ok).toBe(true);
+        expect(spawns).toBe(2);
+        expect(onRespawn).toHaveBeenCalled();
+      }
+      expect(beforeRespawn).toHaveBeenCalledTimes(mode === 'unbound' ? 0 : 1);
+    } finally {
+      signals.emit('SIGTERM', 'SIGTERM');
+      await done;
+      if (existsSync(eventLog)) unlinkSync(eventLog);
+    }
+  }, 15_000);
+});
 
 function fakeIo() {
   let output = '';

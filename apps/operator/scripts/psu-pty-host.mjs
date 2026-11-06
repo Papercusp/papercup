@@ -11633,6 +11633,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {((request:any)=>Promise<any>)|null} [o.beforeRespawn] authenticated pre-child custody admission
  * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
  * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
@@ -11684,7 +11685,8 @@ export function hostThroughPty(o) {
       promptFile: null,
       reason: "not-wired",
     }),
-    onRespawn = () => {},
+    onRespawn: reportRespawn = () => {},
+    beforeRespawn = null,
     resolveRespawnNativeId = null,
     emitCompacted = fireSessionCompactedEvent,
     // WI-38292: hand the session to a FRESH launcher process instead of respawning
@@ -11733,6 +11735,11 @@ export function hostThroughPty(o) {
     // lost. Receives the real spawn as its 4th argument. null = pty.spawn.
     spawnPty = null,
   } = o;
+  let managedSuccessionRequest = null;
+  let managedSuccessionPermit = null;
+  const onRespawn = (nativeId, options = {}) => reportRespawn(nativeId, {
+    ...options, ...(managedSuccessionPermit ? { managedSuccessionPermit } : {}),
+  });
   let adoptedCarryDrillTerminalRecorded = false;
   const recordAdoptedCarryDrillEvent = (kind, extra = {}) => {
     const drillId = typeof adoptedCarryRespawn?.drillId === 'string'
@@ -12417,6 +12424,10 @@ export function hostThroughPty(o) {
       metadataWriter.write(JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
         ...authBlockDetector.snapshot(),
         accountRoutingMode: liveAccountRoutingMode,
+        childGeneration,
+        nativeSessionId: env.PAPERCUSP_AGENT === 'codex'
+          ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : nativeSessionIdFromLaunchArgs(liveChildArgs),
+        managedSuccession: managedSuccessionRequest,
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
           childGeneration,
@@ -18075,6 +18086,10 @@ export function hostThroughPty(o) {
         ? newestNativeTranscriptPath('codex', env, homedir(), carrySourceNativeId)
         : null;
       const carrySourceChildGeneration = childGeneration;
+      const successionSourceNativeId = env.PAPERCUSP_AGENT === 'codex'
+        ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : nativeSessionIdFromLaunchArgs(liveChildArgs);
+      managedSuccessionPermit = null;
+      managedSuccessionRequest = null;
       const managedCarryLineageForTarget = (targetNativeId = null, targetNativeRef = null) => {
         const lineageAdvSessionId = Number(baseMeta.advSessionId);
         const lineageHostStartedAt = Number(baseMeta.startedAt);
@@ -18466,7 +18481,7 @@ export function hostThroughPty(o) {
         bridgeTty,
         allowInteractive,
         pendingWakeDelivery: carryRearm.pendingCount('turn') > 0 || carryRearm.pendingCount('carry-respawn') > 0,
-      }) && !freshChildOnly) {
+      }) && !freshChildOnly && env.PAPERCUSP_LAUNCHED_BY !== 'system:blind-gap-review') {
         let hostCode = { stale: false };
         try {
           hostCode = hostCodeStalenessFn();
@@ -18725,7 +18740,29 @@ export function hostThroughPty(o) {
         } catch {
           /* keep the old pin — the respawn itself matters more */
         }
+        if (env.PAPERCUSP_LAUNCHED_BY === 'system:blind-gap-review' &&
+            (!nativeId || !successionSourceNativeId || nativeId !== successionSourceNativeId)) {
+          if (!beforeRespawn || !successionSourceNativeId || !predecessorExitObserved)
+            throw new Error('blind-review managed succession requires pre-child custody');
+          managedSuccessionRequest = {
+            requestKey: randomUUID(), ownerId, advSessionId: Number(baseMeta.advSessionId),
+            hostPid: process.pid, hostStartedAt: baseMeta.startedAt, hostCodeVersion: baseMeta.hostCodeVersion,
+            predecessorPid, predecessorGeneration: childGeneration, successorGeneration: childGeneration + 1,
+            sourceNativeSessionId: successionSourceNativeId, successorNativeSessionId: nativeId ?? null,
+            predecessorExited: true,
+          };
+          writeMeta();
+          await metadataWriter.whenIdle();
+          managedSuccessionPermit = await beforeRespawn(managedSuccessionRequest);
+          if (!managedSuccessionPermit) throw new Error('blind-review managed succession admission unconfirmed');
+        }
         child = spawnChild(recycleArgs);
+        // Settlement observes the exact successor before its first work input.
+        if (managedSuccessionPermit) {
+          baseMeta.ptyPid = child.pid;
+          writeMeta();
+          await metadataWriter.whenIdle();
+        }
         liveAccountRoutingMode = env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? null;
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,

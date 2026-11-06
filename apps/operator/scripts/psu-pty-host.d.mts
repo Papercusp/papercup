@@ -5972,6 +5972,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {((request:any)=>Promise<any>)|null} [o.beforeRespawn] authenticated pre-child custody admission
  * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
  * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
@@ -6048,6 +6049,7 @@ export function hostThroughPty(o: {
     }) => Promise<any>) | undefined;
     refreshPersonaFile?: (() => Promise<any>) | undefined;
     onRespawn?: ((...args: any[]) => any) | undefined;
+    beforeRespawn?: ((request: any) => Promise<any>) | null | undefined;
     resolveRespawnNativeId?: ((pid: number) => string | null) | null | undefined;
     emitCompacted?: typeof fireSessionCompactedEvent | undefined;
     onReexec?: ((...args: any[]) => any) | null | undefined;
