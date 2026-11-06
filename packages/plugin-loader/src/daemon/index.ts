@@ -22,3 +22,7 @@ export { buildBwrapArgs, buildProviderBwrapArgs, PROVIDER_SYSTEM_RO_DIRS } from 
 export type { ProviderBwrapOptions } from './bwrap-args';
 export { JsonRpcBridge, JsonRpcHandlerError } from './jsonrpc-bridge';
 export type { JsonRpcRequestHandler } from './jsonrpc-bridge';
+// Trusted host/installer surface, never handler manifest input. Qualification
+// and complete inventory authorship remain separate from custody preparation.
+export { prepareHandlerRuntime, handlerRuntimeDigest } from './handler-runtime';
+export type { HandlerRuntimeFile, HandlerRuntimeInventory, PreparedHandlerRuntime } from './handler-runtime';

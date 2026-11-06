@@ -317,10 +317,10 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
 
     try {
       child = spawn(binary, argv, {
-      cwd: handlerMode ? '/' : opts.cwd,
-      // Provider mode: nothing of the host env reaches even the bwrap process.
-      env: handlerMode ? {} : providerMode ? { PATH: '/usr/bin:/bin' } : { PATH: process.env.PATH ?? '/usr/bin:/bin' },
-      stdio: ['pipe', 'pipe', 'pipe', ...(runtime?.descriptors ?? [])],
+        cwd: handlerMode ? '/' : opts.cwd,
+        // Strict modes scrub startup controls before bwrap itself executes.
+        env: handlerMode ? {} : providerMode ? { PATH: '/usr/bin:/bin' } : { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+        stdio: ['pipe', 'pipe', 'pipe', ...(runtime?.descriptors ?? [])],
       });
     } finally { runtime?.close(); }
     const spawned = child;
@@ -336,8 +336,10 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       throw new Error('child stdio pipes missing — spawn failed');
     }
 
+    let bootstrapStderr = '';
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {
+      if (handlerMode && !admitted) bootstrapStderr = (bootstrapStderr + chunk).slice(-8_192);
       for (const line of chunk.split('\n')) {
         if (line) opts.onLog?.(line);
       }
@@ -399,7 +401,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       } catch (error) {
         connection.shutdown(new Error('handler bootstrap refused'));
         spawned.kill('SIGKILL');
-        throw new DaemonSandboxUnavailableError(`handler bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);
+        throw new DaemonSandboxUnavailableError(`handler bootstrap refused: ${error instanceof Error ? error.message : String(error)}${bootstrapStderr ? `\n${bootstrapStderr}` : ''}`);
       }
     }
 
