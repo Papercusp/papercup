@@ -260,42 +260,51 @@ export function censusSources(sources) {
     }
     visit(sf, top);
   }
-  function targets(r, seen = new Set(), context = null) {
+  // A branch needs an independent visited path, but copying all its ancestors
+  // makes deep member/import aliases allocate cubic numbers of Set entries.
+  // Roll back only additions made by this branch; sibling and cycle semantics
+  // remain identical to resolving against a copy of the incoming set.
+  function branchTargets(r, seen, context, trail) {
+    const checkpoint = trail.length;
+    try { return targets(r, seen, context, trail); }
+    finally { while (trail.length > checkpoint) seen.delete(trail.pop()); }
+  }
+  function targets(r, seen = new Set(), context = null, trail = []) {
     if (!r || seen.has(r)) return [];
-    seen.add(r);
+    seen.add(r); trail.push(r);
     if (r.literal !== undefined) return [{ literal: r.literal }];
     if (r.id) {
       if (context?.has(r.id)) {
         const bound = context.get(r.id);
-        return targets(bound.ref, seen, bound.context);
+        return targets(bound.ref, seen, bound.context, trail);
       }
       const s = symbols.get(r.id);
       if (!s || seen.has(`id:${r.id}`)) return [];
-      seen.add(`id:${r.id}`);
-      return [context ? { ...s, boundContext: context } : s, ...s.aliases.flatMap(a => targets(a, seen, context))];
+      seen.add(`id:${r.id}`); trail.push(`id:${r.id}`);
+      return [context ? { ...s, boundContext: context } : s, ...s.aliases.flatMap(a => targets(a, seen, context, trail))];
     }
     if (r.root) return [{ roots: new Set([r.root]) }];
     if (r.module !== undefined) {
       const key = `module:${r.module}:${r.name}`;
       if (seen.has(key)) return [];
-      seen.add(key);
+      seen.add(key); trail.push(key);
       const m = modules.get(r.module);
       if (r.name === '*') return [{ module: m }];
-      return [...targets(m?.exports.get(r.name), seen, context), ...(m?.stars ?? []).flatMap(s => targets({ ...s, name: r.name }, seen, context)), ...(notificationName(r.name) ? targets(root(r.name), seen) : [])];
+      return [...targets(m?.exports.get(r.name), seen, context, trail), ...(m?.stars ?? []).flatMap(s => targets({ ...s, name: r.name }, seen, context, trail)), ...(notificationName(r.name) ? targets(root(r.name), seen, context, trail) : [])];
     }
     if (r.memberRef !== undefined) {
-      const keys = targets(r.memberRef, new Set(seen), context).map(t => t.literal).filter(k => k !== undefined);
+      const keys = branchTargets(r.memberRef, seen, context, trail).map(t => t.literal).filter(k => k !== undefined);
       // Unknown computed dispatch is included conservatively, never silently clean.
-      return keys.length ? keys.flatMap(member => targets({ base: r.base, member }, new Set(seen), context)) : [{ roots: new Set(['<unresolved-computed-dispatch>']) }];
+      return keys.length ? keys.flatMap(member => branchTargets({ base: r.base, member }, seen, context, trail)) : [{ roots: new Set(['<unresolved-computed-dispatch>']) }];
     }
     if (r.member) {
-      const bases = targets(r.base, seen, context);
+      const bases = targets(r.base, seen, context, trail);
       if (/^(call|apply|bind)$/.test(r.member)) return bases;
-      return [...bases.flatMap(b => b.module ? [...targets(b.module.exports.get(r.member), new Set(seen), context), ...b.module.stars.flatMap(s => targets({ ...s, name: r.member }, new Set(seen), context))] : b.members?.has(r.member) ? targets({ id: b.members.get(r.member).id }, new Set(seen), b.boundContext ?? context) : []), ...(notificationName(r.member) ? targets(root(r.member), seen) : [])];
+      return [...bases.flatMap(b => b.module ? [...branchTargets(b.module.exports.get(r.member), seen, context, trail), ...b.module.stars.flatMap(s => branchTargets({ ...s, name: r.member }, seen, context, trail))] : b.members?.has(r.member) ? branchTargets({ id: b.members.get(r.member).id }, seen, b.boundContext ?? context, trail) : []), ...(notificationName(r.member) ? targets(root(r.member), seen, context, trail) : [])];
     }
     let scope = r.scope;
     while (scope && !scope.names.has(r.name)) scope = scope.parent;
-    return [...(scope ? targets({ id: scope.names.get(r.name).id }, seen, context) : []), ...(notificationName(r.name) ? targets(root(r.name), seen) : [])];
+    return [...(scope ? targets({ id: scope.names.get(r.name).id }, seen, context, trail) : []), ...(notificationName(r.name) ? targets(root(r.name), seen, context, trail) : [])];
   }
   // Parameter injection also reveals wrappers whose names contain no notify token.
   if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS graph symbols=${symbols.size} calls=${calls.length}`);

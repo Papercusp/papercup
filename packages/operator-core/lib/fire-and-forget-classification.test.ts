@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -193,6 +193,48 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
       'src/app.ts': 'import {relay} from "./b"; relay();',
     });
     expect(c.sites.some(s => s.expression === 'relay ( )')).toBe(true);
+  });
+
+  it('keeps both notice roots across star-export siblings sharing an object alias', () => {
+    const c = censusSources({
+      'src/shared.ts': 'export const channels = { first: notifyOwner, second: sendOwner };',
+      'src/left.ts': 'import { channels } from "./shared"; export const relay = channels.first;',
+      'src/right.ts': 'import { channels } from "./shared"; export const relay = channels.second;',
+      'src/diamond.ts': 'export * from "./left"; export * from "./right";',
+      'src/app.ts': 'import * as notices from "./diamond"; notices.relay();',
+    });
+    expect(c.gaps).toEqual([]);
+    // A shared visited set would let the first barrel suppress the second
+    // traversal of channels. Distinct roots expose the missing sibling.
+    expect(c.sites.find(s => s.path === 'src/app.ts' && s.expression === 'notices . relay ( )')?.roots)
+      .toEqual(['notifyOwner', 'sendOwner']);
+  });
+
+  it('bounds visited-set copying through deep member aliases without losing notices', () => {
+    const NativeSet = globalThis.Set;
+    let copiedEntries = 0;
+    class TrackedSet<T> extends NativeSet<T> {
+      constructor(values?: Iterable<T> | null) {
+        super(values);
+        if (values instanceof NativeSet) copiedEntries += values.size;
+      }
+    }
+    const depth = 60;
+    const aliases = Array.from({ length: depth }, (_, i) =>
+      `const box${i} = { relay: ${i === 0 ? 'notifyOwner' : `box${i - 1}.relay`} };`,
+    ).join('\n');
+    vi.stubGlobal('Set', TrackedSet);
+    let census: NotifyCensus;
+    try {
+      census = scan(`${aliases}\nbox${depth - 1}.relay();`);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(census.gaps).toEqual([]);
+    expect(census.sites.find(s => s.expression === `box${depth - 1} . relay ( )`)?.roots).toContain('notifyOwner');
+    // Count copied entries rather than wall time: the previous resolver copied
+    // every growing ancestor set at each member branch, making aliases cubic.
+    expect(copiedEntries).toBeLessThan(depth * depth);
   });
 
   it('resolves namespace aliases and object methods with neutral names', () => {
