@@ -2601,6 +2601,41 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
     expect(result.stdout).not.toContain('no terminal receipt');
   });
 
+  it('defers a delivered stderr resource_draining refusal to a bounded next tick without waiting for health', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const tail = script.slice(script.indexOf('# ptool exits successfully for a business-level refusal'));
+    const diagnostics = 'ptool launcher\n✗ tool returned an error:\n' + JSON.stringify({
+      ok: false, reason: 'resource_draining', resource: 'staging-server',
+      holders: [{ owner: 'fixture-holder', mode: 'shared' }],
+    }, null, 2) + '\noperator-connect-trace';
+    const run = (age: string) => runFn(
+      ['restart_result_is_accepted', 'restart_result_is_pending', 'restart_result_is_pre_dispatch_refusal',
+        'restart_refusal_is_transient_git_sync', 'health_sha_matches_target', 'staging_restart_is_observed'],
+      [
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_health_source_sha() { echo UNEXPECTED_HEALTH_PROBE; }',
+        'current_commit_age_sec() { printf "%s" "$TEST_AGE"; }',
+        tail,
+      ].join('\n'),
+      { env: { restart_verified: '0', restart_tool_status: '1', restart_pending: '0', restart_result: '',
+        restart_diagnostics: diagnostics, served_sha: 'fedcba98', TEST_AGE: age, MAX_STALE_SEC: '120' } },
+    );
+
+    const recent = run('30');
+    expect(recent.status, recent.stderr).toBe(0);
+    expect(recent.stdout).toContain('deferring restart');
+    expect(recent.stdout).toContain('resource_draining');
+    expect(recent.stdout).toContain('fixture-holder');
+    expect(recent.stdout).toContain('next scheduled sync tick will retry');
+    expect(recent.stdout).not.toContain('UNEXPECTED_HEALTH_PROBE');
+
+    const stale = run('120');
+    expect(stale.status, stale.stderr).toBe(1);
+    expect(stale.stdout).toContain('staleness ceiling reached');
+    expect(stale.stdout).toContain('resource_draining refusal');
+    expect(stale.stdout).not.toContain('UNEXPECTED_HEALTH_PROBE');
+  });
+
   const accepted = (result: unknown) => runFn(
     ['restart_result_is_accepted'],
     'restart_result_is_accepted',

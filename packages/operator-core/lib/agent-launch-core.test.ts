@@ -1575,6 +1575,103 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
     expect(readAdvSession).toHaveBeenCalledWith(11);
   });
 
+  it('keeps a lineage-confirmed Codex carry pending before carry delivery instead of reporting a UUID mismatch', async () => {
+    const lineage = {
+      ownerId: OWNER,
+      advSessionId: 11,
+      hostStartedAt: 100,
+      sourceNativeId,
+      sourceNativeRef,
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId,
+      targetNativeRef,
+    };
+    const events = [
+      { kind: 'respawned', mode: 'carry-respawn', ownerId: OWNER,
+        managedCarryLineage: { ...lineage, targetNativeId: null, targetNativeRef: null } },
+      { kind: 'respawn-binding-confirmed', ownerId: OWNER, advSessionId: 11,
+        hostStartedAt: 100, childGeneration: 2, nativeId: targetNativeId },
+    ] as unknown as PtyHostEvent[];
+    const readAdvSession = vi.fn(async (id: number) => ({
+      id, coordOwnerId: OWNER, agent: 'codex', sessionId: targetNativeId,
+    } as never));
+
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: sourceNativeId,
+      findHost: () => ptyHostFixture({
+        advSessionId: '11', startedAt: 100, childGeneration: 2, nativeSessionId: targetNativeId,
+      }),
+      readAdvSession,
+      readHostEvents: () => events,
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({
+      started: null,
+      mismatch: false,
+      expectedSessionId: sourceNativeId,
+      actualSessionId: targetNativeId,
+    });
+    expect(readAdvSession).not.toHaveBeenCalled();
+  });
+
+  it('accepts a lineage-confirmed Codex carry only after delivery arrives during the bounded wait', async () => {
+    const lineage = {
+      ownerId: OWNER,
+      advSessionId: 11,
+      hostStartedAt: 100,
+      sourceNativeId,
+      sourceNativeRef,
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId,
+      targetNativeRef,
+    };
+    const events = [
+      { kind: 'respawned', mode: 'carry-respawn', ownerId: OWNER,
+        managedCarryLineage: { ...lineage, targetNativeId: null, targetNativeRef: null } },
+      { kind: 'respawn-binding-confirmed', ownerId: OWNER, advSessionId: 11,
+        hostStartedAt: 100, childGeneration: 2, nativeId: targetNativeId },
+    ] as unknown as PtyHostEvent[];
+    const readAdvSession = vi.fn(async (id: number) => ({
+      id, coordOwnerId: OWNER, agent: 'codex', sessionId: targetNativeId,
+    } as never));
+    const sleep = vi.fn(async () => {
+      events.push({
+        kind: 'respawn-carry-delivered',
+        mode: 'carry-respawn',
+        ownerId: OWNER,
+        nativeId: targetNativeId,
+        turnStartVerified: true,
+        nativeRef: lineage.targetNativeRef,
+        managedCarryLineage: lineage,
+      } as unknown as PtyHostEvent);
+    });
+
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: sourceNativeId,
+      findHost: () => ptyHostFixture({
+        advSessionId: '11', startedAt: 100, childGeneration: 2, nativeSessionId: targetNativeId,
+      }),
+      readAdvSession,
+      readHostEvents: () => events,
+      sleep,
+      pollMs: 1,
+      timeoutMs: 1000,
+    });
+
+    expect(result).toMatchObject({
+      started: true,
+      mismatch: false,
+      managedCarry: true,
+      expectedSessionId: sourceNativeId,
+      actualSessionId: targetNativeId,
+    });
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(readAdvSession).toHaveBeenCalledWith(11);
+  });
+
   it.each([
     ['unrelated source UUID', (events: PtyHostEvent[]) => {
       for (const event of events) {

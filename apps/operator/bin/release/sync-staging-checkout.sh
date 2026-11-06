@@ -1939,6 +1939,41 @@ fi
 # above), so inspect the result rather than treating process status as the verdict. A verified coalesce is a
 # success: another recent restart already cycled the same service and the
 # cooldown prevents a redundant outage.
+restart_result_is_resource_draining_refusal() {
+  printf '%s' "${1:-}" | node -e '
+    let text = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { text += chunk; });
+    process.stdin.on("end", () => {
+      const marker = "✗ tool returned an error:";
+      const markerAt = text.indexOf(marker);
+      const candidate = markerAt < 0 ? text : text.slice(markerAt + marker.length);
+      const start = candidate.indexOf("{");
+      if (start < 0) return process.exit(1);
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      let end = -1;
+      for (let i = start; i < candidate.length; i++) {
+        const code = candidate.charCodeAt(i);
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (code === 92) escaped = true;
+          else if (code === 34) inString = false;
+          continue;
+        }
+        if (code === 34) inString = true;
+        else if (code === 123) depth++;
+        else if (code === 125 && --depth === 0) { end = i; break; }
+      }
+      if (end < 0) return process.exit(1);
+      try {
+        const result = JSON.parse(candidate.slice(start, end + 1));
+        process.exit(result?.ok === false && result?.reason === "resource_draining" ? 0 : 1);
+      } catch { process.exit(1); }
+    });
+  '
+}
 restart_failure_detail="$restart_result $restart_diagnostics"
 if [ "${#restart_failure_detail}" -gt 3000 ]; then
   restart_failure_detail="${restart_failure_detail:0:1800} ...[middle truncated]... ${restart_failure_detail: -1100}"
@@ -1947,6 +1982,14 @@ if [ "$restart_verified" -eq 1 ]; then
   log "coordinated dev:restart independently verified: MainPID $observed_main_pid serves exact source $observed_health_sha"
 elif [ "$restart_tool_status" -ne 0 ] && restart_result_is_pre_dispatch_refusal "$restart_result $restart_diagnostics"; then
   log "FATAL: coordinated dev:restart was refused before dispatch: ${restart_result:0:250} ${restart_diagnostics:0:250}"
+  exit 1
+elif restart_result_is_resource_draining_refusal "$restart_result $restart_diagnostics"; then
+  age="$(current_commit_age_sec "$served_sha")"
+  if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
+    log "deferring restart — dev:restart delivered a resource_draining refusal; no restart was scheduled and :3170 serves a ${age}s-old build (< ${MAX_STALE_SEC}s ceiling). The next scheduled sync tick will retry through the canonical restart path. Refusal: ${restart_failure_detail:0:300}"
+    exit 0
+  fi
+  log "staleness ceiling reached (${age}s ≥ ${MAX_STALE_SEC}s) after a resource_draining refusal; escalating instead of waiting for target health"
   exit 1
 elif [ "$restart_tool_status" -ne 0 ] && printf '%s' "$restart_result $restart_diagnostics" | grep -Eq '"reason"[[:space:]]*:[[:space:]]*"resource_drain_timeout"'; then
   # MCP error results are printed to stderr by ptool (exit 1), including a

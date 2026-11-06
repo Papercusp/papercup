@@ -2487,7 +2487,7 @@ async function verifyManagedCarryResumeLineage(
   host: PsuPtyHost,
   readAdvSession: typeof getAdvSession,
   readHostEvents: typeof readHostEventTail,
-): Promise<boolean> {
+): Promise<boolean | null> {
   const advSessionId = Number(host.advSessionId);
   const hostStartedAt = Number(host.startedAt);
   const targetGeneration = Number(host.childGeneration);
@@ -2514,11 +2514,10 @@ async function verifyManagedCarryResumeLineage(
       deliveredIndex = index;
       break;
     }
-    if (deliveredIndex < 0) return false;
-
     let respawnRecorded = false;
     let bindingConfirmed = false;
-    for (let index = 0; index < deliveredIndex; index += 1) {
+    const evidenceEndIndex = deliveredIndex < 0 ? events.length : deliveredIndex;
+    for (let index = 0; index < evidenceEndIndex; index += 1) {
       const event = events[index] as Record<string, unknown>;
       if (event.kind === 'respawned' && event.mode === 'carry-respawn') {
         const lineage = managedCarryLineageOf(events[index]);
@@ -2532,6 +2531,10 @@ async function verifyManagedCarryResumeLineage(
           event.nativeId === actualSessionId) bindingConfirmed = true;
     }
     if (!respawnRecorded || !bindingConfirmed) return false;
+    // The confirmed child binding protects this successor from mismatch
+    // rollback, but does not prove that its carried turn has started. Keep
+    // observing until the durable carry-delivered event arrives.
+    if (deliveredIndex < 0) return null;
 
     const row = await readAdvSession(advSessionId);
     return Boolean(row && Number(row.id) === advSessionId && row.coordOwnerId === ownerId &&
@@ -2577,7 +2580,9 @@ export async function verifyResumeStarted(
   const begun = Date.now();
   let portExpected: string | null = null;
   let portActual: string | null = null;
+  let pendingManagedCarry: { expectedSessionId: string; actualSessionId: string } | null = null;
   for (;;) {
+    pendingManagedCarry = null;
     const host = await findHost(ownerId);
     if (host) {
       const expected = expectedSessionId?.trim() || null;
@@ -2588,26 +2593,40 @@ export async function verifyResumeStarted(
         // Keep missing physical identity unknown instead of certifying argv.
         if (expected == null || actual != null) {
           const mismatch = expected != null && actual !== expected;
-          if (mismatch && expected != null && actual != null &&
-              await verifyManagedCarryResumeLineage(
-                ownerId, expected, actual, host, readAdvSession, readHostEvents,
-              )) {
+          if (mismatch && expected != null && actual != null) {
+            const managedCarry = await verifyManagedCarryResumeLineage(
+              ownerId, expected, actual, host, readAdvSession, readHostEvents,
+            );
+            if (managedCarry === true) {
+              return {
+                started: true,
+                waitedMs: Date.now() - begun,
+                expectedSessionId: expected,
+                actualSessionId: actual,
+                mismatch: false,
+                managedCarry: true,
+              };
+            }
+            if (managedCarry === null) {
+              pendingManagedCarry = { expectedSessionId: expected, actualSessionId: actual };
+            } else {
+              return {
+                started: false,
+                waitedMs: Date.now() - begun,
+                expectedSessionId: expected,
+                actualSessionId: actual,
+                mismatch: true,
+              };
+            }
+          } else {
             return {
-              started: true,
+              started: !mismatch,
               waitedMs: Date.now() - begun,
               expectedSessionId: expected,
               actualSessionId: actual,
-              mismatch: false,
-              managedCarry: true,
+              mismatch,
             };
           }
-          return {
-            started: !mismatch,
-            waitedMs: Date.now() - begun,
-            expectedSessionId: expected,
-            actualSessionId: actual,
-            mismatch,
-          };
         }
       }
       if (expectedPort) {
@@ -2680,8 +2699,10 @@ export async function verifyResumeStarted(
       return {
         started: null,
         waitedMs: Date.now() - begun,
-        expectedSessionId: expectedPort ? portExpected : expectedSessionId?.trim() || null,
-        actualSessionId: expectedPort ? portActual : null,
+        expectedSessionId: expectedPort
+          ? portExpected
+          : pendingManagedCarry?.expectedSessionId ?? (expectedSessionId?.trim() || null),
+        actualSessionId: expectedPort ? portActual : pendingManagedCarry?.actualSessionId ?? null,
         mismatch: false,
       };
     }
