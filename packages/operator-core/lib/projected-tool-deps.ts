@@ -2114,8 +2114,8 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
   // P-004 / R-2): one row per invocation id, so a second record for the same callId is dropped.
   const codeIntel = isNativeCodeIntelTool(input.toolName);
   if (codeIntel && isDuplicateCodeIntelRecord(input.callId)) return;
-  const otel = finishToolTrace(input);
   const dispatchReceipt = finishToolDispatchReceipt(input);
+  const otel = finishToolTrace(input);
   const managedOperation = dispatchReceipt ? captureManagedOperation({ ...input, receipt: dispatchReceipt }) : null;
   // OTel identity and child receipts are host-owned, including when tracing was
   // unavailable. Caller metadata must never survive as a guessed observation.

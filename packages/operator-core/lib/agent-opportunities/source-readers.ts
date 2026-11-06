@@ -8,7 +8,8 @@ import { parseScratchUri, safeScratchFilesystemPath, scratchRootForWorkspace } f
 import { authorizeScratchReference, parseScratchReference } from '../scratch-reference';
 import { findSessionTranscript } from '../claude-sessions';
 import { findCodexRolloutPathByUuid, findOmpSessionPath } from '../session-transcript-resolvers';
-import { nativeTranscriptSources, type NativeCorpusOptions, type NativeProvider } from './native-operation';
+import { managedOperationEvidence, nativeTranscriptSources, type ManagedOperationSource, type NativeCorpusOptions, type NativeProvider } from './native-operation';
+import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
 import type { SearchCorpusOptions } from './search-reformulation';
 import { readSqlIntentRetention } from '../bash-substitution/sql-intent-corpus';
 import type { MonitoredFamily } from './pipeline';
@@ -62,6 +63,58 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
     return rows.length ? { sourceBoundary: opts.sourceBoundary } : null;
   };
   const ledger = authorizeSource('tool_invocations'), activity = authorizeSource('agent_activity');
+  /** Exact bounded dispatch identities, never a search of wrapper source. The
+   * rows and their CURRENT authority are checked again before evidence escapes. */
+  const readManagedOperations = async (input: {
+    scope: SqlIntentScope; ids?: readonly string[]; callIds?: readonly string[];
+    actor?: string; parentCallId?: string; since?: string; until?: string;
+  }) => {
+    try {
+      const ids = input.ids, calls = input.callIds;
+      if (input.scope.workspaceId !== opts.workspaceId || input.scope.sourceBoundary !== opts.sourceBoundary
+        || !!ids === !!calls || !(ids ?? calls)?.length || (ids ?? calls)!.length > 256
+        || ids?.some(id => !/^\d+$/.test(id)) || calls?.some(id => !/^[A-Za-z0-9][A-Za-z0-9_:/.@-]{0,399}$/.test(id))
+        || calls && (!input.actor || !input.parentCallId || !input.since || !input.until
+          || !Number.isFinite(Date.parse(input.since)) || !Number.isFinite(Date.parse(input.until))
+          || Date.parse(input.until) < Date.parse(input.since) || Date.parse(input.until) - Date.parse(input.since) > 3600_000)
+        || !await scopeAllowed()) return [];
+      const select = ids ? sql`AND id=ANY(${[...ids]}::bigint[])`
+        : sql`AND metadata_json->'managedOperation'->>'callId'=ANY(${[...calls!]}::text[])
+            AND coord_owner_id=${input.actor!} AND invoked_at>=${input.since!}::timestamptz
+            AND invoked_at<=${input.until!}::timestamptz`;
+      const candidates = await sql<{ id: string }[]>`SELECT id::text FROM harness_shared.tool_invocations
+        WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug} ${select} ORDER BY id LIMIT 257`;
+      if (candidates.length > 256 || ids && candidates.length !== new Set(ids).size) return [];
+      // All supplied rows participate in continuation identity. Partial authority
+      // cannot discard a conflicting owner and thereby certify a job match.
+      for (const row of candidates) if (!await ledger(row.id)) return [];
+      const load = () => sql<{ id: string; at: string; actor: string; verified: boolean; tool: string;
+        args: unknown; status: string; metadata: Record<string, unknown>; origin: string; origin_source: string }[]>`
+        SELECT id::text,to_char(invoked_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at,
+          coord_owner_id AS actor,harness_shared.is_agent_coord_owner_id(coord_owner_id,role) AS verified,
+          tool_name AS tool,args_json AS args,status,metadata_json AS metadata,
+          call_origin AS origin,call_origin_source AS origin_source
+        FROM harness_shared.tool_invocations WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}
+          AND id=ANY(${candidates.map(row => row.id)}::bigint[]) ORDER BY id`;
+      const before = await load();
+      if (before.length !== candidates.length) return [];
+      const sources: ManagedOperationSource[] = before.map(row => ({ ...row,
+        workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, sourceBoundary: opts.sourceBoundary,
+        verifiedAgent: row.verified, receipt: row.metadata?.managedOperation,
+        choice: row.origin_source !== 'declared' ? 'unknown' : row.origin === 'agent' ? 'agent'
+          : row.origin === 'hook' ? 'hook' : row.origin === 'system' ? 'system' : 'unknown',
+      }));
+      if (input.parentCallId && sources.some(source => {
+        const receipt = source.receipt as { parentCallId?: unknown } | null;
+        return !receipt || receipt.parentCallId !== input.parentCallId || source.actor !== input.actor;
+      })) return [];
+      const evidence = managedOperationEvidence(sources, input.scope);
+      if (!await scopeAllowed()) return [];
+      for (const row of candidates) if (!await ledger(row.id)) return [];
+      if (JSON.stringify(before) !== JSON.stringify(await load())) return [];
+      return evidence;
+    } catch { return []; }
+  };
   const readOutput: SearchCorpusOptions['readOutput'] = async input => {
     try {
       if (!input.outputRef || !await ledger(input.id)) return null;
@@ -167,7 +220,7 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
     return window.family === 'native-operation' ? reconcileNativeCapture({ ...opts, ...window, authorize: scopeAllowed })
       : readSqlIntentRetention({ ...opts, ...window });
   };
-  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readOutput, readTranscript, readContinuity,
+  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readManagedOperations, readOutput, readTranscript, readContinuity,
     /** @internal Candidate pairing only; never use as a production source authority. */
     readTranscriptCandidate };
 }

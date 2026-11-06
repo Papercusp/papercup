@@ -54,6 +54,7 @@ export interface OperationAdapterEvidence {
     expiresAt: string | null;
     providerCallId?: string;
     parentOperationId?: string;
+    choice?: 'agent' | 'hook' | 'system' | 'unknown';
   };
   outcome: {
     status: 'success' | 'error' | 'refused' | 'preview' | 'running' | 'unknown';
@@ -215,6 +216,7 @@ function copyOperationEvidence(operations: readonly OperationAdapterEvidence[]):
       || !['read-only', 'idempotent', 'checkpointed', 'non-replayable'].includes(operation.replayClass)
       || !['success', 'error', 'refused', 'preview', 'running', 'unknown'].includes(operation.outcome.status)
       || typeof operation.outcome.final !== 'boolean'
+      || (source.choice !== undefined && !['agent', 'hook', 'system', 'unknown'].includes(source.choice))
       || (operation.outcome.status === 'running' && operation.outcome.final)) throw new Error('invalid_operation_evidence');
     const lifecycle = operation.lifecycle;
     if (lifecycle && (lifecycle.attemptId !== operation.operationId || typeof lifecycle.yielded !== 'boolean'
@@ -230,7 +232,8 @@ function copyOperationEvidence(operations: readonly OperationAdapterEvidence[]):
         sourceBoundary: identity.sourceBoundary, epoch: identity.epoch },
       source: { ref: source.ref, authorityRef: source.authorityRef, observedAt: source.observedAt, expiresAt: source.expiresAt,
         ...(source.providerCallId ? { providerCallId: source.providerCallId } : {}),
-        ...(source.parentOperationId ? { parentOperationId: source.parentOperationId } : {}) },
+        ...(source.parentOperationId ? { parentOperationId: source.parentOperationId } : {}),
+        ...(source.choice ? { choice: source.choice } : {}) },
       outcome: { status: operation.outcome.status, final: operation.outcome.final,
         ...(operation.outcome.receiptRef ? { receiptRef: operation.outcome.receiptRef } : {}) },
       ...(lifecycle ? { lifecycle: { attemptId: lifecycle.attemptId, yielded: lifecycle.yielded,

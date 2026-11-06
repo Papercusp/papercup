@@ -85,7 +85,7 @@ function operation(overrides: Partial<OperationAdapterEvidence> = {}): Operation
     semanticIdentity: { version: 'shell-quote:operation-v1', fingerprint: 'a'.repeat(64),
       workspaceId: SCOPE.workspaceId, sourceBoundary: SCOPE.sourceBoundary, epoch: SCOPE.epoch },
     source: { ref: 'native-receipt:100', authorityRef: 'source-acl:100', observedAt: '2026-11-05T12:00:00Z',
-      expiresAt: '2026-11-07T12:00:00Z', providerCallId: 'call:100', parentOperationId: 'invocation:99' },
+      expiresAt: '2026-11-07T12:00:00Z', providerCallId: 'call:100', parentOperationId: 'invocation:99', choice: 'agent' },
     outcome: { status: 'success', final: true, receiptRef: 'result:100' }, replayClass: 'read-only',
     bindingSchema: { version: 1, properties: { cwd: { type: 'string', lifetime: { kind: 'invocation-ephemeral' } } }, additionalProperties: false },
     decisionRefs: ['review:edition-1'], ...overrides,

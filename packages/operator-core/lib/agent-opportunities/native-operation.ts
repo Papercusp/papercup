@@ -6,7 +6,8 @@ import { summariseActivity } from '@papercusp/activity-bridge';
 import { normalizeMcpName } from '@papercusp/tooldef/tool-projection';
 import { atomizePipeline } from '../bash-substitution/atomize';
 import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
-import type { OperationAdapterEvidence } from '../orchestration-trace';
+import type { ManagedOperationReceipt, OperationAdapterEvidence } from '../orchestration-trace';
+import { fingerprintSqlIntent } from '../bash-substitution/sql-intent-fingerprint';
 import { isSensitiveValueKey, redactSensitiveText, redactStructuredSensitiveValue } from '../sensitive-text';
 import { createCodexTimelineParser, createOmpTimelineParser } from '../session-timeline-parsers';
 import { createAgentTimelineParser } from '../owner-sessions/timeline';
@@ -151,6 +152,90 @@ function nativeOutcome(result: SearchSource['result'], kind: NativeKind | null):
 }
 function yieldedResult(body: Obj) {
   return (body.exit_code ?? body.exitCode) == null && (body.session_id != null || body.running === true || body.status === 'running');
+}
+
+/** Host-owned invocation rows, hydrated only by the current-source reader. */
+export interface ManagedOperationSource {
+  id: string; workspaceId: string; harnessSlug: string; sourceBoundary: string;
+  actor: string; verifiedAgent: boolean; choice: NonNullable<OperationAdapterEvidence['source']['choice']>;
+  at: string; tool: string; args: unknown; status: string; receipt: unknown;
+}
+
+/** Reuse the shared adapter contract without turning source text into execution
+ * proof. Wrapper copies and output reads cannot create a second operation. */
+export function managedOperationEvidence(sources: readonly ManagedOperationSource[], scope: SqlIntentScope): OperationAdapterEvidence[] {
+  if (sources.length > 2000) return [];
+  const ref = (value: unknown): value is string => typeof value === 'string'
+    && /^[A-Za-z0-9][A-Za-z0-9_:/.@-]{0,399}$/.test(value);
+  const valid = sources.flatMap(source => {
+    const receipt = object(source.receipt), outcome = object(receipt.outcome);
+    if (source.workspaceId !== scope.workspaceId || source.sourceBoundary !== scope.sourceBoundary
+      || !source.harnessSlug || !source.actor || !/^\d+$/.test(source.id)
+      || !Number.isFinite(Date.parse(source.at)) || receipt.version !== 1 || !ref(receipt.callId)
+      || receipt.parentCallId !== undefined && (!ref(receipt.parentCallId) || receipt.parentCallId === receipt.callId)
+      || !['agent', 'hook', 'system', 'unknown'].includes(source.choice)
+      || source.choice === 'agent' && !source.verifiedAgent
+      || !['operation', 'wrapper', 'poll'].includes(text(receipt.role)) || typeof receipt.handlerEntered !== 'boolean'
+      || receipt.disposition !== source.status || !['success', 'error', 'refused', 'preview', 'running', 'unknown'].includes(text(outcome.status))
+      || typeof outcome.final !== 'boolean' || outcome.status === 'running' && outcome.final
+      || !receipt.handlerEntered && outcome.status === 'success') return [];
+    miningScopeId(scope, source.harnessSlug);
+    return [{ source, receipt: receipt as unknown as ManagedOperationReceipt }];
+  });
+  const identity = (row: typeof valid[number]) => stable([row.source.harnessSlug, row.source.actor, row.receipt.callId]);
+  const grouped = new Map<string, typeof valid>();
+  for (const row of valid) grouped.set(identity(row), [...grouped.get(identity(row)) ?? [], row]);
+  // Conflicting copies do not acquire authority by last-write-wins.
+  const rows = [...grouped.values()].flatMap(copies => new Set(copies.map(row => stable([
+    row.source.tool, clean(row.source.args, scope), row.source.status, row.source.choice, row.receipt,
+  ]))).size === 1 ? [copies[0]!] : []);
+  const operationId = (row: typeof rows[number], callId = row.receipt.callId) =>
+    hash(scope, 'managed-operation', [row.source.harnessSlug, row.source.actor, callId]);
+  const jobKeys = (row: typeof rows[number]) => Object.entries(object(row.receipt.job))
+    .filter(([key, value]) => ['bashId', 'taskId'].includes(key) && ref(value))
+    .map(([key, value]) => stable([row.source.harnessSlug, row.source.actor, key, value]));
+  const attempts = rows.filter(row => row.receipt.role === 'operation'
+    && !['tools:invoke', 'functions.exec', 'capability:bash_output'].includes(row.source.tool));
+  const owners = new Map<string, Set<string>>();
+  for (const row of attempts) for (const key of jobKeys(row))
+    owners.set(key, new Set([...(owners.get(key) ?? []), identity(row)]));
+  return attempts.flatMap(row => {
+    const { source, receipt } = row, args = object(source.args);
+    if (!Object.keys(args).length || args._truncated === true || args._partial === true
+      || object(args._projection).truncated === true) return [];
+    const shell = source.tool === 'capability:bash' ? semantics(source.tool, args, scope) : null;
+    const sql = source.tool === 'dev:pg_query' ? fingerprintSqlIntent(text(args.sql), scope) : null;
+    if (source.tool === 'capability:bash' && !shell || sql && sql.status !== 'supported') return [];
+    const polls = rows.filter(poll => {
+      if (poll.receipt.role !== 'poll' || poll.source.tool !== 'capability:bash_output'
+        || Date.parse(poll.source.at) < Date.parse(source.at)) return false;
+      const keys = jobKeys(poll);
+      return keys.length > 0 && keys.every(key => owners.get(key)?.size === 1 && owners.get(key)?.has(identity(row)))
+        && jobKeys(row).every(key => keys.includes(key));
+    }).sort((a, b) => Date.parse(a.source.at) - Date.parse(b.source.at) || a.source.id.localeCompare(b.source.id, 'en', { numeric: true }));
+    const finals = polls.filter(poll => poll.receipt.outcome.final);
+    const finalOutcomes = new Set([...(receipt.outcome.final ? [receipt.outcome.status] : []),
+      ...finals.map(poll => poll.receipt.outcome.status)]);
+    const settlement = receipt.yielded && finals.length ? finals.at(-1)! : row;
+    const id = operationId(row);
+    const fingerprint = sql?.status === 'supported' ? sql.fingerprint
+      : hash(scope, 'managed-semantics', [source.harnessSlug, source.tool, shell?.value ?? clean(args, scope)]);
+    return [{ operationId: id, family: shell ? 'shell' as const : sql ? 'sql' as const
+      : source.tool === 'code:run' ? 'composition' as const : 'native-operation' as const,
+      adapterVersion: 'managed-operation:v1',
+      semanticIdentity: { version: sql?.status === 'supported' ? sql.version : 'managed-semantics:v1',
+        fingerprint, workspaceId: scope.workspaceId, sourceBoundary: scope.sourceBoundary, epoch: scope.epoch },
+      source: { ref: hash(scope, 'managed-source', [source.id]), authorityRef: miningScopeId(scope, source.harnessSlug),
+        observedAt: source.at, expiresAt: null, providerCallId: id, choice: source.choice,
+        ...(receipt.parentCallId ? { parentOperationId: operationId(row, receipt.parentCallId) } : {}) },
+      outcome: { status: finalOutcomes.size > 1 ? 'unknown' as const : settlement.receipt.outcome.status,
+        final: finalOutcomes.size > 1 ? false : settlement.receipt.outcome.final,
+        receiptRef: hash(scope, 'managed-receipt', [settlement.source.id, settlement.receipt.callId]) },
+      lifecycle: { attemptId: id, yielded: receipt.yielded === true, polls: polls.map(poll => ({
+        providerCallId: operationId(poll), sourceRef: hash(scope, 'managed-source', [poll.source.id]),
+        receiptRef: hash(scope, 'managed-receipt', [poll.source.id, poll.receipt.callId]),
+      })) }, replayClass: 'non-replayable' as const, decisionRefs: [] }];
+  });
 }
 export function observeNativeOperation(source: SearchSource, scope: SqlIntentScope): NativeObservation | null {
   miningScopeId(scope, source.harnessSlug);

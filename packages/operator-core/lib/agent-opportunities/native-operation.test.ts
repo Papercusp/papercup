@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { recordActivity } from '@papercusp/activity-bridge';
 import { boundedStage } from './pipeline';
-import { observeNativeOperation, groupNativeOperations, readableNativeChains, nativeTranscriptSources, type NativeProvider } from './native-operation';
+import { managedOperationEvidence, observeNativeOperation, groupNativeOperations, readableNativeChains, nativeTranscriptSources, type ManagedOperationSource, type NativeProvider } from './native-operation';
 import { normalizeExecutionTrace, readableOperationEvidence } from '../orchestration-trace';
 import type { SearchSource } from './search-reformulation';
 const scope = { workspaceId: 'native-test', sourceBoundary: 'authorized', epoch: 'v1', key: new Uint8Array(32).fill(91) };
@@ -15,6 +15,63 @@ export const source = (id: string, over: Partial<SearchSource> = {}): SearchSour
   result: { provider: 'codex', namespace: 'session-1', callId: id, complete: true, status: 'ok', body: { exit_code: 0 } }, ...over,
 });
 const observe = (s: SearchSource, scoped = scope) => observeNativeOperation(s, scoped)!;
+
+const managed = (id = '1', over: Partial<ManagedOperationSource> = {}): ManagedOperationSource => ({
+  id, workspaceId: scope.workspaceId, harnessSlug: 'native', sourceBoundary: scope.sourceBoundary,
+  actor: 'su-managed', verifiedAgent: true, choice: 'agent', at: '2026-10-24T12:00:00Z',
+  tool: 'capability:bash', args: { command: 'echo private-value', cwd: '/private/path', env: { TOKEN: 'credential' } }, status: 'ok',
+  receipt: { version: 1, callId: `host:${id}`, parentCallId: 'host:parent', handlerEntered: true,
+    role: 'operation', disposition: 'ok', outcome: { status: 'success', final: true } }, ...over,
+});
+const managedReceipt = (over: Record<string, unknown> = {}) => ({ ...managed().receipt as Record<string, unknown>, ...over });
+
+it('P005 managed actual receipts share trace evidence while copies, wrappers, missing receipts and polls add no executions', async () => {
+  const row = managed();
+  const evidence = managedOperationEvidence([row, { ...row, id: '2' },
+    managed('3', { tool: 'functions.exec', args: { script: 'await tools.exec_command({cmd:"hidden"})' } }),
+    managed('4', { receipt: null }), managed('5', { tool: 'capability:bash_output', receipt: managedReceipt({ callId: 'host:5', role: 'poll' }) })], scope);
+  expect(evidence).toHaveLength(1);
+  expect(evidence[0]).toMatchObject({ family: 'shell', source: { choice: 'agent', parentOperationId: expect.any(String) },
+    outcome: { status: 'success', final: true }, replayClass: 'non-replayable' });
+  expect(JSON.stringify(evidence)).not.toMatch(/private-value|private\/path|credential|host:|su-managed|hidden/);
+  const trace = await normalizeExecutionTrace({ script: 'return 1;', tools: [], operations: evidence });
+  expect(trace.operations).toEqual(evidence);
+  expect(managedOperationEvidence([row, { ...row, id: '2', args: { command: 'another' } }], scope)).toEqual([]);
+});
+
+it('P005 managed yielded jobs settle from exact same-actor polls and retain conflicting and absent outcomes', () => {
+  const job = { bashId: 'job-exact', taskId: 'task-exact' };
+  const start = managed('1', { receipt: managedReceipt({ yielded: true, job, outcome: { status: 'running', final: false } }) });
+  const poll = managed('2', { at: '2026-10-24T12:00:01Z', tool: 'capability:bash_output',
+    args: { task_id: 'task-exact' }, receipt: managedReceipt({ callId: 'host:poll', role: 'poll', job,
+      outcome: { status: 'error', final: true } }) });
+  const settled = managedOperationEvidence([start, poll], scope);
+  expect(settled).toHaveLength(1);
+  expect(settled[0]).toMatchObject({ outcome: { status: 'error', final: true }, lifecycle: { yielded: true, polls: [expect.any(Object)] } });
+  for (const wrong of [{ actor: 'su-foreign' }, { at: '2026-10-24T11:00:00Z' },
+    { receipt: { ...poll.receipt as object, job: { bashId: 'other', taskId: 'task-exact' } } }])
+    expect(managedOperationEvidence([start, { ...poll, ...wrong }], scope)[0]?.outcome.status).toBe('running');
+  const reused = managed('3', { receipt: managedReceipt({ callId: 'host:second', yielded: true, job, outcome: { status: 'running', final: false } }) });
+  expect(managedOperationEvidence([start, reused, poll], scope).every(op => op.outcome.status === 'running')).toBe(true);
+  const contrary = { ...poll, id: '4', receipt: { ...poll.receipt as object, callId: 'host:contrary', outcome: { status: 'success', final: true } } };
+  expect(managedOperationEvidence([start, poll, contrary], scope)[0]?.outcome).toMatchObject({ status: 'unknown', final: false });
+});
+
+it('P005 managed adapters retain SQL semantics, shell context, origin and refused dispositions without minting replay', () => {
+  const sql = managed('1', { tool: 'dev:pg_query', args: { sql: 'SELECT id FROM jobs ORDER BY id LIMIT 2' } });
+  const a = managedOperationEvidence([sql], scope)[0]!;
+  expect(a.family).toBe('sql');
+  expect(managedOperationEvidence([{ ...sql, args: { sql: 'SELECT name FROM jobs ORDER BY id LIMIT 2' } }], scope)[0]?.semanticIdentity.fingerprint)
+    .not.toBe(a.semanticIdentity.fingerprint);
+  for (const choice of ['agent', 'hook', 'system', 'unknown'] as const)
+    expect(managedOperationEvidence([managed('1', { choice })], scope)[0]?.source.choice).toBe(choice);
+  expect(managedOperationEvidence([managed('1', { verifiedAgent: false })], scope)).toEqual([]);
+  const refused = managed('1', { status: 'role-not-allowed', receipt: managedReceipt({ handlerEntered: false,
+    disposition: 'role-not-allowed', outcome: { status: 'refused', final: true } }) });
+  expect(managedOperationEvidence([refused], scope)[0]?.outcome.status).toBe('refused');
+  expect(managedOperationEvidence([managed('1', { sourceBoundary: 'foreign' })], scope)).toEqual([]);
+  expect(managedOperationEvidence([managed('1', { args: { _truncated: true, command: 'echo truncated' } })], scope)).toEqual([]);
+});
 
 it.each(['claude', 'codex', 'omp'] as const)('P005 actual %s receipts feed shared operation evidence without executable source or authority', async provider => {
   const call = source('actual-receipt', { provider, args: { cmd: 'echo private-value', cwd: '/private/path',

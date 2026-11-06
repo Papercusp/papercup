@@ -465,6 +465,7 @@ describe('production observability composition', () => {
       aroundInvoke: PROJECTED_DEPS.aroundInvoke, recordInvocation: PROJECTED_DEPS.recordInvocation,
       recordWithoutWindow: () => true };
     const callCtx: UnifiedToolContext = { ...ctx, role: 'su', isSuperuser: true,
+      requestOrigin: { ...ctx.requestOrigin, transport: 'mcp' },
       signal: new AbortController().signal, emit: vi.fn(), progress: vi.fn() };
     const tool = (name: string, fn: ProjectedTool['fn']): ProjectedTool => ({ pluginName: 'p005-fixture',
       description: 'P005 dispatch persistence control', inputSchema: { type: 'object' }, capabilities: [],

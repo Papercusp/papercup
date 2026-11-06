@@ -46,6 +46,67 @@ it('hydrates only the exact ledger-linked, integrity-checked and currently autho
   permitted = true; await f.db.adminSql`UPDATE harness_shared.tool_invocations SET output_ref=NULL WHERE id=${input.id}::bigint`;
   expect(await readers().readOutput(input)).toBeNull();
 });
+
+const managedScope = { workspaceId, sourceBoundary, epoch: 'managed-test', key: new Uint8Array(32).fill(91) };
+async function managedRow(callId: string, over: Record<string, unknown> = {}) {
+  const id = await f.seed();
+  const receipt = { version: 1, callId, parentCallId: 'host:parent', handlerEntered: true,
+    role: 'operation', disposition: 'ok', outcome: { status: 'success', final: true }, ...over };
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET tool_name='capability:bash',
+    args_json=${JSON.stringify({ command: 'echo PRIVATE', cwd: '/private', env: { TOKEN: 'secret' } })}::jsonb,
+    metadata_json=${JSON.stringify({ managedOperation: receipt })}::jsonb WHERE id=${id}::bigint`;
+  return { id, receipt };
+}
+it('P005 hydrates exact host receipts into shared evidence and excludes missing, foreign and truncated sources', async () => {
+  const { id } = await managedRow('host:actual');
+  const input = { ids: [id], scope: managedScope };
+  const evidence = await readers().readManagedOperations(input);
+  expect(evidence).toHaveLength(1);
+  expect(evidence[0]).toMatchObject({ family: 'shell', source: { choice: 'agent' }, outcome: { status: 'success', final: true } });
+  expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE|private|secret|su-private-actor|host:/);
+  expect(await readers().readManagedOperations({ ...input, ids: [id, '999999999'] })).toEqual([]);
+  expect(await readers().readManagedOperations({ ...input, scope: { ...managedScope, workspaceId: 'foreign' } })).toEqual([]);
+  permitted = false; expect(await readers().readManagedOperations(input)).toEqual([]); permitted = true;
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET args_json='{"_truncated":true,"command":"echo incomplete"}'::jsonb WHERE id=${id}::bigint`;
+  expect(await readers().readManagedOperations(input)).toEqual([]);
+});
+
+it('P005 exact code:run child selection requires the real parent, caller and execution window', async () => {
+  await managedRow('host:child');
+  const input = { callIds: ['host:child'], scope: managedScope, actor: 'su-private-actor', parentCallId: 'host:parent',
+    since: '2026-10-24T11:59:59Z', until: '2026-10-24T12:00:01Z' };
+  expect(await readers().readManagedOperations(input)).toHaveLength(1);
+  for (const wrong of [{ actor: 'su-foreign' }, { parentCallId: 'host:guessed' }, { callIds: ['host:absent'] },
+    { since: '2026-10-24T12:00:00.9Z' }, { until: '2026-10-25T12:00:01Z' }])
+    expect(await readers().readManagedOperations({ ...input, ...wrong })).toEqual([]);
+});
+
+it('P005 managed hydration rechecks ACL and source content after awaited reads', async () => {
+  const { id } = await managedRow('host:actual');
+  const input = { ids: [id], scope: managedScope };
+  let reads = 0;
+  const revoking = productionOpportunityReaders({ workspaceId, harnessSlug, sourceBoundary, client: f.db.adminSql,
+    authorize: async () => ++reads < 3 });
+  expect(await revoking.readManagedOperations(input)).toEqual([]);
+  reads = 0;
+  const changing = productionOpportunityReaders({ workspaceId, harnessSlug, sourceBoundary, client: f.db.adminSql,
+    authorize: async () => {
+      if (++reads === 3) await f.db.adminSql`UPDATE harness_shared.tool_invocations SET args_json='{"command":"changed"}'::jsonb WHERE id=${id}::bigint`;
+      return true;
+    } });
+  expect(await changing.readManagedOperations(input)).toEqual([]);
+});
+
+it('P005 a yielded managed job and its final poll produce one failed operation, without copying output', async () => {
+  const job = { bashId: 'job-exact', taskId: 'task-exact' };
+  const first = await managedRow('host:start', { yielded: true, job, outcome: { status: 'running', final: false } });
+  const poll = await managedRow('host:poll', { role: 'poll', job, outcome: { status: 'error', final: true } });
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET tool_name='capability:bash_output',
+    invoked_at='2026-10-24T12:00:01Z',args_json='{"task_id":"task-exact"}'::jsonb WHERE id=${poll.id}::bigint`;
+  const operations = await readers().readManagedOperations({ ids: [first.id, poll.id], scope: managedScope });
+  expect(operations).toHaveLength(1);
+  expect(operations[0]).toMatchObject({ outcome: { status: 'error', final: true }, lifecycle: { yielded: true, polls: [expect.any(Object)] } });
+});
 it('leaves expired, foreign-owner, foreign-workspace, unframed and corrupted output UNKNOWN', async () => {
   for (const over of [{ nowMs: 1 }, { ownerId: 'su-other' }, { workspaceId: 'other' }, { boundary: false }]) {
     expect(await readers().readOutput((await output(over)).input)).toBeNull();
