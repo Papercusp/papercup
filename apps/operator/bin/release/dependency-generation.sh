@@ -4289,6 +4289,14 @@ dependency_generation_main() {
       dependency_generation_log '--prune-only cannot select or publish a generation'
       return 2
     }
+    # Exact-ref scratch used to live beside the integration checkout. Native
+    # rebuilds now keep private copies on the store filesystem; sweep both
+    # locations so a killed legacy builder does not strand its last copy.
+    # The existing owner check preserves live and remote builders.
+    dependency_generation_sweep_exact_scratch "$(dependency_generation_exact_scratch_parent "$integration_root")"
+    if [ "$generation_root" != "$integration_root" ]; then
+      dependency_generation_sweep_exact_scratch "$(dependency_generation_exact_scratch_parent "$generation_root")"
+    fi
     # A quiescent hive still needs retention. Never create a store merely to
     # sweep it; the same publish lock protects live selectors and generation
     # publication when a checkout happens concurrently.
@@ -4334,8 +4342,10 @@ dependency_generation_main() {
     dependency_generation_log '--select-inputs-from, --ensure-ref, and --fingerprint-ref are mutually exclusive'
     return 2
   fi
-  if [ -n "$lease_owner_pid" ] && [ -z "$select_inputs_from" ]; then
-    dependency_generation_log '--lease-owner-pid requires --select-inputs-from'
+  if [ -n "$lease_owner_pid" ] && {
+    [ -n "$ensure_ref$fingerprint_ref" ] || [ "${#workspace_dirs[@]}" -gt 0 ];
+  }; then
+    dependency_generation_log '--lease-owner-pid requires selection or full publication'
     return 2
   fi
   if [ -n "$fingerprint_ref" ]; then
