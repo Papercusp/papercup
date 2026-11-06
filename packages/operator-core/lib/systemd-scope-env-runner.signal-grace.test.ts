@@ -26,7 +26,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTextCollector } from './child-output.js';
@@ -73,6 +73,44 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
 }
 
 describe('systemd-scope-env-runner SIGTERM grace (WI-1064487)', () => {
+  it('preserves explicitly inherited source and control descriptors for a non-Node payload', async () => {
+    const dir = mkNonRepoTmpDir('runner-non-node-descriptors-');
+    const sourcePath = join(dir, 'source');
+    writeFileSync(sourcePath, 'sealed-source-witness');
+    const sourceFd = openSync(sourcePath, 'r');
+    const envPath = writeEnvFile(dir, { ONLY_PAYLOAD: 'exact' });
+    const environmentFd = openSync(envPath, 'r');
+    const payload = [
+      'import json,os,socket',
+      "assert os.read(3,64) == b'sealed-source-witness'",
+      "assert os.environ.get('ONLY_PAYLOAD') == 'exact'",
+      "assert 'HOST_SECRET' not in os.environ",
+      'try: os.fstat(6)',
+      'except OSError: pass',
+      "else: raise AssertionError('environment transport leaked')",
+      'control=socket.socket(fileno=5)',
+      "control.sendall(b'CONTROL_RETAINED')",
+      "print(json.dumps({'source':True,'control':True}))",
+    ].join('\n');
+    try {
+      const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', '/proc/self/fd/6', '--',
+        '/usr/bin/python3', '-I', '-S', '-c', payload], {
+        env: { ...process.env, HOST_SECRET: 'must-not-reach-payload' },
+        stdio: ['ignore', 'pipe', 'pipe', sourceFd, 'ignore', 'pipe', environmentFd],
+      });
+      const output = createTextCollector(runner.stdout);
+      const errors = createTextCollector(runner.stderr);
+      const descriptors: ReadonlyArray<unknown> = runner.stdio;
+      const control = createTextCollector(descriptors[5] as Parameters<typeof createTextCollector>[0]);
+      const code = await new Promise<number | null>((resolve, reject) => {
+        runner.once('error', reject); runner.once('close', resolve);
+      });
+      expect(code, errors.text()).toBe(0);
+      expect(JSON.parse(output.text())).toEqual({ source: true, control: true });
+      expect(control.text()).toBe('CONTROL_RETAINED');
+    } finally { closeSync(sourceFd); closeSync(environmentFd); }
+  });
+
   it('writes a failed JOB END with exact service identity and strips runner controls from the payload', async () => {
     const dir = mkNonRepoTmpDir('runner-job-end-identity-');
     const logPath = join(dir, 'job.log');

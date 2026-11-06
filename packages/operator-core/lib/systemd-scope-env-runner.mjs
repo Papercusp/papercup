@@ -387,6 +387,13 @@ export function main(argv = process.argv) {
     const environment = readEnvironment(sourcePath);
     const inheritedFd = /^\/proc\/self\/fd\/(\d+)$/.exec(sourcePath);
     if (inheritedFd) closeSync(Number(inheritedFd[1]));
+    // managedSpawn appends its environment transport after the caller's stdio
+    // slots. Preserve exactly those preceding descriptors for non-Node payloads
+    // too; stdio:'inherit' alone forwards only 0-2 and drops source/control fds.
+    // The transport itself is closed above and must never reach the workload.
+    const payloadStdio = inheritedFd
+      ? Array.from({ length: Number(inheritedFd[1]) }, (_, fd) => fd)
+      : 'inherit';
     const logPath = environment[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] ?? '';
     const redactions = decodeRedactions(environment[SYSTEMD_RUNNER_REDACTIONS_ENV] ?? '');
     const markerTaskId = environment[SYSTEMD_RUNNER_TASK_ID_ENV] ?? '';
@@ -427,7 +434,7 @@ export function main(argv = process.argv) {
       if (command === process.execPath && process.platform !== 'win32' && typeof process.execve === 'function') {
         process.execve(command, [command, ...args], environment);
       }
-      const child = spawn(command, args, { env: environment, stdio: 'inherit' });
+      const child = spawn(command, args, { env: environment, stdio: payloadStdio });
       // WI-1064487: same grace as the durable branch. stdio is inherited here so there are no
       // pipes of ours to break, but a runner that dies instantly still tears the cgroup down
       // before the payload's trap can run, and the exit code must not collapse to 1.
