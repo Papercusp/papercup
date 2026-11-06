@@ -1,5 +1,6 @@
 /** Five-family pass on the existing SQL census cadence; only minimized diagnostics are persisted. */
 import { createHmac, randomUUID } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { monitoredCensusRunId, monitoredRuntimeId } from '../harness/routines/fire-provenance';
 import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../build-info';
@@ -102,11 +103,11 @@ export async function readMonitoredCandidate(opts: MonitoredCandidateReadOptions
 /** Hash only the adapters' minimized observations, never raw source fields or secrets.
  * Conflicting copies of a token cannot acquire a stable revision by last-write-wins.
  */
-function observationRevisions(scope: SqlIntentScope, rows: readonly { sourceToken: string }[]) {
+function observationRevisions(scope: SqlIntentScope, rows: readonly { sourceToken: string }[], version: 'v1' | 'v2' = 'v2') {
   const revisions: Record<string, string> = {}, conflicts = new Set<string>();
   for (const row of rows) {
-    const revision = createHmac('sha256', scope.key).update(JSON.stringify([
-      'monitored-source-revision-v1', scope.workspaceId, scope.sourceBoundary, scope.epoch, row,
+    const revision = createHmac('sha256', scope.key).update((version === 'v1' ? JSON.stringify : canonicalJson)([
+      `monitored-source-revision-${version}`, scope.workspaceId, scope.sourceBoundary, scope.epoch, row,
     ])).digest('hex');
     if (revisions[row.sourceToken] && revisions[row.sourceToken] !== revision) conflicts.add(row.sourceToken);
     revisions[row.sourceToken] = revision;
@@ -156,7 +157,10 @@ export async function readProductionMonitoredCandidate(
       if (candidate.reviewEligible && (page.coverage.incomplete !== 0 || opts.family === 'native-operation'
         && !nativeProvidersMeasured('matrix' in page.coverage ? page.coverage.matrix : undefined))) return false;
       const current = observationRevisions(opts.scope, page.observations);
-      return candidate.sourceRefs.every(token => current[token] !== undefined && current[token] === revisions[token]);
+      // Keep exact-source access to immutable pre-checkpoint history too.
+      const legacy = observationRevisions(opts.scope, page.observations, 'v1');
+      return candidate.sourceRefs.every(token => current[token] !== undefined
+        && (current[token] === revisions[token] || legacy[token] === revisions[token]));
     } });
   } finally { cancelled = true; }
 }
@@ -179,6 +183,31 @@ const runtimeId = monitoredRuntimeId;
 const positive = (value: number | undefined, fallback: number, max: number) =>
   Number.isFinite(value) ? Math.min(max, Math.max(1, Math.floor(value!))) : fallback;
 
+type PageCoverage = { scanned: number; denied: number; incomplete?: number };
+interface WindowProgress {
+  version: 1; sequence: number; since: string; until: string; after: SqlCorpusCursor | null; complete: boolean;
+  observations: Record<string, unknown>[];
+  coverage: PageCoverage & { pages: number; windowExhausted: boolean; [key: string]: unknown };
+}
+/** Only adapter-minimized fields may survive a wake. Never persist raw requests,
+ * outputs, actor identities, transcript locations, or future adapter additions.
+ * Candidate reads still reconstruct current source revisions and ACLs twice.
+ */
+function minimizeFamilyObservation(family: MonitoredFamily, input: unknown): Record<string, unknown> {
+  const row = input as Record<string, unknown>;
+  const common = ['scopeToken', 'actorToken', 'sourceToken', 'operationToken', 'at', 'outcome', 'resultAvailable'];
+  const recovery = ['providerNamespaceToken', 'requestToken', 'tool', 'spillTokens', 'readToken',
+    'bounded', 'action', 'returnedBytes'];
+  const fields = family === 'search-reformulation'
+    ? ['requestToken', 'intentTokens', 'tool', 'kind', 'provider', 'returned', 'truncated', 'existingTools']
+    : family === 'native-operation' ? ['provider', 'namespaceToken', 'fingerprint', 'kind', 'evidenceGaps']
+      : [...recovery, ...(family === 'workaround-funnel'
+        ? ['contextTokens', 'repair', 'buildToken', 'durationMs', 'manualRead'] : [])];
+  if (!row || typeof row !== 'object' || !/^[a-f0-9]{64}$/.test(String(row.sourceToken))
+    || typeof row.at !== 'string' || !Number.isFinite(Date.parse(row.at))) throw new Error('sql_mining_source_missing');
+  return Object.fromEntries([...common, ...fields].filter(key => key in row).map(key => [key, row[key]]));
+}
+
 /** Drain one fixed window before grouping: page boundaries are not episode boundaries.
  * Exhausting the ledger window does not establish retention or provider completeness.
  * Check cancellation between pages so a timed-out family cannot keep scanning in the background.
@@ -187,24 +216,44 @@ async function drainWindow<T, C extends { scanned: number; denied: number; incom
   fetch: (page: { after?: SqlCorpusCursor; limit: number }) => Promise<{
     observations: T[]; next: SqlCorpusCursor | null; coverage: C;
   }>, pageSize: number, rowCap: number, deadline: number, cancelled: () => boolean,
+  resume?: { initial?: WindowProgress; stopAt: number;
+    commit: (state: { observations: T[]; next: SqlCorpusCursor | null; coverage: PageCoverage & {
+      scanned: number; denied: number; incomplete: number; pages: number; windowExhausted: boolean;
+      stop: 'row-cap' | 'time-budget' | 'window-exhausted'; } }) => Promise<void> },
 ) {
-  const observations: T[] = [], visited = new Set<string>();
-  let after: SqlCorpusCursor | undefined, scanned = 0, denied = 0, incomplete = 0, pages = 0;
-  let lastCoverage: C;
+  const observations: T[] = [...(resume?.initial?.observations ?? [])] as T[], visited = new Set<string>();
+  let after = resume?.initial?.after ?? undefined;
+  let scanned = resume?.initial?.coverage.scanned ?? 0, denied = resume?.initial?.coverage.denied ?? 0;
+  let incomplete = resume?.initial?.coverage.incomplete ?? 0, pages = resume?.initial?.coverage.pages ?? 0;
+  let sliceScanned = 0;
+  let lastCoverage: PageCoverage = resume?.initial?.coverage ?? { scanned: 0, denied: 0 };
   // Native cells carry the conservative strongest observed status across pages;
   // a later empty page must not erase evidence or a truncation from an earlier page.
   const matrix = new Map<string, { provider: string; kind: string; source: string; status: string }>();
   const severity: Record<string, number> = { missing: 0, unsupported: 1, measured: 2, truncated: 3 };
+  const priorMatrix = resume?.initial?.coverage.matrix;
+  if (Array.isArray(priorMatrix)) for (const cell of priorMatrix)
+    matrix.set(JSON.stringify([cell.provider, cell.kind, cell.source]), cell);
+  if (after) visited.add(JSON.stringify(after));
+  const snapshot = (next: SqlCorpusCursor | null, stop: 'row-cap' | 'time-budget' | 'window-exhausted') => ({
+    observations, next, coverage: { ...lastCoverage, ...(matrix.size ? { matrix: [...matrix.values()] } : {}),
+      scanned, denied, incomplete, pages, windowExhausted: !next, stop },
+  });
   for (;;) {
     if (cancelled() || Date.now() >= deadline) throw new Error('sql_mining_time_budget');
-    const limit = Math.min(pageSize, rowCap - scanned);
+    if (resume && Date.now() >= resume.stopAt) {
+      if (!after) throw new Error('sql_mining_time_budget');
+      return snapshot(after, 'time-budget');
+    }
+    const limit = Math.min(pageSize, rowCap - sliceScanned);
     const page = await fetch({ after, limit });
     if (cancelled() || Date.now() >= deadline) throw new Error('sql_mining_time_budget');
     if (!Number.isSafeInteger(page.coverage.scanned) || page.coverage.scanned < 0 || page.coverage.scanned > limit
       || !Number.isSafeInteger(page.coverage.denied) || page.coverage.denied < 0
       || page.coverage.denied > page.coverage.scanned) throw new Error('sql_mining_window_cap');
     observations.push(...page.observations);
-    scanned += page.coverage.scanned; denied += page.coverage.denied; pages++; lastCoverage = page.coverage;
+    scanned += page.coverage.scanned; sliceScanned += page.coverage.scanned;
+    denied += page.coverage.denied; pages++; lastCoverage = page.coverage;
     incomplete += page.coverage.incomplete ?? 0;
     if ('matrix' in page.coverage && Array.isArray(page.coverage.matrix)) {
       for (const cell of page.coverage.matrix) {
@@ -214,13 +263,17 @@ async function drainWindow<T, C extends { scanned: number; denied: number; incom
     }
     if (page.next) {
       const key = JSON.stringify(page.next);
-      if (!page.coverage.scanned || visited.has(key)) throw new Error('sql_mining_window_cap');
+      if (!page.coverage.scanned || visited.has(key)
+        || after && (page.next.at < after.at || page.next.at === after.at && BigInt(page.next.id) <= BigInt(after.id)))
+        throw new Error('sql_mining_window_cap');
       visited.add(key);
     }
-    if (!page.next || scanned >= rowCap) return { observations, next: page.next,
-      coverage: { ...lastCoverage, ...(matrix.size ? { matrix: [...matrix.values()] } : {}),
-        scanned, denied, incomplete, pages, windowExhausted: !page.next,
-        stop: page.next ? 'row-cap' as const : 'window-exhausted' as const } };
+    const state = snapshot(page.next, !page.next ? 'window-exhausted'
+      : Date.now() >= (resume?.stopAt ?? deadline) ? 'time-budget' : 'row-cap');
+    // Evidence and its cursor are one durable write. A hard interruption can
+    // discard only the current page, never previously committed demand.
+    if (resume) await resume.commit(state);
+    if (!page.next || sliceScanned >= rowCap || resume && Date.now() >= resume.stopAt) return state;
     after = page.next;
   }
 }
@@ -254,6 +307,88 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
     throw new Error('sql_mining_run_identity_or_replay');
   const budget = positive(opts.timeBudgetMs, 5000, 30_000);
   const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
+  // Extend the existing per-family run rows rather than introduce a second
+  // cursor store. Progress is private; only minimized candidate packets leave
+  // the read API, after current source reconstruction and authorization.
+  type StoredProgress = WindowProgress & { signature: string };
+  const progress = new Map<MonitoredFamily, WindowProgress>();
+  const previous = new Map<MonitoredFamily, { run_id: string; progress: StoredProgress } | undefined>();
+  const signProgress = (family: MonitoredFamily, state: WindowProgress) => createHmac('sha256', opts.scope.key)
+    .update(canonicalJson(['monitored-progress-v1', scopeId, family, state])).digest('hex');
+  const windowFor = (family: MonitoredFamily) => {
+    const saved = progress.get(family);
+    return saved ? { ...common, since: saved.since, until: saved.until } : common;
+  };
+  const loadProgress = async (family: MonitoredFamily) => {
+    if (!await opts.authorize({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+      sourceBoundary: opts.scope.sourceBoundary })) throw new Error('sql_mining_source_missing');
+    const [row] = await sql<{ run_id: string; progress: StoredProgress }[]>`
+      SELECT f.run_id::text,f.diagnostics->'progress' AS progress
+      FROM harness_shared.sql_intent_family_runs f JOIN harness_shared.sql_intent_runs r USING(workspace_id,run_id)
+      WHERE r.workspace_id=${opts.workspaceId} AND r.scope_id=${scopeId} AND r.harness_slug=${opts.harnessSlug}
+        AND f.family=${family} AND f.diagnostics ? 'progress'
+        AND r.started_at > ${new Date(now - 30 * 86400_000).toISOString()}::timestamptz
+      ORDER BY (f.diagnostics->'progress'->>'sequence')::bigint DESC,r.started_at DESC,f.run_id DESC LIMIT 1`;
+    previous.set(family, row);
+    if (!row) return;
+    const { signature, ...state } = row.progress;
+    if (state.version !== 1 || !Number.isSafeInteger(state.sequence) || state.sequence < 1
+      || typeof signature !== 'string' || signature !== signProgress(family, state)
+      || Date.parse(state.until) - Date.parse(state.since) !== 7 * 86400_000
+      || Date.parse(state.until) > now || !Array.isArray(state.observations)
+      || !Number.isSafeInteger(state.coverage?.scanned) || state.coverage.scanned < 0
+      || typeof state.complete !== 'boolean' || state.complete !== (state.after === null))
+      throw new Error('sql_mining_source_missing');
+    if (!state.complete && Date.parse(state.until) > now - 30 * 86400_000) progress.set(family, state);
+  };
+  const drainFamily = async <T, C extends PageCoverage>(family: MonitoredFamily,
+    fetch: (page: { after?: SqlCorpusCursor; limit: number }) => Promise<{
+      observations: T[]; next: SqlCorpusCursor | null; coverage: C;
+    }>, deadline: number, cancelled: () => boolean) => drainWindow(fetch, pageSize, rowCap, deadline, cancelled, {
+      initial: progress.get(family), stopAt: deadline - Math.max(1, Math.floor(budget / 4)),
+      commit: async page => {
+        if (cancelled() || Date.now() >= deadline) throw new Error('sql_mining_time_budget');
+        const window = windowFor(family), base = previous.get(family);
+        const state: WindowProgress = { version: 1, sequence: (base?.progress.sequence ?? 0) + 1,
+          since: window.since, until: window.until, after: page.next, complete: !page.next,
+          observations: page.observations.map(row => minimizeFamilyObservation(family, row)), coverage: page.coverage };
+        const stored: StoredProgress = { ...state, signature: signProgress(family, state) };
+        await sql.begin(async tx => {
+          // A concurrent continuation may read the same parent, but cannot
+          // publish a divergent successor. Never block the other families.
+          const [lock] = await tx`SELECT pg_try_advisory_xact_lock(hashtextextended(
+            ${JSON.stringify(['monitored-progress-v1', opts.workspaceId, scopeId, family])},0)) AS held`;
+          if (!lock?.held) throw new Error('sql_mining_source_missing');
+          const [latest] = await tx<{ run_id: string; signature: string }[]>`
+            SELECT f.run_id::text,f.diagnostics->'progress'->>'signature' AS signature
+            FROM harness_shared.sql_intent_family_runs f JOIN harness_shared.sql_intent_runs r USING(workspace_id,run_id)
+            WHERE r.workspace_id=${opts.workspaceId} AND r.scope_id=${scopeId} AND r.harness_slug=${opts.harnessSlug}
+              AND f.family=${family} AND f.diagnostics ? 'progress'
+              AND r.started_at > ${new Date(now - 30 * 86400_000).toISOString()}::timestamptz
+            ORDER BY (f.diagnostics->'progress'->>'sequence')::bigint DESC,r.started_at DESC,f.run_id DESC LIMIT 1`;
+          if (latest?.run_id !== base?.run_id || latest?.signature !== base?.progress.signature)
+            throw new Error('sql_mining_source_missing');
+          // Serializes with finalization: a timed-out or dead runtime cannot
+          // advance a cursor after its run has already been closed.
+          const [parent] = await tx`SELECT 1 FROM harness_shared.sql_intent_runs
+            WHERE workspace_id=${opts.workspaceId} AND run_id=${runId}::uuid AND runtime_id=${runtimeId}
+              AND finished_at IS NULL FOR UPDATE`;
+          if (!parent || cancelled() || Date.now() >= deadline) throw new Error('sql_mining_time_budget');
+          if (!await opts.authorize({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+            sourceBoundary: opts.scope.sourceBoundary })) throw new Error('sql_mining_source_missing');
+          await tx`INSERT INTO harness_shared.sql_intent_family_runs
+            (workspace_id,run_id,family,coverage,scanned,qualifying,diagnostics)
+            VALUES (${opts.workspaceId},${runId}::uuid,${family},'UNKNOWN',${page.coverage.scanned},0,
+              ${JSON.stringify({ progress: stored, window: { since: state.since, until: state.until },
+                sourceCoverage: page.coverage, backlog: !state.complete, reviewEligible: false, candidates: [] })}::jsonb)
+            ON CONFLICT (workspace_id,run_id,family) DO UPDATE SET
+              scanned=EXCLUDED.scanned,coverage=EXCLUDED.coverage,qualifying=0,diagnostics=EXCLUDED.diagnostics`;
+          if (cancelled() || Date.now() >= deadline) throw new Error('sql_mining_time_budget');
+        });
+        previous.set(family, { run_id: runId, progress: stored });
+        progress.set(family, state);
+      },
+    });
   const measure = async (family: MonitoredFamily, work: (deadline: number, cancelled: () => boolean) => Promise<FamilyMeasurement>): Promise<FamilyMeasurement> => {
     let cancelled = false;
     type Phase = 'continuity-before' | 'window' | 'continuity-after';
@@ -266,8 +401,9 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       after: 'complete' | 'gap' | 'unknown' | null } = { before: null, after: null };
     try { return await boundedStage(async () => {
       const deadline = Date.now() + budget;
+      if (family !== 'sql') await loadProgress(family);
       const continuity = () => readers.readContinuity({ family: family as Exclude<MonitoredFamily, 'sql'>,
-        since: common.since, until: common.until });
+        since: windowFor(family).since, until: windowFor(family).until });
       const before = family === 'sql' ? null : await continuity();
       observedContinuity.before = before;
       if (family !== 'sql') finishPhase();
@@ -289,13 +425,18 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       for (const candidate of row.diagnostics.candidates as CandidateEvidence[]) {
         candidate.reviewEligible = complete && (family !== 'native-operation' || candidate.metrics.unknown === 0);
       }
-      return { ...row, diagnostics: { ...row.diagnostics, phaseDurationsMs: { ...phaseDurationsMs } } };
+      const window = windowFor(family);
+      return { ...row, diagnostics: { ...row.diagnostics, window: { since: window.since, until: window.until },
+        backlog: !source.windowExhausted, phaseDurationsMs: { ...phaseDurationsMs } } };
     }, budget); }
     catch (error) {
       if (phaseDurationsMs[phase] === undefined) phaseDurationsMs[phase] = Math.max(0, Date.now() - phaseStartedAt);
-      return { family, coverage: 'UNKNOWN', scanned: 0, qualifying: 0,
+      const saved = progress.get(family);
+      return { family, coverage: 'UNKNOWN', scanned: saved?.coverage.scanned ?? 0, qualifying: 0,
       diagnostics: { stage: 'source', phase, reason: miningFailureReason(error),
         ...(family === 'sql' ? {} : { continuity: { ...observedContinuity } }),
+        ...(saved ? { window: { since: saved.since, until: saved.until },
+          sourceCoverage: saved.coverage, backlog: !saved.complete } : {}),
         phaseDurationsMs: { ...phaseDurationsMs }, reviewEligible: false, candidates: [] } };
     }
     finally { cancelled = true; }
@@ -339,7 +480,8 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
           sqlPhaseDurationsMs: result.phaseDurationsMs, window: result.window, backlog: result.more === true } };
     }),
     measure('search-reformulation', async (deadline, cancelled) => {
-      const page = await drainWindow(p => fetchSearchReformulations({ ...common, ...p }), pageSize, rowCap, deadline, cancelled);
+      const page = await drainFamily('search-reformulation', p => fetchSearchReformulations({
+        ...windowFor('search-reformulation'), ...p }), deadline, cancelled);
       const grouped = groupSearchReformulations(page.observations);
       const identities = identityIndex(page.observations);
       const chains = grouped.chains.filter(c => c.reformulations > 0 || c.fallbacks > 0);
@@ -352,7 +494,8 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
             { logicalDemand: c.operations.length, reformulations: c.reformulations, fallbacks: c.fallbacks })) } };
     }),
     measure('result-recovery', async (deadline, cancelled) => {
-      const page = await drainWindow(p => fetchResultRecovery({ ...common, ...p }), pageSize, rowCap, deadline, cancelled);
+      const page = await drainFamily('result-recovery', p => fetchResultRecovery({
+        ...windowFor('result-recovery'), ...p }), deadline, cancelled);
       const grouped = rankResultRecovery(page.observations);
       const identities = identityIndex(page.observations);
       const exposureSources = new Map<string, string[]>();
@@ -370,7 +513,8 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
             { exposure: c.exposure, recoveryEpisodes: c.recoveryEpisodes, extraCalls: c.extraCalls, successful: c.successEpisodes })) } };
     }),
     measure('workaround-funnel', async (deadline, cancelled) => {
-      const page = await drainWindow(p => fetchWorkaroundFunnels({ ...common, ...p }), pageSize, rowCap, deadline, cancelled);
+      const page = await drainFamily('workaround-funnel', p => fetchWorkaroundFunnels({
+        ...windowFor('workaround-funnel'), ...p }), deadline, cancelled);
       const grouped = rankWorkarounds(page.observations);
       const identities = identityIndex(page.observations);
       return { family: 'workaround-funnel', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
@@ -382,8 +526,8 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
             { successfulEpisodes: c.successfulEpisodes, extraCalls: c.extraCalls, elapsedMs: c.elapsedMs })) } };
     }),
     measure('native-operation', async (deadline, cancelled) => {
-      const page = await drainWindow(p => fetchNativeOperations({ ...common, ...p, authorizeSource: readers.authorizeActivitySource,
-        readTranscript: readers.readTranscript }), pageSize, rowCap, deadline, cancelled);
+      const page = await drainFamily('native-operation', p => fetchNativeOperations({ ...windowFor('native-operation'), ...p,
+        authorizeSource: readers.authorizeActivitySource, readTranscript: readers.readTranscript }), deadline, cancelled);
       const grouped = groupNativeOperations(page.observations);
       return { family: 'native-operation', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: grouped.chains.length, diagnostics: { sourceCoverage: page.coverage,
@@ -400,11 +544,20 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       VALUES (${opts.workspaceId},${runId}::uuid,${row.family},${row.coverage},${row.scanned},${row.qualifying},
         ${JSON.stringify({ ...row.diagnostics, window: row.diagnostics.window ?? { since: common.since, until: common.until } })}::jsonb)
       ON CONFLICT (workspace_id,run_id,family) DO UPDATE SET coverage=EXCLUDED.coverage,
-        scanned=EXCLUDED.scanned,qualifying=EXCLUDED.qualifying,diagnostics=EXCLUDED.diagnostics`;
+        scanned=EXCLUDED.scanned,qualifying=EXCLUDED.qualifying,diagnostics=EXCLUDED.diagnostics ||
+          CASE WHEN sql_intent_family_runs.diagnostics ? 'progress'
+            THEN jsonb_build_object('progress',sql_intent_family_runs.diagnostics->'progress') ELSE '{}'::jsonb END`;
     await tx`UPDATE harness_shared.sql_intent_runs SET finished_at=now()
       WHERE workspace_id=${opts.workspaceId} AND run_id=${runId}::uuid`;
     await tx`DELETE FROM harness_shared.sql_intent_runs WHERE workspace_id=${opts.workspaceId}
       AND started_at < now() - ${AGGREGATE_LIFETIME_DAYS} * interval '1 day'`;
+    // Checkpoints are short-lived minimized source evidence, not 120-day
+    // aggregate history. Expired state must not keep old source copies alive.
+    await tx`UPDATE harness_shared.sql_intent_family_runs f SET diagnostics=f.diagnostics-'progress'
+      FROM harness_shared.sql_intent_runs r WHERE f.workspace_id=r.workspace_id AND f.run_id=r.run_id
+        AND r.workspace_id=${opts.workspaceId} AND f.diagnostics ? 'progress'
+        AND (r.started_at < now() - interval '30 days' OR f.diagnostics->'progress'->>'until' <
+          to_char((now() - interval '30 days') AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`;
   });
   return { runId, families, coverage: { population: [...MONITORED_FAMILIES],
     checked: families.filter(f => f.coverage === 'measured').map(f => f.family),
