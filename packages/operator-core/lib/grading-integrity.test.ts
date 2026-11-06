@@ -1513,6 +1513,48 @@ describe('dispatchPendingGradingAudits', () => {
       expect(verdict).toMatchObject({ stranded: true, idleSince: '2026-10-14T13:30:00.000Z' });
     });
 
+    it('selects a current-build quality regrade without historical replay pins', () => {
+      const card = base();
+      card.rerunRecipe = {
+        evaluator: 'plans:evaluate-spec-quality',
+        evaluatorBuild: { sha: '9cb343871d', version: '0.0.0' },
+        specSetHashVersion: 2,
+        args: {
+          harness: 'papercusp', slug: 'quality-plan', classRef: 'plan-class-feature-ship',
+          expectedSpecSetHash: 'a'.repeat(64),
+          evaluatorBuild: { sha: '9cb343871d', version: '0.0.0' },
+          specSetHashVersion: 2,
+          replaySnapshot: { planContentHash: 'b'.repeat(64), clausesAsOf: '2026-10-14T12:00:00Z' },
+        },
+      };
+      const historicalRecipe = structuredClone(card.rerunRecipe);
+      const verdict = assessEvaluatorBuildStranding(card, live, opts(() => true));
+
+      expect(verdict).toMatchObject({ stranded: true });
+      if (!verdict.stranded) throw new Error('expected stranded quality card');
+      expect(verdict.regrade).toEqual({
+        tool: 'plans:evaluate-spec-quality',
+        args: {
+          harness: 'papercusp', slug: 'quality-plan', classRef: 'plan-class-feature-ship',
+          expectedSpecSetHash: 'a'.repeat(64),
+        },
+      });
+      expect(card.rerunRecipe).toEqual(historicalRecipe);
+    });
+
+    it('preserves other evaluator recipes and refuses a quality remedy without a target', () => {
+      const card = base();
+      expect(assessEvaluatorBuildStranding(card, live, opts(() => true)))
+        .toMatchObject({ regrade: { tool: card.rerunRecipe!.evaluator, args: { slug: 'p' } } });
+      card.rerunRecipe = {
+        evaluator: 'plans:evaluate-spec-quality',
+        evaluatorBuild: { sha: '9cb343871d', version: '0.0.0' },
+        args: { evaluatorBuild: { sha: '9cb343871d', version: '0.0.0' } },
+      };
+      expect(assessEvaluatorBuildStranding(card, live, opts(() => true)))
+        .toMatchObject({ stranded: true, regrade: null });
+    });
+
     it('does not fire while an audit lease is live', () => {
       const reservedAt = new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS + 60_000).toISOString();
       const verdict = assessEvaluatorBuildStranding(base({ dispatchReservation: { reservedAt } }), live, opts(() => true));

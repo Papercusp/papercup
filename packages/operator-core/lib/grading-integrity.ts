@@ -248,7 +248,7 @@ export type EvaluatorBuildStranding =
       liveBuild: { sha: string | null; version: string };
       /** Latest of the card stamp and any (current or released) audit lease. */
       idleSince: string;
-      /** The exact submittable re-grade call from the card's own rerun recipe, when it has one. */
+      /** Re-grade selection from the card's recipe; quality recovery drops historical replay pins. */
       regrade: { tool: string; args: unknown } | null;
       /**
        * WI-6554700010013275: the plans:certify-spec-clauses call that mints a superseding card
@@ -400,9 +400,30 @@ export function assessEvaluatorBuildStranding(
     return { stranded: false, reason: `live-build-not-proven-descendant:${ancestry.reason}` };
   }
   const recipe = card.rerunRecipe;
-  const regrade = recipe?.evaluator && recipe.args !== undefined
+  let regrade = recipe?.evaluator && recipe.args !== undefined
     ? { tool: recipe.evaluator, args: recipe.args }
     : null;
+  if (recipe?.evaluator === 'plans:evaluate-spec-quality') {
+    // A fresh grade must derive this host's identity and read the current plan.
+    // The immutable recipe remains the historical auditor's replay contract.
+    const raw = recipe.args;
+    const args = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {};
+    const slug = nonEmptyString(args.slug);
+    const harness = nonEmptyString(args.harness);
+    const classRef = nonEmptyString(args.classRef);
+    const expectedSpecSetHash = nonEmptyString(args.expectedSpecSetHash);
+    regrade = slug ? {
+      tool: recipe.evaluator,
+      args: {
+        slug,
+        ...(harness ? { harness } : {}),
+        ...(classRef ? { classRef } : {}),
+        ...(expectedSpecSetHash ? { expectedSpecSetHash } : {}),
+      },
+    } : null;
+  }
   const recertify = strandedSpecAdequacyRecertifyCall(recipe);
   const idleSince = new Date(idleSinceMs).toISOString();
   const recordedLabel = `${recorded.sha ?? 'unknown-sha'}@${recorded.version}`;
@@ -421,7 +442,7 @@ export function assessEvaluatorBuildStranding(
         ? `Re-grade on the current build with ${recertify.tool} ${JSON.stringify(recertify.args)}; ` +
           'the new card supersedes this one and is audited on this build. The periodic grading sweep runs this call itself.'
         : regrade
-          ? `Re-grade on the current build with ${regrade.tool} using the card's rerunRecipe.args; ` +
+          ? `Re-grade on the current build with ${regrade.tool} ${JSON.stringify(regrade.args)}; ` +
             'the new card supersedes this one and is audited on this build.'
           : 'Re-grade it on the current build; the new card supersedes this one and is audited on this build.'),
   };
