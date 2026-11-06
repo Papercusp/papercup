@@ -63,6 +63,7 @@ export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
  * (R-2). What still reads this set is retrieval/reporting — the post-routing
  * no-pickup detector, and the "who is still reachable" annotations. */
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
+const PENDING_CONSULT_STATES = ['routing', 'awaiting_responder', 'active'];
 /** Recursion ceiling (D-007 §7) — mirrors the consult_state.depth CHECK (0–2). */
 export const MAX_CONSULT_DEPTH = 2;
 /** consult-min-max-and-rubric-vetting-2026-08-17 D-003 [owner]: EVERY consult
@@ -240,7 +241,8 @@ async function priorBarCritiqueLineageOwners(
      WHERE cs.workspace_id = ${workspaceId}
        AND cs.origin_task_ref = ${planSlug}
        AND cs.routing->>'policy' = ${BAR_CRITIQUE_POLICY}
-       AND (cs.state = 'active' OR (cs.state = 'closed_answered' AND cs.closed_at IS NOT NULL))
+       AND (cs.state = ANY(${PENDING_CONSULT_STATES})
+         OR (cs.state = 'closed_answered' AND cs.closed_at IS NOT NULL))
      ORDER BY cs.conversation_id ASC
   `;
   const owners = rows.flatMap(({ responder_id, author_id }) =>
@@ -496,7 +498,7 @@ async function acceptReadyFeedbackRequestCore(req: GetFeedbackRequest,
   return { ok: true, verdict: 'accepted', conversation_id: opened.conversation_id, thread_id: opened.thread_id,
     request_key: key, state: row.state,
     ...(result ? { result } : {}),
-    pending: !row.routing.request.result && ['routing', 'awaiting_responder', 'active'].includes(row.state),
+    pending: !row.routing.request.result && PENDING_CONSULT_STATES.includes(row.state),
     latency_contract: latency, park_key: latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null,
     hint: `Accepted as ${opened.conversation_id}; current state is ${row.state}. ${outcomeHint ? `${outcomeHint} ` : ''}Read conversations:get { id: '${opened.conversation_id}' } for routing and replies. Reuse request_key '${key}' with the same payload after a timeout; use a new key for a fresh consult. Pending means accepted work, not a launched or answered session.` };
 }

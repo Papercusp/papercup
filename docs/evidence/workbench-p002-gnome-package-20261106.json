@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "workbench-native-package-evidence-v1",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "items": [
+    "P-001",
+    "P-002"
+  ],
+  "platform": "Ubuntu GNOME Shell 46.2",
+  "plane": "GNOME CLI archive with private XDG fresh install and forced upgrade; current-build private Shell fixture PUI",
+  "archive": {
+    "path": "docs/evidence/workbench-p002-gnome-extension-20261106.zip",
+    "uuid": "workbench@papercusp.ai",
+    "sha256": "81495016e4ce31adee681b78fb3d14a263a83349c969aaad45307c912f7bb9b0"
+  },
+  "packager": {
+    "path": "papercusp-desktop/bin/package-native-workbench.mjs",
+    "sha256": "47dbbe2a81628a9661aab185f5a8096e74ed618ae3e4b42351c583b853745363"
+  },
+  "test": {
+    "path": "papercusp-desktop/test/native-workbench-gnome-live.test.mjs",
+    "sha256": "b4fe3912c57ab922bb80ac706b0c1a1f1dbf756a62b357b1612370ffd6945d19"
+  },
+  "command": "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-native-package-20261106-v3 node bin/run-node-test-suite.mjs --test-global-setup=test/monorepo-host-preflight.mjs test/native-workbench-gnome.test.mjs test/native-workbench-gnome-live.test.mjs",
+  "log": {
+    "path": "/tmp/wb-native-package-20261106-v3.log",
+    "sha256": "ab0b9087cc8be4f5819df4f2b0520325c5968622176803249bc2becb4ca72b5b"
+  },
+  "result": {
+    "pass": 13,
+    "fail": 0,
+    "skip": 0,
+    "nativeAssertions": 29,
+    "runtimeSourcesEqual": true,
+    "compiledSchemaInstalled": true,
+    "preferencesSurviveUpgrade": true
+  },
+  "isolation": {
+    "fix": "Co-locate XDG_CACHE_HOME with private XDG_DATA_HOME: GNOME installs via cache-directory rename.",
+    "measurement": "Own strace showed real account cache to /tmp private data rename returned EXDEV before correction. GIO_USE_VFS=local alone did not fix; both isolated cache fixtures now pass."
+  },
+  "reuse": "GNOME maintained gnome-extensions pack/install; no parallel archive or schema compiler",
+  "limitations": [
+    "Archive lifecycle proof only; not yet integrated into Papercusp GUI/Server distributable or login policy",
+    "Fixture PUI and injected test extension subclass; not canonical operator or unmodified final installer acceptance",
+    "macOS/Windows native surfaces and full49 requirements acceptance remain unfinished"
+  ],
+  "priorInteractionEvidence": "docs/evidence/workbench-p002-gnome-native-input-20261106.json"
+}

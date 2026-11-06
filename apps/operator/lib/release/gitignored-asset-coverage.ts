@@ -340,6 +340,10 @@ function derivesFromTemporaryFixture(
 ): boolean {
   if (!node || depth > 12) return false;
 
+  if (ts.isAwaitExpression(node) || ts.isParenthesizedExpression(node)) {
+    return derivesFromTemporaryFixture(node.expression, constsAt, functionAt, depth, seen, members);
+  }
+
   if (ts.isIdentifier(node)) {
     if (seen.has(node.text)) return false;
     // Resolve at THIS node's scope, not the original call site's: once we
@@ -366,8 +370,11 @@ function derivesFromTemporaryFixture(
         const value = ts.isPropertyAssignment(property) ? property.initializer : property.name;
         return derivesFromTemporaryFixture(value, constsAt, functionAt, depth + 1, seen, members.slice(1));
       }
-      // A later spread could replace the member; unknown provenance stays a requirement.
-      if (ts.isSpreadAssignment(property)) return false;
+      // A later spread can replace this member. Follow that value specifically;
+      // unknown provenance must not fall back to an earlier temporary member.
+      if (ts.isSpreadAssignment(property)) {
+        return derivesFromTemporaryFixture(property.expression, constsAt, functionAt, depth + 1, seen, members);
+      }
     }
     return false;
   }

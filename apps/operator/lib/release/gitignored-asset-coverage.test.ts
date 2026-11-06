@@ -411,17 +411,21 @@ describe('false-positive controls — the noise that would get this guard disabl
         import { fixture as importedFixture } from './fixture';
         import { readFileSync } from 'node:fs';
         import { join } from 'node:path';
-        const fixture = () => importedFixture();
+        const fixture = async () => ({ ...await importedFixture(), extra: 'unrelated' });
+        const checkoutFixture = async () => ({ ...await fixture(), root: '/checkout-override' });
         const root = '/caller-checkout';
         it('distinguishes fixture members', async () => {
           const f = await fixture();
           readFileSync(join(f.root, 'apps/operator/dist-verify', 'temporary.mjs'));
           readFileSync(join(f.checkout, 'apps/operator/dist-verify', 'real.mjs'));
+          const overridden = await checkoutFixture();
+          readFileSync(join(overridden.root, 'apps/operator/dist-verify', 'override.mjs'));
         });
       `,
     }, { ignored: ['apps/operator/dist-verify'], coveredRoots: [] });
-    expect(result.required.map(site => site.path)).toEqual(['apps/operator/dist-verify/real.mjs']);
-    expect(result.violations.map(site => site.path)).toEqual(['apps/operator/dist-verify/real.mjs']);
+    const expected = ['apps/operator/dist-verify/real.mjs', 'apps/operator/dist-verify/override.mjs'];
+    expect(result.required.map(site => site.path)).toEqual(expected);
+    expect(result.violations.map(site => site.path)).toEqual(expected);
   });
 
   it('tolerates an explicit absence assertion without exempting positive existence or throwing reads', () => {

@@ -44,7 +44,7 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
       const result = await call(`fetch('/api/agent-mcp/run-tool',{method:'POST',headers:{'content-type':'application/json'},
         body:JSON.stringify(${JSON.stringify({ name, args, confirmed: true })})}).then(async response=>({status:response.status,body:await response.json()}))`);
       expect(result.status).toBe(200);
-      expect(result.body.result?.isError).not.toBe(true);
+      expect(result.body.result?.isError, JSON.stringify(result.body.result)).not.toBe(true);
       const value = result.body.result;
       return value.data ?? JSON.parse(value.content.find((entry: { type: string }) => entry.type === 'text').text);
     };
@@ -70,6 +70,7 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
     const save = () => writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
     save(); // Recovery knows the selected edition before the first outward action.
     let stopped = false;
+    let journeyFailed = false;
     const browser = await chromium.launch({ headless: true });
     try {
       await native('navigate', published.path);
@@ -122,17 +123,30 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
       } finally { await contextAfter.close(); }
       evidence.phase = 'removed'; evidence.verifiedAt = new Date().toISOString(); save();
       console.log('REPORT_SHARING_NATIVE_EVIDENCE=' + evidencePath);
+    } catch (error) {
+      journeyFailed = true;
+      evidence.failure = { phase: evidence.phase, message: String(error),
+        stack: error instanceof Error ? error.stack : undefined };
+      save();
+      throw error;
     } finally {
-      await browser.close();
-      if (!stopped) {
+      const cleanupErrors: unknown[] = [];
+      try {
+        if (!stopped) {
         // The product reconciles its saved operation; never delete an arbitrary Gist.
         // Persisted before Share: a later missing status row cannot skip cleanup.
         const cleanup = await call(`fetch('/api/reports/sharing',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(${JSON.stringify({ reportId, accountId, action: 'stop' })})}).then(async response=>({status:response.status,body:await response.json()}))`);
         evidence.cleanup = cleanup; save();
         expect(cleanup.status).toBe(200);
         expect(cleanup.body.sharing?.phase).toBe('inactive');
+        }
+        await tool('reports:retire', { id: reportId });
+      } catch (error) { cleanupErrors.push(error); }
+      try { await browser.close(); } catch (error) { cleanupErrors.push(error); }
+      if (cleanupErrors.length) {
+        evidence.cleanupFailures = cleanupErrors.map(String); save();
+        if (!journeyFailed) throw new AggregateError(cleanupErrors, 'Native sharing cleanup failed');
       }
-      await tool('reports:retire', { id: reportId, reason: 'Harmless native sharing acceptance fixture finished.' });
     }
   }, 240_000);
 
@@ -167,7 +181,7 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
         { data: { name, args, confirmed: true } });
       expect(response.ok()).toBe(true);
       const payload = await response.json();
-      expect(payload.result?.isError).not.toBe(true);
+      expect(payload.result?.isError, JSON.stringify(payload.result)).not.toBe(true);
       const result = payload.result;
       return result.data ?? JSON.parse(result.content.find((item: { type: string }) => item.type === 'text').text);
     };
@@ -203,6 +217,7 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
     let url: string | undefined;
     let publicationAttempted = false;
     let cleanupConfirmed = false;
+    let journeyFailed = false;
     try {
       const published = await tool('reports:publish', { title: 'Deployed report sharing fixture',
         body_md: '# Deployed sharing fixture\n\nHarmless acceptance fixture ' + key
@@ -280,7 +295,14 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
       expect(endIdentity.bundleStale).toBeUndefined();
       deployed.endHealth = endIdentity; deployed.phase = 'removed'; deployed.verifiedAt = new Date().toISOString();
       evidence.scope = 'exact-deployed-artifact'; evidence.deployedHealth = health; save();
+    } catch (error) {
+      journeyFailed = true;
+      deployed.failure = { phase: deployed.phase, message: String(error),
+        stack: error instanceof Error ? error.stack : undefined };
+      save();
+      throw error;
     } finally {
+      const cleanupErrors: unknown[] = [];
       try {
         if (publicationAttempted && !cleanupConfirmed) {
           // The account was persisted BEFORE Share: an absent status row cannot
@@ -295,8 +317,13 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
         }
         // Keep the recovery report visible if remote cleanup is unconfirmed.
         if (reportId && (!publicationAttempted || cleanupConfirmed))
-          await tool('reports:retire', { id: reportId, reason: 'Harmless deployed sharing fixture finished.' });
-      } finally { await browser.close(); }
+          await tool('reports:retire', { id: reportId });
+      } catch (error) { cleanupErrors.push(error); }
+      try { await browser.close(); } catch (error) { cleanupErrors.push(error); }
+      if (cleanupErrors.length) {
+        deployed.cleanupFailures = cleanupErrors.map(String); save();
+        if (!journeyFailed) throw new AggregateError(cleanupErrors, 'Deployed sharing cleanup failed');
+      }
     }
   }, 300_000);
 });
