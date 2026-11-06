@@ -537,6 +537,15 @@ describe('buildCutArgv', () => {
     expect(seedlessInner).toContain(`PAPERCUSP_ALLOW_SEEDLESS_REASON='release:cut seedless:true source=${sourceSha};`);
     expect(seedlessInner).not.toContain('git restore -- package.json');
   });
+  it('restores validated fresh-retry version residue and still cuts a new seed', () => {
+    const argv = buildCutArgv('/root/papercusp-desktop', '0.0.33', 'alpha', {}, sourceSha, '/usr/bin:/bin', {
+      ownerName: 'Avi', restoreVersionResidue: true,
+    });
+    const command = argv.at(-1)!;
+    expect(command).toContain('git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/Cargo.lock &&');
+    expect(command).not.toContain('PAPERCUSP_SKIP_SEED_CUT=');
+    expect(command).not.toContain('PAPERCUSP_ALLOW_SEEDLESS_RELEASE=');
+  });
   it('full-history is rendered into the detached command as a present-empty value', () => {
     const fullHistoryArgv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', {}, sourceSha, '/usr/bin:/bin', {
       ownerName: 'Avi',

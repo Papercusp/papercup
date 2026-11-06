@@ -53,7 +53,7 @@ async function main() {
   const bundleSha256 = createHash('sha256').update(bytes).digest('hex');
   // Keep the maintained private sidecar's capability preflight, but control
   // inference at an owned HTTP boundary. The same production client first
-  // succeeds, then spends its ordinary deadline on a withheld response.
+  // succeeds, then spends its accepted-work lease on a withheld response.
   const privateSidecar = e.PAPERCUSP_EMBED_SIDECAR_URL!;
   assert.match(privateSidecar, /^http:\/\/127\.0\.0\.1:\d+$/);
   let embedRequests = 0;
@@ -138,6 +138,7 @@ async function main() {
     assert.equal(accepted.verdict, 'accepted');
     let persisted: any;
     let lastObserved: any;
+    let acceptedLease: { until: string; initialObservedAt: string; settledAt?: string } | undefined;
     for (const stop = Date.now() + 35_000; Date.now() < stop;) {
       const [row] = await sql`SELECT state, routing FROM harness_shared.consult_state
         WHERE workspace_id = ${workspace} AND conversation_id = ${accepted.conversation_id}`;
@@ -145,10 +146,42 @@ async function main() {
       if (row?.state !== 'routing' && row?.routing?.measurement) { persisted = row; break; }
       await new Promise(done => setTimeout(done, 50));
     }
+    if (!persisted && control === 'timeout') {
+      // EI-27732818813908783 deliberately replaced the foreground 15s
+      // cutoff with the remaining accepted lease. Retain the original 35s
+      // observation, then observe expiry of that SAME lease; an active lease
+      // at 35s is not a failed timeout. Never renew it to make this test pass.
+      const lease = lastObserved?.routing?.request;
+      const observedAt = Date.now();
+      const until = Date.parse(lease?.leaseUntil);
+      assert.equal(lastObserved?.state, 'routing', 'withheld inference must still own accepted work');
+      assert.ok(lease?.leaseToken && Number.isFinite(until) && until > observedAt,
+        'timeout control must retain a live accepted lease after the original observation window');
+      assert.ok(until - observedAt <= 120_000, 'accepted lease exceeds its production bound');
+      assert.equal(diagnosticEmbeds.get(question), 1, 'accepted timeout must reach HTTP exactly once');
+      acceptedLease = { until: lease.leaseUntil, initialObservedAt: new Date(observedAt).toISOString() };
+      writeFileSync(join(evidenceDir, 'embedding-timeout-before-lease-expiry.json'), JSON.stringify({
+        control, workspace, conversationId: accepted.conversation_id, accepted, lastObserved,
+        diagnosticEmbedRequests: diagnosticEmbeds.get(question), acceptedLease,
+      }));
+      for (const stop = until + 35_000; Date.now() < stop;) {
+        const [row] = await sql`SELECT state, routing FROM harness_shared.consult_state
+          WHERE workspace_id = ${workspace} AND conversation_id = ${accepted.conversation_id}`;
+        lastObserved = row ?? null;
+        if (row?.state !== 'routing' && row?.routing?.measurement) {
+          persisted = row;
+          acceptedLease.settledAt = new Date().toISOString();
+          break;
+        }
+        assert.equal(row?.routing?.request?.leaseToken, lease.leaseToken, 'accepted lease was replaced');
+        assert.equal(row?.routing?.request?.leaseUntil, lease.leaseUntil, 'accepted lease was renewed');
+        await new Promise(done => setTimeout(done, 50));
+      }
+    }
     if (!persisted) {
       writeFileSync(join(evidenceDir, `embedding-${control}-routing-failure.json`), JSON.stringify({
         control, workspace, conversationId: accepted.conversation_id, accepted, lastObserved,
-        diagnosticEmbedRequests: diagnosticEmbeds.get(question),
+        diagnosticEmbedRequests: diagnosticEmbeds.get(question), acceptedLease,
       }));
     }
     assert.ok(persisted, 'production request did not persist its measured routing result');
@@ -156,7 +189,10 @@ async function main() {
     assert.equal(measurement.caller, 'consult:get_feedback');
     assert.equal(measurement.stages.embedding?.outcome, control === 'healthy' ? 'returned' : 'threw');
     if (control === 'timeout') {
-      assert.equal(measurement.stages.embedding.errorCode, 'ABORT_ERR');
+      assert.ok(acceptedLease?.settledAt, 'accepted timeout settled before its lease was observed');
+      assert.ok(Date.parse(acceptedLease.settledAt) >= Date.parse(acceptedLease.until),
+        'accepted inference was cut off before its deadline');
+      assert.equal(measurement.stages.embedding.errorCode, 'ETIMEDOUT');
       assert.equal(measurement.outcome, 'degraded');
       assert.equal(measurement.errorCode, null, 'recovered stage failure must not become a terminal router exception');
     }
@@ -167,10 +203,11 @@ async function main() {
     assert.ok(!JSON.stringify(recorded).includes(question), 'diagnostic telemetry leaked the request text');
     const read = await call('conversations:get', { id: accepted.conversation_id });
     writeFileSync(join(evidenceDir, `embedding-${control}.json`), JSON.stringify({ base, identity, accepted,
-      persisted, recorded, read, embedRequests, diagnosticEmbedRequests: diagnosticEmbeds.get(question) }));
+      persisted, recorded, read, embedRequests, diagnosticEmbedRequests: diagnosticEmbeds.get(question), acceptedLease }));
     diagnosticRequests.push({ control, conversationId: accepted.conversation_id,
       correlationId: measurement.correlationId, embeddingOutcome: measurement.stages.embedding.outcome,
-      embeddingErrorCode: measurement.stages.embedding.errorCode ?? null, telemetryMatches: true });
+      embeddingErrorCode: measurement.stages.embedding.errorCode ?? null, telemetryMatches: true,
+      ...(acceptedLease ? { acceptedLease } : {}) });
   }
   assert.deepEqual([...diagnosticEmbeds.values()], [1, 1], 'each exact control must reach the real HTTP client boundary once');
   const lockKey = 741101;

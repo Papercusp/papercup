@@ -571,6 +571,32 @@ describe('release:cut — constrained root selector', () => {
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_resume_seed_missing/) });
   });
 
+  it('admits exact failed-bump residue for a fresh seed without a completed manifest', async () => {
+    const head = '{"name":"desktop","version":"0.0.17"}\n';
+    const bumped = head.replace('0.0.17', '0.0.18');
+    const deps = {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => ' m papercusp-desktop\n',
+      desktopStatus: () => ' M package.json\n',
+      canonicalPath: (candidate: string) => candidate,
+      headFile: () => head,
+      readFile: () => bumped,
+      exists: () => false,
+    };
+    await expect(resolveCutRoot('isolated', deps, { retryVersion: '0.0.18' }))
+      .resolves.toMatchObject({ ok: true, restoreVersionResidue: true });
+    await expect(resolveCutRoot('isolated', {
+      ...deps, readFile: () => bumped.replace('desktop', 'tampered'),
+    }, { retryVersion: '0.0.18' })).resolves.toMatchObject({
+      ok: false, reason: expect.stringMatching(/root_resume_residue_invalid/),
+    });
+    await expect(resolveCutRoot('isolated', deps, { retryVersion: '0.0.19' }))
+      .resolves.toMatchObject({ ok: false, reason: expect.stringMatching(/root_resume_residue_invalid/) });
+    await expect(resolveCutRoot('isolated', deps, { reuseSeedVersion: '0.0.18' }))
+      .resolves.toMatchObject({ ok: false, reason: expect.stringMatching(/root_resume_seed_missing/) });
+  });
+
   it('admits seedless only when the seed root contains the exact canonical placeholder', async () => {
     const result = await resolveCutRoot('isolated', {
       loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),

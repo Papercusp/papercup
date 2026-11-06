@@ -189,6 +189,8 @@ export interface CutRootSelection {
   desktopRoot: string;
   selector?: string;
   worktreeRoot?: string;
+  /** Exact cutter-owned version residue was verified for a fresh-seed retry. */
+  restoreVersionResidue?: boolean;
 }
 
 export type CutRootResolution =
@@ -219,6 +221,8 @@ export interface CutRootResolutionOptions {
   /** A completed seed may be reused only when the remaining tracked edits are the
    * exact idempotent version bump written by release-local.sh for this version. */
   reuseSeedVersion?: string;
+  /** Validate the same residue while cutting a NEW seed after an earlier failure. */
+  retryVersion?: string;
   /** A seedless cut keeps normal clean-root enforcement. Only the canonical
    * marker and exact generated dev-note residue are admitted; preparation removes
    * that note. It never admits tracked retry residue or seed payload. */
@@ -429,6 +433,7 @@ function cutRuntimeEnv(
   },
   operation?: BeginCutOperationResult | null,
   harnessSlug?: string | null,
+  restoreVersionResidue?: boolean,
 ): CutRuntimeEnv {
   return {
     ownerName: args.ownerName,
@@ -437,6 +442,7 @@ function cutRuntimeEnv(
     ...(args.fullHistory ? { fullHistory: true } : {}),
     ...(args.deferTag ? { deferTag: true } : {}),
     reuseSeed: args.reuseSeed,
+    ...(restoreVersionResidue ? { restoreVersionResidue: true } : {}),
     ...(args.seedFindingProof ? { seedFindingProof: args.seedFindingProof } : {}),
     ...(args.seedUuidIdempotency ? { seedUuidIdempotency: args.seedUuidIdempotency } : {}),
     ...(args.seedless ? { seedless: true } : {}),
@@ -740,7 +746,7 @@ function resolveCutSeedMode(args: {
   if (args.seedless) {
     return { ok: true, mode: 'seedless', rootOptions: { seedless: true } };
   }
-  return { ok: true, mode: 'fresh', rootOptions: {} };
+  return { ok: true, mode: 'fresh', rootOptions: { retryVersion: args.version } };
 }
 
 /**
@@ -869,8 +875,10 @@ export async function resolveCutRoot(
       reason: `root_unreadable — could not inspect git status for '${selected.path}': ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+  let restoreVersionResidue = false;
   if (dirty.trim().length > 0 && !options.readOnly) {
-    if (!options.reuseSeedVersion) {
+    const residueVersion = options.reuseSeedVersion ?? options.retryVersion;
+    if (!residueVersion) {
       return {
         ok: false,
         reason: `root_not_clean — selected worktree '${selected.path}' has uncommitted changes; release cuts require a clean worktree`,
@@ -924,7 +932,7 @@ export async function resolveCutRoot(
                 ))
             )(selected.path)
           : undefined,
-      version: options.reuseSeedVersion,
+      version: residueVersion,
       files,
     });
     if (!residue.ok) {
@@ -933,6 +941,7 @@ export async function resolveCutRoot(
         reason: `root_resume_residue_invalid — selected worktree '${selected.path}' is not a safe release-owned retry: ${residue.reason}`,
       };
     }
+    restoreVersionResidue = Boolean(options.retryVersion && !options.reuseSeedVersion);
   }
   if (isAutoManagedCutWorktree(selected.path)) {
     return {
@@ -952,6 +961,7 @@ export async function resolveCutRoot(
     selector: requested,
     worktreeRoot: selected.path,
     desktopRoot: selectedDesktopRoot,
+    ...(restoreVersionResidue ? { restoreVersionResidue: true } : {}),
   };
 }
 
@@ -1320,7 +1330,10 @@ export default defineTool({
     }
     // ── preflight: read-only go/no-go ──
     if (args.op === 'preflight') {
-      const selected = await resolveCutRoot(args.root, undefined, { sourceSha: args.sourceSha });
+      const selected = await resolveCutRoot(args.root, undefined, {
+        sourceSha: args.sourceSha,
+        ...(args.version ? { retryVersion: args.version } : {}),
+      });
       if (!selected.ok) return json({ ok: false, op: 'preflight', refused: true, reason: selected.reason });
       const release =
         args.version && args.sourceSha
@@ -1758,7 +1771,7 @@ export default defineTool({
           legs,
           args.sourceSha,
           '<PATH>',
-          cutRuntimeEnv(args, null, resolveConcreteHarnessSlug(undefined, ctx)),
+          cutRuntimeEnv(args, null, resolveConcreteHarnessSlug(undefined, ctx), selected.restoreVersionResidue),
           platform,
           orchestratorRoot,
         );
@@ -1847,7 +1860,7 @@ export default defineTool({
         version: args.version,
         channel,
         expectedSourceSha: args.sourceSha,
-        runtime: cutRuntimeEnv(args, managed.operation, resolveConcreteHarnessSlug(undefined, ctx)),
+        runtime: cutRuntimeEnv(args, managed.operation, resolveConcreteHarnessSlug(undefined, ctx), selected.restoreVersionResidue),
         legs,
         platform,
         root: selected.desktopRoot,
@@ -1973,7 +1986,7 @@ export default defineTool({
         legs,
         args.sourceSha,
         '<PATH>',
-        cutRuntimeEnv(args, null, resolveConcreteHarnessSlug(undefined, ctx)),
+        cutRuntimeEnv(args, null, resolveConcreteHarnessSlug(undefined, ctx), selected.restoreVersionResidue),
         undefined,
         orchestratorRoot,
       );
@@ -2058,7 +2071,7 @@ export default defineTool({
       version: args.version,
       channel,
       expectedSourceSha: args.sourceSha,
-      runtime: cutRuntimeEnv(args, managed.operation, resolveConcreteHarnessSlug(undefined, ctx)),
+      runtime: cutRuntimeEnv(args, managed.operation, resolveConcreteHarnessSlug(undefined, ctx), selected.restoreVersionResidue),
       legs,
       root: selected.desktopRoot,
       orchestratorRoot,

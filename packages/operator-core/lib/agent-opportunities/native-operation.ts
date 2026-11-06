@@ -40,7 +40,8 @@ function operationToolName(tool: string): string {
   const name = original.startsWith('functions.mcp__') ? original.slice('functions.'.length) : original;
   if (name.startsWith('mcp__') && !/^mcp__papercusp(?:[-_]su)?__/.test(name)) return original;
   const normalized = normalizeMcpName(name);
-  return ['capability:bash', 'capability:terminal', 'capability:bash_output'].includes(normalized) ? normalized : original;
+  if (normalized === 'capability:bash:output') return 'capability:bash_output';
+  return ['capability:bash', 'capability:terminal'].includes(normalized) ? normalized : original;
 }
 const hash = (scope: SqlIntentScope, domain: string, values: unknown[]) => createHmac('sha256', scope.key)
   .update(JSON.stringify(['native-operation-v1', scope.workspaceId, scope.sourceBoundary, scope.epoch, domain, values])).digest('hex');

@@ -54,6 +54,7 @@ export async function verifyCutSourceClone(
   options: {
     readOnly?: boolean;
     reuseSeedVersion?: string;
+    retryVersion?: string;
     onPhase?: (event: ReleaseCutPhaseTiming) => void;
   } = {},
 ): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
@@ -114,6 +115,7 @@ async function verifyCutSourceCloneAdmitted(
   options: {
     readOnly?: boolean;
     reuseSeedVersion?: string;
+    retryVersion?: string;
     onPhase?: (event: ReleaseCutPhaseTiming) => void;
   },
 ): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
@@ -203,7 +205,8 @@ async function verifyCutSourceCloneAdmitted(
       // Read-only inspection retains the existing dirty-artifact contract. For
       // a retry, only root/desktop residue is deferred to resolveCutRoot's exact
       // release-owned residue validator; every other submodule must be clean.
-      const retryResidue = options.reuseSeedVersion && (candidate === root || candidate === path.join(root, 'papercusp-desktop'));
+      const retryResidue = (options.reuseSeedVersion || options.retryVersion)
+        && (candidate === root || candidate === path.join(root, 'papercusp-desktop'));
       if (!options.readOnly && !retryResidue && (await trackedGit(candidate, 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none')).trim()) {
         throw new Error(`unclean source repository at ${candidate}`);
       }

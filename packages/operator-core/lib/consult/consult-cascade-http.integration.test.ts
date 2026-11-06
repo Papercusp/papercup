@@ -59,9 +59,13 @@ it('reply and decline acknowledge persisted posts before the private production 
       expect(receipt.diagnosticRequests).toEqual([
         expect.objectContaining({ control: 'healthy', embeddingOutcome: 'returned', embeddingErrorCode: null,
           telemetryMatches: true }),
-        expect.objectContaining({ control: 'timeout', embeddingOutcome: 'threw', embeddingErrorCode: 'ABORT_ERR',
+        expect.objectContaining({ control: 'timeout', embeddingOutcome: 'threw', embeddingErrorCode: 'ETIMEDOUT',
           telemetryMatches: true }),
       ]);
+      const lease = receipt.diagnosticRequests[1].acceptedLease;
+      expect(Date.parse(lease.initialObservedAt)).toBeLessThan(Date.parse(lease.until));
+      expect(Date.parse(lease.settledAt)).toBeGreaterThanOrEqual(Date.parse(lease.until));
+      expect(Date.parse(lease.settledAt)).toBeLessThan(Date.parse(lease.until) + 35_000);
       console.info('CONSULT_CASCADE_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
   });

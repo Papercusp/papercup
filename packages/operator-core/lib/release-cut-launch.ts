@@ -187,6 +187,8 @@ export interface CutRuntimeEnv {
   deferTag?: boolean;
   /** Explicit retry-only fast path: reuse a seed already cut in this isolated root. */
   reuseSeed?: boolean;
+  /** Set only after exact cutter-owned residue validation; still cut a fresh seed. */
+  restoreVersionResidue?: boolean;
   /** Reviewed private D-140 exact-content seed finding evidence, never a path skip. */
   seedFindingProof?: string;
   /** Private D166 plan bound to a frozen ORIGINAL store. Transport only;
@@ -534,7 +536,7 @@ export function buildCutArgv(
   // validates that exact residue in release:cut, then restores only those files
   // so release-local.sh starts from a clean provenance baseline and reapplies the
   // same idempotent bump while preserving the ignored completed seed.
-  const resumeReset = runtime.reuseSeed
+  const resumeReset = runtime.reuseSeed || runtime.restoreVersionResidue
     ? 'git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/Cargo.lock && '
     : '';
   // The selected root owns the exact target bytes and artifact paths, while the

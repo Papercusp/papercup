@@ -109,6 +109,16 @@ describe('independent release source clone authority', () => {
     await expect(verify()).resolves.toMatchObject({ ok: false });
     await expect(verifyCutSourceClone(clone, [{ path: source }], sha, { readOnly: true })).resolves.toMatchObject({ ok: true });
   });
+
+  it('defers fresh retry residue to the exact validator while retaining gitlink pin checks', async () => {
+    const desktop = path.join(clone, 'papercusp-desktop');
+    writeFileSync(path.join(desktop, 'payload'), 'pending residue validation\n');
+    await expect(verifyCutSourceClone(clone, [{ path: source }], sha, { retryVersion: '0.0.33' }))
+      .resolves.toMatchObject({ ok: true, path: clone });
+    commit(desktop);
+    await expect(verifyCutSourceClone(clone, [{ path: source }], sha, { retryVersion: '0.0.33' }))
+      .resolves.toMatchObject({ ok: false, reason: expect.stringContaining('pin') });
+  });
   it('rejects a child checkout at another commit even when all bytes are clean', async () => {
     const child = path.join(clone, 'papercusp-desktop');
     writeFileSync(path.join(child, 'payload'), 'other source');

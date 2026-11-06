@@ -2,7 +2,8 @@
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { fetchNativeOperations, groupNativeOperations, readableNativeChains, type NativeCorpusOptions, type NativeProvider } from './native-operation';
+import { fetchNativeOperations, groupNativeOperations, readableNativeChains, nativeTranscriptSources, type NativeCorpusOptions, type NativeProvider } from './native-operation';
+import { normalizeExecutionTrace, readableOperationEvidence } from '../orchestration-trace';
 import type { SearchSource } from './search-reformulation';
 
 let db: OrgTestDb;
@@ -48,6 +49,35 @@ it('R12-CONTRACT', async () => {
   expect(JSON.stringify(grouped)).not.toContain('confidential');
   const activity = await fetchNativeOperations(opts({ readTranscript: undefined }));
   expect(groupNativeOperations(activity.observations).chains.every(c => c.unknownCount === 2)).toBe(true);
+});
+
+it('P005 ledger hydration bridges canonical yielded receipts into shared evidence and revocation removes access', async () => {
+  const callId = 'native-yielded';
+  const id = await seed({ callId, args: { cmd: 'echo private-operation', cwd: '/private/repo' } });
+  const lines = [
+    { type: 'function_call', name: 'exec_command', call_id: callId,
+      arguments: JSON.stringify({ cmd: 'echo private-operation', cwd: '/private/repo' }) },
+    { type: 'function_call_output', call_id: callId, output: '{"session_id":42}' },
+    { type: 'function_call', name: 'write_stdin', call_id: 'native-poll', arguments: '{"session_id":42}' },
+    { type: 'function_call_output', call_id: 'native-poll', output: '{"exit_code":0}' },
+  ].map(payload => JSON.stringify({ timestamp: '2026-10-24T12:00:00Z', type: 'response_item', payload }));
+  const calls = nativeTranscriptSources(lines, { workspaceId, harnessSlug, authorizationScope: scope.sourceBoundary,
+    actor: 'su-native-test', verifiedAgent: true, origin: 'agent', provider: 'codex', sessionId: 'session-one', complete: true });
+  transcripts.set(id, calls[0]!);
+  let canRead = true;
+  const config = opts({ authorizeSource: async () => canRead ? { sourceBoundary: scope.sourceBoundary } : null });
+  const page = await fetchNativeOperations(config);
+  const operations = groupNativeOperations(page.observations).operations;
+  expect(operations).toHaveLength(1);
+  const evidence = operations[0]!.operationEvidence!;
+  expect(evidence).toMatchObject({ family: 'shell', outcome: { status: 'success', final: true },
+    lifecycle: { yielded: true, polls: [{}] }, replayClass: 'non-replayable' });
+  const trace = await normalizeExecutionTrace({ script: 'return 1;', tools: [], operations: [evidence] });
+  expect(readableOperationEvidence(trace, { workspaceId, now: Date.now(), canRead: () => canRead })).toEqual([evidence]);
+  expect(JSON.stringify(page)).not.toMatch(/private-operation|private\/repo|native-yielded|native-poll/);
+  canRead = false;
+  expect((await fetchNativeOperations(config)).observations).toEqual([]);
+  expect(readableOperationEvidence(trace, { workspaceId, now: Date.now(), canRead: () => canRead })).toEqual([]);
 });
 
 it('OUTCOME-P-012', async () => {
