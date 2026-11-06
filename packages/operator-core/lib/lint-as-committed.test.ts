@@ -1405,6 +1405,12 @@ console.log('CLONE_PREREQUISITES_OK');
     const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
     const priorStore = process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
     const priorMutexRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const phases = () => diagnostics.mock.calls
+      .filter(([line]) => typeof line === 'string' && line.startsWith('COMMITTED_DEPENDENCY_PHASE '))
+      .map(([line]) => JSON.parse((line as string).slice('COMMITTED_DEPENDENCY_PHASE '.length)) as {
+        phase: string; state: string; elapsedMs: number;
+      });
     const makeWritable = (path: string) => {
       if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !statSync(path).isDirectory()) return;
       chmodSync(path, 0o700);
@@ -1436,6 +1442,10 @@ console.log('CLONE_PREREQUISITES_OK');
         const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
         writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
         await expect(mod.materializeIndependentDependencies(f.root, workRoot)).rejects.toThrow(/independent dependency materialization failed/);
+        expect(phases()).toEqual([
+          { phase: 'generation-selection-and-copy', state: 'started', elapsedMs: expect.any(Number) },
+          { phase: 'generation-selection-and-copy', state: 'failed', elapsedMs: expect.any(Number) },
+        ]);
         expect(existsSync(join(workRoot, 'node_modules'))).toBe(false);
         expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(marker);
         return;
@@ -1443,6 +1453,14 @@ console.log('CLONE_PREREQUISITES_OK');
       // A mutable donor cannot supply these bytes or even be enumerated now.
       rmSync(join(f.root, 'node_modules'), { recursive: true });
       const prepared = await mod.materializeIndependentDependencies(f.root, workRoot);
+      expect(phases().map(({ phase, state }) => [phase, state])).toEqual([
+        ['generation-selection-and-copy', 'started'],
+        ['repair-links', 'started'], ['repair-links', 'complete'],
+        ['generation-selection-and-copy', 'complete'],
+        ['workspace-build', 'started'], ['workspace-build', 'complete'],
+        ['validate-and-publish', 'started'], ['validate-and-publish', 'complete'],
+      ]);
+      expect(phases().every(({ elapsedMs }) => Number.isInteger(elapsedMs) && elapsedMs >= 0)).toBe(true);
       mod.prepareWorkspaceExports(workRoot, prepared.workspacePaths);
       const clonedDependency = join(workRoot, dependency);
       expect(statSync(clonedDependency).ino).not.toBe(statSync(join(generation, 'tree', dependency)).ino);
@@ -1465,6 +1483,7 @@ console.log('CLONE_PREREQUISITES_OK');
       delete requireClone.cache[requireClone.resolve('transitive/index.cjs')];
       expect(requireClone('transitive/index.cjs')).toBe('clone-only');
     } finally {
+      diagnostics.mockRestore();
       if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
       else process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = priorStore;
       if (priorMutexRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
@@ -1480,6 +1499,7 @@ console.log('CLONE_PREREQUISITES_OK');
       const f = fixture('node build.cjs');
       const parent = mkdtempSync(join(tmpdir(), 'lac-independent-custody-'));
       const workRoot = join(parent, 'snapshot');
+      const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
         gitFixture(f.root, ['clone', '--local', '--shared', '--quiet', f.root, workRoot]);
         const markerPath = join(workRoot, '.git/lint-as-committed-owner.json');
@@ -1497,9 +1517,18 @@ console.log('CLONE_PREREQUISITES_OK');
           defect === 'linked-root' ? /independent dependency materialization failed/ :
             defect === 'escaping-link' ? /escapes its snapshot/ : /absent from its snapshot/,
         );
+        const phases = diagnostics.mock.calls.map(([line]) => JSON.parse(
+          (line as string).slice('COMMITTED_DEPENDENCY_PHASE '.length),
+        ) as { phase: string; state: string });
+        expect(phases.at(-1)).toMatchObject({
+          phase: defect === 'incomplete-copy' ? 'validate-and-publish' : 'donor-copy',
+          state: 'failed',
+        });
+        expect(phases).not.toContainEqual(expect.objectContaining({ phase: 'validate-and-publish', state: 'complete' }));
         expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(marker);
         if (defect !== 'linked-root') expect(lstatSync(join(workRoot, 'node_modules')).isDirectory()).toBe(true);
       } finally {
+        diagnostics.mockRestore();
         rmSync(parent, { recursive: true, force: true });
         rmSync(f.root, { recursive: true, force: true });
       }
@@ -1579,6 +1608,11 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       writeFileSync(release, 'release');
       expect(await exited, output).toBe(0);
       expect(output).toContain('INDEPENDENT_DEPENDENCIES_OK');
+      // These records must reach the CLI's captured stderr, including when a
+      // later timeout prevents setup from returning a final summary.
+      expect(output).toContain('COMMITTED_DEPENDENCY_COPY state=started mode=donor path=node_modules');
+      expect(output).toContain('COMMITTED_DEPENDENCY_COPY state=complete mode=donor path=node_modules elapsedSec=');
+      expect(output).toContain('"phase":"workspace-build","state":"complete"');
       const acquired = attempt();
       expect(acquired.status, acquired.stdout + acquired.stderr).toBe(0);
       expect(acquired.stdout).toContain('WRITER_ACQUIRED');
