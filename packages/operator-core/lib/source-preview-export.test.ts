@@ -1144,6 +1144,58 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       .rejects.toThrow('tampered verification source archive');
   });
 
+  it('validates and measures archive verifier inputs from a digest-pinned receipt, refusing tampering', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-archive-cli-fixture'));
+    const input = SHIPPED.find(path => path.startsWith('apps/'))!;
+    const cli = (args: string[]) => spawnSync(process.execPath,
+      [join(__dirname, '../../../scripts/source-preview.mjs'), ...args],
+      { encoding: 'utf8', env: childEnv(), timeout: 60_000, maxBuffer: 1024 * 1024 });
+    const prepare = async (name: string) => {
+      const dest = join(tmp, name);
+      const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+      const receiptSha256 = createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+      return { dest, receipt, receiptSha256 };
+    };
+    const args = (archive: Awaited<ReturnType<typeof prepare>>, command: string, ref = fixture.commit) =>
+      [command, '--repo', archive.dest, '--ref', ref, '--receipt-sha256', archive.receiptSha256];
+
+    const valid = await prepare('verifier-archive-cli-valid');
+    const checked = cli([...args(valid, 'verifier-inputs-check'), '--inputs', input]);
+    expect(checked.status, checked.stderr).toBe(0);
+    expect(JSON.parse(checked.stdout)).toEqual({ sha: fixture.commit, paths: [input] });
+    const measured = cli(args(valid, 'verifier-measure'));
+    expect(measured.status, measured.stderr).toBe(0);
+    expect(measured.stdout.trim()).toBe(String(measureVerifierSourceBytes({ repo: fixture.repo, ref: fixture.commit })));
+    const wrongRef = cli(args(valid, 'verifier-measure', '0'.repeat(40)));
+    expect(wrongRef.status).not.toBe(0);
+    expect(wrongRef.stderr).toContain('differs from selected source ref');
+    const wrongMembership = cli([...args(valid, 'verifier-inputs-check'), '--inputs', 'not-pinned.mjs']);
+    expect(wrongMembership.status).not.toBe(0);
+    expect(wrongMembership.stderr).toContain('tested input membership differs');
+
+    const inputTamper = await prepare('verifier-archive-cli-input-tamper');
+    writeFileSync(join(inputTamper.dest, input), 'tampered tested input');
+    const inputRefusal = cli([...args(inputTamper, 'verifier-inputs-check'), '--inputs', input]);
+    expect(inputRefusal.status).not.toBe(0);
+    expect(inputRefusal.stderr).toContain('tampered verification source archive');
+
+    const receiptTamper = await prepare('verifier-archive-cli-receipt-tamper');
+    const receiptPath = join(receiptTamper.dest, '.verifier-source.json');
+    const changedReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    changedReceipt.sourceCommit = 'f'.repeat(40);
+    writeFileSync(receiptPath, JSON.stringify(changedReceipt) + '\n');
+    const receiptRefusal = cli(args(receiptTamper, 'verifier-measure'));
+    expect(receiptRefusal.status).not.toBe(0);
+    expect(receiptRefusal.stderr).toContain('pinned verifier source receipt changed');
+
+    const sourceTamper = await prepare('verifier-archive-cli-source-tamper');
+    const sourcePath = sourceTamper.receipt.files.find(file => file.path !== input && file.kind === 'file')!.path;
+    writeFileSync(join(sourceTamper.dest, sourcePath), 'tampered untested source');
+    const sourceRefusal = cli(args(sourceTamper, 'verifier-measure'));
+    expect(sourceRefusal.status).not.toBe(0);
+    expect(sourceRefusal.stderr).toContain('tampered verification source archive');
+  }, 120_000);
+
   it('exports exact gitlinks despite unrelated dirty donor bytes and detects archive tampering', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-fixture'));
     const dest = join(tmp, 'verifier-export');
@@ -1373,10 +1425,13 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, script, [
+      "import { createHash } from 'node:crypto';",
+      "import { readFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
       "import value from '@native-proof/runtime';",
       "import { typed } from './schema';",
       "if (value !== typed) throw Error('wrong dependency');",
-      `if (process.argv.includes('verifier-measure') && process.argv.includes('--ref')) { const index = process.argv.indexOf('--repo'); if (index < 0 || process.argv[index + 1] !== ${JSON.stringify(fixture.repo)}) throw Error('measurement must use the Git source repository'); }`,
+      "if (['verifier-inputs-check', 'verifier-measure'].includes(process.argv[2]) && process.argv.includes('--repo')) { const args = process.argv; const value = flag => args[args.indexOf(flag) + 1]; const receipt = readFileSync(join(value('--repo'), '.verifier-source.json')); if (value('--repo') !== process.cwd() || createHash('sha256').update(JSON.stringify(JSON.parse(receipt))).digest('hex') !== value('--receipt-sha256')) throw Error('archive receipt pin mismatch'); }",
       "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');",
     ].join('\n') + '\n');
     write(fixture.repo, 'scripts/schema/index.ts', "export const typed: string = 'private-snapshot';\n");
@@ -1397,7 +1452,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     let receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     try {
       receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
-        dest, inputs: [script], gitCheckout: true });
+        dest, inputs: [script] });
     } finally { vi.unstubAllEnvs(); }
     const probe = (loader = false) => spawnSync(process.execPath, [...(loader ? ['--import', 'tsx'] : []), join(dest, script), 'verifier-measure'],
       { cwd: dest, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' } });

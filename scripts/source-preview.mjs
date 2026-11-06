@@ -436,8 +436,46 @@ function committedInputBlob(repo, sha, path, trees) {
  * any destination. Per-file block rounding covers small-file allocation; the
  * existing disk reservation adds its separate dependency/metadata allowance.
  * export-ignore can only make the actual archive smaller than this census.
+ * An archive without Git metadata instead requires its external receipt digest
+ * and derives the same rounded census from the pinned archive entries.
  */
-export function measureVerifierSourceBytes({ repo, ref }) {
+function readPinnedVerifierArchive(repo, ref, receiptSha256) {
+  if (!/^[a-f0-9]{64}$/.test(receiptSha256 ?? ''))
+    throw new PreviewError('verifier source receipt digest is required for archive verification', 2);
+  const root = realpathSync(repo);
+  let receipt;
+  try {
+    receipt = JSON.parse(readFileSync(join(root, '.verifier-source.json'), 'utf8'));
+  } catch (error) {
+    throw new PreviewError('cannot read pinned verifier source receipt: ' + String(error?.message ?? error), 2);
+  }
+  const digest = createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+  if (digest !== receiptSha256) throw new PreviewError('pinned verifier source receipt changed', 2);
+  if (receipt.sourceCommit !== ref)
+    throw new PreviewError('verifier source receipt differs from selected source ref', 2);
+  verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+  return { root, receipt };
+}
+
+function measureVerifierArchiveSourceBytes({ repo, ref, receiptSha256 }) {
+  const { root, receipt } = readPinnedVerifierArchive(repo, ref, receiptSha256);
+  let bytes = 0;
+  for (const file of receipt.files) {
+    const info = lstatSync(join(root, file.path));
+    if ((file.kind === 'file' && !info.isFile()) || (file.kind === 'symlink' && !info.isSymbolicLink()))
+      throw new PreviewError('verifier archive source kind changed: ' + file.path, 2);
+    if (!Number.isSafeInteger(info.size) || info.size < 0)
+      throw new PreviewError('cannot measure verifier archive source bytes', 2);
+    bytes += Math.ceil(info.size / 4096) * 4096;
+    if (!Number.isSafeInteger(bytes))
+      throw new PreviewError('verifier archive source size exceeds safe integer range', 2);
+  }
+  verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+  return bytes;
+}
+
+export function measureVerifierSourceBytes({ repo, ref, receiptSha256 }) {
+  if (receiptSha256 !== undefined) return measureVerifierArchiveSourceBytes({ repo, ref, receiptSha256 });
   const measure = (source, sha, prefix = '') => {
     let bytes = 0;
     for (const entry of git(source, ['ls-tree', '-r', '-z', '-l', sha]).split('\0')) {
@@ -535,9 +573,9 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
 ]);
 
 /** Validate the explicit tested source population against its pinned commit.
- * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean }} options
+ * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, receiptSha256?: string }} options
  */
-export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile, tauriInputs = false }) {
+export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile, tauriInputs = false, receiptSha256 }) {
   if (inputsFile !== undefined) {
     const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
     if (!Array.isArray(listed) || !listed.length || listed.some((path) => typeof path !== 'string')) {
@@ -556,6 +594,26 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
       || path.split('/').some((p) => p === '..' || p === '.' || !p)) {
       throw new PreviewError(`invalid tested input: ${path}`, 2);
     }
+  }
+  if (receiptSha256 !== undefined) {
+    const { root, receipt } = readPinnedVerifierArchive(repo, ref, receiptSha256);
+    const receiptPaths = receipt.testedInputs.map(input => input.path).sort();
+    if (paths.length !== receiptPaths.length || paths.some((path, index) => path !== receiptPaths[index]))
+      throw new PreviewError('tested input membership differs from pinned verifier source receipt', 2);
+    const pins = new Map(receipt.testedInputs.map(input => [input.path, input.sha256]));
+    for (const path of paths) {
+      let info;
+      try { info = await fs.lstat(join(root, path)); }
+      catch (error) {
+        if (error.code === 'ENOENT') throw new PreviewError('tested input is missing from verifier archive: ' + path, 2);
+        throw error;
+      }
+      if (!info.isFile()) throw new PreviewError('tested input is not a regular file: ' + path, 2);
+      const digest = createHash('sha256').update(await fs.readFile(join(root, path))).digest('hex');
+      if (digest !== pins.get(path)) throw new PreviewError('dirty tested-input mismatch: ' + path, 2);
+    }
+    verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+    return { sha: receipt.sourceCommit, paths };
   }
   const sha = resolveCommit(repo, ref);
   // Refuse initial mismatches before creating a destination, cloning or
@@ -2263,13 +2321,15 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   // The CLI imports workspace TypeScript, including extensionless and directory
   // imports. Resolve its loader from the private snapshot, never ambient options.
   const nodeArgs = ['--import', 'tsx', script];
+  const receiptSha256 = createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
   await runPhase('deps.inputs', () => run(process.execPath, [...nodeArgs, 'verifier-inputs-check', '--repo', dest,
-    '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]));
-  // The materialized snapshot has no submodule Git databases. Measure the
-  // pinned source tree from its dependency donor, which owns those gitlinks.
+    '--ref', receipt.sourceCommit, '--receipt-sha256', receiptSha256,
+    '--inputs', receipt.testedInputs.map(input => input.path).join(',')]));
+  // The source archive has no Git database. Validate and measure it from its
+  // externally pinned receipt, with full source censuses around both reads.
   await runPhase('deps.measure', async () => {
-    const bytes = (await run(process.execPath, [...nodeArgs, 'verifier-measure', '--repo', realpathSync(donor),
-      '--ref', receipt.sourceCommit])).trim();
+    const bytes = (await run(process.execPath, [...nodeArgs, 'verifier-measure', '--repo', dest,
+      '--ref', receipt.sourceCommit, '--receipt-sha256', receiptSha256])).trim();
     if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
       throw new PreviewError('verifier dependency preflight returned no source size', 2);
   });
@@ -4268,7 +4328,7 @@ function parseArgs(argv) {
       if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
       opts[a.slice(2)] = path;
     }
-    else if (['--ref', '--out', '--remote', '--json', '--target', '--repo', '--inputs', '--receipt'].includes(a)) opts[a.slice(2)] = rest[++i];
+    else if (['--ref', '--out', '--remote', '--json', '--target', '--repo', '--inputs', '--receipt', '--receipt-sha256'].includes(a)) opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
     else opts._.push(a);
   }
@@ -4355,7 +4415,8 @@ async function main(argv) {
       throw new PreviewError('verifier input check requires --repo, --ref and --inputs or --inputs-file', 2);
     }
     const result = await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
-      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], tauriInputs: opts.tauriInputs === true });
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
+      tauriInputs: opts.tauriInputs === true, receiptSha256: opts['receipt-sha256'] });
     // This command runs inside the private dependency snapshot before the
     // native child. A stable census alone cannot detect an incomplete donor.
     const failures = findUnusableRuntimeDeps({ repoRoot: opts.repo });
@@ -4365,7 +4426,7 @@ async function main(argv) {
   }
   if (cmd === 'verifier-measure') {
     if (!opts.repo || !opts.ref) throw new PreviewError('verifier measurement requires explicit --repo and --ref', 2);
-    console.log(measureVerifierSourceBytes({ repo: opts.repo, ref: opts.ref }));
+    console.log(measureVerifierSourceBytes({ repo: opts.repo, ref: opts.ref, receiptSha256: opts['receipt-sha256'] }));
     return 0;
   }
   if (cmd === 'verifier-prepare' || cmd === 'verifier-verify') {

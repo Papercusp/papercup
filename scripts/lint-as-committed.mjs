@@ -350,9 +350,11 @@ export function committedWorkRootDependencyDonor(workRoot) {
  * the mutable install is on another device. Small/unpublished installs retain
  * the bounded donor-reader fallback. Retained roots own their resulting bytes;
  * no generation pin or donor reader must outlive materialization.
+ * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
  */
-export async function materializeIndependentDependencies(repoRoot, workRoot) {
+export async function materializeIndependentDependencies(repoRoot, workRoot, options = {}) {
+  const { prepareWorkspace } = options;
   const donor = committedWorkRootDependencyDonor(repoRoot);
   const materializer = fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
   const materialize = (useGeneration) => {
@@ -436,11 +438,24 @@ done <<< "$sources"
         renameSync(installCache, join(workRoot, path, '.papercusp-installed-package-lock.json'));
       }
     }
-    // Resolve only after every link has been rewritten: .bin and package aliases
+    return { paths, workspacePaths, links };
+  };
+  const snapshot = materialize(true) ?? await withFsMutexRead(installLockNameForRoot(donor), async () => {
+    const copied = materialize(false);
+    if (!copied) throw new Error('missing independent dependency snapshot');
+    return copied;
+  });
+  // A workspace .bin can name ignored build output, absent in the committed
+  // clone until its pinned build runs. Release the donor reader before building;
+  // neither that build nor a failed graph may publish independent provenance.
+  prepareWorkspace?.(snapshot);
+  {
+    // Resolve only after every link has been rewritten and workspace output is
+    // prepared: .bin and package aliases
     // can point through other links. A lexical remap alone cannot prove that a
     // copied graph is complete or that its eventual target stays in this root.
     const snapshotRoot = realpathSync(workRoot);
-    for (const path of links) {
+    for (const path of snapshot.links) {
       if (!existsSync(path)) {
         throw new Error(`dependency symlink target is absent from its snapshot: ${relative(workRoot, path)}`);
       }
@@ -458,15 +473,8 @@ done <<< "$sources"
       writeFileSync(temporary, JSON.stringify({ ...marker, dependencyMode: 'independent-copy-v1' }), { flag: 'wx' });
       renameSync(temporary, markerPath);
     } finally { rmSync(temporary, { force: true }); }
-    return { paths, workspacePaths };
-  };
-  const generation = materialize(true);
-  if (generation) return generation;
-  return withFsMutexRead(installLockNameForRoot(donor), async () => {
-    const snapshot = materialize(false);
-    if (!snapshot) throw new Error('missing independent dependency snapshot');
-    return snapshot;
-  });
+  }
+  return { paths: snapshot.paths, workspacePaths: snapshot.workspacePaths };
 }
 
 /** Keep the existing owner marker alive for the lifetime of a dependent artifact. */
@@ -558,6 +566,10 @@ export async function cleanupCommittedWorkRoot(workRoot, keep = false, pinOption
 export function classifyWorkRoot({ inUse, dependentArtifactPresent = false, marker, ownerAlive, ageMs, keepTtlMs = KEEP_TTL_MS, maxAgeMs = MAX_AGE_MS }) {
   if (inUse) return { remove: false, reason: 'in-use' };
   if (dependentArtifactPresent) return { remove: false, reason: 'dependent-artifact' };
+  // Preparation copies dependencies while its owner still has the donor cwd.
+  // Neither an empty cwd census nor --keep makes that live operation idle.
+  if (marker && ownerAlive === true) return { remove: false, reason: 'owner-alive' };
+  if (marker && ownerAlive === null) return { remove: false, reason: 'owner-liveness-unknown' };
   if (!(ageMs >= 0)) return { remove: false, reason: 'age-unknown' };
   if (ageMs > maxAgeMs) return { remove: true, reason: 'max-age' };
   if (!marker) return ageMs > keepTtlMs ? { remove: true, reason: 'unmarked-expired' } : { remove: false, reason: 'unmarked-young' };
@@ -649,6 +661,13 @@ export async function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(),
           currentMarker = JSON.parse(readFileSync(join(path, OWNER_MARKER), 'utf8'));
         } catch (error) {
           if (error?.code !== 'ENOENT') throw error;
+        }
+        // The owner can resume while this sweep waits for the retention mutex.
+        // Recheck at the destructive boundary instead of trusting enumeration.
+        const ownerAlive = currentMarker ? isAlive(currentMarker.pid) : false;
+        if (ownerAlive === true || ownerAlive === null) {
+          kept.push({ name, reason: ownerAlive ? 'owner-alive' : 'owner-liveness-unknown' });
+          return;
         }
         if (hasDependentArtifact(path, currentMarker)) {
           kept.push({ name, reason: 'dependent-artifact' });
@@ -1627,23 +1646,32 @@ async function main() {
 
     // Only snapshot acquisition borrows the mutable install. Commands use private
     // bytes, including after --keep/--materialize-only outlive this process.
-    const { paths: linkedPaths, workspacePaths } = await materializeIndependentDependencies(repoRoot, workRoot);
-    // Keep the extracted tree CLEAN to `git status` (WI-10004898, see planLinkExcludes):
-    // a run inside it must be able to record worktree_dirty=false.
-    const excludePlan = planLinkExcludes(linkedPaths, submodules.map((s) => s.path));
-    writeLinkExcludes(workRoot, excludePlan);
-    console.log(
-      `  copied ${linkedPaths.length} node_modules dir(s) (independent snapshot; excluded from git status); ` +
-        `${workspacePaths.size} workspace package link(s) resolve into this tree`,
-    );
+    let snapshot;
+    let prerequisiteError;
     try {
-      prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets: args.any, sourceRoot: repoRoot });
+      snapshot = await materializeIndependentDependencies(repoRoot, workRoot, {
+        prepareWorkspace: ({ paths, workspacePaths }) => {
+          // Exclude the private install before a pinned build checks cleanliness.
+          writeLinkExcludes(workRoot, planLinkExcludes(paths, submodules.map((s) => s.path)));
+          try {
+            prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets: args.any, sourceRoot: repoRoot });
+          } catch (err) {
+            prerequisiteError = err;
+            throw err;
+          }
+        },
+      });
     } catch (err) {
+      if (err !== prerequisiteError) throw err;
       console.error(`lint-as-committed: workspace runtime prerequisites failed: ${err.message}`);
       process.exitCode = 2;
       return;
     }
-
+    const { paths: linkedPaths, workspacePaths } = snapshot;
+    console.log(
+      `  copied ${linkedPaths.length} node_modules dir(s) (independent snapshot; excluded from git status); ` +
+        `${workspacePaths.size} workspace package link(s) resolve into this tree`,
+    );
     if (args.materializeOnly) {
       verifyCommittedWorkRoot(workRoot, sha);
       if (args.retainFor) await retainCommittedWorkRoot(workRoot, sha, args.retainFor);
