@@ -581,6 +581,13 @@ const VERIFIER_REBUILT_OUTPUTS = [
   'papercusp-desktop/src-tauri/resources/workbench-install.js',
 ];
 
+function committedVerifierPathTracked(repo, sha, path) {
+  const link = listGitlinks(repo, sha).find(entry => path.startsWith(entry.path + '/'));
+  if (link) return committedVerifierPathTracked(materializedSubmodule(repo, link, link.path),
+    link.sha, path.slice(link.path.length + 1));
+  return Boolean(git(repo, ['ls-tree', sha, '--', path]).trim());
+}
+
 /** Validate the explicit tested source population against its pinned commit.
  * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, receiptSha256?: string }} options
  */
@@ -2825,8 +2832,13 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         : null;
       return admitBudget(estimate, true);
     });
+    // Historical pins can track outputs that the private runtime must rebuild.
+    // Reuse the archive exporter for those pins; retain the normal Git checkout
+    // when its tracked source population can remain intact.
+    const gitCheckout = !VERIFIER_REBUILT_OUTPUTS.some(path =>
+      committedVerifierPathTracked(sourceRepo, sourceCommit, path));
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref: sourceCommit, dest: root,
-      inputs, inputsFile, tauriInputs, gitCheckout: true }));
+      inputs, inputsFile, tauriInputs, gitCheckout }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     if (snapshotSelection.command === 'snapshot-generation-locked') {
       await runPhase('deps.preflight', () => {

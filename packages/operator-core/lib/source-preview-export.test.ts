@@ -1980,21 +1980,27 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(candidate, '.papercusp/scratch'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'census-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention'] as const)
+  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'census-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention', 'tracked-operator-runtime', 'tracked-shell-runtime', 'tracked-shell-installer', 'tracked-runtime-tamper'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
       const preflight = 'scripts/source-preview.mjs';
       const provider = 'scripts/provider-fixture.mjs';
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      const runtimeOutput = mode === 'tracked-shell-runtime'
+        ? 'papercusp-desktop/src-tauri/resources/workbench@papercusp.ai.shell-extension.zip'
+        : mode === 'tracked-shell-installer' ? 'papercusp-desktop/src-tauri/resources/workbench-install.js'
+          : mode.startsWith('tracked-') ? 'apps/operator/dist-verify/host.js' : null;
+      const sourceTamper = mode === 'frozen-tamper' || mode === 'tracked-runtime-tamper';
+      if (runtimeOutput) write(fixture.repo, runtimeOutput, 'historically tracked runtime');
       write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
       write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
       const snapshotCustody = 'donor=fixture\nmode=generation-copy\ntrees=1\ngeneration=original-generation\ninput=original-input\ntoken=original-token\n';
       write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then if [ "${VERIFIER_CENSUS_FAIL:-}" = 1 ]; then echo census failure >&2; exit 43; fi; echo node_modules; exit; fi\nif [ "${VERIFIER_PREPARE_FAIL:-}" = 1 ]; then echo missing dependency generation >&2; exit 42; fi\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\nprintf "' + snapshotCustody.replaceAll('\n', '\\n') + '" > "$3/.papercusp-pinned-deps"\n');
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
       write(fixture.repo, provider, [
-        "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
-        "import { join } from 'node:path';",
+        "import { readFileSync, writeFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';",
+        "import { join, dirname } from 'node:path';",
         "import value from '@native-proof/runtime';",
         "const donor = process.argv[2], mode = process.argv[3];",
         "writeFileSync(join(donor, 'scripts/provider-fixture.mjs'), 'peer edit after allocation');",
@@ -2006,7 +2012,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5],",
         "  privatePgReleaseToken: process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN ?? null,",
         "  preparedChildEnv: process.env.VERIFIER_CHILD_ENV_PREPARED ?? null }));",
-        "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
+        "if (mode.startsWith('tracked-')) { const output = process.argv[6]; if (existsSync(output)) throw Error('stale generated runtime copied'); mkdirSync(dirname(output), { recursive: true }); writeFileSync(output, 'rebuilt private runtime'); }",
+        "if (mode === 'frozen-tamper' || mode === 'tracked-runtime-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
         "if (mode === 'dependency-tamper') writeFileSync('node_modules/@native-proof/runtime/index.mjs', 'tampered installed bytes');",
         "if (mode === 'child-failure' || mode === 'child-output-overflow') {",
         "  if (mode === 'child-output-overflow') { process.stdout.write('x'.repeat(131072)); process.stderr.write('y'.repeat(131072)); }",
@@ -2016,6 +2023,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "if (mode === 'phase-io-failure') { const path = process.env.VERIFY_TAURI_SOURCE_RECEIPT + '.phases.jsonl'; rmSync(path); mkdirSync(path); }",
       ].join('\n'));
       git(fixture.repo, ['add', preflight, provider, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
+      if (runtimeOutput) git(fixture.repo, ['add', runtimeOutput]);
       git(fixture.repo, ['commit', '-qm', 'full verifier command fixture']);
       const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
       const original = readFileSync(join(fixture.repo, provider), 'utf8');
@@ -2025,7 +2033,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       installVerifierTsx(fixture.repo);
       const receiptPath = join(tmp, 'verifier-command-' + mode + '.receipt.json');
       const proofPath = join(tmp, 'verifier-command-' + mode + '.proof.json');
-      const command = [process.execPath, provider, fixture.repo, mode, proofPath, '--provider-flag=literal'];
+      const command = [process.execPath, provider, fixture.repo, mode, proofPath, '--provider-flag=literal',
+        ...(runtimeOutput ? [runtimeOutput] : [])];
       const budgetFrom = join(tmp, 'verifier-command-budget-' + mode + '.jsonl');
       const requestParentPgRelease = vi.fn(async () => {});
       const releasesPrivatePg = mode === 'private-pg-release' || mode === 'output-io-failure';
@@ -2110,7 +2119,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true) : null;
       let returnedRefLine: string | undefined;
       try {
-        if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
+        if (sourceTamper) await expect(invocation).rejects.toThrow('tampered verification source archive');
         else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
         else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
         else if (mode === 'output-io-failure') await expect(invocation).rejects.toThrow('Verifier child diagnostics path changed');
@@ -2137,7 +2146,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
       expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe('peer edit after allocation');
       expect(existsSync(join(fixture.repo, 'node_modules'))).toBe(false);
-      expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
+      const sourceReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      expect(sourceReceipt.sourceCommit).toBe(ref);
+      if (runtimeOutput) {
+        expect(sourceReceipt.gitCheckout).toBeUndefined();
+        expect(sourceReceipt.files.some((file: { path: string }) => file.path === runtimeOutput)).toBe(false);
+      }
       if (mode === 'output-io-failure') {
         const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const childFailure = phases.find(row => row.phase === 'child.run' && row.event === 'failed');
@@ -2181,7 +2195,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         ...(mode === 'dependency-tamper' ? [] : ['source.postverify']), 'cleanup',
       ]);
       expect(phases.filter(row => row.event === 'failed').map(row => row.phase))
-        .toEqual(mode === 'frozen-tamper' ? ['source.postverify'] : mode === 'dependency-tamper' ? ['deps.postverify'] : []);
+        .toEqual(sourceTamper ? ['source.postverify'] : mode === 'dependency-tamper' ? ['deps.postverify'] : []);
       const beforeDependencies = JSON.parse(readFileSync(receiptPath + '.dependencies.json', 'utf8'));
       const afterDependencies = JSON.parse(readFileSync(receiptPath + '.dependencies.after.json', 'utf8'));
       expect(beforeDependencies.scope).toBe('materialized-dependency-files');
