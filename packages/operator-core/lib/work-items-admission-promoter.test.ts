@@ -829,6 +829,11 @@ describe('admission endpoint protection — terminal twins', () => {
         externalBlockers: [{ ...ownDebt, capabilitySource: 'legacy-inferred' }] } }, now))
         .toMatchObject({ reason: 'external-blocked' });
     });
+
+    it('allows an own-node remote echo through the overdue admission review gate', () => {
+      const current = { ...reviewSnapshot(), origin: 'remote', ownNode: true };
+      expect(admissionEndpointBlock(current, now)).toBeNull();
+    });
   });
 
   it('preserves owner capability protection on completed twins with execution residue', () => {

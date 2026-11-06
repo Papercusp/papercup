@@ -4275,7 +4275,8 @@ function qualifiedAgentPark(snapshot: AdmissionMergeSnapshot) {
 /** Exact admission-only parks require the canonical hold audit and a complete
  * release contract. A matching phrase in caller-controlled prose grants nothing. */
 function admissionReviewCustodyEligible(snapshot: AdmissionMergeSnapshot): boolean {
-  if (snapshot.origin !== 'local' || !['pending', 'unreviewed'].includes(snapshot.admission ?? '') ||
+  if ((snapshot.origin !== 'local' && snapshot.ownNode !== true) ||
+      !['pending', 'unreviewed'].includes(snapshot.admission ?? '') ||
       !['open', 'todo', 'failing', 'wip', 'in_progress', 'validating', 'blocked'].includes(snapshot.state)) return false;
   const payload = recordValue(snapshot.payload);
   if (Object.keys(payload).some(key => key.startsWith('held_open_')) || payload.needsOwnerAction === true) return false;
