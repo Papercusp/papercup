@@ -13,6 +13,11 @@ import { createPluginInvocationChokepoint, pluginInvocationChokepoint, type Host
 import { pluginInvocationInputSha256, withPinnedPluginInvocationPolicy } from './plugin-invocation-policy-store';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
+// This suite measures the real signed PG policy, not confinement. Make its
+// component execution fixture explicit; production has no implicit fallback.
+const componentExecutor = (request: Omit<Request, 'invoke'>) => request.tool.fn(request.input, request.ctx);
+const componentProductionRoute: NonNullable<DispatchProjectedDeps['aroundInvoke']> = request =>
+  pluginInvocationChokepoint(request, componentExecutor);
 const host = vi.hoisted(() => ({ sql: undefined as unknown as import('postgres').Sql, loaded: [] as unknown[] }));
 // Only route host infrastructure into this file's real isolated PG/installation.
 // Production signature verification, SQL locks, PDP, dispatcher and effects run.
@@ -81,16 +86,25 @@ function fixture() {
       const decide = policy.decide;
       policy.decide = async query => { const decision = await decide(query); retained = { policy, query, decision }; return decision; };
       return createPluginInvocationChokepoint({ resolvePolicy: () => policy,
+        executeHandler: componentExecutor,
         readManifest: async () => ['tasks:write'], readGrants: async () => grants })(request);
     }, { sql: db.sql });
   return { marker, principal, tool, ctx, controller, service,
     runProduction: () => dispatchProjectedTool(tool, 'fixture:write', { resource: 'approved' }, ctx,
-      { aroundInvoke: pluginInvocationChokepoint }),
+      { aroundInvoke: componentProductionRoute }),
     retained: () => retained!, run: (input: unknown = { resource: 'approved' }) =>
       dispatchProjectedTool(tool, 'fixture:write', input, ctx, { aroundInvoke }) };
 }
 
 describe('production signed plugin invocation policy', () => {
+  it('requires a confined route even with a valid signed policy and grant', async () => {
+    const f = fixture();
+    const result = await dispatchProjectedTool(f.tool, 'fixture:write', { resource: 'approved' }, f.ctx,
+      { aroundInvoke: pluginInvocationChokepoint });
+    expect(result.result?.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('confined handler execution route');
+    expect(existsSync(f.marker)).toBe(false);
+  });
   it.each(['manifest', 'declaration', 'grant', 'caller', 'allowlist', 'approval',
     'approval-capability', 'identity', 'authentication', 'trust', 'workspace'] as const)
   ('intersects the production %s axis before the checked effect', async axis => {
@@ -152,7 +166,7 @@ describe('production signed plugin invocation policy', () => {
     const parentApproval = { ...approval, capabilities: [...caps] };
     await writePolicy({ pluginInvocations: { approvals: [parentApproval, childApproval] } });
     const runChild = () => dispatchProjectedTool(child, childName, { resource: 'approved' }, childCtx,
-      { aroundInvoke: pluginInvocationChokepoint });
+      { aroundInvoke: componentProductionRoute });
     f.tool.fn = async () => {
       await Promise.resolve();
       const result = await runChild();

@@ -496,7 +496,12 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       if (healthTimer) healthTimer.stop();
       if (diskQuotaTimer) diskQuotaTimer.stop();
       bridge?.shutdown();
-      if (child?.pid) {
+      if (handlerMode && child?.pid) {
+        const terminating = child;
+        const closed = new Promise<void>(resolve => terminating.once('close', () => resolve()));
+        terminating.kill('SIGKILL');
+        await closed;
+      } else if (child?.pid) {
         child.kill('SIGTERM');
         // Grace then SIGKILL.
         setTimeout(() => { try { child?.kill('SIGKILL'); } catch { /* gone */ } }, 2000);
@@ -505,6 +510,67 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     pid() { return child?.pid; },
     restartCount() { return restartCount; },
   };
+}
+
+/** One approved process/channel per invocation. Broker callbacks must check
+ * current invocation capabilities before effects and honor their signal.
+ * Identity and credentials stay in host closures, never in guest parameters.
+ */
+export async function invokeApprovedHandler(options: {
+  runtime: PreparedHandlerRuntime;
+  toolName: string;
+  input: unknown;
+  signal: AbortSignal;
+  effect?: (operation: string, input: unknown, signal: AbortSignal) => unknown | Promise<unknown>;
+  timeoutMs?: number;
+}): Promise<unknown> {
+  // Snapshot caller data before the first asynchronous step.
+  const { runtime, toolName, effect: broker } = options;
+  const input = structuredClone(options.input);
+  const timeout = options.timeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 600_000
+    || typeof toolName !== 'string' || !toolName.length) throw new Error('invalid handler invocation options');
+  const lifetime = new AbortController();
+  const signal = AbortSignal.any([options.signal, lifetime.signal, AbortSignal.timeout(timeout)]);
+  signal.throwIfAborted();
+  const { requireApprovedHandlerRuntime } = await import('./handler-runtime');
+  requireApprovedHandlerRuntime(runtime);
+  signal.throwIfAborted();
+  const invocationId = randomUUID();
+  const pending = new Set<Promise<unknown>>();
+  let active = true, handle: DaemonPluginHandle | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    handle = await startDaemonPlugin({ pluginName: toolName, cmd: [], cwd: '/', sandbox: 'handler',
+      handlerRuntime: runtime, handlerReadyTimeoutMs: Math.min(timeout, 10_000),
+      restart: { policy: 'never' }, healthIntervalMs: 0,
+      requestHandlers: { 'papercup.handlerEffect': params => {
+        const call = params as { invocationId?: unknown; operation?: unknown; input?: unknown } | null;
+        if (!active || signal.aborted || call?.invocationId !== invocationId || typeof call.operation !== 'string'
+          || !call.operation.length || !broker) throw new Error('handler effect refused');
+        const effect = Promise.resolve().then(() => {
+          signal.throwIfAborted();
+          return broker(call.operation as string, call.input, signal);
+        });
+        pending.add(effect);
+        void effect.finally(() => pending.delete(effect)).catch(() => {});
+        return effect;
+      } },
+    });
+    signal.throwIfAborted();
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    });
+    return await Promise.race([handle.request('papercup.handlerInvoke', { invocationId, toolName, input }, timeout), aborted]);
+  } finally {
+    active = false;
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+    lifetime.abort();
+    await handle?.shutdown();
+    await Promise.allSettled([...pending]);
+  }
 }
 
 function dirSizeApprox(dir: string): number {

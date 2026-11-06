@@ -1,7 +1,7 @@
 /** Actual Linux supervisor/bootstrap integration. Development proof only:
  * ldd here builds a TEST fixture, never a production inventory or SEC census.
  */
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,8 +9,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { handlerRuntimeDigest, prepareHandlerRuntime, type HandlerRuntimeFile } from './handler-runtime';
-import { startDaemonPlugin, type DaemonPluginHandle } from './supervisor';
+import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization, type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
+import { createHandlerRuntimeCandidate, handlerRuntimeDigest, prepareApprovedHandlerRuntime, prepareHandlerRuntime, type HandlerRuntimeFile } from './handler-runtime';
+import { invokeApprovedHandler, startDaemonPlugin, type DaemonPluginHandle } from './supervisor';
 
 const require = createRequire(import.meta.url);
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -70,6 +71,87 @@ describe.runIf(supported)('mandatory handler supervisor (real bwrap + trusted TS
   }
 
   const simpleEntry = 'console.error("HANDLER_STARTED"); exports.requests = { "fixture.echo": input => input };';
+  // Fixture-owned signing authority, not production provenance enrollment.
+  function approved(entry: string) {
+    const input = inventory(entry);
+    const expected = createHandlerRuntimeCandidate(input, { sourceRevision: 'a'.repeat(40),
+      version: '1.0.0', authorIds: ['fixture-author'], rollbackCounter: 1 });
+    const key = (id: string) => {
+      const pair = generateKeyPairSync('ed25519'), keyId = createHash('sha256').update(id).digest().subarray(0, 8);
+      const raw = (pair.publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32);
+      return { id, epoch: 1, principalId: id, revoked: false,
+        publicKey: Buffer.concat([Buffer.from('Ed'), keyId, raw]).toString('base64'),
+        sign(payload: string) {
+          const signature = sign(null, createHash('blake2b512').update(payload).digest(), pair.privateKey);
+          const comment = 'timestamp:1 file:handler-invocation';
+          const global = sign(null, Buffer.concat([signature, Buffer.from(comment)]), pair.privateKey).toString('base64');
+          return Buffer.from(`untrusted comment: fixture\n${Buffer.concat([Buffer.from('ED'), keyId, signature]).toString('base64')}\ntrusted comment: ${comment}\n${global}\n`).toString('base64');
+        } };
+    };
+    const signer = key('fixture-release'), reviewer = key('fixture-reviewer'), now = Date.now();
+    const trust: TauriUpdateTrust = { rootEpoch: 1, minRollbackCounter: 1, minIssuedAt: now - 1,
+      maxMetadataAgeMs: 60_000, signers: [signer], approvers: [reviewer] };
+    const metadata: TauriUpdateAuthorization = { ...expected, schema: 'tauri-update-authorization-v2',
+      rootEpoch: 1, signerId: signer.id, signerEpoch: 1, approverId: reviewer.id, approverEpoch: 1,
+      issuedAt: now, expiresAt: now + 60_000 };
+    const payload = encodeTauriUpdateAuthorization(metadata);
+    return prepareApprovedHandlerRuntime(input, { envelope: { payload, signature: signer.sign(payload), approvalSignature: reviewer.sign(payload) },
+      withCurrentTrust: use => use({ trust, expected, now: Date.now() }) });
+  }
+
+  it('invokes an approved tool through the confined guest and one host-bound effect', async () => {
+    const marker = join(root, 'invocation-effect');
+    const runtime = approved(`exports.invokeTool = async (name,input,ctx) => {
+      const fs = require('node:fs');
+      if(fs.existsSync(input.hostPath)) throw new Error('HOST_VISIBLE');
+      return ctx.effect('marker.write', { name, value:input.value, contextKeys:Object.keys(ctx) });
+    };`);
+    const result = await invokeApprovedHandler({ runtime, toolName: 'fixture:write',
+      input: { hostPath: sentinel, value: 'allowed', principal: 'forged' }, signal: new AbortController().signal,
+      effect: (operation, input, signal) => {
+        signal.throwIfAborted(); expect(operation).toBe('marker.write');
+        writeFileSync(marker, 'host-checked'); return input;
+      } });
+    expect(result).toEqual({ name: 'fixture:write', value: 'allowed', contextKeys: ['effect'] });
+    expect(readFileSync(marker, 'utf8')).toBe('host-checked');
+    expect(readFileSync(sentinel, 'utf8')).toBe('HOST_PRIVATE_CANARY');
+  }, 30_000);
+
+  it('refuses unapproved ordinary invocation before running handler startup', async () => {
+    await expect(invokeApprovedHandler({ runtime: prepareHandlerRuntime(inventory(simpleEntry)), toolName: 'fixture:write',
+      input: {}, signal: new AbortController().signal })).rejects.toThrow(/approved handler runtime required/);
+  });
+
+  it('cannot forward a guest-forged invocation identity to a host effect', async () => {
+    let effects = 0;
+    const runtime = approved(`exports.invokeTool = async () => {
+      process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:900,method:'papercup.handlerEffect',
+        params:{invocationId:'00000000-0000-0000-0000-000000000000',operation:'marker.write',input:{}}})+'\\n');
+      await new Promise(resolve=>setTimeout(resolve,40)); return 'control';
+    };`);
+    expect(await invokeApprovedHandler({ runtime, toolName: 'fixture:write', input: {}, signal: new AbortController().signal,
+      effect: () => { effects++; } })).toBe('control');
+    expect(effects).toBe(0);
+  }, 30_000);
+
+  it('settles cancellation and an accepted broker callback before returning', async () => {
+    const controller = new AbortController(); let settled = false;
+    const runtime = approved(`exports.invokeTool = (_name,_input,ctx) => ctx.effect('marker.write', {});`);
+    await expect(invokeApprovedHandler({ runtime, toolName: 'fixture:write', input: {}, signal: controller.signal,
+      effect: async (_operation, _input, signal) => {
+        controller.abort(new Error('caller cancelled'));
+        try { await Promise.resolve(); signal.throwIfAborted(); }
+        finally { settled = true; }
+      } })).rejects.toThrow(/caller cancelled/);
+    expect(settled).toBe(true);
+  }, 30_000);
+
+  it('propagates a denied broker effect without an in-process fallback', async () => {
+    const runtime = approved(`exports.invokeTool = (_name,_input,ctx) => ctx.effect('ungranted', {});`);
+    await expect(invokeApprovedHandler({ runtime, toolName: 'fixture:write', input: {}, signal: new AbortController().signal,
+      effect: () => { throw new Error('service authority revoked'); } })).rejects.toThrow(/service authority revoked/);
+  }, 30_000);
+
   const options = { pluginName: 'strict-handler-fixture', sandbox: 'handler' as const, cmd: [], cwd: '/', healthIntervalMs: 0,
     restart: { policy: 'never' as const }, handlerReadyTimeoutMs: 10_000 };
 

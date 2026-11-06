@@ -27,6 +27,10 @@ export interface HandlerRuntimeInventory {
 }
 
 export interface PreparedHandlerRuntime { readonly sha256: string }
+/** Ordinary invocation may never use the low-level, unapproved test seam. */
+export function requireApprovedHandlerRuntime(runtime: PreparedHandlerRuntime): void {
+  if (!snapshots.has(runtime) || !approvals.has(runtime)) throw new Error('approved handler runtime required');
+}
 const snapshots = new WeakMap<PreparedHandlerRuntime, ReadonlyArray<HandlerRuntimeFile>>();
 /** The installer owns this transaction, including protected CURRENT trust and
  * exact build/author inputs. It must hold its serialization through `use`.

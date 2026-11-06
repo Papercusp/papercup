@@ -11,7 +11,7 @@
  * registration) can treat WASM and daemon plugins uniformly.
  */
 
-export { startDaemonPlugin, providerSandboxWorks, probeProviderSandbox, DaemonSandboxUnavailableError } from './supervisor';
+export { startDaemonPlugin, invokeApprovedHandler, providerSandboxWorks, probeProviderSandbox, DaemonSandboxUnavailableError } from './supervisor';
 export type { ProviderSandboxProbe } from './supervisor';
 export type {
   DaemonPluginHandle,

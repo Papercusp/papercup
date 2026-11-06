@@ -12,6 +12,8 @@ import type { getGrantsForPluginInHarness } from './plugin-grants';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
 type Installation = NonNullable<Request['tool']['pluginInstallation']>;
+/** Trusted host route only. The in-process fallback is deliberately absent. */
+export type PluginHandlerExecutor = (request: Omit<Request, 'invoke'>) => ReturnType<Request['invoke']>;
 
 export interface HostPluginInvocationPolicy extends PolicyDecisionPoint {
   /** Fail closed unless this EXACT decision, installation, grant revision and
@@ -44,6 +46,7 @@ export function createPluginInvocationChokepoint(deps: {
   resolvePolicy?: () => HostPluginInvocationPolicy | null;
   readManifest?: typeof loadedManifest;
   readGrants?: typeof getGrantsForPluginInHarness;
+  executeHandler?: PluginHandlerExecutor;
 } = {}): NonNullable<DispatchProjectedDeps['aroundInvoke']> {
   return async request => {
     if (!request.tool.pluginInstallation) return request.invoke();
@@ -60,6 +63,7 @@ export function createPluginInvocationChokepoint(deps: {
     }
 
     let context: ReturnType<typeof createInvocationCapabilityContext>;
+    let active = true;
     try {
       // Snapshot before awaiting host IO. The PDP sees the exact registered
       // operation and installation; caller-controlled fields remain query data.
@@ -105,7 +109,7 @@ export function createPluginInvocationChokepoint(deps: {
         || approval.expiresAt <= Date.now()) {
         return refuse('A current host approval bound to this exact invocation is required');
       }
-      const isActive = () => !request.ctx.signal.aborted && resolvePolicy() === policy && dispatchIdentity() === originalIdentity
+      const isActive = () => active && !request.ctx.signal.aborted && resolvePolicy() === policy && dispatchIdentity() === originalIdentity
         && policy.isCurrent(structuredClone(query), structuredClone(decision)) === true;
       context = createInvocationCapabilityContext({ pluginName, capabilities: manifest,
         granted: granted as Capability[], principal: boundPrincipal, invocationId: request.callId,
@@ -117,20 +121,24 @@ export function createPluginInvocationChokepoint(deps: {
     }
     // The existing async scope attenuates prebuilt services and nested dispatch,
     // including across the host's metering/capture hooks and awaits.
-    return runWithInvocationCapabilities(context, request.invoke);
+    if (!deps.executeHandler) return refuse('An approved confined handler execution route is required');
+    const { invoke: _inProcessFallback, ...invocation } = request;
+    try { return await runWithInvocationCapabilities(context, () => deps.executeHandler!(invocation)); }
+    finally { active = false; }
   };
 }
 
 /** Production binding uses the existing owner-signed policy and grant rows.
  * Test/custom hosts may still explicitly install their own trusted PDP. */
-export const pluginInvocationChokepoint: NonNullable<DispatchProjectedDeps['aroundInvoke']> = async request => {
+export async function pluginInvocationChokepoint(request: Request,
+  executeHandler?: PluginHandlerExecutor): ReturnType<Request['invoke']> {
   if (!request.tool.pluginInstallation) return request.invoke();
-  if (hostPolicy) return createPluginInvocationChokepoint()(request);
+  if (hostPolicy) return createPluginInvocationChokepoint({ executeHandler })(request);
   try {
     const { withPinnedPluginInvocationPolicy } = await import('./plugin-invocation-policy-store');
     return await withPinnedPluginInvocationPolicy(request, (policy, grants) =>
-      createPluginInvocationChokepoint({ resolvePolicy: () => policy, readGrants: async () => grants })(request));
+      createPluginInvocationChokepoint({ resolvePolicy: () => policy, readGrants: async () => grants, executeHandler })(request));
   } catch {
     return refuse('The current signed host policy and installation grant revision could not be pinned');
   }
-};
+}

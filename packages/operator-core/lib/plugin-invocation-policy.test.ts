@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { AsyncResource } from 'node:async_hooks';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +29,8 @@ function fixture() {
     isCurrent: () => active,
   };
   const aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => policy,
+    // Component fixture; actual confinement is exercised by the Linux suite.
+    executeHandler: request => request.tool.fn(request.input, request.ctx),
     readManifest: async () => ['tasks:write'],
     readGrants: async (_name, _version, _harness, options) => {
       expect(options).toEqual({ requireAuthoritative: true }); return [...granted];
@@ -48,6 +51,23 @@ function fixture() {
 }
 
 describe('projected plugin host resource approval', () => {
+  it('refuses missing confined execution even after a valid host approval', async () => {
+    const f = fixture();
+    const aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,
+      readManifest: async () => ['tasks:write'], readGrants: async () => ['tasks:write'] });
+    const result = await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx, { aroundInvoke });
+    expect(result.result?.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('confined handler execution route');
+    expect(existsSync(f.marker)).toBe(false);
+  });
+
+  it('expires captured service authority when the invocation settles', async () => {
+    const f = fixture(); let later: (() => void) | undefined;
+    f.tool.fn = async () => { later = AsyncResource.bind(() => f.service.perform()); return { content: [] }; };
+    expect((await f.run()).ok).toBe(true);
+    expect(later).toBeTypeOf('function');
+    expect(() => later!()).toThrow(); expect(existsSync(f.marker)).toBe(false);
+  });
   it('permits a real filesystem effect through the dispatcher and a prebuilt checked service', async () => {
     const f = fixture(); const result = await f.run();
     expect(result.ok).toBe(true); expect(result.result?.isError).not.toBe(true);
@@ -120,6 +140,7 @@ describe('projected plugin host resource approval', () => {
     let aroundInvoke = f.aroundInvoke;
     if (axis === 'grant-read') {
       aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,
+        executeHandler: request => request.tool.fn(request.input, request.ctx),
         readManifest: async () => ['tasks:write'], readGrants: async () => { throw Error('offline'); } });
     }
     if (axis === 'allowlist') f.principal.allowedTools = undefined;
