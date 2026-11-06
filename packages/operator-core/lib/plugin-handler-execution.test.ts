@@ -58,6 +58,7 @@ describe('confined plugin installation binding', () => {
     const invoke = createConfinedPluginInvoker({ ...f.options, tools: mapping });
     mapping['fixture:read'] = 'substituted';
     vi.mocked(invokeApprovedHandler).mockImplementation(async options => {
+      Object.assign(f.request.ctx, { workspaceId: 'substituted', log: () => { throw new Error('substituted'); } });
       expect(options.toolName).toBe('read');
       expect(await options.effect!('sdk.context', null, options.signal)).toEqual({ workspaceId: 'workspace',
         harnessSlug: 'harness', projectDir: '/project', stateDir: '/project/.papercusp', role: 'su',

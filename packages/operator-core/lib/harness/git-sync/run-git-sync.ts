@@ -9152,7 +9152,7 @@ async function runGitSyncPass(
   if (sub.yielded) {
     throw new GitSyncYieldError(
       sub.yielded.reason,
-      sub.yielded.boundary,
+      sub.yielded.boundary ?? 'submodule-batch',
       sub.yielded.synced,
       sub.yielded.total,
       undefined,

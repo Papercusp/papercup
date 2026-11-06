@@ -260,7 +260,7 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     // No restart waiter: the saved cursor is ignored and every child is revalidated
     // before the superproject pointer-bump and push can publish.
     callsByChild.clear();
-    const completed = await fire(undefined, false);
+    const completed = await fire({ submodulesSynced: 8, submodulesTotal: 9, submodulePathsSha256 }, false);
     expect(completed.status).toBe('synced');
     expect(childPaths.every((path) => (callsByChild.get(path) ?? 0) > 0)).toBe(true);
     expect(childOrigins.map(revCount)).toEqual(Array(9).fill(2));

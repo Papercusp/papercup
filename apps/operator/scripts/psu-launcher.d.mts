@@ -3306,15 +3306,24 @@ export function describeResumeClaimRefusal(outcome: {
  * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
  * rejects — a respawn must never wait on it. Exported with injectables for tests.
  */
-export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, env, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
+export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, managedSuccessionPermit, env, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
     coordOwnerId?: null | undefined;
     childLaunchSessionId?: null | undefined;
+    managedSuccessionPermit?: null | undefined;
     env?: NodeJS.ProcessEnv | undefined;
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
     appendEventImpl?: typeof appendHostEvent | undefined;
+}): Promise<any>;
+/** Pre-child half of the existing authenticated lifecycle route. Uncertainty
+ * never grants permission to create a blind-review successor. */
+export function reserveManagedRespawn(request: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
+    fetchImpl?: typeof fetch | undefined;
+    operatorUrl?: any;
+    token?: null | undefined;
+    timeoutMs?: number | undefined;
 }): Promise<any>;
 /**
  * {@link reportSessionRespawned} that keeps retrying in the background until the
@@ -3326,9 +3335,10 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
  * notifies a carry announcer when a background retry succeeds; returning the first
  * failure alone loses that wake. A newer respawn supersedes reports and callbacks.
  */
-export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
+export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, managedSuccessionPermit, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
     coordOwnerId?: null | undefined;
     childLaunchSessionId?: null | undefined;
+    managedSuccessionPermit?: null | undefined;
     reportImpl?: typeof reportSessionRespawned | undefined;
     retryDelaysMs?: number[] | undefined;
     sleepImpl?: ((ms: any) => Promise<any>) | undefined;

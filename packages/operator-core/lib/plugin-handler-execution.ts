@@ -29,30 +29,31 @@ export function createConfinedPluginInvoker(options: {
       || selected.path !== installation.path || selected.source !== installation.source || !tools.has(request.toolName)) {
       throw new Error('confined handler installation binding mismatch');
     }
+    const ctx = request.ctx;
+    // Pin data and callback references before any guest/trust await. Never
+    // spread ctx: it holds principals, credentials and host service closures.
+    const metadata = Object.freeze({ workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug,
+      projectDir: ctx.projectDir, stateDir: ctx.stateDir, role: ctx.role,
+      featureId: ctx.featureId ?? null, chunkId: ctx.chunkId ?? null,
+      runId: ctx.runId, spawnId: ctx.spawnId, parentSpawnId: ctx.parentSpawnId ?? null });
+    const { progress, emit, log } = ctx;
     const services: Readonly<Record<string, (input: unknown, signal: AbortSignal) => unknown>> = Object.freeze({ ...effects?.(request),
-      'sdk.context': () => {
-        const ctx = request.ctx;
-        // Never spread ctx: it holds principals and host service closures.
-        return { workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug,
-          projectDir: ctx.projectDir, stateDir: ctx.stateDir, role: ctx.role,
-          featureId: ctx.featureId ?? null, chunkId: ctx.chunkId ?? null,
-          runId: ctx.runId, spawnId: ctx.spawnId, parentSpawnId: ctx.parentSpawnId ?? null };
-      },
+      'sdk.context': () => metadata,
       'sdk.progress': (input: unknown) => {
         const value = input as { pct?: unknown; msg?: unknown } | null;
         if (!value || (value.pct !== undefined && (typeof value.pct !== 'number' || !Number.isFinite(value.pct)))
           || (value.msg !== undefined && typeof value.msg !== 'string')) throw new Error('invalid SDK progress');
-        request.ctx.progress(value.pct as number | undefined, value.msg as string | undefined); return null;
+        progress(value.pct as number | undefined, value.msg as string | undefined); return null;
       },
       'sdk.emit': (input: unknown) => {
         const value = input as { name?: unknown; data?: unknown } | null;
         if (!value || typeof value.name !== 'string' || !value.name.length) throw new Error('invalid SDK event');
-        request.ctx.emit(value.name, value.data); return null;
+        emit(value.name, value.data); return null;
       },
       'sdk.log': (input: unknown) => {
         const value = input as { msg?: unknown } | null;
         if (!value || typeof value.msg !== 'string') throw new Error('invalid SDK log');
-        request.ctx.log(value.msg); return null;
+        log(value.msg); return null;
       },
     });
     const result = CallToolResultSchema.parse(await invokeApprovedHandler({ runtime, toolName: tools.get(request.toolName)!, input: request.input,
