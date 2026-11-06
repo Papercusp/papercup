@@ -55,8 +55,11 @@ export async function runReportSharingNativeAcceptance() {
   try {
     const env = { ...nativeLedgerEnvironment(), PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit,
       PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath };
-    const selection = process.env.PAPERCUSP_REPORT_SHARING_FINAL_RELEASE === '1'
-      ? [] : ['--', '-t', 'shares the selected harmless edition'];
+    // Initialize retained-resource tracking before Vitest loads its config so a
+    // shutdown timeout preserves the resource owner instead of only a warning.
+    const selection = ['--', '--reporter=default', '--reporter=hanging-process',
+      ...(process.env.PAPERCUSP_REPORT_SHARING_FINAL_RELEASE === '1'
+        ? [] : ['-t', 'shares the selected harmless edition'])];
     execFileSync('npm', ['run', 'test:file', '--', test, ...selection], { cwd: sourceRoot, env,
       stdio: 'inherit', timeout: 360_000 });
     verifyVerifierSourceSync(sourceRoot, receipt, { runtimeArtifacts: true });

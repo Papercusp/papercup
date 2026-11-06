@@ -49,6 +49,16 @@ export function createCurrentHandlerRuntimeApproval(envelope: TauriUpdateEnvelop
   return Object.freeze({ envelope: pinnedEnvelope, async withCurrentTrust<T>(
     use: (state: { trust: TauriUpdateTrust; expected: TauriUpdateCandidate; now: number }) => Promise<T>,
   ): Promise<T> {
+    return withCurrentHandlerRuntimeTrust(state => use({ ...state, expected: pinnedCandidate }));
+  } });
+}
+
+/** The protected producer and admission share the same native transaction.
+ * No caller-selected root, policy path, UID, keys or cached trust snapshot.
+ */
+export async function withCurrentHandlerRuntimeTrust<T>(
+  use: (state: { trust: TauriUpdateTrust; now: number }) => Promise<T>,
+): Promise<T> {
     if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) {
       throw new Error('unsupported protected handler runtime trust platform');
     }
@@ -112,14 +122,12 @@ export function createCurrentHandlerRuntimeApproval(envelope: TauriUpdateEnvelop
         for (const key of keys) Object.freeze(key);
         Object.freeze(keys);
       }
-      return await use({ trust: Object.freeze(trust) as unknown as TauriUpdateTrust,
-        expected: pinnedCandidate, now: Date.now() });
+      return await use({ trust: Object.freeze(trust) as unknown as TauriUpdateTrust, now: Date.now() });
     } finally {
       // Closing the actual locked descriptor AFTER promise settlement releases
       // the kernel lease on both success and rejection, including sync throws.
       for (const fd of descriptors.reverse()) closeSync(fd);
     }
-  } });
 }
 /** Host producer input, authenticated against its complete source closure by
  * the protected installer. Neither a manifest nor signed envelope supplies it.

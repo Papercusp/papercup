@@ -290,9 +290,7 @@ describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process
   it('keeps real restricted startup inside current trust and refuses a revoked restart', async () => {
     const f = fixture();
     const require = createRequire(import.meta.url);
-    const { build } = await import('@papercusp/host-esbuild');
-    const built = await build({ entryPoints: [fileURLToPath(new URL('./handler-bootstrap.ts', import.meta.url))],
-      bundle: true, platform: 'node', format: 'cjs', write: false, external: ['koffi'] });
+    const { buildAuthenticatedHandlerRuntime, handlerBuildInputCandidate } = await import('./handler-runtime-build');
     const files = new Map<string, HandlerRuntimeFile>();
     const add = (path: string, contents: Buffer, executable = false) => files.set(path, { path, contents, executable, sha256: digest(contents) });
     // TEST FIXTURE ONLY: production consumes the approved complete packaged
@@ -310,18 +308,12 @@ describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process
     add('/runtime/node_modules/koffi/build/koffi/linux_' + process.arch + '/koffi.node', readFileSync(native), true); libraries(native);
     const seccomp = '/lib/' + (process.arch === 'x64' ? 'x86_64' : 'aarch64') + '-linux-gnu/libseccomp.so.2';
     add(seccomp, readFileSync(seccomp), true); libraries(seccomp);
-    add('/runtime/bootstrap.cjs', Buffer.from(built.outputFiles![0]!.contents));
     add('/handler/entry.cjs', Buffer.from(`
       console.error('APPROVED_HANDLER_STARTED');
       exports.requests = { 'fixture.echo': input => input, 'fixture.exit': () => {
         setTimeout(() => process.exit(2),20); return true;
       }};
     `));
-    f.inventory.files = [...files.values()];
-    f.inventory.sha256 = handlerRuntimeDigest(f.inventory.files);
-    f.inventory.bootstrapSha256 = files.get('/runtime/bootstrap.cjs')!.sha256;
-    Object.assign(f.expected, { artifactSha256: handlerTrustedRuntimeDigest(f.inventory.files), policySha256: f.inventory.bootstrapSha256 });
-    Object.assign(f.metadata, f.expected); f.approval.envelope = f.envelope();
     // Exercise the real native adapter through supervisor readiness/restart,
     // with only the protected filesystem root/uid relocated for this fixture.
     const policyRoot = mkdtempSync(join(tmpdir(), 'handler-ready-trust-'));
@@ -339,6 +331,23 @@ describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process
     let handle: Awaited<ReturnType<typeof startDaemonPlugin>> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      const entryPoint = '/src/handler-bootstrap.ts';
+      const identity = { sourceRevision: f.expected.sourceRevision, version: f.expected.version, rollbackCounter: f.expected.rollbackCounter };
+      const attest = (file: HandlerRuntimeFile) => {
+        const expected = handlerBuildInputCandidate(file, entryPoint, identity, [f.signer.principalId]);
+        const payload = encodeTauriUpdateAuthorization({ ...f.metadata, ...expected });
+        return { ...file, authorizations: [{ payload, signature: f.signer.sign(payload), approvalSignature: f.reviewer.sign(payload) }] };
+      };
+      const built = await buildAuthenticatedHandlerRuntime({ entryPoint, identity,
+        sources: ['handler-bootstrap.ts', 'handler-seccomp.ts', 'jsonrpc-bridge.ts'].map(name => {
+          const contents = readFileSync(new URL('./' + name, import.meta.url));
+          return attest({ path: '/src/' + name, contents, sha256: digest(contents), executable: false });
+        }),
+        assets: [...files.values()].filter(file => !file.path.startsWith('/handler/')).map(attest),
+        handlerFiles: [files.get('/handler/entry.cjs')!] });
+      f.inventory = built.inventory;
+      Object.assign(f.expected, built.candidate); Object.assign(f.metadata, f.expected);
+      expect(held()).toBe(false);
       const runtime = prepareApprovedHandlerRuntime(f.inventory, createCurrentHandlerRuntimeApproval(f.envelope(), f.expected));
       handle = await startDaemonPlugin({ pluginName: 'approved-real-fixture', sandbox: 'handler', handlerRuntime: runtime,
         cmd: [], cwd: '/', healthIntervalMs: 0, restart: { policy: 'on-failure', maxRestarts: 1, backoffMs: 1 },

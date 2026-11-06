@@ -29,3 +29,10 @@ export { prepareHandlerRuntime, prepareApprovedHandlerRuntime, handlerRuntimeDig
   createCurrentHandlerRuntimeApproval } from './handler-runtime';
 export type { HandlerRuntimeFile, HandlerRuntimeInventory, PreparedHandlerRuntime, HandlerRuntimeApproval,
   HandlerRuntimeBuildIdentity } from './handler-runtime';
+export type { HandlerBuildInput, HandlerBuildIdentity } from './handler-runtime-build';
+/** Build-host entry only; keep the compiler out of ordinary runtime imports. */
+export async function buildAuthenticatedHandlerRuntime(
+  ...args: Parameters<typeof import('./handler-runtime-build').buildAuthenticatedHandlerRuntime>
+) {
+  return (await import('./handler-runtime-build')).buildAuthenticatedHandlerRuntime(...args);
+}
