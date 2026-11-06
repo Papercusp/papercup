@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { closeSync } from 'node:fs';
-import { parseTauriUpdateEnvelope, verifyTauriUpdateAuthorization,
+import { parseTauriUpdateCandidate, parseTauriUpdateEnvelope, verifyTauriUpdateAuthorization,
   type TauriUpdateCandidate, type TauriUpdateEnvelope, type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
 import { buildHandlerBwrapArgs } from './bwrap-args';
 import { createHandlerBootstrapFilter, createHandlerReadonlyFile } from './handler-seccomp';
@@ -35,6 +35,11 @@ export interface HandlerRuntimeApproval {
   envelope: TauriUpdateEnvelope;
   withCurrentTrust<T>(use: (state: { trust: TauriUpdateTrust; expected: TauriUpdateCandidate; now: number }) => Promise<T>): Promise<T>;
 }
+/** Host producer input, authenticated against its complete source closure by
+ * the protected installer. Neither a manifest nor signed envelope supplies it.
+ */
+export type HandlerRuntimeBuildIdentity = Pick<TauriUpdateCandidate,
+  'sourceRevision' | 'version' | 'authorIds' | 'rollbackCounter'>;
 const approvals = new WeakMap<PreparedHandlerRuntime, HandlerRuntimeApproval>();
 const activeLeases = new WeakMap<PreparedHandlerRuntime, number>();
 const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
@@ -69,6 +74,35 @@ export function prepareApprovedHandlerRuntime(inventory: HandlerRuntimeInventory
   const runtime = prepareHandlerRuntime(inventory);
   approvals.set(runtime, { envelope, withCurrentTrust: approval.withCurrentTrust.bind(approval) });
   return runtime;
+}
+
+/** Derive candidate digests from the exact snapshotted runtime bytes. This
+ * prepares the protected producer's comparison input; it cannot authenticate
+ * source authors, discover a missing dependency or authorize a handler spawn.
+ */
+export function createHandlerRuntimeCandidate(inventory: HandlerRuntimeInventory,
+  identity: HandlerRuntimeBuildIdentity): Readonly<TauriUpdateCandidate> {
+  const fields = ['sourceRevision', 'version', 'authorIds', 'rollbackCounter'] as const;
+  if (!identity || ![Object.prototype, null].includes(Object.getPrototypeOf(identity))
+    || Reflect.ownKeys(identity).length !== fields.length
+    || !fields.every(field => Object.hasOwn(identity, field)
+      && 'value' in Object.getOwnPropertyDescriptor(identity, field)!)) {
+    throw new Error('exact protected handler build identity required');
+  }
+  if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) {
+    throw new Error('unsupported approved handler runtime platform');
+  }
+  const runtime = prepareHandlerRuntime(inventory);
+  const files = snapshots.get(runtime)!;
+  return parseTauriUpdateCandidate({
+    artifactSha256: handlerTrustedRuntimeDigest(files),
+    policySha256: files.find(file => file.path === '/runtime/bootstrap.cjs')!.sha256,
+    configurationSha256: handlerRuntimeConfigurationDigest(),
+    sourceRevision: identity.sourceRevision, version: identity.version,
+    authorIds: identity.authorIds, rollbackCounter: identity.rollbackCounter,
+    product: 'papercusp-handler-runtime',
+    platform: process.arch === 'x64' ? 'linux-x86_64' : 'linux-aarch64',
+  });
 }
 
 /** The supervisor wraps spawn AND exact readiness in the installer's lease.

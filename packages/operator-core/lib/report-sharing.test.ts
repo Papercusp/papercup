@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { changeReportSharing, type ReportShare, type ReportShareStore, type SharingGithub } from './report-sharing';
 import type { ReportRecord } from './report-library';
 import { buildReportViewer } from './report-sharing-viewer';
@@ -129,6 +132,19 @@ describe('selected-edition Gist sharing',()=>{
 });
 
 describe('reusable Pages bundle',()=>{
+  it('keeps the same verified viewer assets after host bundle compaction', async () => {
+    const entry = new URL('./report-sharing-viewer.ts', import.meta.url);
+    const result = await build({ entryPoints: [fileURLToPath(entry)], bundle: true, write: false,
+      packages: 'external', platform: 'node', format: 'cjs', minifyWhitespace: true, minifySyntax: true,
+      define: { 'import.meta.url': JSON.stringify(entry.href) } });
+    const compiledModule = { exports: {} };
+    new Function('module', 'exports', 'require', result.outputFiles[0].text)(
+      compiledModule, compiledModule.exports, createRequire(import.meta.url));
+    const compiled = compiledModule.exports as { buildReportViewer: typeof buildReportViewer };
+    const [directAssets, hostAssets] = await Promise.all([buildReportViewer(), compiled.buildReportViewer()]);
+    expect(hostAssets.version).toBe(directAssets.version);
+    expect(hostAssets.files).toEqual(directAssets.files);
+  });
   it('builds only generic assets with a restrictive CSP and no report-specific inputs',async()=>{
     const assets=await buildReportViewer();expect(Object.keys(assets.files).sort()).toEqual(['.nojekyll','index.html','viewer.'+assets.version+'.css','viewer.'+assets.version+'.js','viewer.json']);
     const all=Object.values(assets.files).join('\n');expect(all).not.toContain(report.bodyMd);expect(all).not.toContain(id);

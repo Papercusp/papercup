@@ -269,6 +269,9 @@ export function finishToolDispatchReceipt(input: Invocation): DispatchReceipt | 
 export function finishToolTrace(input: Invocation) {
   const boundaryObservations = input.callId ? state.boundaryReceipts.get(input.callId) : undefined;
   if (input.callId) state.boundaryReceipts.delete(input.callId);
+  // Existing users can finish tracing without writing invocation telemetry.
+  // End their local receipt too; the writer takes its receipt before this seat.
+  if (input.callId) state.dispatchReceipts.delete(input.callId);
   try {
     const correlation = input.callId ? state.runtime?.finish(input.callId, input.status, input.errorCode ?? undefined) : undefined;
     return correlation ? { ...correlation, callId: input.callId,

@@ -25,5 +25,6 @@ export type { JsonRpcRequestHandler } from './jsonrpc-bridge';
 // Trusted host/installer surface, never handler manifest input. Qualification
 // and complete inventory authorship remain separate from custody preparation.
 export { prepareHandlerRuntime, prepareApprovedHandlerRuntime, handlerRuntimeDigest,
-  handlerTrustedRuntimeDigest, handlerRuntimeConfigurationDigest } from './handler-runtime';
-export type { HandlerRuntimeFile, HandlerRuntimeInventory, PreparedHandlerRuntime, HandlerRuntimeApproval } from './handler-runtime';
+  handlerTrustedRuntimeDigest, handlerRuntimeConfigurationDigest, createHandlerRuntimeCandidate } from './handler-runtime';
+export type { HandlerRuntimeFile, HandlerRuntimeInventory, PreparedHandlerRuntime, HandlerRuntimeApproval,
+  HandlerRuntimeBuildIdentity } from './handler-runtime';

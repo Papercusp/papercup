@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization, type TauriUpdateCandidate,
   type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
 import { handlerRuntimeConfigurationDigest, handlerRuntimeDigest, handlerTrustedRuntimeDigest,
-  openHandlerRuntime, prepareApprovedHandlerRuntime, withHandlerRuntimeAuthorization,
+  createHandlerRuntimeCandidate, openHandlerRuntime, prepareApprovedHandlerRuntime, withHandlerRuntimeAuthorization,
   type HandlerRuntimeFile, type HandlerRuntimeApproval } from './handler-runtime';
 import { startDaemonPlugin } from './supervisor';
 
@@ -58,6 +58,43 @@ function fixture() {
 }
 
 describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch))('approved handler runtime admission', () => {
+  it('derives reviewed runtime inputs from bytes and snapshots every source author independently of the envelope', async () => {
+    const f = fixture();
+    const identity = { sourceRevision: f.expected.sourceRevision, version: f.expected.version,
+      authorIds: [...f.expected.authorIds], rollbackCounter: f.expected.rollbackCounter };
+    const candidate = createHandlerRuntimeCandidate(f.inventory, identity);
+    expect(candidate).toEqual(f.expected);
+    identity.authorIds.pop(); identity.sourceRevision = 'b'.repeat(40);
+    expect(candidate.authorIds).toEqual(['author-a', 'author-b']);
+    expect(candidate.sourceRevision).toBe('a'.repeat(40));
+    expect(Object.isFrozen(candidate)).toBe(true);
+    expect(Object.isFrozen(candidate.authorIds)).toBe(true);
+    f.approval.withCurrentTrust = async use => use({ trust: f.trust, expected: candidate, now: 2000 });
+    const runtime = prepareApprovedHandlerRuntime(f.inventory, f.approval);
+    await expect(withHandlerRuntimeAuthorization(runtime, async () => 'READY')).resolves.toBe('READY');
+    f.reviewer.principalId = 'author-b';
+    const effect = vi.fn(async () => 'UNSAFE');
+    await expect(withHandlerRuntimeAuthorization(runtime, effect)).rejects.toThrow(/independent/);
+    expect(effect).not.toHaveBeenCalled();
+    f.files[0]!.contents.fill(0);
+    expect(() => createHandlerRuntimeCandidate(f.inventory, identity)).toThrow(/file digest mismatch/);
+  });
+
+  it('refuses empty authors and candidate-selected digests before producing a host candidate', () => {
+    const f = fixture();
+    const identity = { sourceRevision: f.expected.sourceRevision, version: f.expected.version,
+      authorIds: [] as string[], rollbackCounter: f.expected.rollbackCounter };
+    expect(() => createHandlerRuntimeCandidate(f.inventory, identity)).toThrow(/exact candidate/);
+    identity.authorIds = ['author-a', 'author-b'];
+    const getter = vi.fn(() => identity.authorIds);
+    const accessor = { ...identity };
+    Object.defineProperty(accessor, 'authorIds', { get: getter });
+    expect(() => createHandlerRuntimeCandidate(f.inventory, accessor)).toThrow(/protected handler build identity/);
+    expect(getter).not.toHaveBeenCalled();
+    expect(() => createHandlerRuntimeCandidate(f.inventory,
+      { ...identity, artifactSha256: 'f'.repeat(64) } as typeof identity)).toThrow(/protected handler build identity/);
+  });
+
   it('holds current independent trust through the asynchronous admission effect and refuses opening after release', async () => {
     const f = fixture();
     const runtime = prepareApprovedHandlerRuntime(f.inventory, f.approval);
