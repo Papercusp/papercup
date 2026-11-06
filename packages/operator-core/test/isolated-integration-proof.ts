@@ -430,9 +430,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let completedCases = 0;
     const caseProgress = new Set<string>();
     const nestedProgress = new Set<string>();
-    const provenanceByPhase = new Map<WorkerPhase, {
-      steps: Set<string>; files: number; total?: number;
-    }>();
+    const provenanceByPhase = new Map<WorkerPhase, Map<string, {
+      id: number; steps: Set<string>; files: number; total?: number;
+    }>>();
     const relayProgress = (stage: string, force = false) => {
       const at = Date.now();
       if (!force && at - lastProgressAt < (options.progressIntervalMs ?? 30_000)) return;
@@ -460,16 +460,30 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
             // Reporters verify source before the first case as well as after
             // execution. Renew only the current phase's bounded progress clock;
             // bootstrap evidence never starts or spends the assertion budget.
-            let provenance = provenanceByPhase.get(phase);
+            // Reporter snapshots and the router's terminal snapshot are distinct
+            // censuses in the same phase. A completed reporter must not suppress
+            // the router's lower file count; buffered replays from that reporter
+            // must still retain their original high-water mark.
+            if (value.pid !== undefined && (!Number.isSafeInteger(value.pid) || value.pid <= 0) ||
+                value.origin !== undefined && (typeof value.origin !== 'string' ||
+                  value.origin.length === 0 || value.origin.length > 200)) return;
+            let producers = provenanceByPhase.get(phase);
+            if (!producers) {
+              producers = new Map();
+              provenanceByPhase.set(phase, producers);
+            }
+            const producer = JSON.stringify([value.pid ?? null, value.origin ?? null]);
+            let provenance = producers.get(producer);
             if (!provenance) {
-              provenance = { steps: new Set<string>(), files: 0 };
-              provenanceByPhase.set(phase, provenance);
+              if (producers.size >= 64) return;
+              provenance = { id: producers.size + 1, steps: new Set<string>(), files: 0 };
+              producers.set(producer, provenance);
             }
             const key = `${value.step}:${value.event}`;
             if (['start', 'end'].includes(value.event) && !provenance.steps.has(key)) {
               provenance.steps.add(key);
               progressWatchdog?.noteProgress();
-              relayProgress('provenance-' + key);
+              relayProgress('provenance-' + key + '-producer-' + provenance.id);
             } else if (value.step === 'source-census' && value.event === 'progress' &&
                 Number.isSafeInteger(value.completedFiles) && Number.isSafeInteger(value.totalFiles) &&
                 value.totalFiles > 0 && value.completedFiles > provenance.files &&
@@ -480,7 +494,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
               progressWatchdog?.noteProgress();
               // A parent must distinguish actual census advances from a
               // replayed stage without seeing private source paths/output.
-              relayProgress('provenance-files-' + provenance.files);
+              relayProgress('provenance-files-' + provenance.files + '-producer-' + provenance.id);
             }
           }
         } catch { /* malformed finalization output cannot alter a deadline */ }

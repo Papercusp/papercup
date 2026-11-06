@@ -482,6 +482,67 @@ it('separates nested worker finalization and renews it only on distinct census p
   });
 });
 
+it.each(['pid', 'origin'])('tracks independent finalization census producers by %s', async identity => {
+  const options = { ...routerPhaseOptions, progressIntervalMs: 0,
+    phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, finalizeMaxMs: 180 } };
+  await withCapturedRouter(options, async (child, result) => {
+    const progress = (producer: number, completedFiles: number) => child.stderr!.emit('data',
+      'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+        pid: identity === 'pid' ? producer : 12345,
+        origin: identity === 'origin' ? String(producer) : 'reporter-snapshot',
+        step: 'source-census', event: 'progress', completedFiles, totalFiles: 10 }) + '\n');
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+    progress(1, 10);
+    await vi.advanceTimersByTimeAsync(50);
+    progress(2, 1);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(child.kill).not.toHaveBeenCalled();
+    progress(2, 2);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(child.kill).not.toHaveBeenCalled();
+    // Neither a completed producer replay nor the second producer's unchanged
+    // count is fresh work, even though they interleave on the same pipe.
+    progress(1, 10);
+    progress(2, 2);
+    await vi.advanceTimersByTimeAsync(30);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  });
+});
+
+it('relays equal census counts from distinct producers as distinct nested progress', async () => {
+  const options = { ...routerPhaseOptions, progressIntervalMs: 0,
+    phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, finalizeMaxMs: 90 } };
+  const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    await withCapturedRouter(options, async (child, result) => {
+      child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+      child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+      const progress = (pid: number) => child.stderr!.emit('data', 'TEST_FILE_FINALIZATION ' +
+        JSON.stringify({ pid, phase: 'provenance-progress', step: 'source-census',
+          event: 'progress', completedFiles: 1, totalFiles: 2 }) + '\n');
+      progress(12345);
+      progress(23456);
+      const stages = write.mock.calls.map(([line]) => String(line))
+        .filter(line => line.includes('provenance-files-1'));
+      expect(stages).toHaveLength(2);
+      expect(new Set(stages).size).toBe(2);
+      // Producer identity is not a license to exceed the existing phase cap.
+      for (const pid of [34567, 45678]) {
+        await vi.advanceTimersByTimeAsync(40);
+        progress(pid);
+        expect(child.kill).not.toHaveBeenCalled();
+      }
+      await vi.advanceTimersByTimeAsync(10);
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      child.emit('close');
+      expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+    });
+  } finally { write.mockRestore(); }
+});
+
 it.each([false, true])('cannot use provenance output to escape bootstrap or disabled router observation: %s', async enabled => {
   await withCapturedRouter({ ...routerPhaseOptions, testFileExecutionFromStdout: enabled }, async (child, result) => {
     child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
