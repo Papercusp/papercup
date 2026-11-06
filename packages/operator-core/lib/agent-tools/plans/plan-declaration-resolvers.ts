@@ -10,7 +10,7 @@ import { indexDeclaredPackages, readWorkspaceManifests, type DeclaredPackageInde
 import type { LibraryCheckDeps, ReferenceLookup, ReuseReferenceResolvers } from './plan-declarations';
 import type { DependencyBaseline } from './plan-library-ship-check';
 import { createHash } from 'node:crypto';
-import { discoverySubjectSnapshot, type DiscoveryAuditContext } from '../../plan-audits';
+import { discoverySubjectSnapshot, type DiscoveryAuditContext, type DiscoveryAuditPayload } from '../../plan-audits';
 import { previewDiscoveryDeclaration } from './plan-declarations';
 import { readResearchTrail } from '../../code-intelligence/research-trail';
 import { listSpecEvidence } from './spec-evidence-store';
@@ -18,12 +18,15 @@ import { listSpecEvidence } from './spec-evidence-store';
 /** Existing source research and canonical evidence bindings supply facts; the
  * declaration supplies only the conclusion and the selected references. */
 export async function resolveDiscoveryAuditContext(content: string, previous: string | null,
-  options: DefaultReuseResolverOptions & { harnessSlug: string; ownerId: string; planSlug: string },
+  options: DefaultReuseResolverOptions & { harnessSlug: string; ownerId: string; planSlug: string;
+    prior?: DiscoveryAuditPayload | null; historicalTargets?: Record<string, string> },
 ): Promise<DiscoveryAuditContext> {
   const current = discoverySubjectSnapshot(content);
-  const before = previous ? discoverySubjectSnapshot(previous) : {};
+  const before = { ...options.historicalTargets, ...options.prior?.targets,
+    ...(previous ? discoverySubjectSnapshot(previous) : {}) };
   const targets: DiscoveryAuditContext['targets'] = [
-    ...Object.keys(current).map(ref => ({ ref, change: ref.startsWith('P-') ? 'proposed' as const : 'existing' as const })),
+    ...Object.keys(current).map(ref => ({ ref, change: ref.startsWith('P-') ||
+      (options.prior && options.prior.targets[ref] !== current[ref]) ? 'proposed' as const : 'existing' as const })),
     ...Object.keys(before).filter(ref => !(ref in current)).map(ref => ({ ref, change: 'removed' as const })),
   ];
   const refs = [...new Set(previewDiscoveryDeclaration(content).data?.findings.flatMap(row => row.evidenceRefs) ?? [])];
@@ -39,7 +42,8 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
     const unknown = (reason: string) => evidence.push({ ref, state: 'unknown', usable: false, fingerprint: null, reason });
     if (ref.startsWith('source:')) {
       const sourcePath = ref.slice(7);
-      if (!trail?.subjects.some(subject => subject.path === sourcePath)) {
+      const retained = options.prior?.evidence.some(row => row.ref === ref && row.fingerprint !== null);
+      if (!retained && !trail?.subjects.some(subject => subject.path === sourcePath)) {
         unknown('Select a source captured by the existing research trail, or a canonical proof binding.'); continue;
       }
       const located = await locateReference(options, sourcePath);

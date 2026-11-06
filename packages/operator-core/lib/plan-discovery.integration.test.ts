@@ -1,9 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getLatestActivationAudit, getLatestPlanAudit, recordCurrentDiscoveryAudit,
-  discoverySubjectSnapshot, type DiscoveryAuditContext } from './plan-audits';
+  discoverySubjectSnapshot, withCurrentDiscovery, type DiscoveryAuditContext } from './plan-audits';
+import { resolveDiscoveryAuditContext } from './agent-tools/plans/plan-declaration-resolvers';
+import { persistResearchBatch } from './code-intelligence/research-trail';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 
 const harness = 'zzz-discovery-audit';
@@ -82,5 +86,99 @@ describe('discovery uses existing revision and audit authorities', () => {
   it('refuses a missing matching revision rather than attaching stale provenance', async () => {
     await fx.admin`UPDATE harness_shared.harness_plans SET content=content || E'\nchanged' WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(await recordCurrentDiscoveryAudit(input(), { context })).toMatchObject({ ok: false, error: 'plan_revision_unavailable' });
+  });
+  it('reopens only the affected finding and cannot launder changed evidence through repeated finalization', async () => {
+    let fingerprint = 'a'.repeat(64);
+    const measured = async () => ({ ...await context(), evidence: [{ ...((await context()).evidence[0]!), fingerprint }] });
+    await recordCurrentDiscoveryAudit(input(), { context: measured });
+    fingerprint = 'b'.repeat(64);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await recordCurrentDiscoveryAudit(input(), { context: measured })).toMatchObject({ ok: true,
+        discovery: { readiness: { ready: false, blockers: [expect.objectContaining({ path: 'findings.F-1' })] } } });
+    }
+    let effects = 0;
+    expect(await withCurrentDiscovery(input(), async () => ++effects, { context: measured })).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    expect(effects).toBe(0);
+    fingerprint = 'a'.repeat(64);
+    expect(await recordCurrentDiscoveryAudit(input(), { context: measured })).toMatchObject({ ok: true, reused: true });
+    expect(await withCurrentDiscovery(input(), async () => 'original observed basis', { context: measured })).toMatchObject({ ok: true });
+    fingerprint = 'b'.repeat(64);
+    await revision(draft.replace('Reuse the existing helper at the missing caller.', 'The changed helper still covers the caller; adopt its new argument contract.'));
+    expect(await recordCurrentDiscoveryAudit(input(), { context: measured })).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    expect(await withCurrentDiscovery(input(), async () => ++effects, { context: measured })).toMatchObject({ ok: true, result: 1 });
+  });
+  it('retains applicable provenance across unrelated edits but refuses changed target semantics without a new judgment', async () => {
+    await recordCurrentDiscoveryAudit(input(), { context });
+    await revision(draft + '\n## Notes\nUnrelated operational note.\n');
+    expect(await withCurrentDiscovery(input(), async (_tx, subject) => subject.version, { context })).toMatchObject({ ok: true });
+    await revision(draft.replace('Wire the existing helper', 'Replace the helper with a new behavior'));
+    expect(await withCurrentDiscovery(input(), async () => 'must not run', { context })).toMatchObject({ ok: false,
+      discovery: { readiness: { blockers: [expect.objectContaining({ code: 'discovery_change_unsupported', path: 'findings.F-1' })] } } });
+  });
+  it('reopens affected questions while preserving a separate finding and its original evidence basis', async () => {
+    const scoped = { notApplicable: null, questions: [
+      { id: 'Q-1', kind: 'current-behavior', question: 'What already works?', stopCondition: 'Read the helper.', outcome: 'answered' },
+      { id: 'Q-2', kind: 'gap', question: 'Where is the caller gap?', stopCondition: 'Trace the caller.', outcome: 'answered' },
+      { id: 'Q-3', kind: 'feasibility', question: 'Does the second helper cover the other caller?', stopCondition: 'Read the second helper.', outcome: 'answered' },
+    ], findings: [
+      { ...declaration.findings[0], questions: ['Q-1', 'Q-2'] },
+      { id: 'F-2', questions: ['Q-3'], conclusion: 'The separate helper covers the second caller.', evidenceRefs: ['source:other.ts'],
+        dispositions: [{ target: 'P-002', decision: 'reuse', reason: 'The current second helper covers it.' }] },
+    ] };
+    await revision(draft.replace(JSON.stringify(declaration), JSON.stringify(scoped)) + '\n- **P-002** `todo` Wire the second helper\n');
+    let changed = false;
+    const scopedContext = async (): Promise<DiscoveryAuditContext> => ({ targets: [
+      { ref: 'P-001', change: 'proposed' }, { ref: 'P-002', change: 'proposed' }], evidence: [
+      { ref: 'source:helper.ts', state: 'current', usable: true, fingerprint: changed ? 'b' : 'a' },
+      { ref: 'source:other.ts', state: 'current', usable: true, fingerprint: 'other' },
+    ] });
+    const first = await recordCurrentDiscoveryAudit(input(), { context: scopedContext });
+    changed = true;
+    const stale = await recordCurrentDiscoveryAudit(input(), { context: scopedContext });
+    expect(stale).toMatchObject({ ok: true, discovery: { readiness: { ready: false, reopenedQuestions: ['Q-1', 'Q-2'] } } });
+    if (!first.ok || !stale.ok) throw new Error('fixture finalization failed');
+    expect(stale.discovery.findings?.['F-2']).toEqual(first.discovery.findings?.['F-2']);
+  });
+  it('requires finalization and refuses evidence moving immediately before an accepting effect', async () => {
+    let accepted = 0;
+    expect(await withCurrentDiscovery(input(), async () => ++accepted, { context })).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    await recordCurrentDiscoveryAudit(input(), { context });
+    let reads = 0;
+    const moving = async () => { const value = await context(); if (++reads === 2) value.evidence[0]!.fingerprint = 'b'.repeat(64); return value; };
+    expect(await withCurrentDiscovery(input(), async () => ++accepted, { context: moving })).toMatchObject({ ok: false, error: 'discovery_subject_moved' });
+    expect(accepted).toBe(0);
+  });
+  it('retains source observations after trail expiry and rechecks current bytes instead of trusting a stale graph', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'discovery-source-'));
+    try {
+      await writeFile(join(root, 'helper.ts'), 'export const helper = 1;\n');
+      await persistResearchBatch({ workspace: fx.workspaceId, owner: input().createdBy, harness, client: 'codex', calls: [] },
+        [{ kind: 'path', requested: 'helper.ts', path: 'helper.ts', seenAt: Date.now() }]);
+      const resolver: NonNullable<Parameters<typeof recordCurrentDiscoveryAudit>[1]>['context'] = (content, previous, prior, historicalTargets) =>
+        resolveDiscoveryAuditContext(content, previous, { repoRoot: root, workspaceId: fx.workspaceId, sql: fx.admin,
+          harnessSlug: harness, ownerId: input().createdBy, planSlug: slug, prior, historicalTargets });
+      expect(await recordCurrentDiscoveryAudit(input(), { context: resolver })).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+      await fx.admin`DELETE FROM harness_shared.code_intel_research_trails WHERE workspace_id=${fx.workspaceId} AND owner_id=${input().createdBy} AND harness_slug=${harness}`;
+      expect(await withCurrentDiscovery(input(), async () => 'retained source', { context: resolver })).toMatchObject({ ok: true, result: 'retained source' });
+      await writeFile(join(root, 'helper.ts'), 'export const helper = 2;\n');
+      expect(await withCurrentDiscovery(input(), async () => 'must not run', { context: resolver })).toMatchObject({ ok: false, discovery: { readiness: { ready: false } } });
+      // Removing the source is unknown; an old graph/trail cannot establish absence.
+      await rm(join(root, 'helper.ts'));
+      expect(await withCurrentDiscovery(input(), async () => 'must not run', { context: resolver })).toMatchObject({ ok: false, discovery: { readiness: { state: 'unknown' } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('resolves removals from earlier canonical revisions across intermediate bookkeeping edits', async () => {
+    await revision(draft + '\n- **P-002** `todo` Speculative duplicate work\n');
+    await revision(draft + '\n## Notes\nDuplicate removed.\n');
+    const removed = JSON.parse(JSON.stringify(declaration));
+    removed.findings[0].dispositions.push({ target: 'P-002', decision: 'remove', reason: 'The existing helper makes this work unnecessary.' });
+    await revision(draft.replace(JSON.stringify(declaration), JSON.stringify(removed)));
+    const selected = async (content: string, _previous: string | null, _prior?: unknown, historical?: Record<string, string>): Promise<DiscoveryAuditContext> => ({
+      ...await context(), targets: [{ ref: 'P-001', change: 'proposed' },
+        ...(historical?.['P-002'] ? [{ ref: 'P-002', change: 'removed' as const }] : [])],
+    });
+    expect(await recordCurrentDiscoveryAudit(input(), { context: selected })).toMatchObject({ ok: true, discovery: { removedTargets: ['P-002'], readiness: { ready: true } } });
+    await revision(draft.replace(JSON.stringify(declaration), JSON.stringify(removed)) + '\n## Notes\nLater bookkeeping.\n');
+    expect(await withCurrentDiscovery(input(), async () => 'recorded removal', { context: selected })).toMatchObject({ ok: true });
   });
 });

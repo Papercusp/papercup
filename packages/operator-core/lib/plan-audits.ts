@@ -51,6 +51,7 @@ import {
   type GenericCitationLookup,
 } from './plan-audits-generic-citations';
 import { createHash } from 'node:crypto';
+import { canonicalJson } from './external-bench/reproducibility/canonical-json';
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -65,7 +66,7 @@ import {
   planAdvisoryLockKey,
 } from './agent-tools/plans/plan-lock-key';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
-import { evaluateDiscoveryReadiness, type DiscoveryReadiness,
+import { evaluateDiscoveryReadiness, previewDiscoveryDeclaration, type DiscoveryReadiness,
   type DiscoveryReadinessContext } from './agent-tools/plans/plan-declarations';
 import {
   loadHarnessRegistry,
@@ -246,28 +247,42 @@ export interface DiscoveryAuditPayload {
   schemaVersion: 1;
   requestKey: string;
   subjectHash: string;
+  declarationHash?: string;
   targets: Record<string, string>;
+  /** Derived judgment scope and its original observed basis survive trail expiry
+   * and non-ready retries. A retry cannot silently bless a changed source. */
+  findings?: Record<string, { judgmentHash: string; targets: Record<string, string | null>;
+    evidence: Record<string, string | null> }>;
+  removedTargets?: string[];
   evidence: Array<{ ref: string; state: 'current' | 'stale' | 'historical' | 'unknown';
     usable: boolean; fingerprint: string | null; reason?: string }>;
-  readiness: Pick<DiscoveryReadiness, 'ready' | 'state' | 'blockers' | 'evidenceRefs' | 'supportedTargets' | 'nextAction'>;
+  readiness: Pick<DiscoveryReadiness, 'ready' | 'state' | 'blockers' | 'evidenceRefs' | 'supportedTargets' | 'nextAction'> & {
+    reopenedQuestions?: string[];
+  };
 }
+
+const discoveryDigest = (value: unknown) => createHash('sha256')
+  .update(canonicalJson(value).replace(/\s+/g, ' ').trim()).digest('hex');
 
 /** Whitespace and lifecycle bookkeeping do not change an implementation proposal. */
 export function discoverySubjectSnapshot(content: string): Record<string, string> {
   const digest = (value: string) => createHash('sha256').update(value.replace(/\s+/g, ' ').trim()).digest('hex');
   const parsed = parsePlan(content);
   const targets: Record<string, string> = {};
+  const selectedSections = new Set(previewDiscoveryDeclaration(content).data?.findings
+    .flatMap(finding => finding.dispositions.map(disposition => disposition.target)) ?? []);
   for (const item of parsed.items) targets[item.id] = digest(JSON.stringify({
     text: item.text.replace(NOTE_SUFFIX_RE, ''), blockedBy: item.blockedBy, decisionRefs: item.decisionRefs,
     phase: item.phase, deliverable: item.deliverable, authority: item.authority, riskTier: item.riskTier }));
   for (const decision of parsed.decisions) targets[decision.id] = digest(JSON.stringify({ ...decision, lineNumber: undefined }));
-  for (const section of splitPlanSections(content).filter(section => section.level === 2 && section.heading !== 'Now')) {
+  for (const section of splitPlanSections(content).filter(section => section.level === 2 &&
+    (['Product shaping', 'Requirements', 'Design', 'Delivery and activation'].includes(section.heading) ||
+      selectedSections.has(`section:${section.heading}`)))) {
     const body = section.body.replace(/^- \*\*P-\d+\*\*.*$/gm, '').trim();
     if (body) targets[`section:${section.heading}`] = digest(body);
-    for (const match of section.body.matchAll(/^\*\*(R-\d+)\s+[—–-].*?(?=^\*\*R-\d+\s+[—–-]|$(?![\s\S]))/gms)) {
-      targets[match[1]!] = digest(match[0]);
-    }
   }
+  const requirements = parseRequirementBars(content);
+  if (requirements.ok) for (const bar of requirements.bars) targets[bar.barKey] = discoveryDigest(bar.criterion);
   return Object.fromEntries(Object.entries(targets).sort(([a], [b]) => a.localeCompare(b)));
 }
 
@@ -276,16 +291,43 @@ export interface DiscoveryAuditContext {
   targets: DiscoveryReadinessContext['targets'];
 }
 
-export function assessDiscovery(content: string, context: DiscoveryAuditContext): DiscoveryAuditPayload {
+export function assessDiscovery(content: string, context: DiscoveryAuditContext, previous?: DiscoveryAuditPayload | null): DiscoveryAuditPayload {
   const targets = discoverySubjectSnapshot(content);
   const subjectHash = createHash('sha256').update(JSON.stringify(targets)).digest('hex');
   const { ready, state, blockers, evidenceRefs, supportedTargets, nextAction } = evaluateDiscoveryReadiness(content, {
     targets: context.targets, evidence: new Map(context.evidence.map(row => [row.ref, row])),
   });
+  const declaration = previewDiscoveryDeclaration(content).data;
+  const findings: NonNullable<DiscoveryAuditPayload['findings']> = {};
+  const reopenedQuestions = new Set<string>();
+  for (const finding of declaration?.findings ?? []) {
+    const judgmentHash = discoveryDigest({ finding, questions: declaration!.questions.filter(q => finding.questions.includes(q.id)) });
+    const observed = { judgmentHash,
+      targets: Object.fromEntries(finding.dispositions.map(d => [d.target, targets[d.target] ?? null])),
+      evidence: Object.fromEntries(finding.evidenceRefs.map(ref => [ref, context.evidence.find(e => e.ref === ref)?.fingerprint ?? null])) };
+    const basis = previous?.findings?.[finding.id];
+    // Preserve the original observation across failed retries. Refreshing a
+    // timestamp or calling finalize again does not supply new interpretation.
+    findings[finding.id] = basis?.judgmentHash === judgmentHash ? { ...basis,
+      evidence: Object.fromEntries(Object.entries(observed.evidence).map(([ref, value]) => [ref, basis.evidence[ref] ?? value])) } : observed;
+    if (!basis || basis.judgmentHash !== judgmentHash) continue;
+    const changedTargets = Object.keys(observed.targets).filter(ref => basis.targets[ref] !== observed.targets[ref]);
+    const changedEvidence = Object.keys(observed.evidence).filter(ref => basis.evidence[ref] != null &&
+      basis.evidence[ref] !== observed.evidence[ref]);
+    if (!changedTargets.length && !changedEvidence.length) continue;
+    finding.questions.forEach(ref => reopenedQuestions.add(ref));
+    blockers.push({ code: changedTargets.length ? 'discovery_change_unsupported' : 'discovery_evidence_unusable',
+      path: `findings.${finding.id}`, detail: `${finding.id}: reconcile the affected conclusion/disposition after changes to ${[...changedTargets, ...changedEvidence].join(', ')}; affected questions: ${finding.questions.join(', ') || 'no-material-unknowns basis'}.` });
+  }
   const evidence = [...context.evidence].sort((a, b) => a.ref.localeCompare(b.ref));
-  const requestKey = createHash('sha256').update(JSON.stringify({ subjectHash, evidence, targets: context.targets })).digest('hex');
-  return { schemaVersion: 1, requestKey, subjectHash, targets, evidence,
-    readiness: { ready, state, blockers, evidenceRefs, supportedTargets, nextAction } };
+  const removedTargets = context.targets.filter(t => t.change === 'removed').map(t => t.ref).sort();
+  const declarationHash = discoveryDigest(declaration);
+  const requestKey = discoveryDigest({ subjectHash, declarationHash, evidence, findings, removedTargets });
+  const fresh = blockers.length === 0;
+  return { schemaVersion: 1, requestKey, subjectHash, declarationHash, targets, findings, removedTargets, evidence,
+    readiness: { ready: ready && fresh, state: fresh ? state : state === 'unknown' ? 'unknown' : 'blocked', blockers,
+      evidenceRefs, supportedTargets, reopenedQuestions: [...reopenedQuestions].sort(),
+      nextAction: fresh ? nextAction : `Reconcile Discovery in the draft: ${blockers[0]!.detail}` } };
 }
 
 export interface ActivationAuditSourceRange {
@@ -2747,22 +2789,27 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
 
 /** One logical finalization: resolve facts, lock/re-read the subject, append or reuse.
  * This path never seeds a BAR, promotes an item, activates or dispatches review. */
-export async function recordCurrentDiscoveryAudit(input: {
+interface CurrentDiscoveryInput {
   workspaceId: string; harnessSlug: string; planSlug: string; createdBy: string; dryRun?: boolean;
-}, effects?: {
-  context: (content: string, previous: string | null) => Promise<DiscoveryAuditContext>;
-}) {
+}
+interface DiscoveryEffects {
+  context: (content: string, previous: string | null, prior?: DiscoveryAuditPayload | null,
+    historicalTargets?: Record<string, string>) => Promise<DiscoveryAuditContext>;
+}
+
+/** Shared accepting boundary for finalization and review/start reservations.
+ * The plan writer uses this same advisory lock. Evidence is measured twice
+ * before the caller may reserve an accepting effect on this transaction. */
+async function currentDiscoveryInTransaction(input: CurrentDiscoveryInput, executor: AuditSql, effects?: DiscoveryEffects) {
   const { sql } = getOrgPg();
-  const context = effects?.context ?? (async (content: string, previous: string | null) => {
+  const context: DiscoveryEffects['context'] = effects?.context ?? (async (content, previous, prior, historicalTargets) => {
     const { resolveDiscoveryAuditContext } = await import('./agent-tools/plans/plan-declaration-resolvers');
     const citation = await repoCitationContextForHarness(input.harnessSlug);
     const admitted = citation && !isCitationContextFailure(citation) ? citation : null;
     return resolveDiscoveryAuditContext(content, previous, { repoRoot: admitted?.repoRoot ?? null,
       citationDeps: admitted?.deps, workspaceId: input.workspaceId, sql,
-      harnessSlug: input.harnessSlug, ownerId: input.createdBy, planSlug: input.planSlug });
+      harnessSlug: input.harnessSlug, ownerId: input.createdBy, planSlug: input.planSlug, prior, historicalTargets });
   });
-  return sql.begin(async tx => {
-    const executor = tx as unknown as AuditSql;
     const [lock] = await executor<Array<{ ok: boolean }>>`SELECT pg_try_advisory_xact_lock(
       hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}), hashtext(${planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug)})) AS ok`;
     if (!lock?.ok) return { ok: false as const, error: 'plan_busy', nextAction: 'Retry discovery after the current plan write.' };
@@ -2780,9 +2827,35 @@ export async function recordCurrentDiscoveryAudit(input: {
       SELECT content_snapshot FROM harness_shared.plan_revisions
        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}
          AND seq < ${revision.seq} ORDER BY seq DESC LIMIT 1`;
-    const facts = await context(plan.content, previous?.content_snapshot ?? null);
-    const discovery = assessDiscovery(plan.content, facts);
-    const confirmed = assessDiscovery(plan.content, await context(plan.content, previous?.content_snapshot ?? null));
+    const [lastAudit] = await executor<PlanAuditRow[]>`SELECT * FROM harness_shared.plan_audits
+      WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug}
+        AND plan_slug=${input.planSlug} AND audit_kind='discovery' ORDER BY audit_seq DESC LIMIT 1`;
+    const priorDiscovery = lastAudit?.discovery ?? null;
+    const historicalTargets = { ...priorDiscovery?.targets };
+    for (const ref of priorDiscovery?.removedTargets ?? []) historicalTargets[ref] ??= 'recorded-removal';
+    const currentTargets = discoverySubjectSnapshot(plan.content);
+    const removedRefs = previewDiscoveryDeclaration(plan.content).data?.findings.flatMap(f => f.dispositions
+      .filter(d => ['remove', 'exclude'].includes(d.decision)).map(d => d.target)) ?? [];
+    const missingHistory = new Set(removedRefs.filter(ref => !(ref in currentTargets) && !(ref in historicalTargets)));
+    // Reuse the revision spine, including intermediate edits. Read in bounded
+    // pages and stop as soon as the selected removal identities are resolved.
+    let beforeSeq = revision.seq;
+    while (missingHistory.size) {
+      const history = await executor<Array<{ seq: number; content_snapshot: string }>>`
+        SELECT seq,content_snapshot FROM harness_shared.plan_revisions
+        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}
+          AND seq < ${beforeSeq} ORDER BY seq DESC LIMIT 32`;
+      if (!history.length) break;
+      for (const row of history) {
+        const snapshot = discoverySubjectSnapshot(row.content_snapshot);
+        for (const ref of missingHistory) if (ref in snapshot) { historicalTargets[ref] = snapshot[ref]!; missingHistory.delete(ref); }
+      }
+      beforeSeq = history.at(-1)!.seq;
+    }
+    const facts = await context(plan.content, previous?.content_snapshot ?? null, priorDiscovery, historicalTargets);
+    const discovery = assessDiscovery(plan.content, facts, priorDiscovery);
+    const confirmed = assessDiscovery(plan.content,
+      await context(plan.content, previous?.content_snapshot ?? null, priorDiscovery, historicalTargets), priorDiscovery);
     const [current] = await executor<Array<{ version: number; content_hash: string }>>`
       SELECT version, content_hash FROM harness_shared.harness_plans
        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}`;
@@ -2791,16 +2864,52 @@ export async function recordCurrentDiscoveryAudit(input: {
       previousIdentity: { plan: plan.content_hash, evidence: discovery.requestKey },
       currentIdentity: { plan: current?.content_hash ?? null, evidence: confirmed.requestKey },
       nextAction: 'Reconcile the changed plan or evidence; retry discovery against the current revision.' };
+    return { ok: true as const, discovery, priorDiscovery, lastAudit, plan,
+      auditedPlanRevision: { id: Number(revision.id), seq: revision.seq, contentHash: revision.content_hash } };
+}
+
+export async function recordCurrentDiscoveryAudit(input: CurrentDiscoveryInput, effects?: DiscoveryEffects) {
+  const { sql } = getOrgPg();
+  return sql.begin(async tx => {
+    const executor = tx as unknown as AuditSql;
+    const prepared = await currentDiscoveryInTransaction(input, executor, effects);
+    if (!prepared.ok) return prepared;
+    const { discovery, auditedPlanRevision } = prepared;
     const [prior] = await executor<PlanAuditRow[]>`
       SELECT * FROM harness_shared.plan_audits WHERE workspace_id=${input.workspaceId}
-        AND plan_slug=${input.planSlug} AND audit_kind='discovery'
+        AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug} AND audit_kind='discovery'
         AND discovery->>'requestKey'=${discovery.requestKey} ORDER BY audit_seq DESC LIMIT 1`;
-    const auditedPlanRevision = { id: Number(revision.id), seq: revision.seq, contentHash: revision.content_hash };
     if (prior && !input.dryRun) return { ok: true as const, reused: true, audit: rowToAudit(prior), discovery, auditedPlanRevision };
     if (input.dryRun) return { ok: true as const, preview: true, dryRun: true, discovery, auditedPlanRevision };
     const audit = await insertPlanAudit({ auditKind: 'discovery', ...input, discovery, auditedPlanRevision,
       summary: discovery.readiness.nextAction }, executor, input.workspaceId);
     return { ok: true as const, reused: false, audit, discovery, auditedPlanRevision };
+  });
+}
+
+/** A read alone grants no admission. Consumers reserve accepting effects inside
+ * this callback, under the canonical subject lock and freshly checked evidence.
+ * Cosmetic/unrelated edits can reuse the original discovery provenance. */
+export async function withCurrentDiscovery<T>(input: CurrentDiscoveryInput,
+  accept: (tx: AuditSql, subject: { content: string; version: number; contentHash: string;
+    discovery: DiscoveryAuditPayload; auditId: number }) => Promise<T>, effects?: DiscoveryEffects) {
+  const { sql } = getOrgPg();
+  return sql.begin(async tx => {
+    const executor = tx as unknown as AuditSql;
+    const prepared = await currentDiscoveryInTransaction(input, executor, effects);
+    if (!prepared.ok) return prepared;
+    const { discovery, priorDiscovery, lastAudit, plan } = prepared;
+    // A temporary unknown/stale observation does not erase an earlier valid
+    // finalization. Reverting to that exact scoped basis needs no fresh prose.
+    const [finalizedAudit] = await executor<PlanAuditRow[]>`SELECT * FROM harness_shared.plan_audits
+      WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}
+        AND audit_kind='discovery' AND discovery->>'declarationHash'=${discovery.declarationHash ?? ''}
+        AND discovery->'readiness'->>'ready'='true' ORDER BY audit_seq DESC LIMIT 1`;
+    const finalized = Boolean(finalizedAudit);
+    if (!finalized || !discovery.readiness.ready) return { ok: false as const, error: 'discovery_not_ready', discovery,
+      nextAction: discovery.readiness.ready ? 'Finalize the current findings with plans:audit { phase:"discovery", slug }.' : discovery.readiness.nextAction };
+    return { ok: true as const, result: await accept(executor, { content: plan.content, version: plan.version,
+      contentHash: plan.content_hash, discovery, auditId: finalizedAudit!.audit_seq }) };
   });
 }
 
