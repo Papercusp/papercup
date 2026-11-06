@@ -76,6 +76,10 @@ export const scorecardRepairArgs = z
       .max(120)
       .optional()
       .describe('Harness that owns the pending scorecards; pass it when this operator session is not harness-scoped.'),
+    preparedSource: z.object({
+      sourceRoot: z.string().min(1).max(4096),
+      bundlePath: z.string().min(1).max(4096),
+    }).strict().optional().describe('Existing maintained external host output and its frozen Git source. The dispatcher verifies the manifest, compiler inputs and target evaluator before retention.'),
     gradingLaunch: z
       .object({
         agent: z.literal('codex'),
@@ -87,7 +91,8 @@ export const scorecardRepairArgs = z
       .optional()
       .describe('Optional existing grading launch profile: pin independent auditors to codex/gpt-6.1-sol/xhigh through account auto, as in the acceptance-grading sweep.'),
   })
-  .strict();
+  .strict().refine(args => !args.preparedSource || Boolean(args.targetIds?.length),
+    'Prepared audit source requires explicit targetIds');
 
 export default defineTool({
   name: 'scorecards:repair',
@@ -125,6 +130,7 @@ export default defineTool({
           recertifyStranded: false,
           ...(args.targetIds ? { targetIds: args.targetIds } : {}),
           ...(args.harness ? { harness: args.harness } : {}),
+          ...(args.preparedSource ? { preparedSource: args.preparedSource } : {}),
         };
         return reconcilePendingGradingAudits(input);
       },

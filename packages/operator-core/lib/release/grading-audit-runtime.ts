@@ -20,6 +20,7 @@ import { measureBootOperatorArtifact, operatorArtifactSource, writeOperatorArtif
 import {
   GRADING_AUDIT_SOURCE_PIN_MAX_SEC,
   readGradingAuditSourcePin,
+  recoverExternalGradingAuditSourcePins,
   releaseGradingAuditSourcePin,
   writeGradingAuditSourcePin,
   type GradingAuditSourcePin,
@@ -98,15 +99,25 @@ export class GradingAuditRuntimeReadinessError extends Error {
 
 /** A maintained exact-ref rebuild is a NEW artifact, never the old digest. */
 export async function qualifyRematerializedGradingAuditSource(sourceRoot: string, build: BuildInfo) {
+  return qualifyPreparedGradingAuditSource({ sourceRoot }, build);
+}
+
+/** Adopt outputs from the maintained builder without mutating or re-exporting frozen source. */
+export async function qualifyPreparedGradingAuditSource(input: { sourceRoot: string; bundlePath?: string }, build: BuildInfo) {
+  let sourceRoot = input.sourceRoot;
   sourceRoot = realpathSync(sourceRoot);
-  if (basename(sourceRoot) !== 'checkout' || !basename(dirname(sourceRoot)).startsWith('.candidate-')) {
+  const external = input.bundlePath !== undefined;
+  if (!external && (basename(sourceRoot) !== 'checkout' || !basename(dirname(sourceRoot)).startsWith('.candidate-'))) {
     throw new Error('Exact source recovery requires an immutable candidate checkout');
   }
   const sourceSha = await operatorArtifactSource(sourceRoot);
-  if (!build.sha || !/^[a-f0-9]{7,40}$/.test(build.sha) || !sourceSha.startsWith(build.sha)) {
+  if (!build.sha || !/^(?:[a-f0-9]{7,40}|[a-f0-9]{64})$/.test(build.sha) || !sourceSha.startsWith(build.sha)) {
     throw new Error('Rematerialized audit source differs from the recorded evaluator');
   }
-  const bundlePath = join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  const bundlePath = external ? resolve(input.bundlePath!) : join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  if (realpathSync(bundlePath) !== bundlePath || basename(bundlePath) !== 'hono-host.mjs') {
+    throw new Error('Prepared audit bundle must be a physical maintained host output');
+  }
   if (!readFileSync(bundlePath).includes(requestOnlyIdentityGuardMarker())) {
     throw new Error('Audit runtime bundle lacks request-only identity support');
   }
@@ -117,12 +128,14 @@ export async function qualifyRematerializedGradingAuditSource(sourceRoot: string
   if (artifact.status !== 'measured' || artifact.sourceSha !== sourceSha) {
     throw new Error('Rematerialized audit bundle has no exact source artifact proof');
   }
-  const checked = await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
+  const artifactRoot = external ? dirname(bundlePath) : undefined;
+  const checked = await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha, artifactRoot });
   if (checked.status !== 'measured' || checked.manifestSha256 !== artifact.manifestSha256) {
     throw new Error('Rematerialized audit compiler provenance differs');
   }
   return { sourceSha, artifactManifestSha256: artifact.manifestSha256,
     source: { schemaVersion: 1 as const, sourceRoot, bundlePath, evaluatorBuild: build,
+      ...(artifactRoot ? { externalArtifact: { artifactRoot, bundlePath, sourceSha, manifestSha256: artifact.manifestSha256 } } : {}),
       bundleSha256: artifact.bundleSha256, ownerRef: '' } };
 }
 
@@ -130,7 +143,8 @@ export interface GradingAuditRuntimeDeps {
   now?: () => number;
   list?: (workspaceId: string, label: string) => Promise<TaskRow[]>;
   mutex?: <T>(workspaceId: string, key: string, fn: () => Promise<T>) => Promise<T>;
-  currentSource?: (build: BuildInfo) => Omit<GradingAuditRuntimeLocator, 'baseUrl' | 'issueIds' | 'expiresAtSec'>;
+  currentSource?: (build: BuildInfo) => Omit<GradingAuditRuntimeLocator, 'baseUrl' | 'issueIds' | 'expiresAtSec'> |
+    Promise<Omit<GradingAuditRuntimeLocator, 'baseUrl' | 'issueIds' | 'expiresAtSec'>>;
   recoverSource?: (workspaceId: string, build: BuildInfo, nowSec: number) => GradingAuditRuntimeLocator | null;
   freePort?: () => Promise<number>;
   logDir?: string;
@@ -171,12 +185,13 @@ async function listRuntimeTasks(workspaceId: string, labelPrefix: string): Promi
 }
 
 /** Only a running, immutable, maintained host bundle may seed a new locator. */
-function currentSource(build: BuildInfo): ReturnType<NonNullable<GradingAuditRuntimeDeps['currentSource']>> {
+async function currentSource(build: BuildInfo): Promise<Awaited<ReturnType<NonNullable<GradingAuditRuntimeDeps['currentSource']>>>> {
   if (!sameBuild(getBuildInfo(), build)) throw new Error('This host cannot seed a different evaluator build');
   const bundlePath = realpathSync(process.argv[1] ?? '');
   const sourceRoot = realpathSync(resolve(dirname(bundlePath), '../../..'));
   if (bundlePath !== join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs')) {
-    throw new Error('Exact audit retention requires the maintained immutable host bundle');
+    if (!process.env.PAPERCUSP_INTEGRATION_ROOT) throw new Error('External audit bundle requires its prepared source root');
+    return (await qualifyPreparedGradingAuditSource({ sourceRoot: process.env.PAPERCUSP_INTEGRATION_ROOT, bundlePath }, build)).source;
   }
   // This marker is emitted only by the actual load-only identity implementation.
   if (!readFileSync(bundlePath).includes(requestOnlyIdentityGuardMarker())) {
@@ -396,8 +411,12 @@ function locatorFrom(row: Pick<TaskRow, 'detail'>): GradingAuditRuntimeLocator |
     const url = new URL(raw.baseUrl);
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.pathname !== '/' ||
         url.username || url.password || url.search || url.hash) return null;
-    if (row.detail.label !== raw.ownerRef || !raw.ownerRef.startsWith(LABEL) ||
-        raw.bundlePath !== join(raw.sourceRoot, 'apps/operator/dist-host/hono-host.mjs')) return null;
+    if (row.detail.label !== raw.ownerRef || !raw.ownerRef.startsWith(LABEL)) return null;
+    if (raw.externalArtifact ? raw.bundlePath !== raw.externalArtifact.bundlePath ||
+        raw.bundlePath !== join(raw.externalArtifact.artifactRoot, 'hono-host.mjs') ||
+        !/^[a-f0-9]{64}$/.test(raw.externalArtifact.manifestSha256) ||
+        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(raw.externalArtifact.sourceSha)
+      : raw.bundlePath !== join(raw.sourceRoot, 'apps/operator/dist-host/hono-host.mjs')) return null;
     return raw;
   } catch { return null; }
 }
@@ -407,6 +426,10 @@ export function recoverGradingAuditRuntimeSource(
   generationsRoot: string, workspaceId: string, build: BuildInfo, nowSec: number,
 ): GradingAuditRuntimeLocator | null {
   const label = labelFor(build, workspaceId);
+  for (const pin of recoverExternalGradingAuditSourcePins(generationsRoot, label, nowSec)) {
+    const locator = locatorFrom({ detail: { label, gradingAuditRuntime: pin } });
+    if (locator && sameBuild(pin.evaluatorBuild, build)) return locator;
+  }
   let candidates: string[];
   try { candidates = readdirSync(generationsRoot).filter(name => name.startsWith('.candidate-')); }
   catch { return null; }
@@ -426,6 +449,7 @@ function recoverSource(workspaceId: string, build: BuildInfo, nowSec: number): G
   const legacy = process.env.PAPERCUSP_STAGING_ROOT;
   if (legacy) roots.push(`${legacy}.generations`);
   if (process.env.PAPERCUSP_INTEGRATION_ROOT) {
+    roots.push(dirname(process.env.PAPERCUSP_INTEGRATION_ROOT));
     roots.push(join(dirname(process.env.PAPERCUSP_INTEGRATION_ROOT), 'papercusp-staging.generations'));
   }
   for (const root of new Set(roots)) {
@@ -444,6 +468,8 @@ export async function ensureGradingAuditRuntime(input: {
   workspaceId: string; issueId: string; evaluatorBuild: BuildInfo; allowSeed?: boolean;
   /** Explicit recovery after exact-ref materialization with the maintained builder. */
   recoverySourceRoot?: string;
+  /** Independently qualify an already built exact-source host; no prior locator is fabricated. */
+  preparedSource?: { sourceRoot: string; bundlePath: string };
   /** A claimed source work-item may still need conformance after its audit settles. */
   acceptanceRef?: string;
   /** Bound readiness waiting by the tool caller's response budget and cancellation. */
@@ -479,10 +505,12 @@ export async function ensureGradingAuditRuntime(input: {
       if (input.recoverySourceRoot && !previous?.locator) {
         throw new Error('Exact source recovery requires a registered prior runtime locator');
       }
-      if (!input.recoverySourceRoot && input.allowSeed === false) throw new Error('No retained exact audit runtime source is available');
+      if (input.preparedSource && input.recoverySourceRoot) throw new Error('Choose prepared source or prior-runtime recovery');
+      if (!input.preparedSource && !input.recoverySourceRoot && input.allowSeed === false) throw new Error('No retained exact audit runtime source is available');
       const rebuilt = input.recoverySourceRoot
         ? await qualifyRematerializedGradingAuditSource(input.recoverySourceRoot, input.evaluatorBuild) : null;
-      const source = rebuilt?.source ?? (deps.currentSource ?? currentSource)(input.evaluatorBuild);
+      const prepared = input.preparedSource ? await qualifyPreparedGradingAuditSource(input.preparedSource, input.evaluatorBuild) : null;
+      const source = rebuilt?.source ?? prepared?.source ?? await (deps.currentSource ?? currentSource)(input.evaluatorBuild);
       locator = { ...source, ownerRef: label, issueIds: previous?.locator?.issueIds ?? [],
         ...(rebuilt && previous?.locator ? { sourceRecovery: {
           sourceSha: rebuilt.sourceSha, artifactManifestSha256: rebuilt.artifactManifestSha256,
@@ -493,7 +521,8 @@ export async function ensureGradingAuditRuntime(input: {
     }
     const pin = readGradingAuditSourcePin(locator.sourceRoot, label, now);
     if (recovered && (!pin || pin.bundleSha256 !== locator.bundleSha256 ||
-        !sameBuild(pin.evaluatorBuild, input.evaluatorBuild) || pin.expiresAtSec !== locator.expiresAtSec)) {
+        !sameBuild(pin.evaluatorBuild, input.evaluatorBuild) || pin.expiresAtSec !== locator.expiresAtSec ||
+        JSON.stringify(pin.externalArtifact) !== JSON.stringify(locator.externalArtifact))) {
       throw new Error('Audit runtime recovery pin does not match its task locator');
     }
     if (digest(locator.bundlePath) !== locator.bundleSha256) throw new Error('Retained audit bundle digest changed');

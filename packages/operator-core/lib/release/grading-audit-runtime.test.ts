@@ -16,7 +16,7 @@ import { SPAWNER_SCOPE_ENV } from '../fleet/sidecar-exec-lifetime';
 import { SUBSTRATE_SOCKET_ENV } from '../sync/hyperbee/substrate-socket-path';
 import { writeOperatorArtifactManifest } from './operator-artifact';
 import { ensureGradingAuditRuntime, gradingAuditRuntimeChildEnv, retireUnusedGradingAuditRuntimes, recoverGradingAuditRuntimeSource,
-  qualifyRematerializedGradingAuditSource, gradingAuditRuntimeSupervisorArgs, GradingAuditRuntimeReadinessError,
+  qualifyRematerializedGradingAuditSource, qualifyPreparedGradingAuditSource, gradingAuditRuntimeSupervisorArgs, GradingAuditRuntimeReadinessError,
   type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './grading-audit-runtime';
 
 const spawnManaged = vi.hoisted(() => vi.fn());
@@ -80,11 +80,12 @@ function setReadinessDeadline(f: ReturnType<typeof fixture>, budgetMs = 30_000):
   return 1_000_000 + budgetMs;
 }
 
-async function rebuiltFixture() {
+async function rebuiltFixture(external = false) {
   const root = mkdtempSync(join(tmpdir(), 'audit-rebuilt-'));
   roots.push(root);
-  const sourceRoot = join(root, '.candidate-rebuilt', 'checkout');
-  const bundlePath = join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  const sourceRoot = external ? join(root, 'source') : join(root, '.candidate-rebuilt', 'checkout');
+  const bundlePath = external ? join(root, 'output/hono-host.mjs') : join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  mkdirSync(sourceRoot, { recursive: true });
   mkdirSync(dirname(bundlePath), { recursive: true });
   const git = (...args: string[]) => execFileSync('git', ['-C', sourceRoot, ...args], { encoding: 'utf8' }).trim();
   git('init', '--quiet');
@@ -94,8 +95,9 @@ async function rebuiltFixture() {
   const sourceSha = git('rev-parse', 'HEAD');
   writeFileSync(bundlePath, 'rebuilt evaluator ' + requestOnlyIdentityGuardMarker());
   writeFileSync(bundlePath + '.meta.json', JSON.stringify({ inputs: { 'entry.ts': {} } }));
-  await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
-  return { sourceRoot, bundlePath, sourceSha, git, evaluatorBuild: { sha: sourceSha.slice(0, 10), version: '1.2.3' } };
+  const artifact = await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha,
+    ...(external ? { artifactRoot: dirname(bundlePath) } : {}) });
+  return { root, sourceRoot, bundlePath, sourceSha, artifact, git, evaluatorBuild: { sha: sourceSha.slice(0, 10), version: '1.2.3' } };
 }
 
 describe('retained evaluator self-recycle supervision (EI-26950964476692806)', () => {
@@ -326,6 +328,61 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     writeFileSync(join(rebuilt.sourceRoot, 'entry.ts'), 'export const evaluator = true;\n');
     writeFileSync(rebuilt.bundlePath, 'replacement ' + requestOnlyIdentityGuardMarker());
     await expect(qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).rejects.toThrow('artifact proof');
+  });
+
+  it('adopts prepared external bytes, reuses the endpoint, and retires only after its last reference', async () => {
+    const built = await rebuiltFixture(true);
+    const f = fixture(built.evaluatorBuild);
+    f.deps.currentSource = () => { throw new Error('dispatcher is not the target evaluator'); };
+    f.deps.recoverSource = (ws, build, now) => recoverGradingAuditRuntimeSource(built.root, ws, build, now);
+    const preparedSource = { sourceRoot: built.sourceRoot, bundlePath: built.bundlePath };
+    const first = await ensureGradingAuditRuntime({ ...f.input, allowSeed: false, preparedSource }, f.deps);
+    const locator = f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator;
+    expect(locator).toMatchObject({ sourceRoot: built.sourceRoot, bundlePath: built.bundlePath,
+      externalArtifact: { sourceSha: built.sourceSha, artifactRoot: dirname(built.bundlePath) } });
+    expect(recoverGradingAuditRuntimeSource(built.root, 'ws', built.evaluatorBuild, 1000)).toEqual(locator);
+    expect((await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b', allowSeed: false }, f.deps)).taskId).toBe(first.taskId);
+    expect(f.deps.spawn).toHaveBeenCalledOnce();
+    await retireUnusedGradingAuditRuntimes('ws', async ids => ids.filter(id => id === 'EI-b'), f.deps);
+    expect(f.stop).not.toHaveBeenCalled();
+    await retireUnusedGradingAuditRuntimes('ws', async () => [], f.deps);
+    expect(f.stop).toHaveBeenCalledWith(first.taskId);
+    expect(readGradingAuditSourcePin(built.sourceRoot, locator.ownerRef, 1000)).toBeNull();
+    expect(built.git('status', '--porcelain', '--untracked-files=no')).toBe('');
+  });
+
+  it('recovers the external pin before task registration and refuses expiry or replaced output', async () => {
+    const built = await rebuiltFixture(true);
+    const f = fixture(built.evaluatorBuild);
+    f.deps.recoverSource = (ws, build, now) => recoverGradingAuditRuntimeSource(built.root, ws, build, now);
+    f.deps.spawn = vi.fn(async () => { throw new Error('registration unavailable'); });
+    await expect(ensureGradingAuditRuntime({ ...f.input, preparedSource: built }, f.deps)).rejects.toThrow('registration unavailable');
+    const pin = recoverGradingAuditRuntimeSource(built.root, 'ws', built.evaluatorBuild, 1000)!;
+    expect(pin?.externalArtifact?.sourceSha).toBe(built.sourceSha);
+    expect(recoverGradingAuditRuntimeSource(built.root, 'ws', built.evaluatorBuild, pin.expiresAtSec)).toBeNull();
+    f.deps.spawn = vi.fn(async () => 'recovered-task');
+    f.deps.currentSource = () => { throw new Error('must recover the pin'); };
+    expect((await ensureGradingAuditRuntime({ ...f.input, allowSeed: false }, f.deps)).taskId).toBe('recovered-task');
+    writeFileSync(built.bundlePath, 'replacement ' + requestOnlyIdentityGuardMarker());
+    expect(recoverGradingAuditRuntimeSource(built.root, 'ws', built.evaluatorBuild, 1000)).toBeNull();
+    await expect(ensureGradingAuditRuntime({ ...f.input, allowSeed: false }, f.deps)).rejects.toThrow('No retained');
+  });
+
+  it('refuses external wrong source, dirty compiler inputs, missing manifests and replaced bytes before spawn', async () => {
+    const built = await rebuiltFixture(true);
+    const f = fixture(built.evaluatorBuild);
+    await expect(qualifyPreparedGradingAuditSource(built, { ...built.evaluatorBuild, sha: 'f'.repeat(10) })).rejects.toThrow('differs');
+    writeFileSync(join(built.sourceRoot, 'entry.ts'), 'dirty input');
+    await expect(ensureGradingAuditRuntime({ ...f.input, preparedSource: built }, f.deps)).rejects.toThrow('source-unqualified');
+    writeFileSync(join(built.sourceRoot, 'entry.ts'), 'export const evaluator = true;\n');
+    if (built.artifact.status !== 'measured') throw new Error('fixture artifact missing');
+    const manifest = readFileSync(built.artifact.evidenceRef);
+    rmSync(built.artifact.evidenceRef);
+    await expect(ensureGradingAuditRuntime({ ...f.input, preparedSource: built }, f.deps)).rejects.toThrow('artifact proof');
+    writeFileSync(built.artifact.evidenceRef, manifest);
+    writeFileSync(built.bundlePath, 'replaced ' + requestOnlyIdentityGuardMarker());
+    await expect(ensureGradingAuditRuntime({ ...f.input, preparedSource: built }, f.deps)).rejects.toThrow('artifact proof');
+    expect(f.deps.spawn).not.toHaveBeenCalled();
   });
 
   it('shares one ledger-owned endpoint across concurrent audits of the same build', async () => {

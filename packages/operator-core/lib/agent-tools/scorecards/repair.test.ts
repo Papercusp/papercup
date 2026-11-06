@@ -115,6 +115,17 @@ describe('scorecards:repair', () => {
     expect(reconcilePendingGradingAudits).not.toHaveBeenCalled();
   });
 
+  it('forwards a prepared artifact only for explicit targets and preserves caller identity', async () => {
+    const ctx = makeContext();
+    const preparedSource = { sourceRoot: '/retained/source', bundlePath: '/retained/output/hono-host.mjs' };
+    const args = scorecardRepairArgs.parse({ targetIds: ['EI-target'], preparedSource });
+    await repairTool.handler(args, ctx);
+    expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx, recertifyStranded: false,
+      targetIds: ['EI-target'], preparedSource });
+    expect(scorecardRepairArgs.safeParse({ preparedSource }).success).toBe(false);
+    expect(scorecardRepairArgs.safeParse({ targetIds: [], preparedSource }).success).toBe(false);
+  });
+
   it('omits target selection so the dispatcher owns bounded oldest-first backlog selection', async () => {
     const ctx = makeContext();
     await repairTool.handler({} as never, ctx);

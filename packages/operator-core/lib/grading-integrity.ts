@@ -674,6 +674,8 @@ export interface StrandedRecertifyReceipt {
 }
 
 export interface DispatchPendingGradingAuditsInput {
+  /** Already built maintained artifact, independently checked against each target's evaluator. */
+  preparedSource?: { sourceRoot: string; bundlePath: string };
   /**
    * Pending target issue ids surfaced by the completion gate. Omit or pass an
    * empty list to select the oldest current pending cards from scorecard
@@ -2483,6 +2485,7 @@ export async function dispatchPendingGradingAudits(
       const runtime = await (deps.ensureRuntime ?? ensureGradingAuditRuntime)({
         workspaceId, issueId: card.issueId, evaluatorBuild: build,
         allowSeed: build.sha === liveEvaluatorBuild.sha && build.version === liveEvaluatorBuild.version,
+        ...(input.preparedSource ? { preparedSource: input.preparedSource } : {}),
         signal: input.ctx.signal, deadlineAtMs: input.ctx.deadlineAtMs,
       });
       if (!build.sha || runtime.evaluatorBuild.sha !== build.sha || runtime.evaluatorBuild.version !== build.version ||

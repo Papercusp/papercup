@@ -1616,9 +1616,10 @@ describe('dispatchPendingGradingAudits', () => {
     const runtime = { taskId: 'retained-old', baseUrl: 'http://127.0.0.1:45188',
       evaluatorBuild: { sha: 'old-evaluator', version: '1.2.2' }, bundleSha256: 'b'.repeat(64), expiresAtSec: 4102444800 };
     d.ensureRuntime.mockResolvedValue(runtime);
-    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+    const preparedSource = { sourceRoot: '/retained/source', bundlePath: '/retained/output/hono-host.mjs' };
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, preparedSource }, d);
     expect(result.receipts[0]).toMatchObject({ state: 'launched' });
-    expect(d.ensureRuntime).toHaveBeenCalledWith(expect.objectContaining({ issueId, allowSeed: false }));
+    expect(d.ensureRuntime).toHaveBeenCalledWith(expect.objectContaining({ issueId, allowSeed: false, preparedSource }));
     const { INTERNAL_GRADING_AUDIT_RUNTIME } = await import('./agent-tools/capability/launch-agent');
     expect(d.launch.mock.calls[0]?.[1]).toMatchObject({ [INTERNAL_GRADING_AUDIT_RUNTIME]: runtime });
     const brief = (d.launch.mock.calls[0]?.[0] as { brief: string }).brief;
