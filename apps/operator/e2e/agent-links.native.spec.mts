@@ -6,6 +6,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { publishReport } from '../../../packages/operator-core/lib/report-library';
+import { assertNativeRuntimeLiveness } from '../../../packages/operator-core/lib/testing-native-runtime';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 import { recordNativeCollectionJourney } from './_ongoing-work-native-fixture';
 
@@ -93,9 +94,7 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
   try {
     const completedRuntime = await recordNativeCollectionJourney({ sourceRoot: root, sourceReceipt,
       verifierPhaseDirectory: phase, testPath: TEST_PATH, run: async () => {
-        const environ = (await readFile(`/proc/${pid}/environ`, 'utf8')).split('\0');
-        expect(environ).toContain(`PAPERCUSP_SID=${process.env.VERIFY_TAURI_OWNER_SID}`);
-        expect(environ).toContain(`PAPERCUSP_TAURI_LAUNCH_PROVENANCE=${process.env.VERIFY_TAURI_LAUNCH_PROVENANCE}`);
+        assertNativeRuntimeLiveness(root, sourceReceipt.sourceCommit);
         const windows = (await exec('xdotool', ['search', '--onlyvisible', '--pid', pid],
           { env: xenv, timeout: 10_000 })).stdout.trim().split('\n');
         expect(windows).toHaveLength(1); windowId = windows[0];
