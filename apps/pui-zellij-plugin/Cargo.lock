@@ -1505,6 +1505,7 @@ dependencies = [
 name = "pui-companion"
 version = "0.1.0"
 dependencies = [
+ "kdl",
  "pui-companion-proto",
  "zellij-tile",
 ]

@@ -43,6 +43,33 @@ const wi = (over: Partial<CorpusHit> = {}): CorpusHit => ({
 
 const QUERY = 'why did the http2 transport change on the sse endpoint';
 
+describe('task relevance of optional context (paperwork P-019)', () => {
+  it('drops administrative-only overlap beside a specific provider-control query', () => {
+    const unrelated = wi({ sourceId: 'WI-111', excerpt: 'Write a checkpoint report after setup.' });
+    const relevant = wi({ sourceId: 'WI-222', excerpt: 'Provider control import requires the qualified oracle.' });
+    const selected = selectCorpusLines({ hits: [unrelated, relevant],
+      queryText: 'checkpoint report setup provider control import' });
+    expect(selected.lines.map(line => line.handle.ref)).toEqual(['WI-222']);
+    expect(selected.dropped).toContainEqual({ ref: 'WI-111', reason: 'no-term-overlap' });
+  });
+
+  it('keeps an exact current-task pointer even when its prose uses administrative words', () => {
+    const selected = selectCorpusLines({
+      hits: [wi({ sourceId: 'WI-222', excerpt: 'Write the checkpoint report.' })],
+      queryText: 'provider oracle', declaredWorkItemId: 'WI-222',
+    });
+    expect(selected.lines.map(line => line.handle.ref)).toEqual(['WI-222']);
+  });
+
+  it('retains a specific operation runbook and suppresses a query with only administrative words', () => {
+    const runbook: CorpusHit = { source: 'doc', sourceId: 'retention-runbook',
+      excerpt: 'Retention lease cleanup protects a consumer.', score: 0.03 };
+    expect(selectCorpusLines({ hits: [runbook], queryText: 'read retention cleanup report' }).lines).toHaveLength(1);
+    expect(selectCorpusLines({ hits: [wi({ excerpt: 'Checkpoint report setup.' })],
+      queryText: 'checkpoint report setup' }).lines).toEqual([]);
+  });
+});
+
 describe('complete knowledge context', () => {
   it('retains the known Report when broad plan matches would consume its budget', () => {
     const report: CorpusHit = { source: 'report',sourceId: 'warm-report',scope: 'papercusp',

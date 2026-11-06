@@ -1701,7 +1701,7 @@ type TestFilesCorePayload =
       detachedDurable?: boolean;
       /** Whether the task-ledger alias for the foreground origin id is durable. */
       originAliasDurable?: boolean;
-      /** Managed task that did not confirm exit within the foreground termination grace. */
+      /** Managed task terminal persistence did not confirm within the foreground termination grace. */
       taskId?: string;
       /** The foreground process may still be writing its report; do not retry it concurrently. */
       terminationUnconfirmed?: boolean;
@@ -2271,7 +2271,7 @@ export interface RouterOutcome extends TestProcessOutcome {
   actualDemand?: ResourceDemand;
   /** Managed task identity, surfaced when termination cannot be confirmed in time. */
   taskId?: string;
-  /** True when the process did not emit `close` within its termination grace. */
+  /** True when child closure and terminal task persistence did not both confirm within the grace. */
   terminationUnconfirmed?: boolean;
   /** Resolves on a late `close`, so report artifacts stay available until then. */
   childClosed?: Promise<void>;
@@ -2287,6 +2287,29 @@ export function waitForTestProcessClose(
     timer = setTimeout(() => resolve(false), timeoutMs);
   });
   return Promise.race([childClosed.then(() => true, () => false), expired]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
+ * The systemd-run client can close before its Task Manager row is terminal.
+ * A timeout may start detached recovery only after both facts are confirmed.
+ */
+export function waitForManagedTestTaskSettlement(
+  childClosed: Promise<void>,
+  waitForCompletion: ManagedSpawnResult['waitForCompletion'],
+  timeoutMs = FOREGROUND_TERMINATION_GRACE_MS,
+): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const taskRecorded = Promise.resolve()
+    .then(waitForCompletion)
+    .then((completion) => completion.status === 'recorded', () => false);
+  const processAndTaskSettled = Promise.all([childClosed, taskRecorded])
+    .then(([, recorded]) => recorded, () => false);
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  return Promise.race([processAndTaskSettled, expired]).finally(() => {
     if (timer) clearTimeout(timer);
   });
 }
@@ -2402,7 +2425,8 @@ export interface TestProcessDeadlineContext {
   remainingTimeoutMs(): number;
 }
 
-type ManagedTestSpawn = Pick<ManagedSpawnResult, 'child' | 'taskId' | 'scopeUnit' | 'confined'>;
+type ManagedTestSpawn = Pick<ManagedSpawnResult,
+  'child' | 'taskId' | 'scopeUnit' | 'confined' | 'waitForCompletion'>;
 
 export interface ManagedTestProcess {
   child: ChildProcess;
@@ -2411,6 +2435,8 @@ export interface ManagedTestProcess {
   scopeCgroupPath: string | null;
   outputPath: string;
   confined: boolean;
+  /** Resolves when the managed task's terminal ledger write finishes. */
+  waitForCompletion: ManagedTestSpawn['waitForCompletion'];
   /** Idempotent whole-tree termination. Confined runs address their exact scope;
    *  fail-soft/unconfined runs retain the legacy negative-PGID cleanup. */
   terminate(): void;
@@ -2903,12 +2929,16 @@ export function runTestProcess(
             };
             const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
             let running: ManagedTestProcess | null = null;
+            let childCloseOutcome: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+            let observedTaskId: string | null = null;
             const settleBeforeLaunchHandoff = (): void => {
               finish({
                 code: null,
                 signal: null,
                 timedOut,
                 aborted,
+                terminationUnconfirmed: true,
+                ...(observedTaskId ? { taskId: observedTaskId, childClosed } : {}),
                 output: timedOut
                   ? `managed test-process launch exceeded its ${launchTimeoutMs}ms budget before a child handle was available`
                   : 'caller aborted while managed test-process launch was still pending',
@@ -2928,17 +2958,31 @@ export function runTestProcess(
               const grace = taskDeadline > 0
                 ? Math.max(1, Math.min(FOREGROUND_TERMINATION_GRACE_MS, taskDeadline - Date.now()))
                 : FOREGROUND_TERMINATION_GRACE_MS;
-              void waitForTestProcessClose(childClosed, grace).then((closed) => {
-                if (closed || settled) return;
-                recordProcessPhase('termination-unconfirmed', { taskId: terminating.taskId });
+              void waitForManagedTestTaskSettlement(childClosed, terminating.waitForCompletion, grace).then((confirmed) => {
+                if (settled) return;
+                if (!confirmed) {
+                  recordProcessPhase('termination-unconfirmed', {
+                    taskId: terminating.taskId,
+                    childClosed: childCloseOutcome !== null,
+                  });
+                  finish({
+                    code: null,
+                    signal: null,
+                    timedOut,
+                    aborted,
+                    terminationUnconfirmed: true,
+                    taskId: terminating.taskId,
+                    childClosed,
+                    output: outputCapture.finish(),
+                  });
+                  return;
+                }
+                recordProcessPhase('termination-confirmed', { taskId: terminating.taskId });
                 finish({
-                  code: null,
-                  signal: null,
+                  code: childCloseOutcome?.code ?? null,
+                  signal: childCloseOutcome?.signal ?? null,
                   timedOut,
                   aborted,
-                  terminationUnconfirmed: true,
-                  taskId: terminating.taskId,
-                  childClosed,
                   output: outputCapture.finish(),
                 });
               });
@@ -2977,6 +3021,7 @@ export function runTestProcess(
               stderrPath: routerStderrPath,
               stage: stage => recordProcessPhase(stage),
               onSpawn: (child, taskId) => {
+                observedTaskId = taskId;
                 recordProcessPhase('child-spawned', { taskId, pid: child.pid ?? null });
                 // managedSpawn can await PG after forking. Events emitted in
                 // that interval are not replayed when its promise resolves.
@@ -2996,9 +3041,11 @@ export function runTestProcess(
                   });
                 });
                 child.on('close', (code, closeSignal) => {
+                  childCloseOutcome = { code, signal: closeSignal ?? null };
                   recordProcessPhase('child-close', { taskId, code, signal: closeSignal ?? null });
                   resolveChildClosed();
                   loadOutput();
+                  if (terminationConfirmationStarted) return;
                   finish({
                     code,
                     signal: closeSignal ?? null,
@@ -4184,7 +4231,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         ...(outcome.taskId ? { taskId: outcome.taskId } : {}),
         terminationUnconfirmed: true,
         hint:
-          `termination was requested, but the foreground process did not confirm close within ` +
+          `termination was requested, but child close and Task Manager terminal persistence did not both confirm within ` +
           `${FOREGROUND_TERMINATION_GRACE_MS}ms. No duplicate recovery was started; task ${outcome.taskId ?? 'unknown'} ` +
           `remains tracked; its artifacts and late cleanup receipts are retained at ${packet.paths.directory}.`,
         routerOutput: outcome.output.slice(-2000),

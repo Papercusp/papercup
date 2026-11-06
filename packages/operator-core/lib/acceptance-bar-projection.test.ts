@@ -1,9 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import {
   acceptanceBarAtomicityIssues,
+  acceptanceBarCandidateHash,
   acceptanceBarProjectedBehavior,
   assertChangedAcceptanceBarProjectionsAtomic,
 } from './acceptance-bar-projection';
+
+describe('acceptance BAR candidate identity', () => {
+  const candidate = (declaredAt: string) => ({
+    subjectContent: 'The served consumer receives current guidance.',
+    templateData: { criteria: [{ key: 'R-11', model: 'Current guidance is delivered.',
+      barProvenance: { declaredAt, declaredBy: 'author', lifecycle: 'pre-implementation' } }] },
+    generatedSpecifications: [{ specId: 'AUTO-BAR-R-11-P-007', expectedRevision: 0 }],
+  });
+
+  it('keeps a newly added BAR stable across separate preview and apply timestamps without mutating its provenance', () => {
+    const first = candidate('2026-11-06T09:00:00.000Z');
+    const second = candidate('2026-11-06T09:00:01.000Z');
+    expect(acceptanceBarCandidateHash(first)).toBe(acceptanceBarCandidateHash(second));
+    expect(first.templateData.criteria[0]!.barProvenance.declaredAt).toBe('2026-11-06T09:00:00.000Z');
+  });
+
+  it.each(['model', 'declaredBy', 'lifecycle', 'subjectContent', 'generatedSpecifications'] as const)(
+    'still refuses real candidate drift in %s', field => {
+      const before = candidate('2026-11-06T09:00:00.000Z');
+      const after = candidate('2026-11-06T09:00:01.000Z');
+      if (field === 'model') after.templateData.criteria[0]!.model = 'Obsolete guidance is allowed.';
+      else if (field === 'declaredBy' || field === 'lifecycle') after.templateData.criteria[0]!.barProvenance[field] = 'changed';
+      else if (field === 'subjectContent') after.subjectContent = 'Changed scope.';
+      else after.generatedSpecifications[0]!.expectedRevision = 1;
+      expect(acceptanceBarCandidateHash(before)).not.toBe(acceptanceBarCandidateHash(after));
+    },
+  );
+});
 
 describe('acceptance BAR projection atomicity', () => {
   it('checks the exact behavior persisted to the projected spec clause', () => {

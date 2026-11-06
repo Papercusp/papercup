@@ -696,6 +696,41 @@ describe('test-time evidence continuity', () => {
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
   });
 
+  it('refreshes lifecycle after the evidence ledger settles during reconciliation', async () => {
+    const { d, bundle } = await waitingRecovery((d) => {
+      d.runStatus.mockResolvedValueOnce(running())
+        .mockResolvedValueOnce(detachedRunSnapshot(detached, 'pass', 0));
+      d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass',
+        finished_at: '2026-09-09T00:00:00Z', execution_details: measured }]);
+    }, 0);
+
+    expect(d.runStatus).toHaveBeenCalledTimes(2);
+    expect(bundle).toMatchObject({
+      status: 'recorded',
+      rows: [{ phase: 'settled', outcome: 'pass', testRunId: 42 }],
+      recoveryWait: { outcome: 'terminal' },
+      detachedRunStatus: { runId: detached, status: 'pass', exitCode: 0 },
+    });
+    expect(bundle.recoveryWait).not.toHaveProperty('nextStep');
+  });
+
+  it('keeps the lifecycle warning when settled file rows arrive before the task exits', async () => {
+    const { d, bundle } = await waitingRecovery((d) => {
+      d.runStatus.mockResolvedValueOnce(running()).mockResolvedValueOnce(running());
+      d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass',
+        finished_at: '2026-09-09T00:00:00Z', execution_details: measured }]);
+    }, 0);
+
+    expect(d.runStatus).toHaveBeenCalledTimes(2);
+    expect(bundle).toMatchObject({
+      status: 'recorded',
+      rows: [{ phase: 'settled', outcome: 'pass', testRunId: 42 }],
+      recoveryWait: { outcome: 'still-running' },
+      detachedRunStatus: { runId: detached, status: 'running', exitCode: null },
+    });
+    expect(bundle.recoveryWait.nextStep).toMatch(/testing:run \{ recoverEvidence \} again/);
+  });
+
   it('uses only the remaining recovery budget for a file-level row published after a passing terminal snapshot', async () => {
     const lateRow = { id: 42, file_path: binding.testPath, status: 'pass' as const,
       finished_at: '2026-09-09T00:00:00Z', execution_details: measured };

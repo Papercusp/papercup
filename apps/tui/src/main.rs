@@ -5414,15 +5414,19 @@ async fn agent_ctx_loop(
 ) {
     if matches!(
         mode,
-        app::AgentCtxMode::Orders | app::AgentCtxMode::Activity
-            | app::AgentCtxMode::Turns | app::AgentCtxMode::Fleet
+        app::AgentCtxMode::Orders
+            | app::AgentCtxMode::Activity
+            | app::AgentCtxMode::Turns
+            | app::AgentCtxMode::Fleet
     ) {
         // Subscribe before the first snapshot so a change during the gather
         // remains queued. Reuse the GUI's producer invalidations; the interval
         // only reconciles missed events and retries a disconnected transport.
         let mut stream: Option<tokio::sync::mpsc::UnboundedReceiver<sse::SseFrame>> = None;
         let mut reconcile = tokio::time::interval(Duration::from_secs(60));
+        let mut resolved_owner: Option<String> = None;
         loop {
+            let update_scope = agent_context_update_scope(&scope, resolved_owner.as_deref());
             let refresh = tokio::select! {
                 _ = tx.closed() => return,
                 _ = reconcile.tick() => {
@@ -5440,12 +5444,16 @@ async fn agent_ctx_loop(
                     }
                 } => match frame {
                     Some(frame) => matches!(frame.event.as_str(), "invalidate" | "update")
-                        && agent_ctx::matches_sidebar_invalidation(mode, &scope, &frame.data),
+                        && agent_ctx::matches_sidebar_invalidation(mode, &update_scope, &frame.data),
                     None => { stream = None; false }
                 },
             };
             if refresh {
-                fetch_agent_ctx(mode, scope.clone(), tx.clone()).await;
+                // Keep the launch scope for rereads: a restart can resolve it
+                // to a new owner. Only push filtering follows the current owner.
+                if let Some(owner) = fetch_agent_ctx(mode, scope.clone(), tx.clone()).await {
+                    resolved_owner = Some(owner);
+                }
             }
         }
     }
@@ -5468,104 +5476,133 @@ async fn fetch_agent_ctx(
     mode: app::AgentCtxMode,
     scope: app::WakeFilter,
     tx: UnboundedSender<Event>,
-) {
-    let result: Result<models::AgentCtxData, String> = async {
-        let client = OperatorClient::from_discovery()
-            .await
-            .map_err(|e| e.to_string())?;
-        let roster = client
-            .roster_typed()
-            .await
-            .map(|(active, _)| active)
-            .unwrap_or_default();
-        let entry = match &scope {
-            app::WakeFilter::Owner(id) => agent_context_entry(id, &roster),
-            // Queen (and the never-used All fallback): the roster's canonical
-            // Mug-kind row (`queen` remains a legacy alias).
-            _ => roster.iter().find(|r| {
-                r.agent_pane_kind
-                    .as_deref()
-                    .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire)
-            }),
-        };
-        let owner = match (&scope, entry) {
-            (app::WakeFilter::Owner(id), None) => Some(id.clone()), // gone but addressable
-            (_, Some(r)) => Some(r.owner_id.clone()),
-            (_, None) => None,
-        };
-        let mut data = models::AgentCtxData {
-            owner: owner.clone(),
-            label: entry.map(|r| r.label.clone()),
-            ..Default::default()
-        };
-        let Some(owner) = owner else { return Ok(data) };
-        match mode {
-            app::AgentCtxMode::Prompt => {
-                // The prompt the agent runs on (GET /api/fleet/agent-prompt):
-                // an s-… owner gets its RECORDED run prompt (brief led
-                // separately); a non-spawn owner under Queen scope gets a live
-                // render of the queen role persona. The role hint follows the
-                // roster entry's kind when known.
-                let role_hint = if owner.starts_with("s-") {
-                    None
-                } else {
-                    entry.and_then(|r| r.agent_pane_kind.clone()).or_else(|| {
-                        matches!(scope, app::WakeFilter::Queen).then(|| "mug".to_string())
-                    })
-                };
-                let v = client
-                    .agent_prompt(Some(&owner), role_hint.as_deref())
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
-                data.prompt = s("prompt");
-                data.source = s("source");
-                data.brief = s("brief");
-                data.model = s("model");
-                data.tier = s("tier");
-            }
-            app::AgentCtxMode::Mail => {
-                data.mail = Some(
-                    client
-                        .bee_mail(&owner, 30)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                );
-            }
-            app::AgentCtxMode::Work => {
-                data.assignment = client
-                    .bee_assignment(&owner)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            app::AgentCtxMode::Orders => {
-                data.orders = Some(client.agent_orders(&owner).await.map_err(|e| e.to_string())?);
-            }
-            app::AgentCtxMode::Activity => {
-                data.activity = Some(client.agent_activity(&owner).await.map_err(|e| e.to_string())?);
-            }
-            app::AgentCtxMode::Turns => {
-                data.turns = Some(
-                    client
-                        .agent_turns(&owner, None)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                );
-            }
-            app::AgentCtxMode::Fleet => {
-                data.fleet_peers = Some(
-                    client
-                        .agent_fleet(&owner)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                );
-                data.peer_sessions = roster;
-            }
-        }
-        Ok(data)
-    }
-    .await;
+) -> Option<String> {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => agent_context_snapshot(&client, mode, &scope).await,
+        Err(error) => Err(error.to_string()),
+    };
+    let owner = result.as_ref().ok().and_then(|data| data.owner.clone());
     let _ = tx.send(Event::AgentCtx { result });
+    owner
+}
+
+fn agent_context_update_scope(scope: &app::WakeFilter, owner: Option<&str>) -> app::WakeFilter {
+    owner
+        .map(|owner| app::WakeFilter::Owner(owner.to_owned()))
+        .unwrap_or_else(|| scope.clone())
+}
+
+async fn agent_context_snapshot(
+    client: &OperatorClient,
+    mode: app::AgentCtxMode,
+    scope: &app::WakeFilter,
+) -> Result<models::AgentCtxData, String> {
+    let launch_scope =
+        matches!(scope, app::WakeFilter::Owner(id) if id.starts_with("pending:adv:"));
+    let roster = if launch_scope {
+        // A completed launch still owns its context and history. Reuse the
+        // existing active+ended projection rather than losing it on exit.
+        client.roster_brain_scoped(None).await
+    } else {
+        client.roster_typed().await.map(|(active, _)| active)
+    }
+    .map_err(|error| format!("Agent roster unavailable: {error}"))?;
+    let entry = match &scope {
+        app::WakeFilter::Owner(id) => agent_context_entry(id, &roster),
+        // Queen (and the never-used All fallback): the roster's canonical
+        // Mug-kind row (`queen` remains a legacy alias).
+        _ => roster.iter().find(|r| {
+            r.agent_pane_kind
+                .as_deref()
+                .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire)
+        }),
+    };
+    let owner = match (&scope, entry) {
+        (app::WakeFilter::Owner(_), None) if launch_scope => None,
+        (app::WakeFilter::Owner(id), None) => Some(id.clone()), // gone but addressable
+        (_, Some(r)) => Some(r.owner_id.clone()),
+        (_, None) => None,
+    };
+    let mut data = models::AgentCtxData {
+        owner: owner.clone(),
+        label: entry.map(|r| r.label.clone()),
+        ..Default::default()
+    };
+    let Some(owner) = owner else { return Ok(data) };
+    match mode {
+        app::AgentCtxMode::Prompt => {
+            // The prompt the agent runs on (GET /api/fleet/agent-prompt):
+            // an s-… owner gets its RECORDED run prompt (brief led
+            // separately); a non-spawn owner under Queen scope gets a live
+            // render of the queen role persona. The role hint follows the
+            // roster entry's kind when known.
+            let role_hint = if owner.starts_with("s-") {
+                None
+            } else {
+                entry
+                    .and_then(|r| r.agent_pane_kind.clone())
+                    .or_else(|| matches!(scope, app::WakeFilter::Queen).then(|| "mug".to_string()))
+            };
+            let v = client
+                .agent_prompt(Some(&owner), role_hint.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+            data.prompt = s("prompt");
+            data.source = s("source");
+            data.brief = s("brief");
+            data.model = s("model");
+            data.tier = s("tier");
+        }
+        app::AgentCtxMode::Mail => {
+            data.mail = Some(
+                client
+                    .bee_mail(&owner, 30)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        app::AgentCtxMode::Work => {
+            data.assignment = client
+                .bee_assignment(&owner)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        app::AgentCtxMode::Orders => {
+            data.orders = Some(
+                client
+                    .agent_orders(&owner)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        app::AgentCtxMode::Activity => {
+            data.activity = Some(
+                client
+                    .agent_activity(&owner)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        app::AgentCtxMode::Turns => {
+            data.turns = Some(
+                client
+                    .agent_turns(&owner, None)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        app::AgentCtxMode::Fleet => {
+            data.fleet_peers = Some(
+                client
+                    .agent_fleet(&owner)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            );
+            data.peer_sessions = roster;
+        }
+    }
+    Ok(data)
 }
 
 async fn fetch_agent_turns_page(
@@ -5629,11 +5666,20 @@ fn materialize_hive_tab(spec: &layout::HiveTabSpec) -> std::io::Result<std::path
     Ok(path)
 }
 
-fn agent_context_entry<'a>(owner: &str, roster: &'a [models::RosterEntry]) -> Option<&'a models::RosterEntry> {
-    if let Some(id) = owner.strip_prefix("pending:adv:").and_then(|id| id.parse::<i64>().ok()).filter(|id| *id > 0) {
+fn agent_context_entry<'a>(
+    owner: &str,
+    roster: &'a [models::RosterEntry],
+) -> Option<&'a models::RosterEntry> {
+    if let Some(id) = owner
+        .strip_prefix("pending:adv:")
+        .and_then(|id| id.parse::<i64>().ok())
+        .filter(|id| *id > 0)
+    {
         // A pending id must resolve through its launch record, never through a
         // shared role, title, or another session's owner.
-        roster.iter().find(|row| row.adv_session_id == Some(id) && !row.owner_id.starts_with("pending:"))
+        roster
+            .iter()
+            .find(|row| row.adv_session_id == Some(id) && !row.owner_id.starts_with("pending:"))
     } else {
         roster.iter().find(|row| row.owner_id == owner)
     }
@@ -5646,15 +5692,202 @@ mod session_sidebar_tests {
     #[test]
     fn sidebars_follow_exact_launch_to_real_owner_without_shared_label_fallback() {
         let roster = vec![
-            models::RosterEntry { owner_id: "other".into(), adv_session_id: Some(40), label: "same".into(), ..Default::default() },
-            models::RosterEntry { owner_id: "real-owner".into(), adv_session_id: Some(41), label: "same".into(), ..Default::default() },
+            models::RosterEntry {
+                owner_id: "other".into(),
+                adv_session_id: Some(40),
+                label: "same".into(),
+                ..Default::default()
+            },
+            models::RosterEntry {
+                owner_id: "real-owner".into(),
+                adv_session_id: Some(41),
+                label: "same".into(),
+                ..Default::default()
+            },
         ];
-        assert_eq!(agent_context_entry("pending:adv:41", &roster).unwrap().owner_id, "real-owner");
-        assert_eq!(agent_context_entry("other", &roster).unwrap().adv_session_id, Some(40));
+        assert_eq!(
+            agent_context_entry("pending:adv:41", &roster)
+                .unwrap()
+                .owner_id,
+            "real-owner"
+        );
+        assert_eq!(
+            agent_context_entry("other", &roster)
+                .unwrap()
+                .adv_session_id,
+            Some(40)
+        );
         for missing in ["pending:adv:42", "pending:adv:0", "pending:adv:-1", "same"] {
             assert!(agent_context_entry(missing, &roster).is_none());
         }
         assert!(agent_context_entry("pending:adv:41", &[]).is_none());
+    }
+
+    #[test]
+    fn session_sidebar_pushes_follow_resolved_owner_without_changing_launch_scope() {
+        let scope = app::WakeFilter::Owner("pending:adv:41".into());
+        let live = agent_context_update_scope(&scope, Some("real-owner"));
+        for (mode, query) in [
+            (app::AgentCtxMode::Orders, "agentOrders.byOwner"),
+            (app::AgentCtxMode::Activity, "agentDetail.byOwner"),
+            (app::AgentCtxMode::Turns, "agentDetail.byOwner"),
+            (app::AgentCtxMode::Fleet, "agentDetail.byOwner"),
+        ] {
+            let frame =
+                |owner| serde_json::json!({"name":query,"args":{"ownerId":owner}}).to_string();
+            assert!(agent_ctx::matches_sidebar_invalidation(
+                mode,
+                &live,
+                &frame("real-owner")
+            ));
+            assert!(!agent_ctx::matches_sidebar_invalidation(
+                mode,
+                &live,
+                &frame("other-owner")
+            ));
+        }
+        assert_eq!(scope, app::WakeFilter::Owner("pending:adv:41".into()));
+        assert_eq!(agent_context_update_scope(&scope, None), scope);
+        assert_eq!(
+            agent_context_update_scope(&scope, Some("restarted-owner")),
+            app::WakeFilter::Owner("restarted-owner".into())
+        );
+    }
+
+    async fn sidebar_fixture(
+        roster: serde_json::Value,
+        roster_status: u16,
+    ) -> (
+        OperatorClient,
+        Arc<Mutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use crate::framing::{encode_frame, FrameType};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socket = std::path::PathBuf::from(format!("tcp://{}", listener.local_addr().unwrap()));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            loop {
+                let mut header = [0; 5];
+                if stream.read_exact(&mut header).await.is_err() {
+                    break;
+                }
+                assert_eq!(header[4], FrameType::Request as u8);
+                let mut payload =
+                    vec![0; u32::from_be_bytes(header[..4].try_into().unwrap()) as usize];
+                stream.read_exact(&mut payload).await.unwrap();
+                let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                let id = request["id"].as_u64().unwrap();
+                let path = request["input"]["path"].as_str().unwrap();
+                recorded.lock().unwrap().push(path.to_owned());
+                let (status, response) = if path == "/api/adv/roster" {
+                    (roster_status, roster.clone())
+                } else {
+                    (
+                        200,
+                        serde_json::json!({"rows":[{"ownerId":"real-owner","mission":{"explanation":"exact session mission"}}]}),
+                    )
+                };
+                let head = serde_json::json!({"id":id,"name":"head","data":{"status":status,"headers":{}}});
+                stream
+                    .write_all(
+                        &encode_frame(FrameType::EventJson, head.to_string().as_bytes()).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let mut body = Vec::from(id.to_be_bytes());
+                body.extend_from_slice(&4u32.to_be_bytes());
+                body.extend_from_slice(b"body");
+                body.extend_from_slice(response.to_string().as_bytes());
+                stream
+                    .write_all(&encode_frame(FrameType::EventBin, &body).unwrap())
+                    .await
+                    .unwrap();
+                let done = serde_json::json!({"id":id,"result":{"content":[]}});
+                stream
+                    .write_all(&encode_frame(FrameType::Done, done.to_string().as_bytes()).unwrap())
+                    .await
+                    .unwrap();
+            }
+        });
+        let client = OperatorClient::new(Arc::new(ipc::IpcClient::connect(&socket).await.unwrap()));
+        (client, requests, server)
+    }
+
+    #[tokio::test]
+    async fn session_sidebar_waits_for_registration_without_querying_a_synthetic_owner() {
+        let (client, requests, server) = sidebar_fixture(
+            serde_json::json!({"active":[],"pending":[],"ended":[]}),
+            200,
+        )
+        .await;
+        let snapshot = agent_context_snapshot(
+            &client,
+            app::AgentCtxMode::Orders,
+            &app::WakeFilter::Owner("pending:adv:41".into()),
+        )
+        .await
+        .unwrap();
+        assert!(snapshot.owner.is_none());
+        assert!(snapshot.orders.is_none());
+        assert_eq!(requests.lock().unwrap().as_slice(), ["/api/adv/roster"]);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_sidebar_retains_exact_ended_launch_owner_and_canonical_query() {
+        let (client, requests, server) = sidebar_fixture(serde_json::json!({"active":[{"ownerId":"other-owner","advSessionId":40,"label":"same"}],"pending":[],"ended":[{"ownerId":"real-owner","advSessionId":41,"label":"same"}]}), 200).await;
+        let snapshot = agent_context_snapshot(
+            &client,
+            app::AgentCtxMode::Orders,
+            &app::WakeFilter::Owner("pending:adv:41".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(snapshot.owner.as_deref(), Some("real-owner"));
+        assert_eq!(
+            snapshot
+                .orders
+                .unwrap()
+                .mission
+                .unwrap()
+                .explanation
+                .as_deref(),
+            Some("exact session mission")
+        );
+        let paths = requests.lock().unwrap();
+        assert_eq!(paths.len(), 2);
+        let url = reqwest::Url::parse(&format!("http://fixture{}", paths[1])).unwrap();
+        let args: serde_json::Value = serde_json::from_str(
+            url.query_pairs()
+                .find(|(k, _)| k == "args")
+                .unwrap()
+                .1
+                .as_ref(),
+        )
+        .unwrap();
+        assert_eq!(args["ownerId"], "real-owner");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_sidebar_roster_failure_is_unavailable_instead_of_empty_context() {
+        let (client, requests, server) =
+            sidebar_fixture(serde_json::json!({"error":"fixture unavailable"}), 503).await;
+        let error = agent_context_snapshot(
+            &client,
+            app::AgentCtxMode::Orders,
+            &app::WakeFilter::Owner("pending:adv:41".into()),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("Agent roster unavailable"), "{error}");
+        assert!(error.contains("503"), "{error}");
+        assert_eq!(requests.lock().unwrap().as_slice(), ["/api/adv/roster"]);
+        server.abort();
     }
 }
 

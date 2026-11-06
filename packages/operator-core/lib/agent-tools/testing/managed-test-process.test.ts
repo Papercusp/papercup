@@ -59,7 +59,8 @@ it.each(['close', 'spawn-error'] as const)('retains real child %s and original o
     options?.onSpawn?.(child, 'realhandofftask');
     await ledger;
     handedOff = true;
-    return { child, taskId: 'realhandofftask', scopeUnit: null, confined: false };
+    return { child, taskId: 'realhandofftask', scopeUnit: null, confined: false,
+      waitForCompletion: async () => ({ status: 'recorded' }) };
   });
   const controller = new AbortController();
   let outcome: Awaited<ReturnType<typeof runTestProcess>> | undefined;
@@ -100,6 +101,89 @@ it.each(['close', 'spawn-error'] as const)('retains real child %s and original o
   expect(childClosed).toBe(true);
 });
 
+it('waits for Task Manager settlement after the foreground child closes on timeout', async () => {
+  const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-settlement-'));
+  directories.push(outputDir);
+  const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+  let recordTask!: (value: { status: 'recorded' }) => void;
+  const taskSettlement = new Promise<{ status: 'recorded' }>(resolve => { recordTask = resolve; });
+  let childClosed = false;
+  mocks.spawn.mockImplementation(async (_command, _args, _spec, options) => {
+    options?.onSpawn?.(child, 'foreground-settlement');
+    return {
+      child,
+      taskId: 'foreground-settlement',
+      scopeUnit: 'pc-foreground-settlement.scope',
+      confined: true,
+      waitForCompletion: () => taskSettlement,
+    };
+  });
+  mocks.killScope.mockImplementation(async () => {
+    child.emit('close', null, 'SIGTERM');
+    childClosed = true;
+    return { ok: true, action: 'kill' };
+  });
+
+  let outcome: Awaited<ReturnType<typeof runTestProcess>> | undefined;
+  let settled = false;
+  const controller = new AbortController();
+  const result = runTestProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], [], outputDir, outputDir, {
+    PAPERCUSP_TEST_ARTIFACT_DIR: outputDir,
+    PAPERCUSP_TEST_RUN_GROUP: 'timeout-settlement',
+    PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT: join(outputDir, 'probe-admission'),
+  }, 200, controller.signal).then(value => {
+    outcome = value;
+    settled = true;
+  });
+  try {
+    await vi.waitFor(() => expect(mocks.killScope).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(childClosed).toBe(true), { timeout: 5_000 });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    recordTask({ status: 'recorded' });
+    await result;
+    expect(outcome).toMatchObject({ timedOut: true, aborted: false });
+    expect(outcome).not.toHaveProperty('terminationUnconfirmed');
+  } finally {
+    controller.abort();
+    recordTask({ status: 'recorded' });
+    await result;
+  }
+});
+
+it('keeps a timeout unconfirmed when Task Manager delegates a still-live scope', async () => {
+  const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-delegated-settlement-'));
+  directories.push(outputDir);
+  const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+  mocks.spawn.mockImplementation(async (_command, _args, _spec, options) => {
+    options?.onSpawn?.(child, 'foreground-delegated');
+    return {
+      child,
+      taskId: 'foreground-delegated',
+      scopeUnit: 'pc-foreground-delegated.scope',
+      confined: true,
+      waitForCompletion: async () => ({ status: 'delegated', reason: 'scope still populated' }),
+    };
+  });
+  mocks.killScope.mockImplementation(async () => {
+    child.emit('close', null, 'SIGTERM');
+    return { ok: true, action: 'kill' };
+  });
+
+  const outcome = await runTestProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], [], outputDir, outputDir, {
+    PAPERCUSP_TEST_ARTIFACT_DIR: outputDir,
+    PAPERCUSP_TEST_RUN_GROUP: 'timeout-delegated-settlement',
+    PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT: join(outputDir, 'probe-admission'),
+  }, 200);
+  expect(outcome).toMatchObject({
+    timedOut: true,
+    aborted: false,
+    terminationUnconfirmed: true,
+    taskId: 'foreground-delegated',
+  });
+});
+
 it('keeps the detached core in its serving checkout while preserving an external test root', async () => {
   const root = await mkdtemp(join(tmpdir(), 'papercusp-external-background-'));
   directories.push(root);
@@ -123,6 +207,7 @@ it.each([true, false])('preserves foreground task ownership with parent context 
   const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
   const spawn = vi.fn<NonNullable<ManagedTestProcessDeps['managedSpawnFn']>>(async () => ({
     child, taskId: 'foregroundtask', scopeUnit: null, confined: false,
+    waitForCompletion: async () => ({ status: 'recorded' }),
   }));
   await launchManagedTestProcess({
     command: process.execPath, args: [], cwd: process.cwd(),
@@ -155,7 +240,8 @@ it.each(['close', 'error', 'blocked'] as const)('settles a %s child before hando
     options?.onSpawn?.(child, 'earlyclosetask');
     forked();
     await ledger;
-    return { child, taskId: 'earlyclosetask', scopeUnit: 'pc-earlyclosetask.scope', confined: true };
+    return { child, taskId: 'earlyclosetask', scopeUnit: 'pc-earlyclosetask.scope', confined: true,
+      waitForCompletion: async () => ({ status: 'recorded' }) };
   });
   const controller = new AbortController();
   let outcome: Awaited<ReturnType<typeof runTestProcess>> | undefined;
@@ -169,6 +255,9 @@ it.each(['close', 'error', 'blocked'] as const)('settles a %s child before hando
     else controller.abort();
     await vi.waitFor(() => expect(outcome).toBeDefined());
     expect(outcome).toMatchObject({ timedOut: false, aborted: event === 'blocked' });
+    if (event === 'blocked') {
+      expect(outcome).toMatchObject({ terminationUnconfirmed: true, taskId: 'earlyclosetask' });
+    }
     if (event === 'close') expect(outcome?.code).toBe(7);
     if (event === 'error') expect(outcome?.spawnError).toBe('fork failed before handoff');
     const phases = (await readFile(join(outputDir, 'phases.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).stage);
@@ -209,7 +298,8 @@ it.each(['close', 'error'] as const)('observes child %s before the managed ledge
       options?.onSpawn?.(child, 'earlyclosetask');
       forked();
       await ledger;
-      return { child, taskId: 'earlyclosetask', scopeUnit: null, confined: false };
+      return { child, taskId: 'earlyclosetask', scopeUnit: null, confined: false,
+        waitForCompletion: async () => ({ status: 'recorded' }) };
     },
   });
   try {

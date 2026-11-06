@@ -16,7 +16,29 @@ export class AcceptanceBarCandidateError extends Error {
 }
 
 export function acceptanceBarCandidateHash(candidate: unknown): string {
-  return createHash('sha256').update(canonicalJson(candidate)).digest('hex');
+  // Newly added BARs receive a server declaration timestamp on every preview
+  // and again at apply. It is not reviewed meaning; retaining it makes an
+  // unchanged candidate fail its own second preflight. Keep the other provenance
+  // fields (including lifecycle and actor), source, and generated clauses pinned.
+  let reviewedCandidate = candidate;
+  if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+    const record = candidate as Record<string, unknown>;
+    const template = record.templateData;
+    if (template && typeof template === 'object' && !Array.isArray(template)) {
+      const data = template as Record<string, unknown>;
+      if (Array.isArray(data.criteria)) reviewedCandidate = {
+        ...record,
+        templateData: { ...data, criteria: data.criteria.map(criterion => {
+          if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return criterion;
+          const provenance = criterion.barProvenance;
+          if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return criterion;
+          const { declaredAt: _serverTime, ...reviewedProvenance } = provenance;
+          return { ...criterion, barProvenance: reviewedProvenance };
+        }) },
+      };
+    }
+  }
+  return createHash('sha256').update(canonicalJson(reviewedCandidate)).digest('hex');
 }
 
 export interface AcceptanceBarProjectionText {

@@ -1424,6 +1424,7 @@ describe('testing:run (integration)', () => {
       taskId: 'testtask1234',
       scopeUnit: 'pc-testtask1234.scope',
       confined: true,
+      waitForCompletion: async () => ({ status: 'recorded' }),
     }));
     const teardownSteps: string[] = [];
     const undoTeardown = vi.fn();
@@ -1496,6 +1497,7 @@ describe('testing:run (integration)', () => {
       const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
       const managedSpawnFn = vi.fn(async () => ({
         child, taskId: 'teardown-refusal', scopeUnit: 'pc-teardown-refusal.scope', confined: true,
+        waitForCompletion: async () => ({ status: 'recorded' }),
       }));
       const undoTeardown = vi.fn();
       const markManagedTeardownFn = vi.fn(() => undoTeardown);

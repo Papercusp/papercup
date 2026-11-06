@@ -32,3 +32,5 @@ path = "src/main.rs"
 # Matches the packaged zellij exactly — the plugin API is version-coupled.
 zellij-tile = "=0.45.1"
 pui-companion-proto = { path = "../pui-companion-proto" }
+# Use the same KDL parser already used by Zellij for a lossless tab-name edit.
+kdl = "=4.7.1"

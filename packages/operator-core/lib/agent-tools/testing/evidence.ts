@@ -1152,15 +1152,37 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
     };
   }
   const bundle = await finishTestEvidence(prepared, recovery.originRunId, recoveredRunId, scope, undefined, deps, terminalRun);
-  const stillRunning = runSnapshot !== null && !terminalRun;
+  // Ledger reconciliation can take long enough for the detached runner to finish after
+  // the bounded snapshot wait. When it produced a complete evidence bundle, refresh that
+  // earlier lifecycle read once so callers do not receive settled evidence beside a stale
+  // `still-running` status. A ledger pass alone is not proof the whole task has exited: if
+  // the refreshed snapshot still runs, keep the lifecycle warning.
+  let currentSnapshot = runSnapshot;
+  let lifecycleRefreshError = runStatusError;
+  if (!terminalRun && bundle.status === 'recorded') {
+    try {
+      const refreshedSnapshot = await deps.runStatus?.(recoveredRunId, undefined, scope) ?? null;
+      if (refreshedSnapshot) {
+        currentSnapshot = refreshedSnapshot;
+        lifecycleRefreshError = undefined;
+      } else {
+        lifecycleRefreshError ??= 'run snapshot was not available after ledger reconciliation';
+      }
+    } catch (error) {
+      lifecycleRefreshError = String(error).slice(0, 300);
+    }
+  }
+  const currentTerminalRun = isTerminalRunSnapshot(currentSnapshot);
+  const stillRunning = currentSnapshot !== null && !currentTerminalRun;
   return { ...bundle,
     recoveryWait: { limitMs: waitLimitMs, waitedMs: totalWaitedMs, ledgerWaitedMs,
-      outcome: terminalRun ? 'terminal' as const : stillRunning ? 'still-running' as const
-        : runStatusError ? 'unavailable' as const : 'not-found' as const,
+      outcome: currentTerminalRun ? 'terminal' as const : stillRunning ? 'still-running' as const
+        : lifecycleRefreshError ? 'unavailable' as const : 'not-found' as const,
       ...(stillRunning ? { nextStep: `The detached run was still in flight after waiting ${Math.round(waitedMs / 1000)}s. `
-        + 'Call this same testing:run { recoverEvidence } again (it waits again); do not poll testing:run-status first.' } : {}) },
-    detachedRunStatus: runSnapshot
-    ? { runId: runSnapshot.runId, status: runSnapshot.status, exitCode: runSnapshot.exitCode,
-        finishedAt: runSnapshot.finishedAt }
-    : { status: runStatusError ? 'unavailable' : 'not-found', ...(runStatusError ? { message: runStatusError } : {}) } };
+        + 'Call this same testing:run { recoverEvidence } again (it waits again); do not poll testing:run-status first.' } : {}),
+      ...(lifecycleRefreshError ? { lifecycleRefreshError } : {}) },
+    detachedRunStatus: currentSnapshot
+    ? { runId: currentSnapshot.runId, status: currentSnapshot.status, exitCode: currentSnapshot.exitCode,
+        finishedAt: currentSnapshot.finishedAt }
+    : { status: lifecycleRefreshError ? 'unavailable' : 'not-found', ...(lifecycleRefreshError ? { message: lifecycleRefreshError } : {}) } };
 }

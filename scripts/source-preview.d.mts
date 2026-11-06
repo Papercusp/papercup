@@ -1595,10 +1595,16 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
  * complete evidence. Re-entry always refuses the existing stage, including an
  * attempt whose compiler failed. There is no cache/fallback or service effect.
  * This does not establish the production runtime closure or authorize activation.
- * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0] & { runPhase?: VerifierPhaseRunner }} args
+ * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0] & { runPhase?: VerifierPhaseRunner,
+ *   budget?: { measurements: Record<string, number>, env?: NodeJS.ProcessEnv, now?: () => number } }} args
  */
 export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifierBuildTransaction>[0] & {
     runPhase?: VerifierPhaseRunner;
+    budget?: {
+        measurements: Record<string, number>;
+        env?: NodeJS.ProcessEnv;
+        now?: () => number;
+    };
 }): Promise<{
     identity: {
         path: string;
@@ -2192,13 +2198,27 @@ export function readVerifierPhaseMeasurements(path: string): Record<string, numb
  * Reserve at least 30s, or 125% of an explicitly measured launch delay. This is
  * a forecast; admission still checks the actual remaining clock independently.
  * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
- * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number, parentPgRelease?: boolean }} [options]
+ * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number, parentPgRelease?: boolean,
+ *   bgRecipe?: { invocationCount: number, completedPhases?: string[],
+ *     activePhase?: { phase: string, elapsedMs: number } } }} [options]
  */
-export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number, { observedLaunchMs, maxTimeoutMs, parentPgRelease }?: {
+export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number, { observedLaunchMs, maxTimeoutMs, parentPgRelease, bgRecipe }?: {
     observedLaunchMs?: number;
     maxTimeoutMs?: number;
     parentPgRelease?: boolean;
+    bgRecipe?: {
+        invocationCount: number;
+        completedPhases?: string[];
+        activePhase?: {
+            phase: string;
+            elapsedMs: number;
+        };
+    };
 }): {
+    recipePhases?: {
+        phase: string;
+        estimateMs: number;
+    }[] | undefined;
     preparationMs: number;
     sourceCheckMs: number;
     dependencyCheckMs: number;

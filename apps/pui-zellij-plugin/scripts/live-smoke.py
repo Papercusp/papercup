@@ -12,6 +12,9 @@ for `pui`'s companion.rs: opens the long-lived `zellij pipe` child, speaks the
   • focus_pane → focus follows
   • close_pane → a discrete pane_closed event
   • a command pane's natural exit → pane_exited carrying the real exit code
+  • a centered session tab binds its actual command and restores its name
+  • a same-command terminal in the original tab remains unbound
+  • closing the session terminal removes the launch binding
 
 Run after `scripts/build-install.sh`:
     python3 scripts/live-smoke.py
@@ -40,7 +43,7 @@ if not (ZELLIJ and os.path.exists(ZELLIJ)):
     sys.exit("zellij not found on PATH")
 
 spike = tempfile.mkdtemp(prefix="pui-smoke-")
-for d in ("cache/zellij", "config", "data", "run", "tmp"):
+for d in ("cache/zellij", "config", "data", "run", "tmp", "log"):
     os.makedirs(os.path.join(spike, d), exist_ok=True)
 os.chmod(os.path.join(spike, "run"), 0o700)
 # Pre-seed the plugin permission cache. KEY = the BARE wasm path (no file:).
@@ -50,7 +53,8 @@ with open(os.path.join(spike, "cache/zellij/permissions.kdl"), "w") as f:
 
 ENV = dict(os.environ)
 ENV.update(XDG_CACHE_HOME=f"{spike}/cache", XDG_CONFIG_HOME=f"{spike}/config",
-           XDG_DATA_HOME=f"{spike}/data", XDG_RUNTIME_DIR=f"{spike}/run", TMPDIR=f"{spike}/tmp")
+           XDG_DATA_HOME=f"{spike}/data", XDG_RUNTIME_DIR=f"{spike}/run", TMPDIR=f"{spike}/tmp",
+           ZELLIJ_LOG_DIR=f"{spike}/log")
 LOC = f"file:{WASM}"
 log = lambda m: print(f"[smoke] {m}", flush=True)
 fails = []
@@ -82,6 +86,15 @@ ready = any(SESSION in list_sessions() or time.sleep(0.5) for _ in range(60))
 check(ready, f"isolated session {SESSION} is up")
 
 def cleanup():
+    if fails:
+        for root, _, files in os.walk(spike):
+            for name in files:
+                if name.endswith(".log"):
+                    with open(os.path.join(root, name), errors="replace") as f:
+                        relevant = [line.rstrip() for line in f
+                                    if "[pui-companion]" in line]
+                    if relevant:
+                        log("plugin binding diagnostics: " + "\n".join(relevant[-20:]))
     subprocess.run([ZELLIJ, "--session", SESSION, "kill-session", SESSION], env=ENV, capture_output=True)
     subprocess.run([ZELLIJ, "delete-session", SESSION, "-f"], env=ENV, capture_output=True)
     try: os.killpg(os.getpgid(server.pid), 9)
@@ -121,11 +134,19 @@ threading.Thread(target=heartbeat, daemon=True).start()
 
 def wait_for(pred, timeout, what):
     deadline = time.time() + timeout
+    last_topology = None
     while time.time() < deadline:
         try: ev = events.get(timeout=0.25)
         except queue.Empty: continue
+        if ev.get("ev") == "topology":
+            last_topology = ev
         if pred(ev): return ev
     log(f"timeout waiting for {what}")
+    if last_topology is not None:
+        log("last topology: " + json.dumps(last_topology))
+    layout = subprocess.run([ZELLIJ, "--session", SESSION, "action", "dump-layout"],
+                            env=ENV, text=True, capture_output=True, timeout=10)
+    log("layout at timeout: " + layout.stdout + layout.stderr)
     return None
 
 # ── assertions ───────────────────────────────────────────────────────────────
@@ -196,6 +217,16 @@ if bound:
     check(bool(original) and all(p.get("adv_session_id") is None for p in original),
           "same command in another tab remains unbound")
     check(target["focused"], "new session tab focuses the actual command")
+    restored = wait_for(lambda e: e.get("ev") == "topology"
+                        and any(t["pos"] == target["tab"]
+                                and t["name"] == "session binding smoke" for t in e["tabs"]),
+                        10, "session tab display name restoration")
+    check(restored is not None, "temporary tab marker is replaced by the session display name")
+    send({"cmd": "close_pane", "pane_id": target["id"]})
+    removed = wait_for(lambda e: e.get("ev") == "topology"
+                       and all(p.get("adv_session_id") != 4241 for p in e["panes"]),
+                       10, "closed session binding removal")
+    check(removed is not None, "closed session terminal no longer carries a launch binding")
 
 # ── teardown ─────────────────────────────────────────────────────────────────
 stop.set()

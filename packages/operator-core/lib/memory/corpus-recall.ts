@@ -228,6 +228,14 @@ const STOPWORDS = new Set([
   'where', 'which', 'while', 'will', 'with', 'without', 'would', 'your',
 ]);
 
+// Administrative/tool vocabulary alone does not establish task relevance. Keep
+// retrieval tokenization intact: this guard applies at delivery, where a specific
+// operation, file/runbook topic or exact task identity must justify interruption.
+const ADMINISTRATIVE_OVERLAP = new Set([
+  'report', 'reports', 'checkpoint', 'checkpoints', 'setup',
+  'read', 'write', 'file', 'files', 'path', 'paths',
+]);
+
 /** An id-shaped token is ALWAYS a term regardless of length — WI-6512, EI-9748,
  *  P-008, D-037, migration numbers (bare 3+ digit runs, e.g. a standalone
  *  "374"). These are exactly the tokens that make pointer-retrieval work, and
@@ -738,7 +746,8 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
     // Judged on the match fragment when there is one — see CorpusHit.highlight
     // for why the body lead alone would drop genuine deep matches.
     const shared = corpusTerms(hitText(hit)).filter((t) => queryTerms.has(t));
-    if (queryTerms.size > 0 && shared.length === 0) {
+    const exactTask = declaredWorkItemId !== null && ref === declaredWorkItemId;
+    if (!exactTask && queryTerms.size > 0 && !shared.some((term) => !ADMINISTRATIVE_OVERLAP.has(term))) {
       dropped.push({ ref, reason: 'no-term-overlap' });
       return;
     }
