@@ -1,0 +1,715 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 Windows Accounts controls and current native lifecycle",
+  "framework": "shell",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase accounts -Interactive",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase all -Interactive",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase lifecycle -Interactive"
+  ],
+  "startedAt": "2026-11-06T21:32:23.562120+00:00",
+  "finishedAt": "2026-11-06T21:36:22.138887+00:00",
+  "exitCode": 0,
+  "summary": "94 assertions passed in the signed-in Windows session: Accounts16, complete host42, current resident lifecycle36. Exact canonical source hashes stayed unchanged for each run and match native Get-FileHash. This is current-build fixture proof; real account steering, installed-artifact three-OS acceptance and shipment are not established.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "be214408266d0ca5bb8787b31053128d89c674a5d46829f19f9ec45a8909e051",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "3257c9bc2f962ac3e89c171eb592679002d47e175438795f1e5253060312539e",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "e793de341a189ec7982fbe57095ce4c308230052787c2e5084af450397954f1a",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "6721f3af05cbd965288a2952de7b37bd80f0d19e6ef1df5e5cbbc41b9be2fca8",
+    "papercusp-desktop/native/windows/workbench.ps1": "2bb3f873b3c7c344d5326db2eaa47190143cedd1e49406152e890ecd8871465d",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "64ab9b88265ff26cc3fd6dd64abd5d7d3066c21d559d2d2772c395cad427a100",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "5bb6acdc14a1d7ac2b029e9522a6145e7b34730fff037a71c4f0b4cabdb89f75"
+  },
+  "nativeSourceCustody": [
+    {
+      "sha256": "64ab9b88265ff26cc3fd6dd64abd5d7d3066c21d559d2d2772c395cad427a100",
+      "name": "native-workbench-windows-host.ps1"
+    },
+    {
+      "sha256": "5bb6acdc14a1d7ac2b029e9522a6145e7b34730fff037a71c4f0b4cabdb89f75",
+      "name": "native-workbench-windows-lifecycle.ps1"
+    },
+    {
+      "sha256": "be214408266d0ca5bb8787b31053128d89c674a5d46829f19f9ec45a8909e051",
+      "name": "PuiReadBridge.cs"
+    },
+    {
+      "sha256": "2bb3f873b3c7c344d5326db2eaa47190143cedd1e49406152e890ecd8871465d",
+      "name": "workbench.ps1"
+    },
+    {
+      "sha256": "e793de341a189ec7982fbe57095ce4c308230052787c2e5084af450397954f1a",
+      "name": "WorkbenchHost.cs"
+    },
+    {
+      "sha256": "6721f3af05cbd965288a2952de7b37bd80f0d19e6ef1df5e5cbbc41b9be2fca8",
+      "name": "WorkbenchLifecycle.psm1"
+    },
+    {
+      "sha256": "3257c9bc2f962ac3e89c171eb592679002d47e175438795f1e5253060312539e",
+      "name": "WorkbenchModel.cs"
+    }
+  ],
+  "custody": "Seven sources copied by the maintained rig control transport. Canonical before/after hashes match in each run. Native Get-FileHash after the Accounts run matches all seven sources before the full-host and lifecycle reruns.",
+  "runs": [
+    {
+      "phase": "accounts",
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T21:32:23.562120+00:00",
+      "finishedAt": "2026-11-06T21:32:41.590044+00:00",
+      "sourceSha256": {
+        "papercusp-desktop/native/windows/PuiReadBridge.cs": "be214408266d0ca5bb8787b31053128d89c674a5d46829f19f9ec45a8909e051",
+        "papercusp-desktop/native/windows/WorkbenchModel.cs": "3257c9bc2f962ac3e89c171eb592679002d47e175438795f1e5253060312539e",
+        "papercusp-desktop/native/windows/WorkbenchHost.cs": "e793de341a189ec7982fbe57095ce4c308230052787c2e5084af450397954f1a",
+        "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "6721f3af05cbd965288a2952de7b37bd80f0d19e6ef1df5e5cbbc41b9be2fca8",
+        "papercusp-desktop/native/windows/workbench.ps1": "2bb3f873b3c7c344d5326db2eaa47190143cedd1e49406152e890ecd8871465d",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "64ab9b88265ff26cc3fd6dd64abd5d7d3066c21d559d2d2772c395cad427a100",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "5bb6acdc14a1d7ac2b029e9522a6145e7b34730fff037a71c4f0b4cabdb89f75"
+      },
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "accounts",
+        "cases": [
+          "Accounts preserves distinct exact ids with duplicate labels",
+          "stale account refresh cannot replace confirmed state",
+          "partial account pool disables steering",
+          "duplicate account identity fails closed",
+          "missing selected store identity fails closed",
+          "failed account write preserves confirmed state and requires refresh",
+          "wrong environment acknowledgement cannot update account controls",
+          "confirmed account response preserves independent steering axes",
+          "native Accounts displays selected environment and four separate controls",
+          "WPF Force sends exact selected identity and preserves Default and Exclude",
+          "WPF Default preserves Force",
+          "WPF Exclude preserves independent Force",
+          "WPF Auto clears Force and Exclude while preserving Default",
+          "failed native account write keeps the last confirmed steering visible",
+          "failed native account write disables further controls until refresh",
+          "resident Accounts retains its query across toggles"
+        ],
+        "count": 16,
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-accounts-fixture"
+      }
+    },
+    {
+      "phase": "all",
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T21:35:20.063571+00:00",
+      "finishedAt": "2026-11-06T21:35:40.819724+00:00",
+      "sourceSha256": {
+        "papercusp-desktop/native/windows/PuiReadBridge.cs": "be214408266d0ca5bb8787b31053128d89c674a5d46829f19f9ec45a8909e051",
+        "papercusp-desktop/native/windows/WorkbenchModel.cs": "3257c9bc2f962ac3e89c171eb592679002d47e175438795f1e5253060312539e",
+        "papercusp-desktop/native/windows/WorkbenchHost.cs": "e793de341a189ec7982fbe57095ce4c308230052787c2e5084af450397954f1a",
+        "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "6721f3af05cbd965288a2952de7b37bd80f0d19e6ef1df5e5cbbc41b9be2fca8",
+        "papercusp-desktop/native/windows/workbench.ps1": "2bb3f873b3c7c344d5326db2eaa47190143cedd1e49406152e890ecd8871465d",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "64ab9b88265ff26cc3fd6dd64abd5d7d3066c21d559d2d2772c395cad427a100",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "5bb6acdc14a1d7ac2b029e9522a6145e7b34730fff037a71c4f0b4cabdb89f75"
+      },
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "all",
+        "cases": [
+          "plan identity includes canonical harness and slug",
+          "canonical version retained",
+          "all search terms match canonical text",
+          "unmatched query returns no results",
+          "ended roster preserves launch owner and host identity",
+          "stale refresh cannot replace a newer request",
+          "missing canonical identity fails closed",
+          "unavailable empty and partial are distinct",
+          "result paging retains undisplayed canonical rows",
+          "show more exposes the remaining results",
+          "pinned outside focus retains draft and selection",
+          "Escape closes detail before panel",
+          "detail routes exact harness and literal identity",
+          "focus revalidates exact owner session host and recorded window",
+          "same owner with a different session cannot steal focus",
+          "operator locality cannot authorize a remote desktop focus",
+          "recycled session identity with another owner is refused",
+          "ambiguous canonical session rows are refused",
+          "live session cannot be resumed",
+          "ended remote resume uses canonical PUI command and exact saved identity",
+          "changed recorded host cannot authorize resume",
+          "another live session for the owner blocks ended resume",
+          "partial roster cannot authorize a terminal action",
+          "agent label without exact session or window cannot authorize focus",
+          "recorded hexadecimal HWND selects the exact terminal",
+          "recycled HWND with conflicting session marker is refused",
+          "missing recorded HWND cannot fall back to another matching title",
+          "duplicate session window markers cannot choose an arbitrary terminal",
+          "pinned geometry fits a narrow work area with negative monitor coordinates",
+          "Windows native argv roundtrip preserves empty Unicode shell-looking quotes and trailing slashes",
+          "native shortcut collision preserves live owner",
+          "duplicate shortcut edit preserves both prior bindings",
+          "reserved F12 is rejected before replacing live shortcuts",
+          "failed multi-shortcut edit releases newly acquired keys and retains prior owner",
+          "real HWND is chrome-free tool window without taskbar identity",
+          "failed PUI reads remain visible as unavailable",
+          "shortcut toggle retains resident window and query",
+          "independent pin permits both surfaces",
+          "real pinned WPF panels remain separate inside the desktop work area",
+          "dismissing a pinned companion returns its slot to the remaining panel",
+          "atomic shortcut swap reuses native registrations",
+          "disable releases shortcuts for another native owner"
+        ],
+        "count": 42,
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-model-and-WPF-HWND-fixture"
+      }
+    },
+    {
+      "phase": "lifecycle",
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json",
+      "exitCode": 0,
+      "startedAt": "2026-11-06T21:35:40.822375+00:00",
+      "finishedAt": "2026-11-06T21:36:22.138887+00:00",
+      "sourceSha256": {
+        "papercusp-desktop/native/windows/PuiReadBridge.cs": "be214408266d0ca5bb8787b31053128d89c674a5d46829f19f9ec45a8909e051",
+        "papercusp-desktop/native/windows/WorkbenchModel.cs": "3257c9bc2f962ac3e89c171eb592679002d47e175438795f1e5253060312539e",
+        "papercusp-desktop/native/windows/WorkbenchHost.cs": "e793de341a189ec7982fbe57095ce4c308230052787c2e5084af450397954f1a",
+        "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "6721f3af05cbd965288a2952de7b37bd80f0d19e6ef1df5e5cbbc41b9be2fca8",
+        "papercusp-desktop/native/windows/workbench.ps1": "2bb3f873b3c7c344d5326db2eaa47190143cedd1e49406152e890ecd8871465d",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "64ab9b88265ff26cc3fd6dd64abd5d7d3066c21d559d2d2772c395cad427a100",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "5bb6acdc14a1d7ac2b029e9522a6145e7b34730fff037a71c4f0b4cabdb89f75"
+      },
+      "result": {
+        "resident": true,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "first install enables the Accounts shortcut",
+          "adding Accounts preserves legacy disable and shortcut choices",
+          "Accounts migration avoids an existing shortcut collision",
+          "preserve-existing installer persists the missing Accounts binding",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts",
+          "resident fixture refuses to overwrite an existing Workbench login registration",
+          "actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+          "unchanged desktop preparation preserves the same resident process",
+          "settings command reaches the resident native WPF dialog through its account event",
+          "saving native disable releases the resident and removes login registration",
+          "native settings persist explicit disable",
+          "login invocation respects the saved disabled choice",
+          "explicit enable restarts the same configured native host",
+          "explicit disable waits for resident shutdown",
+          "controller uninstall leaves no owned login entry and retains account choices"
+        ],
+        "count": 36
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": "accounts: Accounts preserves distinct exact ids with duplicate labels",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: stale account refresh cannot replace confirmed state",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: partial account pool disables steering",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: duplicate account identity fails closed",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: missing selected store identity fails closed",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: failed account write preserves confirmed state and requires refresh",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: wrong environment acknowledgement cannot update account controls",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: confirmed account response preserves independent steering axes",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: native Accounts displays selected environment and four separate controls",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: WPF Force sends exact selected identity and preserves Default and Exclude",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: WPF Default preserves Force",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: WPF Exclude preserves independent Force",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: WPF Auto clears Force and Exclude while preserving Default",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: failed native account write keeps the last confirmed steering visible",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: failed native account write disables further controls until refresh",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "accounts: resident Accounts retains its query across toggles",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-20261106-v4.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: plan identity includes canonical harness and slug",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: canonical version retained",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: all search terms match canonical text",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: unmatched query returns no results",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: ended roster preserves launch owner and host identity",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: stale refresh cannot replace a newer request",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: missing canonical identity fails closed",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: unavailable empty and partial are distinct",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: result paging retains undisplayed canonical rows",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: show more exposes the remaining results",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: pinned outside focus retains draft and selection",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: Escape closes detail before panel",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: detail routes exact harness and literal identity",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: focus revalidates exact owner session host and recorded window",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: same owner with a different session cannot steal focus",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: operator locality cannot authorize a remote desktop focus",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: recycled session identity with another owner is refused",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: ambiguous canonical session rows are refused",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: live session cannot be resumed",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: ended remote resume uses canonical PUI command and exact saved identity",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: changed recorded host cannot authorize resume",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: another live session for the owner blocks ended resume",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: partial roster cannot authorize a terminal action",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: agent label without exact session or window cannot authorize focus",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: recorded hexadecimal HWND selects the exact terminal",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: recycled HWND with conflicting session marker is refused",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: missing recorded HWND cannot fall back to another matching title",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: duplicate session window markers cannot choose an arbitrary terminal",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: pinned geometry fits a narrow work area with negative monitor coordinates",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: Windows native argv roundtrip preserves empty Unicode shell-looking quotes and trailing slashes",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: native shortcut collision preserves live owner",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: duplicate shortcut edit preserves both prior bindings",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: reserved F12 is rejected before replacing live shortcuts",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: failed multi-shortcut edit releases newly acquired keys and retains prior owner",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: real HWND is chrome-free tool window without taskbar identity",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: failed PUI reads remain visible as unavailable",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: shortcut toggle retains resident window and query",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: independent pin permits both surfaces",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: real pinned WPF panels remain separate inside the desktop work area",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: dismissing a pinned companion returns its slot to the remaining panel",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: atomic shortcut swap reuses native registrations",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "all: disable releases shortcuts for another native owner",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-all-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: first install enables native panels with distinct default shortcuts",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: first install enables the Accounts shortcut",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: adding Accounts preserves legacy disable and shortcut choices",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: Accounts migration avoids an existing shortcut collision",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: preserve-existing installer persists the missing Accounts binding",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: login registration uses the exact installed controller and fixed argv",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: Workbench registration preserves unrelated login applications",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: native login command preserves spaces apostrophes and literal dollar signs",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: upgrade preserves account shortcuts and individual panel disable",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: upgrade refreshes the registered installation without resetting choices",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: disable removes this accounts Workbench login value",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: reinstall does not re-enable an explicitly disabled account",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: explicit enable restores login registration",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: duplicate enabled shortcuts are refused before writing",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: reserved F12 remains invalid even for a disabled panel",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: invalid native modifier bits are refused",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: invalid settings leave both persistence and login state unchanged",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: concurrent settings writer cannot bypass the per-account lock",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: registry failure is surfaced instead of accepting a partial settings update",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: registry failure restores the previous settings",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: missing resident is reported without starting a service or touching another account",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: settings wake targets the exact account and state-directory identity",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: uninstalling another role preserves the current roles login entry",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: uninstall removes owned login registration and retains account preferences",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: retained preferences survive uninstall and reinstall",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: corrupt preferences fail visibly instead of silently resetting shortcuts",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: resident fixture refuses to overwrite an existing Workbench login registration",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: unchanged desktop preparation preserves the same resident process",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: settings command reaches the resident native WPF dialog through its account event",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: saving native disable releases the resident and removes login registration",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: native settings persist explicit disable",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: login invocation respects the saved disabled choice",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: explicit enable restarts the same configured native host",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: explicit disable waits for resident shutdown",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    },
+    {
+      "id": "lifecycle: controller uninstall leaves no owned login entry and retains account choices",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-accounts-lifecycle-20261106-v5.json terminal exit0 and actual cases[]"
+    }
+  ],
+  "diagnosis": {
+    "symptom": "Two child powershell exits2 before first WPF Accounts assertion.",
+    "measuredCause": "Fixture invoked async WPF actions with SynchronizationContext.Current null before a dispatcher frame. Windows Error Reporting identifies Dispatcher.VerifyAccess; diagnostic v3 shows thread14 context=null at toggle and dispatcher wait.",
+    "fix": "Maintained fixture installs DispatcherSynchronizationContext before native actions, matching production Application.Run. Stage, required-control and thread-access diagnostics remain in the real native test fixture.",
+    "distinguishingEvidence": [
+      "/tmp/wb-p005-windows-accounts-diagnostic-20261106-v3.json",
+      "/tmp/wb-p005-windows-accounts-20261106-v4.json"
+    ],
+    "alternative": "Invalid WPF control tree or account bridge payload.",
+    "actualObservation": "Unchanged production source passed all16 after the fixture context changed; named controls found and every account action/failure assertion passed."
+  }
+}

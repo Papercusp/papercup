@@ -6,13 +6,20 @@ import { setupEngineeringEvidenceFixture } from './_engineering-evidence-fixture
 import { getClaimTimeTaskBrief, type TaskBriefDeps } from './task-brief';
 import { firstPartyCallers } from './first-party-callers';
 import { declarationContentHash, type PlanItemAnchor } from '../plan-items/anchors';
-import { ensureBootstrap, getTxPool, tryAcquire, _resetForTests as resetLockStore } from '../agent-tools/locks/su-lock-store';
+import { ensureBootstrap, getTxPool, tryAcquire, tryRelease, _resetForTests as resetLockStore } from '../agent-tools/locks/su-lock-store';
 import { toolsetFromNames } from './push-toolset';
 
 describe('plan anchors P008 persisted claim context', () => {
   let state: Awaited<ReturnType<typeof setupEngineeringEvidenceFixture>>;
+  let lockAcquired = false;
   beforeAll(async () => { state = await setupEngineeringEvidenceFixture(); }, 180_000);
-  afterAll(async () => { try { await resetLockStore(); } finally { await state?.dispose(); } });
+  afterAll(async () => {
+    try {
+      if (lockAcquired) await getTxPool().begin(tx => tryRelease(tx as never, {
+        coordinationDomain: state.root, owner: 'su-p008-peer', allMine: true,
+      }));
+    } finally { try { await resetLockStore(); } finally { await state?.dispose(); } }
+  });
 
   it('returns exact function impact with real doc/spec/lock readers and records delivered and skipped claims', async () => {
     const { root, path, scope, harness, plan, db, bindingId } = state;
@@ -34,11 +41,16 @@ describe('plan anchors P008 persisted claim context', () => {
       FROM harness_shared.spec_evidence_bindings WHERE id=${bindingId}`;
     await ensureBootstrap();
     const lockDb = getTxPool();
-    const [expected, actual] = await Promise.all([db`SELECT current_database() AS name`, lockDb`SELECT current_database() AS name`]);
-    expect(actual[0]).toEqual(expected[0]); // Never seed a lock into another database.
+    const [expected, actual] = await Promise.all([
+      db`SELECT inet_server_addr()::text AS host, inet_server_port() AS port`,
+      lockDb`SELECT inet_server_addr()::text AS host, inet_server_port() AS port, current_database() AS name`,
+    ]);
+    // The lock package deliberately derives a side database on the configured test server.
+    expect(actual[0]).toEqual({ ...expected[0], name: 'papercusp_su' });
     expect(await lockDb.begin(tx => tryAcquire(tx as never, { coordinationDomain: root,
       owner: 'su-p008-peer', ownerLabel: 'P008 fixture peer', paths: ['consumer.ts'], intent: 'fixture consumer edit',
       goalRef: 'WI-p008-consumer', ttlSec: 120 }))).toMatchObject({ ok: true });
+    lockAcquired = true;
     const contentHash = await declarationContentHash(source, { id: 'evidenceFeature', name: 'evidenceFeature', path,
       line: 1, column: 17, sha256: '', signature: '', aliases: [], callers: [] });
     const anchor: PlanItemAnchor = { anchorKind: 'symbol', requested: 'evidenceFeature', symbolId: 'evidenceFeature',

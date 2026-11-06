@@ -73,7 +73,8 @@ export async function readTaskAnchorContext(input: {
     const position = source.getLineAndCharacterOfPosition(declarations[0]!.name.getStart(source));
     const contentHash = await declarationContentHash(text, { id: '', name: symbol, path,
       line: position.line + 1, column: position.character + 1, sha256: '', signature: '', aliases: [], callers: [] });
-    const freshness = anchor.contentHash && contentHash ? anchor.contentHash === contentHash ? 'fresh' : 'stale' : 'unknown';
+    const freshness: TaskAnchorContext['subjects'][number]['freshness'] = anchor.contentHash && contentHash
+      ? anchor.contentHash === contentHash ? 'fresh' : 'stale' : 'unknown';
     const request: ChangeReportRequest = { symbol, file: path, line1: position.line + 1, paths: ['.'], limit: 50, phase: 'pre-edit' };
     const result = await withBoundedTimeout(() => nativeChangeReport({ rootPath: input.root, include: [path] }, request, {
       exec: input.effects.exec,
