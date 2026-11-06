@@ -328,7 +328,7 @@ export function evaluateDiscoveryReadiness(
         const target = targets.get(disposition.target);
         if (!target) {
           add('discovery_target_unknown', `${at}.dispositions`, `Target ${disposition.target} must exist in the current draft or its recorded removal history.`);
-        } else if ((target.change === 'removed') !== (disposition.decision === 'remove')) {
+        } else if ((target.change === 'removed') !== (disposition.decision === 'remove' || disposition.decision === 'exclude')) {
           add('discovery_disposition_invalid', `${at}.dispositions`, `The ${disposition.decision} disposition does not match the canonical removal state of ${disposition.target}.`);
         }
       }

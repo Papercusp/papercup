@@ -144,6 +144,9 @@ describe('Discovery before implementation review', () => {
     const ctx = context();
     ctx.targets = [{ ref: 'P-001', change: 'removed' }];
     expect(evaluate(value, ctx).ready).toBe(true);
+    value.findings[0]!.dispositions[0]!.decision = 'exclude';
+    expect(evaluate(value, ctx).ready).toBe(true);
+    expect(evaluate(value).ready).toBe(false);
     value.findings[0]!.dispositions[0]!.decision = 'unchanged';
     expect(evaluate(value, ctx).ready).toBe(false);
   });
