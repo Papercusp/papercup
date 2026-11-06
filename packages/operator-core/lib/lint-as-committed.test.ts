@@ -18,9 +18,9 @@
  * running the real thing against this repo.
  *
  * ONE EXCEPTION TO THAT (EI-21033860565861795): the submodule-materialisation step
- * below IS run end-to-end, against a real spawn of the CLI, because the bug it
+ * below IS run end-to-end, against a real spawn of the CLI and local Git repos, because the bug it
  * regresses is exactly the kind a mock cannot see — `git clone --no-checkout` +
- * `checkout --detach` leaves a submodule (this repo has 30+, e.g. `libs/papercusp`)
+ * `checkout --detach` leaves a submodule (for example `libs/papercusp`)
  * as an EMPTY gitlink directory, and a lint that resolves an import through one
  * fabricated a TS2307 that the committed code does not actually have. Asserting the
  * extracted tree's submodule file byte-matches the COMMITTED content is the only way
@@ -1231,12 +1231,62 @@ describe('end-to-end — submodule content is materialised, not silently empty (
   // checkpoint writer, and current-tree lint, both resolve the module fine. This is
   // deliberately NOT unit-tested against a mock (see the file header): the bug lives
   // in the extraction mechanism itself, so the only faithful regression is running
-  // the real CLI against this real, submodule-carrying repo and reading back what it
-  // actually materialised.
+  // the real CLI against a real submodule-carrying fixture and reading back what it
+  // actually materialised. Keep unrelated monorepo dependencies out of this check:
+  // their builds previously exhausted its child deadline before this assertion.
   it('extracts REAL, committed content for a git-submodule path, not an empty gitlink dir', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-submodule-e2e-'));
+    const repoRoot = join(parent, 'source');
     const subRoot = 'libs/papercusp';
     const subRelFile = 'libs/db/src/connection.ts';
     const subFile = `${subRoot}/${subRelFile}`;
+    const gitAt = (root: string, args: string[], input?: string) => execFileSync('git', args, {
+      cwd: root, input, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const commitFiles = (root: string, files: Record<string, string>, prior?: string) => {
+      for (const [path, content] of Object.entries(files)) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), content);
+        const blob = gitAt(root, ['hash-object', '-w', '--stdin'], content);
+        gitAt(root, ['update-index', '--add', '--cacheinfo', '100644', blob, path]);
+      }
+      const tree = gitAt(root, ['write-tree']);
+      const sha = gitAt(root, ['-c', 'user.name=Submodule fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit-tree', tree, ...(prior ? ['-p', prior] : []), '-m', 'submodule fixture']);
+      gitAt(root, ['update-ref', 'refs/heads/staging', sha]);
+      return sha;
+    };
+    try {
+      mkdirSync(join(repoRoot, subRoot), { recursive: true });
+      gitAt(join(repoRoot, subRoot), ['init', '--quiet', '--initial-branch=staging']);
+      const subPin = commitFiles(join(repoRoot, subRoot), {
+        '.gitignore': 'dist/\n',
+        [subRelFile]: 'export const committedConnection = true;\n',
+        'package.json': JSON.stringify({ name: '@papercusp/sse',
+          exports: { '.': { require: './dist/index.js', default: './dist/index.js' } },
+          scripts: { build: 'node build.cjs' } }),
+        'source.cjs': 'module.exports = { sseResponse: () => "committed" };\n',
+        'build.cjs': "const fs = require('node:fs'); fs.mkdirSync('dist', {recursive:true}); fs.copyFileSync('source.cjs', 'dist/index.js');\n",
+      });
+      gitAt(repoRoot, ['init', '--quiet', '--initial-branch=staging']);
+      gitAt(repoRoot, ['update-index', '--add', '--cacheinfo', '160000', subPin, subRoot]);
+      const main = commitFiles(repoRoot, {
+        '.gitignore': 'node_modules/\n',
+        '.gitmodules': `[submodule "papercusp"]\n path = ${subRoot}\n url = ./${subRoot}\n`,
+        'package.json': JSON.stringify({ private: true, workspaces: [subRoot],
+          scripts: { 'lint:probe': 'node probe.cjs' } }),
+        'probe.cjs': 'require("node:assert/strict").equal(require("@papercusp/sse").sseResponse(), "committed");\n',
+        'libs/test-config/src/index.ts': 'export {};\n',
+      });
+      gitAt(repoRoot, ['update-ref', 'refs/heads/main', main]);
+      commitFiles(repoRoot, { 'candidate.txt': 'separate candidate commit\n' }, main);
+      mkdirSync(join(repoRoot, 'node_modules/@papercusp'), { recursive: true });
+      symlinkSync('../../libs/papercusp', join(repoRoot, 'node_modules/@papercusp/sse'));
+      // A dirty donor must not replace either the gitlink's committed blob or
+      // the pinned workspace's build input.
+      writeFileSync(join(repoRoot, subFile), 'dirty connection source\n');
+      writeFileSync(join(repoRoot, subRoot, 'source.cjs'), 'module.exports = { sseResponse: () => "dirty" };\n');
     // Sanity first: if this checkout itself doesn't have the submodule (or the file
     // the bug's repro depends on), the assertions below would pass for the wrong
     // reason — every path missing, not just the extracted one.
@@ -1266,14 +1316,9 @@ describe('end-to-end — submodule content is materialised, not silently empty (
     // the script directly (as this test does) must pass the script name bare, or this
     // tool's OWN `--` forwarding logic swallows it as an (empty) script list.
     //
-    // The chosen lint is deliberately NOT asserted to PASS: this test's job is to
-    // prove submodule content was materialised, not to pin the pass/fail state of an
-    // unrelated lint. `run.status` distinguishes a genuine lint finding (exit 1, via
-    // `summarize()`) from a setup/environment failure in THIS tool (exit 2) — only
-    // the latter would mean the fix regressed.
-    // The real extraction initialises every submodule, so its cost tracks host load, not
-    // this test's subject: 11–44s normally, >60s at load ~130 on the gate (WI-10004340).
-    const run = spawnSync('node', [scriptPath, 'lint:no-owner-name-tags', '--keep'], {
+    // This real lint also reads the pinned workspace export, so an empty
+    // gitlink, a borrowed dirty source, or a missing build must fail.
+    const run = spawnSync('node', [scriptPath, 'lint:probe', '--keep'], {
       cwd: repoRoot,
       env: currentRunnerEnvironment(),
       encoding: 'utf8',
@@ -1288,7 +1333,7 @@ describe('end-to-end — submodule content is materialised, not silently empty (
     }, status: run.status, signal: run.signal });
     const diagnostic = `${outcome}\nrunner stderr tail:\n${run.stderr?.slice(-1200)}\nrunner stdout tail:\n${run.stdout?.slice(-1200)}`;
     expect(run.error, diagnostic).toBeUndefined();
-    expect(run.status, diagnostic).not.toBe(2);
+    expect(run.status, diagnostic).toBe(0);
     // Proof the new step actually engaged, not just that nothing crashed — a future
     // edit that silently skips submodule init would still reach this lint fine (it
     // never touches libs/papercusp), so this line is load-bearing, not decorative.
@@ -1338,9 +1383,12 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       expect(run.stdout).toContain('building pinned runtime exports: @papercusp/sse');
       const requireClone = createRequire(join(workRoot, 'package.json'));
       expect(requireClone('@papercusp/sse').sseResponse).toBeTypeOf('function');
-      expect(realpathSync(requireClone.resolve('@papercusp/sse'))).toBe(realpathSync(join(workRoot, 'libs/generic/sse/dist/index.js')));
+      expect(realpathSync(requireClone.resolve('@papercusp/sse'))).toBe(realpathSync(join(workRoot, subRoot, 'dist/index.js')));
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
+    }
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
     }
   }, 180_000);
 });
@@ -1884,7 +1932,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     try {
       const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
         cwd: f.root, encoding: 'utf8', timeout: 30_000,
-        env: { ...process.env, PAPERCUSP_DISK_ALARM_CRITICAL_GB: '1000000000000000' },
+        env: currentRunnerEnvironment({ PAPERCUSP_DISK_ALARM_CRITICAL_GB: '1000000000000000' }),
       });
       expect(result.status, result.stdout + result.stderr).toBe(2);
       expect(result.stderr).toContain('no temporary directory has critical disk headroom');
@@ -1901,9 +1949,11 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     try {
       const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
         cwd: f.root, encoding: 'utf8', timeout: 30_000,
-        env: { ...process.env, TMPDIR: f.root },
+        env: currentRunnerEnvironment({ TMPDIR: f.root }),
       });
-      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const diagnostic = JSON.stringify({ error: result.error?.message, status: result.status,
+        signal: result.signal }) + '\n' + result.stderr?.slice(-1000) + '\n' + result.stdout?.slice(-1000);
+      expect(result.status, diagnostic).toBe(0);
       expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
       expect(result.stdout).not.toContain(`extracted ${f.root}/`);
       expect(gitFixture(f.root, ['status', '--porcelain'])).not.toContain('papercusp-lint-as-committed-');
