@@ -9,7 +9,9 @@
  * -elimination 2026-05-21 A3 migration; dispatch is now driven directly
  * from `routes/plugins/catchall.ts`.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+const cutover = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: cutover.read }));
 import {
   dispatchPluginApiRoute,
   mountPluginApiRoutes,
@@ -20,10 +22,25 @@ import {
 } from './plugin-api-mount';
 
 beforeEach(() => {
+  cutover.read.mockReset().mockResolvedValue(false);
   _resetPluginApiRoutesForTests();
 });
 
 describe('dispatchPluginApiRoute', () => {
+  it.each(['enabled', 'unavailable'])('never preloads API entry code when confinement is %s', async state => {
+    if (state === 'enabled') cutover.read.mockResolvedValue(true);
+    else cutover.read.mockRejectedValue(new Error('flag storage unavailable'));
+    const tmp = await makeTempPlugin('confined-api', { fetch: () => new Response('UNSAFE') });
+    const marker = join(tmp.dir, 'unconfined-entry-ran');
+    writeFileSync(join(tmp.dir, 'confined-api/index.js'),
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'UNSAFE'); throw new Error('entry preloaded');`);
+    const result = await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    expect(result.errors).toEqual([]);
+    expect(result.mounted).toBe(0);
+    expect(pluginApiRegistryNames()).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it('captures actual mounted prefixes and declared subroutes without dropping opaque handlers', async () => {
     expect(enumerateMountedPluginHttpSurfaces()).toMatchObject({ initialized: false,
       unresolved: ['plugin-http-registry-not-initialized'] });
@@ -141,7 +158,7 @@ describe('dispatchPluginApiRoute', () => {
  * Test helpers
  * ───────────────────────────────────────────────────────────────────── */
 
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 

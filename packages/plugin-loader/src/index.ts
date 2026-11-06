@@ -167,6 +167,11 @@ export interface LoaderOptions {
   projectDir?: string;       // <project>/plugins/<name>/
   harnessSlugs?: string[];   // ~/.papercusp/harnesses/<slug>/plugins/
   globalPluginsDir?: string; // override ~/.papercusp/global-plugins/
+  /** Host security cutover: parse/validate declarations without importing JS.
+   * Tool placeholders refuse direct calls; the host must bind a confined route.
+   * Entry-only hooks and dynamic discovery never execute in this mode.
+   */
+  metadataOnly?: boolean;
 }
 
 // PAPERCUSP_ROOT is intentionally NOT cached at module-load — see
@@ -659,7 +664,8 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
  * above. The generic kernel owns the discover→read→dispatch→import→validate
  * →dedupe control flow; this object is the seam.
  */
-const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
+function createCorePluginLoader(metadataOnly = false) {
+  return createPluginLoader<Plugin, ManifestShape>({
   readManifest,
   // Parsed declarations only: exclude config/defaultConfig and other values
   // that may carry credentials. Snapshot before entry/runtime code can mutate
@@ -674,22 +680,38 @@ const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
   admitManifest: cupboardDistributionExclusion,
   locateEntry,
   importEntry: importPluginEntry,
-  runtimeDispatch,
+  runtimeDispatch: async (manifest, path, source) => {
+    if (!metadataOnly || (manifest.runtime && manifest.runtime.kind !== 'js')) {
+      return runtimeDispatch(manifest, path, source);
+    }
+    // Reuse the generic loader's pre-entry dispatch and the normal validator.
+    // Nothing from the installation's module graph is evaluated in the host.
+    const plugin = makeManifestOnlyPluginShim(manifest);
+    plugin.tools = Object.fromEntries((manifest.tools ?? []).map(tool => [tool.name, async () => {
+      throw new Error('An approved confined handler execution route is required');
+    }]));
+    const error = await validate(plugin, manifest);
+    return error ? { error, path } : { plugin, manifest, path, source };
+  },
   validatePlugin: validate,
   pluginName: (p) => p.name,
   invalidManifestError: 'missing or invalid papercusp.json',
   noEntryError:
     'no entry point found (looked for index.cjs, dist/index.cjs, index.js, index.mjs, dist/index.js, index.ts, src/index.ts)',
-});
+  });
+}
+const corePluginLoader = createCorePluginLoader();
+const metadataPluginLoader = createCorePluginLoader(true);
 
 /** Load a single plugin from a known directory. */
-export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<
+export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source'],
+  opts: Pick<LoaderOptions, 'metadataOnly'> = {}): Promise<
   | LoadedPlugin
   | { error: string; path: string }
   | { skipped: 'not-a-plugin'; path: string }
   | { skipped: 'excluded'; path: string; reason: string }
 > {
-  const r = await corePluginLoader.loadFromDir(dir, source);
+  const r = await (opts.metadataOnly ? metadataPluginLoader : corePluginLoader).loadFromDir(dir, source);
   if ('skipped' in r) return r;
   if ('error' in r) return r;
   return toLoadedPlugin(r);
@@ -776,7 +798,7 @@ export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
   // `@papercupai/`); recurse those into per-plugin candidates.
   roots.push({ pluginsDir: globalDir, source: 'global', scopeRecurse: true });
 
-  const { loaded, errors, discovery } = await corePluginLoader.loadAll(roots);
+  const { loaded, errors, discovery } = await (opts.metadataOnly ? metadataPluginLoader : corePluginLoader).loadAll(roots);
   return { loaded: loaded.map(toLoadedPlugin), errors, discovery };
 }
 

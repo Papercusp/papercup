@@ -27,6 +27,10 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 
+/** Maximum number of expired cache rows one scheduled janitor invocation may delete. */
+export const CACHE_L2_EXPIRY_SWEEP_BATCH_SIZE = 500;
+const CACHE_L2_EXPIRY_SWEEP_MAX_BATCH_SIZE = 1_000;
+
 /** A durably-cached entry as stored in L2 (the value plus its invalidation metadata). */
 export interface L2Entry<V = unknown> {
   value: V;
@@ -183,16 +187,30 @@ export class PgL2Store {
   }
 
   /**
-   * Sweep expired rows (expires_at in the past) — the periodic janitor. Optional,
-   * since `get` already treats an expired row as a miss; the sweep just reclaims
-   * space. Single DELETE; returns the count reclaimed.
+   * Sweep a bounded batch of expired rows (expires_at in the past) — the periodic
+   * janitor. Optional, since `get` already treats an expired row as a miss; the
+   * sweep just reclaims space. Oldest expiries go first, and SKIP LOCKED lets
+   * concurrent janitor ticks make progress without waiting on each other.
    */
-  async sweepExpired(): Promise<number> {
+  async sweepExpired(batchSize = CACHE_L2_EXPIRY_SWEEP_BATCH_SIZE): Promise<number> {
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > CACHE_L2_EXPIRY_SWEEP_MAX_BATCH_SIZE) {
+      throw new Error(`PgL2Store: sweep batchSize must be an integer from 1 to ${CACHE_L2_EXPIRY_SWEEP_MAX_BATCH_SIZE}`);
+    }
     const { sql } = getOrgPg();
     const now = new Date(this.nowMs());
     const rows = await sql<{ id: number }[]>`
-      DELETE FROM harness_shared.cache_l2
-      WHERE expires_at IS NOT NULL AND expires_at <= ${now}
+      WITH expired AS (
+        SELECT workspace_id, cache_key
+        FROM harness_shared.cache_l2
+        WHERE expires_at IS NOT NULL AND expires_at <= ${now}
+        ORDER BY expires_at ASC
+        LIMIT ${batchSize}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM harness_shared.cache_l2 AS target
+      USING expired
+      WHERE target.workspace_id = expired.workspace_id
+        AND target.cache_key = expired.cache_key
       RETURNING 1 AS id`;
     return rows.length;
   }

@@ -106,6 +106,7 @@ Subcommands:
   workbench resume ID HOST [OWNER]  Resume an exact ended session from the native launcher
   doctor                     Verify local artifacts, stale panes, and selected operator identity
   native-read                Read a native desktop model (JSON request on stdin)
+  native-account             Apply a scoped native account control (JSON on stdin)
   self <COMMAND>             Install, update, roll back or uninstall this PUI (`pui self --help`)
   hud                      Open the HUD pane
   chat                       Open the operator chat dock
@@ -463,6 +464,7 @@ async fn main() -> Result<()> {
         }
         Some("doctor") => return run_doctor().await,
         Some("native-read") => return native_panel::run().await,
+        Some("native-account") => return native_panel::run_account().await,
         // The chat-only DOCK (operator chat | brain) — the desktop-docked native
         // terminal surface (native-terminal-desktop P-013 / D-011). Materialises
         // its own 2-pane layout and hands off to zellij.
@@ -1967,6 +1969,7 @@ async fn run_workbench(selection: Option<workbench::ResumeSelection>) -> Result<
         let request = native_panel::ReadRequest {
             name: native_panel::ReadModel::Agents,
             args: Default::default(),
+            environment: None,
         };
         let payload = tokio::time::timeout(
             std::time::Duration::from_secs(20), client.native_panel_read(&request),

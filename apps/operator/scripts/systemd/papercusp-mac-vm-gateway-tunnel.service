@@ -2,6 +2,7 @@
 Description=Papercusp rig macOS VM inference route: ssh reverse tunnel putting the tower account-pool gateway (127.0.0.1:8788) on the VM's 127.0.0.1:18788 (WI-10004503)
 Documentation=file://%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/README.md
 After=papercusp-vm-mac.service
+BindsTo=papercusp-vm-mac.service
 # 0 = never stop re-dialing (see Restart= below). Start-limit keys belong in [Unit]: systemd
 # ignores them in [Service] (WI-10006428), which silently left the 10s/5 default in force.
 StartLimitIntervalSec=0
@@ -15,9 +16,11 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o ConnectTimeout=10 -R 127.0.0.1:18788:127.0.0.1:8788 aviweiss@172.31.44.2
-# The VM reboots and goes away during drills; keep re-dialing rather than giving up.
+# The VM service owns this tunnel's lifetime. BindsTo stops the tunnel when the
+# VM service stops or fails; WantedBy starts it with the VM service. While the
+# VM service is active, retries cover guest SSH readiness and brief disconnects.
 Restart=always
 RestartSec=15
 
 [Install]
-WantedBy=default.target
+WantedBy=papercusp-vm-mac.service

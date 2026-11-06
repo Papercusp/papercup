@@ -27,6 +27,8 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { ObservedSurface } from '@papercusp/testing-shell/census';
 
 import { papercuspPath } from './papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 interface ApiRouteHandle {
   fetch: (req: Request, ...rest: any[]) => Promise<Response> | Response;
 }
@@ -83,7 +85,10 @@ export function mountPluginApiRoutes(opts: MountPluginApiRoutesOptions = {}): Pr
 
     let discovered: { loaded: LoadedPlugin[]; errors: Array<{ error: string; path: string }> };
     try {
+      let metadataOnly = true;
+      try { metadataOnly = await getFlag(FLAGS.PLUGIN_INVOCATION_POLICY, 'system'); } catch { /* fail closed */ }
       discovered = await loadPlugins({
+        metadataOnly,
         globalPluginsDir: opts.globalPluginsDir,
         harnessSlugs: opts.harnessSlugs ?? discoverHarnessSlugs(),
       });

@@ -66,6 +66,14 @@ function unitFiles(dir: string): string[] {
   return found;
 }
 
+function sectionLines(text: string, name: string): string[] {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === `[${name}]`);
+  if (start < 0) return [];
+  const nextSection = lines.findIndex((line, index) => index > start && /^\s*\[[^\]]+\]\s*$/.test(line));
+  return lines.slice(start + 1, nextSection < 0 ? lines.length : nextSection).map((line) => line.trim());
+}
+
 describe('systemd start-limit keys live in [Unit] (WI-10006428)', () => {
   it('includes the host user-unit directory alongside repo units', () => {
     expect(systemdUnitDirectories('/repo/systemd', '/home/test/.config')).toEqual([
@@ -87,6 +95,14 @@ describe('systemd start-limit keys live in [Unit] (WI-10006428)', () => {
     expect(findMisplacedStartLimitKeys('StartLimitBurst=5\n[Unit]\n')).toHaveLength(1);
     // Commented-out keys are not settings.
     expect(findMisplacedStartLimitKeys('[Service]\n# StartLimitBurst=5\n')).toEqual([]);
+  });
+
+  it('ties the Mac VM gateway tunnel to the VM service lifetime', () => {
+    const unit = readFileSync(join(SYSTEMD_DIR, 'papercusp-mac-vm-gateway-tunnel.service'), 'utf8');
+    expect(sectionLines(unit, 'Unit')).toContain('After=papercusp-vm-mac.service');
+    expect(sectionLines(unit, 'Unit')).toContain('BindsTo=papercusp-vm-mac.service');
+    expect(sectionLines(unit, 'Install')).toContain('WantedBy=papercusp-vm-mac.service');
+    expect(sectionLines(unit, 'Install')).not.toContain('WantedBy=default.target');
   });
 
   it('no repo or host user unit or drop-in puts a start-limit key outside [Unit]', () => {

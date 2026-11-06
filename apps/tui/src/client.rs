@@ -2504,6 +2504,13 @@ impl OperatorClient {
         &self,
         request: &crate::native_panel::ReadRequest,
     ) -> Result<serde_json::Value> {
+        if matches!(request.name, crate::native_panel::ReadModel::Environment) {
+            return Ok(serde_json::json!({"rows":[self.backend_identity().await?]}));
+        }
+        if let Some(expected) = &request.environment {
+            anyhow::ensure!(expected.same_rendezvous(&self.backend_identity().await?),
+                "selected environment changed; refresh the native panel");
+        }
         let payload = self
             .get_json(&format!(
                 "/api/zero-harness/rest-query?name={}&args={}",
@@ -2520,6 +2527,26 @@ impl OperatorClient {
             anyhow::bail!("Native model {} returned no row envelope", request.name.as_str());
         }
         Ok(payload)
+    }
+
+    pub async fn native_account_action(&self, request: &crate::native_panel::AccountRequest) -> Result<serde_json::Value> {
+        use crate::native_panel::{ReadModel, ReadRequest};
+        let current = self.backend_identity().await?;
+        anyhow::ensure!(request.environment.same_rendezvous(&current),
+            "selected environment changed; refresh Accounts before applying a control");
+        let pool = self.native_panel_read(&ReadRequest {
+            name: ReadModel::Accounts, args: serde_json::from_value(serde_json::json!({"workspace":current.workspace_id}))?,
+            environment: Some(current.clone()),
+        }).await?;
+        anyhow::ensure!(pool["partial"] != true, "account pool is incomplete");
+        let prior = self.get_json("/api/admin/deploy-accounts/session-override").await?;
+        anyhow::ensure!(prior["ok"] == true, "account steering is unavailable");
+        let mut patch = request.patch(&prior["override"], pool["rows"].as_array().context("missing account pool")?)?;
+        patch["workspaceId"] = serde_json::json!(current.workspace_id);
+        anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?), "selected environment changed before account write");
+        let result = self.post_json("/api/admin/deploy-accounts/session-override", patch).await?;
+        anyhow::ensure!(result["ok"] == true && result["override"].is_object(), "account control failed: {result}");
+        Ok(serde_json::json!({"rows":[result["override"]],"environment":current}))
     }
 
     /// Read the one server-normalized context projection consumed by both pui

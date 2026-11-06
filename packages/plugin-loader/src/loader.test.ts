@@ -56,6 +56,42 @@ after(async () => {
 });
 
 describe('loadPluginFromDir', () => {
+  it('discovers and registers manifest tools without executing the entry or transitive dependencies', async () => {
+    const dir = join(ROOT, 'metadata-boundary');
+    await fs.mkdir(dir, { recursive: true });
+    const marker = join(dir, 'unsafe-entry-ran');
+    await fs.writeFile(join(dir, 'dependency.cjs'),
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'UNSAFE'); throw new Error('unconfined import');`);
+    await fs.writeFile(join(dir, 'index.cjs'), "require('./dependency.cjs');");
+    await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({
+      name: 'metadata-boundary', version: '0.1.0', capabilities: ['tools:read'],
+      tools: [{ name: 'read', description: 'Read', inputSchema: { type: 'object' }, capabilities: ['tools:read'] }],
+    }));
+    const r = await loadPluginFromDir(dir, 'project', { metadataOnly: true });
+    assert.ok('plugin' in r, JSON.stringify(r));
+    assert.equal(r.plugin.name, 'metadata-boundary');
+    assert.equal(r.plugin.getDynamicTools, undefined);
+    assert.equal(r.toolDefinitions?.[0]?.name, 'read');
+    await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+    await assert.rejects(async () => r.plugin.tools!.read!({} as never, {} as never), /approved confined handler/);
+    await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+    const discovered = await loadPlugins({ globalPluginsDir: ROOT, metadataOnly: true });
+    assert.ok(discovered.loaded.some(plugin => plugin.plugin.name === 'metadata-boundary'));
+    await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+  });
+
+  it('retains semantic capability validation before metadata-only registration', async () => {
+    const dir = join(ROOT, 'metadata-bad-capability');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, 'index.cjs'), "throw new Error('entry must not load');");
+    await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({ name: 'metadata-bad-capability', version: '0.1.0',
+      capabilities: [], tools: [{ name: 'read', capabilities: ['tools:read'] }] }));
+    const r = await loadPluginFromDir(dir, 'project', { metadataOnly: true });
+    assert.ok('error' in r);
+    assert.match(r.error, /doesn't declare/);
+    assert.doesNotMatch(r.error, /entry must not load/);
+  });
+
   it('loads a valid plugin', async () => {
     const dir = await makePlugin({ name: 'happy-path' });
     const r = await loadPluginFromDir(dir, 'project');

@@ -1696,6 +1696,12 @@ systemctl --user daemon-reload
 systemctl --user enable --now papercusp-mac-vm-gateway-tunnel.service
 ```
 
+The tunnel is wanted by and bound to `papercusp-vm-mac.service`. Enable it after
+the VM service is available: stopping or failing the VM stops the tunnel, and
+starting the VM starts it again. Its restart policy handles guest SSH readiness
+and short disconnects while the VM service is active; it does not retry while
+the VM service is stopped.
+
 VM side, once per VM DB (the pool lives in the VM's PG and survives restarts):
 
 ```bash

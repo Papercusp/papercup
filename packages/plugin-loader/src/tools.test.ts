@@ -95,6 +95,18 @@ beforeEach(() => {
 });
 
 describe('registerPluginTools', () => {
+  it('registers metadata-only tools while refusing any direct in-process invocation', async () => {
+    const dir = await makeToolPlugin({ name: 'fixture-confined-registration', manifestTools: [{ name: 'read' }] });
+    await fs.writeFile(join(dir, 'index.cjs'), "throw new Error('entry must not execute at registration');");
+    const r = await loadPluginFromDir(dir, 'global', { metadataOnly: true });
+    assert.ok('plugin' in r, JSON.stringify(r));
+    assert.deepEqual(await registerPluginTools([r]), { registered: 1, errors: [] });
+    const tool = lookupByMcpName('fixture-confined-registration.read');
+    assert.ok(tool);
+    assert.deepEqual(tool.pluginInstallation, { version: '0.1.0', path: dir, source: 'global' });
+    await assert.rejects(async () => tool.fn({} as never, {} as never), /approved confined handler/);
+  });
+
   it('registers a single-tool plugin with explicit expose into the projection registry', async () => {
     const dir = await makeToolPlugin({
       name: 'fixture-explicit',
