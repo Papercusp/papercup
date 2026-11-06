@@ -213,6 +213,15 @@ function censusRow(candidate: CensusCandidate, bytes: Buffer): Source {
     ...(excluded ? { reason: 'Maintained test or documentation; not an executing production binding. '
       + 'The digest identifies the audited copy; any historical recorded blob is retained separately in refs.' } : {}) };
 }
+function linkedCensusSql(workspace: string, harness: string, planSlug: string) {
+  return `SELECT COALESCE(json_agg(DISTINCT jsonb_build_object('id',wi.feature_id,
+      'files',wi.payload->'_completionEvidence'->'filesChanged',
+      'stamp',wi.payload->'_completionEvidence'->'treeStamp')), '[]') AS census
+    FROM harness_shared.work_items wi WHERE wi.workspace_id=${literal(workspace)} AND wi.harness_slug=${literal(harness)}
+      AND (wi.source_plan_slug=${literal(planSlug)} OR EXISTS (SELECT 1 FROM harness_shared.coord_links l
+        WHERE l.workspace_id=wi.workspace_id AND l.src_ref IN (wi.feature_id,wi.harness_slug||'#'||wi.feature_id)
+          AND l.rel IN ('implements','relates') AND l.dst_kind='plan_item' AND split_part(l.dst_ref,'#',1)=${literal(planSlug)}))`;
+}
 function collectCensus(fixture: Fixture, started: string): Census {
   const proposed = tool('plans:audit', { slug: plan, harness: 'papercusp', phase: 'completion', dryRun: true, proposeCitations: true });
   requireProof(proposed.truncatedByLimit === false && proposed.unresolved?.length === 0, 'canonical citation producer is incomplete');
@@ -220,13 +229,7 @@ function collectCensus(fixture: Fixture, started: string): Census {
     WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND plan_slug=${literal(plan)}
       AND audit_kind='completion' ORDER BY audit_seq DESC LIMIT 1`);
   requireProof(audit && fullSha.test(audit.audited_sha), 'recorded completion audit is missing');
-  const linked = query<Json[]>(`SELECT COALESCE(json_agg(DISTINCT jsonb_build_object('id',wi.feature_id,
-      'files',wi.payload->'_completionEvidence'->'filesChanged',
-      'stamp',wi.payload->'_completionEvidence'->'treeStamp')), '[]')
-    FROM harness_shared.work_items wi WHERE wi.workspace_id='papercusp-workspace' AND wi.harness_slug='papercusp'
-      AND (wi.source_plan_slug=${literal(plan)} OR EXISTS (SELECT 1 FROM harness_shared.coord_links l
-        WHERE l.workspace_id=wi.workspace_id AND l.src_ref IN (wi.feature_id,wi.harness_slug||'#'||wi.feature_id)
-          AND l.rel IN ('implements','relates') AND l.dst_kind='plan_item' AND split_part(l.dst_ref,'#',1)=${literal(plan)}))`);
+  const linked = query<Json[]>(linkedCensusSql('papercusp-workspace', 'papercusp', plan));
   const parentRead = tool('work_items:get', { id: parent, harness: 'papercusp', threadLimit: 0 });
   const parentItem = parentRead.results?.[0]?.workItem;
   requireProof(linked.some(row => row.id === parent) && parentItem?.assignee && parentItem.createdAt,
@@ -478,6 +481,61 @@ function rejects(change: (proof: Proof) => void, reason: RegExp) {
   expect(() => verify(bad)).toThrow(reason);
 }
 describe('EGM exact released artifact acceptance', () => {
+  it('retains the exact linked completion population while scanning plan links once', async () => {
+    const { createFreshPgDb } = await import('../../test/_pg-helpers');
+    const db = await createFreshPgDb('egm-linked-census');
+    try {
+      // Private read-relation projections, following the shared PG fixture contract.
+      await db.sql.unsafe(`CREATE TABLE harness_shared.work_items (
+        workspace_id text, harness_slug text, feature_id text, source_plan_slug text, payload jsonb);
+        CREATE TABLE harness_shared.coord_links (
+          workspace_id text, src_ref text, rel text, dst_kind text, dst_ref text)`).simple();
+      const workspace = 'census-workspace', harness = 'census-harness', target = 'census-plan';
+      const ids = ['direct', 'raw', 'qualified', 'both', 'no-evidence', 'unlinked', 'wrong-plan',
+        'wrong-rel', 'wrong-kind', 'wrong-link-workspace', 'wrong-harness-qualified'];
+      for (const id of ids) {
+        const payload = id === 'no-evidence' ? null : db.sql.json({ _completionEvidence: {
+          filesChanged: [id + '.ts'], treeStamp: { contentIdentity: [{ path: id + '.ts', headBlobSha: id }] },
+        } });
+        await db.sql`INSERT INTO harness_shared.work_items VALUES
+          (${workspace},${harness},${id},${id === 'direct' ? target : null},${payload})`;
+      }
+      await db.sql`INSERT INTO harness_shared.work_items VALUES
+        ('other-workspace',${harness},'raw',${target},NULL),
+        (${workspace},'other-harness','raw',${target},NULL)`;
+      await db.sql`INSERT INTO harness_shared.work_items
+        SELECT ${workspace},${harness},'unrelated-'||n,NULL,NULL FROM generate_series(1,1000) n`;
+      for (const [id, rel, kind, dst, ws] of [
+        ['raw', 'implements', 'plan_item', target + '#P-001', workspace],
+        ['raw', 'implements', 'plan_item', target + '#P-001', workspace],
+        [harness + '#qualified', 'relates', 'plan_item', target + '#P-002', workspace],
+        ['both', 'implements', 'plan_item', target + '#P-001', workspace],
+        [harness + '#both', 'relates', 'plan_item', target + '#P-002', workspace],
+        ['no-evidence', 'relates', 'plan_item', target + '#P-003', workspace],
+        ['wrong-plan', 'implements', 'plan_item', target + '-other#P-001', workspace],
+        ['wrong-rel', 'depends-on', 'plan_item', target + '#P-001', workspace],
+        ['wrong-kind', 'implements', 'work_item', target + '#P-001', workspace],
+        ['wrong-link-workspace', 'implements', 'plan_item', target + '#P-001', 'other-workspace'],
+        ['other-harness#wrong-harness-qualified', 'implements', 'plan_item', target + '#P-001', workspace],
+      ]) await db.sql`INSERT INTO harness_shared.coord_links VALUES (${ws},${id},${rel},${kind},${dst})`;
+      const statement = linkedCensusSql(workspace, harness, target);
+      const actual = (await db.sql.unsafe(statement))[0]!.census as Json[];
+      const expected = ['both', 'direct', 'no-evidence', 'qualified', 'raw'].map(id => ({ id,
+        files: id === 'no-evidence' ? null : [id + '.ts'],
+        stamp: id === 'no-evidence' ? null : { contentIdentity: [{ path: id + '.ts', headBlobSha: id }] },
+      }));
+      expect(actual.sort((a, b) => a.id.localeCompare(b.id))).toEqual(expected);
+      const explain = await db.sql.unsafe('EXPLAIN (ANALYZE, FORMAT JSON) ' + statement);
+      const scans: Json[] = [];
+      const visit = (node: Json) => {
+        if (node['Relation Name'] === 'coord_links') scans.push(node);
+        for (const child of node.Plans ?? []) visit(child);
+      };
+      visit(explain[0]!['QUERY PLAN'][0].Plan);
+      expect(scans.length).toBeGreaterThan(0);
+      expect(scans.map(node => node['Actual Loops'])).toEqual([1]);
+    } finally { await db.cleanup(); }
+  }, 90_000);
   it.skipIf(process.env.PAPERCUSP_EGM_RELEASE !== '1')('verifies the complete accepted production population and three public journeys on the exact executing release', async () => {
     requireProof(process.env.PAPERCUSP_EGM_RELEASE_FIXTURE && process.env.PAPERCUSP_TEST_RUN_WORK_ITEM &&
       process.env.PAPERCUSP_TEST_RUN_HARNESS === 'papercusp' &&
