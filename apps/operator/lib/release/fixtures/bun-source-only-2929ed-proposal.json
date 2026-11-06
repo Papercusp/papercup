@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "bun-source-only-post-read-fixture-v1",
+  "sourcePin": "2929ed6266e164613ab45201cd7b8e9f7fcecee7",
+  "destination": "/mnt/data/tmp/bun-p006-source-2929ed-0dcd3-20261106",
+  "postReadCommand": "candidate_head=$(timeout 10s git -C '/mnt/data/tmp/bun-p006-source-2929ed-0dcd3-20261106' rev-parse HEAD) || exit \"$?\"\ntest \"$candidate_head\" = '2929ed6266e164613ab45201cd7b8e9f7fcecee7'\ntest -d '/mnt/data/tmp/bun-p006-source-2929ed-0dcd3-20261106/.git'\ncandidate_status=$(timeout 20s git -C '/mnt/data/tmp/bun-p006-source-2929ed-0dcd3-20261106' status --porcelain --untracked-files=all --ignore-submodules=none) || exit \"$?\"\ntest -z \"$candidate_status\"\ntimeout 20s git -C '/mnt/data/tmp/bun-p006-source-2929ed-0dcd3-20261106' submodule status --recursive"
+}
