@@ -193,6 +193,25 @@ it('persists elapsed time for the phase that reaches its bounded timeout', async
     WHERE workspace_id=${opts.workspaceId} AND run_id=${run.runId}::uuid AND family='native-operation'`;
   expect(saved!.diagnostics.phaseDurationsMs['continuity-before']).toBeGreaterThanOrEqual(200);
 });
+it('P004 persists the frozen SQL window and source phase timings across a later wake', async () => {
+  await f.seed(); await f.seed(); await f.seed();
+  const first = await mineSqlCandidateSlice(f.opts({ rowBudget: 1 }));
+  expect(first).toMatchObject({ status: 'ok', more: true });
+  const opts = f.opts({ now: f.now + 86400_000, rowBudget: 3, timeBudgetMs: 30_000 });
+  const run = await runMonitoredCensus(opts, () => mineSqlCandidateSlice(opts));
+  const row = run.families.find(item => item.family === 'sql')!;
+  const [stored] = await f.db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
+    WHERE run_id=${run.runId}::uuid AND family='sql'`;
+  for (const diagnostics of [row.diagnostics, stored!.diagnostics]) {
+    expect(diagnostics).toMatchObject({ backlog: false, sqlPhase: 'commit',
+      sqlPhaseDurationsMs: { source: expect.any(Number), parse: expect.any(Number),
+        aggregate: expect.any(Number), commit: expect.any(Number) } });
+    const window = diagnostics.window as { since: string; until: string };
+    expect(Date.parse(window.until)).toBe(Date.parse(first.window!.until));
+    expect(window.since).toBe(first.window!.since);
+    expect(Date.parse(window.until)).not.toBe(opts.now);
+  }
+});
 it('drains a fixed activity window across equal-timestamp keyset pages before grouping a search chain', async () => {
   for (const query of ['job queue', 'job status', 'job owner']) {
     const id = await f.seed();

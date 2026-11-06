@@ -666,11 +666,14 @@ export const CELL_READ_TIMEOUT_MS = Number(process.env.PAPERCUSP_CELL_READ_TIMEO
  * so every caller still gets a value computed after it asked. That keeps the "read it
  * RIGHT NOW" contract.
  *
- * The key includes everything that can change what the dispatch returns or is allowed to
- * see: tool, args, workspace, harness, role, the reader (`onBehalfOf`) and the caller
- * context. Two readers never share a result, so this cannot widen anyone's view.
- * A call with an `AbortSignal` is never shared, because one caller aborting must not
- * cancel the others.
+ * The key includes every plain dispatch input that can change the result: tool, args,
+ * workspace, harness, role, and reader (`onBehalfOf`). A wearer `callerContext` is never
+ * keyed: it carries live principal capabilities (including Sets that JSON.stringify
+ * erases) and its own AbortSignal. There is no canonical authority/version contract here
+ * that proves two caller contexts stay equivalent for the life of an in-flight dispatch,
+ * so caller-bound reads never share. Plain internal reads retain in-flight-only sharing.
+ * A call with an `AbortSignal` is likewise never shared, because one caller aborting must
+ * not cancel the others.
  */
 const resolverInflight = pinModuleState('@papercusp/operator-core.cell-read.resolver-inflight', () => ({
   byKey: new Map<string, Promise<unknown>>(),
@@ -683,16 +686,8 @@ export function resolverDispatchKey(
   env: CellReadEnv,
   onBehalfOf: string,
 ): string | null {
-  if (env.signal) return null;
-  let callerContext = '';
-  if (env.callerContext) {
-    try {
-      callerContext = JSON.stringify(env.callerContext);
-    } catch {
-      return null; // not serializable, so we cannot prove two contexts are equal
-    }
-  }
-  return JSON.stringify([tool, args, env.workspaceId, env.harnessSlug, env.role, onBehalfOf, callerContext]);
+  if (env.signal || env.callerContext) return null;
+  return JSON.stringify([tool, args, env.workspaceId, env.harnessSlug, env.role, onBehalfOf]);
 }
 
 function coalescedResolverDispatch(key: string | null, start: () => Promise<unknown>): Promise<unknown> {

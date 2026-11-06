@@ -20,7 +20,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
   };
 });
 
-import { readCell, resolverDispatchKey, __resolverInflightCountForTests } from './cell-read';
+import { readCell, resolverDispatchKey, __resolverInflightCountForTests, type CellReadEnv } from './cell-read';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
 
 const ENV = { workspaceId: 'default', harnessSlug: 'papercusp', role: 'su' };
@@ -69,6 +69,17 @@ function deferredDispatch() {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+function callerContext(
+  principalSlug: string,
+  capabilities: Iterable<string>,
+  signal = new AbortController().signal,
+): NonNullable<CellReadEnv['callerContext']> {
+  return {
+    principal: { slug: principalSlug, workspaceId: ENV.workspaceId, capabilities: new Set(capabilities) },
+    signal,
+  } as NonNullable<CellReadEnv['callerContext']>;
 }
 
 beforeEach(() => {
@@ -124,6 +135,84 @@ describe('readCell — concurrent identical resolver dispatches are shared', () 
     expect(onBehalfOf.sort()).toEqual(['su-me', 'su-other']);
   });
 
+  it('does not share when the same wearer loses a capability during an in-flight read', async () => {
+    const first = deferredDispatch();
+    const afterRevocation = deferredDispatch();
+    let call = 0;
+    dispatchReadOnlyTool.mockImplementation(() => (call++ === 0 ? first.promise : afterRevocation.promise));
+
+    const liveCapabilities = new Set(['read:private']);
+    const firstContext = callerContext('wearer-principal', liveCapabilities);
+    const firstRead = readCell('test.a', READER, { ...ENV, callerContext: firstContext });
+    await vi.waitFor(() => expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1));
+    const firstEnv = dispatchReadOnlyTool.mock.calls[0]![2] as { callerContext: NonNullable<CellReadEnv['callerContext']> };
+    expect([...firstEnv.callerContext.principal!.capabilities]).toEqual(['read:private']);
+
+    liveCapabilities.clear();
+    const revokedContext = callerContext('wearer-principal', liveCapabilities);
+    const revokedRead = readCell('test.a', READER, { ...ENV, callerContext: revokedContext });
+    await vi.waitFor(() => expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(2));
+    const revokedEnv = dispatchReadOnlyTool.mock.calls[1]![2] as { callerContext: NonNullable<CellReadEnv['callerContext']> };
+    expect(revokedEnv.callerContext).toBe(revokedContext);
+    expect([...revokedEnv.callerContext.principal!.capabilities]).toEqual([]);
+
+    first.resolve(PAYLOAD);
+    afterRevocation.resolve(PAYLOAD);
+    const [before, after] = await Promise.all([firstRead, revokedRead]);
+    expect(before.status).toBe('value');
+    expect(after.status).toBe('value');
+  });
+
+  it('does not share caller contexts for different principal subjects', async () => {
+    const first = deferredDispatch();
+    const second = deferredDispatch();
+    let call = 0;
+    dispatchReadOnlyTool.mockImplementation(() => (call++ === 0 ? first.promise : second.promise));
+
+    const reads = Promise.all([
+      readCell('test.a', READER, { ...ENV, callerContext: callerContext('subject-one', ['read:private']) }),
+      readCell('test.a', READER, { ...ENV, callerContext: callerContext('subject-two', ['read:private']) }),
+    ]);
+    await vi.waitFor(() => expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(2));
+    const subjects = dispatchReadOnlyTool.mock.calls.map((callArgs) =>
+      (callArgs[2] as { callerContext: NonNullable<CellReadEnv['callerContext']> }).callerContext.principal!.slug,
+    );
+    expect(subjects).toEqual(['subject-one', 'subject-two']);
+
+    first.resolve(PAYLOAD);
+    second.resolve(PAYLOAD);
+    const results = await reads;
+    expect(results.map((result) => result.status)).toEqual(['value', 'value']);
+  });
+
+  it('keeps caller-owned cancellation signals isolated between overlapping reads', async () => {
+    const first = deferredDispatch();
+    const second = deferredDispatch();
+    let call = 0;
+    dispatchReadOnlyTool.mockImplementation(() => (call++ === 0 ? first.promise : second.promise));
+    const firstAbort = new AbortController();
+    const secondAbort = new AbortController();
+
+    const reads = Promise.all([
+      readCell('test.a', READER, { ...ENV, callerContext: callerContext('wearer-principal', ['read:private'], firstAbort.signal) }),
+      readCell('test.a', READER, { ...ENV, callerContext: callerContext('wearer-principal', ['read:private'], secondAbort.signal) }),
+    ]);
+    await vi.waitFor(() => expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(2));
+    const signals = dispatchReadOnlyTool.mock.calls.map((callArgs) =>
+      (callArgs[2] as { callerContext: NonNullable<CellReadEnv['callerContext']> }).callerContext.signal,
+    );
+    expect(signals).toEqual([firstAbort.signal, secondAbort.signal]);
+
+    firstAbort.abort();
+    expect(firstAbort.signal.aborted).toBe(true);
+    expect(secondAbort.signal.aborted).toBe(false);
+
+    first.resolve(PAYLOAD);
+    second.resolve(PAYLOAD);
+    const results = await reads;
+    expect(results.map((result) => result.status)).toEqual(['value', 'value']);
+  });
+
   it('a rejected shared dispatch fails every waiter the same way and leaves nothing behind', async () => {
     const d = deferredDispatch();
     dispatchReadOnlyTool.mockReturnValue(d.promise.then(() => Promise.reject(new Error('resolver blew up'))));
@@ -160,5 +249,17 @@ describe('resolverDispatchKey — the key separates everything the result depend
   it('refuses to share a call that carries an AbortSignal', () => {
     const signal = new AbortController().signal;
     expect(resolverDispatchKey('dev:pipeline_position', {}, { ...ENV, signal }, 'su-me')).toBeNull();
+  });
+
+  it('refuses to serialize caller authority Sets or caller-owned cancellation into a shared key', () => {
+    const granted = callerContext('wearer-principal', ['read:private']);
+    const revoked = callerContext('wearer-principal', []);
+    const callerSignal = new AbortController().signal;
+
+    expect(resolverDispatchKey('dev:pipeline_position', {}, { ...ENV, callerContext: granted }, 'su-me')).toBeNull();
+    expect(resolverDispatchKey('dev:pipeline_position', {}, { ...ENV, callerContext: revoked }, 'su-me')).toBeNull();
+    expect(resolverDispatchKey('dev:pipeline_position', {}, {
+      ...ENV, callerContext: callerContext('wearer-principal', ['read:private'], callerSignal),
+    }, 'su-me')).toBeNull();
   });
 });
