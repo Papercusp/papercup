@@ -13,6 +13,7 @@ import {
 } from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { specClauseWriteIssues } from './agent-tools/plans/spec-clauses-store';
+import { AcceptanceBarCandidateError } from './acceptance-bar-projection';
 
 // Mirrors the fixture in acceptance-bar-amendment.test.ts. R-1 mapped to P-001 is what
 // makes the canonical identity `AUTO-BAR-R-1-P-001` -- the exact clause that wedged the
@@ -172,7 +173,27 @@ describe('complete generated candidate preflight (P-002)', () => {
       falsifier,
     });
     expect(expected).toEqual([{ status: 'falsifier_invalid', specId: row.spec_id, reason: 'required_scenario_duplicate' }]);
-    await expect(preview([row], data)).rejects.toThrow(JSON.stringify(expected));
+    await expect(preview([row], data)).rejects.toThrow(JSON.stringify(expected[0]));
+  });
+
+  it('returns consolidated semantic failures bound to the whole failed candidate', async () => {
+    const data = seedTemplateData();
+    const row = clauseRow({
+      source_bar_hash: data.criteria[0]!.barHash,
+      behavior: 'The writer works; the reader works.',
+      falsifier: { observation: ' ' },
+    });
+    const failure = await preview([row], data).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AcceptanceBarCandidateError);
+    const validation = (failure as AcceptanceBarCandidateError).candidateValidation;
+    expect(validation).toMatchObject({ status: 'failed', candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(validation.issues.join('; ')).toMatch(/falsifier_invalid.*behavior.atomicity/);
+    const repeated = await preview([row], data).catch((error: AcceptanceBarCandidateError) => error.candidateValidation);
+    expect(repeated).toEqual(validation);
+    const changed = await preview([{ ...row, behavior: 'The reader works; the writer works.' }], data)
+      .catch((error: AcceptanceBarCandidateError) => error.candidateValidation);
+    expect(changed).not.toEqual(validation);
+    expect(h.setSpecClause).not.toHaveBeenCalled();
   });
 
   it('binds a corrected preflight pass to the exact normalized candidate and generated refinements', async () => {

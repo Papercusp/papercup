@@ -69,7 +69,9 @@ describe('lost host to restored native conversation', () => {
     headless: boolean; waiting: boolean; stopped: boolean; negative: string | null;
     boundary?: 'event' | 'deadline' | 'human'; duringDowntime?: boolean;
     fleetFirst?: boolean;
+    productionGuarded?: boolean;
   }>([
+    { headless: true, waiting: false, stopped: false, negative: null, productionGuarded: true },
     { headless: true, waiting: false, stopped: false, negative: null },
     ...[true, false].map(fleetFirst => ({ headless: fleetFirst, waiting: false,
       stopped: false, negative: null, fleetFirst })),
@@ -80,7 +82,7 @@ describe('lost host to restored native conversation', () => {
     { headless: true, waiting: false, stopped: false, negative: 'completed' },
     { headless: true, waiting: false, stopped: false, negative: 'unknown' },
     { headless: true, waiting: false, stopped: false, negative: 'stale' },
-  ])('preserves placement=$headless wait=$waiting stop=$stopped negative=$negative boundary=$boundary downtime=$duringDowntime fleetFirst=$fleetFirst', async scenario => {
+  ])('preserves placement=$headless wait=$waiting stop=$stopped negative=$negative boundary=$boundary downtime=$duringDowntime fleetFirst=$fleetFirst production=$productionGuarded', async scenario => {
     const root = mkdtempSync(join(tmpdir(), 'interrupted-host-journey-'));
     const owner = `ih-${process.pid}-${Date.now()}`;
     const ws = m.ws;
@@ -103,9 +105,13 @@ describe('lost host to restored native conversation', () => {
     const transcript = join(config, 'sessions', `rollout-${native}.jsonl`);
     writeFileSync(transcript, '');
     const [adv] = await db.adminSql`INSERT INTO harness_shared.adv_sessions
-      (workspace_id, agent, mode, coord_owner_id, session_id, started_at, launch_spec)
+      (workspace_id, agent, mode, coord_owner_id, session_id, started_at, launch_spec, cwd, launch_argv)
       VALUES (${ws}, 'codex', 'console', ${owner}, ${native}, now(),
-        ${JSON.stringify({ headless: scenario.headless })}::jsonb) RETURNING id`;
+        ${JSON.stringify({ v: 1, agent: 'codex', workspaceId: ws, harnessSlug: 'papercusp',
+          headless: scenario.headless })}::jsonb, ${root},
+        ${JSON.stringify(['psu', '--no-picker', '--agent=codex', '--harness=papercusp',
+          '--account=default', '--carry=warm', '--role=su', ...(scenario.headless ? ['--headless'] : [])])}::jsonb)
+      RETURNING id`;
     const children: ChildProcess[] = [];
     const hostModule = fileURLToPath(new URL('../scripts/psu-pty-host.mjs', import.meta.url));
     const readMeta = () => {
@@ -224,7 +230,7 @@ describe('lost host to restored native conversation', () => {
       let release!: () => void;
       const launchEntered = new Promise<void>(resolve => { entered = resolve; });
       const launchReleased = new Promise<void>(resolve => { release = resolve; });
-      m.launch.mockReset().mockImplementation(async (args: any) => {
+      m.launch.mockReset().mockImplementation(async (args: any, launchContext: any) => {
         expect(args).toMatchObject({ resume: { agentId: owner }, fork: false, headless: scenario.headless });
         expect(args[Symbol.for('host-journey')]).toMatchObject({ ownerId: owner,
           nativeSessionId: native, wait: scenario.waiting });
@@ -233,6 +239,25 @@ describe('lost host to restored native conversation', () => {
         const before = readFileSync(transcript, 'utf8');
         entered();
         if (scenario.fleetFirst != null) await launchReleased;
+        if (scenario.productionGuarded) {
+          const production = await vi.importActual<typeof import('../../../packages/operator-core/lib/agent-tools/capability/launch-agent')>(
+            '../../../packages/operator-core/lib/agent-tools/capability/launch-agent');
+          // Preserve the real handler, resume resolver, safety callbacks and
+          // verification. Only the last OS spawn is a deterministic native CLI.
+          m.replacement.mockImplementation(async (options: any) => {
+            expect(options.envelope.env.PAPERCUSP_SID).toBe(owner);
+            expect(options.envelope.command).toContain(native);
+            const replacement = await start(true);
+            return { status: 'ok', pid: replacement.pid, terminal: 'headless',
+              child: children.at(-1), display: null, desktopEnvResolvedVia: null };
+          });
+          const response = await production.default.handler({ ...args,
+            [production.INTERNAL_INTERRUPTION_RECOVERY]: args[Symbol.for('host-journey')],
+          }, launchContext);
+          expect(response.isError, JSON.stringify(response)).not.toBe(true);
+          expect(m.replacement).toHaveBeenCalledTimes(1);
+          return response;
+        }
         await args[Symbol.for('host-journey')].beforeNativeCreate();
         const replacement = await start(!scenario.waiting);
         expect(replacement.execution.nativeSessionId).toBe(native);
@@ -282,7 +307,10 @@ describe('lost host to restored native conversation', () => {
         expect(children).toHaveLength(1);
         expect(readFileSync(transcript, 'utf8')).toBe(transcriptBeforeRecovery);
       } else {
-        if (scenario.fleetFirst == null) expect(result.restored).toContain(owner);
+        const [settlement] = await db.adminSql`SELECT control_state #> '{lifecycle,interruption}' AS receipt
+          FROM harness_shared.session_briefs WHERE owner_id = ${owner}`;
+        if (scenario.fleetFirst == null) expect(result.restored,
+          JSON.stringify({ result, settlement: settlement?.receipt })).toContain(owner);
         expect(m.launch).toHaveBeenCalledTimes(1);
         await sweepSessionInterruptions({ workspaceId: ws, installSlug: 'papercusp',
           triggerConfig: {}, payloadTemplate: null });

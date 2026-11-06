@@ -18,6 +18,8 @@ import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import { normalizeBarMappingDelta } from './acceptance-bar-amendment-requirements-drift';
+import { AcceptanceBarCandidateError, acceptanceBarCandidateHash } from './acceptance-bar-projection';
+import { specBehaviorNonAtomicReason, specBehaviorNonFalsifiableReason } from './agent-tools/plans/spec-clause-compiler';
 import {
   setSpecClause,
   specClauseWriteIssues,
@@ -1142,16 +1144,23 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
       clause, actorId: 'preview',
     }));
   }
-  const issues = candidateWrites.flatMap(specClauseWriteIssues);
+  const candidate = {
+    workspaceId: args.workspaceId, harnessSlug: args.harnessSlug,
+    rubricSlug: args.rubricSlug, rubricRevision: args.rubricRevision,
+    templateData: parsed.data, subjectContent, generatedSpecifications: candidateWrites,
+  };
+  const issues = candidateWrites.flatMap((write) => [
+    ...specClauseWriteIssues(write).map((issue) => JSON.stringify(issue)),
+    ...[
+      ['behavior.atomicity', specBehaviorNonAtomicReason(write.behavior)],
+      ['behavior.falsifiability', specBehaviorNonFalsifiableReason(write.behavior)],
+    ].flatMap(([field, reason]) => reason ? [`${write.specId}.${field}: ${reason}`] : []),
+  ]);
   if (issues.length) {
-    throw new Error(`invalid_args: acceptance_bar_candidate_invalid: ${JSON.stringify(issues)}`);
+    throw new AcceptanceBarCandidateError(candidate, issues);
   }
   return {
-    candidateHash: createHash('sha256').update(canonicalJson({
-      workspaceId: args.workspaceId, harnessSlug: args.harnessSlug,
-      rubricSlug: args.rubricSlug, rubricRevision: args.rubricRevision,
-      templateData: parsed.data, subjectContent, generatedSpecifications: candidateWrites,
-    })).digest('hex'),
+    candidateHash: acceptanceBarCandidateHash(candidate),
     generatedSpecCount: candidateWrites.length,
   };
 }

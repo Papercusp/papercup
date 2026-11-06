@@ -3487,7 +3487,7 @@ const ZERO_BYTE_LOOSE_OBJECT_REPORT_LIMIT = 20;
  * commit that no remote can restore, so automatic deletion would destroy the
  * only remaining identity needed for reflog/working-tree recovery.
  */
-async function findZeroByteLooseObjects(runGit: RunGit, repoPath: string): Promise<string[]> {
+export async function findZeroByteLooseObjects(runGit: RunGit, repoPath: string): Promise<string[]> {
   const gitDir = await gitDirForRepo(runGit, repoPath);
   if (!gitDir) return [];
   let fanouts: string[];
@@ -4623,7 +4623,9 @@ async function unstagePreStagedProtectedPaths(
   // writer, so an orphaned index.lock blocks it exactly like `git add`/`git commit`.
   // Without the shared age-checked, live-holder-guarded recovery, every tick failed
   // here until someone removed the lock by hand (2026-09-30: superproject frozen for over an hour).
-  const resetArgs = ['reset', '-q', 'HEAD', '--', ...protectedStaged];
+  // These path resets update index blobs, not working-tree stat caches. The default
+  // mixed-reset refresh scans every index entry once per group (EI-280018).
+  const resetArgs = ['reset', '-q', 'HEAD', '--no-refresh', '--', ...protectedStaged];
   const unstage = await recoverIndexLockContention(
     await runGit(resetArgs, repoPath),
     () => runGit(resetArgs, repoPath),
@@ -5407,7 +5409,7 @@ async function commitPriorityPaths(
         const committedPaths = changed.stdout.split('\0').filter(Boolean);
         if (committedPaths.length === 0) return { ok: true };
         const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
-        const resetArgs = ['reset', '-q', commit, '--', ...committedPaths];
+        const resetArgs = ['reset', '-q', commit, '--no-refresh', '--', ...committedPaths];
         const refresh = await recoverIndexLockContention(
           await runGit(resetArgs, repoPath, literal),
           () => runGit(resetArgs, repoPath, literal),
@@ -6095,7 +6097,7 @@ async function commitAttributedGroupsPass(
         }
         // ⚠ never reset with an EMPTY pathspec: that resets the whole shared index.
         if (committedPaths.length === 0) return { ok: true };
-        const resetArgs = ['reset', '-q', commit, '--', ...committedPaths];
+        const resetArgs = ['reset', '-q', commit, '--no-refresh', '--', ...committedPaths];
         const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
         const refresh = await recoverIndexLockContention(
           await runGit(resetArgs, repoPath, literal),
@@ -7548,7 +7550,7 @@ async function commitOneRepoWithScratch(
         const pathspecFile = join(privateBase.gitDir, `papercusp-git-sync-catch-all-${process.pid}-${randomUUID()}.pathspec`);
         scratch.push(pathspecFile);
         await writeFile(pathspecFile, `${committedPaths.join('\0')}\0`);
-        const resetArgs = ['reset', '-q', commit, `--pathspec-from-file=${pathspecFile}`, '--pathspec-file-nul'];
+        const resetArgs = ['reset', '-q', commit, '--no-refresh', `--pathspec-from-file=${pathspecFile}`, '--pathspec-file-nul'];
         const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
         const refresh = await recoverIndexLockContention(
           await runGit(resetArgs, repoPath, literal),

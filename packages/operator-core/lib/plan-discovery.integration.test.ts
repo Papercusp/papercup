@@ -78,7 +78,7 @@ describe('discovery uses existing revision and audit authorities', () => {
       .toMatchObject({ ok: false, error: 'discovery_not_ready' });
     const [{ count: after }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.work_items WHERE workspace_id=${fx.workspaceId}`;
     expect(after).toBe(before);
-    expect(await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId })).toBeNull();
+    expect(await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId, harnessSlug: harness })).toBeNull();
   });
   it('admits finalized current discovery to the real activation writer and refuses a changed target', async () => {
     // The positive control must satisfy the existing BAR seed contract too.
@@ -105,10 +105,10 @@ describe('discovery uses existing revision and audit authorities', () => {
     expect(await recordCurrentDiscoveryAudit(input(), { context })).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
     const accepted = await recordCurrentActivationAudit(activation(), { context });
     expect(accepted, JSON.stringify(accepted)).toMatchObject({ ok: true, audit: { auditKind: 'activation' } });
-    const before = await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId });
+    const before = await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId, harnessSlug: harness });
     await revision(reviewPlan.replace('Wire the existing helper', 'Replace the helper with a different service'));
     expect(await recordCurrentActivationAudit(activation(), { context })).toMatchObject({ ok: false, error: 'discovery_not_ready' });
-    expect((await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId }))?.auditSeq).toBe(before?.auditSeq);
+    expect((await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId, harnessSlug: harness }))?.auditSeq).toBe(before?.auditSeq);
   });
   it('keeps canonical identities for legacy prose requirements as well as structured BARs', () => {
     const plan = draft + '\n## Requirements\n\n**R-1 — Existing behavior.** Preserve the helper behavior.\n';
@@ -124,8 +124,8 @@ describe('discovery uses existing revision and audit authorities', () => {
       WHERE p.workspace_id=${fx.workspaceId} AND p.harness_slug=${harness} AND p.plan_slug=${slug}`;
     expect(row.content).toBe(draft);
     expect(row.discovery.evidence[0].fingerprint).toBe('a'.repeat(64));
-    expect(await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId })).toBeNull();
-    expect(await getLatestPlanAudit(slug, { workspaceId: fx.workspaceId })).toBeNull();
+    expect(await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId, harnessSlug: harness })).toBeNull();
+    expect(await getLatestPlanAudit(slug, { workspaceId: fx.workspaceId, harnessSlug: harness })).toBeNull();
   });
   it('reuses identical and cosmetic state with original provenance and no second write', async () => {
     const first = await recordCurrentDiscoveryAudit(input(), { context });
@@ -134,21 +134,21 @@ describe('discovery uses existing revision and audit authorities', () => {
     await revision(draft.replace('## Now\nDraft', '## Now\nChanged bookkeeping').replace('Wire the existing helper', 'Wire   the existing helper'));
     expect(discoverySubjectSnapshot(draft)).toEqual(discoverySubjectSnapshot(draft.replace('Wire the existing helper', 'Wire   the existing helper')));
     expect(await recordCurrentDiscoveryAudit(input(), { context })).toMatchObject({ ok: true, reused: true });
-    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND plan_slug=${slug}`;
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(count).toBe(1);
   });
   it('previews without writes and stores honest non-ready results without inventing approval', async () => {
     expect(await recordCurrentDiscoveryAudit({ ...input(), dryRun: true }, { context })).toMatchObject({ ok: true, preview: true });
     const unknown = async () => ({ ...await context(), evidence: [] });
     expect(await recordCurrentDiscoveryAudit(input(), { context: unknown })).toMatchObject({ ok: true, discovery: { readiness: { ready: false, state: 'unknown' } } });
-    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND plan_slug=${slug}`;
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(count).toBe(1);
   });
   it('refuses moved evidence at the accepting boundary with zero audit effects', async () => {
     let calls = 0;
     const moving = async () => { const value = await context(); value.evidence[0]!.fingerprint = String(++calls); return value; };
     expect(await recordCurrentDiscoveryAudit(input(), { context: moving })).toMatchObject({ ok: false, error: 'discovery_subject_moved' });
-    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND plan_slug=${slug}`;
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(count).toBe(0);
   });
   it('refuses a missing matching revision rather than attaching stale provenance', async () => {

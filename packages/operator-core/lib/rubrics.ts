@@ -90,7 +90,7 @@ import {
   type BarMappingDeltaEntry,
 } from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
-import { assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
+import { AcceptanceBarCandidateError, assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -5169,7 +5169,11 @@ async function amendAcceptanceBarRubric(
         candidateFailures.push(error instanceof Error ? error.message : String(error));
       }
       if (!built || candidateFailures.length) {
-        throw new Error(`invalid_args: acceptance_bar_candidate_invalid: ${candidateFailures.join('; ')}`);
+        throw new AcceptanceBarCandidateError({
+          workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug,
+          rubricSlug: input.rubricId, rubricRevision: Number(rubricRow.version) + 1,
+          subjectContent: subjectRow.content, amendment: amended,
+        }, candidateFailures);
       }
       // The stored acceptance BAR can contain continuity probes pinned to a
       // projected-tool revision that has since rolled forward. Rebuilding the
