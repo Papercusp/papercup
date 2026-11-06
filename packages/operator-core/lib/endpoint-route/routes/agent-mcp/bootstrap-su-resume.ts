@@ -344,6 +344,7 @@ const sessionRespawned = defineTool({
     let coordOwnerId: string | null = null;
     let sessionId: string | null = null;
     let turnProvenanceDir: string | undefined;
+    let managedSuccession: { phase?: unknown; request?: unknown; permit?: unknown } | undefined;
     // WI-6554700010030031: present only on an in-place context-reset report — the
     // launch id of the SAME child, kept as an accepted alias of the rotated id.
     let childLaunchSessionId: string | null = null;
@@ -354,7 +355,9 @@ const sessionRespawned = defineTool({
         sessionId?: unknown;
         childLaunchSessionId?: unknown;
         turnProvenanceDir?: unknown;
+        managedSuccession?: typeof managedSuccession;
       };
+      managedSuccession = body.managedSuccession;
       if (body.turnProvenanceDir !== undefined) {
         if (typeof body.turnProvenanceDir !== 'string' || !isAbsolute(body.turnProvenanceDir) || body.turnProvenanceDir.includes('\0'))
           return jsonRes({ error: 'turnProvenanceDir must be an absolute runtime namespace' }, 400);
@@ -383,11 +386,30 @@ const sessionRespawned = defineTool({
       return jsonRes({ error: 'sessionId (native session UUID) required' }, 400);
     }
     try {
+      if (managedSuccession !== undefined) {
+        const principal = await requirePrincipal(req.headers, { kind: ['system'], trust: ['trusted'] });
+        if (principal.slug !== 'system:superuser' || principal.authMethod !== 'bearer-token')
+          return jsonRes({ ok: false }, 403);
+        if (!advSessionId || !coordOwnerId || !managedSuccession ||
+            !['reserve', 'settle'].includes(String(managedSuccession.phase)))
+          return jsonRes({ ok: false, error: 'invalid managed succession' }, 400);
+        if (managedSuccession.phase === 'reserve') {
+          const request = managedSuccession.request as { ownerId?: unknown; advSessionId?: unknown;
+            sourceNativeSessionId?: unknown } | undefined;
+          if (request?.ownerId !== coordOwnerId || request?.advSessionId !== advSessionId ||
+              request?.sourceNativeSessionId !== sessionId) return jsonRes({ ok: false }, 400);
+          const { reserveBlindReviewManagedSuccession } = await import('../../../blind-review-continuation-custody');
+          const permit = await reserveBlindReviewManagedSuccession(activeWorkspaceId(), request);
+          return jsonRes({ ok: true, managedSuccessionPermit: permit });
+        }
+      }
       let reanchored = false;
       let owner: string | null = null;
       if (advSessionId != null && advSessionId > 0) {
         ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId, {
           childLaunchSessionId, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
+          ...(managedSuccession ? { managedSuccessionPermit: managedSuccession.permit as
+            import('../../../blind-review-continuation-custody').BlindReviewManagedSuccessionPermit } : {}),
         }));
       }
       // Owner-keyed fallback is reserved for legacy reports that genuinely carry

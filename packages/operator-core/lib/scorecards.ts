@@ -3213,6 +3213,9 @@ async function readActiveGradingAuditTaskOwners(
      WHERE workspace_id = ${workspaceId}
        AND class = 'agent-session'
        AND state IN ('pending', 'running')
+       AND detail->'gradingAudit'->>'issueId' = ${issueId}
+       AND detail->'gradingAudit'->'reservation'->>'key' = ${reservation.key}
+       AND detail->'gradingAudit'->'reservation'->>'reservedAt' = ${reservation.reservedAt}
        AND (detail->>'label' = ${reservation.key}
          OR LEFT(detail->>'label', ${labelPrefix.length}) = ${labelPrefix})
        AND (work_item_id IS NULL OR work_item_id = ${issueId})
@@ -3233,8 +3236,10 @@ async function isCurrentSourceAuditResponderInTransaction(
   if (current) return current.answering_owner_id === ownerId;
 
   // A direct launch fallback has no consult cursor. Bind its shared lease to
-  // the owner on the live dispatcher task; absence of a consult alone is not
-  // authority for any session that receives the lease string.
+  // the owner on the live dispatcher task for this exact reservation epoch.
+  // A missed exit watcher can leave an older task with the same label running;
+  // that row cannot authorize its old owner or veto the current replacement.
+  // Absence of a consult alone is not authority for a session holding the lease.
   const taskOwners = await readActiveGradingAuditTaskOwners(tx, workspaceId, issueId, reservation);
   return taskOwners.length > 0 && taskOwners.every((task) => task.coord_owner_id === ownerId);
 }

@@ -251,7 +251,8 @@ describe('plans:blind-review op post — scratch-plan cleanup', () => {
     expect(isError).toBe(false);
     expect(body).toMatchObject({ ok: true, id: 9 });
     expect(withAuthenticatedBlindReviewEndpoint).toHaveBeenCalledWith({ workspaceId: 'ws-resolved',
-      bindingId: 17, reviewerOwnerId: 'su-reviewer', authenticatedAdvSessionId: 42 }, expect.any(Function));
+      bindingId: 17, reviewerOwnerId: 'su-reviewer', authenticatedAdvSessionId: 42,
+      authenticatedNative: undefined }, expect.any(Function));
     expect(recordBlindReview).toHaveBeenCalledWith(expect.objectContaining({ activationAuditSeq: 3 }),
       { sql: { testTransaction: true } });
     expect(recordBlindReviewSessionPost).toHaveBeenCalledWith({

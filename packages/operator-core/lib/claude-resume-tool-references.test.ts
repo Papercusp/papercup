@@ -52,6 +52,40 @@ describe('Claude resume tool-reference recovery', () => {
     });
   });
 
+  it.each([
+    ['authentication_failed', 'Authentication credentials unavailable'],
+    ['unknown', 'Not logged in · Please run /login'],
+  ])('detects a synthetic authentication rejection (%s)', (error, text) => {
+    const rejected = JSON.stringify({ ...JSON.parse(apiError(text, 401)), error });
+    expect(analyzeClaudeResumeTranscript(rejected)).toMatchObject({
+      trailingAccountWallTurns: 1,
+      lastAccountWallEvidence: text,
+      trailingProviderErrorTurns: 0,
+      assistantTurnsSinceLastPrompt: 1,
+    });
+  });
+
+  it('keeps model discussion and quoted synthetic login prose out of authentication evidence', () => {
+    const text = 'Not logged in · Please run /login';
+    const discussion = JSON.stringify({ ...JSON.parse(assistant(text)), error: 'authentication_failed' });
+    for (const record of [discussion, apiError(`The previous reviewer said ${text}`, 401)]) {
+      expect(analyzeClaudeResumeTranscript(record)).toMatchObject({
+        trailingAccountWallTurns: 0,
+        lastAccountWallEvidence: null,
+      });
+    }
+  });
+
+  it('clears copied authentication failures when the new kickoff selects another account', () => {
+    const rejected = JSON.stringify({ ...JSON.parse(apiError('Not logged in · Please run /login', 401)), error: 'authentication_failed' });
+    const kickoff = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Retry this review.' } });
+    expect(analyzeClaudeResumeTranscript([rejected, kickoff].join('\n'))).toMatchObject({
+      trailingAccountWallTurns: 0,
+      lastAccountWallEvidence: null,
+      assistantTurnsSinceLastPrompt: 0,
+    });
+  });
+
   it('does not treat ordinary discussion of a 429 account-rate error as a provider rejection', () => {
     const text = "The reviewer transcript said API Error: Request rejected (429) · This request would exceed your account's rate limit.";
     expect(analyzeClaudeResumeTranscript(assistant(text))).toMatchObject({

@@ -608,6 +608,52 @@ describe('dispatchPendingGradingAudits', () => {
     }));
     for (const effect of [d.reserve, d.route, d.launch]) expect(effect).not.toHaveBeenCalled();
   });
+  it('protects a spec-quality reservation with Discovery and commits before source routing', async () => {
+    const d = deps();
+    const issueId = 'EI-short-discovery';
+    d.listScorecards.mockResolvedValue([card(issueId, { rubricRef: 'spec-quality',
+      subject: { kind: 'plan', ref: 'spec-set:registered-subject' } })]);
+    let insideAdmission = false;
+    const withCurrentDiscovery: NonNullable<DispatchPendingGradingAuditsDeps['withCurrentDiscovery']> =
+      async (_input, accept) => {
+        insideAdmission = true;
+        try { return { ok: true, result: await accept({} as never, {} as never) }; }
+        finally { insideAdmission = false; }
+      };
+    d.reserve.mockImplementation(async () => {
+      expect(insideAdmission).toBe(true);
+      return { status: 'claimed', reservation: { key: `grading-audit:${issueId}`, reservedAt: 'protected-epoch' } };
+    });
+    d.route.mockImplementation(async () => {
+      expect(insideAdmission).toBe(false);
+      return { state: 'routed', conversationId: 'independent-audit' };
+    });
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, { ...d, withCurrentDiscovery });
+    expect(result.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'independent-audit' });
+    expect(d.confirmReservation).toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('rechecks Discovery before a recovered quota reservation', async () => {
+    const d = deps();
+    const issueId = 'EI-quota-discovery-moved';
+    d.listScorecards.mockResolvedValue([card(issueId, { rubricRef: 'spec-quality',
+      subject: { kind: 'plan', ref: 'spec-set:registered-subject' } })]);
+    d.reserve.mockResolvedValueOnce({ status: 'quota-backoff', backoff: {
+      until: '2099-01-01T00:00:00.000Z', source: 'account-ledger', code: 'model_quota_exhausted',
+      recordedAt: '2026-09-08T00:00:00.000Z', reason: 'old route quota',
+    } });
+    d.discoveryAdmission.mockReturnValueOnce(null).mockReturnValueOnce('Reconcile the changed finding.');
+    const launchCtx = { ...ctx,
+      gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' } as const };
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx: launchCtx },
+    { ...d, quotaRouteCanServe: async () => true });
+    expect(result.receipts[0]).toMatchObject({ state: 'skipped', reason: expect.stringContaining('discovery_not_ready') });
+    expect(d.discoveryAdmission).toHaveBeenCalledTimes(2);
+    expect(d.reserve).toHaveBeenCalledTimes(1);
+    for (const effect of [d.route, d.launch]) expect(effect).not.toHaveBeenCalled();
+  });
+
   it.each([
     { explicit: true, targeted: true, serving: true, launches: 1 },
     { explicit: true, targeted: true, serving: false, launches: 0 },
@@ -1515,7 +1561,7 @@ describe('dispatchPendingGradingAudits', () => {
 
     it('selects a current-build quality regrade without historical replay pins', () => {
       const card = base();
-      card.rerunRecipe = {
+      const qualityRecipe = {
         evaluator: 'plans:evaluate-spec-quality',
         evaluatorBuild: { sha: '9cb343871d', version: '0.0.0' },
         specSetHashVersion: 2,
@@ -1527,6 +1573,7 @@ describe('dispatchPendingGradingAudits', () => {
           replaySnapshot: { planContentHash: 'b'.repeat(64), clausesAsOf: '2026-10-14T12:00:00Z' },
         },
       };
+      card.rerunRecipe = qualityRecipe;
       const historicalRecipe = structuredClone(card.rerunRecipe);
       const verdict = assessEvaluatorBuildStranding(card, live, opts(() => true));
 

@@ -12,11 +12,14 @@ import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import { nativeSessionIdFromHost } from './agent-launch-core';
 import { readProcessCgroupPath } from './task-manager/cgroup-read';
 import { taskIdFromScopeUnit } from './task-manager/types';
+import { readProcessIdentity } from './process-identity';
+import type { RequestOriginMetadata } from '@papercusp/agent-mcp';
+import { z } from 'zod';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 type Native = Parameters<typeof verifyBlindReviewRecoveryPort>[0]['target'] & { resume_claim_key: string | null };
 export type BlindReviewEndpoint = { advSessionId: number; nativeSessionId: string;
-  modelSpec: string | null; continuationId: number | null };
+  modelSpec: string | null; continuationId: number | null; requiresNativeProof?: true };
 type Snapshot = { activation: number; owner: string; planHash: string; confinement: Binding['confinementSnapshot'];
   source: BlindReviewEndpoint; target: Omit<BlindReviewEndpoint, 'continuationId'>; backend: string;
   bootstrapHash: string; hashes: { source: string; normalized: string; rendered: string; token: string } };
@@ -26,6 +29,7 @@ type Entry = { id: number | string; workspace_id: string; binding_id: number | s
   snapshot: Snapshot; evidence: Record<string, unknown>; created_at: Date | string };
 type NativeSnapshot = Pick<Snapshot, 'activation' | 'owner' | 'planHash' | 'confinement' | 'source' | 'backend'> & {
   actor: string; requestHash: string; profile: { spec: unknown; argv: unknown };
+  managedSuccession?: { request: ManagedSuccessionRequest; hostIdentity: string; authority: unknown };
 };
 type NativeEntry = Omit<Entry, 'event_kind' | 'snapshot' | 'port_id'> & {
   event_kind: 'native-reserved' | 'native-admitted' | 'native-settled'; attempt_key: string;
@@ -39,6 +43,210 @@ function requestHash(request: Record<string, unknown>): string {
       .filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => [key, canonical(value)])) : v;
   return createHash('sha256').update(JSON.stringify(canonical(request))).digest('hex');
+}
+
+const managedSuccessionSchema = z.object({
+  requestKey: z.string().uuid(), ownerId: z.string().min(1).max(200), advSessionId: z.number().int().positive(),
+  hostPid: z.number().int().positive(), hostStartedAt: z.number().int().positive(),
+  hostCodeVersion: z.string().regex(/^[a-f0-9]{64}$/), predecessorPid: z.number().int().positive(),
+  predecessorGeneration: z.number().int().positive(), successorGeneration: z.number().int().positive(),
+  sourceNativeSessionId: z.string().min(1).max(200), successorNativeSessionId: z.string().min(1).max(200).nullable(),
+  predecessorExited: z.literal(true),
+}).strict();
+export type ManagedSuccessionRequest = z.infer<typeof managedSuccessionSchema>;
+export type BlindReviewManagedSuccessionPermit = {
+  bindingId: number; reservationId: number; attemptKey: string; receiptId: string;
+};
+type ManagedDeps = { sql?: Sql; findHost?: typeof findLiveHostAsync;
+  processIdentity?: typeof readProcessIdentity; exited?: (pid: number) => boolean };
+function processExited(pid: number) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+}
+
+/** This is an exact ADV/custody lookup, never a same-owner latest-row search.
+ * A recruiter launch with missing storage/binding is restricted, not unbound. */
+async function managedBinding(tx: Sql, workspaceId: string, advSessionId: number) {
+  const [adv] = await tx<Array<{ coord_owner_id: string | null; launch_spec: { launchedBy?: string } | null }>>`
+    SELECT coord_owner_id, launch_spec FROM harness_shared.adv_sessions
+    WHERE workspace_id = ${workspaceId} AND id = ${advSessionId}`;
+  if (!adv) return refuse('managed_source_missing');
+  let [binding] = await tx<Array<{ id: number | string }>>`SELECT id FROM harness_shared.plan_blind_review_sessions
+    WHERE workspace_id = ${workspaceId} AND adv_session_id = ${advSessionId}
+      AND reviewer_owner_id = ${adv.coord_owner_id} AND launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}`;
+  const installed = await blindReviewContinuationStorageInstalled(tx);
+  if (!binding && installed) [binding] = await tx<Array<{ id: number | string }>>`
+    SELECT c.binding_id AS id FROM harness_shared.blind_review_continuation_custody c
+    JOIN harness_shared.plan_blind_review_sessions b ON b.id = c.binding_id AND b.workspace_id = c.workspace_id
+    WHERE c.workspace_id = ${workspaceId} AND c.target_adv_session_id = ${advSessionId}
+      AND b.reviewer_owner_id = ${adv.coord_owner_id} AND b.launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
+    ORDER BY c.id DESC LIMIT 1`;
+  if (!binding) return adv.launch_spec?.launchedBy === BLIND_GAP_REVIEW_ACTOR ? refuse('binding_not_found') : null;
+  if (!installed) return refuse('continuation_storage_unavailable');
+  return lockBlindReviewContinuationScope(tx, workspaceId, Number(binding.id));
+}
+
+async function managedAuthority(tx: Sql, b: Binding, source: Native) {
+  const [row] = await tx`SELECT request_hash, request_snapshot, attempt_seq, review_id
+    FROM harness_shared.plan_blind_review_sessions WHERE workspace_id = ${b.workspaceId} AND id = ${b.id}`;
+  const [brief] = await tx`SELECT control_state->'activation' AS activation FROM harness_shared.session_briefs
+    WHERE workspace_id = ${b.workspaceId} AND owner_id = ${b.reviewerOwnerId} FOR SHARE`;
+  const [policy] = await tx<Array<{ live: boolean }>>`SELECT
+    (payload->'sessions'->${b.reviewerOwnerId}->>'expiresAt')::timestamptz > clock_timestamp() AS live
+    FROM harness_shared.operator_session_confinements WHERE workspace_id = ${b.workspaceId} FOR SHARE`;
+  const activation = brief?.activation;
+  const spec = source.launch_spec as { specificationRevision?: string; stateRevision?: string } | null;
+  if (!row || policy?.live !== true || activation?.status !== 'applied' || !activation.applied ||
+      !equal(activation.desired, activation.applied) || !spec?.specificationRevision || !spec.stateRevision ||
+      spec.specificationRevision !== activation.applied.specificationRevision ||
+      spec.stateRevision !== activation.applied.stateRevision) return refuse('managed_authority_stale');
+  return { activation, manifest: row.request_snapshot ?? null, manifestHash: row.request_hash ?? null,
+    attemptSeq: row.attempt_seq, reviewId: row.review_id ?? null };
+}
+
+async function managedHost(request: ManagedSuccessionRequest, successor: boolean, deps: ManagedDeps) {
+  const host = await (deps.findHost ?? findLiveHostAsync)(request.ownerId);
+  const observed = host as (NonNullable<typeof host> & { managedSuccession?: ManagedSuccessionRequest }) | null;
+  const identity = host && (deps.processIdentity ?? readProcessIdentity)(host.pid);
+  if (!host || !identity || host.pid !== request.hostPid || host.startedAt !== request.hostStartedAt ||
+      host.ownerId !== request.ownerId || Number(host.advSessionId) !== request.advSessionId ||
+      host.hostCodeVersion !== request.hostCodeVersion || !equal(observed?.managedSuccession, request) ||
+      host.childGeneration !== (successor ? request.successorGeneration : request.predecessorGeneration) ||
+      (!successor && host.ptyPid !== request.predecessorPid) ||
+      !(deps.exited ?? processExited)(request.predecessorPid) ||
+      successor && (!host.ptyPid || host.ptyPid === request.predecessorPid ||
+        !(deps.processIdentity ?? readProcessIdentity)(host.ptyPid))) return refuse('managed_host_unverified');
+  return { host, identity };
+}
+
+/** The managed host calls this AFTER observed predecessor exit, BEFORE spawn.
+ * Admission and the recruiter lease commit on the existing append-only seam.
+ * A lost reply leaves both endpoints denied; retrying the exact request is safe. */
+export async function reserveBlindReviewManagedSuccession(workspaceId: string, value: unknown,
+  deps: ManagedDeps = {}): Promise<BlindReviewManagedSuccessionPermit | null> {
+  const request = managedSuccessionSchema.parse(value);
+  if (request.successorGeneration !== request.predecessorGeneration + 1 ||
+      request.successorNativeSessionId === request.sourceNativeSessionId) return refuse('managed_request_invalid');
+  return (deps.sql ?? getOrgPg().sql).begin(async raw => {
+    const tx = raw as unknown as Sql;
+    const scope = await managedBinding(tx, workspaceId, request.advSessionId);
+    if (!scope) return null;
+    const { binding: b, planHash } = scope;
+    if (b.reviewerOwnerId !== request.ownerId) return refuse('managed_request_invalid');
+    const entries = await tx<CustodyEntry[]>`SELECT * FROM harness_shared.blind_review_continuation_custody
+      WHERE workspace_id = ${workspaceId} AND binding_id = ${b.id} ORDER BY id LIMIT 65 FOR SHARE`;
+    const r = entries.at(-2), a = entries.at(-1);
+    const source = await native(tx, workspaceId, request.advSessionId);
+    if (!source || source.resume_claim_key !== null) return refuse('managed_source_invalid');
+    const { identity } = await managedHost(request, false, deps);
+    const authority = await managedAuthority(tx, b, source);
+    if (r?.event_kind === 'native-reserved' && a?.event_kind === 'native-admitted' &&
+        equal(r.snapshot.managedSuccession?.request, request)) {
+      requireLease(b, r.resume_lease_id);
+      if (!equal(r.snapshot.managedSuccession, { request, hostIdentity: identity, authority }) ||
+          !profile(source, b.reviewerOwnerId, r.snapshot.source) ||
+          !equal(r.snapshot.profile, { spec: source.launch_spec, argv: source.launch_argv }) ||
+          Number(a.reservation_id) !== Number(r.id) || typeof a.evidence.admissionReceiptId !== 'string')
+        return refuse('managed_reservation_mismatch');
+      return { bindingId: b.id, reservationId: Number(r.id), attemptKey: r.attempt_key,
+        receiptId: a.evidence.admissionReceiptId };
+    }
+    const endpoint = await resolveBlindReviewEndpoint(tx, b);
+    if (b.status !== 'ready' || !endpoint || endpoint.advSessionId !== request.advSessionId ||
+        endpoint.nativeSessionId !== request.sourceNativeSessionId || !profile(source, b.reviewerOwnerId, endpoint))
+      return refuse('managed_source_invalid');
+    const leaseId = randomUUID(), attemptKey = randomUUID(), receiptId = randomUUID();
+    const snapshot: NativeSnapshot = { activation: b.activationAuditSeq, owner: b.reviewerOwnerId,
+      planHash, confinement: b.confinementSnapshot, source: endpoint, backend: source.agent!,
+      actor: BLIND_GAP_REVIEW_ACTOR, requestHash: requestHash(request as unknown as Record<string, unknown>),
+      profile: { spec: source.launch_spec, argv: source.launch_argv },
+      managedSuccession: { request, hostIdentity: identity, authority } };
+    await tx`UPDATE harness_shared.plan_blind_review_sessions SET status = 'resuming',
+      resume_lease_id = ${leaseId}, resume_lease_expires_at = clock_timestamp() + interval '10 minutes', updated_at = now()
+      WHERE workspace_id = ${workspaceId} AND id = ${b.id}`;
+    const [reserved] = await tx<Array<{ id: number | string }>>`INSERT INTO harness_shared.blind_review_continuation_custody
+      (workspace_id, binding_id, event_kind, attempt_key, resume_lease_id, source_adv_session_id,
+       target_adv_session_id, port_id, snapshot, evidence)
+      VALUES (${workspaceId}, ${b.id}, 'native-reserved', ${attemptKey}, ${leaseId}, ${endpoint.advSessionId},
+        ${endpoint.advSessionId}, NULL, ${tx.json(snapshot as never)}, '{}') RETURNING id`;
+    await tx`INSERT INTO harness_shared.blind_review_continuation_custody
+      (workspace_id, binding_id, reservation_id, event_kind, attempt_key, resume_lease_id,
+       source_adv_session_id, target_adv_session_id, port_id, snapshot, evidence)
+      VALUES (${workspaceId}, ${b.id}, ${reserved!.id}, 'native-admitted', ${attemptKey}, ${leaseId},
+        ${endpoint.advSessionId}, ${endpoint.advSessionId}, NULL, ${tx.json(snapshot as never)},
+        ${tx.json({ admissionReceiptId: receiptId })})`;
+    return { bindingId: b.id, reservationId: Number(reserved!.id), attemptKey, receiptId };
+  }) as Promise<BlindReviewManagedSuccessionPermit | null>;
+}
+
+/** Atomic with the generic native writer. Unreserved legacy callbacks cannot
+ * rewrite an immutable blind binding; same-endpoint retries remain idempotent. */
+export async function withBlindReviewManagedReanchor<T>(tx: Sql, input: {
+  workspaceId: string; advSessionId: number; nativeSessionId: string;
+  permit?: BlindReviewManagedSuccessionPermit;
+}, write: () => Promise<T>, deps: ManagedDeps = {}): Promise<T> {
+  const scope = await managedBinding(tx, input.workspaceId, input.advSessionId);
+  if (!scope) return write();
+  const { binding: b, planHash } = scope;
+  const endpoint = await resolveBlindReviewEndpoint(tx, b);
+  const source = await native(tx, input.workspaceId, input.advSessionId);
+  if (endpoint?.advSessionId === input.advSessionId && endpoint.nativeSessionId === input.nativeSessionId &&
+      source && profile(source, b.reviewerOwnerId, endpoint)) {
+    if (input.permit) {
+      const p = input.permit;
+      const [settled] = await tx<NativeEntry[]>`SELECT * FROM harness_shared.blind_review_continuation_custody
+        WHERE workspace_id = ${b.workspaceId} AND binding_id = ${b.id} AND id = ${endpoint.continuationId}`;
+      if (!settled || p.bindingId !== b.id || Number(settled.reservation_id) !== p.reservationId ||
+          settled.attempt_key !== p.attemptKey || settled.evidence.admissionReceiptId !== p.receiptId ||
+          !settled.snapshot.managedSuccession) return refuse('managed_reservation_mismatch');
+      const m = settled.snapshot.managedSuccession;
+      const observed = await managedHost(m.request, true, deps);
+      if (observed.identity !== m.hostIdentity || observed.host.nativeSessionId !== input.nativeSessionId)
+        return refuse('managed_successor_unverified');
+    }
+    return write();
+  }
+  const p = input.permit;
+  if (!p || p.bindingId !== b.id || !source) return refuse('managed_reservation_required');
+  requireLease(b, b.resumeLeaseId ?? '');
+  const entries = await tx<CustodyEntry[]>`SELECT * FROM harness_shared.blind_review_continuation_custody
+    WHERE workspace_id = ${b.workspaceId} AND binding_id = ${b.id} ORDER BY id LIMIT 65 FOR SHARE`;
+  const r = entries.at(-2), a = entries.at(-1);
+  if (r?.event_kind !== 'native-reserved' || a?.event_kind !== 'native-admitted' ||
+      Number(r.id) !== p.reservationId || r.attempt_key !== p.attemptKey || r.resume_lease_id !== b.resumeLeaseId ||
+      Number(a.reservation_id) !== Number(r.id) || a.attempt_key !== r.attempt_key ||
+      a.evidence.admissionReceiptId !== p.receiptId || !equal(a.snapshot, r.snapshot) ||
+      r.snapshot.planHash !== planHash || !r.snapshot.managedSuccession) return refuse('managed_reservation_mismatch');
+  const m = r.snapshot.managedSuccession, request = m.request;
+  const prior = replayCustody(entries.slice(0, -2), b, planHash, { advSessionId: b.advSessionId,
+    nativeSessionId: b.nativeSessionId, modelSpec: b.modelSpec, continuationId: null });
+  if (!prior || !equal(prior, r.snapshot.source) || !profile(source, b.reviewerOwnerId, prior) ||
+      source.resume_claim_key !== null || !equal(r.snapshot.profile, { spec: source.launch_spec, argv: source.launch_argv }) ||
+      !equal(m.authority, await managedAuthority(tx, b, source)) ||
+      request.successorNativeSessionId !== null && request.successorNativeSessionId !== input.nativeSessionId)
+    return refuse('managed_reservation_mismatch');
+  const observed = await managedHost(request, true, deps);
+  if (observed.identity !== m.hostIdentity || observed.host.nativeSessionId !== input.nativeSessionId)
+    return refuse('managed_successor_unverified');
+  const evidence = { outcome: 'managed-native-started', attemptKey: r.attempt_key, requestHash: r.snapshot.requestHash,
+    admissionReceiptId: p.receiptId, nativeSessionId: input.nativeSessionId, advSessionId: input.advSessionId,
+    hostIdentity: observed.identity, successorGeneration: request.successorGeneration, successorPid: observed.host.ptyPid };
+  if (!replayCustody([...entries, { ...r, id: -1, event_kind: 'native-settled', reservation_id: r.id, evidence }],
+      b, planHash, { advSessionId: b.advSessionId, nativeSessionId: b.nativeSessionId,
+        modelSpec: b.modelSpec, continuationId: null })) return refuse('managed_reservation_mismatch');
+  const result = await write();
+  // Recheck the host after the writer, before either native or custody commits.
+  const again = await managedHost(request, true, deps);
+  if (again.identity !== observed.identity || again.host.ptyPid !== observed.host.ptyPid ||
+      again.host.nativeSessionId !== observed.host.nativeSessionId) return refuse('managed_successor_unverified');
+  await tx`INSERT INTO harness_shared.blind_review_continuation_custody
+    (workspace_id, binding_id, reservation_id, event_kind, attempt_key, resume_lease_id,
+     source_adv_session_id, target_adv_session_id, port_id, snapshot, evidence)
+    VALUES (${b.workspaceId}, ${b.id}, ${r.id}, 'native-settled', ${r.attempt_key}, ${r.resume_lease_id},
+      ${r.source_adv_session_id}, ${r.target_adv_session_id}, NULL, ${tx.json(r.snapshot as never)}, ${tx.json(evidence)})`;
+  await tx`UPDATE harness_shared.plan_blind_review_sessions SET status = 'ready', resume_lease_id = NULL,
+    resume_lease_expires_at = NULL, updated_at = now() WHERE workspace_id = ${b.workspaceId} AND id = ${b.id}`;
+  return result;
 }
 
 /** The same fresh pool verdict used by account status. An owner routing fence
@@ -133,7 +341,27 @@ function replayCustody(entries: CustodyEntry[], b: Pick<Binding, 'id' | 'workspa
           !equal(s.confinement, b.confinementSnapshot) || !isBlindReviewerBackendAgent(s.backend) ||
           !/^[a-f0-9]{64}$/.test(s.requestHash) ||
           t.evidence.attemptKey !== r.attempt_key || t.evidence.requestHash !== s.requestHash ||
-          !['no-native-open', 'native-started'].includes(String(t.evidence.outcome))) return null;
+          !['no-native-open', 'native-started', ...(s.managedSuccession ? ['managed-native-started'] : [])]
+            .includes(String(t.evidence.outcome))) return null;
+      if (s.managedSuccession) {
+        const m = s.managedSuccession, p = m.request;
+        if (!admitted || t.evidence.outcome !== 'managed-native-started' ||
+            s.requestHash !== requestHash(p as unknown as Record<string, unknown>) ||
+            p.ownerId !== s.owner || p.advSessionId !== endpoint.advSessionId ||
+            p.sourceNativeSessionId !== endpoint.nativeSessionId || !p.predecessorExited ||
+            p.successorGeneration !== p.predecessorGeneration + 1 ||
+            !m.hostIdentity || !m.authority ||
+            t.evidence.admissionReceiptId !== admitted.evidence.admissionReceiptId ||
+            t.evidence.hostIdentity !== m.hostIdentity || t.evidence.successorGeneration !== p.successorGeneration ||
+            t.evidence.advSessionId !== endpoint.advSessionId ||
+            typeof t.evidence.nativeSessionId !== 'string' || !t.evidence.nativeSessionId ||
+            t.evidence.nativeSessionId === endpoint.nativeSessionId ||
+            p.successorNativeSessionId !== null && p.successorNativeSessionId !== t.evidence.nativeSessionId ||
+            typeof t.evidence.successorPid !== 'number' || t.evidence.successorPid <= 0) return null;
+        endpoint = { ...endpoint, nativeSessionId: t.evidence.nativeSessionId,
+          continuationId: Number(t.id), requiresNativeProof: true };
+        continue;
+      }
       if (t.evidence.outcome === 'native-started') {
         if (!admitted || t.evidence.admissionReceiptId !== admitted.evidence.admissionReceiptId ||
             t.evidence.nativeSessionId !== endpoint.nativeSessionId ||
@@ -421,11 +649,16 @@ function profile(n: Native, owner: string, endpoint: Pick<BlindReviewEndpoint, '
 
 /** Transport verified advSessionId is host metadata, never a request argument.
  * Its locked native row proves the other half of the authenticated endpoint. */
-export async function verifyBlindReviewEndpointCaller(tx: Sql, b: Binding, authenticatedAdvSessionId?: number) {
+export async function verifyBlindReviewEndpointCaller(tx: Sql, b: Binding, authenticatedAdvSessionId?: number,
+  authenticatedNative?: RequestOriginMetadata['nativeSession']) {
   if (!['ready', 'resuming', 'posted'].includes(b.status) ||
       !Number.isSafeInteger(authenticatedAdvSessionId) || authenticatedAdvSessionId! <= 0) return false;
   const endpoint = await resolveBlindReviewEndpoint(tx, b);
   if (!endpoint || endpoint.advSessionId !== authenticatedAdvSessionId) return false;
+  if (endpoint.requiresNativeProof && (authenticatedNative?.binding !== 'bound' ||
+      authenticatedNative.candidateAdvSessionId !== endpoint.advSessionId ||
+      authenticatedNative.valueFingerprint !== createHash('sha256').update(endpoint.nativeSessionId).digest('hex')))
+    return false;
   const n = await native(tx, b.workspaceId, endpoint.advSessionId);
   return !!n && n.ended_at === null && profile(n, b.reviewerOwnerId, endpoint);
 }
@@ -434,6 +667,7 @@ export async function verifyBlindReviewEndpointCaller(tx: Sql, b: Binding, authe
  * Only host-authenticated metadata may supply the native incarnation. */
 export async function withAuthenticatedBlindReviewEndpoint<T>(input: {
   workspaceId: string; bindingId: number; reviewerOwnerId: string; authenticatedAdvSessionId?: number;
+  authenticatedNative?: RequestOriginMetadata['nativeSession'];
 }, write: (tx: Sql, binding: Binding) => Promise<T>, deps: { sql?: Sql } = {}): Promise<T> {
   return (deps.sql ?? getOrgPg().sql).begin(async raw => {
     const tx = raw as unknown as Sql;
@@ -443,7 +677,7 @@ export async function withAuthenticatedBlindReviewEndpoint<T>(input: {
         > clock_timestamp() AS live FROM harness_shared.operator_session_confinements
       WHERE workspace_id = ${input.workspaceId} FOR SHARE`;
     if (binding.reviewerOwnerId !== input.reviewerOwnerId || policy?.live !== true ||
-        !await verifyBlindReviewEndpointCaller(tx, binding, input.authenticatedAdvSessionId))
+        !await verifyBlindReviewEndpointCaller(tx, binding, input.authenticatedAdvSessionId, input.authenticatedNative))
       return refuse('authenticated_reviewer_endpoint_mismatch');
     return write(tx, binding);
   }) as Promise<T>;

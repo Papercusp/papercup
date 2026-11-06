@@ -49,6 +49,7 @@ const alertRow: DueConsultRow = {
   expires_at: '2026-09-19T23:59:00Z',
   updated_at: '2026-09-20T00:00:00Z', snapshot_updated_at: '2026-09-20T00:00:00.000000Z',
   latency_contract: 'hard-blocked',
+  has_responder_reply: false,
   question: 'review this', routing: {}, cascade_cursor: 0, cascade_digest: [],
 };
 

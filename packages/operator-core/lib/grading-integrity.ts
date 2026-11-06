@@ -654,6 +654,9 @@ export interface PendingGradingAuditDispatchReceipt {
   runtimeReadiness?: GradingAuditRuntimeReadinessDiagnostic;
   /** The first dispatcher phase that failed; present on failed receipts. */
   phase?: GradingAuditDispatchPhase;
+  /** A failed release cannot establish whether the owned lease was cleared.
+   * Preserve this separately from the primary dispatcher error. */
+  reservationRelease?: { state: 'unknown'; key: string; reservedAt: string; reason: string };
   /** EI-25965998744903219: set on a drift skip once no exact-build host can still serve the card. */
   stranded?: Extract<EvaluatorBuildStranding, { stranded: true }>;
   terminalRecovery?: {
@@ -681,6 +684,8 @@ export interface PendingGradingAuditDispatchResult {
    */
   recertifications?: StrandedRecertifyReceipt[];
 }
+
+class GradingAuditDiscoveryRefusal extends Error {}
 
 export type StrandedRecertifyState = 'recertified' | 'not-recertified' | 'deduped' | 'failed';
 
@@ -2734,7 +2739,8 @@ export async function dispatchPendingGradingAudits(
     return { retiredTaskIds, codes, terminalFailures, errors, remainingTaskIds };
   };
 
-  const dispatchReadyTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
+  const dispatchReadyTarget = async (issueId: string,
+    reserveTarget: typeof reserve = reserve): Promise<PendingGradingAuditDispatchReceipt> => {
     let phase: GradingAuditDispatchPhase = 'dispatch';
     const markPhase = (next: GradingAuditDispatchPhase) => {
       phase = next;
@@ -2839,6 +2845,7 @@ export async function dispatchPendingGradingAudits(
     let attempts = 0;
     let reservationHeld = false;
     let reservationReservedAt = 'reservation-unknown';
+    let reservationRelease: PendingGradingAuditDispatchReceipt['reservationRelease'];
     let dispatchClaim: GradingAuditReservationLease | undefined;
     let priorReservation: GradingAuditReservationResult['prior'];
     let launchBackend: 'claude' | 'codex' = profile?.agent ?? 'claude';
@@ -2861,9 +2868,11 @@ export async function dispatchPendingGradingAudits(
           ...(backoff ? { backoff } : {}),
           ...(restore || dispatchClaim ? { restore: restore ?? priorReservation } : {}),
         });
-      } catch {
+      } catch (error) {
         // The reservation TTL is the durable cleanup fallback if this release
         // cannot reach the database after a launcher failure.
+        reservationRelease = { state: 'unknown', key: idempotencyKey, reservedAt: reservationReservedAt,
+          reason: error instanceof Error ? error.message : String(error) };
         return false;
       }
     };
@@ -2888,10 +2897,12 @@ export async function dispatchPendingGradingAudits(
         state: 'skipped',
         idempotencyKey,
         reason: 'target is no longer pending after reservation; dispatch abandoned',
+        ...(reservationRelease ? { reservationRelease } : {}),
       };
       return false;
     };
     const recoveryFields = () => ({
+      ...(reservationRelease ? { reservationRelease } : {}),
       ...(orphanedLaunchRecovery ? { orphanedLaunchRecovery } : {}),
       ...(routingFallback ? { routingFallback } : {}),
       ...(retiredTaskIds.length
@@ -3071,14 +3082,14 @@ export async function dispatchPendingGradingAudits(
         snapshot: reservationSnapshot,
         ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
       };
-      let reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+      let reservation = await reserveTarget(issueId, idempotencyKey, reservationOptions);
       // A dated wall describes the failed route at that time. An explicit
       // targeted repair may have selected a recovered pool or another route.
       // Re-check current capacity and use the same atomic election/lease guard;
       // this exception applies only to quota, never other failure backoffs.
       if (reservation.status === 'quota-backoff' && profile && explicitTargetIds.includes(issueId) &&
           await (deps.quotaRouteCanServe ?? gradingAuditQuotaRouteCanServe)(profile)) {
-        reservation = await reserve(issueId, idempotencyKey, {
+        reservation = await reserveTarget(issueId, idempotencyKey, {
           ...reservationOptions, allowRecoveredQuotaBackoff: true,
         });
       }
@@ -3096,7 +3107,7 @@ export async function dispatchPendingGradingAudits(
             await release(issueId, heldReservation.key, {
               workspaceId: input.ctx.workspaceId, reservedAt: heldReservation.reservedAt,
             })) {
-          reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+          reservation = await reserveTarget(issueId, idempotencyKey, reservationOptions);
           // Carry the proven native failure through the fresh-lease cleanup,
           // just as the ordinary retained-task path does. Otherwise this retry
           // silently returns to Claude and does not consume its retry budget.
@@ -3593,6 +3604,7 @@ export async function dispatchPendingGradingAudits(
           state: 'skipped',
           idempotencyKey,
           reason: routed.reason,
+          ...recoveryFields(),
         };
       }
       if (routed.state !== 'fallback') {
@@ -4059,11 +4071,13 @@ export async function dispatchPendingGradingAudits(
           ...(deps.now ? { nowMs: deps.now() } : {}),
         }),
       );
-      console.warn(`[grading-integrity] pending audit dispatch failed for ${issueId}: ${reason}`);
+      if (!(error instanceof GradingAuditDiscoveryRefusal)) {
+        console.warn(`[grading-integrity] pending audit dispatch failed for ${issueId}: ${reason}`);
+      }
       return {
         issueId,
         rubricRef: card.rubricRef,
-        state: 'failed',
+        state: error instanceof GradingAuditDiscoveryRefusal ? 'skipped' : 'failed',
         idempotencyKey: currentIdempotencyKey,
         phase,
         reason,
@@ -4081,10 +4095,19 @@ export async function dispatchPendingGradingAudits(
     if (!subject) return { issueId, rubricRef: card.rubricRef, state: 'skipped',
       reason: 'discovery_subject_unresolved: regenerate the exact registered plan spec-quality draft.' };
     const { withCurrentDiscovery } = await import('./plan-audits');
-    const admitted = await (deps.withCurrentDiscovery ?? withCurrentDiscovery)({ workspaceId: workspaceId!,
-      ...subject, createdBy: GRADING_AUDIT_DISPATCH_ACTOR }, async () => dispatchReadyTarget(issueId));
-    return admitted.ok ? admitted.result : { issueId, rubricRef: card.rubricRef, state: 'skipped',
-      reason: `${admitted.error}: ${'nextAction' in admitted ? admitted.nextAction ?? '' : ''}` };
+    const reserveWithDiscovery: typeof reserve = async (...args) => {
+      // Discovery admits the accepting reservation under the canonical plan
+      // lock. Commit that boundary before routing, retaining or launching an
+      // auditor: those operations can exceed PostgreSQL's transaction idle
+      // limit. Every retry still rechecks Discovery; subsequent effects retain
+      // the existing exact-card and reservation-epoch CAS checks.
+      const admitted = await (deps.withCurrentDiscovery ?? withCurrentDiscovery)({ workspaceId: workspaceId!,
+        ...subject, createdBy: GRADING_AUDIT_DISPATCH_ACTOR }, async () => reserve(...args));
+      if (!admitted.ok) throw new GradingAuditDiscoveryRefusal(
+        `${admitted.error}: ${'nextAction' in admitted ? admitted.nextAction ?? '' : ''}`);
+      return admitted.result;
+    };
+    return dispatchReadyTarget(issueId, reserveWithDiscovery);
   };
   const receipts = await mapWithConcurrency(
     requestedTargetIds,

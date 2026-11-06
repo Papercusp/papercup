@@ -1340,6 +1340,17 @@ const PSU_FAILURE_LINE =
 /** The native host's nonretryable receipt is terminal evidence for this answer turn. */
 const NATIVE_TERMINAL_FAILURE_LINE =
   /^\[psu\] native-turn-failed agent=(?:claude|codex) code=[A-Za-z0-9_.-]{1,120} retryable=false retryAfterMs=(?:unknown|\d+)$/i;
+// Native TUIs may redraw this status footer after psu has written its failure
+// receipt. Cursor positioning can leave no spaces after control bytes are stripped.
+const NATIVE_EFFORT_FOOTER_LINE = /^◉\s*(?:low|medium|high|xhigh|max)\s*·\s*\/effort$/;
+// psu-pty-host can park the already failed turn while a consult awaits recovery.
+const NATIVE_IDLE_PARK_LINE = /^\[psu\] Agent parked after \d+ min idle to free memory\. Type, or send it a message, to resume the same conversation\.$/;
+// Delivery acknowledges the prompt/provenance, not a successful model reply.
+// These host diagnostics can race with the native failure receipt.
+const NATIVE_DELIVERY_NOTICE_LINES = [
+  /^psu: kickoff delivered — verified the exact provenance marker in the native transcript(?: \(model turn started only after one in-session retry\))?\.$/,
+  /^psu: session port delivered — verified the exact seed checksum in the target native transcript\.$/,
+];
 /**
  * The CLI's own failures arrive inside TUI output drawn with cursor-movement
  * escapes, not newlines, so they sit mid-way through one long rendered "line"
@@ -1379,7 +1390,10 @@ export function launchLogFailureReason(logText: string): string | null {
       continue;
     }
     if (NATIVE_TERMINAL_FAILURE_LINE.test(line) &&
-        lines.slice(index + 1).every((trailing) => LAUNCH_EXIT_LINE.test(trailing))) {
+        lines.slice(index + 1).every((trailing) =>
+          LAUNCH_EXIT_LINE.test(trailing) || NATIVE_EFFORT_FOOTER_LINE.test(trailing) ||
+          NATIVE_IDLE_PARK_LINE.test(trailing) ||
+          NATIVE_DELIVERY_NOTICE_LINES.some((pattern) => pattern.test(trailing)))) {
       failure = line;
       continue;
     }

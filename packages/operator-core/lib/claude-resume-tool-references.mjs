@@ -18,6 +18,7 @@ const CONTEXT_LIMIT_RE =
   /^\s*(?:Prompt is too long|Context limit reached(?:\s*·\s*\/clear to continue)?)\s*$/i;
 const ACCOUNT_WALL_RE =
   /\b(?:credit balance is too low|insufficient credits)\b|^\s*API Error:\s*Request rejected \(429\)[^\r\n]{0,300}\b(?:your\s+)?account(?:['’]s)?\s+rate\s+limit\b/i;
+const AUTHENTICATION_ERROR_RE = /^\s*Not logged in\s*·\s*Please run \/login\s*$/i;
 /**
  * WI-6554700010018125: a transient provider failure that ended the turn, e.g.
  * `API Error: Server error mid-response. The response above may be incomplete.`
@@ -197,7 +198,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     const contextEvidence = synthetic && CONTEXT_LIMIT_RE.test(text) ? text.trim().slice(0, 200) : null;
     trailingContextLimitTurns = contextEvidence ? trailingContextLimitTurns + 1 : 0;
     lastContextLimitEvidence = contextEvidence;
-    const accountEvidence = synthetic && (record.error === 'billing_error' || record.error === 'rate_limit' || ACCOUNT_WALL_RE.test(text))
+    const accountEvidence = synthetic && (record.error === 'billing_error' || record.error === 'rate_limit'
+      || record.error === 'authentication_failed' || ACCOUNT_WALL_RE.test(text) || AUTHENTICATION_ERROR_RE.test(text))
       ? text.trim().slice(0, 200) : null;
     trailingAccountWallTurns = accountEvidence ? trailingAccountWallTurns + 1 : 0;
     lastAccountWallEvidence = accountEvidence;

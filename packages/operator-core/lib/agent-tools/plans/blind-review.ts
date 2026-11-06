@@ -220,7 +220,8 @@ export default defineTool({
     try {
       written = args.op === 'post' && reviewerBinding
         ? await withAuthenticatedBlindReviewEndpoint({ workspaceId, bindingId: reviewerBinding.id,
-            reviewerOwnerId: createdBy, authenticatedAdvSessionId: ctx.advSessionId }, async (tx, binding) => {
+            reviewerOwnerId: createdBy, authenticatedAdvSessionId: ctx.advSessionId,
+            authenticatedNative: ctx.requestOrigin?.nativeSession }, async (tx, binding) => {
             const post = await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [],
               activationAuditSeq: binding.activationAuditSeq, summary: args.summary, outcome: args.outcome! }, { sql: tx });
             if (post.ok && !await recordBlindReviewSessionPost({ workspaceId, planSlug: args.slug,

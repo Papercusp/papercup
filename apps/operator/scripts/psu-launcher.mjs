@@ -12165,6 +12165,7 @@ export async function reportSessionRespawned(
     // WI-6554700010030031: set ONLY by an in-place context reset — the launch id
     // of the same child, which its env-pinned MCP header keeps presenting.
     childLaunchSessionId = null,
+    managedSuccessionPermit = null,
     env = process.env,
     fetchImpl = fetch,
     operatorUrl = launcherOperatorTarget().url,
@@ -12217,6 +12218,7 @@ export async function reportSessionRespawned(
           ...(childLaunchSessionId ? { childLaunchSessionId: String(childLaunchSessionId) } : {}),
           sessionId: String(sessionId),
           turnProvenanceDir: launcherTurnProvenanceDir(env),
+          ...(managedSuccessionPermit ? { managedSuccession: { phase: 'settle', permit: managedSuccessionPermit } } : {}),
         }),
       },
     );
@@ -12234,6 +12236,27 @@ export async function reportSessionRespawned(
     return finish(false, signal?.aborted || errorName === "TimeoutError" ? "timeout" : "transport-error",
       null, errorName, errorCode);
   }
+}
+
+/** Pre-child half of the existing authenticated lifecycle route. Uncertainty
+ * never grants permission to create a blind-review successor. */
+export async function reserveManagedRespawn(request, {
+  fetchImpl = fetch, operatorUrl = launcherOperatorTarget().url, token = null, timeoutMs = 10_000,
+} = {}) {
+  try {
+    const tok = token ?? readToken();
+    const response = await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-respawned', {
+      method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}) },
+      body: JSON.stringify({ advSessionId: request.advSessionId, coordOwnerId: request.ownerId,
+        sessionId: request.sourceNativeSessionId, managedSuccession: { phase: 'reserve', request } }),
+    });
+    if (!response?.ok) return null;
+    const body = await response.json();
+    const p = body?.managedSuccessionPermit;
+    return body?.ok === true && Number.isSafeInteger(p?.bindingId) && Number.isSafeInteger(p?.reservationId) &&
+      typeof p?.attemptKey === 'string' && typeof p?.receiptId === 'string' ? p : null;
+  } catch { return null; }
 }
 
 // Bumped by every durable respawn report in this process: a retry that sees a
@@ -12261,6 +12284,7 @@ export function reportSessionRespawnedDurably(
   {
     coordOwnerId = null,
     childLaunchSessionId = null,
+    managedSuccessionPermit = null,
     reportImpl = reportSessionRespawned,
     retryDelaysMs = RESPAWN_REPORT_RETRY_DELAYS_MS,
     sleepImpl = sleepUnref,
@@ -12275,6 +12299,7 @@ export function reportSessionRespawnedDurably(
         ? reportImpl(advSessionId, sessionId, {
           coordOwnerId,
           ...(childLaunchSessionId ? { childLaunchSessionId } : {}),
+          ...(managedSuccessionPermit ? { managedSuccessionPermit } : {}),
         }) : false)
       .then((ok) => {
         if (ok !== true || generation !== respawnReportGeneration) return false;
@@ -13910,7 +13935,8 @@ export function runWrapper(options) {
         resolveRespawnNativeId: env.PAPERCUSP_AGENT === "codex" && process.platform === "linux"
           ? (pid) => codexNativeIdForPty(env.CODEX_HOME, pid, { env })
           : null,
-        onRespawn: (freshId, { onConfirmed, childLaunchSessionId = null } = {}) => {
+        beforeRespawn: (request) => reserveManagedRespawn(request),
+        onRespawn: (freshId, { onConfirmed, childLaunchSessionId = null, managedSuccessionPermit = null } = {}) => {
           recordSessionOwner(freshId, ownerId, {
             advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
           });
@@ -13929,6 +13955,7 @@ export function runWrapper(options) {
               onConfirmed,
               // WI-6554700010030031: only the in-place reset path supplies this.
               ...(childLaunchSessionId ? { childLaunchSessionId } : {}),
+              ...(managedSuccessionPermit ? { managedSuccessionPermit } : {}),
             },
           );
         },

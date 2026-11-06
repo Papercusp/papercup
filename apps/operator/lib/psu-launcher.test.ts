@@ -206,6 +206,7 @@ import {
   announceAdoptedCarryRespawn,
   adoptedCarryRespawnFromHandoff,
   reportSessionRespawned,
+  reserveManagedRespawn,
   reportSessionRespawnedDurably,
   reportSessionPortDelivery,
   reportSessionPortLaunchFailure,
@@ -16049,6 +16050,28 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
 describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-respawn/recycle — best-effort, never rejects)", () => {
   const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
+
+  it('uses the existing authenticated lifecycle route for pre-child custody and retains its exact receipt', async () => {
+    const request = { ownerId: 'su-bound', advSessionId: 42, sourceNativeSessionId: freshId };
+    const permit = { bindingId: 2, reservationId: 3, attemptKey: 'a', receiptId: 'r' };
+    const fetchImpl = vi.fn(async (_url: string, _opts: { body: string; headers: Record<string, string> }) =>
+      ({ ok: true, json: async () => ({ ok: true, managedSuccessionPermit: permit }) }));
+    expect(await reserveManagedRespawn(request, { fetchImpl, token: 'test-token', operatorUrl: 'http://op:1' })).toEqual(permit);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({ managedSuccession: { phase: 'reserve', request } });
+    expect(fetchImpl.mock.calls[0][1].headers.authorization).toBe('Bearer test-token');
+    await reportSessionRespawned(42, freshId, { managedSuccessionPermit: permit,
+      fetchImpl, token: 'test-token', operatorUrl: 'http://op:1' });
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).toMatchObject({ managedSuccession: { phase: 'settle', permit } });
+  });
+
+  it.each(['refused', 'missing-receipt', 'lost-reply'])('grants no child permission after %s', async fault => {
+    const fetchImpl = async () => {
+      if (fault === 'lost-reply') throw new Error('lost');
+      return { ok: fault !== 'refused', json: async () => ({ ok: true }) };
+    };
+    expect(await reserveManagedRespawn({ advSessionId: 42, ownerId: 'su-bound', sourceNativeSessionId: freshId },
+      { fetchImpl, token: 'test-token', operatorUrl: 'http://op:1' })).toBeNull();
+  });
 
   it("reports the host's actual provenance namespace when enrolling a legacy launch", async () => {
     const fetchImpl = vi.fn(async (_url: string, _opts: { body: string }) => ({ ok: true }));

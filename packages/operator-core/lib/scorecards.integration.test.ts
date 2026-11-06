@@ -48,6 +48,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const {
   builtInCriterionKeysForRubric,
+  isCurrentSourceAuditResponder,
   listScorecardPage,
   listScorecards,
   readScorecardEvidence,
@@ -1079,6 +1080,74 @@ describe('grading-audit reservation identity — real PG', () => {
       await expect(confirm({ ...expectedCard, rubricRef: 'other-rubric' })).resolves.toBe(false);
       await expect(confirm(expectedCard, 'different-epoch')).resolves.toBe(false);
     });
+  });
+
+  it('binds direct audit responders to the exact task reservation epoch', async () => {
+    const workspaceId = issuesScopeWorkspace();
+    const issueId = 'EI-direct-audit-task-epoch';
+    const reservation = { key: `grading-audit:${issueId}`, reservedAt: '2026-11-06T21:05:56.126Z' };
+    const deps = { resolveWorkspace: async () => workspaceId };
+    const addTask = async (name: string, owner: string | null, audit: unknown) => {
+      const taskId = `direct-audit-epoch-${name}`;
+      const detail = { label: name === 'current' ? `${reservation.key}:fallback` : reservation.key,
+        coordOwnerId: owner, gradingAudit: audit };
+      await db.adminSql`
+        INSERT INTO harness_shared.task_ledger
+          (task_id, workspace_id, root_task_id, class, title, argv, launched_by, work_item_id, state, detail)
+        VALUES (${taskId}, ${workspaceId}, ${taskId}, 'agent-session', 'Audit epoch fixture',
+          '[]'::jsonb, 'system:grading-audit-dispatch', ${issueId}, 'running', ${JSON.stringify(detail)}::text::jsonb)`;
+    };
+
+    await addTask('current', 'su-current-auditor', { issueId, reservation });
+    await expect(isCurrentSourceAuditResponder(issueId, reservation, 'su-current-auditor', deps)).resolves.toBe(true);
+
+    // A missed exit watcher leaves the prior auditor running in the ledger.
+    // It must neither block the replacement nor authorize the retired owner.
+    await addTask('old', 'su-retired-auditor', { issueId,
+      reservation: { ...reservation, reservedAt: '2026-11-06T20:44:23.003Z' } });
+    await addTask('other-key', 'su-unrelated-auditor', { issueId,
+      reservation: { ...reservation, key: 'grading-audit:EI-other-target' } });
+    await expect(isCurrentSourceAuditResponder(issueId, reservation, 'su-current-auditor', deps)).resolves.toBe(true);
+    await expect(isCurrentSourceAuditResponder(issueId, reservation, 'su-retired-auditor', deps)).resolves.toBe(false);
+
+    // A competing or unidentified owner in THIS epoch still fails closed.
+    await addTask('competing', 'su-other-current-auditor', { issueId, reservation });
+    await expect(isCurrentSourceAuditResponder(issueId, reservation, 'su-current-auditor', deps)).resolves.toBe(false);
+    await db.adminSql`DELETE FROM harness_shared.task_ledger WHERE task_id = 'direct-audit-epoch-competing'`;
+    await addTask('unidentified', null, { issueId, reservation });
+    await expect(isCurrentSourceAuditResponder(issueId, reservation, 'su-current-auditor', deps)).resolves.toBe(false);
+    await db.adminSql`DELETE FROM harness_shared.task_ledger WHERE task_id = 'direct-audit-epoch-unidentified'`;
+    await expect(isCurrentSourceAuditResponder(issueId, reservation, 'su-current-auditor', deps)).resolves.toBe(true);
+  });
+
+  it('rejects direct audit responders without complete exact reservation metadata', async () => {
+    const workspaceId = issuesScopeWorkspace();
+    const issueId = 'EI-direct-audit-task-metadata';
+    const reservation = { key: `grading-audit:${issueId}`, reservedAt: '2026-11-06T21:05:56.126Z' };
+    const taskId = 'direct-audit-metadata-current';
+    const owner = 'su-metadata-auditor';
+    const deps = { resolveWorkspace: async () => workspaceId };
+    const detail = (gradingAudit: unknown) => JSON.stringify({ label: reservation.key, coordOwnerId: owner, gradingAudit });
+    await db.adminSql`
+      INSERT INTO harness_shared.task_ledger
+        (task_id, workspace_id, root_task_id, class, title, argv, launched_by, work_item_id, state, detail)
+      VALUES (${taskId}, ${workspaceId}, ${taskId}, 'agent-session', 'Audit metadata fixture',
+        '[]'::jsonb, 'system:grading-audit-dispatch', ${issueId}, 'running', ${detail({ issueId, reservation })}::text::jsonb)`;
+
+    for (const invalid of [
+      null,
+      { issueId, reservation: { key: reservation.key } },
+      { issueId, reservation: { reservedAt: reservation.reservedAt } },
+      { issueId: 'EI-other-target', reservation },
+      { issueId, reservation: { ...reservation, reservedAt: '2026-11-06T20:44:23.003Z' } },
+      { issueId, reservation: { ...reservation, key: 'grading-audit:EI-other-target' } },
+    ]) {
+      await db.adminSql`UPDATE harness_shared.task_ledger SET detail = ${detail({ issueId, reservation })}::text::jsonb
+        WHERE task_id = ${taskId}`;
+      await expect(isCurrentSourceAuditResponder(issueId, reservation, owner, deps)).resolves.toBe(true);
+      await db.adminSql`UPDATE harness_shared.task_ledger SET detail = ${detail(invalid)}::text::jsonb WHERE task_id = ${taskId}`;
+      await expect(isCurrentSourceAuditResponder(issueId, reservation, owner, deps)).resolves.toBe(false);
+    }
   });
 });
 

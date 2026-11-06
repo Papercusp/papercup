@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
@@ -16,7 +16,8 @@ import { authorizeBlindReviewPortBootstrap, finalizeBlindReviewContinuation, fin
   resolveBlindReviewEndpoint, verifyBlindReviewEndpointCaller,
   withAuthenticatedBlindReviewEndpoint } from './blind-review-continuation-custody';
 import { reserveBlindReviewNativeAttempt, verifyBlindReviewNativeNoOpen,
-  withBlindReviewNativeLaunch, reconcileBlindReviewNativeStart } from './blind-review-continuation-custody';
+  withBlindReviewNativeLaunch, reconcileBlindReviewNativeStart, reserveBlindReviewManagedSuccession,
+  withBlindReviewManagedReanchor, type ManagedSuccessionRequest } from './blind-review-continuation-custody';
 import { newTaskId, scopeUnitForTask } from './task-manager/types';
 import type { PsuPtyHost } from './events/await/psu-pty-discovery';
 import { BLIND_GAP_REVIEW_ACTOR, type BlindReviewResumePermit } from './blind-review-session-bindings';
@@ -108,6 +109,173 @@ async function fixture() {
 }
 
 describe('blind reviewer continuation custody, real transaction boundaries', () => {
+  async function managedFixture() {
+    const f = await fixture(), b = (await f.read())!;
+    const activation = { status: 'applied', desired: { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) },
+      applied: { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) } };
+    await fx.admin`UPDATE harness_shared.adv_sessions SET ended_at = NULL,
+      launch_spec = launch_spec || ${JSON.stringify(activation.applied)}::jsonb WHERE id = ${f.sourceId}`;
+    await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET status = 'ready',
+      resume_lease_id = NULL, resume_lease_expires_at = NULL WHERE id = ${b.id}`;
+    await fx.admin`INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, control_state)
+      VALUES (${b.workspaceId}, ${f.owner}, ${JSON.stringify({ activation })}::jsonb)`;
+    const request: ManagedSuccessionRequest = { requestKey: randomUUID(), ownerId: f.owner, advSessionId: f.sourceId,
+      hostPid: 400, hostStartedAt: Date.now() - 1000, hostCodeVersion: 'c'.repeat(64), predecessorPid: 401,
+      predecessorGeneration: 3, successorGeneration: 4, sourceNativeSessionId: f.sourceNative,
+      successorNativeSessionId: f.targetNative, predecessorExited: true };
+    let exited = true;
+    const host = { ownerId: f.owner, advSessionId: String(f.sourceId), pid: 400, ptyPid: 401,
+      startedAt: request.hostStartedAt, hostCodeVersion: request.hostCodeVersion, childGeneration: 3,
+      nativeSessionId: f.sourceNative, command: 'codex', args: [], sock: '/isolated/fake.sock', managedSuccession: request };
+    const deps = { ...f.deps, findHost: async () => structuredClone(host),
+      processIdentity: (pid: number) => [400, 402].includes(pid) ? 'kernel:' + pid : null,
+      exited: () => exited };
+    const reserve = () => reserveBlindReviewManagedSuccession(b.workspaceId, request, deps);
+    const successor = () => Object.assign(host, { childGeneration: 4, ptyPid: 402, nativeSessionId: f.targetNative });
+    const settle = (permit?: Awaited<ReturnType<typeof reserve>>) => fx.admin.begin(async tx =>
+      withBlindReviewManagedReanchor(tx as never, { workspaceId: b.workspaceId, advSessionId: f.sourceId,
+        nativeSessionId: f.targetNative, ...(permit ? { permit } : {}) }, async () => {
+        await tx`UPDATE harness_shared.adv_sessions SET session_id = ${f.targetNative} WHERE id = ${f.sourceId}`;
+        return true;
+      }, deps));
+    const denyBoth = async () => {
+      expect(await f.inScope((tx, binding) => resolveBlindReviewEndpoint(tx, binding))).toBeNull();
+      expect(await f.inScope((tx, binding) => verifyBlindReviewEndpointCaller(tx, binding, f.sourceId))).toBe(false);
+    };
+    return { ...f, b, request, host, deps, reserve, successor, settle, denyBoth, setExited: (v: boolean) => { exited = v; } };
+  }
+
+  it('managed succession reserves before creation and transfers one native endpoint atomically', async () => {
+    const f = await managedFixture();
+    const permit = await f.reserve();
+    expect(permit).toMatchObject({ bindingId: f.b.id });
+    expect(await f.reserve()).toEqual(permit);
+    await f.denyBoth();
+    await expect(f.settle(permit)).rejects.toThrow('managed_host_unverified');
+    f.successor();
+    expect(await f.settle(permit)).toBe(true);
+    expect(await f.settle(permit)).toBe(true);
+    const endpoint = await f.inScope((tx, b) => resolveBlindReviewEndpoint(tx, b));
+    expect(endpoint).toMatchObject({ advSessionId: f.sourceId, nativeSessionId: f.targetNative, requiresNativeProof: true });
+    const original = await f.read();
+    expect(original).toMatchObject({ nativeSessionId: f.sourceNative, advSessionId: f.sourceId, status: 'ready' });
+    const [count] = await fx.admin`SELECT count(*)::int AS n FROM harness_shared.blind_review_continuation_custody
+      WHERE binding_id = ${f.b.id}`;
+    expect(count!.n).toBe(3);
+    for (const nativeSessionId of [f.sourceNative, f.targetNative]) {
+      const native = { carrier: 'meta:threadId' as const, binding: 'bound' as const, candidateAdvSessionId: f.sourceId,
+        valueFingerprint: createHash('sha256').update(nativeSessionId).digest('hex') };
+      expect(await f.inScope((tx, b) => verifyBlindReviewEndpointCaller(tx, b, f.sourceId, native)))
+        .toBe(nativeSessionId === f.targetNative);
+    }
+    expect(await f.inScope((tx, b) => verifyBlindReviewEndpointCaller(tx, b, f.sourceId))).toBe(false);
+    expect(await checkRuntimeReviewerAuthority(fx.admin as never, { workspaceId: f.b.workspaceId,
+      bindingId: f.b.id, activationAuditSeq: 1, replacementEpoch: 0, reviewerOwnerId: f.owner,
+      nativeSessionId: f.sourceNative, confinementFingerprint: runtimeCustodyFingerprint(f.b.confinementSnapshot) })).toBe(false);
+  });
+
+  it('rejects a legacy report with no reservation instead of rewriting its immutable tuple', async () => {
+    const f = await managedFixture(); f.successor();
+    await expect(f.settle()).rejects.toThrow('managed_reservation_required');
+    const [row] = await fx.admin`SELECT session_id FROM harness_shared.adv_sessions WHERE id = ${f.sourceId}`;
+    expect(row!.session_id).toBe(f.sourceNative);
+  });
+
+  it('preserves an unchanged native report without creating succession custody', async () => {
+    const f = await managedFixture();
+    let writes = 0;
+    await fx.admin.begin(async tx => withBlindReviewManagedReanchor(tx as never, {
+      workspaceId: f.b.workspaceId, advSessionId: f.sourceId, nativeSessionId: f.sourceNative,
+    }, async () => { writes++; return false; }, f.deps));
+    expect(writes).toBe(1);
+    expect(await f.inScope((tx, b) => resolveBlindReviewEndpoint(tx, b)))
+      .toMatchObject({ advSessionId: f.sourceId, nativeSessionId: f.sourceNative, continuationId: null });
+    const [count] = await fx.admin`SELECT count(*)::int AS n FROM harness_shared.blind_review_continuation_custody
+      WHERE binding_id = ${f.b.id}`;
+    expect(count!.n).toBe(0);
+  });
+
+  it('leaves unbound sessions on the generic native reanchor path', async () => {
+    const f = await managedFixture(), owner = 'ordinary-' + randomUUID();
+    const [adv] = await fx.admin`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, mode, coord_owner_id, session_id, agent, launch_spec)
+      VALUES (${f.b.workspaceId}, 'omp', ${owner}, ${f.sourceNative}, 'codex', '{}') RETURNING id`;
+    const advSessionId = Number(adv!.id);
+    const request = { ...f.request, ownerId: owner, advSessionId };
+    // An ordinary session needs neither a recruiter lease nor managed-host proof.
+    expect(await reserveBlindReviewManagedSuccession(f.b.workspaceId, request, f.deps)).toBeNull();
+    expect(await fx.admin.begin(async tx => withBlindReviewManagedReanchor(tx as never, {
+      workspaceId: f.b.workspaceId, advSessionId, nativeSessionId: f.targetNative,
+    }, async () => {
+      await tx`UPDATE harness_shared.adv_sessions SET session_id = ${f.targetNative} WHERE id = ${advSessionId}`;
+      return true;
+    }, f.deps))).toBe(true);
+    const [row] = await fx.admin`SELECT session_id FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`;
+    expect(row!.session_id).toBe(f.targetNative);
+    const [count] = await fx.admin`SELECT count(*)::int AS n FROM harness_shared.blind_review_continuation_custody
+      WHERE workspace_id = ${f.b.workspaceId} AND target_adv_session_id = ${advSessionId}`;
+    expect(count!.n).toBe(0);
+  });
+
+  it('serializes competing requests and duplicate settlement callbacks', async () => {
+    const f = await managedFixture();
+    const results = await Promise.allSettled([f.reserve(), f.reserve()]);
+    expect(results.every(r => r.status === 'fulfilled')).toBe(true);
+    const permit = (results[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof f.reserve>>>).value;
+    expect((results[1] as typeof results[0] & { value: unknown }).value).toEqual(permit);
+    const competing = { ...f.request, requestKey: randomUUID() };
+    f.host.managedSuccession = competing;
+    await expect(reserveBlindReviewManagedSuccession(f.b.workspaceId, competing, f.deps))
+      .rejects.toThrow('managed_source_invalid');
+    f.host.managedSuccession = f.request; f.successor();
+    expect(await Promise.all([f.settle(permit), f.settle(permit)])).toEqual([true, true]);
+  });
+
+  it.each(['live-predecessor', 'host-incarnation', 'generation', 'missing-storage'] as const)(
+    'refuses unsafe managed admission: %s', async fault => {
+      const f = await managedFixture();
+      if (fault === 'live-predecessor') f.setExited(false);
+      if (fault === 'host-incarnation') f.host.startedAt++;
+      if (fault === 'generation') f.host.childGeneration++;
+      if (fault === 'missing-storage') {
+        // Rename is transaction-local and rolled back, never a shared migration.
+        await expect(fx.admin.begin(async tx => {
+          await tx`ALTER TABLE harness_shared.blind_review_continuation_custody RENAME TO absent_managed_custody`;
+          await reserveBlindReviewManagedSuccession(f.b.workspaceId, f.request, { ...f.deps,
+            sql: { begin: (run: (value: unknown) => Promise<unknown>) => run(tx) } as never });
+        })).rejects.toThrow('continuation_storage_unavailable');
+      } else await expect(f.reserve()).rejects.toThrow('managed_host_unverified');
+    });
+
+  it.each(['activation', 'manifest', 'confinement', 'receipt', 'successor', 'generation', 'lease-expired', 'lease-lost'] as const)(
+    'keeps both endpoints denied after an uncertain or forged callback: %s', async fault => {
+      const f = await managedFixture(), permit = (await f.reserve())!; f.successor();
+      if (fault === 'activation') await fx.admin`UPDATE harness_shared.session_briefs
+        SET control_state = jsonb_set(control_state, '{activation,status}', '"pending"') WHERE owner_id = ${f.owner}`;
+      if (fault === 'manifest') await fx.admin`UPDATE harness_shared.plan_blind_review_sessions
+        SET request_snapshot = '{"changed":true}' WHERE id = ${f.b.id}`;
+      if (fault === 'confinement') await fx.admin`UPDATE harness_shared.operator_session_confinements
+        SET payload = jsonb_set(payload, ${['sessions', f.owner, 'confinement']}, '{}') WHERE workspace_id = ${f.b.workspaceId}`;
+      if (fault === 'receipt') permit.receiptId = randomUUID();
+      if (fault === 'successor') f.host.nativeSessionId = 'forged-native';
+      if (fault === 'generation') f.host.childGeneration++;
+      if (fault === 'lease-expired') await fx.admin`UPDATE harness_shared.plan_blind_review_sessions
+        SET resume_lease_expires_at = clock_timestamp() - interval '1 second' WHERE id = ${f.b.id}`;
+      if (fault === 'lease-lost') await fx.admin`UPDATE harness_shared.plan_blind_review_sessions
+        SET resume_lease_id = ${randomUUID()} WHERE id = ${f.b.id}`;
+      await expect(f.settle(permit)).rejects.toThrow();
+      const [row] = await fx.admin`SELECT session_id FROM harness_shared.adv_sessions WHERE id = ${f.sourceId}`;
+      expect(row!.session_id).toBe(f.sourceNative);
+      if (fault !== 'confinement') await f.denyBoth();
+    });
+
+  it('keeps a crashed pre-child attempt uncertain after lease expiry', async () => {
+    const f = await managedFixture(); await f.reserve();
+    await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET resume_lease_expires_at =
+      clock_timestamp() - interval '1 second' WHERE id = ${f.b.id}`;
+    await f.denyBoth();
+    await expect(f.reserve()).rejects.toThrow('resume_lease_lost');
+  });
   async function nativeFixture() {
     const f = await fixture(), b = (await f.read())!;
     const request = { resume: { sessionId: f.sourceNative }, fork: false, headless: true,

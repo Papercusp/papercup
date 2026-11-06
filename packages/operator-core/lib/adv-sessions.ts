@@ -1851,7 +1851,8 @@ async function recordReanchorSpan(
 export async function reanchorAdvSessionNativeId(
   id: number,
   sessionId: string,
-  opts: { childLaunchSessionId?: string | null; turnProvenanceDir?: string } = {},
+  opts: { childLaunchSessionId?: string | null; turnProvenanceDir?: string;
+    managedSuccessionPermit?: import('./blind-review-continuation-custody').BlindReviewManagedSuccessionPermit } = {},
 ): Promise<{ reanchored: boolean; owner: string | null }> {
   if (!sessionId) return { reanchored: false, owner: null };
   if (opts.turnProvenanceDir !== undefined && !isAbsolute(opts.turnProvenanceDir))
@@ -1876,6 +1877,14 @@ export async function reanchorAdvSessionNativeId(
     // ended_signal too, matching claimAdvSessionResume) — leaving them behind
     // creates a half-live row whose residue later reads as terminal evidence.
     const result = await sql.begin(async (tx) => {
+      const [scope] = await tx<Array<{ workspace_id: string }>>`SELECT workspace_id FROM harness_shared.adv_sessions
+        WHERE id = ${id} AND retired_at IS NULL`;
+      if (!scope) return { reanchored: false, owner: null, workspaceId: null };
+      const { withBlindReviewManagedReanchor } = await import('./blind-review-continuation-custody');
+      return withBlindReviewManagedReanchor(tx as unknown as Parameters<typeof withBlindReviewManagedReanchor>[0], {
+        workspaceId: scope.workspace_id, advSessionId: id, nativeSessionId: sessionId,
+        permit: opts.managedSuccessionPermit,
+      }, async () => {
       const rows = await tx<{ id: number; owner: string | null; workspace_id: string }[]>`
         UPDATE harness_shared.adv_sessions
            SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
@@ -1919,6 +1928,7 @@ export async function reanchorAdvSessionNativeId(
       // A repeated native-id report must also heal an omitted receipt.
       await recordSuLaunchSpecInTransaction(tx, id, null, undefined, opts.turnProvenanceDir);
       return { reanchored: false, owner: existing[0].owner, workspaceId: existing[0].workspace_id };
+      });
     });
     await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
     return { reanchored: result.reanchored, owner: result.owner };
@@ -1982,6 +1992,10 @@ export async function reanchorAdvSessionNativeIdByOwner(
       const targetId = target[0]?.id;
       if (targetId == null) return { reanchored: false, owner: null, workspaceId: null };
       const targetWorkspaceId = target[0]?.workspace_id ?? null;
+      const { withBlindReviewManagedReanchor } = await import('./blind-review-continuation-custody');
+      return withBlindReviewManagedReanchor(tx as unknown as Parameters<typeof withBlindReviewManagedReanchor>[0], {
+        workspaceId: target[0]!.workspace_id, advSessionId: targetId, nativeSessionId: sessionId,
+      }, async () => {
       const rows = await tx<{ id: number }[]>`
         UPDATE harness_shared.adv_sessions
            SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
@@ -1999,6 +2013,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
       // reanchored:false so "did I change it" stays honest.
       await recordSuLaunchSpecInTransaction(tx, targetId, null, undefined, opts.turnProvenanceDir);
       return { reanchored: rows.length > 0, owner: coordOwnerId, workspaceId: targetWorkspaceId };
+      });
     });
     await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
     return { reanchored: result.reanchored, owner: result.owner };

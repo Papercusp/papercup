@@ -48,6 +48,9 @@ const clearContextUsageMock = vi.hoisted(() => vi.fn());
 const clearContextAnchorMock = vi.hoisted(() => vi.fn());
 const clearContextEstimateMock = vi.hoisted(() => vi.fn(async () => {}));
 const bindTasksMock = vi.hoisted(() => vi.fn(async (): Promise<string[]> => ['task-bound']));
+const managedReserve = vi.hoisted(() => vi.fn());
+const managedPrincipal = vi.hoisted(() => vi.fn(async () => ({ slug: 'system:superuser', authMethod: 'bearer-token' })));
+vi.mock('../../../blind-review-continuation-custody', () => ({ reserveBlindReviewManagedSuccession: managedReserve }));
 const readiness = vi.hoisted(() => ({
   launch: vi.fn(async (): Promise<unknown> => null),
   pending: vi.fn(async (): Promise<unknown> => null),
@@ -59,7 +62,7 @@ const readiness = vi.hoisted(() => ({
 
 
 vi.mock('../../../auth/require-principal', () => ({
-  requirePrincipal: vi.fn(async () => {}),
+  requirePrincipal: managedPrincipal,
   PrincipalCheckError: class PrincipalCheckError extends Error {
     status = 401;
     reason = 'denied';
@@ -116,6 +119,8 @@ beforeEach(() => {
   readiness.binding.mockResolvedValue({ status: 'bound', receipt: { sessionId: 42 } });
   readiness.policy.mockResolvedValue({ status: 'bound', attestation: { nativeSessionId: FRESH_ID } });
   readiness.sql.mockResolvedValue([{ agent: 'codex' }]);
+  managedPrincipal.mockResolvedValue({ slug: 'system:superuser', authMethod: 'bearer-token' });
+  managedReserve.mockReset();
 });
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -135,6 +140,36 @@ async function postRespawned(body: unknown): Promise<Response> {
 }
 
 describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)', () => {
+  it('reserves before creation without running reanchor or accepting caller-mismatched host evidence', async () => {
+    const request = { ownerId: 'su-source', advSessionId: 42, sourceNativeSessionId: FRESH_ID };
+    const permit = { bindingId: 7, reservationId: 8, attemptKey: 'attempt', receiptId: 'receipt' };
+    managedReserve.mockResolvedValue(permit);
+    const response = await postRespawned({ advSessionId: 42, coordOwnerId: 'su-source', sessionId: FRESH_ID,
+      managedSuccession: { phase: 'reserve', request } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, managedSuccessionPermit: permit });
+    expect(managedReserve).toHaveBeenCalledWith(expect.any(String), request);
+    expect(reanchorMock).not.toHaveBeenCalled();
+    const mismatch = await postRespawned({ advSessionId: 43, coordOwnerId: 'su-source', sessionId: FRESH_ID,
+      managedSuccession: { phase: 'reserve', request } });
+    expect(mismatch.status).toBe(400);
+    expect(managedReserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the exact custody receipt to the atomic reanchor', async () => {
+    const permit = { bindingId: 7, reservationId: 8, attemptKey: 'attempt', receiptId: 'receipt' };
+    expect((await postRespawned({ advSessionId: 42, coordOwnerId: 'su-source', sessionId: FRESH_ID,
+      managedSuccession: { phase: 'settle', permit } })).status).toBe(200);
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null, managedSuccessionPermit: permit });
+  });
+
+  it('does not turn failed reservation storage into a successful callback', async () => {
+    managedReserve.mockRejectedValue(new Error('continuation_storage_unavailable'));
+    const response = await postRespawned({ advSessionId: 42, coordOwnerId: 'su-source', sessionId: FRESH_ID,
+      managedSuccession: { phase: 'reserve', request: { advSessionId: 42, ownerId: 'su-source', sourceNativeSessionId: FRESH_ID } } });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(reanchorMock).not.toHaveBeenCalled();
+  });
   it('passes the managed host provenance namespace to the atomic reanchor', async () => {
     const turnProvenanceDir = '/runtime/host/turn-provenance';
     const response = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID, turnProvenanceDir });

@@ -1798,6 +1798,43 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
     expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
   });
 
+  it.each(['low', 'medium', 'high', 'xhigh', 'max'])
+    ('retains a native terminal failure followed by the %s effort footer', (effort) => {
+      const receipt = '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown';
+      // EI-28073999355321790: the real failed critic drew this footer AFTER
+      // the host's receipt, leaving the consult incorrectly awaiting a reply.
+      const footer = `\x1b[62G\x1b[38;5;246m◉\x1b[64G${effort}\x1b[70G·\x1b[72G/effort\x1b[39m\r\n`;
+      expect(launchLogFailureReason(`${receipt}\n${footer}`)).toBe(receipt);
+    });
+
+  it('does not revive quoted or superseded native failures beside an effort footer', () => {
+    const receipt = '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown';
+    const footer = '◉ xhigh · /effort';
+    expect(launchLogFailureReason(`review brief\n\`\`\`log\n${receipt}\n${footer}\n\`\`\`\n`)).toBeNull();
+    expect(launchLogFailureReason(`${receipt}\n${footer}\nA later native turn answered successfully.\n`)).toBeNull();
+  });
+
+  it('retains a failed turn after the host parks it, without ignoring a later active turn', () => {
+    const receipt = '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown';
+    const parked = '[psu] Agent parked after 15 min idle to free memory. Type, or send it a message, to resume the same conversation.';
+    const log = `${receipt}\n◉ xhigh · /effort\n${parked}\n`;
+    expect(launchLogFailureReason(log)).toBe(receipt);
+    expect(launchLogFailureReason(`${log}A later native turn answered successfully.\n`)).toBeNull();
+    expect(launchLogFailureReason(`review brief\n\`\`\`log\n${log}\`\`\`\n`)).toBeNull();
+  });
+
+  it.each([
+    'psu: kickoff delivered — verified the exact provenance marker in the native transcript.',
+    'psu: kickoff delivered — verified the exact provenance marker in the native transcript (model turn started only after one in-session retry).',
+    'psu: session port delivered — verified the exact seed checksum in the target native transcript.',
+  ])('does not confuse a late prompt-delivery acknowledgement with model success: %s', (ack) => {
+    const receipt = '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown';
+    const log = `${receipt}\n${ack}\n◉ xhigh · /effort\n`;
+    expect(launchLogFailureReason(log)).toBe(receipt);
+    expect(launchLogFailureReason(`review brief\n\`\`\`log\n${log}\`\`\`\n`)).toBeNull();
+    expect(launchLogFailureReason(`${log}A later native turn answered successfully.\n`)).toBeNull();
+  });
+
   it('reports the LAST failure when a log holds several', () => {
     const log = 'psu: tracked resume failed: first\npsu: refusing fork: second\n';
     expect(launchLogFailureReason(log)).toBe('psu: refusing fork: second');
@@ -2066,6 +2103,29 @@ describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', (
       type: 'event_msg', payload: { type: 'task_complete', error: { message: 'You’ve hit your usage limit. Upgrade to Pro' } },
     }));
     expect(verdict).toMatchObject({ status: 'rejected', reason: 'account-walled' });
+  });
+
+  it('rejects an unauthenticated Claude first turn through the real transcript reader', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'consult-auth-rejection-'));
+    const transcriptPath = join(dir, 'answer.jsonl');
+    const text = 'Not logged in · Please run /login';
+    try {
+      writeFileSync(transcriptPath, [
+        { type: 'user', message: { role: 'user', content: 'Review the acceptance contract.' } },
+        { type: 'assistant', error: 'authentication_failed', isApiErrorMessage: true,
+          message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] } },
+      ].map(record => JSON.stringify(record)).join('\n'));
+      const verdict = await rejudgeFirstTurn({ agent: 'claude', transcriptPath }, {
+        readLaunchLogReason: async () => null,
+        analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
+        analyzeCodexRollout: () => { throw new Error('Claude rejection must use the Claude reader'); },
+      });
+      expect(verdict).toMatchObject({ status: 'rejected', reason: 'account-walled' });
+      expect(verdict.status === 'rejected' && verdict.evidence).toContain(text);
+    } finally {
+      __resetClaudeResumeTranscriptCacheForTests();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('treats an explicit nonretryable native failure receipt as a terminal first-turn failure', async () => {

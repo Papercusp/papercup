@@ -1761,6 +1761,9 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
   it('leaves a review consult alone before half its TTL, once someone has engaged, or when it is not a review', async () => {
     const early = await seedReview({ routing: VETTING, createdMin: -10, expiresMin: 110 });
     const engaged = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50, exchangesUsed: 1 });
+    await rootSql`INSERT INTO harness_shared.consult_post_meta
+      (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, ${++seq}, ${engaged}, 'resp-1', 'clarifying_question')`;
     const ordinary = await seedReview({ routing: menuSnapshot(['resp-1', 'resp-2']), createdMin: -70, expiresMin: 50 });
     const { deps, filed } = withFiler();
     const result = await sweepExpiredConsults(deps);
@@ -1784,6 +1787,34 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     const second = await sweepExpiredConsults(healthy.deps);
     expect(second.converted.map((c) => c.conversationId)).toContain(id);
     expect((await rowOf(id)).outcome).toMatchObject({ work_item_id: `WI-review-${id}` });
+  });
+
+  it('converts a silent review after a requester follow-up debits the exchange cap', async () => {
+    const id = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50, exchangesUsed: 1 });
+    await rootSql`INSERT INTO harness_shared.consult_post_meta
+      (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, ${++seq}, ${id}, 'rubric-author', 'new_fact')`;
+    const { deps, filed } = withFiler();
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(filed.map((entry) => entry.conversationId)).toContain(id);
+    expect(result.converted).toContainEqual({ conversationId: id, workItemId: `WI-review-${id}`, kind: 'rubric-vetting' });
+    expect(await rowOf(id)).toMatchObject({ state: 'expired', outcome: { disposition: 'converted_to_review_work_item' } });
+  });
+
+  it('preserves a prior responder perspective even when it did not debit the exchange cap', async () => {
+    const id = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50 });
+    await rootSql`INSERT INTO harness_shared.consult_post_meta
+      (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, ${++seq}, ${id}, 'resp-1', 'answer')`;
+    const { deps, filed } = withFiler();
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(filed.map((entry) => entry.conversationId)).not.toContain(id);
+    expect(result.converted.map((entry) => entry.conversationId)).not.toContain(id);
+    expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
   });
 
   it('wakes a hard-blocked requester with the work item instead of leaving them parked', async () => {
@@ -2190,7 +2221,29 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     expect(reachCalls.filter((c) => c.conversationId === id)).toEqual([]);
   });
 
-  it('does not re-judge past the re-judge window, a walk for a different stamped answerer, or an engaged consult', async () => {
+  it('recovers a rejected answering turn after a requester follow-up debits the exchange cap', async () => {
+    const id = await nonDue();
+    await recordDispatch(id, {
+      transcriptPath: rolloutFile(`requester-${id}`, started, modelNotFound),
+      kickoffAt: new Date(NOW.getTime() - FIRST_TURN_REJUDGE_WINDOW_MS - 60_000).toISOString(),
+      afterInterimReply: true,
+    });
+    await rootSql`INSERT INTO harness_shared.consult_post_meta
+      (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, ${++seq}, ${id}, 'req-1', 'new_fact')`;
+    await rootSql`UPDATE harness_shared.consult_state SET exchanges_used = 1
+      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.rejudgeFirstTurn = (unjudged) => rejudgeFirstTurn(unjudged);
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(await cascadeRow(id)).toMatchObject({ state: 'awaiting_responder', responder_id: 'resp-2', cascade_cursor: 1 });
+    expect(result.answerFailures).toContainEqual(expect.objectContaining({ conversationId: id, reason: 'answer-first-turn-rejected', recorded: true }));
+    expect(reachCalls.filter((call) => call.conversationId === id).map((call) => call.responder)).toEqual(['resp-2']);
+  });
+
+  it('does not re-judge past the re-judge window, a walk for a different stamped answerer, or an active consult', async () => {
     const old = await nonDue();
     await recordDispatch(old, {
       transcriptPath: rolloutFile(`old-${old}`, started, modelNotFound),
@@ -2204,7 +2257,9 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     });
     const engaged = await nonDue();
     await recordDispatch(engaged, { transcriptPath: rolloutFile(`eng-${engaged}`, started, modelNotFound), kickoffAt: kickoff });
-    await rootSql`UPDATE harness_shared.consult_state SET exchanges_used = 1 WHERE workspace_id = ${WS} AND conversation_id = ${engaged}`;
+    // A responder reply changes state to active; the total exchange count also
+    // includes requester follow-ups and cannot establish responder engagement.
+    await rootSql`UPDATE harness_shared.consult_state SET state = 'active', exchanges_used = 1 WHERE workspace_id = ${WS} AND conversation_id = ${engaged}`;
     const judged: string[] = [];
     const { deps } = makeDeps({ withReach: true });
     deps.rejudgeFirstTurn = (u) => { judged.push(u.transcriptPath); return rejudgeFirstTurn(u); };

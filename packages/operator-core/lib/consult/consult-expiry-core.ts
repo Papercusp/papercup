@@ -70,10 +70,12 @@ export interface DueConsultRow {
   routing: unknown;
   cascade_cursor: number;
   cascade_digest: unknown;
-  /** Responder turns taken on this consult (834). 0 = nobody has engaged. */
+  /** Debited deliberation replies, including requester updates; not engagement. */
   exchanges_used?: number;
+  /** Typed responder perspectives, independent of the exchange-cap debit. */
+  has_responder_reply: boolean;
   /** True when the row has passed half of its TTL (created_at → expires_at)
-   * with zero exchanges — the P-014 conversion trigger, computed in SQL. */
+   * without a responder reply — the P-014 conversion trigger, computed in SQL. */
   is_half_silent?: boolean;
   /** Persisted dispatch walks (migration 1225), newest last. */
   dispatch_attempts?: unknown;
@@ -423,19 +425,28 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
            updated_at,
            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS snapshot_updated_at,
            latency_contract, question, routing, cascade_cursor, cascade_digest,
-           exchanges_used, dispatch_attempts,
+           exchanges_used, dispatch_attempts, engagement.has_responder_reply,
            COALESCE(
-             exchanges_used = 0
+             NOT engagement.has_responder_reply
                AND expires_at IS NOT NULL
                AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2,
              false
            ) AS is_half_silent
-      FROM harness_shared.consult_state
+      FROM harness_shared.consult_state cs
+      CROSS JOIN LATERAL (
+        SELECT EXISTS (
+          SELECT 1 FROM harness_shared.consult_post_meta reply
+           WHERE reply.workspace_id = cs.workspace_id
+             AND reply.conversation_id = cs.conversation_id
+             AND reply.author_id IS DISTINCT FROM cs.requester_id
+             AND reply.kind IN ('answer', 'clarifying_question', 'new_fact')
+        ) AS has_responder_reply
+      ) engagement
      WHERE closed_at IS NULL
        AND (
          expires_at < ${nowIso}::timestamptz
          OR (state = 'awaiting_responder' AND responder_id IS NOT NULL)
-         OR (state = 'awaiting_responder' AND exchanges_used = 0 AND expires_at IS NOT NULL
+         OR (state = 'awaiting_responder' AND NOT engagement.has_responder_reply AND expires_at IS NOT NULL
              AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2)
        )
        AND NOT (routing #>> '{cascadeDispatch,version}' = '1'
@@ -486,7 +497,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     const nowMs = Date.parse(nowIso);
     for (const row of due) {
       if (row.is_due === true || row.state !== 'awaiting_responder' || row.responder_id == null) continue;
-      if (Number(row.exchanges_used ?? 0) !== 0) continue;
+      // A requester follow-up debits exchanges_used without changing this
+      // awaiting state. Judge the exact current answerer; a responder reply
+      // changes the state to active and snapshot revalidation protects races.
       const selection = currentSelectionAnswerer(row.routing, row.cascade_cursor, row.responder_id);
       if (!selection) continue;
       const unjudged = currentUnjudgedFirstTurn(row, selection.answeringOwnerId, nowMs);
@@ -531,7 +544,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     if (
       reviewKind &&
       row.state === 'awaiting_responder' &&
-      Number(row.exchanges_used ?? 0) === 0 &&
+      row.has_responder_reply === false &&
       (row.is_half_silent === true || unstampedDispatchFailed)
     ) {
       const answeringOwnerId = currentReviewAnsweringOwner(row);
@@ -922,7 +935,7 @@ async function convertReviewConsult(
   try {
     flipped = (await sql.begin(async (tx) => {
       const terminal = (await tx`
-        UPDATE harness_shared.consult_state
+        UPDATE harness_shared.consult_state cs
            SET state = 'expired',
                outcome = ${tx.json({
                  disposition: 'converted_to_review_work_item',
@@ -939,7 +952,13 @@ async function convertReviewConsult(
            AND conversation_id = ${row.conversation_id}
            AND closed_at IS NULL
            AND state = 'awaiting_responder'
-           AND exchanges_used = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.consult_post_meta reply
+              WHERE reply.workspace_id = cs.workspace_id
+                AND reply.conversation_id = cs.conversation_id
+                AND reply.author_id IS DISTINCT FROM cs.requester_id
+                AND reply.kind IN ('answer', 'clarifying_question', 'new_fact')
+           )
            AND cascade_cursor = ${row.cascade_cursor}
            AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
            AND (
