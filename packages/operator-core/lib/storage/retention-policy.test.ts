@@ -51,7 +51,7 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
       expect(shipped.filter(cls => cls.acceptance?.kind === kind).map(cls => cls.id)).toEqual(expected[kind]);
     }
     const scopes = retentionAcceptancePopulation(shipped);
-    expect(scopes).toHaveLength(164);
+    expect(scopes).toHaveLength(165);
     expect(new Set(scopes.map(row => `${row.scopeKind}:${row.scope}`)).size).toBe(scopes.length);
     expect(scopes.every(row => row.acceptance?.provenance.length)).toBe(true);
     // A new/removed root or store requires an explicit population review even
@@ -418,6 +418,7 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
         [`${HOME}/.papercusp/scratch/brand-new-probe/out.json`, 'papercusp-scratch'],
         [`${HOME}/.papercusp/evidence/never-seen-before/run.log`, 'agent-evidence'],
         [`${HOME}/.papercusp/artifacts/new-bundle`, 'agent-evidence'],
+        [`${HOME}/.papercusp/test-artifacts/testing-run/run-example/manifest.json`, 'agent-evidence'],
         [`${HOME}/papercupai-workspace/any-checkout/.papercusp/scratch/x`, 'repo-scratch'],
         [`${HOME}/papercupai-workspace/any-checkout/.papercusp/vitest-tmp/x`, 'repo-scratch'],
         [`${HOME}/papercupai-workspace/any-checkout/.papercusp/tsx-1000/x`, 'repo-scratch'],
@@ -431,6 +432,7 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
         const rule = policy.classes.get(cls)!.keep;
         expect(rule.kind === 'max-age' ? rule.maxAgeHours : -1, path).toBeLessThanOrEqual(AGENT_MAX_AGE_HOURS);
       }
+      expect(del(`${HOME}/.papercusp/test-artifacts/owner-data/live`)).toBeNull();
     });
 
     it('expires plan-item, work-item and date-stamped run output at the top of ~/.papercusp', () => {

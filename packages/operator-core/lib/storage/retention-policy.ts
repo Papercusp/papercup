@@ -550,10 +550,11 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'Evidence, test-evidence and artifact bundles under ~/.papercusp',
     origin: 'agent',
-    roots: ['~/.papercusp/evidence', '~/.papercusp/test-evidence', '~/.papercusp/artifacts'],
+    roots: ['~/.papercusp/evidence', '~/.papercusp/test-evidence', '~/.papercusp/artifacts',
+      '~/.papercusp/test-artifacts/testing-run'],
     keep: AGENT_DEFAULT_RULE,
     enforcers: [{ kind: 'standing-reclaim' }],
-    note: 'Evidence an open work item still needs is pinned (P-006), not kept by a longer class bound.',
+    note: 'Evidence an open work item still needs is pinned (P-006), not kept by a longer class bound. testing:run packets use this same guarded 72h retention.',
   },
   {
     id: 'papercusp-home-run-dirs',

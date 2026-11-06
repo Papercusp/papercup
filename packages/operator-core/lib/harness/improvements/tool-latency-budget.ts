@@ -19,6 +19,7 @@
  * aggregate and the lazy registry read live in `collectToolErrorSignals` (watchdog.ts).
  */
 import type { WatchdogSignal } from './watchdog';
+import type { LateCompletionToolFacts } from '@papercusp/tooldef';
 
 /** Mirrors dispatch-stack.ts `exec.tool.timeoutSec ?? 60` — the budget a tool without `timeoutSec` is aborted at. */
 export const TOOL_LATENCY_DEFAULT_BUDGET_SEC = 60;
@@ -52,6 +53,8 @@ export interface ToolLatencyBudget {
    * Such a tool is NOT judged — flagging it would re-file a mitigated risk.
    */
   hasAbortCompletionReceipt?: boolean;
+  /** The dispatcher already surfaces a completed late result safely for this tool. */
+  lateCompletionSafe?: boolean;
 }
 
 /** One per-tool aggregate row from `harness_shared.tool_invocations` (SQL shapes numbers as text sometimes). */
@@ -75,11 +78,18 @@ export interface ToolLatencyOptions {
 /** Structural view of a projected tool — only the three fields this detector reads. */
 export interface ProjectedToolLike {
   expose?: { mcp?: { name?: string | null } | null } | null;
+  capabilities?: readonly string[];
   timeoutSec?: number | null;
   effect?: string | null;
   idempotent?: boolean;
   /** A resolver function when the tool declares one (see {@link ToolLatencyBudget.hasAbortCompletionReceipt}). */
   abortCompletionReceipt?: unknown;
+}
+
+/** The host policy inputs the dispatcher uses for late completed results. */
+export interface ToolLateCompletionPolicy {
+  capabilityTier?: (capability: string) => string;
+  isLateCompletionSafeRead?: (tool: LateCompletionToolFacts) => boolean;
 }
 
 /** Effective dispatch budget in seconds, exactly as the dispatcher resolves it. */
@@ -97,16 +107,35 @@ export function effectiveToolBudgetSec(budget: ToolLatencyBudget | undefined): n
  */
 export function toolLatencyBudgetsFromProjected(
   tools: Iterable<ProjectedToolLike>,
+  lateCompletionPolicy: ToolLateCompletionPolicy = {},
 ): Map<string, ToolLatencyBudget> {
   const out = new Map<string, ToolLatencyBudget>();
   for (const tool of tools) {
     const name = tool.expose?.mcp?.name;
     if (typeof name !== 'string' || name.length === 0) continue;
+    const capabilities = tool.capabilities ?? [];
+    const effect = tool.effect === 'read' || tool.effect === 'write' ? tool.effect : undefined;
+    let lateCompletionSafe = false;
+    try {
+      const capabilityTierSafe = capabilities.length > 0 &&
+        lateCompletionPolicy.capabilityTier != null &&
+        capabilities.every(capability => lateCompletionPolicy.capabilityTier!(capability) === 'low');
+      const hostClassifiedSafe = lateCompletionPolicy.isLateCompletionSafeRead?.({
+        name,
+        capabilities,
+        ...(effect ? { effect } : {}),
+      }) === true;
+      lateCompletionSafe = capabilityTierSafe || hostClassifiedSafe;
+    } catch {
+      // A broken classifier must not suppress a real late-write warning.
+      lateCompletionSafe = false;
+    }
     out.set(name, {
       timeoutSec: tool.timeoutSec ?? null,
       effect: tool.effect ?? null,
       ...(tool.idempotent === true ? { idempotent: true } : {}),
       hasAbortCompletionReceipt: typeof tool.abortCompletionReceipt === 'function',
+      ...(lateCompletionSafe ? { lateCompletionSafe: true } : {}),
     });
   }
   return out;
@@ -114,7 +143,8 @@ export function toolLatencyBudgetsFromProjected(
 
 /** True for a write tool whose late completion is not already safe to surface or recover. */
 function isJudged(budget: ToolLatencyBudget | undefined): budget is ToolLatencyBudget {
-  return budget?.effect === 'write' && budget.idempotent !== true && budget.hasAbortCompletionReceipt !== true;
+  return budget?.effect === 'write' && budget.idempotent !== true &&
+    budget.hasAbortCompletionReceipt !== true && budget.lateCompletionSafe !== true;
 }
 
 /** Names of the judged tools (write, no idempotent completion or receipt) — the risky SQL population. */

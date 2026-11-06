@@ -2,15 +2,17 @@
  * Port 3 (grader) unit tests — fake exec/fs, no Docker, no image pulls.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   getOfficialGrader,
   makeFakeGrader,
+  makeHarnessBenchGrader,
   makeSweBenchProGrader,
   makeSweBenchVerifiedGrader,
   parseSweBenchProReport,
   parseSweBenchVerifiedReport,
 } from './grader';
-import type { GraderFs, SweBenchVerifiedGraderConfig } from './grader';
+import type { GraderFs, HarnessBenchReceipt, SweBenchVerifiedGraderConfig } from './grader';
 import type { ArmSubmission, BenchTask as Task } from './types';
 
 function task(id: string): Task {
@@ -230,11 +232,102 @@ describe('getOfficialGrader', () => {
   it('throws when the verified config is absent', () => {
     expect(() => getOfficialGrader('swe-bench-verified', {})).toThrow(/requires a SweBenchVerifiedGraderConfig/);
   });
-  it('throws for the unbuilt M2 families', () => {
+  it('throws for the unbuilt terminal backend and unconfigured replay backend', () => {
     expect(() => getOfficialGrader('terminal-bench', {})).toThrow(/not built yet/);
-    expect(() => getOfficialGrader('harness-bench', {})).toThrow(/not built yet/);
+    expect(() => getOfficialGrader('harness-bench', {})).toThrow(/requires a HarnessBenchGraderConfig/);
   });
   it('throws for an unsupported family', () => {
     expect(() => getOfficialGrader('made-up', {})).toThrow(/unsupported/);
+  });
+});
+
+describe('real-plan replay own-test receipt validation', () => {
+  const sourceCommit = 'a'.repeat(40), graderCommit = 'b'.repeat(40);
+  function replayTask(): Task {
+    return { ...task('real-plan/P-001'), benchmark: 'harness-bench', baseCommit: sourceCommit,
+      graderMeta: { graderCommit, testFiles: ['src/own.test.ts'] } };
+  }
+  function receipt(): HarnessBenchReceipt {
+    return { instanceId: 'real-plan/P-001', prefix: 'seed-0', sourceCommit, graderCommit,
+      submissionSha256: createHash('sha256').update('PATCH').digest('hex'),
+      checkoutRealpath: '/private/replay-1', exitCode: 0,
+      tests: [{ path: 'src/own.test.ts', passed: 3, failed: 0, skipped: 0, collectionFailed: false }],
+      rawOutput: 'original own-test output' };
+  }
+  const submission = () => diffSub('real-plan/P-001', 'PATCH');
+  const config = (evaluate: (sub: Extract<ArmSubmission, { modality: 'diff' }>, item: Task) => Promise<HarnessBenchReceipt>) =>
+    ({ version: 'own-tests@' + graderCommit, sharedCheckoutRealpath: '/shared/staging', evaluate });
+
+  it('reuses the registry and returns the task own measured verdict and original receipt', async () => {
+    const original = receipt(), evaluate = vi.fn(async () => original);
+    const grader = getOfficialGrader('harness-bench', { harnessBench: config(evaluate) });
+    const [grade] = await grader.grade([submission()], [replayTask()]);
+    expect(evaluate).toHaveBeenCalledWith(submission(), replayTask());
+    expect(grade).toMatchObject({ resolved: true, graderFamily: 'harness-bench',
+      graderVersion: 'own-tests@' + graderCommit, failToPass: [{ test: 'src/own.test.ts', passed: true }] });
+    expect(grade!.rawGraderOutput).toBe(original);
+    expect(grade!.graderError).toBeUndefined();
+  });
+
+  it('records an actual assertion failure as a measured failure', async () => {
+    const original = receipt(); original.tests[0]!.failed = 1; original.exitCode = 1;
+    const [grade] = await makeHarnessBenchGrader(config(async () => original)).grade([submission()], [replayTask()]);
+    expect(grade!.resolved).toBe(false);
+    expect(grade!.graderError).toBeUndefined();
+    expect(grade!.failToPass).toEqual([{ test: 'src/own.test.ts', passed: false }]);
+  });
+
+  it.each([
+    ['different task', (r: HarnessBenchReceipt) => { r.instanceId = 'other'; }],
+    ['different sample', (r: HarnessBenchReceipt) => { r.prefix = 'other'; }],
+    ['different source', (r: HarnessBenchReceipt) => { r.sourceCommit = 'c'.repeat(40); }],
+    ['different grader', (r: HarnessBenchReceipt) => { r.graderCommit = 'c'.repeat(40); }],
+    ['different patch', (r: HarnessBenchReceipt) => { r.submissionSha256 = 'c'.repeat(64); }],
+    ['shared checkout', (r: HarnessBenchReceipt) => { r.checkoutRealpath = '/shared/staging/sub'; }],
+    ['relative checkout', (r: HarnessBenchReceipt) => { r.checkoutRealpath = 'private/replay'; }],
+    ['missing test', (r: HarnessBenchReceipt) => { r.tests = []; }],
+    ['different test', (r: HarnessBenchReceipt) => { r.tests[0]!.path = 'different.test.ts'; }],
+    ['duplicate test', (r: HarnessBenchReceipt) => { r.tests.push({ ...r.tests[0]! }); }],
+    ['collection failure', (r: HarnessBenchReceipt) => { r.tests[0]!.collectionFailed = true; }],
+    ['all skipped', (r: HarnessBenchReceipt) => { r.tests[0]!.passed = 0; r.tests[0]!.skipped = 3; }],
+    ['partial skip', (r: HarnessBenchReceipt) => { r.tests[0]!.skipped = 1; }],
+    ['zero assertions', (r: HarnessBenchReceipt) => { r.tests[0]!.passed = 0; }],
+    ['unknown count', (r: HarnessBenchReceipt) => { r.tests[0]!.passed = NaN; }],
+    ['negative count', (r: HarnessBenchReceipt) => { r.tests[0]!.failed = -1; }],
+    ['lost output', (r: HarnessBenchReceipt) => { r.rawOutput = ''; }],
+    ['timeout', (r: HarnessBenchReceipt) => { r.exitCode = 124; }],
+    ['failed finalization', (r: HarnessBenchReceipt) => { r.exitCode = 7; }],
+    ['false passing exit', (r: HarnessBenchReceipt) => { r.tests[0]!.failed = 1; }],
+  ])('preserves %s as grader infrastructure error rather than success or capability failure', async (_name, change) => {
+    const original = receipt(); change(original);
+    const [grade] = await makeHarnessBenchGrader(config(async () => original)).grade([submission()], [replayTask()]);
+    expect(grade!.resolved).toBe(false);
+    expect(grade!.graderError).toBeTruthy();
+    expect(grade!.rawGraderOutput).toBe(original);
+  });
+
+  it.each([
+    ['unfrozen source', (t: Task) => { t.baseCommit = 'staging'; }],
+    ['unfrozen grader', (t: Task) => { t.graderMeta.graderCommit = 'main'; }],
+    ['missing own tests', (t: Task) => { t.graderMeta.testFiles = []; }],
+    ['escaping own tests', (t: Task) => { t.graderMeta.testFiles = ['../own.test.ts']; }],
+    ['duplicate own tests', (t: Task) => { t.graderMeta.testFiles = ['src/own.test.ts', 'src/own.test.ts']; }],
+  ])('refuses %s before execution', async (_name, change) => {
+    const item = replayTask(); change(item); const evaluate = vi.fn(async () => receipt());
+    const [grade] = await makeHarnessBenchGrader(config(evaluate)).grade([submission()], [item]);
+    expect(grade!.graderError).toBeTruthy(); expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it('keeps evaluator failure from becoming a measured capability failure', async () => {
+    const [grade] = await makeHarnessBenchGrader(config(async () => { throw Error('private runtime unavailable'); }))
+      .grade([submission()], [replayTask()]);
+    expect(grade!.graderError).toBe('private runtime unavailable');
+    expect(grade!.rawGraderOutput).toEqual({ unmeasured: true });
+  });
+
+  it('refuses a second submission that reuses the same grader checkout', async () => {
+    const grader = makeHarnessBenchGrader(config(async sub => ({ ...receipt(), prefix: sub.prefix })));
+    const grades = await grader.grade([submission(), diffSub('real-plan/P-001', 'PATCH', 'seed-1')], [replayTask()]);
+    expect(grades[0]!.resolved).toBe(true); expect(grades[1]!.graderError).toMatch(/reused/);
   });
 });

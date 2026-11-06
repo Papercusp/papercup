@@ -240,4 +240,34 @@ describe('registry mapping', () => {
     ]);
     expect(writeToolNames(map)).toEqual(['a:write', 'z:write']);
   });
+
+  it('matches dispatch late-completion safety for low-tier and host-classified writes', () => {
+    const mapped = toolLatencyBudgetsFromProjected([
+      {
+        expose: { mcp: { name: 'activity:report' } },
+        capabilities: ['activity:report'],
+        effect: 'write',
+      },
+      {
+        expose: { mcp: { name: 'host:safe' } },
+        capabilities: ['intel:read'],
+        effect: 'write',
+      },
+      {
+        expose: { mcp: { name: 'unsafe:write' } },
+        capabilities: ['write:unsafe'],
+        effect: 'write',
+      },
+    ], {
+      capabilityTier: capability => capability === 'activity:report' ? 'low' : 'medium',
+      isLateCompletionSafeRead: tool => tool.name === 'host:safe',
+    });
+
+    expect(writeToolNames(mapped)).toEqual(['unsafe:write']);
+    expect(toolLatencyBudgetSignalsFromRows([
+      row('activity:report', 233_433, 1537),
+      row('host:safe', 60_000, 100),
+      row('unsafe:write', 60_000, 100),
+    ], mapped).map(signal => signal.key)).toEqual(['tool-latency-budget:unsafe:write']);
+  });
 });

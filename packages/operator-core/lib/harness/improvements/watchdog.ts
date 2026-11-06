@@ -2363,7 +2363,11 @@ export function toolErrorSignalsFromRows(
  */
 async function loadProjectedToolLatencyBudgets(): Promise<Map<string, ToolLatencyBudget>> {
   const { listAllProjectedTools } = await import('@papercusp/agent-mcp');
-  return toolLatencyBudgetsFromProjected(listAllProjectedTools());
+  const { isLateCompletionSafeRead, tierFor } = await import('@papercusp/tooldef');
+  return toolLatencyBudgetsFromProjected(listAllProjectedTools(), {
+    capabilityTier: tierFor,
+    isLateCompletionSafeRead,
+  });
 }
 
 export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}, workspaceId?: string): Promise<WatchdogSignal[]> {

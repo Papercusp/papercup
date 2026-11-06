@@ -342,6 +342,72 @@ describe('required screenshot GPU preflight', () => {
   });
 });
 
+describe('isolated native assertion ledger routing', () => {
+  const preserve = source.match(/^preserve_assertion_ledger_identity\(\) \{[\s\S]*?^\}/m)?.[0];
+  const start = source.indexOf('# EI-22622028658305763: assertion commands');
+  const isolation = source.slice(start).match(/^if \[ "\$ISOLATED_DB" = "1" \]; then[\s\S]*?^fi/m)?.[0];
+  if (!preserve || !isolation) throw new Error('Maintained assertion ledger boundary was not found');
+
+  function probe(overrides: Record<string, string> = {}) {
+    const keys = ['PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_WORKSPACE',
+      'PAPERCUSP_TEST_RUN_HARNESS', 'PAPERCUSP_TEST_RUN_GROUP', 'HARNESS_ADMIN_DATABASE_URL',
+      'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_DISABLE_TEST_RUNS_REPORTER'];
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail', preserve, isolation,
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+        `console.log(JSON.stringify(Object.fromEntries(${JSON.stringify(keys)}.map(k => [k, process.env[k] ?? null]))))`,
+      )}`,
+    ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env,
+      ISOLATED_DB: '1', ISOLATED_HOME: '/fixture/private', ISOLATED_CODEX_HOMES_DIR: '/fixture/codex',
+      ISOLATED_WORKSPACE: 'verify-tauri-isolated-fixture', ISOLATED_WORKSPACES_ROOT: '/fixture/workspaces',
+      ISOLATED_ADMIN_URL: 'postgresql://private@localhost:6543/private',
+      ISOLATED_APP_URL: 'postgresql://app@localhost:6543/private', ISOLATED_PG_PORT: '6543',
+      HARNESS_ADMIN_DATABASE_URL: 'postgresql://ledger@localhost:5432/shared',
+      PAPERCUSP_WORKSPACE_ID: 'caller-workspace', PAPERCUSP_WORKSPACE: 'caller-workspace',
+      HARNESS_SLUG: '', PAPERCUSP_HARNESS_SLUG: 'papercusp', VH_RUN_ID: 'fixture-run',
+      PAPERCUSP_TEST_RUNS_DB_URL: '', PAPERCUSP_TEST_RUN_WORKSPACE: '',
+      PAPERCUSP_TEST_RUN_HARNESS: '', PAPERCUSP_TEST_RUN_GROUP: '',
+      PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1', ...overrides,
+    } });
+    expect(result.status, result.stderr).toBe(0);
+    return { values: JSON.parse(result.stdout), stderr: result.stderr };
+  }
+
+  it('preserves caller ledger identity while fixture writes stay on the private database', () => {
+    const { values, stderr } = probe();
+    expect(stderr).toBe('');
+    expect(values).toEqual({
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://ledger@localhost:5432/shared',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'caller-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_TEST_RUN_GROUP: 'verify-tauri-headless-fixture-run',
+      HARNESS_ADMIN_DATABASE_URL: 'postgresql://private@localhost:6543/private',
+      PAPERCUSP_WORKSPACE_ID: 'verify-tauri-isolated-fixture', PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: null,
+    });
+  });
+
+  it('keeps explicit ledger overrides supplied by an outer isolated runner', () => {
+    const { values } = probe({ PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://explicit@localhost:5434/ledger',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'explicit-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'explicit-harness',
+      PAPERCUSP_TEST_RUN_GROUP: 'explicit-group' });
+    expect(values).toMatchObject({ PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://explicit@localhost:5434/ledger',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'explicit-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'explicit-harness',
+      PAPERCUSP_TEST_RUN_GROUP: 'explicit-group', HARNESS_ADMIN_DATABASE_URL: 'postgresql://private@localhost:6543/private' });
+  });
+
+  it('does not invent a caller workspace when none was supplied', () => {
+    const { values, stderr } = probe({ PAPERCUSP_WORKSPACE_ID: '', PAPERCUSP_WORKSPACE: '' });
+    expect(values.PAPERCUSP_TEST_RUN_WORKSPACE).toBeNull();
+    expect(stderr).toContain('WARNING no caller workspace');
+  });
+
+  it('keeps shared-mode assertions outside the isolated ledger override', () => {
+    const { values } = probe({ ISOLATED_DB: '0' });
+    expect(values).toMatchObject({ HARNESS_ADMIN_DATABASE_URL: 'postgresql://ledger@localhost:5432/shared',
+      PAPERCUSP_WORKSPACE_ID: 'caller-workspace', PAPERCUSP_TEST_RUNS_DB_URL: '',
+      PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1' });
+  });
+});
+
 describe('native Playwright assertion source preflight', () => {
   function preflight(...args: string[]) {
     const dir = mkdtempSync(resolve(tmpdir(), 'tauri-assertion-source-'));

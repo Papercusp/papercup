@@ -1197,7 +1197,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         { id: 'pending', kind: 'test' as const, path: 'pending.test.ts' },
         { id: 'post', kind: 'post-suite' as const, path: 'post.mjs' },
       ];
-      const receipt = (unit: typeof units[number]) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
+      const receipt = (unit: { id: string; path: string }) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
         observedAtMs: 250, state: 'pass' as const, firstAttemptVerdict: 'pass' as const,
         worktreeDirty: false, observedCount: 1, proof: { recordedSha: owner.candidate,
           runContext: 'ci', runnerIdentity: 'proof-v3 node', executedModules: [unit.path],
@@ -1224,7 +1224,10 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         .toMatchObject({ verdict: 'incomplete', reused: ['banked'], run: ['pending', 'post'],
           counts: { selected: 3, passed: 1, pending: 2 } });
       expect(await composeStoredQualificationWork(target, { ...input, updates: [] }))
-        .toMatchObject({ status: 'conflict', refusalReason: 'continuation-verdict-not-green' });
+        // These synthetic test receipts intentionally lack native enrollment.
+        // The earlier producer-population guard must prevent promotion too.
+        .toMatchObject({ status: 'conflict', refusalReason: 'native-producer-population-incomplete' });
+      expect(await readStoredQualification(target)).toEqual(refused);
       const resumed = await continueStoredQualificationWork(target, { ...input, updates: [] }, async unit => receipt(unit));
       expect(resumed).toMatchObject({ status: 'settled', executed: ['pending', 'post'],
         evaluation: { verdict: 'green', reused: ['banked', 'pending', 'post'],

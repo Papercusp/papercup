@@ -382,6 +382,9 @@ describe('portable Playwright ledger reporter', () => {
       vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'papercusp-workspace');
       vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'portal-e2e-proof');
       vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', receipts);
+      vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://ledger@localhost:5432/shared');
+      vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://private@localhost:6543/disposable');
+      pg.mockClear();
       sql.mockReset().mockResolvedValue([{ id: '12345' }]);
       const reporter = new Reporter();
       const beforeBegin = Date.now();
@@ -403,6 +406,7 @@ describe('portable Playwright ledger reporter', () => {
       }
       await reporter.onEnd();
       await reporter.onExit();
+      expect(pg).toHaveBeenCalledWith('postgresql://ledger@localhost:5432/shared', expect.any(Object));
       expect(sql).toHaveBeenCalledOnce();
       const values = sql.mock.calls[0]!.slice(1);
       expect(values[0]).toBe('e2e/portal-product-tutorial.spec.ts');

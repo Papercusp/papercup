@@ -30,8 +30,11 @@ import {
 import { makeGaiaGrader, type GaiaGraderConfig } from './gaia-official';
 import { makeGdpvalGrader, type GdpvalGraderConfig } from './gdpval-official';
 import { makeFrontierSweGrader, type FrontierSweGraderConfig, type FrontierSweGraderDeps } from './frontier-swe';
+import { makeHarnessBenchGrader, type HarnessBenchGraderConfig } from './harness-bench';
 
 export { makeFakeGrader } from './fake';
+export { makeHarnessBenchGrader, type HarnessBenchGraderConfig, type HarnessBenchReceipt,
+  type HarnessBenchTestResult } from './harness-bench';
 export { makeSweBenchProGrader, parseSweBenchProReport } from './swe-bench-pro';
 export { makeSweLancerGrader, parseSweLancerReport } from './swe-lancer';
 export {
@@ -109,6 +112,7 @@ export interface GraderRegistryConfig {
   gaia?: GaiaGraderConfig;
   gdpval?: GdpvalGraderConfig;
   frontierSwe?: FrontierSweGraderConfig;
+  harnessBench?: HarnessBenchGraderConfig;
 }
 
 /**
@@ -166,8 +170,11 @@ export function getOfficialGrader(
         fs: deps?.fs ?? liveGraderFs,
       } satisfies FrontierSweGraderDeps);
     }
+    case 'harness-bench': {
+      if (!cfg.harnessBench) throw new Error('getOfficialGrader: harness-bench requires a HarnessBenchGraderConfig');
+      return makeHarnessBenchGrader(cfg.harnessBench);
+    }
     case 'terminal-bench':
-    case 'harness-bench':
       throw new Error(
         `getOfficialGrader: M2 in-container grader for "${family}" not built yet (feasibility doc §3/§4 — M1 first)`,
       );
