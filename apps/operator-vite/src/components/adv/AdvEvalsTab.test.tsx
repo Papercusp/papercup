@@ -382,11 +382,12 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('submits verified protocol controls and refuses a stale result after the seed changes', async () => {
+  it.each(['swe-bench-pro', 'frontier-swe', 'hive-backlog', 'minecraft'])(
+    'submits the verified %s suite and refuses stale protocol controls after the seed changes', async suite => {
     nuqsState.evalView = 'launch';
     const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
       observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
-    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', current,
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', suite, current,
       taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 60,
       model: 'frozen-model', effort: 'high', account: 'api', basis: 'Frozen caps' }] };
     render(<AdvEvalsTab />);
@@ -399,9 +400,23 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     // state after the asynchronous mutation rather than a replacement spy.
     await vi.waitFor(() => expect(nuqsState.evalRun).toBe('current-study-result'));
     const [, init] = vi.mocked(fetch).mock.calls[0];
-    expect(JSON.parse(String(init?.body))).toEqual({ arm: 'papercusp', taskSetId: 'custom', current });
+    expect(JSON.parse(String(init?.body))).toEqual({ arm: 'papercusp', suite, taskSetId: 'custom', current });
     fireEvent.change(screen.getByLabelText('Registered seed'), { target: { value: '2' } });
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('withholds launch when cached preflight lacks a registered suite', () => {
+    nuqsState.evalView = 'launch';
+    const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
+      observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', current,
+      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 60,
+      model: 'frozen-model', effort: 'high', account: 'api', basis: 'Frozen caps' }] };
+    render(<AdvEvalsTab />);
+    fireEvent.change(screen.getByLabelText('Committed protocol run ID'), { target: { value: 'study' } });
+    fireEvent.click(screen.getByLabelText('Approve this spend'));
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('disables launch + shows the in-flight banner when a run is already running', () => {

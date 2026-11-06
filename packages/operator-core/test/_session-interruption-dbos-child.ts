@@ -56,7 +56,12 @@ workflow.configureSessionInterruptionRuntime(async () => {
       const hostPath = fileURLToPath(new URL('../../../apps/operator/scripts/psu-pty-host.mjs', import.meta.url));
       const nativeCode = "process.stdin.resume();setInterval(()=>process.stdout.write('.'),100)";
       const hostCode = `import {hostThroughPty} from ${JSON.stringify(hostPath)};
+        import postgres from ${JSON.stringify(import.meta.resolve('postgres'))};
         import {EventEmitter} from 'node:events';
+        const witness=postgres(process.env.RECOVERY_CRASH_DSN,{max:1,onnotice(){}});
+        await witness.unsafe('INSERT INTO test_recovery.creations (owner_id,pid,workflow_id,native_session_id) VALUES ($1,$2,$3,$4)',
+          [${JSON.stringify(owner)},process.pid,${JSON.stringify(workflowId)},${JSON.stringify(native)}]);
+        await witness.end({timeout:2});
         const signalSource=new EventEmitter();
         process.on('SIGTERM',()=>signalSource.emit('SIGTERM'));
         await hostThroughPty({command:process.execPath,args:['-e',${JSON.stringify(nativeCode)}],
@@ -73,8 +78,9 @@ workflow.configureSessionInterruptionRuntime(async () => {
           PAPERCUSP_WORKSPACE_ID: ws, PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY_DIR: join(root, 'pty') },
       });
       child.unref();
-      // An independent OS creation ledger survives death of the controller.
-      await sql`INSERT INTO test_recovery.creations (owner_id, pid) VALUES (${owner}, ${child.pid!})`;
+      // The child owns its witness: even death before the launch response or
+      // any controller-side receipt cannot hide this surviving process.
+      await killAt('after-native-spawn');
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {
         const host = await findLiveHostAsync(owner);

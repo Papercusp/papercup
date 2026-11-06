@@ -288,6 +288,7 @@ interface BenchRunLive {
 
 interface LaunchRunArgs {
   arm: string;
+  suite?: string;
   taskSetId: string;
   taskIds?: string[];
   model?: string;
@@ -1080,6 +1081,7 @@ const fieldStyle: CSSProperties = {
 
 interface LaunchEstimate {
   ready?: boolean;
+  suite?: string;
   arm?: string;
   error?: string;
   taskCount: number;
@@ -1125,7 +1127,8 @@ function LaunchRunView() {
 
   // A previous query result cannot authorize a newly typed protocol/seed.
   const selection = estimate?.current;
-  const ready = estimate?.ready === true && estimate.arm === arm && selection?.workspaceId === workspaceId &&
+  const ready = estimate?.ready === true && Boolean(estimate.suite?.trim()) &&
+    estimate.arm === arm && selection?.workspaceId === workspaceId &&
     selection.protocolRunId === protocolRunId && selection.seed === seed &&
     !estimateSync.loading && !estimateSync.fetching && !estimateSync.error;
   const needsConfirm = (estimate?.aggregateBudgetUsd ?? 0) >= OWNER_CONFIRM_USD;
@@ -1136,7 +1139,7 @@ function LaunchRunView() {
     setError(null);
     try {
       if (!canLaunch || !selection) throw new Error('The selected committed protocol is not ready.');
-      const body: LaunchRunArgs = { arm, taskSetId: 'custom', current: selection };
+      const body: LaunchRunArgs = { arm, suite: estimate!.suite, taskSetId: 'custom', current: selection };
       const json = await launchRun(body);
       if (!json.ok || !json.runId) {
         setError(json.error || 'launch failed');

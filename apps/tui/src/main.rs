@@ -115,6 +115,8 @@ Subcommands:
   work-pane [OWNER]          Open the agent work board
   orders-pane [OWNER]        Open the agent's current orders
   activity-pane [OWNER]      Open the agent's current activity
+  turns-pane [OWNER]         Browse turns and answers ([ earlier, ] latest)
+  fleet-pane [OWNER]         Open the agent's fleet peers
   network-pane               Open the cross-Hive network board
   hive-pane <KEY>            Open a Hive dossier
   context-pane [SOURCE ID]   Open Context for the live Sentinel or an exact session
@@ -370,6 +372,15 @@ fn agent_pane_scope(value: Option<&str>, default: app::WakeFilter) -> app::WakeF
     }
 }
 
+fn context_pane_scope(subcommand: Option<&str>, owner: Option<&str>) -> Option<app::WakeFilter> {
+    match subcommand {
+        Some("prompt-pane" | "mail-pane" | "work-pane" | "orders-pane" | "activity-pane"
+            | "turns-pane" | "fleet-pane") =>
+            Some(agent_pane_scope(owner, app::WakeFilter::Queen)),
+        _ => None,
+    }
+}
+
 fn reactive_launch_mode(subcommand: Option<&str>) -> bool {
     matches!(subcommand, Some("hud") | Some("dock-driver"))
 }
@@ -584,12 +595,9 @@ async fn main() -> Result<()> {
             },
             owner => agent_pane_scope(owner, app::WakeFilter::All),
         },
-        // The agent-context panes share the wake-pane's scope grammar; their
-        // bare default is the QUEEN (they sit in her dock column).
-        Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
-        | Some("orders-pane") | Some("activity-pane") =>
-            agent_pane_scope(cli.positional(1), app::WakeFilter::Queen),
-        _ => app::WakeFilter::All,
+        // Resolve every context mode through the same tested owner grammar.
+        _ => context_pane_scope(subcommand.as_deref(), cli.positional(1))
+            .unwrap_or(app::WakeFilter::All),
     };
     // The dock-driver drives the reactive agent stack (hive-agent-tabs
     // P-004/D-009): one live `claude --resume` pane per resumable bee + one
@@ -2588,6 +2596,10 @@ async fn run<B: Backend>(
                     if let Some(target) = app.context_projection_target.clone() {
                         tokio::spawn(fetch_context_projection(target, tx.clone()));
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchAgentTurns { owner, request_id, cursor } => {
+                    tokio::spawn(fetch_agent_turns_page(owner, request_id, cursor, tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::FetchSessionSwitcher { query } => {
@@ -5538,7 +5550,7 @@ async fn fetch_agent_ctx(
             app::AgentCtxMode::Turns => {
                 data.turns = Some(
                     client
-                        .agent_turns(&owner)
+                        .agent_turns(&owner, None)
                         .await
                         .map_err(|e| e.to_string())?,
                 );
@@ -5557,6 +5569,28 @@ async fn fetch_agent_ctx(
     }
     .await;
     let _ = tx.send(Event::AgentCtx { result });
+}
+
+async fn fetch_agent_turns_page(
+    owner: String,
+    request_id: u64,
+    cursor: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let result = async {
+        OperatorClient::from_discovery()
+            .await?
+            .agent_turns(&owner, cursor.as_deref())
+            .await
+    }
+    .await
+    .map_err(|e| e.to_string());
+    let _ = tx.send(Event::AgentTurnsPage {
+        owner,
+        request_id,
+        cursor,
+        result,
+    });
 }
 
 /// Fetch the federated p2p roster (`coord:presence`, federated rows only) and
@@ -9691,6 +9725,8 @@ mod tests {
             Some("work-pane"),
             Some("orders-pane"),
             Some("activity-pane"),
+            Some("turns-pane"),
+            Some("fleet-pane"),
             Some("network-pane"),
             Some("hive-pane"),
             Some("context-pane"),
@@ -9755,6 +9791,16 @@ mod tests {
                 app::WakeFilter::Owner("su-exact-owner".into())
             );
         }
+        for mode in ["prompt-pane", "mail-pane", "work-pane", "orders-pane",
+            "activity-pane", "turns-pane", "fleet-pane"] {
+            assert_eq!(context_pane_scope(Some(mode), Some("su-exact-owner")),
+                Some(app::WakeFilter::Owner("su-exact-owner".into())), "{mode}");
+            for owner in [None, Some("--mug"), Some("--queen")] {
+                assert_eq!(context_pane_scope(Some(mode), owner),
+                    Some(app::WakeFilter::Queen), "{mode}");
+            }
+        }
+        assert_eq!(context_pane_scope(Some("network-pane"), Some("su-exact-owner")), None);
     }
 
     #[test]

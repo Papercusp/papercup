@@ -278,7 +278,7 @@ describe('delivery ledger', () => {
   it.each(['headers', 'body'] as const)('retains the failed transport phase for a stalled %s response', async (phase) => {
     vi.useFakeTimers();
     try {
-      const env = { ...home(), PAPERCUSP_SID: 'su-stalled-response' };
+      const env = { ...home(), PAPERCUSP_SID: 'su-stalled-response', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:48111' };
       const adapter = {
         client: 'codex' as const,
         portForEvent: () => 'turn-start' as const,

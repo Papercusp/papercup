@@ -2664,13 +2664,17 @@ impl OperatorClient {
         self.agent_sidebar_query("agentDetail.byOwner", owner).await
     }
 
-    pub async fn agent_turns(&self, owner: &str) -> Result<crate::agent_ctx::AgentTurns> {
-        self.agent_sidebar_query_args(
-            "agentDetail.byOwner",
-            owner,
-            serde_json::json!({"ownerId":owner,"view":"turns"}),
-        )
-        .await
+    pub async fn agent_turns(
+        &self,
+        owner: &str,
+        cursor: Option<&str>,
+    ) -> Result<crate::agent_ctx::AgentTurns> {
+        let mut args = serde_json::json!({"ownerId":owner,"view":"turns"});
+        if let Some(cursor) = cursor {
+            args["historyCursor"] = serde_json::json!(cursor);
+        }
+        self.agent_sidebar_query_args("agentDetail.byOwner", owner, args)
+            .await
     }
 
     pub async fn agent_fleet(&self, owner: &str) -> Result<crate::agent_ctx::AgentFleet> {
@@ -3867,11 +3871,12 @@ mod tests {
             selection_source: "test".into(),
         };
         let server = tokio::spawn(async move {
-            for (name, view) in [
-                ("agentOrders.byOwner", None),
-                ("agentDetail.byOwner", None),
-                ("agentDetail.byOwner", Some("turns")),
-                ("agentDetail.byOwner", Some("fleet")),
+            for (name, view, cursor) in [
+                ("agentOrders.byOwner", None, None),
+                ("agentDetail.byOwner", None, None),
+                ("agentDetail.byOwner", Some("turns"), None),
+                ("agentDetail.byOwner", Some("turns"), Some("opaque+/=& cursor")),
+                ("agentDetail.byOwner", Some("fleet"), None),
             ] {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
@@ -3899,6 +3904,9 @@ mod tests {
                 let mut expected = json!({"ownerId":"su-selected & exact"});
                 if let Some(view) = view {
                     expected["view"] = json!(view);
+                }
+                if let Some(cursor) = cursor {
+                    expected["historyCursor"] = json!(cursor);
                 }
                 assert_eq!(
                     serde_json::from_str::<serde_json::Value>(params.get("args").unwrap()).unwrap(),
@@ -3928,7 +3936,14 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(client
-            .agent_turns("su-selected & exact")
+            .agent_turns("su-selected & exact", None)
+            .await
+            .unwrap()
+            .turns
+            .unwrap()
+            .is_empty());
+        assert!(client
+            .agent_turns("su-selected & exact", Some("opaque+/=& cursor"))
             .await
             .unwrap()
             .turns

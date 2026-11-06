@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,11 +12,12 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type {} from '../../test/_session-interruption-dbos-child';
 
 let db: OrgTestDb;
+const repo = fileURLToPath(new URL('../../../../', import.meta.url));
+const controllerSources = ['packages/operator-core/test/_session-interruption-dbos-child.ts',
+  'packages/operator-core/lib/dbos/session-interruption-workflow.ts',
+  'packages/operator-core/lib/harness/routines/session-interruption-runtime.ts'];
 beforeAll(async () => {
-  const repo = fileURLToPath(new URL('../../../../', import.meta.url));
-  const required = ['packages/operator-core/test/_session-interruption-dbos-child.ts',
-    'packages/operator-core/lib/dbos/session-interruption-workflow.ts',
-    'packages/operator-core/lib/harness/routines/session-interruption-runtime.ts',
+  const required = [...controllerSources,
     'apps/operator/scripts/psu-pty-host.mjs'];
   for (const path of required) {
     const absolute = join(repo, path);
@@ -29,14 +30,15 @@ beforeAll(async () => {
   }
   db = await createOrgTestDb();
   await db.adminSql`CREATE SCHEMA test_recovery`;
-  await db.adminSql`CREATE TABLE test_recovery.creations (owner_id text, pid integer)`;
+  await db.adminSql`CREATE TABLE test_recovery.creations
+    (owner_id text, pid integer, workflow_id text NOT NULL, native_session_id text NOT NULL)`;
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 const childPath = fileURLToPath(new URL('../../test/_session-interruption-dbos-child.ts', import.meta.url));
 
 describe('real DBOS interruption-controller death with a surviving native PTY', () => {
   it.each(['before-reservation', 'after-reservation', 'after-dispatch-intent',
-    'after-native-creation', 'before-settlement', 'after-settlement'])(
+    'after-native-spawn', 'after-native-creation', 'before-settlement', 'after-settlement'])(
     'reconciles %s without refunding or duplicating native creation', async target => {
       const owner = 'su-crash-' + randomUUID();
       const root = mkdtempSync(join(tmpdir(), 'recovery-dbos-'));
@@ -55,6 +57,7 @@ describe('real DBOS interruption-controller death with a surviving native PTY', 
       const run = (mode: string) => spawnSync(process.execPath, ['--import', 'tsx', childPath], {
         cwd: fileURLToPath(new URL('../../', import.meta.url)), encoding: 'utf8', timeout: 90_000,
         env: { ...process.env, RECOVERY_CRASH_DSN: db.adminDsn, RECOVERY_CRASH_OWNER: owner,
+          PAPERCUSP_COMMITTED_SOURCE_AUDIT: join(root, 'controller-loads.jsonl'),
           RECOVERY_CRASH_ROOT: root, RECOVERY_CRASH_TARGET: target, RECOVERY_CRASH_MODE: mode },
       });
       const marker = async () => (await sql`SELECT control_state #> '{lifecycle,interruption}' AS marker
@@ -63,6 +66,16 @@ describe('real DBOS interruption-controller death with a surviving native PTY', 
         const crashed = run('crash');
         expect(crashed.signal, crashed.stdout + crashed.stderr).toBe('SIGKILL');
         const before = await marker();
+        if (target === 'after-native-spawn') {
+          // Observe the surviving child's own witness and discovery record;
+          // the killed controller never acknowledged or recorded its spawn.
+          await expect.poll(async () => (await sql`SELECT pid FROM test_recovery.creations
+            WHERE owner_id = ${owner}`).length, { timeout: 15_000 }).toBe(1);
+          await expect.poll(() => {
+            try { return JSON.parse(readFileSync(join(root, 'pty', owner + '.json'), 'utf8')).nativeSessionId; }
+            catch { return null; }
+          }, { timeout: 15_000 }).toBe(native);
+        }
         const recovered = run('recover');
         expect(recovered.status, recovered.stdout + recovered.stderr).toBe(0);
         const line = recovered.stdout.split('\n').find(row => row.startsWith('RECOVERY_OUTCOME '));
@@ -75,9 +88,12 @@ describe('real DBOS interruption-controller death with a surviving native PTY', 
         expect(after).toMatchObject({ attempts: 1, state: held ? 'blocked' : 'restored',
           actionId: proof.workflowId, leaseKey: null });
         if (before) expect(after.actionId).toBe(before.actionId);
-        const creations = await sql`SELECT pid FROM test_recovery.creations WHERE owner_id = ${owner}`;
+        const creations = await sql`SELECT pid, workflow_id, native_session_id FROM test_recovery.creations WHERE owner_id = ${owner}`;
         expect(creations).toHaveLength(held ? 0 : 1);
-        for (const creation of creations) expect(() => process.kill(creation.pid, 0)).not.toThrow();
+        for (const creation of creations) {
+          expect(creation).toMatchObject({ workflow_id: proof.workflowId, native_session_id: native });
+          expect(() => process.kill(creation.pid, 0)).not.toThrow();
+        }
         const steps = await sql`SELECT function_name FROM dbos.operation_outputs WHERE workflow_uuid = ${proof.workflowId}
           ORDER BY function_id`;
         expect(steps.map(row => row.function_name)).toEqual(['recovery:0:admission', 'recovery:0:reservation',
@@ -85,7 +101,20 @@ describe('real DBOS interruption-controller death with a surviving native PTY', 
         const replay = run('recover');
         expect(replay.status, replay.stdout + replay.stderr).toBe(0);
         expect(await marker()).toEqual(after);
-        expect(await sql`SELECT pid FROM test_recovery.creations WHERE owner_id = ${owner}`).toEqual(creations);
+        expect(await sql`SELECT pid, workflow_id, native_session_id FROM test_recovery.creations WHERE owner_id = ${owner}`).toEqual(creations);
+        if (process.env.NODE_OPTIONS?.includes('committed-source-loader')) {
+          const loads = readFileSync(join(root, 'controller-loads.jsonl'), 'utf8')
+            .trim().split('\n').map(line => JSON.parse(line));
+          for (const path of controllerSources) {
+            const receipts = loads.filter(load => load.file === join(repo, path));
+            expect(receipts.length, `missing controller load receipt: ${path}`).toBeGreaterThan(0);
+            const sha256 = createHash('sha256').update(readFileSync(join(repo, path))).digest('hex');
+            for (const receipt of receipts) {
+              expect(receipt.kind, path).toBe('committed');
+              expect(receipt.returnedSha256, path).toBe(sha256);
+            }
+          }
+        }
       } finally {
         for (const row of await sql`SELECT pid FROM test_recovery.creations WHERE owner_id = ${owner}`) {
           try { process.kill(-row.pid, 'SIGKILL'); } catch (error) {
