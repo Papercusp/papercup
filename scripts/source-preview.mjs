@@ -390,7 +390,8 @@ function materializedSubmodule(repo, link, full) {
 
 // Resolve only the tested path's gitlinks, against their pinned commits. An
 // unrelated unresolved gitlink must not hide an initial dirty-input refusal.
-function committedInputBlob(repo, sha, path, trees) {
+// Retain the object owner so contract readers can read pinned submodule bytes.
+function committedInputObject(repo, sha, path, trees, optional = false) {
   const key = `${repo}\0${sha}`;
   if (!trees.has(key)) {
     const entries = new Map();
@@ -407,13 +408,20 @@ function committedInputBlob(repo, sha, path, trees) {
   }
   const { entries, links } = trees.get(key);
   const link = links.find((entry) => path.startsWith(`${entry.path}/`));
-  if (link) return committedInputBlob(materializedSubmodule(repo, link, link.path),
-    link.sha, path.slice(link.path.length + 1), trees);
+  if (link) return committedInputObject(materializedSubmodule(repo, link, link.path),
+    link.sha, path.slice(link.path.length + 1), trees, optional);
+  if (optional && !entries.has(path)) return null;
   const [mode, type, blob] = entries.get(path) ?? [];
   if (type !== 'blob' || !['100644', '100755'].includes(mode)) {
     throw new PreviewError(`tested input is not a regular committed file: ${path}`, 2);
   }
-  return blob;
+  return { repo, blob };
+}
+
+function committedInputBlob(repo, sha, path, trees) {
+  const input = committedInputObject(repo, sha, path, trees);
+  assert.ok(input, 'Committed input must be present');
+  return input.blob;
 }
 
 /** Conservative allocated source bytes for the exact recursive verifier export.
@@ -2544,8 +2552,8 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     throw new PreviewError('verifier command scratch must be outside the source and dependency donor', 2);
   const copyMode = verifierDependencyCopyMode(donor, scratch);
   const helperPath = 'papercusp-desktop/bin/lib/pinned-deps.sh';
-  const helperSource = git(sourceRepo, ['ls-tree', sourceCommit, '--', helperPath]).trim()
-    ? git(sourceRepo, ['show', sourceCommit + ':' + helperPath]) : '';
+  const helperObject = committedInputObject(sourceRepo, sourceCommit, helperPath, new Map(), true);
+  const helperSource = helperObject ? git(helperObject.repo, ['cat-file', 'blob', helperObject.blob]) : '';
   const snapshotSelection = selectVerifierDependencySnapshot(copyMode,
     /^\s*snapshot-generation-locked\s*\)/m.test(helperSource), explicitGeneration);
   // Automatic cross-device selection consumes the same immutable closure as an

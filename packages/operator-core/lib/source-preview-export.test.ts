@@ -1686,31 +1686,49 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   }, 120_000);
 
-  it.each(['automatic', 'explicit'] as const)('checks %s generation custody against selected source before dependencies or PG', async selection => {
+  it.each([
+    { selection: 'automatic', layout: 'superproject' },
+    { selection: 'explicit', layout: 'superproject' },
+    { selection: 'automatic', layout: 'submodule' },
+    { selection: 'explicit', layout: 'submodule' },
+  ] as const)('checks $selection generation custody against selected source before dependencies or PG ($layout helper)', async ({ selection, layout }) => {
     const parent = process.platform === 'linux' ? mkdtempSync('/var/tmp/source-preview-generation-preflight-') : tmp;
     try {
-      const fixture = makeSuperproject(join(parent, 'generation-' + selection));
+      const fixture = makeSuperproject(join(parent, 'generation-' + selection + '-' + layout));
       const usesAutomaticGeneration = process.platform === 'linux' &&
         statSync(fixture.repo).dev === statSync('/').dev;
       if (selection === 'automatic' && !usesAutomaticGeneration) return;
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
-      write(fixture.repo, helper, [
+      const helperSource = [
         '#!/bin/bash', 'set -eu', 'case "$1" in',
         '  preflight-generation)',
         '    test "$(cat "$3/selected-source.txt")" = committed-candidate || { echo "checked moving source" >&2; exit 95; }',
         '    echo "missing verifier closure" >&2; exit 74 ;;',
         '  snapshot-generation-locked) echo "snapshot must not start" >&2; exit 93 ;;',
         '  *) exit 94 ;;', 'esac', '',
-      ].join('\n'));
+      ].join('\n');
+      if (layout === 'submodule') {
+        git(fixture.repo, ['rm', '-r', '--', 'papercusp-desktop']);
+        const desktop = join(parent, 'desktop-' + selection);
+        mkdirSync(desktop, { recursive: true });
+        git(desktop, ['init', '-q', '-b', 'main']);
+        write(desktop, 'bin/lib/pinned-deps.sh', helperSource);
+        git(desktop, ['add', '-A']);
+        git(desktop, ['commit', '-qm', 'pinned generation helper']);
+        git(fixture.repo, ['submodule', 'add', '-q', desktop, 'papercusp-desktop']);
+      } else write(fixture.repo, helper, helperSource);
       write(fixture.repo, 'selected-source.txt', 'committed-candidate');
-      git(fixture.repo, ['add', helper, 'selected-source.txt']);
+      git(fixture.repo, ['add', 'papercusp-desktop', 'selected-source.txt']);
       git(fixture.repo, ['commit', '-qm', 'generation admission fixture']);
       const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
       write(fixture.repo, 'selected-source.txt', 'unrelated-live-change');
+      // The selected gitlink's contract must survive a mutable helper rewrite.
+      if (layout === 'submodule') write(fixture.repo, helper, '#!/bin/bash\nexit 0\n');
       const prepareChildEnv = vi.fn(async () => { throw new Error('PG must not start'); });
-      const receiptPath = join(tmp, 'generation-preflight-' + selection + '.json');
+      const receiptPath = join(tmp, 'generation-preflight-' + selection + '-' + layout + '.json');
       await expect(runVerifierCommand({ repo: fixture.repo,
-        ref, receiptPath, prepareChildEnv, inputs: [helper],
+        ref, receiptPath, prepareChildEnv,
+        inputs: [layout === 'submodule' ? 'apps/operator/src/index.ts' : helper],
         env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '' },
         command: [process.execPath, '-e', 'throw Error("provider must not start")'],
       })).rejects.toThrow('verifier generation preflight failed: missing verifier closure');
