@@ -2141,6 +2141,7 @@ try {
 
 const reportedCounts = [];
 const reportedOffsets = [];
+const reportedLauncherParentPids = [];
 const launcherPids = new Set();
 for (const line of output.split(/\r?\n/)) {
   if (line.startsWith('TEST_FILE_FINALIZATION ')) {
@@ -2169,6 +2170,15 @@ for (const line of output.split(/\r?\n/)) {
       if (!/^\d+$/.test(value) || !Number.isSafeInteger(offset)) fail('runner-notice-offset-unknown');
       reportedOffsets.push(offset);
     }
+    const parentField = line.split(/\s+/).find((part) => part.startsWith('launcherParentPid='));
+    if (parentField) {
+      const value = parentField.slice('launcherParentPid='.length);
+      const parentPid = Number(value);
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(parentPid) || parentPid < 1) {
+        fail('runner-parent-pid-unknown');
+      }
+      reportedLauncherParentPids.push(parentPid);
+    }
   }
   if (line.includes('COMMITTED_SOURCE notice-unrecorded')) fail('loader-notice-write-failed');
 }
@@ -2180,6 +2190,9 @@ if (childNoticeOffsetBytes > noticeBytes.length
   || (childNoticeOffsetBytes > 0 && noticeBytes[childNoticeOffsetBytes - 1] !== 0x0a)) {
   fail('runner-notice-offset-invalid');
 }
+const uniqueLauncherParentPids = [...new Set(reportedLauncherParentPids)];
+if (uniqueLauncherParentPids.length > 1) fail('runner-parent-pid-mismatch');
+const launcherParentPid = uniqueLauncherParentPids[0];
 
 const repoRoot = canonical(repoRootInput);
 function parseRecords(bytes) {
@@ -2193,8 +2206,9 @@ const launcherRecords = parseRecords(launcherPrefix);
 const parsedRecords = parseRecords(childSuffix);
 // The byte offset separates startup from later activity, not processes. The
 // governed runner lazily imports its own dependencies after opening the sink.
-// Bind those notices to the runner's existing finalization receipt (or its
-// exact startup notice); entry text alone cannot distinguish a test child.
+// Bind test-files notices to its finalization receipt (or exact startup
+// notice), and npm-install-safe notices to the test-files-reported parent PID.
+// Entry text alone cannot distinguish a test child.
 for (const record of launcherRecords) {
   if (record?.schemaVersion === 'committed-source-notice-v1'
     && record.kind === 'substituted' && record.via === 'esm'
@@ -2207,11 +2221,14 @@ if (launcherPids.size > 1) fail('launcher-pid-mismatch');
 const launcherPid = [...launcherPids][0];
 const acceptedLauncherRecords = [];
 function acceptLauncherRecord(record) {
+  const testFilesRunner = record.entry === 'scripts/test-files.mjs' && record.pid === launcherPid;
+  const installSafeParent = record.entry === 'scripts/npm-install-safe.mjs'
+    && record.pid === launcherParentPid;
   if (record.kind !== 'substituted' || record.via !== 'esm'
     || !isAbsolute(record.top) || canonical(record.top) !== repoRoot
     || typeof record.rel !== 'string' || isAbsolute(record.rel) || record.rel.includes('\\')
-    || record.entry !== 'scripts/test-files.mjs'
-    || !Number.isSafeInteger(record.pid) || record.pid < 1 || record.pid !== launcherPid) return false;
+    || !Number.isSafeInteger(record.pid) || record.pid < 1
+    || (!testFilesRunner && !installSafeParent)) return false;
   const sourcePath = canonical(resolve(repoRoot, record.rel));
   if (!within(repoRoot, sourcePath)) fail('notice-path-outside-repository', record);
   // A launcher import of the intentional mutant is still a substitution,
