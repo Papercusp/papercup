@@ -10,6 +10,19 @@ import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 import { verifyVerifierSourceSync } from '../packages/operator-core/lib/verifier-source';
 import { checkNativeLedger, nativeLedgerEnvironment } from './tauri-surface-verify-reports.mts';
 
+/** Save the original failure before diagnostics or cleanup can obscure it. */
+export async function recordReportSharingFailure(
+  evidence: Record<string, unknown>, error: unknown,
+  diagnose: () => Promise<unknown>, save: () => void,
+) {
+  evidence.failure = { phase: evidence.phase, message: String(error),
+    stack: error instanceof Error ? error.stack : undefined };
+  save();
+  try { evidence.failureDiagnostics = await diagnose(); }
+  catch (cause) { evidence.failureDiagnosticError = String(cause); }
+  save();
+}
+
 export async function runReportSharingNativeAcceptance() {
   assert.equal(process.env.PAPERCUSP_REPORT_SHARING_NATIVE_LIVE, '1', 'Explicit fixture publication opt-in required');
   // Publication is allowed only in disposable app state. Any explicit account

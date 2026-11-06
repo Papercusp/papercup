@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import { describe, expect, it } from 'vitest';
+import { recordReportSharingFailure } from '../../../scripts/tauri-surface-verify-report-sharing.mts';
 
 const execute = promisify(execFile);
 const live = process.env.PAPERCUSP_REPORT_SHARING_NATIVE_LIVE === '1';
@@ -79,10 +80,10 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
       await click('Share');
       await expect.poll(async () => {
         const value = await evaluate(`document.querySelector('[aria-label="Shared link"]')?.value??null`);
-        if (value) return value;
+        if (typeof value === 'string' && value) return value;
         const check = await evaluate(`[...document.querySelectorAll('[aria-label="Report sharing"] button')].some(button=>button.textContent.trim()==='Check sharing'&&!button.disabled)`);
         if (check) await click('Check sharing');
-        return null;
+        return '';
       }, { timeout: 120_000, interval: 3000 }).toMatch(/^https:\/\/[^/]+\.github\.io\//);
       const url = await evaluate(`document.querySelector('[aria-label="Shared link"]').value`);
       evidence.url = url; evidence.phase = 'shared'; save();
@@ -125,9 +126,18 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
       console.log('REPORT_SHARING_NATIVE_EVIDENCE=' + evidencePath);
     } catch (error) {
       journeyFailed = true;
-      evidence.failure = { phase: evidence.phase, message: String(error),
-        stack: error instanceof Error ? error.stack : undefined };
-      save();
+      // Read the visible error and saved operation BEFORE Stop/retire changes them.
+      // Reuse the Reports native launcher's failure-first diagnostic pattern.
+      await recordReportSharingFailure(evidence, error, async () => {
+        const ui = await evaluate(`(()=>{const panel=document.querySelector('[aria-label="Report sharing"]');
+          return {url:location.href,text:panel?.textContent?.slice(0,4000)??null,
+            actions:[...(panel?.querySelectorAll('button')??[])].map(button=>({text:button.textContent,disabled:button.disabled})),
+            sharedLink:document.querySelector('[aria-label="Shared link"]')?.value??null};})()`);
+        evidence.failureUi = ui; save();
+        const status = await call(`fetch('/api/zero-harness/rest-query?name=reports.sharing&args='+encodeURIComponent(JSON.stringify({reportId:${JSON.stringify(reportId)}})),
+          {signal:AbortSignal.timeout(15000)}).then(async response=>({status:response.status,body:await response.json()}))`);
+        return { ui, status };
+      }, save);
       throw error;
     } finally {
       const cleanupErrors: unknown[] = [];
@@ -246,7 +256,7 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
         if (await link.count()) return link.inputValue();
         const retry = actions.getByRole('button', { name: 'Check sharing', exact: true });
         if (await retry.count() && await retry.isEnabled()) await retry.click();
-        return null;
+        return '';
       }, { timeout: 120_000, interval: 3000 }).toMatch(/^https:\/\/[^/]+\.github\.io\//);
       url = await link.inputValue(); deployed.url = url; save();
       await actions.getByRole('button', { name: 'Copy shared link', exact: true }).click();
