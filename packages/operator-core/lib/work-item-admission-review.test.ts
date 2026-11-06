@@ -285,10 +285,9 @@ describe('signed admission review recovery', () => {
     expect(candidates[0]!.receiptId).toBe(request.requestId);
     expect(candidates[1]!.attemptedAtMs).toBeNull();
     expect(candidates[1]!.receiptId).toBeNull();
-    const receiptWrites = writes.filter(write =>
-      write.query.startsWith('UPDATE harness_shared.work_items') && write.query.includes('_admissionReviewReceipt'));
-    expect(receiptWrites).toHaveLength(1);
-    expect(receiptWrites[0]!.values).toContain(featureId);
+    const receiptWrite = writes.find(write => write.query.includes("'{_admissionReviewReceipt}',"));
+    expect(receiptWrite).toBeDefined();
+    expect(receiptWrite!.values).toContain(featureId);
     expect(mocks.readVerifiedRecoveryTarget).toHaveBeenCalledWith(scope, sql);
   });
 

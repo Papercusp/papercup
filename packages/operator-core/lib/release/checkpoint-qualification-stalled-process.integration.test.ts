@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import postgres, { type Sql } from 'postgres';
 import { buildConnectionOptions } from '@papercusp/db-org';
 import { createFreshTestDb } from '@papercusp/test-config/pg';
-import { managedSpawn } from '../task-manager/managed-spawn';
+import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn';
 import { killScopeUnit } from '../task-manager/control';
 import { newTaskId, scopeUnitForTask } from '../task-manager/types';
 import { userManagerBusReachable } from '../systemd-scope';
 import { runQualificationCommand, type QualificationCommandOptions } from './checkpoint-qualification-command';
 import { beginQualificationTransaction, checkpointPidIdentity, observeQualificationProgress,
-  probeRunnerLiveness, parseCheckpointQualificationTransaction, QUALIFICATION_PROGRESS_STALE_MS, type CheckpointQualificationTransaction,
+  probeRunnerLiveness, qualificationProgressFence, reserveQualificationRunner,
+  parseCheckpointQualificationTransaction, QUALIFICATION_PROGRESS_STALE_MS, type CheckpointQualificationTransaction,
   type recordStoredQualificationChildScope } from './checkpoint-qualification-transaction';
 import { sweepLostGateRuns } from './lost-gate-run-alarm';
 
@@ -27,6 +30,94 @@ function running(pid: number) {
 }
 
 describe.runIf(process.platform === 'linux' && userManagerBusReachable())('qualification independent stalled-process bounds', () => {
+  it('quiet live work retains unknown custody across the stall horizon and records only declared semantic completion', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qualification-quiet-'));
+    const ready = join(dir, 'ready.json'), trigger = join(dir, 'finish-subtask'), receipt = join(dir, 'receipt.json');
+    const target = { workspaceId: 'quiet-workspace', installSlug: 'quiet-install' };
+    const id = newTaskId(), unit = scopeUnitForTask(id);
+    const script = `const fs = require('node:fs');
+      fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({pid:process.pid}));
+      setInterval(() => {
+        if (fs.existsSync(${JSON.stringify(trigger)}) && !fs.existsSync(${JSON.stringify(receipt)}))
+          fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({pid:process.pid,
+            unitId:'test:declared-subtask',completionId:'quiet-result',state:'pass',observedAtMs:Date.now()}));
+      }, 20);`;
+    let output = '';
+    const worker = await managedSpawn(process.execPath, ['-e', script], {
+      class: 'test-run', title: 'Quiet qualification subtask', argv: [process.execPath, '-e', script],
+      cwd: process.cwd(), launchedBy: 'test:qualification-quiet', runtimeMaxSec: 20,
+    }, { taskId: id, workspaceId: target.workspaceId, requireConfinement: true, requireRegistration: true,
+      scopeAvailable: true, spawnOptions: { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] },
+      onSpawn(child) { child.stdout!.on('data', bytes => { output += bytes.toString(); }); } });
+    try {
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 3000 });
+      const { pid } = JSON.parse(readFileSync(ready, 'utf8')) as { pid: number };
+      const start = Date.now();
+      let tx = reserveQualificationRunner(beginQualificationTransaction(null, {
+        attemptId: 'quiet-attempt', candidate: 'quiet-candidate', nowMs: start,
+      }).transaction, { attemptId: 'quiet-attempt', runnerId: 'quiet-runner', runId: 'quiet-run',
+        unit, pid, pidIdentity: checkpointPidIdentity(pid), leaseDurationMs: 1000, nowMs: start }).transaction;
+      tx.currentPhysicalRunner = { ...tx.currentPhysicalRunner!, phase: 'materializing', phaseEnteredAtMs: start,
+        heartbeatAtMs: start, childScopeUnits: [unit], childScopeReservedAtMs: start };
+      const held = JSON.stringify(tx.currentPhysicalRunner);
+      // Only the business clock advances; every sample probes the same real OS scope.
+      const passes = Math.ceil(QUALIFICATION_PROGRESS_STALE_MS / 120_000) + 2;
+      for (let sequence = 1; sequence <= passes; sequence++) {
+        expect(await probeRunnerLiveness(tx.currentPhysicalRunner!)).toBe('live');
+        const result = observeQualificationProgress(tx, target, { fence: qualificationProgressFence(tx, target),
+          observerGeneration: 'quiet-materialization', sequence, sampledAtMs: start + sequence * 120_000,
+          monotonicAtMs: sequence * 120_000, telemetryHealthy: true });
+        expect(result.status).toBe('updated');
+        tx = result.transaction;
+        expect(tx.progressObservation?.semantic).toBe('unknown');
+        expect(JSON.stringify(tx.currentPhysicalRunner)).toBe(held);
+        expect(tx.outcome.kind).toBe('pending');
+        expect(running(pid)).toBe(true);
+      }
+      expect(tx.progressObservation).toMatchObject({ health: 'healthy', controller: 'silent', semantic: 'unknown' });
+      expect(output).toBe('');
+      expect(existsSync(receipt)).toBe(false);
+      // A different phase binds a predeclared finite subtask population before its result.
+      const suiteStart = Date.now();
+      tx.currentPhysicalRunner!.phase = 'suite';
+      tx.currentPhysicalRunner!.phaseEnteredAtMs = suiteStart;
+      tx.continuation = { schemaVersion: 1, attemptId: tx.attemptId, candidate: tx.candidate!,
+        repairHead: tx.repairHead, root: process.cwd(), taskKey: 'quiet-suite', retryStates: [],
+        manifest: { schemaVersion: 1, units: [
+          { id: 'test:declared-subtask', kind: 'test', path: 'quiet-subtask.test.ts' },
+          { id: 'test:pending', kind: 'test', path: 'quiet-pending.test.ts' },
+        ] }, receipts: [], supersededReceipts: [] };
+      const sample = (sequence: number) => {
+        tx = observeQualificationProgress(tx, target, { fence: qualificationProgressFence(tx, target),
+          observerGeneration: 'quiet-suite', sequence, sampledAtMs: suiteStart + sequence * 1000,
+          monotonicAtMs: sequence * 1000, telemetryHealthy: true }).transaction;
+      };
+      sample(1); sample(2);
+      expect(tx.progressObservation?.semantic).toBe('unchanged');
+      writeFileSync(trigger, 'complete declared subtask');
+      await vi.waitFor(() => expect(existsSync(receipt)).toBe(true), { timeout: 1000 });
+      const result = JSON.parse(readFileSync(receipt, 'utf8'));
+      expect(result.pid).toBe(pid);
+      delete result.pid;
+      tx.continuation.receipts.push(result);
+      sample(3);
+      expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'advancing',
+        completedUnits: ['test:declared-subtask'] });
+      expect(tx.currentPhysicalRunner?.childScopeUnits).toEqual([unit]);
+      expect(await probeRunnerLiveness(tx.currentPhysicalRunner!)).toBe('live');
+      expect(running(pid)).toBe(true);
+      expect(tx.outcome.kind).toBe('pending');
+      expect(output).toBe('');
+      sample(4);
+      expect(tx.progressObservation?.semantic).toBe('unchanged');
+    } finally {
+      markManagedSpawnTeardown(worker.child);
+      await killScopeUnit(unit, { signal: 'SIGKILL' });
+      await worker.waitForCompletion();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it.each(['chatty', 'database-lock', 'blocked-controller'] as const)('bounds %s while a healthy peer completes', async mode => {
     const database = mode === 'database-lock' ? await createFreshTestDb({ prefix: 'qualification_stall' }) : undefined;
     const sql = database ? postgres(database.url, { max: 1, onnotice: () => {} }) : undefined;
