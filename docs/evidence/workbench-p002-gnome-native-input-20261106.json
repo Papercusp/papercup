@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "workbench-native-interaction-evidence-v1",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "items": [
+    "P-001",
+    "P-002"
+  ],
+  "observedAt": "2026-11-06T11:19:00Z",
+  "platform": "Ubuntu GNOME Shell 46.2",
+  "plane": "current build in private GNOME Wayland desktop; fixture PUI",
+  "command": "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-native-input-20261106-v7 node bin/run-node-test-suite.mjs --test-global-setup=test/monorepo-host-preflight.mjs test/native-workbench-gnome.test.mjs test/native-workbench-gnome-live.test.mjs",
+  "testResult": {
+    "pass": 12,
+    "fail": 0,
+    "skip": 0,
+    "nativeAssertions": 29
+  },
+  "provenance": {
+    "git": "worktree_dirty; HEAD moved during run; evidence bound to source hashes below",
+    "log": "/tmp/wb-native-input-20261106-v7.log",
+    "logSha256": "8fd5522cdee4d53ecea31318469c2252aacb4f71afa6c3c01ea8727e16aa6b76"
+  },
+  "sources": {
+    "papercusp-desktop/native/gnome/extension.js": "e38ef9361d4e72e3a011f513d7427b0b3d82d1f6b30566e8a2178e9f38ad87ec",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "077bdffc1eeadf1553e009ea444025f06281e44aee04996b426634912eb2f6d0",
+    "papercusp-desktop/native/gnome/bridge.js": "344c7abdb81c65e259199b061071fa3e3814876faa92765b1745afc6dc2f7373",
+    "papercusp-desktop/native/gnome/helper.js": "2662c09e053e88aac3260056fa54fadbcf543e80ce746b469cc4219917e396f6",
+    "papercusp-desktop/native/gnome/panel-model.mjs": "60baad13960931c719cf386b0f2a745f6ff2f925c7d0239d5125c9bce2002edd"
+  },
+  "screenshot": {
+    "path": "docs/evidence/workbench-p002-gnome-native-input-20261106.png",
+    "sha256": "64f4addb9f009b7bdf6ed3ecbcce971a41a1079a1a9c6c60db3beca53f7fcda1",
+    "visuallyInspected": true
+  },
+  "rootCauses": [
+    {
+      "symptom": "Focused search ignored Enter",
+      "origin": "Clutter.Text consumes key press and emits activate; panel key-press did not receive Enter",
+      "fix": "Bind native search clutter_text activate to exact selected item",
+      "evidence": "v3 captured seat Return but detail timed out; v4 onward native activate signal and exact report body pass"
+    },
+    {
+      "symptom": "Pin click dismissed panel",
+      "origin": "Wayland captured click event source null was treated as outside",
+      "fix": "Pick reactive actor from stage coordinates when event source null",
+      "evidence": "v6 button1 at1160,81 source null picked StButton Pin and panel.contains true, then panel hidden. v7 same native event pins panel; outside button1 at5,450 picks MetaBackgroundActor and dismisses only unpinned Goals"
+    }
+  ],
+  "nativeInputAssertions": [
+    "seat shortcut opens panel",
+    "seat typing reaches focused native search",
+    "seat arrow navigates results",
+    "seat Up restores exact report selection",
+    "focused search consumes Enter through native activate signal",
+    "seat Enter opens exact selected detail",
+    "seat Escape dismisses detail before surface",
+    "seat click pins native panel",
+    "seat second shortcut preserves independent pin",
+    "seat journey keeps native surfaces outside application windows",
+    "seat outside click closes unpinned panel and preserves pin",
+    "seat shortcut toggles pinned panel closed"
+  ],
+  "notProven": [
+    "canonical operator data and ACL",
+    "packaged install/upgrade/login lifecycle",
+    "real hardware input",
+    "native macOS/Windows panel behavior",
+    "exact agent terminal activation",
+    "remaining Inbox B/bulk, Papercup, Accounts and organizer panels",
+    "full 49-requirement acceptance",
+    "shipped artifact"
+  ]
+}

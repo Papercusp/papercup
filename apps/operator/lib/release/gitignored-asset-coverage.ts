@@ -205,6 +205,9 @@ function buildScopedConstResolver(sf: ts.SourceFile): (node: ts.Node) => Map<str
 
   const cache = new Map<ts.Node, Map<string, ts.Expression>>();
   return (node: ts.Node): Map<string, ts.Expression> => {
+    if (node.getSourceFile() !== sf) {
+      throw new Error(`asset fixture scope mismatch: ${node.getSourceFile().fileName} != ${sf.fileName}`);
+    }
     const scope = scopeOf(node);
     const hit = cache.get(scope);
     if (hit) return hit;
@@ -607,13 +610,17 @@ export function scanRequiredIgnoredAssets(opts: {
         const fn = calleeName(n);
         if (FS_REQUIRE_FNS.has(fn) && !toleratesAbsence(n)) {
           const consts = constsAt(n);
+          const paths = candidatePathsFor(literalsOf(n.arguments[0], consts));
+          if (!paths.length) {
+            ts.forEachChild(n, visit);
+            return;
+          }
           if (derivesFromTemporaryFixture(n.arguments[0], constsAt, functionAt)) {
             ts.forEachChild(n, visit);
             return;
           }
-          const literals = literalsOf(n.arguments[0], consts);
           const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
-          for (const path of candidatePathsFor(literals)) {
+          for (const path of paths) {
             sites.push({ file: rel, line, fn, path });
           }
         }
