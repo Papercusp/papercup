@@ -48,6 +48,7 @@ import {
 } from './inspect';
 import inspectTool from './inspect';
 import { startBackground } from './bash-jobs';
+import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { vmCopyInspectSchema } from './vm-copy-authority';
 
 const BASE = '/repo';
@@ -83,6 +84,8 @@ function inspectCtx() {
     stateDir: INSPECT_STATE,
     signal: new AbortController().signal,
     emit: () => {},
+    workspaceId: 'papercusp-workspace',
+    harnessSlug: 'papercusp',
     role: 'cup',
   } as never;
 }
@@ -499,6 +502,32 @@ describe('capability:inspect — background launch response', () => {
       expect.objectContaining({ command: 'npx vitest run', cwd: INSPECT_PACKAGE }),
       expect.any(Number),
     );
+  });
+
+  it('carries scoped test ledger provenance through the sandboxed background path', async () => {
+    vi.mocked(capabilityExecSandboxPolicy).mockResolvedValueOnce({ enabled: true, required: true } as never);
+    vi.mocked(startBackground).mockReturnValue({
+      id: 'bash-ledger-scoped-test',
+      taskId: 'task-ledger-scoped-test',
+      logPath: '/tmp/bash-ledger-scoped-test.log',
+    } as never);
+    const canonicalCalls = canonicalBackground.mock.calls.length;
+
+    const result = await inspect.handler(
+      { check: 'test', path: 'packages/operator-core/lib/foo.test.ts', run_in_background: true },
+      inspectCtx(),
+    );
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    const calls = vi.mocked(startBackground).mock.calls;
+    const execEnv = calls[calls.length - 1]?.[0].env;
+
+    expect(execEnv).toMatchObject({
+      PAPERCUSP_TEST_RUN_GROUP: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+    });
+    expect(payload).toMatchObject({ status: 'running', test_run_group_id: execEnv?.PAPERCUSP_TEST_RUN_GROUP });
+    expect(canonicalBackground).toHaveBeenCalledTimes(canonicalCalls);
   });
 
   it('honors onlyPaths in the launched background command instead of silently dropping it', async () => {

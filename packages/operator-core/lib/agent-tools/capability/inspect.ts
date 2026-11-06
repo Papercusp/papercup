@@ -23,6 +23,7 @@
  * Execution reuses the same bash-jobs runner + exec-sandbox as capability:bash.
  */
 
+import { randomUUID } from 'node:crypto';
 import { isAbsolute, basename, dirname, relative, resolve } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
@@ -39,6 +40,7 @@ import {
 } from './bash-jobs';
 import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { TSC_HEAP_MB, tscHeapEnv } from '../tsc-heap';
 import { TSC_DECOY_BANNER } from '../../tsc-diagnostics';
 import {
@@ -748,7 +750,22 @@ export default defineTool({
     // DEFAULT ~4GB old-space and is killed BEFORE emitting any diagnostics, which reads
     // as a clean compile to every natural probe. Typecheck only — a suite run has its
     // own memory profile and is not the measured failure.
-    const execEnv = args.check === 'typecheck' ? tscHeapEnv() : undefined;
+    //
+    // The sandboxed test path deliberately stays in bash-jobs instead of calling
+    // testing:run, so carry the same non-secret ledger scope explicitly. The exec
+    // environment allowlist drops the operator's harness and run-group variables;
+    // without these, test rows and executed-source reports cannot join this run.
+    const testRunGroupId = args.check === 'test' ? randomUUID() : undefined;
+    const testHarnessSlug = args.check === 'test' ? resolveConcreteHarnessSlug(undefined, ctx) : null;
+    const execEnv = args.check === 'typecheck'
+      ? tscHeapEnv()
+      : testRunGroupId
+        ? {
+            PAPERCUSP_TEST_RUN_GROUP: testRunGroupId,
+            ...(testHarnessSlug ? { PAPERCUSP_TEST_RUN_HARNESS: testHarnessSlug } : {}),
+            ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: ctx.workspaceId } : {}),
+          }
+        : undefined;
 
     if (runInBackground) {
       // Background is uncapped by the MCP transport (returns a bash_id immediately), so it
@@ -773,6 +790,7 @@ export default defineTool({
               check: args.check,
               command,
               cwd,
+              ...(testRunGroupId ? { test_run_group_id: testRunGroupId } : {}),
               log_path: job.logPath,
               // WI-42443: the STOP route must name processes:kill { taskId } — capability:bash_kill
               // is absent from trimmed surfaces (su) and refused for some principals. This is
@@ -821,6 +839,7 @@ export default defineTool({
       `${args.check} · exit ${r.exitCode ?? 'null'}` +
       (r.status !== 'completed' ? ` (${r.status})` : '') +
       ` · ${(r.durationMs / 1000).toFixed(1)}s · ${command} · cwd ${cwd}` +
+      (testRunGroupId ? ` · test run group ${testRunGroupId}` : '') +
       (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '');
 
     const deadBanner = deadUnfiltered
