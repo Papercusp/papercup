@@ -1535,7 +1535,14 @@ const timer = setInterval(() => {
 setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(9); }, 15000).unref();
 `;
     snapshot(f.root, { 'probe.cjs': probe }, f.head);
-    const childEnv = currentRunnerEnvironment({ PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir });
+    // A private mutex must guard private cleanup targets too. Otherwise startup
+    // can sweep unrelated shared snapshots before this fixture reaches ready.
+    const childTmp = mkdtempSync(join(tmpdir(), 'lac-reader-scratch-'));
+    const childEnv = currentRunnerEnvironment({
+      TMPDIR: childTmp,
+      PAPERCUSP_RELEASE_RETENTION_ROOT: join(f.root, 'retention-pins'),
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir,
+    });
     const child = spawn(process.execPath, [scriptPath, 'lint:probe'], {
       cwd: f.root, env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1553,6 +1560,7 @@ setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(
         await new Promise(resolveWait => setTimeout(resolveWait, 20));
       }
       if (!existsSync(ready)) throw new Error(`Donor reader did not start (exit=${child.exitCode}): ${output}`);
+      expect(output).toContain(` -> ${childTmp}/${mod.WORK_ROOT_PREFIX}`);
       // Reify the actual donor while the committed command remains paused. The
       // child must re-read its old dependency bytes after this writer completes.
       const writer = `import { withFsMutex } from ${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)};
@@ -1578,6 +1586,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       writeFileSync(release, 'release');
       if (child.exitCode === null) child.kill('SIGTERM');
       await exited;
+      rmSync(childTmp, { recursive: true, force: true });
       rmSync(f.root, { recursive: true, force: true });
     }
   }, 30000);
@@ -1645,6 +1654,31 @@ const { execFileSync } = require('node:child_process');
       if (extracted) rmSync(extracted, { recursive: true, force: true });
       rmSync(f.root, { recursive: true, force: true });
     }
+  }, 40_000);
+
+  it('builds pinned workspace bins before final dependency link validation despite dirty shared output', () => {
+    const f = fixture('node build.cjs');
+    try {
+      const manifestPath = join(f.root, 'libs/runtime/package.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      manifest.bin = { 'fixture-runtime': './dist/cli.cjs' };
+      snapshot(f.root, {
+        'libs/runtime/package.json': JSON.stringify(manifest),
+        'libs/runtime/build.cjs': readFileSync(join(f.root, 'libs/runtime/build.cjs'), 'utf8') +
+          "fs.writeFileSync('dist/cli.cjs', 'console.log(' + JSON.stringify(require('./source.cjs')) + ');\\n');\n",
+        'probe.cjs': readFileSync(join(f.root, 'probe.cjs'), 'utf8') +
+          "assert.equal(execFileSync(process.execPath, ['node_modules/.bin/fixture-runtime'], { encoding: 'utf8' }).trim(), 'pinned-source');\nconsole.log('PINNED_WORKSPACE_BIN_OK');\n",
+      }, f.head);
+      mkdirSync(join(f.root, 'node_modules/.bin'));
+      symlinkSync('../@fixture/runtime/dist/cli.cjs', join(f.root, 'node_modules/.bin/fixture-runtime'));
+      writeFileSync(join(f.root, 'libs/runtime/dist/cli.cjs'), 'console.log("shared-stale-bin");\n');
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain('PINNED_WORKSPACE_BIN_OK');
+      expect(result.stdout).toContain('building pinned runtime exports: @fixture/runtime');
+      expect(readFileSync(join(f.root, 'libs/runtime/dist/cli.cjs'), 'utf8')).toContain('shared-stale-bin');
+      expect(readFileSync(join(f.root, 'libs/runtime/source.cjs'), 'utf8')).toContain('shared-dirty-source');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
 
   it('pins main separately from HEAD and builds require exports from committed source despite dirty shared source/dist', () => {
@@ -1898,6 +1932,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       nowMs: number;
       cwds: string[] | null;
       isAlive: (pid: number) => boolean;
+      maxIdleKept?: number;
     }) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
     sweepStaleWorkRootsWithRetentionPins: (
       o: { root: string; nowMs: number; cwds: string[]; isAlive: (pid: number) => boolean },
@@ -2291,7 +2326,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(c(true, null, false, MAX_AGE_MS * 10)).toEqual({ remove: false, reason: 'in-use' });
     expect(c(false, { pid: 1, keep: false }, false, 60_000)).toEqual({ remove: true, reason: 'owner-dead' });
     expect(c(false, { pid: 1, keep: false }, true, 60_000)).toEqual({ remove: false, reason: 'owner-alive' });
-    expect(c(false, { pid: 1, keep: false }, true, MAX_AGE_MS + 1)).toEqual({ remove: true, reason: 'max-age' });
+    expect(c(false, { pid: 1, keep: false }, true, MAX_AGE_MS + 1)).toEqual({ remove: false, reason: 'owner-alive' });
     expect(c(false, { pid: 1, keep: true }, false, KEEP_TTL_MS - 1)).toEqual({ remove: false, reason: 'keep-young' });
     expect(c(false, { pid: 1, keep: true }, false, KEEP_TTL_MS + 1)).toEqual({ remove: true, reason: 'keep-expired' });
     expect(c(false, null, false, KEEP_TTL_MS - 1)).toEqual({ remove: false, reason: 'unmarked-young' });
@@ -2392,6 +2427,68 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('EI-28038179265277451: preserves a live kept owner outside its root during dependency preparation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-live-kept-owner-'));
+    try {
+      const now = Date.now();
+      const trees = [
+        { name: 'waiting-for-copy', age: 60_000 },
+        { name: 'long-running-copy', age: MAX_AGE_MS + 1 },
+      ];
+      for (const { name, age } of trees) {
+        const tree = join(root, `${WORK_ROOT_PREFIX}${name}`);
+        mkdirSync(join(tree, '.git'), { recursive: true });
+        writeFileSync(join(tree, OWNER_MARKER), JSON.stringify({
+          pid: process.pid, keep: true, createdAtMs: now - age,
+        }));
+      }
+      const swept = await sweepStaleWorkRoots({
+        root, nowMs: now, cwds: [], isAlive: (pid: number) => pid === process.pid, maxIdleKept: 0,
+      });
+      expect(swept.removed).toEqual([]);
+      for (const { name } of trees) {
+        expect(swept.kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}${name}`, reason: 'owner-alive' });
+        expect(existsSync(join(root, `${WORK_ROOT_PREFIX}${name}`))).toBe(true);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a live preparing owner outside its kept tree across age and idle-cap cleanup', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-live-preparation-'));
+    try {
+      const now = Date.now();
+      for (const ageMs of [60_000, MAX_AGE_MS + H]) {
+        const name = `${WORK_ROOT_PREFIX}${ageMs}`;
+        const path = join(root, name);
+        mkdirSync(join(path, '.git'), { recursive: true });
+        writeFileSync(join(path, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: true, createdAtMs: now - ageMs }));
+      }
+      const result = await mod.sweepStaleWorkRoots({ root, nowMs: now, cwds: [], isAlive: () => true, maxIdleKept: 0 });
+      expect(result.removed).toEqual([]);
+      expect(result.kept).toHaveLength(2);
+      expect(result.kept.every((entry: { reason: string }) => entry.reason === 'owner-alive')).toBe(true);
+      expect(readdirSync(root)).toHaveLength(2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('rechecks owner liveness at the final retention removal boundary', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-owner-recheck-'));
+    try {
+      const name = `${WORK_ROOT_PREFIX}resumed`;
+      const path = join(root, name);
+      mkdirSync(join(path, '.git'), { recursive: true });
+      writeFileSync(join(path, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: true, createdAtMs: Date.now() }));
+      const isAlive = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+      const result = await mod.sweepStaleWorkRoots({ root, nowMs: Date.now(), cwds: [], isAlive, maxIdleKept: 0 });
+      expect(result.removed).toEqual([]);
+      expect(result.kept).toContainEqual({ name, reason: 'owner-alive' });
+      expect(existsSync(path)).toBe(true);
+      expect(isAlive).toHaveBeenCalledTimes(2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', async () => {
