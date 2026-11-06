@@ -36,9 +36,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -1394,6 +1396,78 @@ console.log('CLONE_PREREQUISITES_OK');
       cwd: root, env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
     });
   }
+
+  it.each(['valid', 'corrupt'] as const)('consumes a %s exact-input generation without borrowing its source', async variant => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-generation-custody-'));
+    const store = join(parent, 'generations');
+    const f = fixture('node build.cjs');
+    const workRoot = join(parent, 'snapshot');
+    const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
+    const priorStore = process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+    const makeWritable = (path: string) => {
+      if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !statSync(path).isDirectory()) return;
+      chmodSync(path, 0o700);
+      for (const entry of readdirSync(path)) makeWritable(join(path, entry));
+    };
+    try {
+      mkdirSync(join(f.root, 'node_modules/transitive'), { recursive: true });
+      writeFileSync(join(f.root, 'node_modules/transitive/package.json'), '{"name":"transitive","version":"1.0.0"}');
+      writeFileSync(join(f.root, 'node_modules/transitive/index.cjs'), 'module.exports = require("@fixture/runtime");\n');
+      const head = snapshot(f.root, {
+        'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {
+          'node_modules/transitive': { version: '1.0.0' },
+          'node_modules/@fixture/runtime': { resolved: 'libs/runtime', link: true },
+        } }),
+      }, f.head);
+      const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store], {
+        env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30000,
+      });
+      expect(published.status, published.stdout + published.stderr).toBe(0);
+      const identity = published.stdout.match(/identity=(v1-[0-9a-f]{64})/)![1];
+      const generation = join(store, identity);
+      const dependency = 'node_modules/transitive/index.cjs';
+      gitFixture(f.root, ['clone', '--local', '--shared', '--quiet', f.root, workRoot]);
+      const markerPath = join(workRoot, '.git/lint-as-committed-owner.json');
+      const marker = { sha: head, sourceRepoRoot: f.root };
+      writeFileSync(markerPath, JSON.stringify(marker));
+      process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = store;
+      if (variant === 'corrupt') {
+        const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
+        writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
+        await expect(mod.materializeIndependentDependencies(f.root, workRoot)).rejects.toThrow(/independent dependency materialization failed/);
+        expect(existsSync(join(workRoot, 'node_modules'))).toBe(false);
+        expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(marker);
+        return;
+      }
+      // A mutable donor cannot supply these bytes or even be enumerated now.
+      rmSync(join(f.root, 'node_modules'), { recursive: true });
+      const prepared = await mod.materializeIndependentDependencies(f.root, workRoot);
+      mod.prepareWorkspaceExports(workRoot, prepared.workspacePaths);
+      const clonedDependency = join(workRoot, dependency);
+      expect(statSync(clonedDependency).ino).not.toBe(statSync(join(generation, 'tree', dependency)).ino);
+      const requireClone = createRequire(join(workRoot, 'package.json'));
+      expect(requireClone('transitive/index.cjs')).toBe('pinned-source');
+      expect(realpathSync(requireClone.resolve('@fixture/runtime'))).toBe(join(workRoot, 'libs/runtime/dist/index.cjs'));
+      writeFileSync(clonedDependency, 'module.exports = "clone-only";\n');
+      expect(readFileSync(join(generation, 'tree', dependency), 'utf8')).toContain('require("@fixture/runtime")');
+      const artifact = join(parent, 'artifact');
+      writeFileSync(artifact, 'retained');
+      await mod.retainCommittedWorkRoot(workRoot, head, artifact);
+      const swept = spawnSync('bash', ['-c', 'source "$1"; dependency_generation_apply_retention "$2" "$3" 0',
+        'retention-fixture', helper, store, f.root], { encoding: 'utf8', timeout: 30000 });
+      expect(swept.status, swept.stdout + swept.stderr).toBe(0);
+      expect(existsSync(generation)).toBe(false);
+      expect(await mod.cleanupCommittedWorkRoot(workRoot, false, { dir: join(parent, 'retention-pins') })).toBe(false);
+      delete requireClone.cache[requireClone.resolve('transitive/index.cjs')];
+      expect(requireClone('transitive/index.cjs')).toBe('clone-only');
+    } finally {
+      if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+      else process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = priorStore;
+      makeWritable(parent);
+      rmSync(parent, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 60000);
 
   it.each(['escaping-link', 'incomplete-copy', 'linked-root'] as const)
     ('refuses independent dependency custody for %s before publishing its marker', async defect => {
