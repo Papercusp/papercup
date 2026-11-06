@@ -30,6 +30,7 @@
  * architecture reflect-rules.ts already established.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef, implementsLinkScopes } from '../issue-blocks-merge';
 import { IMPLEMENTS_REL } from './convert';
 import {
@@ -48,6 +49,7 @@ import {
   type WorkItem,
 } from '../work-items';
 import { getPlanRow, planItemsForRow, type PlanRow } from '../agent-tools/plans/source';
+import { readPlanLineNodes } from '../agent-tools/plans/plan-line-graph';
 import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
 import { getFeatureBlockers, syncFeatureBlockEdges } from '../dbos/feature-blockers-edges';
 import {
@@ -133,11 +135,13 @@ export interface ReconcileLinkedWorkItemsResult {
  * `viaImplementsEdge` is the only evidence that the work-item IMPLEMENTS the
  * plan item rather than merely referencing it — see the reconcile guard.
  */
-export type LinkedWorkItem = WorkItem & { viaImplementsEdge: boolean };
+export type LinkedWorkItem = WorkItem & { viaImplementsEdge: boolean; viaPlanLineNode?: boolean };
 
 /**
  * D-046 (byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 / WI-40754): ONE canonical
- * work-item per plan lane. Among the NON-terminal linked rows the canonical row is the
+ * work-item per plan lane. A current plan-line node is authoritative, including when
+ * it is terminal; execution children must never replace it. For legacy lanes without
+ * a plan-line node, among the NON-terminal linked rows the canonical row is the
  * EARLIEST-created (tie → lexicographically smallest id), preferring rows PROVEN by an
  * `implements` edge — so an unrelated stamp-only row can never outrank a real promoted
  * implementation, while the stamp-only fallback still elects a canonical row when no
@@ -151,6 +155,11 @@ export function selectCanonicalLinkedWorkItem(linked: readonly LinkedWorkItem[])
   duplicates: LinkedWorkItem[];
 } {
   const nonTerminal = linked.filter((wi) => !isSettledWorkItemState(wi.state));
+  const planNode = linked.find((wi) => wi.viaPlanLineNode);
+  if (planNode) {
+    const canonical = isSettledWorkItemState(planNode.state) ? null : planNode;
+    return { canonical, duplicates: nonTerminal.filter((wi) => wi !== canonical) };
+  }
   if (nonTerminal.length === 0) return { canonical: null, duplicates: [] };
   const proven = nonTerminal.filter((wi) => wi.viaImplementsEdge);
   const pool = proven.length > 0 ? proven : nonTerminal;
@@ -195,18 +204,23 @@ function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], planSlug: s
  * is already the join key across the edge, payload-stamp, and feature-column
  * truth sources.
  */
-export async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise<LinkedWorkItem[]> {
+export async function findAllLinkedWorkItems(
+  planSlug: string,
+  itemId: string,
+  scope?: Pick<PlanRow, 'workspaceId' | 'harnessSlug'>,
+): Promise<LinkedWorkItem[]> {
   const { sql } = getOrgPg();
   const found = new Map<string, LinkedWorkItem>();
   // `viaImplementsEdge` is STICKY-TRUE: an item found by BOTH truth sources is
   // proven by the edge, and the later stamp pass must not downgrade it.
-  const add = (wi: WorkItem | null, viaImplementsEdge: boolean) => {
+  const add = (wi: WorkItem | null, viaImplementsEdge: boolean, viaPlanLineNode = false) => {
     if (!wi) return;
     const key = `${wi.harness ?? ''}#${wi.id}`;
     const prior = found.get(key);
     found.set(key, {
       ...wi,
       viaImplementsEdge: viaImplementsEdge || prior?.viaImplementsEdge === true,
+      ...(viaPlanLineNode || prior?.viaPlanLineNode ? { viaPlanLineNode: true } : {}),
     });
   };
 
@@ -268,6 +282,20 @@ export async function findAllLinkedWorkItems(planSlug: string, itemId: string): 
      WHERE item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
        AND ${stampMatchFragment(sql, planSlug, itemId)}`;
   for (const r of issueRows) add(await getWorkItem(r.issue_id), false);
+
+  // Current plan-line identity outranks legacy conversion edges and stamps. Reuse
+  // the scoped graph reader so an execution child cannot hide the canonical node.
+  if (scope?.harnessSlug) {
+    const nodes = (await readPlanLineNodes(sql, { ...scope, slug: planSlug }))
+      .filter((candidate) => candidate.id === itemId);
+    if (nodes.length > 1) throw new Error(`Ambiguous canonical plan-line node: ${planSlug}#${itemId}`);
+    const node = nodes[0];
+    if (node) {
+      const wi = await getWorkItem(node.featureId, scope.harnessSlug);
+      if (!wi) throw new Error(`Canonical plan-line work-item unavailable: ${node.featureId}`);
+      add(wi, false, true);
+    }
+  }
 
   return [...found.values()];
 }
@@ -687,7 +715,8 @@ export interface CircularPrerequisiteFinding {
 }
 
 /** The fresh plan projection needed by the pure circularity detector. */
-export type CircularPrerequisitePlanRow = Pick<PlanRow, 'planSlug' | 'content' | 'items' | 'decisions' | 'nowNext'>;
+export type CircularPrerequisitePlanRow = Pick<PlanRow, 'planSlug' | 'content' | 'items' | 'decisions' | 'nowNext'> &
+  Partial<Pick<PlanRow, 'workspaceId' | 'harnessSlug'>>;
 
 function containsWorkItemId(text: unknown, workItemId: string): boolean {
   if (typeof text !== 'string' || !text || !workItemId.trim()) return false;
@@ -1111,6 +1140,15 @@ async function applyLaneGateToWorkItem(
       // would let a LATER un-park restore a state from the wrong era.
       await mergeWorkItemPayload(wi.id, { [PLAN_LANE_PARKED_FROM_KEY]: null }, { harness });
       await dispatchUngatedAgenticWorkItem(wi, execution, laneItem);
+    } else if (changed) {
+      // The lane has cleared even while an independent prerequisite keeps this
+      // item parked. Persist only our blocker clear; preserve its state and hold
+      // so the prerequisite's own lifecycle remains responsible for reopening it.
+      const cleared = await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, {
+        harness, expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+        requireNonTerminal: true,
+      });
+      if (!cleared) throw new Error('blocker history changed before partial lane ungate write');
     }
     return 'ungated';
   } catch (error) {
@@ -1183,7 +1221,11 @@ export async function syncLinkedWorkItemsToPlanLane(
   };
   try {
     const laneRef = planLaneBlockerRef(item.planSlug, item.itemId);
-    const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
+    const harnessSlug = planRow?.harnessSlug ?? item.harnessSlug;
+    const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId, harnessSlug ? {
+      workspaceId: planRow?.workspaceId ?? DEFAULT_COORD_WORKSPACE,
+      harnessSlug,
+    } : undefined);
     // D-046: elect ONE canonical row; the sync mutates it alone. Terminal rows keep
     // reporting as skippedAlreadyTerminal; every other non-terminal row is a duplicate.
     const { canonical } = selectCanonicalLinkedWorkItem(linked);
@@ -1395,7 +1437,7 @@ export async function reconcilePlanAuthoredDependenciesNow(
     // The canonical promoted row for THIS lane. Only feature-family rows participate:
     // The reader is feature-only, but the canonical writer knows every endpoint family.
     // Pass the prior owned subset below rather than replacing all of the target's edges.
-    const { canonical } = selectCanonicalLinkedWorkItem(await findAllLinkedWorkItems(planSlug, itemId));
+    const { canonical } = selectCanonicalLinkedWorkItem(await findAllLinkedWorkItems(planSlug, itemId, row));
     if (!canonical || canonical.family !== 'feature' || !canonical.harness) return null;
     const harness = canonical.harness;
 
@@ -1409,7 +1451,7 @@ export async function reconcilePlanAuthoredDependenciesNow(
       const st = statusById.get(blockerItemId);
       if (st === 'done' || st === 'dropped' || st === undefined) continue;
       const blockerCanonical = selectCanonicalLinkedWorkItem(
-        await findAllLinkedWorkItems(planSlug, blockerItemId),
+        await findAllLinkedWorkItems(planSlug, blockerItemId, row),
       ).canonical;
       if (!blockerCanonical || blockerCanonical.family !== 'feature') continue;
       if ((blockerCanonical.harness ?? null) !== harness) continue;

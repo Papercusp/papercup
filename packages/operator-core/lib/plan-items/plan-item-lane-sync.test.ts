@@ -420,16 +420,37 @@ describe('isDependencyDerivedPlanLanePark — provenance-safe hold clear [EI-216
   });
 });
 
-function linked(over: { id: string; createdAt: string; state?: string; viaImplementsEdge?: boolean }): LinkedWorkItem {
+function linked(over: { id: string; createdAt?: string; state?: string; viaImplementsEdge?: boolean; viaPlanLineNode?: boolean }): LinkedWorkItem {
   return {
     id: over.id,
-    createdAt: over.createdAt,
+    createdAt: over.createdAt ?? '2026-08-22T00:00:00.000Z',
     state: over.state ?? 'open',
     viaImplementsEdge: over.viaImplementsEdge ?? true,
+    ...(over.viaPlanLineNode ? { viaPlanLineNode: true } : {}),
   } as unknown as LinkedWorkItem;
 }
 
 describe('selectCanonicalLinkedWorkItem — one mutable row per plan lane [D-046]', () => {
+  it('keeps the current plan-line node ahead of a proven execution child', () => {
+    const node = linked({ id: 'WI-node', viaImplementsEdge: false, viaPlanLineNode: true });
+    const child = linked({ id: 'WI-child', viaImplementsEdge: true });
+
+    const selected = selectCanonicalLinkedWorkItem([child, node]);
+
+    expect(selected.canonical).toBe(node);
+    expect(selected.duplicates).toEqual([child]);
+  });
+
+  it('does not elect an execution child after the current plan-line node becomes terminal', () => {
+    const node = linked({ id: 'WI-node', state: 'resolved', viaPlanLineNode: true });
+    const child = linked({ id: 'WI-child', viaImplementsEdge: true });
+
+    const selected = selectCanonicalLinkedWorkItem([child, node]);
+
+    expect(selected.canonical).toBeNull();
+    expect(selected.duplicates).toEqual([child]);
+  });
+
   it('prefers proven implementations, elects the earliest deterministically, and reports every other nonterminal row', () => {
     const stampOnly = linked({
       id: 'WI-0001',

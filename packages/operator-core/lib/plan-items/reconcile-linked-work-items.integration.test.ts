@@ -116,6 +116,8 @@ const h3 = vi.hoisted(() => ({
   getPlanRow: vi.fn(
     async (_slug: string, _opts?: unknown) =>
       null as {
+        workspaceId?: string;
+        harnessSlug?: string;
         planSlug?: string;
         content?: string;
         items: {
@@ -1484,6 +1486,46 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       (blocker) => blocker.status === 'active',
     );
     expect(active.map((blocker) => blocker.ref)).toEqual(['owner-microphone-acceptance']);
+  });
+
+  it.each([false, true])('resyncs the canonical plan node instead of its execution child (owner blocker: %s)', async (ownerBlocked) => {
+    const plan = 'p-canonical-node';
+    const itemId = 'P-003';
+    const laneRef = planLaneBlockerRef(plan, itemId);
+    const { blockers } = updateExternalBlockerHistory({}, {
+      kind: 'gate', capability: 'live-dependency', ref: laneRef, summary: 'dependency blocked',
+    }, 'system:plan-item-lane-sync');
+    const externalBlockers = ownerBlocked ? updateExternalBlockerHistory({ externalBlockers: blockers }, {
+      kind: 'human', capability: 'physical-device', ref: 'owner-microphone-acceptance',
+      summary: 'owner must accept at the mic',
+    }, 'su-owner').blockers : blockers;
+    const node = stub({ id: 'WI-node', state: 'blocked', payload: {
+      externalBlockers, planLaneParkedFrom: 'open', _claimHold: true,
+      held_open_by: 'system:plan-item-lane-sync',
+    } });
+    const child = stub({ id: 'WI-child', state: 'open' });
+    await insertWorkItemRow({ id: node.id, kind: 'bug', status: 'blocked', planSlug: plan, itemId });
+    // The canonical graph identity must work without a legacy stamp or edge.
+    await rootSql`UPDATE harness_shared.work_items
+      SET payload = '{}'::jsonb, plan_slug = ${plan}, plan_line_id = ${itemId},
+          plan_seq = 3, plan_line_text = 'Canonical lane'
+      WHERE feature_id = ${node.id} AND workspace_id = ${WS} AND harness_slug = 'sheets'`;
+    await edge({ plan, item: itemId, srcRef: child.id });
+    h3.getPlanRow.mockResolvedValue({ workspaceId: WS, harnessSlug: 'sheets', items: [
+      { id: 'P-001', status: 'done', blockedBy: [] },
+      { id: itemId, status: 'todo', blockedBy: ['P-001'] },
+    ] });
+
+    const result = await resyncPlanItemLaneNow(plan, itemId, 'sheets');
+
+    expect(result?.failures).toBeUndefined();
+    expect(result?.skippedDuplicates).toEqual([child.id]);
+    expect(child.state).toBe('open');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalledWith(child.id, expect.anything(), expect.anything());
+    expect(activeExternalBlockers(node.payload).map((blocker) => blocker.ref))
+      .toEqual(ownerBlocked ? ['owner-microphone-acceptance'] : []);
+    expect(node.state).toBe(ownerBlocked ? 'blocked' : 'open');
+    if (!ownerBlocked) expect(result?.ungated).toEqual([node.id]);
   });
 
   it('a terminal dependency edge opens only dependents whose full blocker set is resolved', async () => {
