@@ -119,7 +119,10 @@ const envMs = (name: string, dflt: number): number => {
 const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', 'clone']);
 
 /** Repos at the same depth have separate git dirs; parents still wait for children. */
-const SUBMODULE_SYNC_CONCURRENCY = 4;
+// EI-276780: four-wide depth batches held the exclusive git-sync resource for
+// tens of minutes on the measured Papercusp tree. Keep remote fan-out bounded,
+// but allow eight independent repositories per batch before advancing to parents.
+const SUBMODULE_SYNC_CONCURRENCY = 8;
 
 /**
  * WI-5111: git-sync commits under the box's GLOBAL git identity, which on every
