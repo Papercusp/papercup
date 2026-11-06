@@ -146,6 +146,7 @@ import {
   activeExternalBlockers,
   readExternalBlockers,
   updateExternalBlockerHistory,
+  ownerActionFlagsReleasedByClear,
   type ExternalBlockerKind,
   type ExternalBlockerRecord,
 } from './external-blockers';
@@ -7767,6 +7768,25 @@ export async function clearExternalBlockersOnLockedRow(
     externalBlockers: blockers,
   };
 
+  const active = blockers.filter((blocker) => blocker.status === 'active');
+  const humanCleared = cleared.some((blocker) => blocker.kind === 'human');
+  for (const key of ownerActionFlagsReleasedByClear(payload, active, { kind: 'human', cleared: humanCleared })) {
+    delete nextPayload[key];
+  }
+  // Settling a consult answers the decision, not the underlying bug. Correct the
+  // stale human queue label conservatively without lifting defaults or durable parks.
+  const settledHumanClassification = issueFamily && humanCleared &&
+    String(row.status ?? '').toLowerCase() === 'needs-human' && !active.some((blocker) => blocker.kind === 'human');
+  if (settledHumanClassification && active.length === 0) {
+    // Settlement records a decision, not its application. Retain that concrete
+    // triage reason until the woken parker applies the default or alternative.
+    const settled = blockers.find((blocker) => blocker.kind === 'human' &&
+      cleared.some((target) => target.kind === blocker.kind && target.ref === blocker.ref));
+    nextPayload.blockedReason = `Apply settled decision ${settled?.ref ?? ''}: ` +
+      (settled?.evidence || settled?.defaultIfUnanswered || 'parker must apply the recorded consult outcome');
+    nextPayload.blockedAt = new Date().toISOString();
+  }
+
   if (restoreIssue) {
     delete nextPayload.held_open_by;
     delete nextPayload.held_open_at;
@@ -7783,7 +7803,8 @@ export async function clearExternalBlockersOnLockedRow(
   await tx`
     UPDATE harness_shared.work_items
        SET payload = ${JSON.stringify(nextPayload)}::text::jsonb,
-           status = CASE WHEN ${restoreIssue} THEN 'open' ELSE status END,
+           status = CASE WHEN ${restoreIssue} THEN 'open'
+                         WHEN ${settledHumanClassification} THEN 'blocked' ELSE status END,
            updated_ts = ${updatedTs}
      WHERE workspace_id = ${row.workspace_id}
        AND feature_id = ${row.feature_id}
