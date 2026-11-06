@@ -43,6 +43,51 @@ it('OUTCOME-P-004', async () => {
   expect(await mineSqlCandidateSlice(mining.opts())).toMatchObject({ status: 'ok', rows: 1, logicalCalls: 1, cursor: { id } });
 });
 
+it('P004 commits a parser cutoff and resumes its frozen window without losing or duplicating demand', async () => {
+  const ids = [await mining.seed(), await mining.seed(), await mining.seed()];
+  let elapsed = 0;
+  const first = await mineSqlCandidateSlice(mining.opts({ rowBudget: 3 }), {
+    clock: () => elapsed,
+    fetch: async opts => {
+      let checks = 0;
+      return fetchSqlIntentCorpus({ ...opts, clock: () => {
+        // The real adapter parses one row, then reaches its source deadline.
+        if (++checks === 2) elapsed = opts.deadline!;
+        return elapsed;
+      } });
+    },
+  });
+  expect(first).toMatchObject({ status: 'ok', rows: 1, more: true, cursor: { id: ids[0] },
+    logicalCalls: 1, phaseDurationsMs: { parse: 7500 } });
+  const [partial] = await mining.db.adminSql`SELECT cursor_id::text,pending_until FROM harness_shared.sql_intent_progress`;
+  expect(partial!.cursor_id).toBe(ids[0]);
+  expect(partial!.pending_until).not.toBeNull();
+  const [incomplete] = await mining.db.adminSql`SELECT summary FROM harness_shared.sql_intent_history`;
+  expect(incomplete!.summary.coverage.status).toBe('truncated');
+
+  // A later wake changes wall time, but must finish the original finite window.
+  const next = await mineSqlCandidateSlice(mining.opts({ now: mining.now + 86400_000, rowBudget: 3 }));
+  expect(next).toMatchObject({ status: 'ok', rows: 2, more: false, logicalCalls: 3, cursor: { id: ids[2] } });
+  expect(Date.parse(next.window!.until)).toBe(Date.parse(first.window!.until));
+  expect(next.window!.since).toBe(first.window!.since);
+  const actual = await mining.db.adminSql`SELECT source_id::text FROM harness_shared.sql_intent_operations ORDER BY source_id`;
+  expect(actual.map(r => r.source_id)).toEqual(ids);
+  const [complete] = await mining.db.adminSql`SELECT pending_until FROM harness_shared.sql_intent_progress`;
+  expect(complete!.pending_until).toBeNull();
+});
+
+it('P004 a cutoff before the first source row stays UNKNOWN and cannot complete an empty window', async () => {
+  await mining.seed();
+  const result = await mineSqlCandidateSlice(mining.opts(), {
+    fetch: opts => fetchSqlIntentCorpus({ ...opts, clock: () => opts.deadline! }),
+  });
+  expect(result).toMatchObject({ status: 'UNKNOWN', stage: 'source', reason: 'sql_mining_time_budget', rows: 0 });
+  const [progress] = await mining.db.adminSql`SELECT count(*)::int AS n FROM harness_shared.sql_intent_progress`;
+  expect(progress!.n).toBe(0);
+  const [history] = await mining.db.adminSql`SELECT count(*)::int AS n FROM harness_shared.sql_intent_history`;
+  expect(history!.n).toBe(0);
+});
+
 describe('SQL intent corpus (real PG)', () => {
   let db: OrgTestDb;
   const workspaceId = 'sql-intent-corpus-test', harnessSlug = 'corpus-test';

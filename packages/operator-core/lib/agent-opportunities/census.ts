@@ -304,7 +304,8 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
     measure('sql', async () => {
       const result = await sqlStage();
       if (result.status !== 'ok') return { family: 'sql', coverage: 'UNKNOWN', scanned: result.rows, qualifying: 0,
-        diagnostics: { stage: result.stage, reason: result.reason ?? 'unknown', reviewEligible: false, candidates: [] } };
+        diagnostics: { stage: result.stage, reason: result.reason ?? 'unknown', sqlPhase: result.phase,
+          sqlPhaseDurationsMs: result.phaseDurationsMs, window: result.window, reviewEligible: false, candidates: [] } };
       const [row] = await sql<{ summary: SqlDemandAggregate; source_tokens: string[]; revision_token: string }[]>`
         SELECT summary,source_tokens,revision_token FROM harness_shared.sql_intent_history
         WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId} AND ran_on=${new Date(now).toISOString().slice(0,10)}::date`;
@@ -334,7 +335,8 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       return { family: 'sql', coverage, scanned: result.rows,
         qualifying: ranked.filter(c => c.eligible).length,
         diagnostics: { stage: result.stage, logicalCalls: result.logicalCalls ?? null, reviewEligible: coverage === 'measured',
-          candidates, sourceRevision: row?.revision_token ?? null } };
+          candidates, sourceRevision: row?.revision_token ?? null, sqlPhase: result.phase,
+          sqlPhaseDurationsMs: result.phaseDurationsMs, window: result.window, backlog: result.more === true } };
     }),
     measure('search-reformulation', async (deadline, cancelled) => {
       const page = await drainWindow(p => fetchSearchReformulations({ ...common, ...p }), pageSize, rowCap, deadline, cancelled);
@@ -396,7 +398,7 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
     for (const row of families) await tx`INSERT INTO harness_shared.sql_intent_family_runs
       (workspace_id,run_id,family,coverage,scanned,qualifying,diagnostics)
       VALUES (${opts.workspaceId},${runId}::uuid,${row.family},${row.coverage},${row.scanned},${row.qualifying},
-        ${JSON.stringify({ ...row.diagnostics, window: { since: common.since, until: common.until } })}::jsonb)
+        ${JSON.stringify({ ...row.diagnostics, window: row.diagnostics.window ?? { since: common.since, until: common.until } })}::jsonb)
       ON CONFLICT (workspace_id,run_id,family) DO UPDATE SET coverage=EXCLUDED.coverage,
         scanned=EXCLUDED.scanned,qualifying=EXCLUDED.qualifying,diagnostics=EXCLUDED.diagnostics`;
     await tx`UPDATE harness_shared.sql_intent_runs SET finished_at=now()

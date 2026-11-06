@@ -450,6 +450,8 @@ export interface IngestResult {
 
 const DEFAULT_MAX_FILES = 5000;
 const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
+// 250 rows × 27 values stays well below PostgreSQL's 65,535-parameter limit.
+const USAGE_EVENT_WRITE_BATCH_SIZE = 250;
 
 /** Reuse this ingest tick for late gateway evidence too, even when native files
  * are unchanged. Update at most 500 exact matches with a bounded query deadline;
@@ -881,131 +883,158 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
           const observations: TranscriptUsageEvent[] = events ?? [...perModel].map(([model, usage]) => ({
             model, usage, sourceId: `aggregate:${offset}:${model}`, relativeOffset: 0, eventTime: null,
           } satisfies TranscriptUsageEvent));
-          for (const [eventIndex, event] of observations.entries()) {
-            const { model } = event;
-            const sourceId = event.sourceId.startsWith('line:') ? `line:${offset + event.relativeOffset}` : event.sourceId;
-            const eventKey = transcriptUsageEventKey({ file, fileGeneration: fileState.fileGeneration ?? 0, model, sourceId });
-            const [previous] = await tx<Array<{
-              input_tokens: string | null; output_tokens: string | null; cache_read_tokens: string | null;
-              cache_creation_tokens: string | null; cache_creation_5m_tokens: string | null;
-              cache_creation_1h_tokens: string | null; turn_count: number | null; event_ts: string | null;
-            }>>`
-              SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+          type PreviousSample = {
+            usage_event_key: string;
+            input_tokens: string | number | null; output_tokens: string | number | null; cache_read_tokens: string | number | null;
+            cache_creation_tokens: string | number | null; cache_creation_5m_tokens: string | number | null;
+            cache_creation_1h_tokens: string | number | null; turn_count: number | null; event_ts: string | number | null;
+          };
+          type PendingSample = PreviousSample & {
+            workspace_id: string; ts: number; bucket_key: string; provider: string; model_class: string; source: 'interactive';
+            cost_usd: number | null; model: string | null; cost_source: string | null; harness_slug: string | null;
+            run_id: string; role: string; session_id: string; goal_id: string | null; turn_trigger: string | null;
+            input_tokens: number | null; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number | null;
+            cache_creation_5m_tokens: number | null; cache_creation_1h_tokens: number | null; turn_count: number;
+            event_ts: number | null; ingested_at: number; usage_provenance: string; price_table_version: typeof PRICE_TABLE_VERSION;
+          };
+          let sampleAttribution: { harness_slug: string | null; goal_id: string | null } | undefined;
+          for (let batchStart = 0; batchStart < observations.length; batchStart += USAGE_EVENT_WRITE_BATCH_SIZE) {
+            const batch = observations.slice(batchStart, batchStart + USAGE_EVENT_WRITE_BATCH_SIZE).map((event, batchIndex) => {
+              const sourceId = event.sourceId.startsWith('line:') ? `line:${offset + event.relativeOffset}` : event.sourceId;
+              const eventKey = transcriptUsageEventKey({ file, fileGeneration: fileState.fileGeneration ?? 0, model: event.model, sourceId });
+              return { event, eventIndex: batchStart + batchIndex, sourceId, eventKey };
+            });
+            const eventKeys = [...new Set(batch.map(({ eventKey }) => eventKey))];
+            const previousRows = await tx<PreviousSample[]>`
+              SELECT usage_event_key, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 cache_creation_5m_tokens, cache_creation_1h_tokens, turn_count, event_ts
-                FROM harness_shared.agent_usage_samples WHERE workspace_id = ${ws} AND usage_event_key = ${eventKey}
+                FROM harness_shared.agent_usage_samples WHERE workspace_id = ${ws}
+                  AND usage_event_key IN ${tx(eventKeys)}
             `;
-            const before: TranscriptDelta = previous ? {
-              turns: previous.turn_count ?? 0, inputTokens: Number(previous.input_tokens ?? 0),
-              outputTokens: Number(previous.output_tokens ?? 0), cacheReadTokens: Number(previous.cache_read_tokens ?? 0),
-              cacheCreationTokens: Number(previous.cache_creation_tokens ?? 0),
-              cacheCreationUnreported: previous.cache_creation_tokens === null,
-              cacheCreation5mTokens: previous.cache_creation_5m_tokens === null ? undefined : Number(previous.cache_creation_5m_tokens),
-              cacheCreation1hTokens: previous.cache_creation_1h_tokens === null ? undefined : Number(previous.cache_creation_1h_tokens),
-              cacheCreationTierUnknown: providerForModel(model) === 'anthropic' && Number(previous.cache_creation_tokens) > 0 &&
-                (previous.cache_creation_5m_tokens === null || previous.cache_creation_1h_tokens === null),
-            } : emptyDelta();
-            const d = previous ? mergeTranscriptUsage(before, event.usage) : event.usage;
-            const inputKnown = event.uncachedInputKnown !== false || (previous != null && previous.input_tokens !== null);
-            if (event.uncachedInputKnown === false && previous?.input_tokens != null) d.inputTokens = before.inputTokens;
-            const change = emptyDelta();
-            for (const key of ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) change[key] = d[key] - before[key];
-            if (!inputKnown) change.inputTokens = 0;
-            if (!opts.historical && previous && Object.values(change).every((n) => n === 0) &&
-              inputKnown === (previous.input_tokens !== null) &&
-              Boolean(d.cacheCreationUnreported) === Boolean(before.cacheCreationUnreported) &&
-              d.cacheCreation5mTokens === before.cacheCreation5mTokens && d.cacheCreation1hTokens === before.cacheCreation1hTokens &&
-              (previous.event_ts !== null || event.eventTime === null)) continue;
-            const modelClass = modelClassForModel(model);
-            const provider = providerForModel(model);
-            // Price the row from exactly the values stored below, through the same function the
-            // repricer uses, so a stored estimate is always re-derivable (WI-10004517 / D-018).
-            const stored = {
-              source: 'interactive', provider, model: model === 'unknown-openai' ? null : model,
-              input_tokens: inputKnown ? d.inputTokens : null, output_tokens: d.outputTokens,
-              cache_read_tokens: d.cacheReadTokens,
-              cache_creation_tokens: d.cacheCreationUnreported ? null : d.cacheCreationTokens,
-              cache_creation_5m_tokens: d.cacheCreationTierUnknown ? null : d.cacheCreation5mTokens ?? null,
-              cache_creation_1h_tokens: d.cacheCreationTierUnknown ? null : d.cacheCreation1hTokens ?? null,
-              grain: events ? 'request' : 'file-model-delta',
-            };
-            const price = priceStoredUsageSample(stored);
-            const ingestedAt = Date.now();
-            const eventTime = previous?.event_ts != null ? Number(previous.event_ts) : event.eventTime;
-            const providerResponseId = event.providerResponseId ??
-              (sourceId.startsWith('message:') ? sourceId.slice('message:'.length) : null);
-            const provenance = { parserVersion: 2, adapter: adapter.name, sourceFile: file, fileGeneration: fileState.fileGeneration ?? 0,
-              sourceId, byteOffset: offset + event.relativeOffset, grain: events ? 'request' : 'file-model-delta',
-              modelSource: model === 'unknown-openai' ? 'unavailable' : 'transcript',
-              parserStateSource: fileState.bootstrapSource ?? 'incremental',
-              turnId: event.turnId ?? null,
-              ...(providerResponseId ? { providerResponseId,
-                providerResponseIdSource: event.providerResponseId ? 'native-token-usage-record' : 'native-message-id' } : {}),
-              cacheWriteSource: d.cacheCreationUnreported ? 'unreported' : 'reported',
-              // 'lower' = cache writes with no TTL split, priced at the 5-minute floor; always
-              // written (null included) so the ON CONFLICT `||` merge cannot keep a stale bound.
-              costBound: price.costBound,
-              uncachedInputSource: inputKnown ? 'reported-or-reconciled' : 'unknown-decomposition',
-              inputTotalTokens: event.inputTotalTokens ?? null,
-              accountSource: 'unavailable', triggerSource: event.turnTrigger ? 'native-turn-envelope' : 'unavailable',
-              ...(sessionContext ? { advSessionId: sessionContext.id,
-                sessionOwnerId: sessionContext.coord_owner_id, sessionPlanSlug: sessionContext.plan_slug,
-                sessionContextSource: 'ingest-time-adv-session' } : adapter.ownerId ? {
-                  sessionOwnerId: adapter.ownerId, sessionContextSource: 'adapter-isolation-root' } : {}),
-              // Session context is not evidence of a causal per-request work item.
-              workItemSource: 'unavailable',
-              predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null,
-              requestOrdinal: event.requestOrdinal ?? null,
-              cacheReadSource: event.cacheReadKnown === true ? 'reported' : event.cacheReadKnown === false ? 'unreported' : 'unavailable',
-              ...(opts.historical ? { reconciliation: { sourceSha256: opts.historical.sourceSha256,
-                sourceLocation: historicalSourceLocation,
-                byteOffset: opts.historical.byteOffset, backupSnapshotId: opts.historical.backupSnapshotId,
-                legacyFingerprint: opts.historical.legacyFingerprint,
-                ...(eventIndex === 0 ? { originalRows: legacyRows } : {}) } } : {}) };
-            // Both attribution stamps below take the CODEX_HOME-derived adv_sessions PK
-            // as their strongest key. harness_slug: migration 1120 (WI-2144763).
-            // goal_id: migration 1121 (WI-2145149) — the 3-arg overload, same defect,
-            // because both routes of the 2-arg form join adv_sessions on session_id,
-            // which a psu codex row (whose sample carries the rollout uuid there) can
-            // never match. The goal ceiling is small and deliberately honest: 0 -> 3 of
-            // 134 codex sessions, which is 100% of the achievable set. The other 131
-            // owners have no goal recorded at all — workspace-wide only 1.55% of
-            // adv_sessions resolve a goal by ANY route — so a NULL goal_id here is
-            // absent goal data, NOT a resolver failure (EI-22391659152296045).
-            await tx`
-              INSERT INTO harness_shared.agent_usage_samples
-                (workspace_id, ts, bucket_key, provider, model_class, source,
-                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-                 model, cost_source, harness_slug, run_id, role, session_id, goal_id, turn_trigger,
-                 cache_creation_5m_tokens, cache_creation_1h_tokens, turn_count,
-                 usage_event_key, event_ts, ingested_at, usage_provenance, price_table_version)
-              VALUES (
-                ${ws}, ${eventTime ?? ingestedAt}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
-                ${stored.input_tokens}, ${stored.output_tokens}, ${stored.cache_read_tokens}, ${stored.cache_creation_tokens},
-                ${price.costUsd}, ${stored.model}, ${price.costSource},
-                (SELECT harness_shared.harness_slug_for_usage_attribution(
-                   ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})),
-                ${sessionId}, ${sessionRole.role}, ${sessionId},
-                (SELECT harness_shared.goal_id_for_usage_session(
-                   ${ws}, ${sessionId}, ${adapter.advSessionId ?? null})),
-                ${event.turnTrigger ?? null},
-                ${stored.cache_creation_5m_tokens},
-                ${stored.cache_creation_1h_tokens}, ${d.turns},
-                ${eventKey}, ${eventTime}, ${ingestedAt}, ${JSON.stringify(provenance)}::jsonb, ${PRICE_TABLE_VERSION}
-              )
-              ON CONFLICT (workspace_id, usage_event_key) WHERE usage_event_key IS NOT NULL
-              DO UPDATE SET input_tokens = EXCLUDED.input_tokens, output_tokens = EXCLUDED.output_tokens,
-                cache_read_tokens = EXCLUDED.cache_read_tokens, cache_creation_tokens = EXCLUDED.cache_creation_tokens,
-                cache_creation_5m_tokens = EXCLUDED.cache_creation_5m_tokens, cache_creation_1h_tokens = EXCLUDED.cache_creation_1h_tokens,
-                cost_usd = EXCLUDED.cost_usd, cost_source = EXCLUDED.cost_source,
-                price_table_version = EXCLUDED.price_table_version, turn_count = EXCLUDED.turn_count,
-                event_ts = EXCLUDED.event_ts, ts = COALESCE(EXCLUDED.event_ts, agent_usage_samples.ts),
-                ingested_at = EXCLUDED.ingested_at,
-                turn_trigger = COALESCE(EXCLUDED.turn_trigger, agent_usage_samples.turn_trigger),
-                usage_provenance = COALESCE(agent_usage_samples.usage_provenance, '{}'::jsonb) || EXCLUDED.usage_provenance
-                  || jsonb_build_object('accountSource', COALESCE(agent_usage_samples.usage_provenance->>'accountSource', 'unavailable'))
-            `;
-            if (d.cacheCreationUnreported) change.cacheCreationUnreported = true;
-            deltas.push(change);
+            const previousByKey = new Map(previousRows.map((row) => [row.usage_event_key, row]));
+            const pendingByKey = new Map<string, PendingSample>();
+            for (const { event, eventIndex, sourceId, eventKey } of batch) {
+              const { model } = event;
+              const pending = pendingByKey.get(eventKey);
+              const previous = pending ?? previousByKey.get(eventKey);
+              const before: TranscriptDelta = previous ? {
+                turns: previous.turn_count ?? 0, inputTokens: Number(previous.input_tokens ?? 0),
+                outputTokens: Number(previous.output_tokens ?? 0), cacheReadTokens: Number(previous.cache_read_tokens ?? 0),
+                cacheCreationTokens: Number(previous.cache_creation_tokens ?? 0),
+                cacheCreationUnreported: previous.cache_creation_tokens === null,
+                cacheCreation5mTokens: previous.cache_creation_5m_tokens === null ? undefined : Number(previous.cache_creation_5m_tokens),
+                cacheCreation1hTokens: previous.cache_creation_1h_tokens === null ? undefined : Number(previous.cache_creation_1h_tokens),
+                cacheCreationTierUnknown: providerForModel(model) === 'anthropic' && Number(previous.cache_creation_tokens) > 0 &&
+                  (previous.cache_creation_5m_tokens === null || previous.cache_creation_1h_tokens === null),
+              } : emptyDelta();
+              const d = previous ? mergeTranscriptUsage(before, event.usage) : event.usage;
+              const inputKnown = event.uncachedInputKnown !== false || (previous != null && previous.input_tokens !== null);
+              if (event.uncachedInputKnown === false && previous?.input_tokens != null) d.inputTokens = before.inputTokens;
+              const change = emptyDelta();
+              for (const key of ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) change[key] = d[key] - before[key];
+              if (!inputKnown) change.inputTokens = 0;
+              if (!opts.historical && previous && Object.values(change).every((n) => n === 0) &&
+                inputKnown === (previous.input_tokens !== null) &&
+                Boolean(d.cacheCreationUnreported) === Boolean(before.cacheCreationUnreported) &&
+                d.cacheCreation5mTokens === before.cacheCreation5mTokens && d.cacheCreation1hTokens === before.cacheCreation1hTokens &&
+                (previous.event_ts !== null || event.eventTime === null)) continue;
+              const modelClass = modelClassForModel(model);
+              const provider = providerForModel(model);
+              // Price the row from exactly the values stored below, through the same function the
+              // repricer uses, so a stored estimate is always re-derivable (WI-10004517 / D-018).
+              const stored = {
+                source: 'interactive', provider, model: model === 'unknown-openai' ? null : model,
+                input_tokens: inputKnown ? d.inputTokens : null, output_tokens: d.outputTokens,
+                cache_read_tokens: d.cacheReadTokens,
+                cache_creation_tokens: d.cacheCreationUnreported ? null : d.cacheCreationTokens,
+                cache_creation_5m_tokens: d.cacheCreationTierUnknown ? null : d.cacheCreation5mTokens ?? null,
+                cache_creation_1h_tokens: d.cacheCreationTierUnknown ? null : d.cacheCreation1hTokens ?? null,
+                grain: events ? 'request' : 'file-model-delta',
+              };
+              const price = priceStoredUsageSample(stored);
+              const ingestedAt = Date.now();
+              const eventTime = previous?.event_ts != null ? Number(previous.event_ts) : event.eventTime;
+              const providerResponseId = event.providerResponseId ??
+                (sourceId.startsWith('message:') ? sourceId.slice('message:'.length) : null);
+              const provenance = { parserVersion: 2, adapter: adapter.name, sourceFile: file, fileGeneration: fileState.fileGeneration ?? 0,
+                sourceId, byteOffset: offset + event.relativeOffset, grain: events ? 'request' : 'file-model-delta',
+                modelSource: model === 'unknown-openai' ? 'unavailable' : 'transcript',
+                parserStateSource: fileState.bootstrapSource ?? 'incremental',
+                turnId: event.turnId ?? null,
+                ...(providerResponseId ? { providerResponseId,
+                  providerResponseIdSource: event.providerResponseId ? 'native-token-usage-record' : 'native-message-id' } : {}),
+                cacheWriteSource: d.cacheCreationUnreported ? 'unreported' : 'reported',
+                // 'lower' = cache writes with no TTL split, priced at the 5-minute floor; always
+                // written (null included) so the ON CONFLICT `||` merge cannot keep a stale bound.
+                costBound: price.costBound,
+                uncachedInputSource: inputKnown ? 'reported-or-reconciled' : 'unknown-decomposition',
+                inputTotalTokens: event.inputTotalTokens ?? null,
+                accountSource: 'unavailable', triggerSource: event.turnTrigger ? 'native-turn-envelope' : 'unavailable',
+                ...(sessionContext ? { advSessionId: sessionContext.id,
+                  sessionOwnerId: sessionContext.coord_owner_id, sessionPlanSlug: sessionContext.plan_slug,
+                  sessionContextSource: 'ingest-time-adv-session' } : adapter.ownerId ? {
+                    sessionOwnerId: adapter.ownerId, sessionContextSource: 'adapter-isolation-root' } : {}),
+                // Session context is not evidence of a causal per-request work item.
+                workItemSource: 'unavailable',
+                predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null,
+                requestOrdinal: event.requestOrdinal ?? null,
+                cacheReadSource: event.cacheReadKnown === true ? 'reported' : event.cacheReadKnown === false ? 'unreported' : 'unavailable',
+                ...(opts.historical ? { reconciliation: { sourceSha256: opts.historical.sourceSha256,
+                  sourceLocation: historicalSourceLocation,
+                  byteOffset: opts.historical.byteOffset, backupSnapshotId: opts.historical.backupSnapshotId,
+                  legacyFingerprint: opts.historical.legacyFingerprint,
+                  ...(eventIndex === 0 ? { originalRows: legacyRows } : {}) } } : {}) };
+              const mergedProvenance = pending
+                ? { ...(JSON.parse(pending.usage_provenance) as Record<string, unknown>), ...provenance }
+                : provenance;
+              pendingByKey.set(eventKey, {
+                workspace_id: ws, ts: eventTime ?? pending?.ts ?? ingestedAt, bucket_key: `${provider}:${modelClass}`,
+                provider, model_class: modelClass, source: 'interactive',
+                input_tokens: stored.input_tokens, output_tokens: stored.output_tokens,
+                cache_read_tokens: stored.cache_read_tokens, cache_creation_tokens: stored.cache_creation_tokens,
+                cost_usd: price.costUsd, model: stored.model, cost_source: price.costSource, harness_slug: null,
+                run_id: sessionId, role: sessionRole.role, session_id: sessionId, goal_id: null,
+                turn_trigger: event.turnTrigger ?? pending?.turn_trigger ?? null,
+                cache_creation_5m_tokens: stored.cache_creation_5m_tokens,
+                cache_creation_1h_tokens: stored.cache_creation_1h_tokens, turn_count: d.turns,
+                usage_event_key: eventKey, event_ts: eventTime, ingested_at: ingestedAt,
+                usage_provenance: JSON.stringify(mergedProvenance), price_table_version: PRICE_TABLE_VERSION,
+              });
+              if (d.cacheCreationUnreported) change.cacheCreationUnreported = true;
+              deltas.push(change);
+            }
+            if (pendingByKey.size > 0) {
+              if (!sampleAttribution) {
+                const [attribution] = await tx<Array<{ harness_slug: string | null; goal_id: string | null }>>`
+                  SELECT
+                    (SELECT harness_shared.harness_slug_for_usage_attribution(
+                       ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})) AS harness_slug,
+                    (SELECT harness_shared.goal_id_for_usage_session(
+                       ${ws}, ${sessionId}, ${adapter.advSessionId ?? null})) AS goal_id
+                `;
+                sampleAttribution = attribution;
+              }
+              const rows = [...pendingByKey.values()].map((row) => ({ ...row, ...sampleAttribution }));
+              await tx`
+                INSERT INTO harness_shared.agent_usage_samples
+                ${tx(rows, 'workspace_id', 'ts', 'bucket_key', 'provider', 'model_class', 'source',
+                  'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'cost_usd',
+                  'model', 'cost_source', 'harness_slug', 'run_id', 'role', 'session_id', 'goal_id', 'turn_trigger',
+                  'cache_creation_5m_tokens', 'cache_creation_1h_tokens', 'turn_count',
+                  'usage_event_key', 'event_ts', 'ingested_at', 'usage_provenance', 'price_table_version')}
+                ON CONFLICT (workspace_id, usage_event_key) WHERE usage_event_key IS NOT NULL
+                DO UPDATE SET input_tokens = EXCLUDED.input_tokens, output_tokens = EXCLUDED.output_tokens,
+                  cache_read_tokens = EXCLUDED.cache_read_tokens, cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+                  cache_creation_5m_tokens = EXCLUDED.cache_creation_5m_tokens, cache_creation_1h_tokens = EXCLUDED.cache_creation_1h_tokens,
+                  cost_usd = EXCLUDED.cost_usd, cost_source = EXCLUDED.cost_source,
+                  price_table_version = EXCLUDED.price_table_version, turn_count = EXCLUDED.turn_count,
+                  event_ts = EXCLUDED.event_ts, ts = COALESCE(EXCLUDED.event_ts, agent_usage_samples.ts),
+                  ingested_at = EXCLUDED.ingested_at,
+                  turn_trigger = COALESCE(EXCLUDED.turn_trigger, agent_usage_samples.turn_trigger),
+                  usage_provenance = COALESCE(agent_usage_samples.usage_provenance, '{}'::jsonb) || EXCLUDED.usage_provenance
+                    || jsonb_build_object('accountSource', COALESCE(agent_usage_samples.usage_provenance->>'accountSource', 'unavailable'))
+              `;
+            }
           }
           await tx`
             INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, parser_state, updated_at)

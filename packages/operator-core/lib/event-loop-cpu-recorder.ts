@@ -15,6 +15,9 @@ interface ProfileSession {
   connect(): void;
   disconnect(): void;
   post(method: string, params?: Record<string, number>): Promise<unknown>;
+  on(event: 'Profiler.consoleProfileFinished', listener: (event: {
+    params: { title: string; profile: unknown };
+  }) => void): unknown;
 }
 
 interface ThreadCpuUsage {
@@ -35,6 +38,9 @@ export interface CpuRecording {
   samplingIntervalUs: number;
   startMs: number;
   stopMs: number;
+  coverage?: 'pre-trigger' | 'post-trigger';
+  windowStartMonoMs?: number;
+  windowEndMonoMs?: number;
 }
 
 let nextRecorder = 0;
@@ -48,6 +54,8 @@ export class LoopCpuRecorder {
   private initializing = false;
   private closed = false;
   private capture: AbortController | null = null;
+  private finishing: { name: string; start: number; end: number } | null = null;
+  private preceding: CpuRecording | null = null;
   private readonly prefix = `papercusp-loop-${process.pid}-${++nextRecorder}-`;
 
   constructor(
@@ -79,11 +87,16 @@ export class LoopCpuRecorder {
       }
       const before = this.deps.now();
       try {
+        this.preceding = null;
+        this.finishing = null;
         const next = this.prefix + ++this.sequence;
         // Start the successor FIRST: stopping the last recording destroys V8's
         // code map and makes the next capture pay the cold-start pause again.
         this.deps.begin(next);
-        if (this.anchor) this.deps.end(this.anchor);
+        if (this.anchor) {
+          this.finishing = { name: this.anchor, start: this.rotatedAt, end: this.deps.now() };
+          this.deps.end(this.anchor);
+        }
         this.anchor = next;
         this.rotatedAt = this.deps.now();
         const rotationMs = this.rotatedAt - before;
@@ -104,6 +117,20 @@ export class LoopCpuRecorder {
       if (this.closed || revision !== this.revision) return false;
       session.connect();
       this.session = session;
+      const connected = session;
+      session.on('Profiler.consoleProfileFinished', ({ params }) => {
+        const window = this.finishing;
+        if (this.session !== connected || !window || params.title !== window.name) return;
+        this.finishing = null;
+        // Keep only the just-completed, bounded window. A notification arriving
+        // after revocation or another rotation cannot resurrect an old profile.
+        if (this.deps.now() - window.start > this.maxRotationGapMs) return;
+        this.preceding = {
+          profile: params.profile, samplingIntervalUs: LOOP_CPU_SAMPLING_INTERVAL_US,
+          startMs: 0, stopMs: 0, coverage: 'pre-trigger',
+          windowStartMonoMs: window.start, windowEndMonoMs: window.end,
+        };
+      });
       await session.post('Profiler.enable');
       if (this.session !== session) return false;
       await session.post('Profiler.setSamplingInterval', { interval: LOOP_CPU_SAMPLING_INTERVAL_US });
@@ -132,6 +159,17 @@ export class LoopCpuRecorder {
     }
   }
 
+  /** The monitor rotates before capture: use that preceding window once, when
+   * available. A fresh foreground profile is explicitly labelled post-trigger. */
+  async recordTriggered(durationMs: number, signal?: AbortSignal): Promise<CpuRecording> {
+    signal?.throwIfAborted();
+    if (!this.session || !this.anchor || this.closed || this.capture) throw new Error('CPU recorder unavailable');
+    const preceding = this.preceding;
+    this.preceding = null;
+    if (preceding && this.deps.now() - preceding.windowStartMonoMs! <= this.maxRotationGapMs) return preceding;
+    return this.record(durationMs, signal);
+  }
+
   async record(durationMs: number, signal?: AbortSignal): Promise<CpuRecording> {
     signal?.throwIfAborted();
     const session = this.session;
@@ -146,6 +184,7 @@ export class LoopCpuRecorder {
       await session.post('Profiler.start');
       recording = true;
       const startMs = this.deps.now() - before;
+      const windowStartMonoMs = this.deps.now();
       if (this.session !== session) throw new Error('CPU recorder revoked');
       await delay(durationMs, undefined, { signal: capture.signal });
       const stopAt = this.deps.now();
@@ -153,7 +192,8 @@ export class LoopCpuRecorder {
       recording = false;
       capture.signal.throwIfAborted();
       if (this.session !== session) throw new Error('CPU recorder revoked');
-      return { profile, startMs, stopMs: this.deps.now() - stopAt, samplingIntervalUs: LOOP_CPU_SAMPLING_INTERVAL_US };
+      return { profile, startMs, stopMs: this.deps.now() - stopAt, samplingIntervalUs: LOOP_CPU_SAMPLING_INTERVAL_US,
+        coverage: 'post-trigger', windowStartMonoMs, windowEndMonoMs: stopAt };
     } finally {
       signal?.removeEventListener('abort', abort);
       if (recording && this.session === session) {
@@ -167,6 +207,8 @@ export class LoopCpuRecorder {
     this.revision++;
     this.capture?.abort();
     this.anchor = null;
+    this.finishing = null;
+    this.preceding = null;
     const session = this.session;
     this.session = null;
     // Disconnect discards native recordings. Do not console.profileEnd here:

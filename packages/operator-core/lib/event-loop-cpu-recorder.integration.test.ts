@@ -1299,3 +1299,38 @@ describe('reusable eager CPU profiler capture windows', () => {
     120_000,
   );
 });
+
+describe('trigger-window CPU profile coverage', () => {
+  it('retains the triggering interval before rotation and labels a later profile separately', async () => {
+    const { stdout } = await exec(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+      import { LoopCpuRecorder } from ${JSON.stringify(recorderPath)};
+      import { performance } from 'node:perf_hooks';
+      const recorder = new LoopCpuRecorder(5000, () => {});
+      function triggeringCpuWork() {
+        const end = performance.now() + 150;
+        let n = 0;
+        while (performance.now() < end) n += Math.sqrt(n + 1);
+        return n;
+      }
+      try {
+        const ready = await recorder.update(true, true);
+        triggeringCpuWork();
+        const rotated = await recorder.update(true, true);
+        const before = await recorder.recordTriggered(10);
+        const after = await recorder.recordTriggered(10);
+        console.log(JSON.stringify({
+          ready, rotated, before: before.coverage, after: after.coverage,
+          samples: before.profile.samples.length,
+          namedFrame: before.profile.nodes.some(n => n.callFrame.functionName === 'triggeringCpuWork'),
+          span: before.profile.endTime - before.profile.startTime,
+          window: before.windowEndMonoMs - before.windowStartMonoMs,
+        }));
+      } finally { recorder.stop(); }
+    `]);
+    const result = JSON.parse(stdout.trim());
+    expect(result).toMatchObject({ ready: true, rotated: true, before: 'pre-trigger', after: 'post-trigger', namedFrame: true });
+    expect(result.samples).toBeGreaterThan(0);
+    expect(result.span).toBeGreaterThan(0);
+    expect(result.window).toBeGreaterThanOrEqual(150);
+  });
+});

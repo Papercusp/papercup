@@ -117,8 +117,18 @@ pub trait Multiplexer {
 
 /// Spawn an argv, returning the process status as `()`.
 fn spawn(argv: Vec<String>) -> std::io::Result<()> {
-    let (prog, rest) = argv.split_first().expect("multiplexer argv is never empty");
-    Command::new(prog).args(rest).status().map(|_| ())
+    let (prog, rest) = argv.split_first().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty multiplexer command",
+        )
+    })?;
+    let status = Command::new(prog).args(rest).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("{prog} failed: {status}")))
+    }
 }
 
 /// zellij driver: `zellij action new-pane [--name <title>] -- <argv...>`.
@@ -199,6 +209,40 @@ impl Multiplexer for Zellij {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exit_argv(code: u8) -> Vec<String> {
+        #[cfg(windows)]
+        let argv = vec!["cmd".into(), "/C".into(), format!("exit {code}")];
+        #[cfg(not(windows))]
+        let argv = vec!["sh".into(), "-c".into(), format!("exit {code}")];
+        argv
+    }
+
+    #[test]
+    fn multiplexer_child_success_is_reported_as_success() {
+        spawn(exit_argv(0)).unwrap();
+    }
+
+    #[test]
+    fn multiplexer_child_refusal_is_reported_as_failure() {
+        let error = spawn(exit_argv(17)).expect_err("a refused action must not appear successful");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert!(error.to_string().contains("17"), "{error}");
+    }
+
+    #[test]
+    fn multiplexer_child_missing_program_preserves_spawn_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing-multiplexer");
+        let error = spawn(vec![missing.to_string_lossy().into_owned()]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn multiplexer_child_empty_argv_is_a_recoverable_error() {
+        let error = spawn(Vec::new()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn builds_zellij_new_pane_command() {

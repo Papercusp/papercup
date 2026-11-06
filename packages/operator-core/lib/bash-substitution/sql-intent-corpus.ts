@@ -184,6 +184,8 @@ export interface SqlIntentCorpusOptions {
   /** Stop between parser calls without advancing past unprocessed source rows. */
   deadline?: number;
   clock?: () => number;
+  /** Phase boundaries only; never passes query text or source identity. */
+  onPhase?: (phase: 'authorize' | 'source' | 'parse' | 'retention') => void;
   /** Trusted adapter/test seam. Production reads the native detector when absent. */
   retainedFrom?: string;
   /** Current source authorization checked before touching raw invocation args. */
@@ -240,11 +242,13 @@ export async function fetchSqlIntentCorpus(opts: SqlIntentCorpusOptions): Promis
     || !Number.isFinite(until) || until <= since || until - since > 30 * 86400_000
     || (opts.after && (!Number.isFinite(Date.parse(opts.after.at)) || !/^\d+$/.test(opts.after.id))))
     throw new Error('invalid_sql_corpus_window');
+  opts.onPhase?.('authorize');
   if (!await opts.authorize({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
     sourceBoundary: opts.scope.sourceBoundary })) throw new Error('sql_corpus_source_denied');
   const sql = opts.client ?? getOrgPg().sql;
   const limit = Number.isFinite(opts.limit) ? Math.min(SQL_CORPUS_MAX_ROWS, Math.max(1, Math.floor(opts.limit!))) : SQL_CORPUS_MAX_ROWS;
   const after = opts.after ? sql`AND (invoked_at, id) > (${opts.after.at}::timestamptz, ${opts.after.id}::bigint)` : sql``;
+  opts.onPhase?.('source');
   const rows = await sql<LedgerRow[]>`
     SELECT id::text, to_char(invoked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at,
       coord_owner_id AS actor, harness_shared.is_agent_coord_owner_id(coord_owner_id, role) AS agent,
@@ -264,6 +268,7 @@ export async function fetchSqlIntentCorpus(opts: SqlIntentCorpusOptions): Promis
   const observations: SqlDemandObservation[] = [];
   const sources: Array<{ token: string; id: string }> = [];
   let processed = 0;
+  opts.onPhase?.('parse');
   for (const row of page) {
     if (opts.deadline !== undefined && (opts.clock ?? Date.now)() >= opts.deadline) break;
     const wrapper = row.tool_name !== SQL_CORPUS_TOOL;
@@ -288,6 +293,7 @@ export async function fetchSqlIntentCorpus(opts: SqlIntentCorpusOptions): Promis
   }
   const capped = rows.length > limit || processed < page.length;
   const last = processed ? { at: page[processed - 1]!.at, id: page[processed - 1]!.id } : null;
+  opts.onPhase?.('retention');
   const retained = opts.retainedFrom ? Date.parse(opts.retainedFrom) : NaN;
   const retention = opts.retainedFrom === undefined ? await readSqlIntentRetention(opts)
     : Number.isFinite(retained) ? retained <= since ? 'complete' : 'gap' : 'unknown';

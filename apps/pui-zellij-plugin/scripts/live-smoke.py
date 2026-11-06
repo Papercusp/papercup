@@ -165,6 +165,38 @@ exited = wait_for(lambda e: e.get("ev") == "pane_exited" and e.get("exit_code") 
                   15, "pane_exited(exit_code=7)")
 check(exited is not None, "command-pane natural exit detected with real exit code (7)")
 
+# New session tab: the command is identical to one in another tab. Only the
+# exact host-returned tab may acquire the canonical launch id.
+send({"cmd": "open_command_pane", "command": "bash", "args": ["-c", "sleep 90"]})
+baseline = wait_for(lambda e: e.get("ev") == "topology"
+                    and any(p.get("command") == "bash -c sleep 90" for p in e["panes"]),
+                    15, "same-command negative control")
+check(baseline is not None, "same-command control exists in original tab")
+session_layout = '''layout {
+    tab name="session binding smoke" {
+        pane split_direction="vertical" {
+            pane size="22%" { command "bash"; args "-c" "sleep 91"; }
+            pane size="56%" focus=true { command "bash"; args "-c" "sleep 90"; }
+            pane size="22%" { command "bash"; args "-c" "sleep 92"; }
+        }
+    }
+}'''
+send({"cmd": "new_tab", "layout": session_layout,
+      "session": {"adv_session_id": 4241, "command": "bash -c sleep 90"}})
+bound = wait_for(lambda e: e.get("ev") == "topology"
+                 and any(p.get("adv_session_id") == 4241 for p in e["panes"]),
+                 20, "exact session-tab binding")
+check(bound is not None, "new tab preserves exact session identity in live topology")
+if bound:
+    bound_panes = [p for p in bound["panes"] if p.get("adv_session_id") == 4241]
+    check(len(bound_panes) == 1, "only one terminal acquires the launch binding")
+    target = bound_panes[0]
+    original = [p for p in bound["panes"]
+                if p.get("command") == "bash -c sleep 90" and p["tab"] != target["tab"]]
+    check(bool(original) and all(p.get("adv_session_id") is None for p in original),
+          "same command in another tab remains unbound")
+    check(target["focused"], "new session tab focuses the actual command")
+
 # ── teardown ─────────────────────────────────────────────────────────────────
 stop.set()
 try: pipe.stdin.close()

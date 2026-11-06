@@ -2570,6 +2570,7 @@ async fn run<B: Backend>(
                             c.send(pui_companion_proto::Command::NewTab {
                                 name: Some(name),
                                 layout: Some(layout),
+                                session: None,
                             });
                         }
                     }
@@ -2584,6 +2585,7 @@ async fn run<B: Backend>(
                             c.send(pui_companion_proto::Command::NewTab {
                                 name: Some(name),
                                 layout: Some(layout),
+                                session: None,
                             });
                         }
                     }
@@ -2766,7 +2768,7 @@ async fn run<B: Backend>(
                     match &companion {
                         Some(c) => c.open_pane(&spec),
                         None => {
-                            if let Err(e) = Zellij.open_pane(&spec) {
+                            if let Err(e) = open_workbench_pane(&spec) {
                                 app.update(Event::Error(format!("launch: {e}")));
                             }
                         }
@@ -2782,7 +2784,7 @@ async fn run<B: Backend>(
                         match &companion {
                             Some(c) => c.open_pane(&spec),
                             None => {
-                                if let Err(e) = Zellij.open_pane(&spec) {
+                                if let Err(e) = open_workbench_pane(&spec) {
                                     app.update(Event::Error(format!("launch: {e}")));
                                 }
                             }
@@ -2818,7 +2820,7 @@ async fn run<B: Backend>(
                         match &companion {
                             Some(c) => c.open_pane(&p.spec),
                             None => {
-                                if let Err(e) = Zellij.open_pane(&p.spec) {
+                                if let Err(e) = open_workbench_pane(&p.spec) {
                                     app.update(Event::Error(format!("launch pane: {e}")));
                                 }
                             }
@@ -5477,7 +5479,7 @@ async fn fetch_agent_ctx(
             .map(|(active, _)| active)
             .unwrap_or_default();
         let entry = match &scope {
-            app::WakeFilter::Owner(id) => roster.iter().find(|r| &r.owner_id == id),
+            app::WakeFilter::Owner(id) => agent_context_entry(id, &roster),
             // Queen (and the never-used All fallback): the roster's canonical
             // Mug-kind row (`queen` remains a legacy alias).
             _ => roster.iter().find(|r| {
@@ -5625,6 +5627,51 @@ fn materialize_hive_tab(spec: &layout::HiveTabSpec) -> std::io::Result<std::path
     let path = base.join(format!("pui-hive-tab-{slug}.kdl"));
     std::fs::write(&path, layout::hive_tab_kdl(spec))?;
     Ok(path)
+}
+
+fn agent_context_entry<'a>(owner: &str, roster: &'a [models::RosterEntry]) -> Option<&'a models::RosterEntry> {
+    if let Some(id) = owner.strip_prefix("pending:adv:").and_then(|id| id.parse::<i64>().ok()).filter(|id| *id > 0) {
+        // A pending id must resolve through its launch record, never through a
+        // shared role, title, or another session's owner.
+        roster.iter().find(|row| row.adv_session_id == Some(id) && !row.owner_id.starts_with("pending:"))
+    } else {
+        roster.iter().find(|row| row.owner_id == owner)
+    }
+}
+
+#[cfg(test)]
+mod session_sidebar_tests {
+    use super::*;
+
+    #[test]
+    fn sidebars_follow_exact_launch_to_real_owner_without_shared_label_fallback() {
+        let roster = vec![
+            models::RosterEntry { owner_id: "other".into(), adv_session_id: Some(40), label: "same".into(), ..Default::default() },
+            models::RosterEntry { owner_id: "real-owner".into(), adv_session_id: Some(41), label: "same".into(), ..Default::default() },
+        ];
+        assert_eq!(agent_context_entry("pending:adv:41", &roster).unwrap().owner_id, "real-owner");
+        assert_eq!(agent_context_entry("other", &roster).unwrap().adv_session_id, Some(40));
+        for missing in ["pending:adv:42", "pending:adv:0", "pending:adv:-1", "same"] {
+            assert!(agent_context_entry(missing, &roster).is_none());
+        }
+        assert!(agent_context_entry("pending:adv:41", &[]).is_none());
+    }
+}
+
+fn open_workbench_pane(spec: &mux::PaneSpec) -> std::io::Result<()> {
+    let pui = std::env::current_exe()?;
+    let Some(kdl) = layout::session_tab_kdl(spec, &pui.to_string_lossy()) else {
+        return Zellij.open_pane(spec);
+    };
+    let base = dirs::home_dir().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?.join(".papercusp");
+    std::fs::create_dir_all(&base)?;
+    let path = base.join(format!("pui-session-tab-{}-{}.kdl", std::process::id(), spec.adv_session_id.unwrap()));
+    std::fs::write(&path, kdl)?;
+    let result = Zellij.run_action(&MuxAction::NewTab {
+        name: spec.title.clone(), layout: Some(path.to_string_lossy().into_owned()),
+    });
+    let _ = std::fs::remove_file(path);
+    result
 }
 
 /// Fetch the cross-Hive network board (hive-network-surface B-09) off the UI

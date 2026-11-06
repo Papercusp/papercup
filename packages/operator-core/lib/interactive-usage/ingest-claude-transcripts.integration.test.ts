@@ -35,6 +35,24 @@ const usage = (total: number, input = 1000) => line({ type: 'event_msg', payload
   },
 } });
 const adapter = (name = 'codex') => [{ name, root, parse: parseCodexChunk, replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
+const observeSql = (base: Sql, statements: string[]): Sql => {
+  const wrap = (target: Sql): Sql => new Proxy(target as unknown as (...args: unknown[]) => unknown, {
+    apply(fn, thisArg, args) {
+      const first = args[0] as { raw?: unknown; join?: (separator: string) => string } | undefined;
+      if (first && Array.isArray(first.raw) && typeof first.join === 'function') statements.push(first.join(' '));
+      return Reflect.apply(fn, thisArg, args);
+    },
+    get(fn, property, receiver) {
+      if (property === 'begin') {
+        return (callback: (tx: Sql) => Promise<unknown>) =>
+          target.begin(async tx => callback(wrap(tx as unknown as Sql)));
+      }
+      const value = Reflect.get(fn, property, receiver);
+      return typeof value === 'function' ? value.bind(fn) : value;
+    },
+  }) as unknown as Sql;
+  return wrap(base);
+};
 const migrationsDir = new URL('../../../../libs/papercusp/libs/db/sql/', import.meta.url);
 const readMigration = (name: string) => fs.readFile(new URL(name, migrationsDir), 'utf8')
   .catch(() => fs.readFile(new URL(name + '.DRAFT', migrationsDir), 'utf8'));
@@ -108,6 +126,60 @@ describe('persistent transcript accounting', () => {
     expect(JSON.stringify(progress)).not.toContain(file);
   });
 
+  it('batches event reads and writes while preserving incremental idempotency', async () => {
+    const file = path.join(root, 'bulk-requests.jsonl');
+    const startedAt = Date.UTC(2026, 10, 6);
+    const request = (id: string, inputTokens: number, atMs: number) => line({
+      type: 'assistant', timestamp: new Date(atMs).toISOString(),
+      message: { id, model: 'claude-sonnet-4', usage: {
+        input_tokens: inputTokens, output_tokens: 64, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      } },
+    });
+    const eventCount = 503;
+    await fs.writeFile(file, Array.from({ length: eventCount }, (_, index) =>
+      request(`request-${index}`, 1000 + index, startedAt + index * 1000)).join(''));
+    const statements: string[] = [];
+    const observedSql = observeSql(sql, statements);
+    const adapters = [{ name: 'claude', root, parse: parseTranscriptChunk }];
+    const eventReads = () => statements.filter(statement =>
+      statement.includes('FROM harness_shared.agent_usage_samples') && statement.includes('usage_event_key')).length;
+    const eventWrites = () => statements.filter(statement =>
+      statement.includes('INSERT INTO harness_shared.agent_usage_samples')).length;
+
+    const first = await ingestInteractiveUsage({ adapters }, { sql: observedSql, workspaceId: WS });
+    expect(first.errors).toEqual([]);
+    expect(first.samples).toBe(eventCount);
+    expect(eventReads()).toBe(3);
+    expect(eventWrites()).toBe(3);
+    const [initial] = await sql<Array<{ input_tokens: string; event_ts: string }>>`
+      SELECT input_tokens, event_ts FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${WS} AND session_id = 'bulk-requests'
+        AND usage_provenance->>'sourceId' = 'message:request-0'`;
+    expect(initial.input_tokens).toBe('1000');
+
+    statements.length = 0;
+    await fs.appendFile(file, request('request-0', 9000, startedAt + 60 * 60 * 1000));
+    const grown = await ingestInteractiveUsage({ adapters }, { sql: observedSql, workspaceId: WS });
+    expect(grown.errors).toEqual([]);
+    expect(grown.samples).toBe(1);
+    expect(eventReads()).toBe(1);
+    expect(eventWrites()).toBe(1);
+    const [afterGrowth] = await sql<Array<{ count: number; input_tokens: string; event_ts: string }>>`
+      SELECT count(*)::int AS count, max(input_tokens) FILTER (WHERE usage_provenance->>'sourceId' = 'message:request-0') AS input_tokens,
+        max(event_ts) FILTER (WHERE usage_provenance->>'sourceId' = 'message:request-0') AS event_ts
+      FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS} AND session_id = 'bulk-requests'`;
+    expect(afterGrowth.count).toBe(eventCount);
+    expect(afterGrowth.input_tokens).toBe('9000');
+    expect(afterGrowth.event_ts).toBe(initial.event_ts);
+
+    statements.length = 0;
+    await fs.appendFile(file, request('request-0', 9000, startedAt + 2 * 60 * 60 * 1000));
+    const repeated = await ingestInteractiveUsage({ adapters }, { sql: observedSql, workspaceId: WS });
+    expect(repeated.errors).toEqual([]);
+    expect(repeated.samples).toBe(0);
+    expect(eventReads()).toBe(1);
+    expect(eventWrites()).toBe(0);
+  });
   it('persists source-start ordinals and compaction generations through incremental ingestion', async () => {
     const file = path.join(root, 'carry-startup.jsonl');
     await fs.writeFile(file, line({ type: 'session_meta', payload: { forked_from_id: 'parent-session' } }) +

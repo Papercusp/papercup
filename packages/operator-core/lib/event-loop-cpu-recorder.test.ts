@@ -7,9 +7,12 @@ function fixture() {
   let threadSystem = 0;
   const live = new Set<string>();
   const events: string[] = [];
+  let finished: ((event: { params: { title: string; profile: unknown } }) => void) | undefined;
+  const precedingProfile = { nodes: [], samples: [7, 8, 9] };
   const session = {
     connect: vi.fn(),
     disconnect: vi.fn(() => { live.clear(); events.push('disconnect'); }),
+    on: vi.fn((_event: string, listener: typeof finished) => { finished = listener; }),
     post: vi.fn(async (method: string, _params?: Record<string, number>): Promise<unknown> => {
       events.push(method);
       if (method === 'Profiler.enable') {
@@ -31,14 +34,51 @@ function fixture() {
   const recorder = new LoopCpuRecorder(300, log, {
     session: make,
     begin: (name) => { live.add(name); maxLive = Math.max(maxLive, live.size); events.push('begin'); },
-    end: (name) => { live.delete(name); events.push('end'); },
+    end: (name) => { live.delete(name); events.push('end'); finished?.({ params: { title: name, profile: precedingProfile } }); },
     now: () => now,
     threadCpuUsage,
   });
-  return { recorder, session, make, log, events, live, threadCpuUsage, advance: (ms: number) => { now += ms; }, maxLive: () => maxLive };
+  return { recorder, session, make, log, events, live, threadCpuUsage, precedingProfile,
+    notify: (title: string) => finished?.({ params: { title, profile: precedingProfile } }),
+    advance: (ms: number) => { now += ms; }, maxLive: () => maxLive };
 }
 
 describe('monitor-owned warm CPU recorder', () => {
+  it('captures the completed triggering interval once without starting a later profiler', async () => {
+    const f = fixture();
+    try {
+      await f.recorder.update(true, true);
+      f.advance(150);
+      await f.recorder.update(true, true);
+      expect(await f.recorder.recordTriggered(1)).toMatchObject({
+        profile: f.precedingProfile, coverage: 'pre-trigger', windowStartMonoMs: 0, windowEndMonoMs: 150,
+      });
+      expect(f.session.post).not.toHaveBeenCalledWith('Profiler.start');
+      expect(await f.recorder.recordTriggered(1)).toMatchObject({ coverage: 'post-trigger' });
+    } finally { f.recorder.stop(); }
+  });
+
+  it.each(['disabled', 'unsafe', 'stop', 'overdue', 'stale'] as const)('discards retained trigger coverage after %s', async (reason) => {
+    const f = fixture();
+    await f.recorder.update(true, true);
+    f.advance(100);
+    await f.recorder.update(true, true);
+    const oldAnchor = [...f.live][0]!;
+    if (reason === 'stop') f.recorder.stop();
+    else if (reason === 'stale') f.advance(301);
+    else {
+      if (reason === 'overdue') f.advance(301);
+      await f.recorder.update(reason !== 'disabled', reason !== 'unsafe');
+    }
+    f.notify(oldAnchor);
+    if (reason === 'stale') {
+      expect(await f.recorder.recordTriggered(1)).toMatchObject({ coverage: 'post-trigger' });
+    } else {
+      await expect(f.recorder.recordTriggered(1)).rejects.toThrow('unavailable');
+    }
+    f.recorder.stop();
+  });
+
   it('keeps cold initialization out of repeated captures and overlaps bounded anchors', async () => {
     const f = fixture();
     try {

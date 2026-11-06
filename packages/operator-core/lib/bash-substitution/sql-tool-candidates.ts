@@ -18,10 +18,17 @@ export interface SqlMiningDeps {
   /** Publisher deduplicates this durable request key: outbox delivery can retry after a crash. */
   alert?: (packet: { requestKey: string; workspaceId: string; scopeId: string; ranOn: string }) => Promise<void>;
   beforeCommit?: () => Promise<void>;
+  /** Monotonic elapsed-time seam, independent of the frozen source-window time. */
+  clock?: () => number;
 }
+export type SqlMiningPhase = 'acquire' | 'authorize' | 'source' | 'parse' | 'retention'
+  | 'persist' | 'aggregate' | 'commit' | 'alert';
 export interface SqlMiningResult {
   status: 'ok' | 'UNKNOWN'; stage: MiningStage; reason?: string; rows: number;
   cursor?: SqlCorpusCursor | null; more?: boolean; logicalCalls?: number;
+  phase?: SqlMiningPhase;
+  phaseDurationsMs?: Partial<Record<SqlMiningPhase, number>>;
+  window?: { since: string; until: string };
 }
 const positive = (v: number | undefined, fallback: number, max: number) =>
   Number.isFinite(v) ? Math.min(max, Math.max(1, Math.floor(v!))) : fallback;
@@ -32,12 +39,24 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
   if (opts.workspaceId !== opts.scope.workspaceId) throw new Error('invalid_sql_mining_scope');
   const sql = opts.client ?? getOrgPg().sql;
   const now = opts.now ?? Date.now(), ranOn = new Date(now).toISOString().slice(0, 10);
-  const budget = positive(opts.timeBudgetMs, 5000, 30_000), deadline = Date.now() + budget;
+  const clock = deps.clock ?? Date.now;
+  const budget = positive(opts.timeBudgetMs, 5000, 30_000), deadline = clock() + budget;
+  // A parser slice must leave time to persist its evidence and cursor atomically.
+  // Sharing the hard deadline made every partially parsed page roll back at check().
+  const sourceDeadline = deadline - Math.max(1, Math.ceil(budget / 4));
   const rowBudget = positive(opts.rowBudget, 250, 2000);
   let stage: MiningStage = 'source', cancelled = false;
-  const check = () => { if (cancelled || Date.now() >= deadline) throw new Error('sql_mining_time_budget'); };
+  let phase: SqlMiningPhase = 'acquire', phaseStartedAt = clock();
+  const phaseDurationsMs: Partial<Record<SqlMiningPhase, number>> = {};
+  const finishPhase = () => {
+    phaseDurationsMs[phase] = (phaseDurationsMs[phase] ?? 0) + Math.max(0, clock() - phaseStartedAt);
+    phaseStartedAt = clock();
+  };
+  const startPhase = (next: SqlMiningPhase) => { finishPhase(); phase = next; };
+  let window: SqlMiningResult['window'];
+  const check = () => { if (cancelled || clock() >= deadline) throw new Error('sql_mining_time_budget'); };
   try {
-    return await boundedStage(async () => {
+    const result = await boundedStage(async () => {
       const committed = await sql.begin(async tx => {
         await tx`SELECT set_config('statement_timeout', ${String(budget)}, true)`;
         await tx`INSERT INTO harness_shared.sql_intent_progress (workspace_id,scope_id,harness_slug)
@@ -49,14 +68,20 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
         check();
         const until = state?.pending_until ?? new Date(now).toISOString();
         const since = new Date(Date.parse(until) - 7 * 86400_000).toISOString();
+        window = { since, until };
         // Only replay the overlap after finishing a prior snapshot; each source row replaces its contribution.
         const after = state?.cursor_at && state.cursor_id ? state.pending_until
           ? { at: state.cursor_at, id: state.cursor_id }
           : { at: new Date(Date.parse(state.cursor_at) - 10 * 60_000).toISOString(), id: '0' } : undefined;
         const page = await boundedStage(() => (deps.fetch ?? fetchSqlIntentCorpus)({ ...opts, since, until, after,
-          limit: rowBudget, deadline, client: tx as unknown as Client }), Math.max(1, deadline - Date.now()));
+          limit: rowBudget, deadline: sourceDeadline, clock, onPhase: startPhase,
+          client: tx as unknown as Client }), Math.max(1, sourceDeadline - clock()));
         check();
+        // A soft cutoff before the first row is incomplete, never measured empty demand.
+        if (!page.coverage.scannedRows && page.coverage.status === 'truncated')
+          throw new Error('sql_mining_time_budget');
         if (page.observations.length > rowBudget) throw new Error('sql_mining_window_cap');
+        startPhase('persist');
         const refs = new Map(page.sources.map(s => [s.token, s.id]));
         const operationRows: Array<{ source_token: string; source_id: string; day: string; observation: unknown }> = [];
         const exampleRows: Array<{ source_token: string; captured_at: string; expires_at: string; example: unknown }> = [];
@@ -97,6 +122,7 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
           check();
         }
         stage = 'aggregate';
+        startPhase('aggregate');
         const cap = positive(opts.windowRowBudget, 20_000, 100_000);
         const observations = await tx<{ observation: SqlDemandObservation; source_id: string; source_token: string }[]>`
           SELECT observation,source_id::text,source_token FROM harness_shared.sql_intent_operations
@@ -111,6 +137,7 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
         const revision = createHash('sha256').update(JSON.stringify(summary)).digest('hex');
         const sourceIds = observations.map(r => r.source_id), sourceTokens = observations.map(r => r.source_token);
         stage = 'commit';
+        startPhase('commit');
         await tx`INSERT INTO harness_shared.sql_intent_history
           (workspace_id,scope_id,ran_on,window_since,window_until,summary,source_ids,source_tokens,revision_token)
           VALUES (${opts.workspaceId},${scopeId},${ranOn}::date,${since}::timestamptz,${until}::timestamptz,
@@ -122,18 +149,19 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
         await tx`UPDATE harness_shared.sql_intent_progress SET cursor_at=${cursor?.at ?? null}::timestamptz,
           cursor_id=${cursor?.id ?? null}::bigint,pending_until=${page.next ? until : null}::timestamptz,updated_at=now()
           WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId}`;
-        if (deps.beforeCommit) await boundedStage(deps.beforeCommit, Math.max(1, deadline - Date.now()));
+        if (deps.beforeCommit) await boundedStage(deps.beforeCommit, Math.max(1, deadline - clock()));
         check();
         await tx`INSERT INTO harness_shared.sql_intent_stages (workspace_id,scope_id,stage,status,reason)
           VALUES (${opts.workspaceId},${scopeId},'commit','ok',NULL)
           ON CONFLICT (workspace_id,scope_id,stage) DO UPDATE SET status='ok',reason=NULL,measured_at=now()`;
         check();
         return { status: 'ok' as const, stage: 'commit' as const, rows: page.observations.length,
-          cursor, more: !!page.next, logicalCalls: summary.logicalCalls, revision };
+          cursor, more: !!page.next, logicalCalls: summary.logicalCalls, revision, window };
       });
       check();
       if (deps.alert && !committed.more && committed.logicalCalls > 0) {
         stage = 'alert';
+        startPhase('alert');
         const [pending] = await sql`SELECT 1 FROM harness_shared.sql_intent_history
           WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId} AND ran_on=${ranOn}::date
             AND revision_token=${committed.revision} AND alerted_revision IS DISTINCT FROM revision_token`;
@@ -149,8 +177,11 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
       }
       return committed;
     }, budget);
+    finishPhase();
+    return { ...result, phase, phaseDurationsMs: { ...phaseDurationsMs } };
   } catch (error) {
     cancelled = true;
+    finishPhase();
     const reason = miningFailureReason(error);
     try {
       await boundedStage(async () => {
@@ -159,7 +190,7 @@ export async function mineSqlCandidateSlice(opts: SqlMiningOptions, deps: SqlMin
           ON CONFLICT (workspace_id,scope_id,stage) DO UPDATE SET status='UNKNOWN',reason=EXCLUDED.reason,measured_at=now()`;
       }, 1000);
     } catch { /* Returned UNKNOWN retains the failure when storage is unavailable too. */ }
-    return { status: 'UNKNOWN', stage, reason, rows: 0 };
+    return { status: 'UNKNOWN', stage, reason, rows: 0, window, phase, phaseDurationsMs: { ...phaseDurationsMs } };
   }
 }
 
