@@ -1647,13 +1647,32 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
       return result;
     };
 
-    const result = await sweepExpiredConsults(deps);
+    try {
+      const result = await sweepExpiredConsults(deps);
 
-    expect(result.converted.some((entry) => entry.conversationId === id)).toBe(false);
-    expect(result.requesterAlerts).toEqual([]);
-    expect(filed.filter((entry) => entry.conversationId === id)).toHaveLength(1);
-    expect(alerts).toEqual([]);
-    expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+      expect(result.converted.some((entry) => entry.conversationId === id)).toBe(false);
+      expect(result.requesterAlerts).toEqual([]);
+      expect(filed.filter((entry) => entry.conversationId === id)).toHaveLength(1);
+      expect(alerts).toEqual([]);
+      expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    } finally {
+      const cleanupAt = currentTime.toISOString();
+      await rootSql`
+        UPDATE harness_shared.consult_state
+           SET closed_at = COALESCE(closed_at, ${cleanupAt}::timestamptz),
+               updated_at = GREATEST(updated_at, ${cleanupAt}::timestamptz)
+         WHERE workspace_id = ${WS} AND conversation_id = ${id}
+      `;
+      await rootSql`
+        UPDATE harness_shared.coord_conversations
+           SET state = 'closed', updated_at = GREATEST(updated_at, ${cleanupAt}::timestamptz)
+         WHERE workspace_id = ${WS} AND id = ${id}
+      `;
+      await rootSql`
+        DELETE FROM harness_shared.session_turn_parts
+         WHERE workspace_id = 'default' AND owner = 'answerer-after-file'
+      `;
+    }
   });
 
   it('does not send a conversion alert when a reply closes the consult during work-item filing', async () => {
