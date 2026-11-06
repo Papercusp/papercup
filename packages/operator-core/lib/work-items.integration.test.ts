@@ -21,7 +21,12 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import {
+  applyDisclosureLedgerForTest,
+  applyEventSubstrateMigrationsForTest,
+  createFreshPgDb,
+  type FreshPgDb,
+} from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   applyClaimPathReadDeps,
@@ -148,6 +153,10 @@ beforeAll(async () => {
   // (EI-24551293655721837, EI-21222032743884155, WI-10004700).
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-items.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
+  // commentWorkItem's outbound privacy guard checks the disclosure ledger even
+  // for an unrestricted writer. Install its canonical schema so the real-PG
+  // checkpoint/archive transaction test reaches the post writer.
+  await applyDisclosureLedgerForTest(db.sql);
   // work_items:list q also searches retained capture text on the canonical
   // issue occurrence ledger (migration 831). Install its production schema so
   // this integration fixture exercises the same indexed read path.
