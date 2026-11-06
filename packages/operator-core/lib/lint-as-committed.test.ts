@@ -31,8 +31,10 @@ import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  cpSync,
   existsSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -41,6 +43,7 @@ import {
   rmSync,
   symlinkSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -1624,6 +1627,242 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       rmSync(f.root, { recursive: true, force: true });
     }
   }, 30000);
+
+  function retainedFixture() {
+    const f = fixture('node build.cjs');
+    const parent = mkdtempSync(join(realpathSync(tmpdir()), 'lac-resume-'));
+    const workRoot = join(parent, 'snapshot');
+    const manifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
+    f.head = snapshot(f.root, {
+      'libs/runtime/package.json': JSON.stringify({ ...manifest, bin: { 'runtime-bin': 'dist/index.cjs' } }),
+    }, f.head);
+    mkdirSync(join(f.root, 'node_modules/.bin'));
+    symlinkSync('../@fixture/runtime/dist/index.cjs', join(f.root, 'node_modules/.bin/runtime-bin'));
+    for (const name of ['alpha', 'beta', 'gamma'])
+      writeFileSync(join(f.root, 'node_modules', name + '.txt'), 'payload-v1');
+    gitFixture(f.root, ['clone', '--local', '--shared', '--quiet', f.root, workRoot]);
+    cpSync(join(f.root, 'node_modules'), join(workRoot, 'node_modules'), { recursive: true, dereference: false });
+    const markerPath = join(workRoot, '.git/lint-as-committed-owner.json');
+    const marker = { sha: f.head, sourceRepoRoot: f.root };
+    writeFileSync(markerPath, JSON.stringify(marker));
+    const checkpointDir = join(parent, 'verification');
+    const priorMutex = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    const priorRacy = process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(parent, 'mutexes');
+    // The separate racy-window control below exercises conservative rehashing.
+    process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC = '0';
+    const options = (maxBatches = 64) => ({
+      resumeVerification: { checkpointDir, batchSize: 6, maxBatches, maxDurationMs: 30_000 },
+    });
+    const cleanup = () => {
+      if (priorMutex === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = priorMutex;
+      if (priorRacy === undefined) delete process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC;
+      else process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC = priorRacy;
+      rmSync(parent, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    };
+    return { ...f, parent, workRoot, markerPath, marker, checkpointDir, options, cleanup };
+  }
+
+  it('resumes verified batches without recopying and releases its reader before workspace preparation', async () => {
+    const f = retainedFixture();
+    const files = ['alpha', 'beta', 'gamma'].map(name => join(f.workRoot, 'node_modules', name + '.txt'));
+    const before = files.map(path => ({ inode: statSync(path).ino, bytes: readFileSync(path) }));
+    const build = vi.fn((copied: { workspacePaths: Set<string> }) => {
+      const lockHelper = pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href;
+      const installHelper = pathToFileURL(join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href;
+      const writer = [
+        'import {withFsMutex} from ' + JSON.stringify(lockHelper) + ';',
+        'import {installLockNameForRoot} from ' + JSON.stringify(installHelper) + ';',
+        'await withFsMutex(installLockNameForRoot(' + JSON.stringify(f.root) + '), () => {}, {timeoutMs: 250});',
+      ].join('\n');
+      const attempt = spawnSync(process.execPath, ['--input-type=module', '-e', writer], {
+        env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 5000,
+      });
+      expect(attempt.status, attempt.stderr).toBe(0);
+      mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths);
+    });
+    try {
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot,
+        { ...f.options(1), prepareWorkspace: build });
+      expect(paused.status).toBe('incomplete');
+      expect(paused.progress.hashedFiles).toBeGreaterThan(0);
+      expect(build).not.toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      const prepared = await mod.materializeIndependentDependencies(f.root, f.workRoot,
+        { ...f.options(), prepareWorkspace: build });
+      expect(prepared.status).toBe('complete');
+      expect(prepared.verification.reusedBatches).toBeGreaterThan(0);
+      expect(build).toHaveBeenCalledOnce();
+      expect(realpathSync(join(f.workRoot, 'node_modules/.bin/runtime-bin')))
+        .toBe(join(f.workRoot, 'libs/runtime/dist/index.cjs'));
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8')).dependencyMode).toBe('independent-copy-v1');
+      for (const [index, path] of files.entries()) {
+        expect(statSync(path).ino).toBe(before[index].inode);
+        expect(readFileSync(path)).toEqual(before[index].bytes);
+      }
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['donor', 'destination'] as const)('rehashes and rejects same-size %s changes with restored mtime', async side => {
+    const f = retainedFixture();
+    try {
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, f.options(1));
+      expect(paused.status).toBe('incomplete');
+      const path = join(side === 'donor' ? f.root : f.workRoot, 'node_modules/alpha.txt');
+      const stat = statSync(path);
+      writeFileSync(path, 'PAYLOAD-V1');
+      utimesSync(path, stat.atime, stat.mtime);
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toThrow(/dependency bytes differ/);
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['source', 'commit', 'inputs', 'extra', 'missing', 'escaping-link', 'linked-root',
+    'donor-hardlink', 'new-alias'] as const)('fails closed on retained-copy %s drift', async defect => {
+    const f = retainedFixture();
+    try {
+      expect((await mod.materializeIndependentDependencies(f.root, f.workRoot, f.options(1))).status)
+        .toBe('incomplete');
+      const modules = join(f.workRoot, 'node_modules');
+      if (defect === 'source') writeFileSync(join(f.workRoot, 'libs/runtime/source.cjs'), 'changed source\n');
+      if (defect === 'commit') gitFixture(f.workRoot, ['update-ref', 'refs/heads/staging', f.main]);
+      if (defect === 'inputs') writeFileSync(join(f.root, 'package-lock.json'), '{"lockfileVersion":3}');
+      if (defect === 'extra') writeFileSync(join(modules, 'unexpected.txt'), 'extra');
+      if (defect === 'missing') rmSync(join(modules, 'gamma.txt'));
+      if (defect === 'escaping-link') {
+        rmSync(join(modules, '.bin/runtime-bin'));
+        symlinkSync(f.parent, join(modules, '.bin/runtime-bin'));
+      }
+      if (defect === 'linked-root') {
+        rmSync(modules, { recursive: true });
+        symlinkSync(join(f.root, 'node_modules'), modules);
+      }
+      if (defect === 'donor-hardlink' || defect === 'new-alias') {
+        rmSync(join(modules, 'beta.txt'));
+        linkSync(join(defect === 'donor-hardlink' ? f.root : f.workRoot, 'node_modules/alpha.txt'),
+          join(modules, 'beta.txt'));
+      }
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toThrow(/retained|recorded artifact/);
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('rejects a corrupted completed journal batch without publishing provenance', async () => {
+    const f = retainedFixture();
+    try {
+      await mod.materializeIndependentDependencies(f.root, f.workRoot, f.options(1));
+      const batch = readdirSync(f.checkpointDir).find(name => /^batch-.*\.json$/.test(name))!;
+      const path = join(f.checkpointDir, batch);
+      const data = JSON.parse(readFileSync(path, 'utf8'));
+      data.data.files = 999;
+      writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toThrow(/journal integrity/);
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('preserves internal hardlinks while keeping the copy independent', async () => {
+    const f = retainedFixture();
+    try {
+      linkSync(join(f.root, 'node_modules/alpha.txt'), join(f.root, 'node_modules/twin.txt'));
+      linkSync(join(f.workRoot, 'node_modules/alpha.txt'), join(f.workRoot, 'node_modules/twin.txt'));
+      const done = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: (copied: { workspacePaths: Set<string> }) =>
+          mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths),
+      });
+      expect(done.status).toBe('complete');
+      expect(statSync(join(f.workRoot, 'node_modules/alpha.txt')).ino)
+        .toBe(statSync(join(f.workRoot, 'node_modules/twin.txt')).ino);
+      expect(statSync(join(f.workRoot, 'node_modules/alpha.txt')).ino)
+        .not.toBe(statSync(join(f.root, 'node_modules/alpha.txt')).ino);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('does not publish dependency provenance after a workspace build failure', async () => {
+    const f = retainedFixture();
+    try {
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: () => { throw new Error('fixture workspace failure'); },
+      })).rejects.toThrow(/fixture workspace failure/);
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['inside', 'symlink', 'public'] as const)('rejects an unsafe %s checkpoint directory', async defect => {
+    const f = retainedFixture();
+    try {
+      let checkpointDir = f.checkpointDir;
+      if (defect === 'inside') checkpointDir = join(f.workRoot, 'verification');
+      if (defect === 'public') mkdirSync(checkpointDir, { mode: 0o755 });
+      if (defect === 'symlink') {
+        const actual = join(f.parent, 'private-journal');
+        mkdirSync(actual, { mode: 0o700 });
+        symlinkSync(actual, checkpointDir);
+      }
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        resumeVerification: { ...f.options().resumeVerification, checkpointDir },
+      })).rejects.toThrow(/checkpoint|outside both/);
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('does not reuse metadata in the maintained racy window', async () => {
+    const f = retainedFixture();
+    try {
+      await mod.materializeIndependentDependencies(f.root, f.workRoot, f.options(1));
+      process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC = '3600';
+      const done = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: (copied: { workspacePaths: Set<string> }) => mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths),
+      });
+      expect(done.status).toBe('complete');
+      expect(done.verification.reusedBatches).toBe(0);
+      expect(done.verification.hashedFiles).toBe(3);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('resumes across process death and ignores an unpublished torn temporary journal file', async () => {
+    const f = retainedFixture();
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      const program = [
+        'import {materializeIndependentDependencies} from ' + JSON.stringify(pathToFileURL(scriptPath).href) + ';',
+        'const result = await materializeIndependentDependencies(' + JSON.stringify(f.root) + ', ' +
+          JSON.stringify(f.workRoot) + ', ' + JSON.stringify(f.options(1)) + ');',
+        'console.log("RESUME_PAUSED " + JSON.stringify(result));',
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      child = spawn(process.execPath, ['--input-type=module', '-e', program], {
+        env: currentRunnerEnvironment(), stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const processChild = child;
+      let output = '';
+      await new Promise<void>((done, reject) => {
+        processChild.on('error', reject);
+        processChild.stdout!.on('data', chunk => {
+          output += chunk;
+          if (output.includes('RESUME_PAUSED ')) processChild.kill('SIGKILL');
+        });
+        processChild.stderr!.on('data', chunk => { output += chunk; });
+        processChild.on('close', (_code, signal) =>
+          signal === 'SIGKILL' ? done() : reject(new Error(output)));
+      });
+      writeFileSync(join(f.checkpointDir, 'batch-unpublished.tmp'), '{"data":', { mode: 0o600 });
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      const done = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: (copied: { workspacePaths: Set<string> }) => mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths),
+      });
+      expect(done.status).toBe('complete');
+      expect(done.verification.reusedBatches).toBeGreaterThan(0);
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      f.cleanup();
+    }
+  }, 60_000);
 
   it('refuses insufficient temporary headroom before cloning or running the committed command', () => {
     const f = fixture('node build.cjs');
