@@ -301,6 +301,11 @@ export interface PrivateHostStopObservation {
 }
 
 interface PrivatePostgresProcess { pid: number; identity: string; postmaster: boolean }
+export interface PrivateHostStopOptions {
+  /** Test seam for exercising restricted /proc/<pid>/exe access on a live tree. */
+  readExecutable?: (pid: number) => string;
+}
+
 const privateHostPostgres = new WeakMap<ChildProcess, Map<number, PrivatePostgresProcess>>();
 
 function privatePostgresState(pin: PrivatePostgresProcess): string | null {
@@ -327,7 +332,22 @@ function privatePostgresAlive(pin: PrivatePostgresProcess) {
 /** Inspect only this host's descendant tree, never a host-wide PID/name search.
  * A root must also own its exact PGDATA pid file. Retain stable kernel identities
  * across host exit/reparenting, and recheck them before sending any signal. */
-function capturePrivatePostgres(host: ChildProcess) {
+function isPostgresExecutable(pid: number, readExecutable: (pid: number) => string) {
+  let processName: string;
+  try { processName = basename(readExecutable(pid)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EACCES') throw error;
+    // The exe symlink can be unreadable for a live descendant even when its
+    // command line is readable. argv[0] only identifies a candidate here;
+    // exact -D, pid-file, PGDATA realpath, and process-identity checks below
+    // remain mandatory before it can be pinned or signalled.
+    const argv0 = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')[0] ?? '';
+    processName = basename(argv0);
+  }
+  return processName === 'postgres' || processName.startsWith('postgres:') || processName.startsWith('postgres ');
+}
+
+function capturePrivatePostgres(host: ChildProcess, readExecutable: (pid: number) => string) {
   const pins = privateHostPostgres.get(host) ?? new Map<number, PrivatePostgresProcess>();
   privateHostPostgres.set(host, pins);
   if (process.platform !== 'linux' || !host.pid) return pins;
@@ -352,7 +372,7 @@ function capturePrivatePostgres(host: ChildProcess) {
       let postmaster = false;
       if (!owned) {
         try {
-          if (basename(readlinkSync(`/proc/${childPid}/exe`)) === 'postgres') {
+          if (isPostgresExecutable(childPid, readExecutable)) {
             const argv = readFileSync(`/proc/${childPid}/cmdline`, 'utf8').split('\0');
             const at = argv.lastIndexOf('-D');
             assert.ok(at >= 0 && argv[at + 1], 'private postmaster must name its PGDATA');
@@ -387,7 +407,8 @@ function capturePrivatePostgres(host: ChildProcess) {
  * A rejected stop retains observations on the error, independently of the optional
  * diagnostic sink. Neither a signal attempt nor ended pipes prove process exit. */
 export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: () => Promise<void>, graceMs = 5_000,
-  observe?: (observation: PrivateHostStopObservation) => void) {
+  observe?: (observation: PrivateHostStopObservation) => void, options: PrivateHostStopOptions = {}) {
+  const readExecutable = options.readExecutable ?? (pid => readlinkSync(`/proc/${pid}/exe`));
   const started = Date.now();
   const alreadyExited = host.exitCode !== null || host.signalCode !== null;
   const pipesEnded = () => [host.stdout, host.stderr].every(stream => !stream || stream.destroyed || stream.readableEnded);
@@ -461,7 +482,7 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
     // Capture before the parent disappears: PG can outlive a successful host
     // exit without holding either of its stdout/stderr descriptors open.
     let captureError: unknown;
-    try { postgres = capturePrivatePostgres(host); }
+    try { postgres = capturePrivatePostgres(host, readExecutable); }
     catch (error) { captureError = error; }
     if (postgres.size) record('postgres captured');
     if (!alreadyExited) {
@@ -480,7 +501,7 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
       for (const pin of postgres.values()) if (pin.postmaster) signalPostgres(pin, 'SIGINT');
       const wait = async () => {
         const deadline = Date.now() + graceMs;
-        while ([...capturePrivatePostgres(host).values()].some(privatePostgresAlive)) {
+        while ([...capturePrivatePostgres(host, readExecutable).values()].some(privatePostgresAlive)) {
           if (Date.now() >= deadline) return false;
           await new Promise(resolve => setTimeout(resolve, 25));
         }

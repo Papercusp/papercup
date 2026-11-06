@@ -1,5 +1,5 @@
 /** Cheap guard for the context API used by the expensive private-worker fixture. */
-import { expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ChildProcess, execFileSync, fork, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
@@ -22,6 +22,22 @@ import { preflightPrivateStats } from '../test/portal-stats-fixture';
 import { privateDocsNavButton, retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport, verifyPrivateTestingReadScopes } from '../test/portal-roster-browser-fixture';
 
 const testingPots = { selected: 'testing-selected', neighbor: 'testing-neighbor', foreign: 'testing-foreign' };
+
+// Match verification-harness's own fixtures: a custom evidenceRoot still mirrors
+// immutable originals into the canonical reader root. Fixed fixture run IDs must
+// never collide with another test or a previous invocation at that location.
+let privateRetention: string;
+beforeEach(() => {
+  privateRetention = mkdtempSync(join(tmpdir(), 'isolated-metadata-retention-'));
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(privateRetention, 'canonical'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(privateRetention, 'mutex'));
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(privateRetention, 'pins'));
+  vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(privateRetention, { recursive: true, force: true });
+});
 
 it.each([false, true])('retains cleanup across the final source verdict and count pruning (sourceChanged=%s)', async sourceChanged => {
   const root = mkdtempSync(join(tmpdir(), 'isolated-source-verdict-retention-'));

@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -407,9 +407,11 @@ it.skipIf(process.platform !== 'linux')('rejects a real native crash after depen
   }
 });
 
-it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGDATA'])(
+it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGDATA',
+  'unreadable executable', 'unreadable executable, foreign PGDATA'])(
   'waits for owned PostgreSQL descendants after a primary exits with redirected output (%s)', async mode => {
   const forced = mode === 'forced';
+  const unreadableExecutable = mode.startsWith('unreadable executable');
   const directory = mkdtempSync(join(tmpdir(), 'private-pg-stop-'));
   dirs.push(directory);
   // A native process tree models the lifecycle independently of SQL/startup:
@@ -422,9 +424,10 @@ it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGD
     const pg=spawn(${JSON.stringify(binary)},['-e',
       ${JSON.stringify("const {spawn}=require('node:child_process');const worker=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});process.on('SIGINT',()=>{" + (forced ? '' : "setTimeout(()=>{worker.kill('SIGTERM');worker.once('exit',()=>process.exit(0));},200)") + "});process.stdout.write(JSON.stringify({workerPid:worker.pid}));setInterval(()=>{},1000)")},
       '--','-D',${JSON.stringify(directory)}],{stdio:['ignore','pipe','ignore']});
+    const unrelated=${unreadableExecutable ? "spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'})" : 'null'};
     pg.stdout.once('data',chunk=>{
       fs.writeFileSync(${JSON.stringify(join(directory, 'postmaster.pid'))},pg.pid+'\\n'+${JSON.stringify(directory)}+'\\n');
-      process.stdout.write(JSON.stringify({pid:pg.pid,...JSON.parse(String(chunk))})+'\\n');
+      process.stdout.write(JSON.stringify({pid:pg.pid,...JSON.parse(String(chunk)),unrelatedPid:unrelated?.pid??null})+'\\n');
     });
     process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);
   `], { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
@@ -434,9 +437,11 @@ it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGD
   try {
     const ready = JSON.parse(String((await once(child.stdout!, 'data'))[0]));
     pgPid = ready.pid;
-    for (const pid of [ready.pid, ready.workerPid]) fixturePins.push({pid,identity:readProcessIdentity(pid)});
+    for (const pid of [ready.pid, ready.workerPid, ...(ready.unrelatedPid ? [ready.unrelatedPid] : [])]) {
+      fixturePins.push({pid,identity:readProcessIdentity(pid)});
+    }
     expect(fixturePins.every(pin => pin.identity)).toBe(true);
-    if (mode === 'foreign PGDATA') writeFileSync(join(directory,'postmaster.pid'), pgPid+'\n'+tmpdir()+'\n');
+    if (mode.includes('foreign PGDATA')) writeFileSync(join(directory,'postmaster.pid'), pgPid+'\n'+tmpdir()+'\n');
     const observations: PrivateHostStopObservation[] = [];
     const cleanup = vi.fn(async () => {
       try {
@@ -444,9 +449,18 @@ it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGD
         expect(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]).toMatch(/^[ZX]$/);
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     });
+    const readExecutable = unreadableExecutable ? (pid: number) => {
+      if (pid === ready.pid || pid === ready.unrelatedPid) {
+        const error = Object.assign(new Error('controlled executable-link EACCES'), {
+          code: 'EACCES', path: `/proc/${pid}/exe`,
+        });
+        throw error;
+      }
+      return readlinkSync(`/proc/${pid}/exe`);
+    } : undefined;
     const stopped = stopPrivateOperatorHost(child, cleanup, forced ? 100 : 2000,
-      observation => observations.push(observation));
-    if (mode === 'foreign PGDATA') {
+      observation => observations.push(observation), readExecutable ? { readExecutable } : undefined);
+    if (mode.includes('foreign PGDATA')) {
       await expect(stopped).rejects.toThrow('private postmaster PGDATA mismatch');
       expect(cleanup).not.toHaveBeenCalled();
       expect(fixturePins.every(pin => readProcessIdentity(pin.pid) === pin.identity)).toBe(true);
@@ -467,6 +481,10 @@ it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGD
     expect(pins).toHaveLength(2);
     expect(pins?.filter(p => p.postmaster)).toHaveLength(1);
     expect(observations.at(-1)?.postgres?.every(p => p.state === null || p.state === 'Z' || p.state === 'X')).toBe(true);
+    if (unreadableExecutable && ready.unrelatedPid) {
+      const unrelated = fixturePins.find(pin => pin.pid === ready.unrelatedPid)!;
+      expect(readProcessIdentity(unrelated.pid)).toBe(unrelated.identity);
+    }
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     // Both negative controls and historical mutants can leave the fixture
