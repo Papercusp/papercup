@@ -220,6 +220,38 @@ const post = (body: unknown) =>
     body: JSON.stringify(body),
   });
 
+test('P-002 observes client/provider body bytes, tool-result estimates and actual model content through the HTTP gateway', async () => {
+  resetGovernorRegistry();
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":4,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n\n');
+    res.end('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"é🙂"}}\n\n');
+  });
+  const body = { model: 'claude-opus-4', max_tokens: 8, stream: true, messages: [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'PRIVATE_RESULT_é🙂' }] },
+  ] };
+  const response = await post(body);
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /é🙂/);
+  const stats = await (await ask('/stats')).json() as {
+    requestStages: import('./request-stage-telemetry').GatewayRequestTelemetrySnapshot;
+  };
+  const row = stats.requestStages.recent.at(-1)!;
+  const measures = row.measurements!;
+  assert.equal(measures.clientGateway.bytes, Buffer.byteLength(JSON.stringify(body)));
+  assert.equal(measures.gatewayProvider.bytes, Buffer.byteLength(upstream.last.body));
+  assert.equal(measures.clientGateway.boundary, 'client-to-gateway:http-body');
+  assert.equal(measures.gatewayProvider.boundary, 'gateway-to-provider:last-fetch-body');
+  const forwarded = JSON.parse(upstream.last.body);
+  const result = forwarded.messages.find((message: { role: string }) => message.role === 'user').content
+    .find((part: { type: string }) => part.type === 'tool_result');
+  assert.equal(measures.modelToolResults.tokenEstimate, Math.ceil(JSON.stringify(result).length / 4));
+  assert.equal(measures.modelToolResults.estimator, 'ceil(utf16Chars/4)');
+  assert.ok(measures.firstModelContent.ms !== null && measures.firstModelContent.ms >= 0);
+  assert.ok(!JSON.stringify(row).includes('PRIVATE_RESULT_'));
+});
+
 /** Deterministic-rig value for the SHORT bare-429 account penalty. Production is 15s
  *  (`BARE_429_FAILOVER_BACKOFF_MS` in gateway.ts) and `bare429FailoverBackoffMs` exists so a rig can
  *  inject a smaller one — its docstring says so verbatim. Every rig below asserts that the gateway

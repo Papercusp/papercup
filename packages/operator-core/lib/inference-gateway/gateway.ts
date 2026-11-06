@@ -2362,13 +2362,15 @@ function setPreReadBody(req: http.IncomingMessage, body: Buffer): void {
   preReadRequestBodies.set(req, body);
 }
 
-async function readBody(req: http.IncomingMessage): Promise<Buffer> {
+async function readBody(req: http.IncomingMessage, span?: GatewayRequestSpan): Promise<Buffer> {
   // The spool path already drained the stream; iterating it again yields nothing.
   const preRead = preReadRequestBodies.get(req);
-  if (preRead) return preRead;
+  if (preRead) { span?.recordClientBodyBytes(preRead.byteLength); return preRead; }
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
-  return Buffer.concat(chunks);
+  const body = Buffer.concat(chunks);
+  span?.recordClientBodyBytes(body.byteLength);
+  return body;
 }
 
 /**
@@ -2819,7 +2821,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (!METHODS_WITH_SPOOLABLE_BODY.has((req.method ?? '').toUpperCase())) return undefined;
 
     // Reading here drains the stream; `readBody` serves the parked copy to the handler afterwards.
-    const body = await readBody(req);
+    const body = await readBody(req, requestSpan(req));
     setPreReadBody(req, body);
     if (body.byteLength === 0) return undefined;
 
@@ -4988,22 +4990,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // A giant unterminated line is a content delta, never the small message_delta event.
       if (lineCarry.length > 65_536) lineCarry = '';
       for (const line of lines) {
-        if (!line.startsWith('data: {"type":"message_delta"')) continue;
+        if (!line.startsWith('data:')) continue;
         try {
-          const n = observedCount((JSON.parse(line.slice(6)) as { usage?: { output_tokens?: number } }).usage?.output_tokens);
-          if (n !== null) outputTokens = n;
+          const event = JSON.parse(line.slice(5));
+          stageSpan?.recordProviderContent(event);
+          if (event.type === 'message_delta') {
+            const n = observedCount(event.usage?.output_tokens);
+            if (n !== null) outputTokens = n;
+          }
         } catch {
           /* malformed message_delta — ignore; never break the stream */
         }
       }
     };
     const settleOutput = () => {
-      if (settled || !billedClass) return;
+      if (settled) return;
       settled = true;
       stream.off('data', onDelta);
       lineCarry += decoder.end();
       if (lineCarry) onDelta('\n');
-      if (outputTokens === null) return;
+      if (outputTokens === null || !billedClass) return;
       const t = billingTally(accountId, billedClass);
       t.outputTokens += outputTokens;
       t.outputKnown++;
@@ -5015,7 +5021,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (m) {
         done = true;
         stream.off('data', onData);
-        if (billedClass) {
+        if (billedClass || stageSpan) {
           stream.on('data', onDelta);
           stream.once('end', settleOutput);
           stream.once('close', settleOutput);
@@ -5066,6 +5072,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
     };
     stream.on('data', onData);
+    // JSON responses use the same bounded usage observer. Do not time a
+    // metadata-only response or an unparsed oversized body as content.
+    stream.once('end', () => {
+      if (done || !stageSpan) return;
+      try { stageSpan.recordProviderContent(JSON.parse(buf + decoder.end())); } catch { /* unknown */ }
+    });
   }
   /** Responses API twin of `observeCacheUsage`. Streaming usage arrives on a late
    *  `response.completed` SSE event as `response.usage`; non-streaming responses expose `usage`
@@ -5102,6 +5114,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             };
           };
         };
+        stageSpan?.recordProviderContent(parsed);
         const usage = parsed.response?.usage ?? parsed.usage;
         if (!usage) return false;
         const providerResponse = parsed.response ?? parsed;
@@ -5565,7 +5578,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       stageSpan?.beginStage('bodyRead');
       let bodyBuf: Buffer;
       try {
-        bodyBuf = await readBody(req);
+        bodyBuf = await readBody(req, requestSpan(req));
       } finally {
         stageSpan?.endStage('bodyRead');
       }
@@ -5623,7 +5636,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // Request-derived, parsed once above — the same one fact drives the span.
         streaming: isStream,
         attemptTimeoutMs: localAttemptTimeoutMs,
-        fetchImpl: (target, init) => doFetch(target, init as RequestInit) as unknown as Promise<LocalFetchResponse>,
+        fetchImpl: (target, init) => {
+          stageSpan?.recordProviderBody(init?.body);
+          return doFetch(target, init as RequestInit) as unknown as Promise<LocalFetchResponse>;
+        },
         isUpstreamUnreachable,
         startableOnDemand,
         ensureOnDemandBackend,
@@ -6147,7 +6163,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stageSpan?.beginStage('bodyRead');
     let bodyBuf: Buffer;
     try {
-      bodyBuf = await readBody(req);
+      bodyBuf = await readBody(req, requestSpan(req));
     } finally {
       stageSpan?.endStage('bodyRead');
     }
@@ -7408,7 +7424,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
             // Authorization sees the adapter's final body and selected provider
             // account. Re-check its copied receipt synchronously at every send.
-            const upstream = await authorizedSend(() => doFetch(target, fetchInit as RequestInit));
+            const upstream = await authorizedSend(() => {
+              stageSpan?.recordProviderBody(init.body);
+              return doFetch(target, fetchInit as RequestInit);
+            });
             return {
               status: upstream.status,
               headers: upstream.headers,
@@ -8739,7 +8758,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     } else {
       stageSpan?.beginStage('bodyRead');
       try {
-        bodyBuf = await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
+        bodyBuf = await withPromiseDeadline(readBody(req, requestSpan(req)), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
       } catch {
         try {
           req.destroy();
@@ -9213,7 +9232,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     try {
       bodyBuf =
         preBody ??
-        (await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`));
+        (await withPromiseDeadline(readBody(req, requestSpan(req)), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`));
     } catch {
       try {
         req.destroy();
@@ -9545,7 +9564,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const authorizedSend = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
           if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
-          const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
+          const send = () => authorizedSend(() => {
+            stageSpan?.recordProviderBody(init.body);
+            return doFetch(target, fetchInit as RequestInit);
+          });
           const upstream = stageSpan
             ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
             : await send();
@@ -10212,7 +10234,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (req.method === 'POST' && url.startsWith('/v1/responses')) {
       stageSpan?.beginStage('bodyRead');
       try {
-        preBody = await withPromiseDeadline(readBody(req), requestCeilingMs, 'codex model-policy body read');
+        preBody = await withPromiseDeadline(readBody(req, requestSpan(req)), requestCeilingMs, 'codex model-policy body read');
       } catch {
         req.resume();
         if (!res.headersSent) {
@@ -10733,7 +10755,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const authorizedSend = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
         if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
-        const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
+        const send = () => authorizedSend(() => {
+          stageSpan?.recordProviderBody(init.body);
+          return doFetch(target, fetchInit as RequestInit);
+        });
         const upstream = stageSpan
           ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
           : await send();
@@ -10778,7 +10803,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // buffer (`preReadRequestBodies`). Iterating `req` directly here would
             // send an EMPTY body on every request the spool already drained.
             body: (async function* () {
-              yield preBody ?? (await readBody(req));
+              yield preBody ?? (await readBody(req, requestSpan(req)));
             })(),
             ownerId: wantOwner ?? null,
             // A pin that already yielded at the request-selection seam must not be re-selected by
@@ -11941,7 +11966,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // Sets the in-memory owner→account pin the routing above honors per-request (overriding the static
       // x-papercusp-account header). NOT persisted — re-applied by the caller if the gateway restarts.
       // Promise-chained (this admin-dispatch scope is sync, like /admin/reload — no await here).
-      void readBody(req)
+      void readBody(req, requestSpan(req))
         .then((buf) => {
           let body: { ownerId?: string; account?: string; hard?: boolean; clear?: boolean };
           try {
@@ -12007,7 +12032,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // headers are deliberately NOT forwarded: a pinned/exhausted account must not gate maintenance —
       // the pool auto-selects. The loopback uses the REAL server socket (global fetch, not deps.fetchImpl)
       // so the inner request pays admission like any other; only its upstream leg rides deps.fetchImpl.
-      void readBody(req)
+      void readBody(req, requestSpan(req))
         .then(async (buf) => {
           let body: { systemPrompt?: unknown; prompt?: unknown; model?: unknown; maxTokens?: unknown };
           try {

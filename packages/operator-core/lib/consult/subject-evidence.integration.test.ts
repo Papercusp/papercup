@@ -184,6 +184,7 @@ describe('registered subject evidence with the real local scorer', () => {
     const readScorerState = async (callStartedAtMs?: number) => {
       const health = url ? await probeSidecarHealth(url, 1000).catch(() => null) as {
         pid?: number; uptimeMs?: number;
+        eventLoopDelayP99Ms?: number;
         models?: Record<string, string>; warmups?: Record<string, string>;
         rerankExecutionHealth?: { active?: unknown };
         rerankExecution?: unknown;
@@ -264,22 +265,32 @@ describe('registered subject evidence with the real local scorer', () => {
             models?: Record<string, string>; warmups?: Record<string, string>;
             rerankExecutionHealth?: { active?: unknown };
             rerankExecution?: unknown;
+            eventLoopDelayP99Ms?: number;
             rerankScorerGate?: { active?: number; queued?: number; maxConcurrent?: number; msPerPair?: number | null; observations?: number };
-            workers?: { embedder?: unknown; reranker?: unknown };
             admission?: { mode?: string };
             queue?: { depth?: number; active?: number; saturated?: boolean };
+            workers?: { embedder?: unknown; reranker?: {
+              alive?: boolean; pendingCount?: number; oldestPendingAgeMs?: number | null; settledCount?: number;
+            } };
           } | null;
+          const rerankerWorker = health?.workers?.reranker;
           phaseSamples.push({ sampledAtMs: Date.now(), elapsedMs, healthAvailable: true, healthStatus: response.status,
             kernelBefore, kernelAfter: kernelScorerState(),
             admission: health?.admission ?? null,
             queue: health?.queue ?? null,
             scorerGate: health?.rerankScorerGate ?? null,
+            eventLoopDelayP99Ms: health?.eventLoopDelayP99Ms ?? null,
             model: health?.models?.rerank ?? null,
             warmup: health?.warmups?.rerank ?? null,
             execution: health?.rerankExecutionHealth?.active ?? null,
             rerankExecution: health?.rerankExecution ?? null,
             embedderWorker: health?.workers?.embedder ?? null,
-            rerankerWorker: health?.workers?.reranker ?? null });
+            rerankerWorker: rerankerWorker ?? null,
+            workerProgress: rerankerWorker ? {
+              pendingCount: rerankerWorker.pendingCount ?? null,
+              oldestPendingAgeMs: rerankerWorker.oldestPendingAgeMs ?? null,
+              settledCount: rerankerWorker.settledCount ?? null,
+            } : null });
         } catch (error) {
           phaseSamples.push({ sampledAtMs: Date.now(), elapsedMs: Date.now() - callStartedAt,
             healthAvailable: false,
@@ -312,8 +323,11 @@ describe('registered subject evidence with the real local scorer', () => {
         return scores;
       } catch (error) {
         await stopSampling();
-        if (phaseSamples.length === 0) await samplePhase();
         const callFinishedAtMs = Date.now();
+        // A timed-out earlier probe is not a failure-time worker snapshot.
+        // Take one bounded sample after the scorer settles so recovered health
+        // can report loop delay and worker progress for this exact attempt.
+        await samplePhase();
         const failure = { callStartedAtMs: callStartedAt, callFinishedAtMs, elapsedMs: callFinishedAtMs - callStartedAt,
           query,
           contracts: contracts.map(c => c.split('\n')[0]),

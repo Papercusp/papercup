@@ -187,6 +187,23 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(body.models).toEqual({}); // warmAtBoot:false + no embeds yet ⇒ all cold
   });
 
+  it('GET /healthz reports sidecar event-loop delay and resets after a completed response', async () => {
+    await boot();
+    const readHealth = async () => (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+      eventLoopDelayP99Ms: number;
+    };
+    const before = await readHealth();
+    expect(Number.isFinite(before.eventLoopDelayP99Ms)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const until = performance.now() + 120;
+    while (performance.now() < until) { /* deliberate sidecar event-loop stall */ }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const after = await readHealth();
+    expect(after.eventLoopDelayP99Ms).toBeGreaterThan(60);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((await readHealth()).eventLoopDelayP99Ms).toBeLessThan(after.eventLoopDelayP99Ms);
+  });
+
   it('healthz counts successful model completions separately from cache hits and failures', async () => {
     handle = createEmbedSidecarServer({
       port: 0, warmAtBoot: false, concurrency: 1, log: () => {},
@@ -324,6 +341,11 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
         keepAlive: expect.any(Boolean),
       });
     }
+    expect(body.workers.reranker).toHaveProperty('settledCount');
+    expect(body.workers.reranker).toHaveProperty('oldestPendingAgeMs');
+    expect(typeof body.workers.reranker.settledCount).toBe('number');
+    expect(body.workers.reranker.oldestPendingAgeMs === null ||
+      typeof body.workers.reranker.oldestPendingAgeMs === 'number').toBe(true);
   });
 
   // The mis-mapping guard. Both real getters return the SAME SHAPE and both read

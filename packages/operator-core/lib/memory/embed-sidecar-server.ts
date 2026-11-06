@@ -106,6 +106,7 @@ import { getBuildInfo } from '../build-info';
 import { getBundleStaleness, type BundleStaleness } from '../bundle-staleness';
 import { flushFallbackObservations } from '../degradation/fallback-observations';
 import { loadEmbedDeviceSetting, type EmbedDeviceSettingLoad } from './embed-device-setting';
+import { createSidecarLoopDelay } from '../sidecar-loop-delay';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
 export const EMBED_SIDECAR_PORT_ENV = 'PAPERCUSP_EMBED_SIDECAR_PORT';
@@ -604,6 +605,10 @@ export interface WorkerBreakerState {
   disabled: boolean;
   pendingCount: number;
   keepAlive: boolean;
+  /** Monotonic count of worker replies delivered to this process. */
+  settledCount?: number;
+  /** Age of the oldest request still awaiting a worker reply; null when idle. */
+  oldestPendingAgeMs?: number | null;
 }
 
 export interface WorkerStateReaders {
@@ -777,6 +782,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   const workerStates = opts.workerStates ?? defaultWorkerStates;
   const port = opts.port ?? Number(process.env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
   const startedAt = Date.now();
+  const loopDelay = createSidecarLoopDelay();
   // Resolved once: /healthz must stay a synchronous, dependency-free read.
   const buildIdentity = (opts.buildIdentity ?? defaultBuildIdentity)();
 
@@ -1364,10 +1370,18 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // tell "route absent" (version skew) from "request bad".
   const handlers: Record<string, (req: http.IncomingMessage, res: http.ServerResponse) => void> = {
     [EMBED_SIDECAR_CAP_HEALTHZ]: (_req, res) => {
+      // Keep the sample until a health response completes. A timed-out caller
+      // may already have closed its socket while this handler was queued behind
+      // the very event-loop stall being measured.
+      const eventLoopDelayP99Ms = loopDelay.readP99Ms(false);
+      res.once('finish', () => {
+        if (!res.destroyed) loopDelay.reset();
+      });
       json(res, 200, {
         ok: true,
         pid: process.pid,
         uptimeMs: Date.now() - startedAt,
+        eventLoopDelayP99Ms,
         runtime: EMBED_SIDECAR_RUNTIME,
         // WI-10005944: the bundle this process booted (dev:pipeline_position reads it
         // instead of inferring from start time; see serving-runtimes.ts).
@@ -1675,7 +1689,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     activity: () => ({ inFlight, lastActivityAt }),
     close: () =>
       new Promise<void>((resolve) => {
-        server.close(() => resolve());
+        server.close(() => {
+          loopDelay.close();
+          resolve();
+        });
       }),
   };
 }
