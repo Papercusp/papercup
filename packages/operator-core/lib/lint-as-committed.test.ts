@@ -1280,8 +1280,15 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       timeout: 150_000,
       killSignal: 'SIGKILL',
     });
-    expect(run.error, `runner stdout:\n${run.stdout}\nrunner stderr:\n${run.stderr}`).toBeUndefined();
-    expect(run.status, `runner stdout:\n${run.stdout}\nrunner stderr:\n${run.stderr}`).not.toBe(2);
+    // Case traces bound assertion text. Put the exact process outcome and the
+    // latest setup phase first so a killed suite still preserves its cause.
+    const outcome = JSON.stringify({ error: run.error && {
+      name: run.error.name, message: run.error.message,
+      code: 'code' in run.error ? run.error.code : undefined,
+    }, status: run.status, signal: run.signal });
+    const diagnostic = `${outcome}\nrunner stderr tail:\n${run.stderr?.slice(-1200)}\nrunner stdout tail:\n${run.stdout?.slice(-1200)}`;
+    expect(run.error, diagnostic).toBeUndefined();
+    expect(run.status, diagnostic).not.toBe(2);
     // Proof the new step actually engaged, not just that nothing crashed — a future
     // edit that silently skips submodule init would still reach this lint fine (it
     // never touches libs/papercusp), so this line is load-bearing, not decorative.
@@ -1653,10 +1660,15 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(parent, 'mutexes');
     // The separate racy-window control below exercises conservative rehashing.
     process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC = '0';
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation((line, ...args) => {
+      if (typeof line !== 'string' || !/^COMMITTED_DEPENDENCY_(PHASE|VERIFICATION) /.test(line) || args.length)
+        throw new Error('Unexpected retained-verification diagnostic: ' + String(line));
+    });
     const options = (maxBatches = 64) => ({
       resumeVerification: { checkpointDir, batchSize: 6, maxBatches, maxDurationMs: 30_000 },
     });
     const cleanup = () => {
+      diagnostics.mockRestore();
       if (priorMutex === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
       else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = priorMutex;
       if (priorRacy === undefined) delete process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC;
@@ -1664,7 +1676,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       rmSync(parent, { recursive: true, force: true });
       rmSync(f.root, { recursive: true, force: true });
     };
-    return { ...f, parent, workRoot, markerPath, marker, checkpointDir, options, cleanup };
+    return { ...f, parent, workRoot, markerPath, marker, checkpointDir, options, cleanup, diagnostics };
   }
 
   it('resumes verified batches without recopying and releases its reader before workspace preparation', async () => {
@@ -1696,6 +1708,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         { ...f.options(), prepareWorkspace: build });
       expect(prepared.status).toBe('complete');
       expect(prepared.verification.reusedBatches).toBeGreaterThan(0);
+      expect(f.diagnostics).toHaveBeenCalledWith(expect.stringMatching(/^COMMITTED_DEPENDENCY_VERIFICATION /));
       expect(build).toHaveBeenCalledOnce();
       expect(realpathSync(join(f.workRoot, 'node_modules/.bin/runtime-bin')))
         .toBe(join(f.workRoot, 'libs/runtime/dist/index.cjs'));
