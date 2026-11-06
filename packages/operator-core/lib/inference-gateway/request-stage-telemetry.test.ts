@@ -82,8 +82,39 @@ describe('owned-loop cost observation boundaries', () => {
       messages: protocol === 'anthropic-messages' ? [{ role: 'user', content: [part] }] : [part],
     };
     span.recordProviderBody(Buffer.from(JSON.stringify(body)));
-    span.recordProviderBody(Buffer.from('invalid retry'));
-    expect(span.finish('ok', 200)!.measurements!.modelToolResults.tokenEstimate).toBeNull();
+    const expected = Math.ceil(JSON.stringify(part).length / 4);
+    expect(span.finish('ok', 200)!.measurements!.modelToolResults.tokenEstimate).toBe(expected);
+    expect(telemetry.snapshot().recent[0].measurements!.modelToolResults.tokenEstimate).toBe(expected);
+    const retry = telemetry.begin({ provider: 'codex', protocol });
+    retry.recordProviderBody(Buffer.from(JSON.stringify(body)));
+    retry.recordProviderBody(Buffer.from('invalid retry'));
+    expect(retry.finish('ok', 200)!.measurements!.modelToolResults.tokenEstimate).toBeNull();
+  });
+
+  it.each([null, [], { choices: [null, { delta: { tool_calls: 'invalid' } }] },
+    { output: [null, 1, { content: [null] }] }])('ignores malformed content frames without throwing: %s', frame => {
+    const f = fixture();
+    expect(() => f.span.recordProviderContent(frame)).not.toThrow();
+    for (const row of f.read()) expect(row.firstModelContent.ms).toBeNull();
+  });
+
+  it.each([{ messages: [null] }, { messages: [{}] }, { messages: [{ role: 'user', content: [null] }] },
+    { messages: [{ role: 'user', content: [{ type: 'tool_result' }] }] }])('reports malformed model tool-result shapes as unknown: %s', body => {
+    const f = fixture();
+    f.span.recordProviderBody(Buffer.from(JSON.stringify(body)));
+    for (const row of f.read()) expect(row.modelToolResults.tokenEstimate).toBeNull();
+  });
+
+  it.each([{ type: 'message', content: [{ type: 'text', text: 'text' }] },
+    { type: 'response.output_text.delta', delta: 'text' },
+    { type: 'response.function_call_arguments.delta', delta: '{}' },
+    { choices: [{ delta: { tool_calls: [{ function: { name: 'read' } }] } }] },
+    { type: 'response.completed', response: { output: [{ content: [{ type: 'output_text', text: 'text' }] }] } },
+  ])('observes actual text or tool content across provider representations: %s', frame => {
+    const f = fixture();
+    f.tick(110);
+    f.span.recordProviderContent(frame);
+    for (const row of f.read()) expect(row.firstModelContent.ms).toBe(10);
   });
 
   it('owns both snapshot copies and the stored values when callers mutate a finished result', () => {

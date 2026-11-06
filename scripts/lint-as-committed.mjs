@@ -355,6 +355,23 @@ export function committedWorkRootDependencyDonor(workRoot) {
  */
 export async function materializeIndependentDependencies(repoRoot, workRoot, options = {}) {
   const { prepareWorkspace } = options;
+  // Emit before entering synchronous setup too: a killed copier cannot return
+  // to explain which prerequisite consumed the enclosing command's budget.
+  const phase = (name, operation) => {
+    const started = performance.now();
+    const emit = state => console.error('COMMITTED_DEPENDENCY_PHASE ' + JSON.stringify({
+      phase: name, state, elapsedMs: Math.round(performance.now() - started),
+    }));
+    emit('started');
+    try {
+      const result = operation();
+      emit(result === null ? 'miss' : 'complete');
+      return result;
+    } catch (error) {
+      emit('failed');
+      throw error;
+    }
+  };
   const donor = committedWorkRootDependencyDonor(repoRoot);
   const materializer = fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
   const materialize = (useGeneration) => {
@@ -387,7 +404,10 @@ while IFS= read -r source; do
   fi
   [ -d "$3/$(dirname "$rel")" ] || continue
   [ ! -L "$source" ] || { echo "dependency root must be physical: $source" >&2; exit 1; }
+  copy_started=$SECONDS
+  printf 'COMMITTED_DEPENDENCY_COPY state=started mode=%s path=%q\\n' "$4" "$rel" >&2
   dependency_generation_materialize_tree "$source" "$3/$rel"
+  printf 'COMMITTED_DEPENDENCY_COPY state=complete mode=%s path=%q elapsedSec=%s\\n' "$4" "$rel" "$((SECONDS - copy_started))" >&2
   printf '%s\\n' "$rel"
 done <<< "$sources"
 `, 'committed-dependencies', materializer, donor, workRoot, useGeneration ? 'generation' : 'donor'], {
@@ -431,25 +451,27 @@ done <<< "$sources"
         else if (entry.isFile()) chmodSync(path, statSync(path).mode | 0o600);
       }
     };
-    for (const path of paths) {
-      visit(join(workRoot, path));
-      const installCache = join(workRoot, path, '.package-lock.json');
-      if (existsSync(installCache)) {
-        renameSync(installCache, join(workRoot, path, '.papercusp-installed-package-lock.json'));
+    phase('repair-links', () => {
+      for (const path of paths) {
+        visit(join(workRoot, path));
+        const installCache = join(workRoot, path, '.package-lock.json');
+        if (existsSync(installCache)) {
+          renameSync(installCache, join(workRoot, path, '.papercusp-installed-package-lock.json'));
+        }
       }
-    }
+    });
     return { paths, workspacePaths, links };
   };
-  const snapshot = materialize(true) ?? await withFsMutexRead(installLockNameForRoot(donor), async () => {
-    const copied = materialize(false);
+  const snapshot = phase('generation-selection-and-copy', () => materialize(true)) ?? await withFsMutexRead(installLockNameForRoot(donor), async () => {
+    const copied = phase('donor-copy', () => materialize(false));
     if (!copied) throw new Error('missing independent dependency snapshot');
     return copied;
   });
   // A workspace .bin can name ignored build output, absent in the committed
   // clone until its pinned build runs. Release the donor reader before building;
   // neither that build nor a failed graph may publish independent provenance.
-  prepareWorkspace?.(snapshot);
-  {
+  phase('workspace-build', () => prepareWorkspace?.(snapshot));
+  phase('validate-and-publish', () => {
     // Resolve only after every link has been rewritten and workspace output is
     // prepared: .bin and package aliases
     // can point through other links. A lexical remap alone cannot prove that a
@@ -473,7 +495,7 @@ done <<< "$sources"
       writeFileSync(temporary, JSON.stringify({ ...marker, dependencyMode: 'independent-copy-v1' }), { flag: 'wx' });
       renameSync(temporary, markerPath);
     } finally { rmSync(temporary, { force: true }); }
-  }
+  });
   return { paths: snapshot.paths, workspacePaths: snapshot.workspacePaths };
 }
 

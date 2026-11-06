@@ -1186,20 +1186,35 @@ export class GatewayRequestSpan {
         const rows = this.protocol === 'openai-responses' ? shaped.input : shaped.messages;
         if (Array.isArray(rows)) {
           const parts: unknown[] = [];
+          let valid = true;
           for (const row of rows) {
-            if (!row || typeof row !== 'object') continue;
+            if (!row || typeof row !== 'object' || Array.isArray(row)) { valid = false; break; }
             const message = row as Record<string, unknown>;
-            if (this.protocol === 'openai-responses' && message.type === 'function_call_output') parts.push(message);
-            else if (this.protocol === 'openai-chat' && message.role === 'tool') parts.push(message);
+            if (this.protocol !== 'openai-responses' && (typeof message.role !== 'string' ||
+                !Object.hasOwn(message, 'content'))) { valid = false; break; }
+            if (this.protocol === 'openai-responses' && message.type === 'function_call_output') {
+              if (!Object.hasOwn(message, 'output')) { valid = false; break; }
+              parts.push(message);
+            } else if (this.protocol === 'openai-chat' && message.role === 'tool') parts.push(message);
             else if (this.protocol === 'anthropic-messages' && Array.isArray(message.content)) {
-              parts.push(...message.content.filter((part: unknown) => part && typeof part === 'object' &&
-                (part as Record<string, unknown>).type === 'tool_result'));
+              for (const part of message.content) {
+                if (!part || typeof part !== 'object' || Array.isArray(part) ||
+                    typeof (part as Record<string, unknown>).type !== 'string') { valid = false; break; }
+                if ((part as Record<string, unknown>).type === 'tool_result') {
+                  if (!Object.hasOwn(part, 'content')) { valid = false; break; }
+                  parts.push(part);
+                }
+              }
+            } else if (this.protocol === 'anthropic-messages' && typeof message.content !== 'string') {
+              valid = false; break;
             }
           }
-          const chars = parts.reduce<number>((total, part) => total + JSON.stringify(part).length, 0);
-          this.measurements.modelToolResults.parts = parts.length;
-          this.measurements.modelToolResults.utf16Chars = chars;
-          this.measurements.modelToolResults.tokenEstimate = Math.ceil(chars / 4);
+          if (valid) {
+            const chars = parts.reduce<number>((total, part) => total + JSON.stringify(part).length, 0);
+            this.measurements.modelToolResults.parts = parts.length;
+            this.measurements.modelToolResults.utf16Chars = chars;
+            this.measurements.modelToolResults.tokenEstimate = Math.ceil(chars / 4);
+          }
         }
       }
       const effortContainer = this.protocol === 'openai-responses' ? shaped.reasoning : shaped.output_config;
@@ -1248,25 +1263,40 @@ export class GatewayRequestSpan {
   /** Receives already-parsed provider frames from the existing usage observers.
    * Headers, message_start, role-only frames and usage are not model content. */
   recordProviderContent(frame: unknown): void {
-    if (!frame || typeof frame !== 'object') return;
-    const event = frame as Record<string, any>;
+    if (this.finished || this.measurements.firstModelContent.ms !== null) return;
+    const record = (value: unknown): Record<string, unknown> =>
+      value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const event = record(frame);
     const text = (value: unknown) => typeof value === 'string' && value.length > 0;
-    const content = (part: any): boolean => !!part && (text(part.text) || text(part.thinking) ||
-      part.type === 'tool_use' && text(part.name));
-    if (event.type === 'content_block_delta' &&
-        (text(event.delta?.text) || text(event.delta?.thinking) || text(event.delta?.partial_json)) ||
-        event.type === 'content_block_start' && content(event.content_block) ||
-        ['response.output_text.delta', 'response.reasoning_text.delta', 'response.reasoning_summary_text.delta',
-          'response.function_call_arguments.delta'].includes(event.type) && text(event.delta) ||
-        event.type === 'response.output_item.added' && event.item?.type === 'function_call' && text(event.item.name) ||
-        !event.type && (Array.isArray(event.content) && event.content.some(content) ||
-          Array.isArray(event.output) && event.output.some((item: any) => item.type === 'function_call' && text(item.name) ||
-            Array.isArray(item.content) && item.content.some(content)) ||
-          Array.isArray(event.choices) && event.choices.some((choice: any) => {
-            const message = choice.delta ?? choice.message;
-            return text(message?.content) || message?.tool_calls?.some((tool: any) =>
-              text(tool.function?.name) || text(tool.function?.arguments));
-          }))) this.recordFirstModelContent();
+    const content = (value: unknown): boolean => {
+      const part = record(value);
+      return text(part.text) || text(part.thinking) || part.type === 'tool_use' && text(part.name);
+    };
+    const delta = record(event.delta);
+    const item = record(event.item);
+    const anthropic = event.type === 'content_block_delta' &&
+      (text(delta.text) || text(delta.thinking) || text(delta.partial_json)) ||
+      event.type === 'content_block_start' && content(event.content_block);
+    const responses = typeof event.type === 'string' &&
+      ['response.output_text.delta', 'response.reasoning_text.delta', 'response.reasoning_summary_text.delta',
+        'response.function_call_arguments.delta'].includes(event.type) && text(event.delta) ||
+      event.type === 'response.output_item.added' && item.type === 'function_call' && text(item.name);
+    const response = event.type === 'response.completed' ? record(event.response) : event;
+    const complete = (!event.type || event.type === 'message' || event.type === 'response.completed') && (
+      Array.isArray(response.content) && response.content.some(content) ||
+      Array.isArray(response.output) && response.output.some((value: unknown) => {
+        const output = record(value);
+        return output.type === 'function_call' && text(output.name) ||
+          Array.isArray(output.content) && output.content.some(content);
+      }) || Array.isArray(response.choices) && response.choices.some((value: unknown) => {
+        const choice = record(value);
+        const message = record(choice.delta ?? choice.message);
+        return text(message.content) || Array.isArray(message.tool_calls) && message.tool_calls.some((value: unknown) => {
+          const tool = record(record(value).function);
+          return text(tool.name) || text(tool.arguments);
+        });
+      }));
+    if (anthropic || responses || complete) this.recordFirstModelContent();
   }
 
   recordAttemptAccountId(accountId: string | null | undefined): void {
