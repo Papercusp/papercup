@@ -18,37 +18,18 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 vi.setConfig({ testTimeout: 15_000 });
 
-// bootstrap-su's import graph reaches release-checkpoint-config, whose module
-// initialization performs a best-effort operator-state read. Keep that import
-// read-only and immediate; the route tests install their readiness.sql spy after
-// the graph is loaded, so a real PG retry here would consume the whole hook
-// timeout before a single respawn assertion can run.
-const bootstrapImportSql = vi.hoisted(() => {
-  const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => []);
-  Object.assign(sql, {
-    begin: vi.fn(async (run: (tx: typeof sql) => unknown) => run(sql)),
-  });
-  return sql;
-});
+// This is the HTTP contract suite. Real lifecycle SQL is exercised by
+// adv-sessions-reanchor.integration.test.ts; importing those implementations or
+// the activation graph here can deadlock mock collection before any assertion.
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: bootstrapImportSql }),
+  getOrgPg: () => ({ sql: readiness.sql }),
 }));
 
 let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
 beforeAll(async () => {
-  const mod = await import('./bootstrap-su');
+  const mod = await import('./bootstrap-su-resume');
   routes = mod.default as unknown as typeof routes;
-  // Install spies after the route graph loads: hoisted import-actual factories
-  // for these mutually dependent modules deadlock bootstrap-su collection.
-  const control = await import('../../../agent-tools/coordination/control-anchor');
-  const binding = await import('../../../blueprint/operation-worker-binding');
-  const db = await import('@papercusp/db-org');
-  vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: readiness.sql } as unknown as ReturnType<typeof db.getOrgPg>);
-  vi.spyOn(control, 'preparePendingControlTransition').mockImplementation(readiness.pending as typeof control.preparePendingControlTransition);
-  vi.spyOn(control, 'applyRelaunchedActivation').mockImplementation(readiness.apply);
-  vi.spyOn(binding, 'readActiveOperationWorkerClaimBinding').mockImplementation(readiness.binding as typeof binding.readActiveOperationWorkerClaimBinding);
-  vi.spyOn(binding, 'readActiveOperationModelPolicy').mockImplementation(readiness.policy as typeof binding.readActiveOperationModelPolicy);
 }, 30_000);
 
 const reanchorMock = vi.hoisted(() =>
@@ -84,7 +65,21 @@ vi.mock('../../../auth/require-principal', () => ({
     reason = 'denied';
   },
 }));
-vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
+  preparePendingControlTransition: readiness.pending,
+  applyRelaunchedActivation: readiness.apply,
+}));
+vi.mock('../../../blueprint/operation-worker-binding', () => ({
+  readActiveOperationWorkerClaimBinding: readiness.binding,
+  readActiveOperationModelPolicy: readiness.policy,
+}));
+vi.mock('../../../adv-sessions', () => ({
+  NATIVE_SESSION_ID_RE: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  acquireAdvSessionResume: vi.fn(),
+  finalizeAdvSessionResume: vi.fn(),
+  getAdvSession: vi.fn(),
+  isAdvSessionLocalLivenessEvidence: vi.fn(),
+  releaseAdvSessionResume: vi.fn(),
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
   claimAdvSessionResume: vi.fn(async () => false),
@@ -140,6 +135,19 @@ async function postRespawned(body: unknown): Promise<Response> {
 }
 
 describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)', () => {
+  it('passes the managed host provenance namespace to the atomic reanchor', async () => {
+    const turnProvenanceDir = '/runtime/host/turn-provenance';
+    const response = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID, turnProvenanceDir });
+    expect(response.status).toBe(200);
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null, turnProvenanceDir });
+  });
+
+  it.each(['relative/ledger', '', 42])('rejects an invalid host provenance namespace: %j', async turnProvenanceDir => {
+    const response = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID, turnProvenanceDir });
+    expect(response.status).toBe(400);
+    expect(reanchorMock).not.toHaveBeenCalled();
+  });
+
   it('confirms an accepted worker only after launch-proven activation and exact native attestation are ready', async () => {
     const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'launch-state' };
     readiness.launch.mockResolvedValue({ acceptedOperation: { kind: 'blueprint-operation-worker', modelPolicy: {} } });

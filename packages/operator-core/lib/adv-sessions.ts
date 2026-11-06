@@ -1851,9 +1851,11 @@ async function recordReanchorSpan(
 export async function reanchorAdvSessionNativeId(
   id: number,
   sessionId: string,
-  opts: { childLaunchSessionId?: string | null } = {},
+  opts: { childLaunchSessionId?: string | null; turnProvenanceDir?: string } = {},
 ): Promise<{ reanchored: boolean; owner: string | null }> {
   if (!sessionId) return { reanchored: false, owner: null };
+  if (opts.turnProvenanceDir !== undefined && !isAbsolute(opts.turnProvenanceDir))
+    return { reanchored: false, owner: null };
   // WI-6554700010030031: an in-place context reset (`/clear`) rotates the native
   // id INSIDE the same child process, whose MCP header and inherited shells keep
   // presenting PAPERCUSP_NATIVE_SESSION_ID — the id that child was LAUNCHED with,
@@ -1891,7 +1893,7 @@ export async function reanchorAdvSessionNativeId(
       if (rows.length > 0) {
         // Carry-respawn uses this seam rather than keyed resume finalization.
         // Keep its native binding and the genuine already-applied receipt atomic.
-        await recordSuLaunchSpecInTransaction(tx, id, null);
+        await recordSuLaunchSpecInTransaction(tx, id, null, undefined, opts.turnProvenanceDir);
         return { reanchored: true, owner: rows[0].owner, workspaceId: rows[0].workspace_id };
       }
       // WI-41555: a NO-OP re-anchor is NOT "no owner". The UPDATE above is guarded
@@ -1915,7 +1917,7 @@ export async function reanchorAdvSessionNativeId(
         return { reanchored: false, owner: null, workspaceId: null };
       }
       // A repeated native-id report must also heal an omitted receipt.
-      await recordSuLaunchSpecInTransaction(tx, id, null);
+      await recordSuLaunchSpecInTransaction(tx, id, null, undefined, opts.turnProvenanceDir);
       return { reanchored: false, owner: existing[0].owner, workspaceId: existing[0].workspace_id };
     });
     await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
@@ -1943,8 +1945,11 @@ export async function reanchorAdvSessionNativeId(
 export async function reanchorAdvSessionNativeIdByOwner(
   coordOwnerId: string,
   sessionId: string,
+  opts: { turnProvenanceDir?: string } = {},
 ): Promise<{ reanchored: boolean; owner: string | null }> {
   if (!coordOwnerId || !sessionId) return { reanchored: false, owner: null };
+  if (opts.turnProvenanceDir !== undefined && !isAbsolute(opts.turnProvenanceDir))
+    return { reanchored: false, owner: null };
   try {
     const { sql } = getOrgPg();
     // `started_at` is a mutable activation clock (resume/re-anchor bumps it),
@@ -1992,7 +1997,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
       // the context-usage + anchor cache clears — must still run for that owner.
       // Confirm the owner really does have a row, then report it with
       // reanchored:false so "did I change it" stays honest.
-      await recordSuLaunchSpecInTransaction(tx, targetId, null);
+      await recordSuLaunchSpecInTransaction(tx, targetId, null, undefined, opts.turnProvenanceDir);
       return { reanchored: rows.length > 0, owner: coordOwnerId, workspaceId: targetWorkspaceId };
     });
     await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
@@ -2274,6 +2279,7 @@ async function recordSuLaunchSpecInTransaction(
   advSessionId: number | null,
   coordOwnerId: string | null,
   launchSpec?: unknown,
+  runtimeProvenanceDir?: string,
 ): Promise<boolean> {
   // Prefer the exact row id; fall back to the owner's NEWEST row for the
   // interactive cohort. Lock across read/merge/write so concurrent refreshes
@@ -2354,6 +2360,14 @@ async function recordSuLaunchSpecInTransaction(
     !Array.isArray(row.launch_spec)
       ? row.launch_spec as Record<string, unknown>
       : null;
+  // Only a managed host lifecycle report can enroll an old launch. Never infer
+  // this namespace from the ingest server's HOME, or redirect an existing pin.
+  if (runtimeProvenanceDir !== undefined && currentRecord) {
+    if (!isAbsolute(runtimeProvenanceDir) || currentRecord.workspaceId !== row.workspace_id)
+      throw new Error('managed runtime provenance namespace has no matching launch workspace');
+    if (currentRecord.turnProvenanceDir != null && currentRecord.turnProvenanceDir !== runtimeProvenanceDir)
+      throw new Error('managed runtime provenance namespace differs from the launch receipt');
+  }
   const inheritedReceipt = matchingReceipts[0]?.receipt;
   const previous = inheritedReceipt
     ? {
@@ -2366,9 +2380,12 @@ async function recordSuLaunchSpecInTransaction(
     : row.launch_spec;
   // Only the lifecycle writer above may originate this receipt. A persona
   // refresh must neither discard nor replace it with caller-supplied history.
-  const next = launchSpec !== null && typeof launchSpec === 'object' && !Array.isArray(launchSpec)
-    ? { ...launchSpec as Record<string, unknown> } : launchSpec;
+  const nextSpec = launchSpec === undefined && runtimeProvenanceDir ? row.launch_spec : launchSpec;
+  const next = nextSpec !== null && typeof nextSpec === 'object' && !Array.isArray(nextSpec)
+    ? { ...nextSpec as Record<string, unknown> } : nextSpec;
   if (next && typeof next === 'object' && !Array.isArray(next)) {
+    if (runtimeProvenanceDir && currentRecord)
+      (next as Record<string, unknown>).turnProvenanceDir = runtimeProvenanceDir;
     delete (next as Record<string, unknown>).originalMemberLaunch;
     if (currentRecord?.originalMemberLaunch !== undefined)
       (next as Record<string, unknown>).originalMemberLaunch = currentRecord.originalMemberLaunch;

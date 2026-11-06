@@ -273,6 +273,37 @@ describe('grant-bearing role receipt and activation (canonical PostgreSQL client
     }
   });
 
+  it.each(['exact', 'owner'] as const)('enrolls legacy provenance from the managed host during reanchor: %s', async target => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    expect(await recordSuLaunchSpec(id, OWNER, { v: 1, agent: 'claude', workspaceId: WS })).toBe(true);
+    const opts = { turnProvenanceDir: '/runtime/host/turn-provenance' };
+    const reanchor = () => target === 'exact'
+      ? reanchorAdvSessionNativeId(id, FRESH_ID, opts)
+      : reanchorAdvSessionNativeIdByOwner(OWNER, FRESH_ID, opts);
+    expect(await reanchor()).toEqual({ reanchored: true, owner: OWNER });
+    expect(await readSuLaunchSpecByOwner(OWNER)).toMatchObject({ workspaceId: WS, turnProvenanceDir: opts.turnProvenanceDir });
+    expect(await reanchor()).toEqual({ reanchored: false, owner: OWNER });
+    expect(await readSuLaunchSpecByOwner(OWNER)).toMatchObject({ turnProvenanceDir: opts.turnProvenanceDir });
+  });
+
+  it('refuses a provenance redirect without committing the new native identity', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+      const launch = { v: 1, agent: 'claude', workspaceId: WS, turnProvenanceDir: '/runtime/original/turn-provenance' };
+      expect(await recordSuLaunchSpec(id, OWNER, launch)).toBe(true);
+      expect(await reanchorAdvSessionNativeId(id, FRESH_ID, { turnProvenanceDir: '/runtime/foreign/turn-provenance' }))
+        .toEqual({ reanchored: false, owner: null });
+      const [row] = await admin<{ session_id: string; launch_spec: unknown }[]>`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${id}`;
+      expect(row.session_id).toBe(DEAD_ID);
+      expect(row.launch_spec).toMatchObject(launch);
+      expect(warning).toHaveBeenCalledWith('[adv-sessions] reanchorAdvSessionNativeId failed:',
+        'managed runtime provenance namespace differs from the launch receipt');
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('persists a readable artifact before recording the launch activation', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER });
     const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
