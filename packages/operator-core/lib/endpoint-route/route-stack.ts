@@ -44,7 +44,7 @@ export type RouteStepName = 'auth' | 'input' | 'invoke';
 
 const committedResponses = new WeakSet<Response>();
 
-const ROUTE_DIAGNOSTICS_HISTORY_CAP = 32;
+const ROUTE_DIAGNOSTICS_HISTORY_CAP = 80;
 const ROUTE_DIAGNOSTICS_PHASE_RE = /^[a-z][a-z0-9._-]{0,63}$/;
 
 /**
@@ -57,7 +57,13 @@ export function createRouteDiagnostics(): RouteDiagnostics {
   const completed: Array<{ phase: string; durationMs: number }> = [];
   const active = new Map<number, { phase: string; startedAt: number }>();
   let nextId = 0;
+  const record = (phase: string, durationMs: number): void => {
+    if (!ROUTE_DIAGNOSTICS_PHASE_RE.test(phase) || !Number.isFinite(durationMs) || durationMs < 0) return;
+    completed.push({ phase, durationMs });
+    if (completed.length > ROUTE_DIAGNOSTICS_HISTORY_CAP) completed.shift();
+  };
   return {
+    record,
     measure<T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> {
       if (!ROUTE_DIAGNOSTICS_PHASE_RE.test(phase)) return Promise.resolve().then(work);
       const id = ++nextId;
@@ -66,8 +72,7 @@ export function createRouteDiagnostics(): RouteDiagnostics {
         const started = active.get(id);
         active.delete(id);
         if (!started) return;
-        completed.push({ phase, durationMs: Math.max(0, Date.now() - started.startedAt) });
-        if (completed.length > ROUTE_DIAGNOSTICS_HISTORY_CAP) completed.shift();
+        record(phase, Math.max(0, Date.now() - started.startedAt));
       });
     },
     snapshot(): Readonly<Record<string, number>> {

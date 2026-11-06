@@ -250,16 +250,42 @@ describe('recordRouteInvocation — native guard route correlation', () => {
         authorization: 'Bearer private-guard-token', 'x-private-header': 'private-guard-header' },
     });
     exec.routeDiagnostics = { measure: async (_phase, work) => work(),
-      snapshot: () => ({ auth: 6200, input: 0, invoke: 643, 'private phase': 1, invalid: NaN }) };
+      snapshot: () => ({
+        auth: 6200, input: 0, invoke: 643, guard_setup: 7, guard_plan_total: 500,
+        guard_plan_bindings: 400, 'guard_plan_start_gate_snapshot_plan-items': 200,
+        guard_identity_local_rules: 40, guard_pg_acquire_org_admin_acquired_1: 17,
+        guard_pg_acquire_org_app_released_1: 3, guard_plan_private_marker: 99,
+        'guard_pg_acquire_private_pool_acquired_1': 99, 'private phase': 1, invalid: NaN,
+      }) };
     recordRouteInvocation(exec);
     exec.req.headers.set('x-papercusp-guard-request-id', 'private-late-guard-header');
     await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({
-      guardRequestId: requestId, routePhaseTimingsMs: { auth: 6200, input: 0, invoke: 643 },
+      guardRequestId: requestId, routePhaseTimingsMs: {
+        auth: 6200, input: 0, invoke: 643, guard_setup: 7, guard_plan_total: 500,
+        guard_plan_bindings: 400, 'guard_plan_start_gate_snapshot_plan-items': 200,
+        guard_identity_local_rules: 40, guard_pg_acquire_org_admin_acquired_1: 17,
+        guard_pg_acquire_org_app_released_1: 3,
+      },
     })));
     const persisted = JSON.stringify(findInsertCall().params);
     for (const secret of ['private-guard-token', 'private-guard-header', 'private-late-guard-header']) {
       expect(persisted).not.toContain(secret);
     }
+  });
+
+  it('omits detailed guard timing fields for fast invocations', async () => {
+    const exec = execWith({ method: 'POST', path, status: 'ok',
+      headers: { 'x-papercusp-guard-request-id': requestId },
+    });
+    exec.routeDiagnostics = { measure: async (_phase, work) => work(),
+      snapshot: () => ({
+        auth: 1, input: 0, invoke: 499, guard_setup: 4,
+        guard_plan_bindings: 25, guard_pg_acquire_org_admin_acquired_1: 11,
+      }) };
+    recordRouteInvocation(exec);
+    await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({
+      guardRequestId: requestId, routePhaseTimingsMs: { auth: 1, input: 0, invoke: 499 },
+    })));
   });
 
   it.each([

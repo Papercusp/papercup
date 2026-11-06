@@ -52,9 +52,10 @@ vi.mock('../../../turn-provenance/turn-provenance', async (importOriginal) => ({
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
 
 import { wornSyncRules, type WornSyncRules } from '../../../agent-identities/sync-hook-rules';
+import { createRouteDiagnostics } from '../../route-stack';
 import routes, { compactionSinkDue, guardRefusalText, toolGuardText } from './identity-hook-sinks';
 
-type Route = { path: string; handler: (req: Request) => Promise<Response> };
+type Route = { path: string; handler: (req: Request, ctx?: { routeDiagnostics?: ReturnType<typeof createRouteDiagnostics> }) => Promise<Response> };
 const route = (path: string): Route => {
   const found = (routes as unknown as Route[]).find((entry) => entry.path === path);
   if (!found) throw new Error(`no route ${path}`);
@@ -645,6 +646,30 @@ describe('tool-guard request acquisition diagnostics', () => {
         coverage: 'instrumented-acquisition-seam-only', acquisitions: [], omitted: 0,
         pendingAcquisitions: 'not-retained',
       });
+    } finally { timing.restore(); }
+  });
+
+  it('records slow plan and pool acquisition phases on route diagnostics', async () => {
+    const timing = timingHarness();
+    const diagnostics = createRouteDiagnostics();
+    planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
+      observeTiming({ stage: 'bindings', durationMs: 21 });
+      const ticket = acquireDiagnostics.beginAcquire('org-admin-priority');
+      ticket.acquired();
+      ticket.release();
+      timing.setNow(600);
+      return null;
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(request('builder'), { routeDiagnostics: diagnostics });
+      expect(await res.json()).toEqual({ ok: true, text: '' });
+      expect(diagnostics.snapshot()).toMatchObject({
+        guard_setup: expect.any(Number),
+        guard_plan_total: expect.any(Number),
+        guard_plan_bindings: 21,
+        guard_pg_acquire_org_admin_acquired_1: 0,
+      });
+      expect(JSON.stringify(diagnostics.snapshot())).not.toContain(NEVER_EMIT_MARKER);
     } finally { timing.restore(); }
   });
 

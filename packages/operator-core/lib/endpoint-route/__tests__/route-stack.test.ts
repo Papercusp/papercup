@@ -97,8 +97,19 @@ describe('route diagnostics', () => {
     })).rejects.toThrow('diagnostic failure marker');
     await diagnostics.measure('handler.phase', () => undefined);
     await diagnostics.measure('Bad phase', () => undefined);
+    diagnostics.record?.('handler.phase', 3.4);
+    diagnostics.record?.('handler.phase', 2.1);
+    diagnostics.record?.('handler.negative', -1);
+    diagnostics.record?.('handler.nan', Number.NaN);
+    diagnostics.record?.('handler.infinity', Number.POSITIVE_INFINITY);
+    diagnostics.record?.('Bad phase', 7);
 
-    expect(diagnostics.snapshot()).toEqual({ 'handler.phase': expect.any(Number) });
+    expect(diagnostics.snapshot()).toMatchObject({ 'handler.phase': expect.any(Number) });
+    expect(diagnostics.snapshot()['handler.negative']).toBeUndefined();
+    expect(diagnostics.snapshot()['handler.nan']).toBeUndefined();
+    expect(diagnostics.snapshot()['handler.infinity']).toBeUndefined();
+    expect(diagnostics.snapshot()['Bad phase']).toBeUndefined();
+    expect(diagnostics.snapshot()['handler.phase']).toBeGreaterThanOrEqual(5);
   });
 });
 

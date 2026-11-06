@@ -37,6 +37,32 @@ const guardHttpDiagnostics = pinModuleState('@papercusp/operator-core.guard-http
 }));
 const guardUuid = (value: unknown): value is string => typeof value === 'string'
   && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+const GUARD_BASE_PHASES = new Set(['auth', 'input', 'invoke']);
+const GUARD_SUMMARY_PHASES = new Set(['guard_setup', 'guard_plan_total', 'guard_identity_total']);
+const GUARD_PLAN_PHASES = new Set([
+  'guard_plan_bindings', 'guard_plan_goal_module', 'guard_plan_goal_read', 'guard_plan_goal',
+  'guard_plan_start_proof', 'guard_plan_scope', 'guard_plan_plan_row', 'guard_plan_audit',
+  'guard_plan_activation', 'guard_plan_admission', 'guard_plan_start_gate', 'guard_plan_spec_quality',
+  'guard_plan_critique', 'guard_plan_recheck', 'guard_plan_binding',
+  'guard_plan_goal_leg_work_items', 'guard_plan_goal_leg_plan_items', 'guard_plan_goal_leg_fleet',
+  'guard_plan_goal_leg_override', 'guard_plan_goal_leg_links',
+  'guard_plan_goal_pool_acquire_work_items', 'guard_plan_goal_pool_acquire_plan_items',
+  'guard_plan_goal_pool_acquire_fleet', 'guard_plan_goal_pool_acquire_override',
+  'guard_plan_plan_row_resolve_scope', 'guard_plan_plan_row_wait_for_begin',
+  'guard_plan_plan_row_workspace_setup', 'guard_plan_plan_row_acquire_and_setup',
+  'guard_plan_plan_row_query', 'guard_plan_plan_row_finish_transaction', 'guard_plan_plan_row_row',
+  ...['plan', 'rubric', 'vetting', 'lineage', 'grading', 'clauses', 'plan-items',
+    'work-contracts', 'lineage-parties', 'evidence'].map(source => 'guard_plan_start_gate_snapshot_' + source),
+]);
+const GUARD_IDENTITY_PHASE_RE = /^guard_identity_(?:applied_revision|applied_artifact|local_rules)$/;
+const GUARD_ACQUISITION_PHASE_RE = /^guard_pg_acquire_(?:org_admin|org_app)_(?:acquired|released)_[1-8]$/;
+const SLOW_GUARD_PHASE_THRESHOLD_MS = 500;
+const GUARD_ROUTE_PHASE_LIMIT = 80;
+
+function isGuardDiagnosticPhase(phase: string): boolean {
+  return GUARD_SUMMARY_PHASES.has(phase) || GUARD_PLAN_PHASES.has(phase) ||
+    GUARD_IDENTITY_PHASE_RE.test(phase) || GUARD_ACQUISITION_PHASE_RE.test(phase);
+}
 
 function emitGuardHttpTrace(trace: GuardHttpTrace, event: 'finish' | 'close' | 'late_response'): void {
   try {
@@ -204,7 +230,12 @@ export function recordRouteInvocation(exec: RouteExecution): void {
     try {
       const phaseTimings: Record<string, number> = Object.create(null) as Record<string, number>;
       const raw = exec.routeDiagnostics?.snapshot() ?? {};
-      for (const [phase, value] of Object.entries(raw).slice(0, 32)) {
+      const slowGuard = validGuardRequest && Number.isFinite(raw.invoke) &&
+        raw.invoke >= SLOW_GUARD_PHASE_THRESHOLD_MS;
+      const maxPhases = validGuardRequest ? GUARD_ROUTE_PHASE_LIMIT : 32;
+      for (const [phase, value] of Object.entries(raw).slice(0, maxPhases)) {
+        if (validGuardRequest && !GUARD_BASE_PHASES.has(phase) &&
+            !(slowGuard && isGuardDiagnosticPhase(phase))) continue;
         if (!/^[a-z][a-z0-9._-]{0,63}$/.test(phase)) continue;
         if (!Number.isFinite(value) || value < 0) continue;
         phaseTimings[phase] = Math.min(86_400_000, Math.round(value));

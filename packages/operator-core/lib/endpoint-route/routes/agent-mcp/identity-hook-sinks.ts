@@ -26,7 +26,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPriorityOrgPg } from '@papercusp/db-org';
-import { pgAcquireTimingSnapshot, pgResultDiagnosticSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
+import { PG_ACQUIRE_TIMING_LIMIT, pgAcquireTimingSnapshot, pgResultDiagnosticSnapshot,
+  withPgAcquireDiagnostics, type PgAcquireTimingSnapshot } from '@papercusp/db-org/acquire-registry';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
 import { checkPlanExecutionGuard, type PlanExecutionTimingObserver } from '../../../agent-tools/plans/plan-execution-guard';
@@ -139,6 +140,25 @@ function toolGuardPgAcquisitions(snapshot: typeof pgAcquireTimingSnapshot) {
   }
 }
 
+/** Copy only bounded pool wait durations into route telemetry; omit request ids and operation labels. */
+function recordToolGuardAcquisitionTimings(snapshot: PgAcquireTimingSnapshot | null,
+  record: (phase: string, durationMs: number) => void): void {
+  if (!snapshot || !Array.isArray(snapshot.acquisitions)) return;
+  const counts = { org_admin: 0, org_app: 0 };
+  const limit = Math.max(0, Math.min(PG_ACQUIRE_TIMING_LIMIT, snapshot.capacity));
+  for (const acquisition of snapshot.acquisitions.slice(0, limit)) {
+    const pool = acquisition.pool.startsWith('org-admin') ? 'org_admin'
+      : acquisition.pool.startsWith('org-app') ? 'org_app' : null;
+    if (!pool || !Number.isFinite(acquisition.elapsedMs) || acquisition.elapsedMs < 0) continue;
+    const outcome = acquisition.outcome === 'acquired' ? 'acquired'
+      : acquisition.outcome === 'released-before-acquire' ? 'released' : null;
+    if (!outcome) continue;
+    const ordinal = ++counts[pool];
+    try { record('guard_pg_acquire_' + pool + '_' + outcome + '_' + ordinal, acquisition.elapsedMs); }
+    catch { /* Diagnostics must never affect the guard verdict. */ }
+  }
+}
+
 /**
  * The guard verdict for one pending call. Never throws. The always-worn kernel
  * safety rails refuse first, whatever is worn (R-11); after them an unreadable
@@ -206,7 +226,7 @@ const toolGuard = defineTool({
   method: 'POST',
   path: '/agent-mcp/tool-guard',
   auth: 'loopback',
-  async handler(req) {
+  async handler(req, ctx) {
     const startedAt = performance.now();
     const body = await readBody(req);
     const ownerId = (body?.owner ?? '').trim();
@@ -240,6 +260,15 @@ const toolGuard = defineTool({
     const setupMs = performance.now() - startedAt;
     let text;
     let requestAcquireSnapshot: typeof pgAcquireTimingSnapshot = () => null;
+    let acquisitionSnapshotRead = false;
+    let acquisitionSnapshot: PgAcquireTimingSnapshot | null = null;
+    const readAcquireSnapshot = () => {
+      if (!acquisitionSnapshotRead) {
+        acquisitionSnapshotRead = true;
+        acquisitionSnapshot = requestAcquireSnapshot();
+      }
+      return acquisitionSnapshot;
+    };
     try {
       const run = () => withPriorityOrgPg(() => toolGuardText({
         ownerId,
@@ -261,6 +290,20 @@ const toolGuard = defineTool({
         : await run();
     } finally {
       const totalMs = performance.now() - startedAt;
+      if (totalMs >= 500) {
+        const recordRoutePhase = (phase: string, durationMs: number) => {
+          try { ctx?.routeDiagnostics?.record?.(phase, durationMs); } catch { /* diagnostics only */ }
+        };
+        recordRoutePhase('guard_setup', setupMs);
+        if (phases.plan !== undefined) recordRoutePhase('guard_plan_total', phases.plan);
+        if (phases.identity !== undefined) recordRoutePhase('guard_identity_total', phases.identity);
+        for (const [stage, durationMs] of Object.entries(planStages))
+          recordRoutePhase('guard_plan_' + stage, durationMs);
+        for (const [stage, durationMs] of Object.entries(identityStages))
+          recordRoutePhase('guard_identity_' + stage, durationMs);
+        try { recordToolGuardAcquisitionTimings(readAcquireSnapshot(), recordRoutePhase); }
+        catch { /* A diagnostic read must not change the guard result. */ }
+      }
       // Keep attribution after the client has aborted too. No tool inputs, plan
       // content or refusal text belongs in this timing-only diagnostic.
       if (totalMs >= 500) console.warn('[tool-guard-timing]', JSON.stringify({
@@ -272,7 +315,7 @@ const toolGuard = defineTool({
         ...(Object.keys(planStages).length ? { planStages } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
         ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId),
-          pgAcquisitions: toolGuardPgAcquisitions(requestAcquireSnapshot) } : {}),
+          pgAcquisitions: toolGuardPgAcquisitions(readAcquireSnapshot) } : {}),
       }));
     }
     const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases,
