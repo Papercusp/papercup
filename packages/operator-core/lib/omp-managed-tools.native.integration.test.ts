@@ -12,7 +12,7 @@ import { invoke } from '@papercusp/orchestrator';
 import { resumeArgsFor, roleLaunchArgs, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { resumeCommandFor } from './events/await/wake-executor';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
-import { captureIsolatedWorker, isolatedWorkerOptions, isolatedWorkerFailureDetail,
+import { captureIsolatedWorker, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
   recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics,
   withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
@@ -328,9 +328,9 @@ if (privateMcpUrl) {
           code: 0, signal: null, timedOut: false, aborted: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
         });
         expect(result.output).toContain('OMP_PRODUCTION_MCP_VERIFIED');
-        const line = result.output.split('\n').find(row => row.startsWith('OMP_ADMITTED_LIFECYCLE '));
+        const line = isolatedWorkerReceipt(result.output, 'OMP_ADMITTED_LIFECYCLE');
         expect(line, 'Native lifecycle observations must be retained').toBeDefined();
-        await writeFile(join(evidenceDir, 'native-tool-surface.json'), line!.slice('OMP_ADMITTED_LIFECYCLE '.length));
+        await writeFile(join(evidenceDir, 'native-tool-surface.json'), line!);
       },
     });
     // A test timeout aborts context.signal before its async body settles. Keep

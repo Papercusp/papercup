@@ -13,7 +13,7 @@ import { CODEX_MANAGED_DISPATCHER_APPROVAL_TOML, codexGatewayConfigToml,
 import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
   codexManagedToolsNativeIntegrationSourcePaths, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
@@ -467,9 +467,9 @@ describe('Codex managed replacement installed-client census', () => {
         let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
         try { result = await captureIsolatedWorker(child, evidenceDir, workerOptions); }
         finally { await rm(join(evidenceDir, 'node_modules')); }
-        const line = result.output.split('\n').find(row => row.startsWith('CODEX_ADMITTED_LIFECYCLE '));
+        const line = isolatedWorkerReceipt(result.output, 'CODEX_ADMITTED_LIFECYCLE');
         if (line) await writeFile(join(evidenceDir, 'native-tool-surface.json'),
-          line.slice('CODEX_ADMITTED_LIFECYCLE '.length) + '\n', { flag: 'wx' });
+          line + '\n', { flag: 'wx' });
         expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({
           code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
         });
@@ -478,7 +478,7 @@ describe('Codex managed replacement installed-client census', () => {
         expect(result.output).toMatch(/Tests\s+5 passed \(5\)/);
         expect(line, 'original installed-client lifecycle observations are required').toBeDefined();
         expect(result.output).toContain('CODEX_PRODUCTION_MCP_VERIFIED');
-        const measured = JSON.parse(line!.slice('CODEX_ADMITTED_LIFECYCLE '.length));
+        const measured = JSON.parse(line!);
         expect(measured.removed.lifecycle.map((row: { surface: string }) => row.surface))
           .toEqual(['launch', 'resume', 'wake']);
         for (const row of measured.removed.lifecycle) {

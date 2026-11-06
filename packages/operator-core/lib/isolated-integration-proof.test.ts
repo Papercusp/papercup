@@ -8,9 +8,45 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerPendingStage, preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, isolatedWorkerPendingStage, preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, privateNativeDockerHost, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it.each(['OMP', 'CODEX'])('reads the original ANSI-prefixed %s lifecycle receipt without changing raw evidence', client => {
+  const marker = client + '_ADMITTED_LIFECYCLE';
+  const payload = JSON.stringify({ retained: { hasNativeExecution: true },
+    removed: [{ surface: 'launch', hasNativeExecution: false, managedPath: 'production-capability-bash' }] });
+  // Exact VT prefix measured in the original passing OMP production worker.
+  const output = 'stdout | installed native lifecycle\r\n\x1b[22m\x1b[39m' + marker + ' ' + payload + '\x1b[0m\r\n';
+  expect(output.split('\n').some(line => line.startsWith(marker + ' '))).toBe(false);
+  expect(isolatedWorkerReceipt(output, marker)).toBe(payload);
+  expect(JSON.parse(isolatedWorkerReceipt(output, marker)!)).toMatchObject({ retained: { hasNativeExecution: true } });
+  expect(output).toContain('\x1b[22m\x1b[39m');
+});
+
+it('reads an ANSI-prefixed router result without dropping its first verdict field', () => {
+  const payload = 'requested=1 executed=1 matched=1 status=passed skippedTests=0';
+  const receipt = isolatedWorkerReceipt('\x1b[32mTEST_FILE_RESULT ' + payload + '\x1b[0m\r\n', 'TEST_FILE_RESULT');
+  expect(Object.fromEntries(receipt!.split(/\s+/).map(field => field.split('='))))
+    .toEqual({ requested: '1', executed: '1', matched: '1', status: 'passed', skippedTests: '0' });
+});
+
+it.each(['', 'diagnostic OMP_ADMITTED_LIFECYCLE {}', 'OMP_ADMITTED_LIFECYCLE_OTHER {}',
+  'TEST_FILE_PROGRESS lastOutputLine="OMP_ADMITTED_LIFECYCLE {}"', 'OMP_ADMITTED_LIFECYCLE\n{}'])(
+  'refuses an absent or embedded lifecycle receipt (%s)', output => {
+    expect(isolatedWorkerReceipt(output, 'OMP_ADMITTED_LIFECYCLE')).toBeUndefined();
+  });
+
+it('refuses ambiguous plain and ANSI-prefixed lifecycle receipts', () => {
+  expect(() => isolatedWorkerReceipt('OMP_ADMITTED_LIFECYCLE {}\n\x1b[22mOMP_ADMITTED_LIFECYCLE {}\n',
+    'OMP_ADMITTED_LIFECYCLE')).toThrow('Multiple OMP_ADMITTED_LIFECYCLE receipts');
+});
+
+it('keeps a malformed lifecycle payload visible to the JSON validator', () => {
+  const receipt = isolatedWorkerReceipt('\x1b[22mOMP_ADMITTED_LIFECYCLE {broken}\n', 'OMP_ADMITTED_LIFECYCLE');
+  expect(receipt).toBe('{broken}');
+  expect(() => JSON.parse(receipt!)).toThrow();
+});
 
 it('restores the explicit native Docker endpoint after environment sanitization', () => {
   expect(privateNativeDockerHost(['--prepared-api-sha=abc', '--native-docker-host=unix:///run/docker-bench.sock']))

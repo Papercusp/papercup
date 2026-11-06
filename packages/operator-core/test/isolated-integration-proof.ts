@@ -7,6 +7,7 @@ import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlink
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { parse as parseToml } from '@iarna/toml';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
@@ -159,6 +160,18 @@ export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[
     'phases/prepare/bundle-restricted-hold-inputs.json',
     'phases/prepare/hono-host.mjs.build-steps.jsonl',
   ];
+}
+
+/** Read one exact machine receipt through terminal formatting without changing
+ * the original streams retained in worker.log. Never accept an embedded marker
+ * from progress/diagnostic prose or choose between conflicting receipts. */
+export function isolatedWorkerReceipt(output: string, marker: string): string | undefined {
+  assert.match(marker, /^[A-Z][A-Z0-9_]*$/);
+  const prefix = marker + ' ';
+  const lines = stripVTControlCharacters(output).split(/\r?\n/)
+    .filter(line => line.startsWith(prefix));
+  assert.ok(lines.length <= 1, `Multiple ${marker} receipts in original worker output`);
+  return lines[0]?.slice(prefix.length);
 }
 
 /** Cleanup logs must not displace a worker's original structured assertion.

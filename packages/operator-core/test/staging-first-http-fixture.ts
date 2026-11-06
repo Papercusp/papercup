@@ -11,7 +11,7 @@ import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registr
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
@@ -304,9 +304,9 @@ async function main() {
     assert.equal(result.code, 0, isolatedWorkerFailureDetail(result.output, result));
     assert.equal(result.signal, null);
     assert.equal(result.timedOut, false);
-    const resultLine = result.output.split(/\r?\n/).find(row => row.startsWith('TEST_FILE_RESULT '));
+    const resultLine = isolatedWorkerReceipt(result.output, 'TEST_FILE_RESULT');
     assert.ok(resultLine, 'machine-readable TEST_FILE_RESULT is required');
-    const resultFields = Object.fromEntries(resultLine.split(/\s+/).slice(1).map(field => {
+    const resultFields = Object.fromEntries(resultLine.split(/\s+/).map(field => {
       const equals = field.indexOf('=');
       assert.notEqual(equals, -1, `malformed TEST_FILE_RESULT field: ${field}`);
       return [field.slice(0, equals), field.slice(equals + 1)];
@@ -314,9 +314,9 @@ async function main() {
     assert.deepEqual({ requested: resultFields.requested, executed: resultFields.executed,
       matched: resultFields.matched, status: resultFields.status, skippedTests: resultFields.skippedTests },
     { requested: '1', executed: '1', matched: '1', status: 'passed', skippedTests: '0' });
-    const line = result.output.split('\n').find(row => row.startsWith(prefix + '_ADMITTED_LIFECYCLE '));
+    const line = isolatedWorkerReceipt(result.output, prefix + '_ADMITTED_LIFECYCLE');
     assert.ok(line, 'production MCP lifecycle receipt is required');
-    const measured = JSON.parse(line.slice((prefix + '_ADMITTED_LIFECYCLE ').length));
+    const measured = JSON.parse(line);
     for (const row of isOmpManagedTools ? measured.removed : measured.removed.lifecycle) {
       assert.equal(row.managedPath, 'production-capability-bash');
       assert.equal(row.managedCalls, 1);
