@@ -801,7 +801,14 @@ function renderCheckpointWithArchiveWithinCap(
 
   const overflow = rendered.length - CHECKPOINT_CAP + TRUNCATION_MARKER.length;
   const keepBody = Math.max(archiveSplit.body.length - overflow, 0);
-  const trimmedBody = preserveNewestFirst
+  const markerAt = archiveSplit.body.indexOf(TRUNCATION_MARKER);
+  const archiveOverhead = rendered.length - CHECKPOINT_CAP;
+  // joinCheckpoint already retained the baseline head and complete update.
+  // Reserve the archive header by removing more superseded prior tail at its
+  // existing cut, rather than evicting that deliberately retained head.
+  const trimmedBody = !preserveNewestFirst && markerAt >= archiveOverhead
+    ? archiveSplit.body.slice(0, markerAt - archiveOverhead) + archiveSplit.body.slice(markerAt)
+    : preserveNewestFirst
     ? archiveSplit.body.slice(0, keepBody) + TRUNCATION_MARKER
     : TRUNCATION_MARKER + archiveSplit.body.slice(Math.min(overflow, archiveSplit.body.length));
   const trimmed = render(trimmedBody);
@@ -2199,7 +2206,7 @@ export default defineTool({
                     : bodyWithAppend;
                 body = normalizeUnverifiedOwnerAttributionMarkers(body) ?? body;
                 if (ownerEnforcement.unverified) body = markUnverifiedOwnerAttribution(body) ?? body;
-                if (shouldAppendRefresh) autoAppendedRefresh = true;
+                autoAppendedRefresh = shouldAppendRefresh;
                 const patchedExistingChecks =
                   (additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace')) &&
                   resolvedSuppliedChecks !== undefined &&
@@ -2410,7 +2417,7 @@ export default defineTool({
                 phaseDetail('locked-checkpoint-archive'),
                 () =>
                   commentWorkItem(it.id, priorNote, ident.ownerId, {
-                    harness,
+                    harness: harness ?? undefined,
                     workspaceId,
                     writerOwnerId: ident.ownerId,
                     transaction: tx,
@@ -2423,7 +2430,7 @@ export default defineTool({
                 'thread-post:' + post.id +
                 ' (sha256:' + archiveHash + ')';
               return enforceFrozenWorkItemCarry(
-                renderCheckpointWithArchiveWithinCap(transformed, reference, shouldAppendRefresh),
+                renderCheckpointWithArchiveWithinCap(transformed, reference, autoAppendedRefresh),
                 currentProvenanceText,
               );
             },
@@ -2504,7 +2511,9 @@ export default defineTool({
         const appendBodyPreservationGuard: CheckpointGuard | null =
           didAttemptJoin && joinAddendumStored
             ? (priorNote, priorLen) => {
-                const candidate = timedChecksTransform?.(priorNote, checkpointToStore);
+                // Guards must remain pure and synchronous. The timed wrapper
+                // archives only during the accepted write, with its transaction.
+                const candidate = checksTransform(priorNote, checkpointToStore);
                 const candidateBody = candidate
                   ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
                   : '';
