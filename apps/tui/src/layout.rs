@@ -145,6 +145,101 @@ layout {
 /// `:dock`/`:layout` (D-008). The first entry is the default arrangement.
 pub const SWAP_PRESETS: &[&str] = &["stacked", "stacked-left", "split", "grid"];
 
+/// Compose the existing agent sidebars around the actual vendor command. Each
+/// sidebar resolves the exact launch record against the live roster; labels
+/// never select a session. Non-session and dock stack commands keep their shape.
+pub fn session_tab_kdl(spec: &crate::mux::PaneSpec, pui: &str) -> Option<String> {
+    let id = spec.adv_session_id.filter(|id| *id > 0)?;
+    let (program, args) = spec.argv.split_first()?;
+    if spec.stacked || program.is_empty() {
+        return None;
+    }
+    let quote = |s: &str| serde_json::to_string(s).expect("KDL string");
+    let owner = quote(&format!("pending:adv:{id}"));
+    let name = quote(&format!(
+        "{} · adv:{id}",
+        spec.title.as_deref().unwrap_or("session")
+    ));
+    let pui = quote(pui);
+    let program = quote(&crate::remote_connect::pane_program(program));
+    let args = args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ");
+    let args = if args.is_empty() {
+        String::new()
+    } else {
+        format!("args {args}\n")
+    };
+    let cwd = spec
+        .cwd
+        .as_ref()
+        .map(|cwd| format!("cwd {}\n", quote(cwd)))
+        .unwrap_or_default();
+    Some(format!(
+        r#"layout {{
+    tab name={name} {{
+        pane size=1 borderless=true {{ plugin location="zellij:tab-bar"; }}
+        pane split_direction="vertical" {{
+            pane size="22%" {{
+                pane name="Orders" size="60%" {{ command {pui}; args "orders-pane" {owner}; }}
+                pane name="Activity" {{ command {pui}; args "activity-pane" {owner}; }}
+            }}
+            pane name="Terminal" size="56%" focus=true {{
+                command {program}
+                {args}{cwd}
+            }}
+            pane size="22%" {{
+                pane name="Turns" size="70%" {{ command {pui}; args "turns-pane" {owner}; }}
+                pane name="Fleet" {{ command {pui}; args "fleet-pane" {owner}; }}
+            }}
+        }}
+        pane size=2 borderless=true {{ plugin location="zellij:status-bar"; }}
+    }}
+}}
+"#
+    ))
+}
+
+#[cfg(test)]
+mod session_tab_tests {
+    use super::*;
+    use crate::mux::PaneSpec;
+
+    #[test]
+    fn session_tab_centers_real_command_and_scopes_all_four_sidebars() {
+        let spec = PaneSpec::new(["psu", "--resume", "41", "--model=a model"])
+            .for_session(41)
+            .titled("shared title")
+            .cwd("/repo with spaces");
+        let kdl = session_tab_kdl(&spec, "/bundle/pui").unwrap();
+        let orders = kdl.find("name=\"Orders\"").unwrap();
+        let activity = kdl.find("name=\"Activity\"").unwrap();
+        let terminal = kdl.find("name=\"Terminal\"").unwrap();
+        let turns = kdl.find("name=\"Turns\"").unwrap();
+        let fleet = kdl.find("name=\"Fleet\"").unwrap();
+        assert!(orders < activity && activity < terminal && terminal < turns && turns < fleet);
+        assert!(kdl.contains("size=\"56%\" focus=true"));
+        assert!(kdl.contains("args \"--resume\" \"41\" \"--model=a model\""));
+        assert!(kdl.contains("cwd \"/repo with spaces\""));
+        assert_eq!(kdl.matches("\"pending:adv:41\"").count(), 4);
+        assert_eq!(kdl.matches("command \"/bundle/pui\"").count(), 4);
+        assert!(!kdl.contains("--solo"));
+    }
+
+    #[test]
+    fn session_tab_escapes_data_and_preserves_non_session_dock_commands() {
+        let spec = PaneSpec::new(["vendor", "a\"; pane { command \"injected", "line\nnext"])
+            .for_session(2)
+            .titled("title\"\nnext");
+        let kdl = session_tab_kdl(&spec, "C:\\Program Files\\pui.exe").unwrap();
+        assert!(kdl.contains(&serde_json::to_string(&spec.argv[1]).unwrap()));
+        assert!(kdl.contains(&serde_json::to_string(&spec.argv[2]).unwrap()));
+        assert!(session_tab_kdl(&PaneSpec::new(["vendor"]), "pui").is_none());
+        assert!(session_tab_kdl(&spec.clone().stacked_autoclose(), "pui").is_none());
+        assert!(
+            session_tab_kdl(&PaneSpec::new(Vec::<String>::new()).for_session(1), "pui").is_none()
+        );
+    }
+}
+
 /// One key the DOCK layout binds at the MULTIPLEXER level.
 ///
 /// This slice is the single source for both halves of that fact: the dock's KDL
@@ -972,7 +1067,8 @@ fn materialize_chat_workbench_at(base: &Path) -> std::io::Result<PathBuf> {
 
 /// zellij settings for pui's own sessions, used ONLY when the user has no
 /// zellij config of their own ([`user_zellij_config_exists`]).
-pub const SESSION_ZELLIJ_CONFIG_KDL: &str = "// Papercusp: zellij settings for pui's own sessions.\n\
+pub const SESSION_ZELLIJ_CONFIG_KDL: &str =
+    "// Papercusp: zellij settings for pui's own sessions.\n\
 // Used only while you have no zellij config of your own; create\n\
 // ~/.config/zellij/config.kdl and pui uses yours instead.\n\
 show_startup_tips false\n\
@@ -1137,7 +1233,10 @@ mod tests {
             .iter()
             .find(|(opener, _)| opener.contains("name=\"chat\""))
             .expect("the layout has a chat pane");
-        assert!(chat.0.contains("focus=true"), "the chat is focused: {chat:?}");
+        assert!(
+            chat.0.contains("focus=true"),
+            "the chat is focused: {chat:?}"
+        );
         assert_eq!(
             chat.1.as_deref(),
             Some(format!("\"--solo\" \"{CHAT_WORKBENCH_PANE_FLAG}\"").as_str())
@@ -1159,15 +1258,15 @@ mod tests {
     #[test]
     fn chat_workbench_keeps_the_workbench_panes_beside_the_chat() {
         let kdl = chat_workbench_kdl();
-        let args: Vec<String> = pui_panes(&kdl)
-            .into_iter()
-            .filter_map(|(_, a)| a)
-            .collect();
+        let args: Vec<String> = pui_panes(&kdl).into_iter().filter_map(|(_, a)| a).collect();
         // The HUD runs as a side pane (D-034): it draws the compact summary in
         // the narrow column instead of "Terminal too small".
         let hud = format!("\"hud\" \"{CHAT_WORKBENCH_SIDE_FLAG}\"");
         for wanted in [hud.as_str(), "\"wake-pane\"", "\"network-pane\""] {
-            assert!(args.iter().any(|a| a == wanted), "missing {wanted}: {args:?}");
+            assert!(
+                args.iter().any(|a| a == wanted),
+                "missing {wanted}: {args:?}"
+            );
         }
         assert!(kdl.contains("pane name=\"side\" stacked=true"));
         assert!(kdl.contains("pane name=\"hud\" expanded=true"));
@@ -1237,7 +1336,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pui-chat-wb-{}", std::process::id()));
         let path = materialize_chat_workbench_at(&dir).expect("materialize");
         assert_eq!(path.file_name().unwrap(), "pui-chat-workbench.kdl");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), chat_workbench_kdl());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            chat_workbench_kdl()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1386,25 +1488,54 @@ mod tests {
     fn a_user_zellij_config_is_found_where_zellij_looks_for_it() {
         let home = Path::new("/home/u");
         let env_of = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| pairs.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| v.to_string())
+            }
         };
         let only = |file: &'static str| move |p: &Path| p == Path::new(file);
         // Default location.
-        assert!(user_zellij_config_exists(env_of(&[]), Some(home), only("/home/u/.config/zellij/config.kdl")));
+        assert!(user_zellij_config_exists(
+            env_of(&[]),
+            Some(home),
+            only("/home/u/.config/zellij/config.kdl")
+        ));
         // XDG_CONFIG_HOME moves it; the ~/.config copy is then not where zellij looks.
         assert!(user_zellij_config_exists(
-            env_of(&[("XDG_CONFIG_HOME", "/x")]), Some(home), only("/x/zellij/config.kdl")));
+            env_of(&[("XDG_CONFIG_HOME", "/x")]),
+            Some(home),
+            only("/x/zellij/config.kdl")
+        ));
         assert!(!user_zellij_config_exists(
-            env_of(&[("XDG_CONFIG_HOME", "/x")]), Some(home), only("/home/u/.config/zellij/config.kdl")));
+            env_of(&[("XDG_CONFIG_HOME", "/x")]),
+            Some(home),
+            only("/home/u/.config/zellij/config.kdl")
+        ));
         // An explicit dir or file, and the system-wide one.
         assert!(user_zellij_config_exists(
-            env_of(&[("ZELLIJ_CONFIG_DIR", "/c")]), Some(home), only("/c/config.kdl")));
-        assert!(user_zellij_config_exists(env_of(&[("ZELLIJ_CONFIG_FILE", "/f.kdl")]), Some(home), |_| false));
-        assert!(user_zellij_config_exists(env_of(&[]), Some(home), only("/etc/zellij/config.kdl")));
+            env_of(&[("ZELLIJ_CONFIG_DIR", "/c")]),
+            Some(home),
+            only("/c/config.kdl")
+        ));
+        assert!(user_zellij_config_exists(
+            env_of(&[("ZELLIJ_CONFIG_FILE", "/f.kdl")]),
+            Some(home),
+            |_| false
+        ));
+        assert!(user_zellij_config_exists(
+            env_of(&[]),
+            Some(home),
+            only("/etc/zellij/config.kdl")
+        ));
         // None anywhere (a new machine): pui supplies its own, and an EMPTY
         // variable (as the PTY harness sets) counts as unset.
         assert!(!user_zellij_config_exists(
-            env_of(&[("ZELLIJ_CONFIG_FILE", ""), ("ZELLIJ_CONFIG_DIR", "")]), Some(home), |_| false));
+            env_of(&[("ZELLIJ_CONFIG_FILE", ""), ("ZELLIJ_CONFIG_DIR", "")]),
+            Some(home),
+            |_| false
+        ));
     }
 
     #[test]
