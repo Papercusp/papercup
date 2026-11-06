@@ -215,6 +215,8 @@ export async function setWorkItemCheckpointWithPrior(
      * personal:open-sealed. Omit for system writers, which hold no disclosures.
      */
     writerOwnerId?: string | null;
+    /** Internal: host respawn only; capture one wait sample on a bounded timeout. */
+    captureWaitSnapshot?: boolean;
   },
 ): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
@@ -342,6 +344,7 @@ export async function setWorkItemCheckpointWithPrior(
           }
         : {}),
       bounded: true,
+      ...(opts?.captureWaitSnapshot ? { captureWaitSnapshot: true } : {}),
     },
   );
   // A blocked write is a no-op — never bump the progress anchor for it.

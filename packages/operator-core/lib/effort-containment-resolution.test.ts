@@ -136,6 +136,20 @@ describe('work-item checkpoint journal ring (P-003)', () => {
     expect(setCarryNoteWithPrior.mock.calls[0][2]).toMatchObject({ journal: true, bounded: true });
   });
 
+  it('allows mandatory host snapshots to opt into target wait-event capture', async () => {
+    setCarryNoteWithPrior.mockResolvedValue({ stored: null, priorLength: 0 });
+    await setWorkItemCheckpointWithPrior(
+      { workItemId: 'WI-1', harness: 'papercusp' },
+      'host snapshot',
+      { captureWaitSnapshot: true },
+    );
+    expect(setCarryNoteWithPrior.mock.calls[0][2]).toMatchObject({
+      journal: true,
+      bounded: true,
+      captureWaitSnapshot: true,
+    });
+  });
+
   it('CONTROL: the journal assertion is falsifiable — a `journal: false` seam fails it', () => {
     // A guard that has never failed is a guard nobody has tested. The subject here is
     // a module this file IMPORTS, so the repo's falsifiability ladder prescribes a

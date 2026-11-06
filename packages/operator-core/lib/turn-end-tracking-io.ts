@@ -30,6 +30,7 @@ import {
   type OpenTaskReminderTripwire,
 } from './turn-end-tracking';
 import { CHECKPOINT_BODY_CAP_CHARS } from './carry-note';
+import { OrgTxnTimeoutError, type BoundedOrgTxnWaitSnapshot } from './pg-bounded-txn';
 
 /** Total budget for each sweep — advisory work riding a fire-and-forget hook. */
 export const TURN_END_SWEEP_BUDGET_MS = 4_000;
@@ -114,9 +115,11 @@ export class CheckpointWriteBlockedError extends Error {
 export class CheckpointSnapshotFailureError extends Error {
   readonly code: string;
   readonly errorFingerprint: string;
+  readonly waitSnapshot?: BoundedOrgTxnWaitSnapshot;
 
   constructor(error: unknown, readonly checkpointStage: 'load-writer' | 'read-held-items' | 'write-item',
-    readonly workItemId: string | undefined, readonly completedWorkItemIds: string[]) {
+    readonly workItemId: string | undefined, readonly completedWorkItemIds: string[],
+    waitSnapshot?: BoundedOrgTxnWaitSnapshot) {
     const message = error instanceof Error ? error.message : String(error);
     const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null;
     const code = typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
@@ -125,9 +128,11 @@ export class CheckpointSnapshotFailureError extends Error {
     this.name = 'CheckpointSnapshotFailureError';
     this.code = code;
     this.errorFingerprint = createHash('sha256').update(message).digest('hex').slice(0, 16);
+    this.waitSnapshot = waitSnapshot;
     console.warn('[host-checkpoint] ' + JSON.stringify({ checkpointStage, workItemId,
       completedWorkItemIds, code, errorFingerprint: this.errorFingerprint,
-      message: redactSensitiveText(message).slice(0, 1000) }));
+      message: redactSensitiveText(message).slice(0, 1000),
+      ...(waitSnapshot ? { waitSnapshot } : {}) }));
   }
 }
 
@@ -219,6 +224,7 @@ export async function autoCheckpointStaleHeldItems(input: {
                 : null;
             },
             transform: (prior) => mergeMechanicalCheckpoint(prior, block),
+            captureWaitSnapshot: input.mode === 'respawn',
           },
         );
         // A full authored checkpoint is already preserved in storage. There is no
@@ -255,7 +261,10 @@ export async function autoCheckpointStaleHeldItems(input: {
   } catch (error) {
     if (input.mode === 'respawn') {
       if (error instanceof CheckpointWriteBlockedError) throw error;
-      throw new CheckpointSnapshotFailureError(error, checkpointStage, workItemId, written.map((item) => item.id));
+      const waitSnapshot = error instanceof OrgTxnTimeoutError ? error.waitSnapshot : undefined;
+      throw new CheckpointSnapshotFailureError(
+        error, checkpointStage, workItemId, written.map((item) => item.id), waitSnapshot,
+      );
     }
     return [];
   }

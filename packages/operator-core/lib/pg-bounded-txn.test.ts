@@ -892,4 +892,73 @@ describe('boundedOrgTxn', () => {
     await expect(sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal))
       .resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'settle' });
   });
+
+  it('attaches one target wait sample to an opted-in bounded transaction timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      let beginCount = 0;
+      const client = {
+        begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+          beginCount += 1;
+          if (beginCount === 1) {
+            const tx = Object.assign((strings: TemplateStringsArray) => {
+              const statement = strings.join('?');
+              if (statement.includes('clock_timestamp')) {
+                return Promise.resolve([{ pid: 42, queryStartedAfter: new Date('2026-11-06T14:00:00.000Z') }]);
+              }
+              if (statement.includes('SELECT 1')) {
+                return new Promise<never>((_resolve, reject) => {
+                  setTimeout(() => reject(pgError('57014')), 100);
+                });
+              }
+              return Promise.resolve([] as unknown[]);
+            }, { unsafe: async () => [] as unknown[] });
+            return cb(tx);
+          }
+          if (beginCount === 2) {
+            const tx = Object.assign((strings: TemplateStringsArray) => {
+              const statement = strings.join('?');
+              return Promise.resolve(statement.includes('FROM pg_stat_activity')
+                ? [{ waitEventType: 'IO', waitEvent: 'WALSync', blockingPids: [] }]
+                : [] as unknown[]);
+            }, { unsafe: async () => [] as unknown[] });
+            return cb(tx);
+          }
+          const tx = Object.assign((strings: TemplateStringsArray) => Promise.resolve([] as unknown[]), {
+            unsafe: async () => [] as unknown[],
+          });
+          return cb(tx);
+        },
+      } as never;
+
+      const pending = boundedOrgTxn(async (tx) => {
+        await tx`SELECT 1`;
+      }, {
+        client,
+        captureWaitSnapshot: true,
+        statementTimeoutMs: 100,
+        lockTimeoutMs: 100,
+        acquireTimeoutMs: 1_000,
+        acquireRetries: 0,
+        connectionSetupRetries: 0,
+      }).catch((error) => error);
+
+      await vi.advanceTimersByTimeAsync(101);
+      const error = await pending;
+
+      expect(error).toBeInstanceOf(OrgTxnTimeoutError);
+      expect((error as OrgTxnTimeoutError).waitSnapshot).toMatchObject({
+        status: 'sampled',
+        targetPid: 42,
+        waitEventType: 'IO',
+        waitEvent: 'WALSync',
+        blockingPids: [],
+        statementTimeoutMs: 100,
+        lockTimeoutMs: 100,
+        sampleAfterMs: 80,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
