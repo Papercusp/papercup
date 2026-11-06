@@ -3883,6 +3883,7 @@ describe("psu-launcher arg parsing", () => {
       picker: false,
       resume: false,
       resumeId: null,
+      resumeHost: null,
       fork: false,
       agent: "claude",
       role: null,
@@ -4209,7 +4210,8 @@ describe("psu-launcher arg parsing", () => {
         NO_CHROME_FLAG,
       ],
     });
-    // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
+    // OMP resumes retain both the optional coordination extension and the
+    // owned MCP adapter, which carries the current catalog generation.
     // `--no-lsp` is present because omp CLI flags do NOT persist into a resume,
     // so the native-lsp gate must be re-applied every time (P-023/D-015). With
     // no model spec the tier term fails closed — see the dedicated block below.
@@ -4217,7 +4219,7 @@ describe("psu-launcher arg parsing", () => {
       resumeArgsFor({ agent: "omp", cwd: "/x", ompThreadId: "thr-1" }),
     ).toEqual({
       bin: "omp",
-      args: ["-r", "thr-1", "--approval-mode", "yolo", "--no-title", "--no-lsp"],
+      args: ["-r", "thr-1", "--approval-mode", "yolo", ...nativeOmpExtensionArgs("omp"), "--no-title", "--no-lsp"],
     });
     expect(
       resumeArgsFor(
@@ -4232,6 +4234,7 @@ describe("psu-launcher arg parsing", () => {
         "yolo",
         "-e",
         "/h/.papercusp/papercusp-coord.ts",
+        ...nativeOmpExtensionArgs("omp"),
         "--no-title",
         "--no-lsp",
       ],
@@ -5904,6 +5907,7 @@ describe("psu-launcher arg parsing", () => {
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
       PAPERCUSP_AGENT_SESSION: "1",
+      PAPERCUSP_LAUNCHED_BY: "",
       // Console-history preservation: a resumed Claude CLI stays off the alternate screen.
       CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       DISABLE_AUTO_COMPACT: "1",
@@ -6101,11 +6105,12 @@ describe("psu-launcher arg parsing", () => {
       coordOwnerId: "su-abc",
       workspaceId: "ws1",
     };
-    // No account → identity/scope exactly match resumeEnvFor; psu still adds
-    // the marker that arms hook-level guards for Claude too (WI-3071).
+    // No account → identity/scope match resumeEnvFor; psu adds the hook marker
+    // and explicitly clears inherited custody for this interactive resume.
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
       PAPERCUSP_AGENT_SESSION: "1",
+      PAPERCUSP_LAUNCHED_BY: "",
       CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
@@ -6129,6 +6134,7 @@ describe("psu-launcher arg parsing", () => {
       PAPERCUSP_WORKSPACE: "ws1",
       PAPERCUSP_ADV_SESSION_ID: "7",
       PAPERCUSP_AGENT_SESSION: "1",
+      PAPERCUSP_LAUNCHED_BY: "",
       CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
@@ -8004,10 +8010,11 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--no-title",
       "-e",
       "/home/u/.papercusp/papercusp-coord.ts",
+      ...nativeOmpExtensionArgs("omp"),
     ]);
   });
 
-  it("omp: omits -e when no coordExtPath is supplied", () => {
+  it("omp: retains the owned MCP adapter when no coordExtPath is supplied", () => {
     const { args } = suLaunchArgs("omp", { promptFile: "/lc/s.md" });
     expect(args).toEqual([
       "--approval-mode",
@@ -8016,8 +8023,9 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--system-prompt",
       "/lc/s.md",
       "--no-title",
+      ...nativeOmpExtensionArgs("omp"),
     ]);
-    expect(args).not.toContain("-e");
+    expect(args.filter(arg => arg === "-e")).toHaveLength(1);
   });
 
   it("codex: hook-trust + approvals/sandbox bypass (CODEX_HOME minted server-side, P-030)", () => {
@@ -8109,6 +8117,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--no-title",
       "-e",
       "/home/u/.papercusp/papercusp-coord.ts",
+      ...nativeOmpExtensionArgs("omp"),
     ]);
     expect(args).not.toContain("--append-system-prompt");
   });
@@ -13898,6 +13907,7 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       "thr-1",
       "--approval-mode",
       "yolo",
+      ...nativeOmpExtensionArgs("omp"),
       "--model",
       "opus:high",
       "--no-title",
