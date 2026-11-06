@@ -9,7 +9,8 @@ const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(480_000);
 
 it('reply and decline acknowledge persisted posts before the private production dispatcher acquires its lease', async context => {
-  const runId = await recordIsolatedIntegrationProof({ root,
+  const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
+    minimumFileRunTimeoutMs: options.testTimeoutMs,
     filePath: 'packages/operator-core/lib/consult/consult-cascade-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/consult-cascade-http-fixture.ts',
       'libs/generic/verification-harness/src/evidence-root.ts',
@@ -41,7 +42,7 @@ it('reply and decline acknowledge persisted posts before the private production 
         for (const line of String(chunk).split('\n')) if (line.startsWith('CONSULT_CASCADE_HTTP_PHASE ')) console.info(line);
       });
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
-      try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+      try { result = await captureIsolatedWorker(child, evidenceDir, { ...options, signal: context.signal }); }
       finally { await rm(join(evidenceDir, 'node_modules')); }
       const errors = result.output.split('\n').filter(line => /CONSULT_CASCADE_HTTP_FAILURE|operator-api preflight failed/.test(line));
       expect(result, errors.join('\n') || result.output.slice(-4000)).toMatchObject({ code: 0, signal: null,

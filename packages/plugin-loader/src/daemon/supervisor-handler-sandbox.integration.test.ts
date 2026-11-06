@@ -117,6 +117,59 @@ describe.runIf(supported)('mandatory handler supervisor (real bwrap + trusted TS
     expect(readFileSync(sentinel, 'utf8')).toBe('HOST_PRIVATE_CANARY');
   }, 30_000);
 
+  const sdkMetadata = { workspaceId: 'workspace', harnessSlug: 'harness', projectDir: '/project',
+    stateDir: '/project/.papercusp', role: 'su', runId: 'run', spawnId: 'spawn',
+    featureId: null, chunkId: null, parentSpawnId: null };
+
+  it.each(['default', 'named'])('runs the actual %s SDK tools export under confinement with acknowledged callbacks', async form => {
+    const operations: string[] = [];
+    const entry = `const plugin = { tools: { read: async (input, ctx) => {
+      const fs = require('node:fs');
+      ctx.progress(50, 'half'); ctx.emit('progress', { n: 1 }); ctx.log('SDK log');
+      const secret = await ctx.secret('allowed');
+      const child = await ctx.spawn('allowed-bin', ['arg'], { stdin: 'payload' });
+      return { content: [{type:'text', text:JSON.stringify({ secret, child,
+        workspace:ctx.workspaceId, role:ctx.role, signal:ctx.signal.aborted,
+        frozen:Object.isFrozen(ctx), hostVisible:fs.existsSync(input.hostPath),
+        privateValue:ctx.privateValue ?? null, principal:ctx.principal ?? null })}] };
+    } } }; ${form === 'default' ? 'exports.default = plugin;' : 'module.exports = plugin;'}`;
+    const result = await invokeApprovedHandler({ runtime: approved(entry), toolName: 'read',
+      input: { hostPath: sentinel, principal: 'forged' }, signal: new AbortController().signal,
+      effect: async (operation, input, signal) => {
+        signal.throwIfAborted();
+        if (operation === 'sdk.context') return { ...sdkMetadata, privateValue: 'HOST_PRIVATE', principal: 'HOST_PRIVATE' };
+        if (operation === 'sdk.secret') { expect(input).toEqual({ name: 'allowed' }); return 'checked-secret'; }
+        if (operation === 'sdk.spawn') {
+          expect(input).toEqual({ bin: 'allowed-bin', args: ['arg'], opts: { stdin: 'payload' } });
+          return { code: 0, stdout: 'checked', stderr: '', killed: false };
+        }
+        await new Promise(resolve => setTimeout(resolve, 20));
+        operations.push(operation); return null;
+      } });
+    expect(JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text)).toEqual({
+      secret: 'checked-secret', child: { code: 0, stdout: 'checked', stderr: '', killed: false },
+      workspace: 'workspace', role: 'su', signal: false, frozen: true,
+      hostVisible: false, privateValue: null, principal: null });
+    expect(operations.sort()).toEqual(['sdk.emit', 'sdk.log', 'sdk.progress']);
+  }, 30_000);
+
+  it('refuses a rejected void SDK callback instead of reporting a successful tool result', async () => {
+    const runtime = approved(`module.exports = {tools:{read:async (input,ctx) => {
+      ctx.emit('forbidden', {}); return {content:[{type:'text',text:'must not succeed'}]};
+    }}};`);
+    await expect(invokeApprovedHandler({ runtime, toolName: 'read', input: {}, signal: new AbortController().signal,
+      effect: operation => { if (operation === 'sdk.context') return sdkMetadata; throw new Error('event denied'); } }))
+      .rejects.toThrow(/event denied/);
+  }, 30_000);
+
+  it.each(['toString', 'missing'])('refuses the non-own SDK tool key %s before requesting context', async toolName => {
+    let effects = 0;
+    const runtime = approved('module.exports = {tools:{read:async () => ({content:[]})}};');
+    await expect(invokeApprovedHandler({ runtime, toolName, input: {}, signal: new AbortController().signal,
+      effect: () => { effects++; return sdkMetadata; } })).rejects.toThrow(/SDK tool handler missing/);
+    expect(effects).toBe(0);
+  }, 30_000);
+
   it('refuses unapproved ordinary invocation before running handler startup', async () => {
     await expect(invokeApprovedHandler({ runtime: prepareHandlerRuntime(inventory(simpleEntry)), toolName: 'fixture:write',
       input: {}, signal: new AbortController().signal })).rejects.toThrow(/approved handler runtime required/);

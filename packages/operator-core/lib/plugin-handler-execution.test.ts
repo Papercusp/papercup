@@ -48,6 +48,34 @@ describe('confined plugin installation binding', () => {
     const f = fixture(); vi.mocked(invokeApprovedHandler).mockResolvedValue({ content: [{ type: 'text', text: 1 }] });
     await expect(f.invoke(f.request)).rejects.toThrow();
   });
+
+  it('pins the wire to SDK name mapping and exports only the SDK data context', async () => {
+    const f = fixture(), mapping = { 'fixture:read': 'read' };
+    const progress = vi.fn(), emit = vi.fn(), log = vi.fn();
+    Object.assign(f.request.ctx, { workspaceId: 'workspace', harnessSlug: 'harness', projectDir: '/project',
+      stateDir: '/project/.papercusp', role: 'su', runId: 'run', spawnId: 'spawn',
+      principal: { token: 'HOST_PRIVATE' }, privateValue: 'HOST_PRIVATE', progress, emit, log });
+    const invoke = createConfinedPluginInvoker({ ...f.options, tools: mapping });
+    mapping['fixture:read'] = 'substituted';
+    vi.mocked(invokeApprovedHandler).mockImplementation(async options => {
+      expect(options.toolName).toBe('read');
+      expect(await options.effect!('sdk.context', null, options.signal)).toEqual({ workspaceId: 'workspace',
+        harnessSlug: 'harness', projectDir: '/project', stateDir: '/project/.papercusp', role: 'su',
+        runId: 'run', spawnId: 'spawn', featureId: null, chunkId: null, parentSpawnId: null });
+      await options.effect!('sdk.progress', { pct: 50, msg: 'half' }, options.signal);
+      await options.effect!('sdk.emit', { name: 'progress', data: { n: 1 } }, options.signal);
+      await options.effect!('sdk.log', { msg: 'log' }, options.signal);
+      await expect(Promise.resolve().then(() => options.effect!('sdk.secret', { name: 'PRIVATE' }, options.signal)))
+        .rejects.toThrow(/not exposed/);
+      await expect(Promise.resolve().then(() => options.effect!('sdk.progress', { pct: 'invalid' }, options.signal)))
+        .rejects.toThrow(/invalid SDK/);
+      return { content: [{ type: 'text', text: 'SDK' }] };
+    });
+    await invoke(f.request);
+    expect(progress).toHaveBeenCalledWith(50, 'half');
+    expect(emit).toHaveBeenCalledWith('progress', { n: 1 });
+    expect(log).toHaveBeenCalledWith('log');
+  });
 });
 
 describe('installed confined plugin binding', () => {

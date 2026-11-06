@@ -3,7 +3,7 @@
  * the process group mid-import, tsx's esbuild service died with it, and the phase
  * detail reported only "TransformError: The service is no longer running"). */
 import { describe, expect, it, vi } from 'vitest';
-import { assertIsolatedIntegrationWorkerEnvironment, codexManagedToolsNativeIntegrationSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions } from './isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, codexManagedToolsNativeIntegrationSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from './isolated-integration-proof';
 
 describe('isolated integration worker environment', () => {
   const owned = { PAPERCUSP_WORKSPACE: 'test-runtime-private',
@@ -94,5 +94,32 @@ describe('isolatedWorkerOptions', () => {
     expect(options.phaseTimeouts.executeMs).toBe(180_000);
     expect(options.phaseTimeouts.bootstrapMs).toBeGreaterThan(0);
     expect(options.testTimeoutMs).toBeGreaterThan(options.phaseTimeouts.bootstrapMaxMs! + 180_000);
+  });
+});
+
+describe('isolated proof enclosing file deadline', () => {
+  it.each([undefined, '600000'])('refuses an undersized file budget (%s) before source or worker allocation', async budget => {
+    const options = isolatedWorkerOptions(480_000, {});
+    const execute = vi.fn();
+    vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', budget);
+    try {
+      await expect(recordIsolatedIntegrationProof({
+        // This root must never be inspected: deadline admission precedes source
+        // observation, telemetry database setup and execute.
+        root: '/not-an-allocated-proof-root', filePath: 'consult-http-budget.test.ts',
+        sourcePaths: [], minimumFileRunTimeoutMs: options.testTimeoutMs, execute,
+      })).rejects.toThrow(`Isolated proof requires PAPERCUSP_TEST_FILE_TIMEOUT_MS >= ${options.testTimeoutMs}`);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('admits the composed worker budget exactly and refuses one millisecond less', () => {
+    const { testTimeoutMs } = isolatedWorkerOptions(480_000, {});
+    expect(() => assertIsolatedFileRunBudget(testTimeoutMs,
+      { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(testTimeoutMs) })).not.toThrow();
+    expect(() => assertIsolatedFileRunBudget(testTimeoutMs,
+      { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(testTimeoutMs - 1) })).toThrow('enclosing router has');
   });
 });

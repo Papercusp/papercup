@@ -59,6 +59,12 @@ describe('plan anchors P008 persisted claim context', () => {
     async function preflight<T>(name: string, read: () => Promise<T>): Promise<T> {
       const startedAt = performance.now();
       try { return await read(); }
+      catch (error) {
+        console.info('P008_CONTEXT_PREFLIGHT', JSON.stringify({ phase: name,
+          error: error instanceof Error ? error.message : String(error),
+          code: error && typeof error === 'object' && 'code' in error ? error.code : null }));
+        throw error;
+      }
       finally {
         timings[name] = Math.round(performance.now() - startedAt);
         console.info('P008_CONTEXT_PREFLIGHT', JSON.stringify({ phase: name, elapsedMs: timings[name] }));
@@ -90,7 +96,11 @@ describe('plan anchors P008 persisted claim context', () => {
     const deps: TaskBriefDeps = { root: async () => root,
       effects: { exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => '', now: () => new Date(0) },
       graph: async () => { throw new Error('Whole-file graph must not run for an anchored claim.'); },
-      anchors: { graph: async () => graph, writeArtifact: async () => 'fixture-artifact' },
+      anchors: { graph: async () => graph, writeArtifact: async () => 'fixture-artifact',
+        // Exercise the same default reader while retaining its original failure
+        // before the production bounded wrapper returns unknown context.
+        links: (input, paths) => preflight('claim-source-links', () => readPushSourceLinks({ ...input, calls: [] }, paths)),
+      },
       reuse: { providers: [] }, toolset: async () => toolsetFromNames(['code:pack', 'work_items:get']),
       pack: async (_op, args) => {
         const artifact = join(root, 'claim.xml');

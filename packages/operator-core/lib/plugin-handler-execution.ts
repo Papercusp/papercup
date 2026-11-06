@@ -10,22 +10,52 @@ export function createConfinedPluginInvoker(options: {
   runtime: PreparedHandlerRuntime;
   pluginName: string;
   installation: NonNullable<Parameters<PluginHandlerExecutor>[0]['tool']['pluginInstallation']>;
-  tools: readonly string[];
+  /** Wire-name -> manifest-local SDK handler. Arrays retain the raw guest API. */
+  tools: readonly string[] | Readonly<Record<string, string>>;
   /** Narrow capability-checked service closures built from the HOST request. */
   effects?: (request: Parameters<PluginHandlerExecutor>[0]) => Readonly<Record<string,
     (input: unknown, signal: AbortSignal) => unknown | Promise<unknown>>>;
 }): PluginHandlerExecutor {
   const { runtime, pluginName, effects } = options;
   const installation = Object.freeze({ ...options.installation });
-  const tools = new Set(options.tools);
+  const tools = new Map(Array.isArray(options.tools) ? options.tools.map(name => [name, name] as const)
+    : Object.entries(options.tools));
+  if (!tools.size || [...tools].some(([name, local]) => !name || typeof local !== 'string' || !local)) {
+    throw new Error('invalid confined tool mapping');
+  }
   return async request => {
     const selected = request.tool.pluginInstallation;
     if (request.tool.pluginName !== pluginName || !selected || selected.version !== installation.version
       || selected.path !== installation.path || selected.source !== installation.source || !tools.has(request.toolName)) {
       throw new Error('confined handler installation binding mismatch');
     }
-    const services = Object.freeze({ ...effects?.(request) });
-    const result = CallToolResultSchema.parse(await invokeApprovedHandler({ runtime, toolName: request.toolName, input: request.input,
+    const services: Readonly<Record<string, (input: unknown, signal: AbortSignal) => unknown>> = Object.freeze({ ...effects?.(request),
+      'sdk.context': () => {
+        const ctx = request.ctx;
+        // Never spread ctx: it holds principals and host service closures.
+        return { workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug,
+          projectDir: ctx.projectDir, stateDir: ctx.stateDir, role: ctx.role,
+          featureId: ctx.featureId ?? null, chunkId: ctx.chunkId ?? null,
+          runId: ctx.runId, spawnId: ctx.spawnId, parentSpawnId: ctx.parentSpawnId ?? null };
+      },
+      'sdk.progress': (input: unknown) => {
+        const value = input as { pct?: unknown; msg?: unknown } | null;
+        if (!value || (value.pct !== undefined && (typeof value.pct !== 'number' || !Number.isFinite(value.pct)))
+          || (value.msg !== undefined && typeof value.msg !== 'string')) throw new Error('invalid SDK progress');
+        request.ctx.progress(value.pct as number | undefined, value.msg as string | undefined); return null;
+      },
+      'sdk.emit': (input: unknown) => {
+        const value = input as { name?: unknown; data?: unknown } | null;
+        if (!value || typeof value.name !== 'string' || !value.name.length) throw new Error('invalid SDK event');
+        request.ctx.emit(value.name, value.data); return null;
+      },
+      'sdk.log': (input: unknown) => {
+        const value = input as { msg?: unknown } | null;
+        if (!value || typeof value.msg !== 'string') throw new Error('invalid SDK log');
+        request.ctx.log(value.msg); return null;
+      },
+    });
+    const result = CallToolResultSchema.parse(await invokeApprovedHandler({ runtime, toolName: tools.get(request.toolName)!, input: request.input,
       signal: request.ctx.signal, effect: (operation, input, signal) => {
         if (!Object.hasOwn(services, operation) || typeof services[operation] !== 'function') throw new Error('handler service is not exposed');
         return services[operation]!(input, signal);
@@ -51,7 +81,7 @@ export async function createInstalledConfinedPluginInvoker(options:
   // during admission must not bind an approved runtime to another installation.
   const { runtimeDirectory, pluginName, effects } = options;
   const installation = { ...options.installation };
-  const tools = [...options.tools];
+  const tools = Array.isArray(options.tools) ? [...options.tools] : { ...options.tools };
   // Apply the runtime builder's ceilings BEFORE allocating any guest copies.
   // Its later validation cannot protect this earlier admission snapshot.
   if (!Array.isArray(options.handlerFiles) || !options.handlerFiles.length || options.handlerFiles.length > 1023) {
