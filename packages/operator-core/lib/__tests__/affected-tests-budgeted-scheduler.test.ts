@@ -108,7 +108,9 @@ describe('private native proof custody (P002)', () => {
     const contract = { identity, expected };
     const save = () => retainNativeProofPacket(directory, { ...contract, observations,
       execution: { state: 'failed' }, cleanup: { complete: false } });
-    return { root, producer, directory, contract, observations, save };
+    const saveAsync = () => retainNativeProofPacketAsync(directory, { ...contract, observations,
+      execution: { state: 'failed' }, cleanup: { complete: false } });
+    return { root, producer, directory, contract, observations, save, saveAsync };
   }
 
   function consumeRetained(f: ReturnType<typeof fixture>, locator: ReturnType<typeof f.save>['locator'], contract = f.contract) {
@@ -219,7 +221,7 @@ describe('private native proof custody (P002)', () => {
     expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
   });
 
-  it('retains evaluator references across the segment object boundary and preserves historical partial packets', () => {
+  it('retains evaluator references across the segment object boundary and preserves historical partial packets', async () => {
     const f = fixture(), group = f.contract.expected[0]!, modules = group.out! + '.modules';
     rmSync(modules, { recursive: true });
     mkdirSync(modules);
@@ -234,7 +236,7 @@ describe('private native proof custody (P002)', () => {
     payload.rows = [{ moduleEvaluations: { ...payload.rows[0].moduleEvaluations, entries: pins, vmInputs: [] } }];
     payload.diagnostics = []; payload.nativeRun.files = [];
     writeFileSync(group.out!, JSON.stringify(payload));
-    const saved = f.save();
+    const saved = await f.saveAsync();
     expect(saved.status).toBe('complete');
     expect(saved.manifest.groups[0]!.referenceArtifacts).toEqual(pins);
     expect(saved.manifest.groups[0]!.referenceGaps).toEqual([]);

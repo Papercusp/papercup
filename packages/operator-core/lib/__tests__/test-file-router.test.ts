@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
 import { mockImplementationTyped } from '../testing/typed-mock';
+import { stripVitestAnsi } from '../../../../scripts/lib/vitest-summary.mjs';
 
 it('records a real node:test child when the focused router starts without a TS loader', () => {
   const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
@@ -1537,7 +1538,7 @@ describe('Vitest main-process close timeout is a finalization error', () => {
       for (const result of [late, early]) {
         expect(result.error, output(result)).toBeUndefined();
         expect(result.status, output(result)).toBe(0);
-        expect(output(result)).toMatch(/Tests\s+1 passed/);
+        expect(stripVitestAnsi(output(result))).toMatch(/Tests\s+1 passed/);
         expect(hasVitestCloseTimeoutWarning(output(result)), output(result)).toBe(true);
       }
       // Vite bundles config into a timestamped .mjs file; retain that actual
