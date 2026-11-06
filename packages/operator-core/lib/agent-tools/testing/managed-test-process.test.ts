@@ -50,16 +50,17 @@ it.each(['close', 'spawn-error'] as const)('retains real child %s and original o
     expect(spec.argv).toEqual([command, ...args]);
     expect(args).toContain(source);
     options?.stage?.('spawn-fork');
-    child = spawnChild(event === 'spawn-error' ? join(root, 'missing-overlay.sh') : command,
-      [...args], options?.spawnOptions);
+    const spawned = spawnChild(event === 'spawn-error' ? join(root, 'missing-overlay.sh') : command,
+      [...args], options?.spawnOptions ?? {});
+    child = spawned;
     // managedSpawn's own ledger observer also handles errors independently of
     // the caller. Preserve that behavior while controlling only its async wait.
-    child.on('error', () => {});
-    child.once('close', () => { childClosed = true; });
-    options?.onSpawn?.(child, 'realhandofftask');
+    spawned.on('error', () => {});
+    spawned.once('close', () => { childClosed = true; });
+    options?.onSpawn?.(spawned, 'realhandofftask');
     await ledger;
     handedOff = true;
-    return { child, taskId: 'realhandofftask', scopeUnit: null, confined: false,
+    return { child: spawned, taskId: 'realhandofftask', scopeUnit: null, confined: false,
       waitForCompletion: async () => ({ status: 'recorded' }) };
   });
   const controller = new AbortController();
@@ -230,7 +231,7 @@ it.each([false, true])('preserves ordered wrapper cleanup with bounded escalatio
   const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-ordered-cleanup-'));
   directories.push(outputDir);
   const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
-  const killScope = vi.fn(async () => ({ ok: true, scopeUnit: 'pc-orderedcleanup.scope', action: 'kill' }));
+  const killScope = vi.fn(async () => ({ ok: true as const, scopeUnit: 'pc-orderedcleanup.scope', action: 'kill' }));
   const killGroup = vi.fn();
   const launched = await launchManagedTestProcess({
     command: process.execPath, args: [], cwd: process.cwd(), env: {}, timeoutMs: 60_000,
