@@ -564,8 +564,8 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     const deadlineAtMs = setReadinessDeadline(f, 60_000);
     let probes = 0;
     f.deps.probe = vi.fn(async () => ++probes <= 35
-      ? { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' }
-      : { status: 'ready', build: f.input.evaluatorBuild });
+      ? { status: 'unready' as const, reason: 'connection-error' as const, errorCode: 'ECONNREFUSED' }
+      : { status: 'ready' as const, build: f.input.evaluatorBuild });
 
     const runtime = await ensureGradingAuditRuntime({ ...f.input, deadlineAtMs }, f.deps);
 
@@ -582,7 +582,7 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     f.deps.probe = vi.fn(async () => {
       probes += 1;
       if (probes === 2) f.rows[0]!.state = 'exited';
-      return { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' };
+      return { status: 'unready' as const, reason: 'connection-error' as const, errorCode: 'ECONNREFUSED' };
     });
 
     const error = await ensureGradingAuditRuntime(f.input, f.deps).catch(error => error);
@@ -598,7 +598,7 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     const controller = new AbortController();
     f.deps.probe = vi.fn(async () => {
       controller.abort();
-      return { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' };
+      return { status: 'unready' as const, reason: 'connection-error' as const, errorCode: 'ECONNREFUSED' };
     });
 
     const error = await ensureGradingAuditRuntime({ ...f.input, signal: controller.signal }, f.deps).catch(error => error);
