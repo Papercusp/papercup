@@ -173,6 +173,31 @@ export interface DiskReclaimOptions {
   acquireRegularFileLease?: (entry: RetentionEntry, timeoutMs: number) => Promise<RetentionFileLease>;
 }
 
+/** A delegate's hint can only schedule a fresh pass, never authorize effects.
+ * Recognize the existing release-cut pending receipt and refuse mixed failures
+ * or absent lineage rather than reconstructing an older native attempt. */
+function pendingDelegateCensus(delegate: DiskReclaimReceipt['delegates'][number]): PendingRetentionCensus | null {
+  if (delegate.ok || delegate.classId !== 'release-cut-worktrees' ||
+      !delegate.detail || typeof delegate.detail !== 'object') return null;
+  const detail = delegate.detail as { pendingWalk?: Partial<PendingRetentionCensus>; errors?: unknown };
+  const pending = detail.pendingWalk;
+  if (!pending || typeof pending !== 'object' ||
+      typeof pending.root !== 'string' || !pending.root ||
+      typeof pending.dir !== 'string' || resolve(pending.dir) !== pending.dir ||
+      !Number.isInteger(pending.attempt) || (pending.attempt ?? 0) < 1 ||
+      typeof pending.requestKey !== 'string' || !pending.requestKey ||
+      typeof pending.launchedAt !== 'number' || !Number.isFinite(pending.launchedAt) || pending.launchedAt < 0 ||
+      !Array.isArray(detail.errors) || detail.errors.length !== 1) return null;
+  const error = detail.errors[0], prefix = 'release-cut usage before reclaim: ';
+  if (typeof error !== 'string' || !error.startsWith(prefix)) return null;
+  try {
+    const cause = JSON.parse(error.slice(prefix.length));
+    if (cause.message !== 'release-cut usage pending; managed census continues for adoption' ||
+        cause.code != null || cause.signal != null || cause.killed === true) return null;
+  } catch { return null; }
+  return pending as PendingRetentionCensus;
+}
+
 /** The workflow checkpoints each callback separately. Productive effect-budget
  * stops and an exact completed pending census continue; another pass rebuilds all eligibility evidence.
  * The deadline comes from persisted receipt time, so recovery cannot reset it.
@@ -200,16 +225,25 @@ export async function drainScheduledDiskReclaim(
     const started = Date.parse(receipt.startedAt), finished = Date.parse(receipt.finishedAt);
     if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return { ...result, stop: 'error' };
     notAfterMs ??= started + maxElapsedMs;
-    const pending = receipt.censuses?.find(census => !census.preparationOnly && census.error === RETENTION_CENSUS_PENDING_ERROR &&
-      census.pendingWalk?.root === census.root)?.pendingWalk;
-    if (pending && limits.awaitPendingCensus &&
-        receipt.errors.length > 0 && receipt.errors.every(error => error === `inspect:${pending.root}: ${RETENTION_CENSUS_PENDING_ERROR}`) &&
-        receipt.delegates.every(delegate => delegate.ok) && receipt.entries.every(entry => entry.status !== 'failed')) {
+    const rootWaits = receipt.censuses?.filter(census => !census.preparationOnly && census.error === RETENTION_CENSUS_PENDING_ERROR &&
+      census.pendingWalk?.root === census.root && receipt.errors.includes(`inspect:${census.root}: ${RETENTION_CENSUS_PENDING_ERROR}`)) ?? [];
+    const delegateWaits = receipt.delegates.map(delegate => ({ delegate, pending: pendingDelegateCensus(delegate) }));
+    const pending = [...delegateWaits.flatMap(wait => wait.pending ? [wait.pending] : []),
+      ...rootWaits.map(census => census.pendingWalk!)];
+    const pendingErrors = new Set(rootWaits.map(census => `inspect:${census.root}: ${RETENTION_CENSUS_PENDING_ERROR}`));
+    if (pending.length && limits.awaitPendingCensus && receipt.errors.every(error => pendingErrors.has(error)) &&
+        delegateWaits.every(wait => wait.delegate.ok || wait.pending) && receipt.entries.every(entry => entry.status !== 'failed')) {
       if (finished >= notAfterMs) return { ...result, stop: 'time-limit' };
       if (batch + 1 >= maxBatches) return { ...result, stop: 'batch-limit' };
       // This callback runs after the pass released its retention mutex. A
       // pending walk alone is progress only when its exact attempt completes.
-      if (!await limits.awaitPendingCensus(pending, notAfterMs)) return { ...result, stop: 'no-progress' };
+      const waited = new Set<string>();
+      for (const wait of pending) {
+        const identity = JSON.stringify([wait.root, wait.dir, wait.attempt, wait.requestKey, wait.launchedAt]);
+        if (waited.has(identity)) continue;
+        waited.add(identity);
+        if (!await limits.awaitPendingCensus(wait, notAfterMs)) return { ...result, stop: 'no-progress' };
+      }
       continue;
     }
     const budgetErrors = new Set(receipt.effects?.filter((effect) => effect.stopped && effect.remaining > 0)

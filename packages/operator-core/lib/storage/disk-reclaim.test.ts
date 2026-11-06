@@ -263,6 +263,50 @@ describe('bounded scheduled retention drain', () => {
     expect(run).toHaveBeenCalledOnce();
     expect(awaitPendingCensus).toHaveBeenCalledTimes(mode === 'failed-wait' ? 1 : 0);
   });
+  const pendingDelegate = () => {
+    const pendingWalk = { root: '/cuts', dir: '/retention/cut-usage', attempt: 1, requestKey: 'cut-request', launchedAt: 0 };
+    return { classId: 'release-cut-worktrees', ok: false, detail: { pendingWalk,
+      errors: ['release-cut usage before reclaim: ' + JSON.stringify({
+        message: 'release-cut usage pending; managed census continues for adoption',
+      })] } };
+  };
+  it.each([false, true])('adopts an exact pending delegate before a fresh pass (root pending: %s)', async rootPending => {
+    const delegate = pendingDelegate();
+    const pendingWalk = { root: '/scratch', dir: '/retention/root', attempt: 2, requestKey: 'root-request', launchedAt: 0 };
+    const pending = partial({ entries: [], effects: [], delegates: [delegate],
+      errors: rootPending ? ['inspect:/scratch: retention census pending; managed walk continues for adoption'] : [],
+      censuses: rootPending ? [{ root: '/scratch', classId: 'scratch', elapsedMs: 1000, inspectedNodes: 0,
+        pendingWalk, error: 'retention census pending; managed walk continues for adoption' }] : [],
+    });
+    const run = vi.fn().mockResolvedValueOnce(pending).mockResolvedValueOnce(partial({ id: 'fresh', complete: true, errors: [] }));
+    const awaitPendingCensus = vi.fn(async () => true);
+    expect(await drainScheduledDiskReclaim(run, { awaitPendingCensus })).toEqual({ batches: 2, lastReceiptId: 'fresh', stop: 'complete' });
+    expect(awaitPendingCensus.mock.calls).toEqual([
+      [delegate.detail.pendingWalk, 900_000], ...(rootPending ? [[pendingWalk, 900_000]] : []),
+    ]);
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+  });
+  it.each(['missing-lineage', 'invalid-lineage', 'permanent-failure', 'unknown-owner', 'other-delegate',
+    'root-error', 'failed-entry', 'failed-wait', 'expired-deadline', 'batch-limit', 'no-waiter'])('refuses unsafe pending delegate: %s', async mode => {
+    const delegate = pendingDelegate();
+    const pending = partial({ entries: [], effects: [], errors: [], delegates: [delegate] });
+    if (mode === 'missing-lineage') delete (delegate.detail as Partial<typeof delegate.detail>).pendingWalk;
+    if (mode === 'invalid-lineage') delegate.detail.pendingWalk.attempt = 0;
+    if (mode === 'permanent-failure') delegate.detail.errors.push('release-cut pin census unavailable');
+    if (mode === 'unknown-owner') delegate.classId = 'other-owner';
+    if (mode === 'other-delegate') pending.delegates.push({ classId: 'other-owner', ok: false, detail: 'unavailable' });
+    if (mode === 'root-error') pending.errors.push('incomplete process-holder scan:/scratch');
+    if (mode === 'failed-entry') pending.entries.push({ path: '/scratch/held', classId: 'scratch', status: 'failed', bytes: 1 });
+    if (mode === 'expired-deadline') pending.finishedAt = new Date(900_000).toISOString();
+    const run = vi.fn().mockResolvedValue(pending);
+    const awaitPendingCensus = vi.fn(async () => false);
+    const result = await drainScheduledDiskReclaim(run, {
+      ...(mode === 'no-waiter' ? {} : { awaitPendingCensus }), ...(mode === 'batch-limit' ? { maxBatches: 1 } : {}),
+    });
+    expect(run).toHaveBeenCalledOnce();
+    expect(awaitPendingCensus).toHaveBeenCalledTimes(mode === 'failed-wait' ? 1 : 0);
+    expect(result.stop).toBe(mode === 'failed-wait' ? 'no-progress' : mode === 'expired-deadline' ? 'time-limit' : mode === 'batch-limit' ? 'batch-limit' : 'error');
+  });
   const cappedPartial = (): DiskReclaimReceipt => partial({
     caps: [{ root: '/scratch', classId: 'scratch', maxBytes: 10, beforeBytes: 12,
       pinnedBytes: 0, pinnedPaths: [], afterBytes: 11, overByBytes: 1, pinnedOverageBytes: 0 }],
