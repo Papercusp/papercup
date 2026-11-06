@@ -1446,12 +1446,16 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       const internalLink = join(deps, 'internal-b');
       const privateFile = join(deps, 'private');
       const symlink = join(deps, 'symlink');
+      const sources = join(checkout, 'sources');
+      const misleadingName = join(sources, 'node_modules');
+      mkdirSync(sources);
       linkSync(externalDependency, dependency);
       linkSync(externalBuild, build);
       writeFileSync(internal, Buffer.alloc(128 * 1024, 3));
       linkSync(internal, internalLink);
       writeFileSync(privateFile, Buffer.alloc(64 * 1024, 4));
       symlinkSync(externalDependency, symlink);
+      linkSync(externalBuild, misleadingName);
       const body = /^STAGING_GENERATION_MEASURE_SCRIPT='([^']*)'$/m.exec(readFileSync(SCRIPT_PATH, 'utf8'))?.[1];
       const result = runFn(['launch_staging_generation_measure'],
         `log() { echo "$*"; }; launch_staging_generation_measure ${JSON.stringify(home)} ${JSON.stringify(bytesFile)}`,
@@ -1460,13 +1464,31 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       const measurement = JSON.parse(readFileSync(bytesFile, 'utf8'));
       // Count each inode once, including directories and symlinks. The build
       // hardlink and links wholly inside this generation still cost bytes.
-      const fullBytes = [home, checkout, deps, dependency, build, internal, privateFile, symlink]
+      const fullBytes = [home, checkout, deps, sources, dependency, build, internal, privateFile, symlink]
         .reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
       expect(measurement).toEqual({
         schemaVersion: 1,
         fullBytes,
         hardlinkBytes: fullBytes - lstatSync(dependency).blocks * 512,
       });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([-1, 9000000000000001, 'unknown'])('keeps full-copy admission when the hardlink estimate is invalid (%s)', (hardlinkBytes) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-invalid-'));
+    try {
+      const bytesFile = join(root, '.generation-bytes');
+      writeFileSync(bytesFile, JSON.stringify({ schemaVersion: 1, fullBytes: 9000000000000000, hardlinkBytes }));
+      const result = runFn(['staging_preparation_has_headroom'],
+        'if staging_preparation_has_headroom; then echo HEADROOM_OK; else echo "HEADROOM_STATUS=$?"; fi', {
+          env: {
+            INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'), STAGING_GENERATIONS_ROOT: root,
+            STAGING_GENERATION_BYTES_FILE: bytesFile, NODE_MODULES_COPY_MODE: 'hardlink',
+            PAPERCUSP_DISK_ALARM_CRITICAL_GB: '0.000001', PAPERCUSP_DISK_ALARM_CRITICAL_PCT: '0.000001',
+          },
+        });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('HEADROOM_STATUS=75');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

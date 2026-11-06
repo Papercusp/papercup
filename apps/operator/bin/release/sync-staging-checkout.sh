@@ -617,15 +617,16 @@ launch_staging_trash_drain() {
 # and leaves the previous measurement in place.
 STAGING_GENERATION_MEASURE_SCRIPT='node --input-type=module - "$1" "$2" <<\NODE
 import { lstatSync, readdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 const root = process.argv[2], file = process.argv[3];
 const device = lstatSync(root).dev;
 const shared = new Map();
 const pending = [{ path: root, dependency: false }];
 let fullBytes = 0;
 while (pending.length) {
-  const { path, dependency } = pending.pop();
+  const { path, dependency: parentDependency } = pending.pop();
   const stat = lstatSync(path);
+  const dependency = parentDependency || (stat.isDirectory() && basename(path) === "node_modules");
   if (stat.dev !== device) throw new Error("generation crosses filesystem boundary");
   const bytes = stat.blocks * 512;
   let first = true;
@@ -641,7 +642,7 @@ while (pending.length) {
   }
   if (first) fullBytes += bytes;
   if (stat.isDirectory()) {
-    for (const name of readdirSync(path)) pending.push({ path: join(path, name), dependency: dependency || name === "node_modules" });
+    for (const name of readdirSync(path)) pending.push({ path: join(path, name), dependency });
   }
 }
 let hardlinkBytes = fullBytes;

@@ -11,6 +11,7 @@ const live = process.env.PAPERCUSP_REPORT_SHARING_NATIVE_LIVE === '1';
 
 describe.skipIf(!live)('report sharing through the owned native operator', () => {
   it('shares the selected harmless edition, copies its URL, reads Pages anonymously and stops sharing', async () => {
+    expect(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED).toBe('1');
     const pid = process.env.VERIFY_TAURI_PID!;
     const profile = JSON.parse(readFileSync(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE!, 'utf8'));
     const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));

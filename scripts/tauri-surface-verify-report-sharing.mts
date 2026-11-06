@@ -12,9 +12,9 @@ import { checkNativeLedger, nativeLedgerEnvironment } from './tauri-surface-veri
 
 export async function runReportSharingNativeAcceptance() {
   assert.equal(process.env.PAPERCUSP_REPORT_SHARING_NATIVE_LIVE, '1', 'Explicit fixture publication opt-in required');
-  // This specific journey needs the selected account's existing external GitHub
-  // credentials. Keep the ordinary isolated verifier's credential scrub intact.
-  assert.notEqual(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the owned account runtime for this explicit fixture');
+  // Publication is allowed only in disposable app state. Any explicit account
+  // profile must retain the standard verifier's credential and CLI write guards.
+  assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier for fixture writes');
   assert.ok(process.env.VERIFY_TAURI_SOURCE_RECEIPT && process.env.OPERATOR_SOURCE_ROOT);
   const sourceRoot = realpathSync(process.env.OPERATOR_SOURCE_ROOT);
   const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT, 'utf8'));
