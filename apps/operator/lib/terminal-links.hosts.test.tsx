@@ -104,7 +104,7 @@ async function mount(host: Host) {
     case 'host-pi': render(<PiPanel slug="links-test" />); break;
     case 'host-hosted':
       render(<HostedWorkspaceSession hostId="link-host" routeLabel="links" workspaceName="Links" />);
-      fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
       break;
     case 'host-setup': M.native = true; render(<InlinePtyTerminal command="bash" />); break;
     case 'host-dev': render(<TerminalTab />); break;

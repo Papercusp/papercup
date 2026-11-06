@@ -39,6 +39,7 @@ describe('terminal app references in real xterm buffers', () => {
   it('preserves query-fragment and punctuation with exact-cell-range and app activation', async () => {
     const { provider } = await setup(`\x1b[32mgo ${HREF}\x1b[0m).`);
     const [link] = linksAt(provider, 1);
+    expect(link, 'the actual provider must discover the complete reference').toBeDefined();
     expect(link.text).toBe(HREF);
     expect(link.range).toEqual({ start: { x: 4, y: 1 }, end: { x: 3 + HREF.length, y: 1 } });
     const event = new MouseEvent('click', { cancelable: true });
@@ -49,7 +50,7 @@ describe('terminal app references in real xterm buffers', () => {
 
   it.each([
     [REPORT, `/reports?sel=${REPORT}`],
-    [`/reports/${REPORT}?view=all#details`, HREF],
+    [`/reports/${REPORT}?view=all#details`, `/reports?view=all&sel=${REPORT}#details`],
   ])('recognizes complete reference %s', async (text, expected) => {
     const { provider } = await setup(text);
     const [link] = linksAt(provider, 1);
@@ -93,13 +94,26 @@ describe('terminal app references in real xterm buffers', () => {
   });
 
   it('resize-reflow recomputes ranges without cached viewport coordinates', async () => {
-    const { terminal, provider } = await setup(`go ${HREF}`, 20);
+    // Xterm deliberately leaves a wrapped group alone while the cursor is
+    // inside it. Move past the group to exercise actual scrollback reflow.
+    const { terminal, provider } = await setup(`go ${HREF}\r\n`, 20);
     const before = linksAt(provider, 1)[0];
     terminal.resize(40, 10);
     const after = linksAt(provider, 1)[0];
     expect(after.text).toBe(HREF);
     expect(after.range.end.y).toBeLessThan(before.range.end.y);
     expect(after.range.end).toEqual({ x: (3 + HREF.length - 1) % 40 + 1, y: Math.floor((3 + HREF.length - 1) / 40) + 1 });
+  });
+
+  it('resize of the active cursor group ignores newly added trailing null padding', async () => {
+    const { terminal, provider } = await setup(`go ${HREF}`, 20);
+    terminal.resize(40, 10);
+    const [link] = linksAt(provider, 1);
+    expect(link?.text).toBe(HREF);
+    const { end } = link.range;
+    expect(terminal.buffer.active.getLine(end.y - 1)?.getCell(end.x - 1)?.getChars()).toBe('s');
+    link.activate(new MouseEvent('click'), link.text);
+    expect(navigation).toHaveBeenCalledExactlyOnceWith(HREF);
   });
 
   it('buffer-viewport uses buffer row identities after scrollback', async () => {

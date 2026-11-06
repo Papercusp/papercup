@@ -10,8 +10,9 @@ function openAppReference(href: string): void {
 }
 
 /** Read the whole logical line, retaining the actual cells behind UTF-16 offsets.
- * Hard newlines stay separate. Wide-character continuation cells and the null
- * padding before an early-wrapped wide character contribute no text. */
+ * Hard newlines stay separate. Wide-character continuation cells and trailing
+ * null padding (including expanded cursor lines after resize) add no text.
+ * Explicitly printed spaces and interior null cells remain separators. */
 function readLogicalLine(terminal: Terminal, y: number) {
   const buffer = terminal.buffer.active;
   if (!Number.isInteger(y) || y < 1 || !buffer.getLine(y - 1)) return null;
@@ -24,14 +25,17 @@ function readLogicalLine(terminal: Terminal, y: number) {
   const ends: Position[] = [];
   for (let row = first; row <= last; row++) {
     const line = buffer.getLine(row)!;
-    const columns = Math.min(line.length, terminal.cols);
+    let columns = Math.min(line.length, terminal.cols);
+    while (columns > 0) {
+      const tail = line.getCell(columns - 1)!;
+      if (tail.getChars() || tail.getWidth() === 0) break;
+      columns--;
+    }
     for (let column = 0; column < columns; column++) {
       const cell = line.getCell(column)!;
       const width = cell.getWidth();
       if (width === 0) continue;
       const chars = cell.getChars();
-      if (!chars && column === columns - 1 && row < last
-        && buffer.getLine(row + 1)?.getCell(0)?.getWidth() === 2) continue;
       const value = chars || ' ';
       text += value;
       for (let offset = 0; offset < value.length; offset++) {
@@ -80,12 +84,18 @@ export class TerminalLinksAddon implements ITerminalAddon {
   constructor(private navigate: Navigate = openAppReference) {}
 
   activate(terminal: Terminal): void {
-    this.dispose();
+    // Xterm replaces public dispose before calling activate. Calling that
+    // wrapper here would remove this addon from its teardown manager.
+    this.releaseRegistration();
     this.provider = new AppReferenceProvider(terminal, this.navigate);
     this.registration = terminal.registerLinkProvider(this.provider);
   }
 
   dispose(): void {
+    this.releaseRegistration();
+  }
+
+  private releaseRegistration(): void {
     this.provider?.dispose();
     this.registration?.dispose();
     this.provider = undefined;
