@@ -60,6 +60,9 @@ export interface CommittedTreeSpawnBoundaryRecord extends BlobBatchSpawnBoundary
 /** Bounded per-request timing for one batched `git ls-tree` call. */
 export interface CommittedTreeLsTreeRecord {
   repository: string;
+  /** Commit and exact argv identity; path names themselves are never retained. */
+  commit: string;
+  argumentSha256: string;
   pathCount: number;
   pathBytes: number;
   argumentBytes: number;
@@ -456,6 +459,8 @@ async function lsTree(
   const args = ['ls-tree', '-z', ...(includeSizes ? ['-l'] : []), ...(recursive ? ['-r'] : []), commit, '--', ...paths];
   const details = {
     repository: repository.slice(0, 160),
+    commit,
+    argumentSha256: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
     pathCount: paths.length,
     pathBytes: paths.reduce((total, path) => total + Buffer.byteLength(path, 'utf8'), 0),
     argumentBytes: args.reduce((total, arg) => total + Buffer.byteLength(arg, 'utf8') + 1, 0),

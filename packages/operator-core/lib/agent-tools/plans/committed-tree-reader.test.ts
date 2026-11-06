@@ -368,6 +368,8 @@ describe('batched reads', () => {
     expect(diagnostics.lsTreeRecordsDropped).toBe(2);
     expect(diagnostics.lsTreeRecords?.[0]).toMatchObject({
       repository: '.',
+      commit,
+      argumentSha256: createHash('sha256').update(JSON.stringify(['ls-tree', '-z', commit, '--', 'src/a.ts'])).digest('hex'),
       pathCount: 1,
       pathBytes: Buffer.byteLength('src/a.ts'),
       recursive: false,
@@ -400,6 +402,8 @@ describe('batched reads', () => {
     expect(diagnostics.lsTreeRecords).toHaveLength(1);
     expect(diagnostics.lsTreeRecords?.[0]).toMatchObject({
       repository: '.',
+      commit,
+      argumentSha256: createHash('sha256').update(JSON.stringify(['ls-tree', '-z', commit, '--', 'src/a.ts', 'src/b.ts'])).digest('hex'),
       pathCount: 2,
       pathBytes: Buffer.byteLength('src/a.ts') + Buffer.byteLength('src/b.ts'),
       recursive: false,
