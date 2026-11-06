@@ -25,6 +25,8 @@
  */
 import type postgres from 'postgres';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { checkScript, ensureParseCheckReady } from '@papercusp/tooldef';
+import { RECIPE_RUN_RECEIPTS_CTE } from './code-recipes-store';
 import { searchSimilarRecipes } from './code-recipes-search';
 import { clampDemandScore as clamp01, logDemandScore, linearDemandScore, explainDemandScore, compareDemandRank } from './demand-score';
 
@@ -68,8 +70,9 @@ import { clampDemandScore as clamp01, logDemandScore, linearDemandScore, explain
 //     toolCount 1→COHESION_SATURATION(=3): 1 tool ⇒ 0, 2 ⇒ 0.5, ≥3 ⇒ 1.0.
 //
 // Redundancy damp (multiplicative, applied AFTER the weighted sum):
-//   • TRIVIAL  — toolCount ≤ 1: not batch-worthy. damp = 0 ⇒ EXCLUDED from
-//     promote candidates entirely (a 1-tool wrapper never promotes).
+//   • TRIVIAL — a primitive wrapper without supported result processing. A
+//     one-tool recipe can qualify when its executable source transforms the
+//     tool result it actually returns; frequency alone cannot establish this.
 //   • NAME COLLISION — an existing defineTool already projects a tool whose name
 //     matches the recipe id/slug (listAllProjectedTools names): the tool already
 //     exists, so promoting would regenerate it (D-007). damp = 0 ⇒ EXCLUDED.
@@ -131,7 +134,9 @@ export interface RecipeSignal {
   toolCount: number;
   /** Deterministic 0..1 rubric score (post-redundancy damp). */
   promotionScore: number;
-  /** True ⇒ EXCLUDED from promote candidates (trivial 1-tool OR name-collides an existing tool). */
+  /** Source-based substance, independent of popularity and tool count. */
+  substance: RecipeSubstance;
+  /** True ⇒ EXCLUDED from promote candidates (primitive wrapper or name collision). */
   redundant: boolean;
   /** Human-readable redundancy cause when redundant, else null. */
   redundancyReason: string | null;
@@ -214,6 +219,7 @@ type RecipeRow = {
   id: string;
   title: string;
   description: string;
+  script: string;
   status: string;
   tools_used: string[] | null;
   run_count: number | string;
@@ -253,6 +259,78 @@ export function existingToolSlugSet(
     slugs.add(slugifyToolName(n));
   }
   return { names, slugs };
+}
+
+export type RecipeSubstance = 'multi-tool' | 'result-processing' | 'primitive' | 'unknown';
+
+/** Reuse the facade parser's resolved call positions, then follow a conservative
+ * straight-line result flow. This is ranking evidence, never execution proof or
+ * authorization. Comments, unused helpers and unused transformations add no
+ * value. Unsupported control flow stays unknown rather than earning a bonus.
+ * The compiler stays lazy, as in the existing facade parser. */
+export async function recipeSubstance(script: string, toolsUsed: readonly string[]): Promise<RecipeSubstance> {
+  if (new Set(toolsUsed).size > 1) return 'multi-tool';
+  if (!toolsUsed.length) return 'primitive';
+  await ensureParseCheckReady();
+  const checked = checkScript(script, []);
+  if (checked.hasParseErrors) return 'unknown';
+  const ts = (await import('typescript')).default;
+  const source = ts.createSourceFile('recipe.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const calls = new Set(checked.calls.flatMap(call => call.position ? [call.position.offset] : []));
+  type Flow = 'raw' | 'processed' | null;
+  const bindings = new Map<string, Flow>();
+  const flow = (expression: import('typescript').Expression): Flow => {
+    if (ts.isParenthesizedExpression(expression) || ts.isAwaitExpression(expression)
+      || ts.isAsExpression(expression) || ts.isNonNullExpression(expression)) return flow(expression.expression);
+    if (ts.isIdentifier(expression)) return bindings.get(expression.text) ?? null;
+    if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) return flow(expression.expression);
+    if (ts.isCallExpression(expression)) {
+      if (calls.has(expression.getStart(source))) return 'raw';
+      if (!ts.isPropertyAccessExpression(expression.expression)) return null;
+      const input = flow(expression.expression.expression);
+      if (!input) return null;
+      const method = expression.expression.name.text;
+      const callback = expression.arguments[0];
+      if (!['filter', 'map', 'reduce', 'flatMap'].includes(method) || !callback
+        || !ts.isArrowFunction(callback) || ts.isBlock(callback.body)) return null;
+      // Identity maps and constant predicates do not establish useful work.
+      // Require a callback parameter to participate in a computed expression.
+      const parameters = new Set(callback.parameters.flatMap(parameter =>
+        ts.isIdentifier(parameter.name) ? [parameter.name.text] : []));
+      let body = callback.body;
+      while (ts.isParenthesizedExpression(body)) body = body.expression;
+      if (!ts.isObjectLiteralExpression(body) && !ts.isPropertyAccessExpression(body)
+        && !ts.isElementAccessExpression(body) && !ts.isBinaryExpression(body)) return input;
+      let readsParameter = false;
+      const visit = (node: import('typescript').Node): void => {
+        const isPropertyName = (ts.isPropertyAssignment(node.parent) || ts.isPropertyAccessExpression(node.parent))
+          && node.parent.name === node;
+        if (ts.isIdentifier(node) && parameters.has(node.text) && !isPropertyName) readsParameter = true;
+        ts.forEachChild(node, visit);
+      };
+      visit(body);
+      if (!readsParameter) return input;
+      return 'processed';
+    }
+    if (ts.isObjectLiteralExpression(expression)) {
+      return expression.properties.some(property => ts.isPropertyAssignment(property)
+        && flow(property.initializer) === 'processed') ? 'processed' : null;
+    }
+    return null;
+  };
+  for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) return 'unknown';
+        bindings.set(declaration.name.text, declaration.initializer ? flow(declaration.initializer) : null);
+      }
+    } else if (ts.isReturnStatement(statement)) {
+      return statement.expression && flow(statement.expression) === 'processed' ? 'result-processing' : 'primitive';
+    } else if (!ts.isFunctionDeclaration(statement) && !ts.isEmptyStatement(statement)) {
+      return 'unknown';
+    }
+  }
+  return 'primitive';
 }
 
 /** freqScore — log-saturating on run_count (run ~20× ⇒ ~1.0). See RECIPE RUBRIC. */
@@ -298,31 +376,8 @@ export async function recipeCandidates(
     | 'replay_successes' | 'replay_errors' | 'replay_refused' | 'source_rows' | 'copies_excluded'
     | 'conflicts' | 'source_bytes' | 'intermediate_bytes' | 'elapsed_ms'
     | 'source_measured' | 'intermediate_measured' | 'elapsed_measured', number | string>)[]>`
-        WITH observed AS (
-          SELECT *, execution_trace->'usage' AS usage, execution_trace->'runEvidence' AS evidence,
-            CASE WHEN execution_trace->'runEvidence'->>'version' = '1'
-              AND execution_trace->'runEvidence'->>'invocationId' ~ '^[A-Za-z0-9_.:-]{1,200}$'
-              AND execution_trace->'runEvidence'->>'attempt' ~ '^[0-9]{1,15}$'
-              THEN 'dispatch:' || (execution_trace->'runEvidence'->>'invocationId') || ':' || (execution_trace->'runEvidence'->>'attempt')
-              ELSE 'row:' || id::text END AS receipt_key
-            FROM harness_shared.code_recipe_runs
-        ), copies AS (
-          SELECT MIN(id) AS first_id, COUNT(*) AS source_rows,
-            COUNT(DISTINCT jsonb_build_array(execution_trace, success, reused, agent_owner, agent_role)) AS variants
-            FROM observed GROUP BY recipe_id, workspace_id, receipt_key
-        ), receipts AS (
-          SELECT observed.*, copies.source_rows, copies.variants FROM observed
-            JOIN copies ON observed.id = copies.first_id
-        ), classified AS (
-          SELECT *, COALESCE(
-            variants = 1 AND usage->>'version' = '1'
-            AND usage->>'selection' IN ('authored', 'automatic-match', 'saved-replay')
-            AND usage->>'choice' IN ('agent', 'hook', 'system', 'unknown')
-            AND usage->>'mode' IN ('commit', 'preview')
-            AND usage->>'settled' = 'true'
-            AND usage->>'outcome' IN ('success', 'error', 'refused'), false) AS known
-            FROM receipts
-        ), measured AS (
+        WITH recipe_run_source AS (SELECT * FROM harness_shared.code_recipe_runs),
+        ${sql.unsafe(RECIPE_RUN_RECEIPTS_CTE)}, measured AS (
           SELECT *,
             CASE WHEN variants = 1 AND evidence->>'version' = '1' AND evidence->>'sourceBytes' ~ '^[0-9]{1,16}$'
               THEN (evidence->>'sourceBytes')::numeric END AS source_bytes_value,
@@ -332,7 +387,7 @@ export async function recipeCandidates(
               THEN (evidence->>'elapsedBeforeRecordMs')::numeric END AS elapsed_value
             FROM classified
         )
-      SELECT r.id, r.title, r.description, r.status, r.tools_used,
+      SELECT r.id, r.title, r.description, r.script, r.status, r.tools_used,
              r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
              COUNT(run.id) AS observations,
              COALESCE(SUM(run.source_rows), 0) AS source_rows,
@@ -398,14 +453,16 @@ export async function recipeCandidates(
         reason: 'Recipe run receipts alone do not establish a completed source/client census or a compatible baseline.' },
     };
 
-    // Redundancy (excludes from promote candidates):
-    //   • TRIVIAL — toolCount ≤ 1: a 1-tool wrapper isn't batch-worthy.
-    //   • NAME COLLISION — an existing defineTool already owns this name/slug.
+    const substance = await recipeSubstance(r.script, toolsUsed);
+    // A source-backed one-tool reduction can qualify. Trivial wrappers and
+    // unsupported source never acquire substance from repeated use alone.
     let redundant = false;
     let redundancyReason: string | null = null;
-    if (toolCount <= 1) {
+    if (substance === 'primitive' || substance === 'unknown') {
       redundant = true;
-      redundancyReason = 'trivial: batches ≤1 distinct tool (not worth a tool over the primitive)';
+      redundancyReason = substance === 'unknown'
+        ? 'unknown: unsupported result-processing evidence'
+        : 'trivial: no supported processing beyond the primitive';
     } else if (existingToolNames.has(r.id) || existingToolSlugs.has(r.id)) {
       redundant = true;
       redundancyReason = `name_collision: recipe id "${r.id}" maps to an existing tool (D-007 — promoting would regenerate it)`;
@@ -440,6 +497,7 @@ export async function recipeCandidates(
       lastRunAt: asIsoOrNull(r.last_run_at),
       toolsUsed,
       toolCount,
+      substance,
       promotionScore,
       redundant,
       redundancyReason,
