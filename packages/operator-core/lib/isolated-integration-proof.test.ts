@@ -31,6 +31,22 @@ it('reads an ANSI-prefixed router result without dropping its first verdict fiel
     .toEqual({ requested: '1', executed: '1', matched: '1', status: 'passed', skippedTests: '0' });
 });
 
+it.each(['MANAGED_API_CLEANUP', 'MANAGED_API_PROOF'])(
+  'reads the terminal-formatted %s payload without altering original evidence', marker => {
+    const payload = JSON.stringify({ transport: 'http', patch: 'canonical-peer-lock-and-all-hunks' });
+    const output = '\x1b[22m\x1b[39m' + marker + ' ' + payload + '\x1b[0m\r\n';
+    expect(output.split('\n').some(line => line.startsWith(marker + ' '))).toBe(false);
+    expect(JSON.parse(isolatedWorkerReceipt(output, marker)!)).toEqual(JSON.parse(payload));
+    expect(output).toContain('\x1b[22m\x1b[39m');
+  });
+
+it.each(['MANAGED_API_CLEANUP', 'MANAGED_API_PROOF'])(
+  'refuses embedded or duplicate %s receipts', marker => {
+    expect(isolatedWorkerReceipt('diagnostic ' + marker + ' {}\n', marker)).toBeUndefined();
+    expect(() => isolatedWorkerReceipt(marker + ' {}\n\x1b[22m' + marker + ' {}\n', marker))
+      .toThrow('Multiple ' + marker + ' receipts');
+  });
+
 it.each(['', 'diagnostic OMP_ADMITTED_LIFECYCLE {}', 'OMP_ADMITTED_LIFECYCLE_OTHER {}',
   'TEST_FILE_PROGRESS lastOutputLine="OMP_ADMITTED_LIFECYCLE {}"', 'OMP_ADMITTED_LIFECYCLE\n{}'])(
   'refuses an absent or embedded lifecycle receipt (%s)', output => {
