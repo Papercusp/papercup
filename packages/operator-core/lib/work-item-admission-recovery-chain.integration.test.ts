@@ -648,6 +648,9 @@ describe('original authority context fidelity', () => {
     const heldRecovery = (await row(original.id)).payload._admissionRecovery;
     expect(heldRecovery).toMatchObject({ requestId: signed.request.requestId, state: 'held', stage: 'screen' });
 
+    await db.sql`UPDATE harness_shared.routines SET metadata =
+      '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}'
+      WHERE id = 'original-promoter'`;
     const ordinary = await tick();
     expect(ordinary).toMatchObject({ promoted: 1, merged: 0 });
     expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
@@ -946,7 +949,7 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
   });
 
   it('persists a guarded review refusal, retries on dependency change, and rechecks authority before a cached skip', async () => {
-    const original = await create('Guarded admission review target');
+    const original = await unassignedRecoveryReview();
     const dependency = await create(original.title);
     const [a, b] = [original.id, dependency.id].sort();
     const queued = await review(original.id);
@@ -1089,7 +1092,10 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     const refusal = expect.objectContaining({ itemId: original.id, canonicalId: null,
       reason: 'review-gated', detail: expect.stringContaining('malformed admission review request') });
     expect(result.guardRefusals).toContainEqual(refusal);
-    expect(await row(original.id)).toEqual(before);
+    expect(await row(original.id)).toEqual({
+      ...before,
+      payload: { ...before.payload, _admissionReviewLastAttemptAtMs: expect.any(Number) },
+    });
     const [protectedAfter] = await db.sql`SELECT (payload->'_admissionReviewRequest')::text AS request,
         (payload->'externalBlockers')::text AS blocker
       FROM harness_shared.work_items WHERE feature_id = ${original.id}`;
@@ -1124,7 +1130,10 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
       reason: 'review-gated',
       detail: expect.stringContaining('review requester absent, revoked or foreign'),
     }));
-    expect(await row(revokedItem.id)).toEqual(revokedBefore);
+    expect(await row(revokedItem.id)).toEqual({
+      ...revokedBefore,
+      payload: { ...revokedBefore.payload, _admissionReviewLastAttemptAtMs: expect.any(Number) },
+    });
     expect(await row(validItem.id)).toMatchObject({
       admission: 'admitted',
       taken_by: reviewerOwnerId,
@@ -1278,7 +1287,7 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     const original = await create('Reference drift review');
     const twin = await create(original.title);
     await claimOriginal(original.id);
-    await review(original.id);
+    const queued = await review(original.id);
     h.model.mockImplementationOnce(async () => {
       await db.sql`UPDATE harness_shared.work_items SET title = 'changed during judging', updated_ts = updated_ts + 1
         WHERE feature_id = ${twin.id}`;
@@ -1286,7 +1295,16 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     });
     expect(await tick()).toMatchObject({ promoted: 0, merged: 0, held: 1 });
     expect((await row(original.id)).admission).toBe('pending');
-    expect((await row(original.id)).payload).not.toHaveProperty('_admissionReviewReceipt');
+    expect((await row(original.id)).payload._admissionReviewReceipt).toMatchObject({
+      requestId: queued.requestId,
+      pickupConfirmed: false,
+      guardDisposition: {
+        schemaVersion: 1,
+        outcome: 'guard-refused',
+        guardRefusals: [expect.objectContaining({ itemId: original.id, reason: 'snapshot-drift' })],
+        dependencies: [{ itemId: twin.id, fingerprint: expect.any(String) }],
+      },
+    });
     expect((await row(twin.id)).admission).toBe('pending');
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();

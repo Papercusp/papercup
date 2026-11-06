@@ -4,10 +4,14 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn(async (_identity: unknown, _opts: unknown) => ({})),
   wake: vi.fn(async (_to: unknown, _opts: unknown) => ({})),
   launch: vi.fn(async (_args: unknown, _ctx: unknown) => ({ isError: false })),
+  turnProofReady: vi.fn(async () => true),
+  pickupHost: vi.fn(async (): Promise<{ execution: { turnStartedAt: number } } | null> => null),
 }));
 vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage: mocks.send }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: mocks.wake }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: mocks.launch } }));
+vi.mock('../events/await/turn-proof-schema', () => ({ turnProofColumnsReady: mocks.turnProofReady }));
+vi.mock('../events/await/pickup-sweep', () => ({ readPickupHostView: mocks.pickupHost }));
 
 import {
   makeProdParkDeliveryDeps,
@@ -90,11 +94,15 @@ describe('parkDeliveryStateFromRow', () => {
 });
 
 /** A tagged-template stand-in for postgres.js: SELECTs return `rows`, every call is recorded. */
-function fakeSql(rows: ParkDeliveryRow[]) {
+function fakeSql(rows: ParkDeliveryRow[], pickupRows: Array<{ turn_started_at: string }> = []) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     calls.push({ text, values });
+    if (/SELECT.*turn_started_at/.test(text)) return Promise.resolve(pickupRows);
+    // This deliberately resembles activity from an old turn after the verdict.
+    // The production reader must not use it as proof of verdict pickup.
+    if (/FROM harness_shared\.tool_invocations/.test(text)) return Promise.resolve([{ invoked_at: AFTER_GRACE }]);
     return Promise.resolve(/^\s*SELECT/.test(text) ? rows : []);
   }) as unknown as Record<string, unknown>;
   sql.unsafe = (s: string) => s;
@@ -114,6 +122,50 @@ function fakeDeps(): MockedDeps {
 }
 
 describe('sweepParkDeliveries', () => {
+  beforeEach(() => {
+    mocks.turnProofReady.mockResolvedValue(true);
+    mocks.pickupHost.mockResolvedValue(null);
+  });
+
+  it('does not stop recovery on unrelated tool activity without verdict pickup proof', async () => {
+    const { sql, calls } = fakeSql([row({ outcomes: [{ verdict: 'proceed', at: VERDICT_AT }] })]);
+    const deps = fakeDeps();
+    const r = await sweepParkDeliveries({ sql, depsFor: () => deps, sessionState: async () => 'parked', now: AFTER_GRACE });
+    expect(r.checked).toEqual([{ consultId: 'conv-1', action: 'rewake' }]);
+    expect(deps.rewake).toHaveBeenCalledOnce();
+    expect(calls.some(c => c.text.includes('tool_invocations'))).toBe(false);
+    expect(calls.some(c => c.values.some(v => typeof v === 'object' && v !== null && 'deliveredAt' in v))).toBe(false);
+  });
+
+  it('settles only the matching verdict delivery with confirmed turn-start proof', async () => {
+    const { sql, calls } = fakeSql([row({ outcomes: [{ verdict: 'proceed', at: VERDICT_AT }] })], [{ turn_started_at: AFTER_GRACE }]);
+    const deps = fakeDeps();
+    const r = await sweepParkDeliveries({ sql, depsFor: () => deps, sessionState: async () => 'live', now: AFTER_GRACE });
+    expect(r.checked).toEqual([{ consultId: 'conv-1', action: 'none', reason: 'delivered' }]);
+    const query = calls.find(c => c.text.includes('event_wake_deliveries'))!;
+    expect(query.text).toContain('turn_proof = ANY');
+    expect(query.text).toContain('turn_started_at >= delivered_at');
+    expect(query.values).toEqual(expect.arrayContaining(['default', 'su-parker', 'consult:park-verdict:conv-1', 'proceed', VERDICT_AT]));
+    expect(query.values).toContainEqual(['host-attested', 'observed']);
+    expect(deps.rewake).not.toHaveBeenCalled();
+  });
+
+  it('keeps pickup unknown when the canonical turn-proof schema is unavailable', async () => {
+    mocks.turnProofReady.mockResolvedValueOnce(false);
+    const { sql } = fakeSql([row({ outcomes: [{ verdict: 'proceed', at: VERDICT_AT }] })], [{ turn_started_at: AFTER_GRACE }]);
+    const deps = fakeDeps();
+    const r = await sweepParkDeliveries({ sql, depsFor: () => deps, sessionState: async () => 'parked', now: AFTER_GRACE });
+    expect(r.checked).toEqual([{ consultId: 'conv-1', action: 'rewake' }]);
+  });
+
+  it.each([false, true])('requires a new native turn after the re-wake (new turn: %s)', async fresh => {
+    const attemptedAt = '2026-10-13T01:05:00.000Z';
+    mocks.pickupHost.mockResolvedValueOnce({ execution: { turnStartedAt: Date.parse(fresh ? AFTER_GRACE : VERDICT_AT) } });
+    const { sql } = fakeSql([row({ outcomes: [{ verdict: 'proceed', at: VERDICT_AT }], delivery: { verdictAt: VERDICT_AT, rewakeAttemptedAt: attemptedAt } })]);
+    const r = await sweepParkDeliveries({ sql, depsFor: fakeDeps, sessionState: async () => 'live', now: AFTER_GRACE });
+    expect(r.checked).toEqual([{ consultId: 'conv-1', action: 'none', reason: fresh ? 'delivered' : 'awaiting-rewake-turn' }]);
+  });
+
   it('re-wakes a live parker with no turn after the grace (R-7)', async () => {
     const { sql } = fakeSql([row({ outcomes: [{ verdict: 'proceed', at: VERDICT_AT }] })]);
     const deps = fakeDeps();
@@ -179,7 +231,7 @@ describe('makeProdParkDeliveryDeps', () => {
     const deps = makeProdParkDeliveryDeps(sql, 'ws-1');
     expect(await deps.resume(state, 'note')).toBe(true);
     expect(mocks.launch).toHaveBeenCalledWith(
-      expect.objectContaining({ resume: { agentId: 'su-parker' }, brief: 'note', idempotencyKey: parkResumeIdempotencyKey(state) }),
+      expect.objectContaining({ resume: { agentId: 'su-parker' }, fork: false, brief: 'note', idempotencyKey: parkResumeIdempotencyKey(state) }),
       expect.objectContaining({ workspaceId: 'ws-1' }),
     );
     mocks.launch.mockResolvedValueOnce({ isError: true });

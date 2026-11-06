@@ -17,6 +17,9 @@
  * this module is loaded from the consult expiry routine.
  */
 import type { Sql } from 'postgres';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { TURN_PROOF_CONFIRMED } from '../events/await/turn-proof';
+import { turnProofColumnsReady } from '../events/await/turn-proof-schema';
 import { decisionReviewMetaFromRouting } from './decision-review';
 import type { StoredParkState } from './park-adapters';
 import {
@@ -26,7 +29,7 @@ import {
   type ParkDeliveryState,
   type ParkerSessionState,
 } from './park-delivery';
-import type { ParkOutcomeRecord, ParkVerdict } from './park-resolver';
+import { parkVerdictEventKey, type ParkOutcomeRecord, type ParkVerdict } from './park-resolver';
 import { PARK_SYSTEM_ACTOR } from './park-prod';
 
 /** Verdicts the parked agent must act on. */
@@ -140,16 +143,39 @@ export async function recordParkDelivery(
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${consultId}`;
 }
 
-/** The parked agent's latest tool invocation — any call at or after the verdict counts as a turn on it. */
-async function parkerLastTurnAt(sql: Sql, parkerId: string): Promise<string | null> {
-  const rows = await sql<Array<{ invoked_at: Date | string }>>`
-    SELECT invoked_at FROM harness_shared.tool_invocations
-     WHERE coord_owner_id = ${parkerId}
-     ORDER BY invoked_at DESC
-     LIMIT 1`;
-  const at = rows[0]?.invoked_at;
-  if (at == null) return null;
-  return at instanceof Date ? at.toISOString() : new Date(at).toISOString();
+/** Reuse the wake engine's verdict-specific pickup proof, never unrelated tool activity. */
+async function parkerLastTurnAt(sql: Sql, state: ParkDeliveryState): Promise<string | null> {
+  if (await turnProofColumnsReady()) {
+    const rows = await sql<Array<{ turn_started_at: Date | string }>>`
+      SELECT turn_started_at FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+         AND subscriber_id = ${state.parkerId}
+         AND event_key = ${parkVerdictEventKey(state.consultId)}
+         AND payload->>'verdict' = ${state.verdict}
+         AND status = 'delivered'
+         AND turn_proof = ANY(${[...TURN_PROOF_CONFIRMED]})
+         AND delivered_at >= ${state.emittedAt}::timestamptz
+         AND turn_started_at >= delivered_at
+       ORDER BY turn_started_at DESC
+       LIMIT 1`;
+    const at = rows[0]?.turn_started_at;
+    if (at != null) return at instanceof Date ? at.toISOString() : new Date(at).toISOString();
+  }
+
+  // A re-wake uses the inbox channel and an exact resume need not create another
+  // verdict delivery. In those cases use the host's existing native turn witness
+  // after the recovery attempt; an older running turn still proves nothing.
+  const recoveryAt = state.resumeAttemptedAt ?? state.rewakeAttemptedAt;
+  if (recoveryAt) {
+    const { readPickupHostView } = await import('../events/await/pickup-sweep');
+    const host = await readPickupHostView(state.parkerId);
+    const startedAt = host?.execution?.turnStartedAt;
+    if (typeof startedAt === 'number' && Number.isFinite(startedAt)
+      && startedAt >= Math.max(Date.parse(recoveryAt), Date.parse(state.emittedAt))) {
+      return new Date(startedAt).toISOString();
+    }
+  }
+  return null;
 }
 
 async function parkerSessionState(parkerId: string): Promise<ParkerSessionState | null> {
@@ -194,6 +220,7 @@ export function makeProdParkDeliveryDeps(sql: Sql, workspaceId: string): ParkDel
       const res = await launch(
         {
           resume: { agentId: s.parkerId },
+          fork: false,
           brief: note,
           headless: true,
           idempotencyKey: parkResumeIdempotencyKey(s),
@@ -229,7 +256,7 @@ export interface ParkDeliverySweepResult {
 export interface ParkDeliverySweepOpts {
   sql: Sql;
   depsFor?: (workspaceId: string) => ParkDeliveryDeps;
-  /** Test seams for the parker reads; production reads tool_invocations and the liveness oracle. */
+  /** Test seams; production uses verdict pickup/native turn proof and the liveness oracle. */
   lastTurnAt?: (parkerId: string) => Promise<string | null>;
   sessionState?: (parkerId: string) => Promise<ParkerSessionState | null>;
   now?: string;
@@ -244,7 +271,6 @@ export async function sweepParkDeliveries(opts: ParkDeliverySweepOpts): Promise<
   const now = opts.now ?? new Date().toISOString();
   const limit = opts.limit ?? 100;
   const depsFor = opts.depsFor ?? ((ws: string) => makeProdParkDeliveryDeps(opts.sql, ws));
-  const lastTurn = opts.lastTurnAt ?? ((id: string) => parkerLastTurnAt(opts.sql, id));
   const session = opts.sessionState ?? parkerSessionState;
   const rows = await findParksAwaitingDelivery(opts.sql, now, limit);
   const result: ParkDeliverySweepResult = { checked: [], failures: [], saturated: rows.length >= limit };
@@ -252,9 +278,12 @@ export async function sweepParkDeliveries(opts: ParkDeliverySweepOpts): Promise<
     try {
       const meta = decisionReviewMetaFromRouting(row.routing);
       if (!meta) continue;
-      const [lastTurnAt, sessionState] = await Promise.all([lastTurn(meta.setterId), session(meta.setterId)]);
-      const state = parkDeliveryStateFromRow(row, { lastTurnAt, sessionState });
+      const sessionState = await session(meta.setterId);
+      const state = parkDeliveryStateFromRow(row, { lastTurnAt: null, sessionState });
       if (!state) continue;
+      state.parkerLastTurnAt = opts.lastTurnAt
+        ? await opts.lastTurnAt(meta.setterId)
+        : await parkerLastTurnAt(opts.sql, state);
       const r = await runParkDeliveryCheck(depsFor(row.workspace_id), state, now);
       // A delivered verdict closes the check so later ticks skip it.
       if (r.action === 'none' && r.reason === 'delivered') {
