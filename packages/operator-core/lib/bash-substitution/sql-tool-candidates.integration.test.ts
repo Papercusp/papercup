@@ -70,7 +70,7 @@ it('P004 commits a parser cutoff and resumes its frozen window without losing or
   expect(next).toMatchObject({ status: 'ok', rows: 2, more: false, logicalCalls: 3, cursor: { id: ids[2] } });
   expect(Date.parse(next.window!.until)).toBe(Date.parse(first.window!.until));
   expect(next.window!.since).toBe(first.window!.since);
-  const actual = await mining.db.adminSql`SELECT source_id::text FROM harness_shared.sql_intent_operations ORDER BY source_id`;
+  const actual = await mining.db.adminSql`SELECT source_id::text FROM harness_shared.sql_intent_operations o ORDER BY o.source_id`;
   expect(actual.map(r => r.source_id)).toEqual(ids);
   const [complete] = await mining.db.adminSql`SELECT pending_until FROM harness_shared.sql_intent_progress`;
   expect(complete!.pending_until).toBeNull();

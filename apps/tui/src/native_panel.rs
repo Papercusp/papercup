@@ -14,6 +14,8 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 pub enum ReadModel {
     #[serde(rename = "plans.list")]
     Plans,
+    #[serde(rename = "plans.get")]
+    Plan,
     #[serde(rename = "advRoster.list")]
     Agents,
     #[serde(rename = "reports.list")]
@@ -22,6 +24,8 @@ pub enum ReadModel {
     Report,
     #[serde(rename = "goals.list")]
     Goals,
+    #[serde(rename = "goals.detail")]
+    Goal,
     #[serde(rename = "planSessions.list")]
     PlanSessions,
 }
@@ -30,10 +34,12 @@ impl ReadModel {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Plans => "plans.list",
+            Self::Plan => "plans.get",
             Self::Agents => "advRoster.list",
             Self::Reports => "reports.list",
             Self::Report => "reports.get",
             Self::Goals => "goals.list",
+            Self::Goal => "goals.detail",
             Self::PlanSessions => "planSessions.list",
         }
     }
