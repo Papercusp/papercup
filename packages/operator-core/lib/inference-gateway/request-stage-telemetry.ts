@@ -773,6 +773,32 @@ export interface GatewayStageEvent {
   offsetMs: number;
 }
 
+/** Body sizes exclude HTTP framing, compression and provider receipt. Tool cost is
+ * a reserialized-part estimate, never provider billing or an inferred delta saving. */
+export interface GatewayRequestMeasurements {
+  clientGateway: { boundary: 'client-to-gateway:http-body'; bytes: number | null };
+  gatewayProvider: { boundary: 'gateway-to-provider:last-fetch-body'; bytes: number | null };
+  modelToolResults: {
+    boundary: 'gateway-to-provider:reserialized-tool-result-parts';
+    estimator: 'ceil(utf16Chars/4)'; parts: number | null;
+    utf16Chars: number | null; tokenEstimate: number | null;
+  };
+  firstModelContent: { boundary: 'gateway:request-start-to-first-provider-content'; ms: number | null };
+}
+
+const emptyRequestMeasurements = (): GatewayRequestMeasurements => ({
+  clientGateway: { boundary: 'client-to-gateway:http-body', bytes: null },
+  gatewayProvider: { boundary: 'gateway-to-provider:last-fetch-body', bytes: null },
+  modelToolResults: { boundary: 'gateway-to-provider:reserialized-tool-result-parts',
+    estimator: 'ceil(utf16Chars/4)', parts: null, utf16Chars: null, tokenEstimate: null },
+  firstModelContent: { boundary: 'gateway:request-start-to-first-provider-content', ms: null },
+});
+const cloneRequestMeasurements = (value?: GatewayRequestMeasurements): GatewayRequestMeasurements => {
+  const source = value ?? emptyRequestMeasurements();
+  return { clientGateway: { ...source.clientGateway }, gatewayProvider: { ...source.gatewayProvider },
+    modelToolResults: { ...source.modelToolResults }, firstModelContent: { ...source.firstModelContent } };
+};
+
 export interface GatewayRequestTimeline {
   requestId: number;
   ownerId: string | null;
@@ -785,6 +811,8 @@ export interface GatewayRequestTimeline {
   providerIdentity?: { responseId: string; model: string; effort: string | null; accountId: string } | null;
   cacheRouting: GatewayCacheRoutingDecision;
   cache: GatewayCacheObservation;
+  /** Absent on historical rows. Each unobserved current value is explicitly null. */
+  measurements?: GatewayRequestMeasurements;
   /** Account selected for each kernel attempt, in order; absent on older snapshots. */
   attemptAccountIds?: readonly (string | null)[];
   nativeCorrelation: GatewayNativeCorrelation;
@@ -1015,6 +1043,7 @@ export class GatewayRequestSpan {
   private providerIdentity: GatewayRequestTimeline['providerIdentity'] = null;
   private cacheRouting: GatewayCacheRoutingDecision = 'not-applicable';
   private readonly cache = emptyCacheObservation();
+  private readonly measurements = emptyRequestMeasurements();
   private readonly attemptAccountIds: Array<string | null> = [];
   private nativeCorrelation = emptyNativeCorrelation();
   private readonly upstreamWrites: GatewayRequestTimeline['upstreamWrites'] = { calls: [], droppedCalls: 0 };
@@ -1140,7 +1169,7 @@ export class GatewayRequestSpan {
   }
 
   /** Inspect only the already-buffered shaped body, with a hard parse-size ceiling. */
-  setCacheShape(body: Uint8Array): void {
+  setCacheShape(body: Uint8Array, providerDelivery = false): void {
     if (this.finished) return;
     this.forwardedEffort = null;
     this.cache.nativeInstructionTemplate = null;
@@ -1151,6 +1180,28 @@ export class GatewayRequestSpan {
         tools?: unknown; system?: unknown; instructions?: unknown; input?: unknown; messages?: unknown };
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { this.cache.shape = 'invalid'; return; }
       const shaped = parsed as Record<string, unknown>;
+      if (providerDelivery) {
+        // Reuse this existing bounded parse; never retain result text or infer
+        // model base presence from an internal dispatch/delta observation.
+        const rows = this.protocol === 'openai-responses' ? shaped.input : shaped.messages;
+        if (Array.isArray(rows)) {
+          const parts: unknown[] = [];
+          for (const row of rows) {
+            if (!row || typeof row !== 'object') continue;
+            const message = row as Record<string, unknown>;
+            if (this.protocol === 'openai-responses' && message.type === 'function_call_output') parts.push(message);
+            else if (this.protocol === 'openai-chat' && message.role === 'tool') parts.push(message);
+            else if (this.protocol === 'anthropic-messages' && Array.isArray(message.content)) {
+              parts.push(...message.content.filter((part: unknown) => part && typeof part === 'object' &&
+                (part as Record<string, unknown>).type === 'tool_result'));
+            }
+          }
+          const chars = parts.reduce<number>((total, part) => total + JSON.stringify(part).length, 0);
+          this.measurements.modelToolResults.parts = parts.length;
+          this.measurements.modelToolResults.utf16Chars = chars;
+          this.measurements.modelToolResults.tokenEstimate = Math.ceil(chars / 4);
+        }
+      }
       const effortContainer = this.protocol === 'openai-responses' ? shaped.reasoning : shaped.output_config;
       const effort = effortContainer && typeof effortContainer === 'object'
         ? (effortContainer as Record<string, unknown>).effort : null;
@@ -1172,6 +1223,50 @@ export class GatewayRequestSpan {
 
   setServingAccount(accountId: string): void {
     if (!this.finished) this.cache.servingAccountId = boundedIdentifier(accountId, 120);
+  }
+
+  recordClientBodyBytes(bytes: unknown): void {
+    if (this.finished) return;
+    this.measurements.clientGateway.bytes = typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
+  }
+
+  /** Call at the final fetch boundary, after all authorization/body rewrites.
+   * This is the last attempt's serialized body, not a sum across retries. */
+  recordProviderBody(body: unknown): void {
+    if (this.finished) return;
+    this.measurements.gatewayProvider.bytes = body instanceof Uint8Array ? body.byteLength : null;
+    this.measurements.modelToolResults = emptyRequestMeasurements().modelToolResults;
+    if (body instanceof Uint8Array) this.setCacheShape(body, true);
+  }
+
+  recordFirstModelContent(at: number = this.now()): void {
+    if (this.finished || this.measurements.firstModelContent.ms !== null) return;
+    const elapsed = at - this.startedAt;
+    if (Number.isFinite(elapsed) && elapsed >= 0) this.measurements.firstModelContent.ms = elapsed;
+  }
+
+  /** Receives already-parsed provider frames from the existing usage observers.
+   * Headers, message_start, role-only frames and usage are not model content. */
+  recordProviderContent(frame: unknown): void {
+    if (!frame || typeof frame !== 'object') return;
+    const event = frame as Record<string, any>;
+    const text = (value: unknown) => typeof value === 'string' && value.length > 0;
+    const content = (part: any): boolean => !!part && (text(part.text) || text(part.thinking) ||
+      part.type === 'tool_use' && text(part.name));
+    if (event.type === 'content_block_delta' &&
+        (text(event.delta?.text) || text(event.delta?.thinking) || text(event.delta?.partial_json)) ||
+        event.type === 'content_block_start' && content(event.content_block) ||
+        ['response.output_text.delta', 'response.reasoning_text.delta', 'response.reasoning_summary_text.delta',
+          'response.function_call_arguments.delta'].includes(event.type) && text(event.delta) ||
+        event.type === 'response.output_item.added' && event.item?.type === 'function_call' && text(event.item.name) ||
+        !event.type && (Array.isArray(event.content) && event.content.some(content) ||
+          Array.isArray(event.output) && event.output.some((item: any) => item.type === 'function_call' && text(item.name) ||
+            Array.isArray(item.content) && item.content.some(content)) ||
+          Array.isArray(event.choices) && event.choices.some((choice: any) => {
+            const message = choice.delta ?? choice.message;
+            return text(message?.content) || message?.tool_calls?.some((tool: any) =>
+              text(tool.function?.name) || text(tool.function?.arguments));
+          }))) this.recordFirstModelContent();
   }
 
   recordAttemptAccountId(accountId: string | null | undefined): void {
@@ -1311,6 +1406,7 @@ export class GatewayRequestSpan {
       providerIdentity: this.providerIdentity ? { ...this.providerIdentity } : null,
       cacheRouting: this.cacheRouting,
       cache: cloneCacheObservation(this.cache),
+      measurements: cloneRequestMeasurements(this.measurements),
       attemptAccountIds: [...this.attemptAccountIds],
       nativeCorrelation: { ...this.nativeCorrelation },
       upstreamWrites: cloneUpstreamWrites(this.upstreamWrites),
@@ -1431,7 +1527,7 @@ export class GatewayRequestTelemetry {
     }
     const queueWait = timeline.durationsMs.queueWait;
     if (queueWait !== undefined) this.providerQueueWait[timeline.provider].add(queueWait);
-    this.recent.push(timeline);
+    this.recent.push({ ...timeline, measurements: cloneRequestMeasurements(timeline.measurements) });
     if (this.recent.length > this.recentCapacity) {
       this.recent.splice(0, this.recent.length - this.recentCapacity);
     }
@@ -1484,6 +1580,7 @@ export class GatewayRequestTelemetry {
       },
       recent: this.recent.map((timeline) => ({
         ...timeline,
+        measurements: cloneRequestMeasurements(timeline.measurements),
         cache: cloneCacheObservation(timeline.cache),
         providerIdentity: timeline.providerIdentity ? { ...timeline.providerIdentity } : null,
         nativeCorrelation: { ...timeline.nativeCorrelation },
@@ -1531,6 +1628,7 @@ export class GatewayRequestTelemetry {
       stages,
       recent: timelines.map((timeline) => ({
         ...timeline,
+        measurements: cloneRequestMeasurements(timeline.measurements),
         cache: cloneCacheObservation(timeline.cache),
         providerIdentity: timeline.providerIdentity ? { ...timeline.providerIdentity } : null,
         nativeCorrelation: { ...timeline.nativeCorrelation },

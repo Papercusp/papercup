@@ -2,6 +2,107 @@ import { describe, expect, it } from 'vitest';
 import { channel } from 'node:diagnostics_channel';
 import http from 'node:http';
 
+describe('owned-loop cost observation boundaries', () => {
+  const fixture = () => {
+    let now = 100;
+    const telemetry = new GatewayRequestTelemetry({ now: () => now });
+    const span = telemetry.begin({ provider: 'claude', protocol: 'anthropic-messages', ownerId: 'su-cost' });
+    return { span, telemetry, tick: (value: number) => { now = value; }, read: () => {
+      span.finish('ok', 200);
+      return [telemetry.snapshot().recent[0].measurements!, telemetry.snapshotForOwner('su-cost').recent[0].measurements!];
+    } };
+  };
+
+  it.each([undefined, NaN, Infinity, -1, 0, Buffer.byteLength('é🙂')])('preserves incoming unknown/zero/UTF-8 bytes: %s', value => {
+    const f = fixture();
+    if (value !== undefined) f.span.recordClientBodyBytes(value);
+    const expected = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+    for (const row of f.read()) {
+      expect(row.clientGateway).toEqual({ boundary: 'client-to-gateway:http-body', bytes: expected });
+      expect(row.gatewayProvider.bytes).toBeNull();
+      expect(row.modelToolResults.tokenEstimate).toBeNull();
+      expect(row.firstModelContent.ms).toBeNull();
+    }
+  });
+
+  it.each([undefined, {}, Buffer.alloc(0), Buffer.from('é🙂')])('measures only the actual provider body, including zero: %s', body => {
+    const f = fixture();
+    f.span.recordProviderBody(body);
+    for (const row of f.read()) {
+      expect(row.gatewayProvider).toEqual({ boundary: 'gateway-to-provider:last-fetch-body',
+        bytes: body instanceof Uint8Array ? body.byteLength : null });
+      expect(row.modelToolResults.tokenEstimate).toBeNull();
+      expect(row.clientGateway.bytes).toBeNull();
+    }
+  });
+
+  it.each([undefined, 'invalid', '{}', '{"messages":[]}', JSON.stringify({ messages: [
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'PRIVATE_é🙂' }] },
+  ] })])('keeps tool-result estimates separate from measured wire bytes: %s', body => {
+    const f = fixture();
+    if (body !== undefined) f.span.recordProviderBody(Buffer.from(body));
+    const chars = body?.includes('PRIVATE_')
+      ? JSON.stringify({ type: 'tool_result', tool_use_id: 't', content: 'PRIVATE_é🙂' }).length
+      : body === '{"messages":[]}' ? 0 : null;
+    for (const row of f.read()) {
+      expect(row.modelToolResults).toMatchObject({ boundary: 'gateway-to-provider:reserialized-tool-result-parts',
+        estimator: 'ceil(utf16Chars/4)', utf16Chars: chars, tokenEstimate: chars === null ? null : Math.ceil(chars / 4) });
+    }
+    expect(JSON.stringify(f.telemetry.snapshot())).not.toContain('PRIVATE_');
+  });
+
+  it.each([undefined, NaN, -1, 100, 125])('preserves unavailable, invalid, zero and positive first-content timing: %s', at => {
+    const f = fixture();
+    if (at !== undefined) f.span.recordFirstModelContent(at);
+    for (const row of f.read()) expect(row.firstModelContent).toEqual({
+      boundary: 'gateway:request-start-to-first-provider-content',
+      ms: at !== undefined && Number.isFinite(at) && at >= 100 ? at - 100 : null,
+    });
+  });
+
+  it('does not count headers/usage/empty deltas as content, and keeps the first actual content time', () => {
+    const f = fixture();
+    f.span.recordProviderContent({ type: 'message_start', message: { usage: { input_tokens: 123 } } });
+    f.span.recordProviderContent({ choices: [{ delta: { role: 'assistant' } }] });
+    f.span.recordProviderContent({ type: 'content_block_delta', delta: { text: '' } });
+    f.tick(125);
+    f.span.recordProviderContent({ type: 'content_block_delta', delta: { text: 'PRIVATE_FIRST' } });
+    f.tick(150);
+    f.span.recordProviderContent({ type: 'content_block_delta', delta: { text: 'later' } });
+    for (const row of f.read()) expect(row.firstModelContent.ms).toBe(25);
+    expect(JSON.stringify(f.telemetry.snapshot())).not.toContain('PRIVATE_FIRST');
+  });
+
+  it.each(['anthropic-messages', 'openai-responses', 'openai-chat'] as const)('estimates the final representation for %s and clears stale estimates on an unparseable retry', protocol => {
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ provider: protocol === 'anthropic-messages' ? 'claude' : 'codex', protocol });
+    const part = protocol === 'anthropic-messages' ? { type: 'tool_result', content: 'é🙂' }
+      : protocol === 'openai-responses' ? { type: 'function_call_output', output: 'é🙂' } : { role: 'tool', content: 'é🙂' };
+    const body = protocol === 'openai-responses' ? { input: [part] } : {
+      messages: protocol === 'anthropic-messages' ? [{ role: 'user', content: [part] }] : [part],
+    };
+    span.recordProviderBody(Buffer.from(JSON.stringify(body)));
+    span.recordProviderBody(Buffer.from('invalid retry'));
+    expect(span.finish('ok', 200)!.measurements!.modelToolResults.tokenEstimate).toBeNull();
+  });
+
+  it('owns both snapshot copies and the stored values when callers mutate a finished result', () => {
+    const f = fixture();
+    f.span.recordClientBodyBytes(6);
+    const finished = f.span.finish('ok', 200)!;
+    finished.measurements!.clientGateway.bytes = -1;
+    const snapshot = f.telemetry.snapshot();
+    snapshot.recent[0].measurements!.clientGateway.bytes = -2;
+    const owner = f.telemetry.snapshotForOwner('su-cost');
+    expect(owner.recent[0].measurements!.clientGateway.bytes).toBe(6);
+    owner.recent[0].measurements!.clientGateway.bytes = -3;
+    expect(f.telemetry.snapshot().recent[0].measurements!.clientGateway.bytes).toBe(6);
+    expect(f.telemetry.snapshotForOwner('su-other').recent).toEqual([]);
+    f.span.recordClientBodyBytes(999);
+    expect(f.telemetry.snapshot().recent[0].measurements!.clientGateway.bytes).toBe(6);
+  });
+});
+
 describe('provider queue-wait retention', () => {
   it('keeps sparse-lane waits after another provider fills the shared timeline ring', () => {
     let now = 0;

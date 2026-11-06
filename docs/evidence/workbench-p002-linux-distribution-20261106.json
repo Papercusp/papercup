@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "workbench-linux-distribution-evidence-v1",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "items": [
+    "P-001",
+    "P-002"
+  ],
+  "date": "2026-11-06",
+  "sources": {
+    "papercusp-desktop/bin/package-native-workbench.mjs": "919921ddc438f71c45730ead3a3e2e95b69c54220e029027b10dde3a23f610c1",
+    "papercusp-desktop/native/linux/install-workbench.js": "019cb87120b0d08abf780defc23936c6083126b166d077b4d2cc6dea18b64f42",
+    "papercusp-desktop/src-tauri/tauri.linux.conf.json": "91aaec595e9aa34551ba7d14683b171ff716d5bc569289c9a7613afc221be682",
+    "papercusp-desktop/src-tauri/tauri.server.conf.json": "808022761485b98c71708ca5558f9fbffcdc5e3ebca44601ba4b8b9cb96c10f8",
+    "papercusp-desktop/src-tauri/distribution-contract.json": "ccd32b116b36a2a993a242e9bc43cb386b73042b20d382dd9dbbe12923f5dfd4",
+    "papercusp-desktop/src-tauri/build.rs": "41c324de948237f284dd7e587f0206bfed4f6e8e81d12c0acb3aea7c823b42ab",
+    "papercusp-desktop/src-tauri/src/native_workbench.rs": "909a8865fcc59db84191b4dbf7f0bc4598b5ad8072cc77bcd5f6cc230a3e2b60",
+    "papercusp-desktop/src-tauri/src/main.rs": "2eab8c84c2a7ccfc940da75575780df73a61e9645a22aa4307d19dfc9c170874",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "b8b9550c8159d2df1a9797bbef5a2041bc99895af0d6cd1a7232cc5683d064c3",
+    "papercusp-desktop/test/tauri-config-resources.test.js": "f6d4f04a082ecebfa9e784410fdea0ef2e8bb03375adabd7863d9a431fe3cfa5"
+  },
+  "test": {
+    "pass": 33,
+    "fail": 0,
+    "skip": 0,
+    "log": "/tmp/wb-native-distribution-20261106-v3.log",
+    "sha256": "736af24ea78696ded7f98a1dacd1f98ea33e6e8685577bfcdf7a491cd1ff52a9",
+    "nativeAssertions": 29,
+    "fileLedgerRows": 3
+  },
+  "compile": {
+    "command": "cargo check --manifest-path src-tauri/Cargo.toml --bin papercusp-desktop",
+    "result": "exit 0",
+    "log": "/tmp/wb-native-distribution-cargo-20261106-v2.log",
+    "sha256": "96d3725a1b741d9b1b7680b966ef93a2bf4e2ca9c9c71cb6175c1d3de767711a"
+  },
+  "installer": {
+    "first": {
+      "changed": true,
+      "firstInstall": true,
+      "sha256": "d64cfcc29893a608e21c98c65076c8312d43dfac9a9644dd6252e51462710395",
+      "loginRequired": false,
+      "reloadError": null
+    },
+    "laterServer": {
+      "changed": false,
+      "sha256": "d64cfcc29893a608e21c98c65076c8312d43dfac9a9644dd6252e51462710395"
+    },
+    "enabled": [
+      "unrelated@example.invalid",
+      "workbench@papercusp.ai"
+    ],
+    "bundledPui": "/tmp/workbench-distribution-u6jQlC/pui '$ fixture",
+    "upgrade": {
+      "changed": true,
+      "firstInstall": false,
+      "sha256": "2c5e2df448ac0dc08694be999f9fe3fa20ab5976358f0a0aadfe16c1ea970f88",
+      "loginRequired": false,
+      "reloadError": null
+    },
+    "preserved": [
+      "unrelated@example.invalid"
+    ],
+    "unchanged": {
+      "changed": false,
+      "sha256": "2c5e2df448ac0dc08694be999f9fe3fa20ab5976358f0a0aadfe16c1ea970f88"
+    },
+    "repair": {
+      "changed": true,
+      "firstInstall": false,
+      "sha256": "2c5e2df448ac0dc08694be999f9fe3fa20ab5976358f0a0aadfe16c1ea970f88",
+      "loginRequired": false,
+      "reloadError": null
+    },
+    "goals": [
+      "<Super><Alt>g"
+    ],
+    "pui": "/custom/operator/pui",
+    "compiled": true,
+    "plane": "production bundle staging and private XDG installation; no desktop login restart or final artifact"
+  },
+  "reuse": "GNOME pack/install/schema compiler, Tauri Linux platform resources and Server wildcard, existing fs2/Tauri account data resolver and Shell login registration",
+  "testRepair": "Native navigation fixture waits for complete independently delivered report/Goals population before pressing Down. Production behavior unchanged.",
+  "limitations": [
+    "Source bundle staging and private XDG proof only; no exact installed GUI/Server artifact built or shipped",
+    "Installer lifecycle fixture stubs ReloadExtension; actual Shell reload/login acceptance pending",
+    "Private virtual-seat Shell uses fixture PUI and injected subclass; canonical operator ACL/exact agent route pending",
+    "AppImage native dependency closure and stable PUI executable pending",
+    "Remaining native panels and macOS/Windows installed acceptance pending"
+  ]
+}
