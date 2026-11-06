@@ -18,6 +18,8 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { recipeCandidates } from '../../code-recipes-candidates';
+import { pullSqlToolCandidates } from '../../sql-tool-candidate-pull';
+import { harnessArg } from '../_harness-scope';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 // tool-call-batching-wrappers-2026-06-21 P-004 / D-016 — the deterministic co-occurrence scoring leg.
@@ -29,7 +31,8 @@ export default defineTool({
     'Deterministic graduation worklist for code:run RECIPES: ranked PROMOTE candidates (recipes worth ' +
     'building into a tool, scored by run-frequency + distinct-agent reuse + success-rate + tool-set ' +
     'cohesion, 1-tool/duplicate ones excluded) + near-duplicate MERGE clusters. No LLM — counting only; ' +
-    'YOU decide promote/merge. Read-only.',
+    'YOU decide promote/merge. Includes currently authorized SQL opportunities with existing review history; ' +
+    'source authority unavailable means UNKNOWN. Read-only.',
   guidance: {
     when:
       'The Mug calls this in her cadence to find recipes worth promoting to a tool or merging. It ' +
@@ -48,12 +51,14 @@ export default defineTool({
       'recipes:merge (collapse a near-duplicate merge cluster)',
       'recipes:sweep (retire stale one-off recipes)',
       'recipes:get (read a candidate\'s script before acting)',
+      'dev:sql_tool_candidates (the same scoped SQL opportunity reader)',
     ],
   },
   capability: 'recipes:read',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    harness: harnessArg,
     minRunCount: z
       .number()
       .int()
@@ -82,6 +87,11 @@ export default defineTool({
       },
       { embedder, toolCooccurrence, log: (msg) => ctx.log(msg) },
     );
+    // Reuse the existing source-authorized worklist after the asynchronous recipe
+    // scoring. Its own final read renews ACLs, retention and history identity.
+    // SQL observations remain opportunities; discovery never executes corpus SQL
+    // or certifies an unvalidated observation as a replayable recipe.
+    const sqlOpportunities = await pullSqlToolCandidates(ctx, { harness: args.harness, limit: args.limit });
     return {
       content: [
         {
@@ -92,6 +102,7 @@ export default defineTool({
             mergeClusterCount: mergeClusters.length,
             promoteCandidates,
             mergeClusters,
+            opportunities: { sql: sqlOpportunities },
           }),
         },
       ],

@@ -22,6 +22,7 @@ import {
 } from '../../recipe-authority';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+import type { SqlCandidateWorklist } from '../../sql-tool-candidate-worklist';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
@@ -34,6 +35,8 @@ const {
   runOrchestrationMock,
   normalizeExecutionTraceMock,
   normalizedTrace,
+  recipeCandidatesMock,
+  pullSqlToolCandidatesMock,
   orgSqlMock,
   resourceSqlMock,
   searchSimilarRecipesMock,
@@ -81,6 +84,9 @@ const {
     })),
     normalizeExecutionTraceMock: vi.fn(async () => trace),
     normalizedTrace: trace,
+    recipeCandidatesMock: vi.fn(async () => ({ promoteCandidates: [], mergeClusters: [], signals: [] })),
+    pullSqlToolCandidatesMock: vi.fn<typeof import('../../sql-tool-candidate-pull').pullSqlToolCandidates>(async () => ({ status: 'UNKNOWN', candidates: [], snapshots: [],
+      population: { candidates: 0, returned: 0, omitted: 0, snapshotCap: 120 } })),
     orgSqlMock: vi.fn(),
     resourceSqlMock: vi.fn(),
     searchSimilarRecipesMock: vi.fn(async () => []),
@@ -109,6 +115,9 @@ vi.mock('../../code-recipes-search', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   searchSimilarRecipes: searchSimilarRecipesMock,
 }));
+vi.mock('../../code-recipes-candidates', () => ({ recipeCandidates: recipeCandidatesMock }));
+vi.mock('../../sql-tool-candidate-pull', () => ({ pullSqlToolCandidates: pullSqlToolCandidatesMock }));
+vi.mock('../../recipe-cooccurrence-leg', () => ({ buildRecipeCooccurrenceDep: async () => null }));
 vi.mock('../search/embedder', () => ({
   buildQueryEmbedderResolved: buildQueryEmbedderResolvedMock,
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 0),
@@ -145,7 +154,7 @@ import recipeGetTool from './get';
 import recipeReviseTool from './revise';
 import recipeSearchTool from './search';
 import recipeRunTool from './run';
-import './candidates';
+import recipeCandidatesTool from './candidates';
 import './merge';
 import './sweep';
 // The encoded-owner regression exercises the live condition reader through the
@@ -214,6 +223,30 @@ describe('recipes:* registration (P-005, P-013)', () => {
     const tool = findTool('recipes:candidates');
     expect(tool.effect).toBe('read');
     expect(tool.capabilities).toContain('recipes:read');
+  });
+
+  it('P006 discovers SQL through the existing fresh caller-authorized worklist without replaying observations', async () => {
+    const sql: SqlCandidateWorklist = { status: 'ok', candidates: [{ candidate: { id: 'scoped-intent',
+      workspaceToken: 'workspace', harnessToken: 'harness', boundaryToken: 'boundary', fingerprint: 'fingerprint',
+      parserVersion: 'parser', policyVersion: 'sql-demand-score-v1', eligible: false, reasons: ['review-needed'],
+      score: 0, components: [], counts: { ok: 1, error: 0, refused: 0, unknown: 0 }, verifiedAgents: 1,
+      activeDays: ['2026-11-06'], observedCost: { measuredCalls: 0, totalMs: 0, meanMs: null, unit: 'dispatch-wall-ms' } },
+      sourceRef: { scopeId: 'scope', ranOn: '2026-11-06' },
+      evidenceRefs: [], evidenceRefsOmitted: 0, decisionHistoryTruncated: false,
+      decisionHistory: [{ editionId: 'edition', workItemId: 'EI-retained', suppressed: true, createdAt: '2026-11-06T00:00:00Z' }] }], snapshots: [],
+      population: { candidates: 1, returned: 1, omitted: 0, snapshotCap: 120 } };
+    pullSqlToolCandidatesMock.mockResolvedValueOnce(sql);
+    const ctx = { workspaceId: 'ws-test', harnessSlug: 'h-test', tx: null, log: () => {},
+      signal: new AbortController().signal, emit: () => {}, progress: () => {} };
+    const priorRuns = runOrchestrationMock.mock.calls.length;
+    const result = await recipeCandidatesTool.handler({ harness: 'h-test', limit: 2 }, ctx);
+    if (!('content' in result)) throw new Error('Expected a recipe worklist content response');
+    const text = result.content[0];
+    expect(text?.type).toBe('text');
+    const body = JSON.parse(text!.type === 'text' ? text!.text : '{}');
+    expect(body).toMatchObject({ ok: true, promoteCandidates: [], mergeClusters: [], opportunities: { sql } });
+    expect(pullSqlToolCandidatesMock).toHaveBeenLastCalledWith(ctx, { harness: 'h-test', limit: 2 });
+    expect(runOrchestrationMock.mock.calls).toHaveLength(priorRuns);
   });
 
   it('recipes:search accepts limits through 50 and rejects 51', () => {
