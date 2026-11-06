@@ -330,7 +330,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
   it('records only slow phase markers for single-item writes', async () => {
     const logs: string[] = [];
-    const ctx = { ...baseCtx, log: (message: string) => logs.push(message) } as never;
+    const ctx = { ...(baseCtx as Record<string, unknown>), log: (message: string) => logs.push(message) } as never;
     const body = 'Checkpoint write with a deliberately slow store phase.';
 
     setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string | null | undefined, opts: unknown) => {
