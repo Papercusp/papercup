@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench GNOME exact local agent-window activation",
+  "framework": "operational",
+  "command": [
+    "npm",
+    "run",
+    "test:native-workbench"
+  ],
+  "cwd": "papercusp-desktop",
+  "startedAt": "2026-11-06T13:26:35.397Z",
+  "finishedAt": "2026-11-06T13:27:16.512Z",
+  "timestampScope": "Retained redirected log creation and last-write bounds.",
+  "exitCode": 0,
+  "summary": "All 18 maintained Node/GJS tests passed with zero failures or skips. Private real GNOME Shell ran 31 assertions including exact native activation of one of two real GTK terminal-fixture windows sharing a process and similar launch titles. Fresh roster/host/liveness and ambiguous window rejection covered by maintained tests. Current-build fixture-operator evidence only.",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "parentWorkItem": "WI-6554700010044395",
+  "sourceSha256": {
+    "papercusp-desktop/native/gnome/extension.js": "4f1cdc39a907b8a8ee1597707914d0b1ab29ab99d9fe71f527c6dc572df7eb2c",
+    "papercusp-desktop/native/gnome/panel-model.mjs": "7ce16d3e379da58ac5c0f5f0acea7f923ba59bc9d3ab273c200fb2878382f007",
+    "papercusp-desktop/test/native-workbench-gnome.test.mjs": "677e01075f09b85df5e84c02977e1a1243f9f37063220d397149582021976186",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "87b4cd82c17930a7fde57b17e6f023f5204f3e2ac770fba494b7db40da40242c"
+  },
+  "logs": [
+    {
+      "path": "/tmp/wb-native-focus-20261106-v1.log",
+      "sha256": "ce59438d062744757325eb1625e1fb2acd975a0e403b9b181377020cf6271c89"
+    },
+    {
+      "path": "/tmp/wb-native-focus-20261106-v1/gnome-native-process.json",
+      "sha256": "07f101c83fd8bb7f51de858c866f1e06241dc94ad7cac13d677b74c4970d63f5"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "gnome-focus-1",
+      "passed": true,
+      "evidence": "native shortcut acquisition"
+    },
+    {
+      "id": "gnome-focus-2",
+      "passed": true,
+      "evidence": "qualified plan reached native actor model"
+    },
+    {
+      "id": "gnome-focus-3",
+      "passed": true,
+      "evidence": "Shell actor is attached"
+    },
+    {
+      "id": "gnome-focus-4",
+      "passed": true,
+      "evidence": "native result controls rendered"
+    },
+    {
+      "id": "gnome-focus-5",
+      "passed": true,
+      "evidence": "independent pinned panels coexist"
+    },
+    {
+      "id": "gnome-focus-6",
+      "passed": true,
+      "evidence": "Goals requests only its canonical source"
+    },
+    {
+      "id": "gnome-focus-7",
+      "passed": true,
+      "evidence": "panels and GTK helper create no application windows"
+    },
+    {
+      "id": "gnome-focus-8",
+      "passed": true,
+      "evidence": "debounced canonical query renders current result"
+    },
+    {
+      "id": "gnome-focus-9",
+      "passed": true,
+      "evidence": "exact report body in native detail"
+    },
+    {
+      "id": "gnome-focus-10",
+      "passed": true,
+      "evidence": "first Escape dismisses detail only"
+    },
+    {
+      "id": "gnome-focus-11",
+      "passed": true,
+      "evidence": "second Escape dismisses only its surface"
+    },
+    {
+      "id": "gnome-focus-12",
+      "passed": true,
+      "evidence": "reopen retains query and exact selection"
+    },
+    {
+      "id": "gnome-focus-13",
+      "passed": true,
+      "evidence": "outside dismissal preserves another pinned surface"
+    },
+    {
+      "id": "gnome-focus-14",
+      "passed": true,
+      "evidence": "repeated shortcut toggles pinned surface"
+    },
+    {
+      "id": "gnome-focus-15",
+      "passed": true,
+      "evidence": "native seat supports input injection"
+    },
+    {
+      "id": "gnome-focus-16",
+      "passed": true,
+      "evidence": "native input methods exist"
+    },
+    {
+      "id": "gnome-focus-17",
+      "passed": true,
+      "evidence": "desktop ready for normal shortcuts"
+    },
+    {
+      "id": "gnome-focus-18",
+      "passed": true,
+      "evidence": "seat shortcut opens panel"
+    },
+    {
+      "id": "gnome-focus-19",
+      "passed": true,
+      "evidence": "seat typing reaches focused native search"
+    },
+    {
+      "id": "gnome-focus-20",
+      "passed": true,
+      "evidence": "seat arrow navigates results"
+    },
+    {
+      "id": "gnome-focus-21",
+      "passed": true,
+      "evidence": "seat Up restores exact report selection"
+    },
+    {
+      "id": "gnome-focus-22",
+      "passed": true,
+      "evidence": "focused search consumes Enter through native activate signal"
+    },
+    {
+      "id": "gnome-focus-23",
+      "passed": true,
+      "evidence": "seat Enter opens exact selected detail"
+    },
+    {
+      "id": "gnome-focus-24",
+      "passed": true,
+      "evidence": "seat Escape dismisses detail before surface"
+    },
+    {
+      "id": "gnome-focus-25",
+      "passed": true,
+      "evidence": "seat click pins native panel"
+    },
+    {
+      "id": "gnome-focus-26",
+      "passed": true,
+      "evidence": "seat second shortcut preserves independent pin"
+    },
+    {
+      "id": "gnome-focus-27",
+      "passed": true,
+      "evidence": "seat journey keeps native surfaces outside application windows"
+    },
+    {
+      "id": "gnome-focus-28",
+      "passed": true,
+      "evidence": "seat outside click closes unpinned panel and preserves pin"
+    },
+    {
+      "id": "gnome-focus-29",
+      "passed": true,
+      "evidence": "seat shortcut toggles pinned panel closed"
+    },
+    {
+      "id": "gnome-focus-30",
+      "passed": true,
+      "evidence": "native activation observes exact launch window despite shared process and similar titles"
+    },
+    {
+      "id": "gnome-focus-31",
+      "passed": true,
+      "evidence": "verified terminal focus dismisses its native launcher"
+    }
+  ],
+  "limitations": [
+    "Fixture PUI; real selected-operator ACL acceptance remains pending.",
+    "Local unique-window activation only; ended/remote saved-connection UI and exact Zellij pane selection remain pending.",
+    "Not exact installed-artifact three-OS or independent shipment acceptance."
+  ]
+}
