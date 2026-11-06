@@ -4,10 +4,42 @@ import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFi
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildWorkspace, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
+import { buildWorkspace as buildWorkspaceWithPhaseLogs, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
 import { nativeVerifierEnv } from '../../../../scripts/lib/verify-tauri-native-env.mjs';
 import { bindFrozenDependencyGeneration } from '../../../../packages/operator-core/lib/dependency-generation-proof';
 import { runVerifierCommand, selectVerifierDependencySnapshot } from '../../../../scripts/source-preview.mjs';
+
+// Imported builds intentionally report progress on stderr. Capture only this
+// operation and validate its diagnostics, leaving unexpected console errors fatal.
+function buildWorkspace(...args: Parameters<typeof buildWorkspaceWithPhaseLogs>) {
+  const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    return buildWorkspaceWithPhaseLogs(...args);
+  } finally {
+    const calls = diagnostics.mock.calls.slice();
+    diagnostics.mockRestore();
+    const prefix = 'VERIFIER_WORKSPACE_BUILD_PHASE ';
+    const phases = calls.map(([message, ...extra]) => {
+      expect(extra).toEqual([]);
+      expect(message).toEqual(expect.stringMatching(/^VERIFIER_WORKSPACE_BUILD_PHASE /));
+      const phase = JSON.parse(message.slice(prefix.length));
+      expect(phase.packagePath).toBe(args[1]);
+      expect(phase.elapsedMs).toBeGreaterThanOrEqual(0);
+      return phase;
+    });
+    expect(phases.length).toBeGreaterThan(0);
+    expect(phases.length % 2).toBe(0);
+    const order = ['input-census-before', 'command', 'input-census-after', 'output-census'];
+    for (let index = 0; index < phases.length; index += 2) {
+      const [start, end] = phases.slice(index, index + 2);
+      expect(start).toMatchObject({ phase: order[index / 2], state: 'started' });
+      expect(end.phase).toBe(start.phase);
+      expect(['complete', 'failed']).toContain(end.state);
+      expect(end.elapsedMs).toBeGreaterThanOrEqual(start.elapsedMs);
+      if (end.state === 'failed') expect(index + 2).toBe(phases.length);
+    }
+  }
+}
 
 const repo = resolve(__dirname, '../../../..');
 const script = join(repo, 'apps/operator/bin/release/dependency-generation.sh');

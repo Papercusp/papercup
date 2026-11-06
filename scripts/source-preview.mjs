@@ -572,6 +572,15 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'packages/operator-core/lib/gnome-terminal-policy.json',
 ]);
 
+// These exact outputs are rebuilt from the recorded source during verification.
+// Older commits may track them; an archive must not seal their stale bytes as
+// source, and a Git checkout cannot discard its tracked population.
+const VERIFIER_REBUILT_OUTPUTS = [
+  'apps/operator/dist-verify',
+  'papercusp-desktop/src-tauri/resources/workbench@papercusp.ai.shell-extension.zip',
+  'papercusp-desktop/src-tauri/resources/workbench-install.js',
+];
+
 /** Validate the explicit tested source population against its pinned commit.
  * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, receiptSha256?: string }} options
  */
@@ -587,7 +596,7 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
   if (tauriInputs) inputs = [...inputs, ...TAURI_VERIFIER_INPUTS];
   const paths = [...new Set(inputs)].sort();
   for (const path of paths) {
-    if (path === 'apps/operator/dist-verify' || path.startsWith('apps/operator/dist-verify/')) {
+    if (VERIFIER_REBUILT_OUTPUTS.some(output => path === output || path.startsWith(output + '/'))) {
       throw new PreviewError(`generated verifier runtime output cannot be a tested source input: ${path}`, 2);
     }
     if (typeof path !== 'string' || !path || isAbsolute(path) || path.includes('\0')
@@ -681,14 +690,17 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     // Never record those mutable artifacts as immutable source in an archive.
     // A Git checkout must retain its tracked population, so refuse that route
     // rather than removing tracked files or weakening its source attestation.
-    const runtimeOutput = join(dest, 'apps/operator/dist-verify');
-    if (gitCheckout && (await fs.readdir(runtimeOutput).catch(error => {
-      if (error.code === 'ENOENT') return [];
-      throw error;
-    })).length) {
-      throw new PreviewError('committed verifier runtime output requires archive export, not Git checkout', 2);
+    for (const path of VERIFIER_REBUILT_OUTPUTS) {
+      const runtimeOutput = join(dest, path);
+      const info = await fs.lstat(runtimeOutput).catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (gitCheckout && info && (!info.isDirectory() || (await fs.readdir(runtimeOutput)).length)) {
+        throw new PreviewError('committed verifier runtime output requires archive export, not Git checkout', 2);
+      }
+      if (!gitCheckout) await fs.rm(runtimeOutput, { recursive: true, force: true });
     }
-    if (!gitCheckout) await fs.rm(runtimeOutput, { recursive: true, force: true });
     const testedInputs = [];
     for (const path of paths) {
       const archived = join(dest, path);
