@@ -2002,12 +2002,13 @@ export function verifyBgVerifierOutputRecord(output: BgVerifierOutputRecord, rec
  * An explicit allowance is shared across phases and requires a finite caller
  * deadline. Neither progress nor a forecast grants more time. Keep the default
  * dependency ceiling when omitted, and reserve the parent's cleanup window.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
+ * @param {{ donor: string, runtimeAssetDonor?: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
  *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number,
  *   resourceInventory?: ReturnType<typeof verifierResourceInventory> }} options
  */
-export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, signal, env, maxMs, cutoffEpochMs, now, resourceInventory }: {
+export function prepareVerifierDependencies({ donor, runtimeAssetDonor, dest, receipt, runPhase, signal, env, maxMs, cutoffEpochMs, now, resourceInventory }: {
     donor: string;
+    runtimeAssetDonor?: string;
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     runPhase?: VerifierPhaseRunner;
@@ -2084,12 +2085,13 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, prepareChildEnv, releaseParentPrivatePg, requestParentPgReleaseImpl, signal, clock }: {
+export function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, prepareChildEnv, releaseParentPrivatePg, requestParentPgReleaseImpl, signal, clock }: {
     repo: string;
+    runtimeAssetDonor?: string;
     ref: string;
     receiptPath: string;
     inputs?: string[];
