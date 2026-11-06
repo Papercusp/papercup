@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import postgres from 'postgres';
 import { publishReport } from '../../../packages/operator-core/lib/report-library';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
@@ -92,7 +92,7 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
   }
   try {
     const completedRuntime = await recordNativeCollectionJourney({ sourceRoot: root, sourceReceipt,
-      verifierRunId: basename(dirname(phase)), testPath: TEST_PATH, run: async () => {
+      verifierPhaseDirectory: phase, testPath: TEST_PATH, run: async () => {
         const environ = (await readFile(`/proc/${pid}/environ`, 'utf8')).split('\0');
         expect(environ).toContain(`PAPERCUSP_SID=${process.env.VERIFY_TAURI_OWNER_SID}`);
         expect(environ).toContain(`PAPERCUSP_TAURI_LAUNCH_PROVENANCE=${process.env.VERIFY_TAURI_LAUNCH_PROVENANCE}`);
