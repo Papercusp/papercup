@@ -122,7 +122,7 @@ Independent method replication, L4/scenario obligations, adoption evidence, outs
 
 **Holds and next work**
 
-Waiting on Avi: the existing funding/reviewer decision remains pending. Preserve the selected account and spend policy; no extra implementation agents or reviewer launches merely to clear freshness. LIVE_GATE_OPS stand-down remains binding: do not read or operate the current release gate. Independent source, evidence and dossier preparation can continue.
+The original funding/reviewer question was withdrawn and superseded: conversation `conv-mvrqsuvd-0000-4978129d567d4f5193d1a5c2e5c8cea2`, withdrawal post 1208702, and replacement `conv-mvs25bu4-0000-a5b4a96d68d04c3e9017c3ea5968fb88`. No funding response is pending from Avi. Preserve the selected account and spend policy; reviewer freshness alone does not authorize recruitment. Canonical independent acceptance remains required. LIVE_GATE_OPS stand-down remains binding: do not read or operate the current release gate. Independent source, evidence and dossier preparation can continue.
 
 EI-27987532442733865 owns the measured AFTER-run provenance timeout follow-up; its latency root cause is unknown and deferred. The TSC timeout recurrence is already recorded on EI-26811637840004293, post 1214488. Neither is a reason to abandon the original parent lane.
 
