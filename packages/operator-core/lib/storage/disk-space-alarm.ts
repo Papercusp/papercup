@@ -25,7 +25,10 @@ import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 
-export const DISK_SPACE_ALARM_CONDITION_KEY = 'alarm:disk-space';
+import { DISK_SPACE_ALARM_CONDITION_KEY } from '../coord/actionable-conditions';
+export { DISK_SPACE_ALARM_CONDITION_KEY } from '../coord/actionable-conditions';
+import { DISK_RECOVERY_MIN_BYTES, DISK_RECOVERY_TARGET_BYTES } from './disk-space-policy';
+import type { DiskRecoveryRequest, DiskRecoveryResult } from './disk-space-recovery';
 import { notifySyncInvalidate } from '../sync-sse';
 import { workspacesRoot } from '../workspace-registry';
 import { listDiskRootChildrenAsync, type DiskRootChildScan } from './disk';
@@ -304,6 +307,9 @@ export function formatDiskAlarmToast(breaches: DiskBreach[]): { level: string; m
 // ── Impure sampling + emit (injectable; never throws) ──────────────────────────
 
 export interface DiskAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
+  /** null = no open episode; undefined = unreadable, never evidence of recovery. */
+  readOpenAlarm?: () => Promise<{ paths: string[]; retryWake?: boolean } | null | undefined>;
+  ensureRecovery?: (request: DiskRecoveryRequest) => Promise<DiskRecoveryResult>;
   /** Saved census and reclaim receipt; no new disk walk on the alert path. */
   readContext?: () => Promise<DiskAlarmContext>;
   /** Bounded consumer attribution, sampled only when a filesystem breaches. */
@@ -498,6 +504,12 @@ export async function runDiskSpaceAlarmOnce(
   }
 
   const breaches = detectLowSpace(snapshots, policy);
+  let openAlarm: { paths: string[]; retryWake?: boolean } | null | undefined;
+  try {
+    openAlarm = await (deps.readOpenAlarm ?? readOpenDiskAlarm)();
+  } catch { openAlarm = undefined; }
+  const recoveryPaths = [...new Set([...(openAlarm?.paths ?? []), ...breaches.map((breach) => breach.path)])].sort();
+  const recovering = openAlarm != null && !diskRecoveryReached(snapshots, recoveryPaths, policy);
   let attribution = '';
   const alarmData: Record<string, unknown> = { host: hostname(), consumers: {} };
   if (breaches.length > 0) {
@@ -545,15 +557,38 @@ export async function runDiskSpaceAlarmOnce(
   // durable record. Best-effort + never throws, exactly like the toast.
   let escalated = false;
   const critical = breaches.filter((b) => b.severity === 'critical');
-  if (breaches.length > 0) {
+  if (breaches.length > 0 || recovering) {
     const request = critical.length > 0 ? formatDiskEscalation(critical, policy) : {
       title: 'Disk below headroom target',
-      body: formatDiskAlarmToast(breaches).description,
+      body: breaches.length ? formatDiskAlarmToast(breaches).description : 'Disk recovery remains incomplete.',
     };
+    const recoveryBody = request.body + attribution +
+      `\nRecovery: aim for ${fmtGiB(DISK_RECOVERY_TARGET_BYTES)} free on each affected filesystem. ` +
+      `${fmtGiB(DISK_RECOVERY_MIN_BYTES)} is partial recovery, not an all-clear. ` +
+      'Investigate and use existing retention/census/prune mechanisms and cleanup mutex; preserve pins, active files and owner data. ' +
+      'Reuse any active cleanup owner. Record measured before/after free space, blockers and safe reclaim limits; never infer recovery from a successful cleanup command.';
+    let recovery: DiskRecoveryResult;
+    try {
+      recovery = await (deps.ensureRecovery ?? (async (input) => {
+        const { ensureDiskRecoveryOwner } = await import('./disk-space-recovery');
+        return ensureDiskRecoveryOwner(input);
+      }))({ title: request.title, body: recoveryBody, retryWake: openAlarm?.retryWake });
+    } catch (error) {
+      // Dispatch failure must not hide the disk measurement or suppress human attention.
+      recovery = { workItem: null, owner: null, status: 'unavailable', reason: String(error) };
+    }
+    alarmData.paths = recoveryPaths;
+    alarmData.recovery = recovery;
+    alarmData.filesystems = snapshots.map(({ path, freeBytes, totalBytes }) => ({ path, freeBytes, totalBytes }));
     escalated = await escalateAlarm(
       {
         ...request,
-        body: request.body + attribution,
+        // Changed affected devices/status must survive one-shot summary deduplication,
+        // including across restarts. Unchanged episodes still remain quiet.
+        title: request.title + ` [affected: ${recoveryPaths.join(', ')}]` +
+          (recovery.status === 'unavailable' ? ' — recovery agent unavailable' : ''),
+        body: recoveryBody + `\nRecovery assignment: ${JSON.stringify(recovery)}`,
+        oneShot: true,
         cooldownMs: ESCALATE_COOLDOWN_MS,
         source: 'disk-space-alarm',
         conditionKey: DISK_SPACE_ALARM_CONDITION_KEY,
@@ -561,11 +596,33 @@ export async function runDiskSpaceAlarmOnce(
       },
       { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );
-  } else if (snapshots.length > 0) {
+  } else if (snapshots.length > 0 && openAlarm !== undefined &&
+      (openAlarm === null || diskRecoveryReached(snapshots, recoveryPaths, policy))) {
     await resolveAlarm(DISK_SPACE_ALARM_CONDITION_KEY, 'disk-space-alarm', deps);
   }
   await checkDeclaredMounts(deps);
   return { checked: snapshots.length, breaches, escalated };
+}
+
+/** Missing/invalid samples never certify recovery of a previously breached device. */
+export function diskRecoveryReached(snapshots: DiskSnapshot[], paths: string[], policy = DEFAULT_DISK_POLICY): boolean {
+  const affected = paths.length ? paths.map((path) => snapshots.find((sample) => sample.path === path || sample.aliases?.includes(path))) : snapshots;
+  return affected.length > 0 && affected.every((sample) => sample !== undefined &&
+    Number.isFinite(sample.totalBytes) && sample.totalBytes > 0 &&
+    Number.isFinite(sample.freePct) && Number.isFinite(sample.freeInodesPct) &&
+    Number.isFinite(sample.freeBytes) && sample.freeBytes >= DISK_RECOVERY_TARGET_BYTES &&
+    detectLowSpace([sample], policy).length === 0);
+}
+
+async function readOpenDiskAlarm(): Promise<{ paths: string[]; retryWake: boolean } | null> {
+  const { readLatestConditionEnvelope } = await import('../agent-tools/coordination/condition-state');
+  const latest = await readLatestConditionEnvelope(DISK_SPACE_ALARM_CONDITION_KEY);
+  if (!latest || latest['resolves_condition'] || latest['resolves_conditions']) return null;
+  const data = latest['data'] as { paths?: unknown; recovery?: { status?: string } } | undefined;
+  return {
+    paths: Array.isArray(data?.paths) ? data.paths.filter((path): path is string => typeof path === 'string') : [],
+    retryWake: data?.recovery?.status === 'unavailable',
+  };
 }
 
 /**

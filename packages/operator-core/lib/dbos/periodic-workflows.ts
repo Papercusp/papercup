@@ -178,6 +178,29 @@ const scratchGcWorkflow = idempotentRegisterWorkflow('scratchGc', () =>
 );
 DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: SCRATCH_GC_CRONTAB });
 
+// Every five minutes at :01+: cache_l2 rows become read misses at expiry, but
+// their JSONB values otherwise remain physically present. The daily filesystem
+// scratch GC is retention-flagged and too infrequent for these short-lived rows;
+// reuse this DBOS maintenance lane with a bounded database batch instead.
+async function cacheL2ExpirySweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    try {
+      const { PgL2Store, CACHE_L2_EXPIRY_SWEEP_BATCH_SIZE } = await import('../cache/pg-l2-store');
+      const removed = await new PgL2Store().sweepExpired(CACHE_L2_EXPIRY_SWEEP_BATCH_SIZE);
+      console.log(`[cache-l2-expiry-sweep] removed=${removed} batchLimit=${CACHE_L2_EXPIRY_SWEEP_BATCH_SIZE}`);
+    } catch (err) {
+      console.warn(`[cache-l2-expiry-sweep] sweep failed (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'cache-l2-expiry-sweep' });
+}
+const cacheL2ExpirySweepWorkflow = idempotentRegisterWorkflow('cacheL2ExpirySweep', () =>
+  DBOS.registerWorkflow(cacheL2ExpirySweepTick, {
+    name: 'cacheL2ExpirySweep',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(cacheL2ExpirySweepWorkflow, { name: 'cacheL2ExpirySweep', crontab: '0 1-59/5 * * * *' });
+
 // (The 6-hourly mem0 ephemeral-TTL sweep was removed — the `ephemeral` kind is
 // retired, so nothing carries expires_at; ephemeral state lives in coord now.
 // docs-and-memory-as-projections-2026-06-05 D-006.)

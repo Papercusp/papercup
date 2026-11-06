@@ -1334,7 +1334,18 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           selected.push({ ...entry, buildOnly: true });
           agePaths.add(entry.path);
         }
-        selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
+        selected.sort((a, b) => {
+          // Expired max-age entries must all go, regardless of the cap. Spend
+          // a bounded effect window on their largest allocations first so tiny
+          // old packets cannot starve meaningful headroom. Keep cap-only
+          // evictions oldest-first, preserving the newest retained evidence.
+          if (keep?.kind === 'max-age' && cap && cap.beforeBytes > cap.maxBytes) {
+            const aExpired = agePaths.has(a.path), bExpired = agePaths.has(b.path);
+            if (aExpired !== bExpired) return aExpired ? -1 : 1;
+            if (aExpired && a.bytes !== b.bytes) return b.bytes - a.bytes;
+          }
+          return a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path);
+        });
         if (!selected.length) {
           if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
           continue;

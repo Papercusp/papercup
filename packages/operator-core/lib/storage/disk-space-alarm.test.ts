@@ -25,6 +25,7 @@ import {
   formatDiskEscalation,
   formatDiskAlarmToast,
   runDiskSpaceAlarmOnce as runDiskSpaceAlarmWithDefaults,
+  diskRecoveryReached,
   diskPolicyFromEnv,
   watchedPaths,
   alarmWatchedPaths,
@@ -43,7 +44,15 @@ const GIB = 1024 ** 3;
 // Unit fixtures never touch the live census/cooldown database.
 function runDiskSpaceAlarmOnce(deps: Parameters<typeof runDiskSpaceAlarmWithDefaults>[0] = {}, policy?: DiskAlarmPolicy) {
   // readMissingMounts: null keeps the host's real /etc/fstab out of every fixture.
-  return runDiskSpaceAlarmWithDefaults({ readContext: async () => ({ devices: [], receipt: null }), recentlyEscalated: async () => false, readMissingMounts: async () => null, ...deps }, policy);
+  return runDiskSpaceAlarmWithDefaults({
+    readOpenAlarm: async () => null,
+    ensureRecovery: async () => ({ workItem: 'fixture-recovery', owner: 'fixture-agent', status: 'assigned' }),
+    readContext: async () => ({ devices: [], receipt: null }),
+    recentlyEscalated: async () => false,
+    readMissingMounts: async () => null,
+    emitToast: async () => {}, broadcast: async () => true, resolve: async () => false,
+    ...deps,
+  }, policy);
 }
 
 function snap(p: Partial<DiskSnapshot> = {}): DiskSnapshot {
@@ -295,13 +304,15 @@ describe('runDiskSpaceAlarmOnce', () => {
     expect(escalate.mock.calls[0]![0].data).toEqual({
       conditionKey: DISK_SPACE_ALARM_CONDITION_KEY, host: expect.any(String),
       consumers: { '/': ['/home/builduser'], '/mnt/data': ['/mnt/data/offload'] }, reclaimReceiptId: 'receipt-123',
+      paths: ['/'], filesystems: expect.any(Array),
+      recovery: { workItem: 'fixture-recovery', owner: 'fixture-agent', status: 'assigned' },
     });
     for (const text of ['/home/builduser', '/mnt/data/offload', '/settings/storage?reclaim=receipt-123', 'partial']) {
       expect(escalate.mock.calls[0]![0].body).toContain(text);
       expect(emitToast.mock.calls[0]![0].description).toContain(text);
     }
     escalate.mockClear(); readContext.mockClear();
-    await runDiskSpaceAlarmOnce({ ...deps, sample: async () => [snap({ path: '/', freeBytes: 100 * GIB, freePct: 0.2 })] });
+    await runDiskSpaceAlarmOnce({ ...deps, sample: async () => [snap({ path: '/', freeBytes: 250 * GIB, freePct: 0.5 })] });
     expect(escalate).not.toHaveBeenCalled(); expect(readContext).not.toHaveBeenCalled();
   });
   it('inspects breached temporary and extra paths before known roots and reports their consumers', async () => {
@@ -417,7 +428,7 @@ describe('runDiskSpaceAlarmOnce', () => {
     });
     expect(emitToast).toHaveBeenCalledTimes(1); // still toasts
     expect(escalate).toHaveBeenCalledOnce();
-    expect(escalate.mock.calls[0][0].title).toBe('Disk below headroom target');
+    expect(escalate.mock.calls[0][0].title).toBe('Disk below headroom target [affected: /ws]');
     expect(res.escalated).toBe(true);
   });
 
@@ -506,12 +517,11 @@ describe('escalation ladder — a worsening critical disk re-escalates inside th
 
   it('emits NO toast when every filesystem is healthy', async () => {
     const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
-    vi.mocked(readLatestConditionEnvelope).mockClear();
-    const res = await runDiskSpaceAlarmOnce({ sample: async () => [snap(), snap({ path: '/tmp' })], emitToast });
+    const resolve = vi.fn(async () => true);
+    const res = await runDiskSpaceAlarmOnce({ sample: async () => [snap(), snap({ path: '/tmp' })], emitToast, resolve });
     expect(res.breaches).toEqual([]);
     expect(emitToast).not.toHaveBeenCalled();
-    expect(readLatestConditionEnvelope).toHaveBeenCalledOnce();
-    expect(readLatestConditionEnvelope).toHaveBeenCalledWith(DISK_SPACE_ALARM_CONDITION_KEY);
+    expect(resolve).toHaveBeenCalledWith({ conditionKey: DISK_SPACE_ALARM_CONDITION_KEY, summary: 'disk-space-alarm recovered' });
   });
 
   it('never throws when sampling fails — returns an empty result', async () => {
@@ -548,11 +558,77 @@ describe('diskPolicyFromEnv', () => {
   it('falls back to defaults when env is unset', () => {
     expect(diskPolicyFromEnv()).toEqual(DEFAULT_DISK_POLICY);
   });
-  it('keeps the approved 100 GiB alarm floor when a legacy environment sets a lower value', () => {
+  it('keeps the approved 200 GiB alarm floor when a legacy environment sets a lower value', () => {
     vi.stubEnv('PAPERCUSP_DISK_ALARM_FREE_GB', '5');
-    expect(diskPolicyFromEnv().freeBytesMin).toBe(100 * GIB);
-    vi.stubEnv('PAPERCUSP_DISK_ALARM_FREE_GB', '150');
-    expect(diskPolicyFromEnv().freeBytesMin).toBe(150 * GIB);
+    expect(diskPolicyFromEnv().freeBytesMin).toBe(200 * GIB);
+    vi.stubEnv('PAPERCUSP_DISK_ALARM_FREE_GB', '250');
+    expect(diskPolicyFromEnv().freeBytesMin).toBe(250 * GIB);
+  });
+});
+
+describe('disk recovery hysteresis', () => {
+  it('still alerts when recovery dispatch throws and retries a previously failed wake', async () => {
+    const broadcast = vi.fn(async () => true);
+    const escalate = vi.fn(async () => {});
+    const ensureRecovery = vi.fn(async () => { throw new Error('dispatch unavailable'); });
+    await expect(runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ freeBytes: 199 * GIB, freePct: 0.398 })],
+      readOpenAlarm: async () => ({ paths: ['/ws'], retryWake: true }),
+      ensureRecovery, broadcast, escalate,
+    })).resolves.toMatchObject({ checked: 1, escalated: true });
+    expect(ensureRecovery).toHaveBeenCalledWith(expect.objectContaining({ retryWake: true }));
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ recovery: expect.objectContaining({ status: 'unavailable', reason: expect.stringContaining('dispatch unavailable') }) }),
+    }));
+    expect(escalate).toHaveBeenCalledOnce();
+  });
+
+  it('persists the union of affected devices as new information and will not clear a missing device', async () => {
+    const broadcast = vi.fn(async () => true);
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ path: '/new', freeBytes: 199 * GIB, freePct: 0.398 })],
+      readOpenAlarm: async () => ({ paths: ['/old'] }), broadcast,
+    });
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.stringContaining('[affected: /new, /old]'),
+      data: expect.objectContaining({ paths: ['/new', '/old'] }),
+    }));
+    const recovered = snap({ path: '/new', aliases: ['/new-alias'], freeBytes: 500 * GIB, freePct: 1 });
+    expect(diskRecoveryReached([recovered], ['/new', '/old'])).toBe(false);
+    expect(diskRecoveryReached([recovered], ['/new-alias'])).toBe(true);
+    expect(diskRecoveryReached([{ ...recovered, freePct: NaN }], ['/new'])).toBe(false);
+  });
+
+  it('starts recovery below 200 GiB even at a healthy percentage', async () => {
+    const ensureRecovery = vi.fn(async (_request: { title: string; body: string }) => ({ workItem: 'incident', owner: 'responder', status: 'assigned' as const }));
+    const sample = snap({ freeBytes: 199 * GIB, freePct: 0.398 });
+    const result = await runDiskSpaceAlarmOnce({ sample: async () => [sample], ensureRecovery });
+    expect(result.breaches).toHaveLength(1);
+    expect(ensureRecovery).toHaveBeenCalledOnce();
+    expect(ensureRecovery.mock.calls[0]?.[0].body).toContain('500.0 GiB');
+    expect(detectLowSpace([snap({ freeBytes: 200 * GIB, freePct: 0.4 })])).toEqual([]);
+  });
+
+  it.each([250, 400, 499])('keeps the episode open at %s GiB despite successful assignment', async (free) => {
+    const resolve = vi.fn(async () => true);
+    const ensureRecovery = vi.fn(async () => ({ workItem: 'incident', owner: 'responder', status: 'assigned' as const }));
+    await runDiskSpaceAlarmOnce({ sample: async () => [snap({ freeBytes: free * GIB, freePct: free / 500 })],
+      readOpenAlarm: async () => ({ paths: ['/ws'] }), ensureRecovery, resolve });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(ensureRecovery).toHaveBeenCalledOnce();
+  });
+
+  it('resolves only from measured recovery and retains unknown or missing devices', async () => {
+    const recovered = snap({ freeBytes: 500 * GIB, freePct: 1 });
+    expect(diskRecoveryReached([recovered], ['/ws'])).toBe(true);
+    expect(diskRecoveryReached([recovered], ['/missing'])).toBe(false);
+    expect(diskRecoveryReached([snap({ freeBytes: NaN })], ['/ws'])).toBe(false);
+    const resolve = vi.fn(async () => true);
+    await runDiskSpaceAlarmOnce({ sample: async () => [recovered], readOpenAlarm: async () => ({ paths: ['/ws'] }), resolve });
+    expect(resolve).toHaveBeenCalledOnce();
+    resolve.mockClear();
+    await runDiskSpaceAlarmOnce({ sample: async () => [recovered], readOpenAlarm: async () => undefined, resolve });
+    expect(resolve).not.toHaveBeenCalled();
   });
 });
 

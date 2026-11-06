@@ -1588,6 +1588,35 @@ describe('retention on a real fixture tree', () => {
       for (const path of [paths[0]!, paths[2]!]) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { now.mockRestore(); }
   });
+  it.each([true, false])('reclaims large expired allocations within one effect window while preserving cap-only order (expired=%s)', async (expired) => {
+    const { root, options } = await setup();
+    const tiny = join(root, 'a-tiny'), large = join(root, 'b-large'), pinned = join(root, 'c-pinned');
+    await writeFile(tiny, 'small');
+    await writeFile(large, Buffer.alloc(64 * 1024, 1));
+    await writeFile(pinned, Buffer.alloc(128 * 1024, 1));
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const checked: string[][] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options,
+        nowMs: clock + (expired ? 48 : 12) * 3_600_000,
+        policy: options.policy.map(cls => ({ ...cls, maxBytes: 4096 })),
+        protectedPaths: [pinned], effectBudgetMs: 100,
+        scanHolders: async paths => {
+          checked.push([...paths]);
+          return { complete: true, byPath: new Map<string, string[]>() };
+        },
+        record: async phase => { if (phase === 'removed') clock += 200; },
+      });
+      const first = expired ? large : tiny;
+      expect(receipt.entries.filter(entry => entry.status === 'removed').map(entry => entry.path)).toEqual([first]);
+      expect(checked).toContainEqual([first]);
+      expect(receipt.complete).toBe(false);
+      await expect(stat(first)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect((await stat(expired ? tiny : large)).size).toBeGreaterThan(0);
+      expect((await stat(pinned)).size).toBe(128 * 1024);
+    } finally { now.mockRestore(); }
+  });
   it('bounds effect work per root, records the remainder and resumes from a fresh policy census', async () => {
     const { root, options } = await setup();
     const secondRoot = join(fixture!, 'second-root'); await mkdir(secondRoot);
