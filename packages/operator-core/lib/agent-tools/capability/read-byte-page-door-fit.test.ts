@@ -3,20 +3,20 @@
  *
  * `capability:read`'s byte window is the documented recovery path for a spilled
  * tool result: page the spill, base64-decode `data`, follow `next_cursor`. Every
- * tool result also passes the `resultEach` door, and an over-budget result is
+ * model-facing result also passes the `resultEach` door, and an over-budget result is
  * projected — which for this tool truncates `data` MID-BASE64. The decode then
  * yields a valid plaintext prefix followed by `invalid input`: silent corruption
  * of the path an agent runs precisely when it has already lost state, while
  * `ok:true`, `eof:false` and a well-formed `next_cursor` all still look healthy.
  *
  * A 4096-byte page is 5464 chars of base64 on its own — over the 6000-char door
- * before the envelope is even counted — so the maximum page the schema ADVERTISED
- * could never be returned intact (EI-20545077286837456, EI-20501871898754755;
- * both were watchdog-auto-closed while the defect stayed live).
+ * before the envelope is even counted — so model-facing reads must clamp to the
+ * measured envelope fit. Machine-consumed code-mode reads bypass that door and
+ * can use one larger bounded page instead of paying dispatch cost per 4 KiB.
  *
- * So these tests assert the property that matters — a page that survives the door
- * and decodes cleanly — rather than any particular page size, and they exercise
- * the real door rather than re-deriving its arithmetic.
+ * The model-facing tests exercise the real door rather than re-deriving its
+ * arithmetic; the code-mode regression checks that a larger internal page stays
+ * exact without crossing that door.
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -106,8 +106,11 @@ async function readThroughNestedInvokeDoor(args: Record<string, unknown>, ctxExt
 }
 
 /** The tool's own response, BEFORE the door — the thing that must fit. */
-async function rawResponseText(args: Record<string, unknown>): Promise<string> {
-  const res = (await readTool.handler(args as never, { projectDir: sandbox } as never)) as {
+async function rawResponseText(
+  args: Record<string, unknown>,
+  ctxExtra: Record<string, unknown> = {},
+): Promise<string> {
+  const res = (await readTool.handler(args as never, { projectDir: sandbox, ...ctxExtra } as never)) as {
     content: Array<{ text: string }>;
   };
   return res.content[0].text;
@@ -143,6 +146,35 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     // and it bites for ANY path length rather than only the fixture's.
     const text = await rawResponseText({ file_path: filePath, byte_offset: 0, byte_limit: MAX_BYTE_PAGE });
     expect(text.length).toBeLessThanOrEqual(DOOR_BUDGET_CHARS);
+  });
+
+  it('lets machine-consumed code-mode reads return one larger scratch page', async () => {
+    const original = payload(40_000);
+    writeScratchReference({
+      filePath,
+      payload: original,
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: original.length }],
+    });
+
+    const raw = await rawResponseText(
+      { file_path: filePath, byte_offset: 0, byte_limit: MAX_BYTE_PAGE },
+      { workspaceId: 'ws-1', codeMode: true },
+    );
+    const parsed = JSON.parse(raw) as {
+      byte_length: number;
+      data: string;
+      eof: boolean;
+      byte_limit_clamped?: unknown;
+    };
+
+    expect(raw.length).toBeGreaterThan(DOOR_BUDGET_CHARS);
+    expect(parsed.byte_length).toBe(original.length);
+    expect(parsed.eof).toBe(true);
+    expect(parsed).not.toHaveProperty('byte_limit_clamped');
+    expect(Buffer.from(parsed.data, 'base64')).toEqual(original);
   });
 
   it('holds that budget for pathological path lengths too', async () => {

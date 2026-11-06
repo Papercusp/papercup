@@ -41,6 +41,32 @@ fn workbench_help_is_side_effect_free_without_a_controlling_tty() {
 }
 
 #[test]
+fn workbench_resume_rejects_incomplete_identity_before_terminal_or_operator_access() {
+    for args in [
+        vec!["workbench", "resume"],
+        vec!["workbench", "resume", "0", "desktop"],
+        vec!["workbench", "resume", "41", "host;echo bad"],
+    ] {
+        let output = Command::new(pui_binary())
+            .args(&args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "accepted {args:?}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !error.contains("interactive terminal"),
+            "identity was not validated first: {error}"
+        );
+        assert!(
+            error.contains("Usage:") || error.contains("invalid session"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn native_read_help_is_side_effect_free_without_a_controlling_tty() {
     assert_help_is_side_effect_free(&["native-read", "--help"]);
 }

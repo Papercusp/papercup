@@ -19,6 +19,7 @@ vi.mock('./flush-refusal-marker', () => ({
 import { readHeldWorkItems, CARRY_BRIEF_MAX_HELD_ITEMS } from './carry-brief';
 import { autoCheckpointStaleHeldItems } from './turn-end-tracking-io';
 import { runFlushGate } from './enforcement-gate-io';
+import { OrgTxnTimeoutError } from './pg-bounded-txn';
 
 const nowMs = 1_792_095_000_000;
 const input = { ownerId: 'su-respawn', workspaceId: 'papercusp-workspace', sessionId: 'session-current',
@@ -153,6 +154,32 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
     expect(out.refusalText).toContain('session remains intact');
     expect(out.refusalText).not.toContain('work_items:checkpoint');
     expect(log).toHaveBeenCalledWith(expect.stringContaining(out.snapshotFailure!.errorFingerprint!));
+  });
+
+  it('preserves a targeted wait sample on a mandatory host checkpoint timeout', async () => {
+    notes.set('WI-1', 'Judgment.');
+    const waitSnapshot = {
+      status: 'sampled' as const,
+      targetPid: 42,
+      waitEventType: 'IO',
+      waitEvent: 'WALSync',
+      blockingPids: [],
+      statementTimeoutMs: 15_000,
+      lockTimeoutMs: 8_000,
+      sampleAfterMs: 6_400,
+      sampleRequestedAt: new Date(nowMs).toISOString(),
+    };
+    const timeout = new OrgTxnTimeoutError('57014', new Error('statement timeout'));
+    timeout.waitSnapshot = waitSnapshot;
+    mocks.set.mockRejectedValueOnce(timeout);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const out = await runFlushGate({ ...input, boundary: 'compaction', mode: 'host-snapshot', brief: null });
+
+    expect(mocks.set.mock.calls[0]![2]).toMatchObject({ captureWaitSnapshot: true });
+    expect(out.verdict).toBe('refuse');
+    expect(out.snapshotFailure?.waitSnapshot).toEqual(waitSnapshot);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"waitEvent":"WALSync"'));
   });
 
   it('preserves a locked-store refusal code and affected item context', async () => {

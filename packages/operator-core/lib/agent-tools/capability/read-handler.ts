@@ -56,7 +56,7 @@ export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 export const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse unbounded reads outright
 const STREAM_LINE_WINDOW_THRESHOLD_BYTES = 1024 * 1024;
-export const MAX_BYTE_PAGE = 4_096;
+export const MAX_BYTE_PAGE = 4 * 1024 * 1024; // 4 MiB for machine-consumed code-mode reads
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 /** Inspect bytes rather than trusting a caller-controlled extension or MIME type. */
@@ -160,17 +160,18 @@ const DOOR_MARGIN_CHARS = 256;
 export const MIN_PAGE_BYTES = 512;
 
 /**
- * WI-39670: the largest page whose base64 payload PLUS this response's own
- * envelope still fits the `resultEach` door.
+ * WI-39670: the largest model-facing page whose base64 payload PLUS this
+ * response's own envelope still fits the `resultEach` door.
  *
- * Every tool result passes that door, and an over-budget result is projected —
- * for this tool that means `data` is truncated MID-BASE64. Decoding the result
+ * Model-facing tool results pass that door, and an over-budget result is
+ * projected — for this tool that means `data` is truncated MID-BASE64. Decoding
  * then yields a valid plaintext prefix followed by `invalid input`, i.e. silent
- * corruption of the byte-window recovery path, with `ok:true`, `eof:false` and a
- * well-formed `next_cursor` all still looking healthy. `MAX_BYTE_PAGE` (4096)
- * alone is 5464 chars of base64 — already over the 6000-char door once the
- * envelope is counted, so the maximum page the schema ADVERTISES could never be
- * returned intact.
+ * corruption of the recovery path, with `ok:true`, `eof:false` and a well-formed
+ * `next_cursor` all still looking healthy. A 4096-byte page alone is 5464 chars
+ * of base64, already over the 6000-char door once the envelope is counted.
+ * Machine-consumed inner dispatches bypass the model-facing door, so they can
+ * use the larger bounded `MAX_BYTE_PAGE` without multiplying authorization and
+ * dispatch work across hundreds of tiny pages.
  *
  * The envelope is measured, not guessed, because `file_path` is absolute and
  * appears TWICE (top level and again in `next_cursor.args`) — a deep scratch path
@@ -331,9 +332,10 @@ const byteWindowArgs = z.object({
     .positive()
     .max(MAX_BYTE_PAGE)
     .describe(
-      `Bytes to return as base64 (max ${MAX_BYTE_PAGE}), an UPPER BOUND — the page is clamped to ` +
-        `fit the result door. If the response includes byte_limit_clamped, use its applied limit; ` +
-        `always follow next_cursor. Use with byte_offset. ${BYTE_WINDOW_EXCLUSIVITY}`,
+      `Bytes to return as base64 (max ${MAX_BYTE_PAGE}, 4 MiB), an UPPER BOUND. Machine-consumed ` +
+        `code-mode calls may use the full bound; model-facing calls are clamped to fit the result ` +
+        `door. If the response includes byte_limit_clamped, use its applied limit; always follow ` +
+        `next_cursor. Use with byte_offset. ${BYTE_WINDOW_EXCLUSIVITY}`,
     ),
   content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
   evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
@@ -622,8 +624,12 @@ async function renderByteWindow(
   totalBytes: number,
   readPage: (offset: number, limit: number) => Buffer | Promise<Buffer>,
   reference?: ScratchReferenceManifest,
+  codeMode = false,
 ) {
-  const effectiveLimit = doorSafePageBytes(abs, args.byte_limit!, reference);
+  const requestedLimit = Math.min(args.byte_limit!, MAX_BYTE_PAGE);
+  const effectiveLimit = codeMode
+    ? requestedLimit
+    : doorSafePageBytes(abs, requestedLimit, reference);
   // A caller asking for a deliberately small page (for example, 256 bytes
   // from a result-door cursor) has already accepted the extra hops. Do not
   // reject it merely because the absolute scratch path leaves less than the
@@ -819,6 +825,7 @@ export const capabilityReadDefinition = {
           reference.manifest.byteCount,
           (offset, limit) => reference.payload.subarray(offset, offset + limit),
           reference.manifest,
+          ctx.codeMode,
         );
       } catch (e: unknown) {
         if (e instanceof ScratchReferenceError) return err(e.code, e.message);
@@ -866,6 +873,7 @@ export const capabilityReadDefinition = {
           fallback.manifest.byteCount,
           (offset, limit) => fallback.payload.subarray(offset, offset + limit),
           fallback.manifest,
+          ctx.codeMode,
         );
       } catch (e: unknown) {
         if (e instanceof ScratchReferenceError) return err(e.code, e.message);
@@ -974,6 +982,8 @@ export const capabilityReadDefinition = {
             args as ByteReadArgs,
             fileStat.size,
             (offset, limit) => readBytePage(abs, offset, limit),
+            undefined,
+            ctx.codeMode,
           );
         }
         if (boundedLineRead) {
@@ -1284,6 +1294,7 @@ export const capabilityReadDefinition = {
         bytes.length,
         (offset, limit) => bytes.subarray(offset, Math.min(bytes.length, offset + limit)),
         reference,
+        ctx.codeMode,
       ), reference);
     }
 

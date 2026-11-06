@@ -102,10 +102,11 @@ const RESULT_DOOR_FINALIZE_RESERVE_MS = 250;
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOL_SEGMENT_REGEX = /^[A-Za-z0-9._:-]+$/;
 
-// Keep this model-facing ceiling synchronized with MAX_BYTE_PAGE in
-// agent-tools/capability/read.ts. A cursor advertises the safe page request
-// (3,072 bytes) separately, but callers also need the tool's schema maximum
-// when they choose their own page size during recovery.
+// This remains the model-facing capability:read ceiling. Machine-consumed
+// code-mode reads use the separate 4 MiB schema ceiling in
+// agent-tools/capability/read.ts and bypass this result door by design. A
+// model-facing cursor advertises its own safe page request; callers may also
+// request this door ceiling and let capability:read clamp it to fit.
 const CAPABILITY_READ_MAX_BYTE_PAGE = 4_096;
 
 /** The subset of an MCP tools/call result the door reads/rewrites. */

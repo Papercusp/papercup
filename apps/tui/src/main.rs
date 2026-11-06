@@ -103,6 +103,7 @@ Usage:
 
 Subcommands:
   workbench                  Open the full zellij workbench (boards, fleet, panes)
+  workbench resume ID HOST [OWNER]  Resume an exact ended session from the native launcher
   doctor                     Verify local artifacts, stale panes, and selected operator identity
   native-read                Read a native desktop model (JSON request on stdin)
   self <COMMAND>             Install, update, roll back or uninstall this PUI (`pui self --help`)
@@ -456,7 +457,10 @@ async fn main() -> Result<()> {
         }
     }
     match subcommand.as_deref() {
-        Some("workbench") => return run_workbench().await,
+        Some("workbench") => {
+            let selection = workbench::ResumeSelection::parse(&cli.positionals[1..])?;
+            return run_workbench(selection).await;
+        }
         Some("doctor") => return run_doctor().await,
         Some("native-read") => return native_panel::run().await,
         // The chat-only DOCK (operator chat | brain) — the desktop-docked native
@@ -1942,11 +1946,12 @@ fn chat_workbench_transcript_path(session: &str) -> Result<std::path::PathBuf> {
     Ok(dir.join(format!("{session}.exit.txt")))
 }
 
-async fn run_workbench() -> Result<()> {
+async fn run_workbench(selection: Option<workbench::ResumeSelection>) -> Result<()> {
     require_interactive_terminal("workbench")?;
     let session = layout::session_name("wb");
-    let (_client, backend) = match selected_backend_identity().await {
+    let (client, backend) = match selected_backend_identity().await {
         Ok(backend) => backend,
+        Err(error) if selection.is_some() => return Err(error),
         Err(_) => {
             // A clean machine must reach the repair form even with no operator.
             // No multiplexer/session binding exists yet on this path.
@@ -1958,6 +1963,38 @@ async fn run_workbench() -> Result<()> {
             return Err(error.into());
         }
     };
+    if let Some(selection) = selection {
+        let request = native_panel::ReadRequest {
+            name: native_panel::ReadModel::Agents,
+            args: Default::default(),
+        };
+        let payload = tokio::time::timeout(
+            std::time::Duration::from_secs(20), client.native_panel_read(&request),
+        ).await??;
+        let spec = selection.resolve(&payload, &session_panes::local_host())?;
+        identity::inherit(&backend);
+        let pui = std::env::current_exe()?;
+        let Some(kdl) = layout::session_tab_kdl(&spec, &pui.to_string_lossy()) else {
+            // Saved remote connections own their host-local launch ID. Never
+            // attach sidebars on this operator to that remote numeric ID.
+            let (program, args) = spec.argv.split_first().context("empty resume command")?;
+            let error = fresh_exec::replace(
+                std::process::Command::new(remote_connect::pane_program(program)).args(args),
+            );
+            return Err(error.into());
+        };
+        let session = format!("pui-resume-{}-{}", selection.id, std::process::id());
+        let base = dirs::home_dir().context("no home dir")?.join(".papercusp");
+        std::fs::create_dir_all(&base)?;
+        let path = base.join(format!("{session}.kdl"));
+        std::fs::write(&path, kdl)?;
+        let argv = layout::launch_argv(&path.to_string_lossy(), &session);
+        let status = zellij_session_command(&argv).status();
+        let _ = std::fs::remove_file(path);
+        reap::kill_and_delete(&session);
+        identity::clear(&session);
+        std::process::exit(status?.code().unwrap_or(1));
+    }
     let live = resolve_survivor(&session, &backend)?;
     identity::inherit(&backend);
     let argv = if live {

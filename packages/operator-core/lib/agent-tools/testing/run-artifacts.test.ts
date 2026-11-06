@@ -1,14 +1,53 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { open as openAsync } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TestRunArtifactPacket, testRunDeadline } from './run-artifacts';
+import { retainDetachedVitestReport, TestRunArtifactPacket, testRunDeadline } from './run-artifacts';
 import { verifyNativeProofPacket } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const roots: string[] = [];
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 describe('maintained run deadlines and retained artifacts', () => {
+  it('keeps default packets and detached receipts after the isolated runtime HOME is removed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-isolated-')); roots.push(root);
+    const runtime = join(root, 'runtime');
+    const source = join(runtime, 'source'); mkdirSync(source, { recursive: true });
+    vi.stubEnv('HOME', join(runtime, 'home'));
+    vi.stubEnv('PAPERCUSP_HOME', join(runtime, 'home', '.papercusp'));
+    vi.stubEnv('XDG_STATE_HOME', join(runtime, 'state'));
+    vi.stubEnv('VH_EVIDENCE_ROOT_BASE', '  ' + join(root, 'retained') + '  ');
+    writeFileSync(join(source, 'subject.test.ts'), 'export {};');
+    const packet = new TestRunArtifactPacket('isolated-retention', source, testRunDeadline(60_000));
+    packet.captureSelectedSources(['subject.test.ts'], { commit: 'fixture' });
+    for (const name of ['configuration.json', 'router.json', 'ledger.json']) packet.write(name, { fixture: true });
+    packet.childState = 'closed';
+    await packet.finish({ cleanup: { complete: true } });
+    const report = await retainDetachedVitestReport({ runId: 'isolated-retention', root: source,
+      sourcePath: join(source, 'report.json'), reportText: '{"passed":1}' });
+    rmSync(runtime, { recursive: true });
+
+    expect(dirname(packet.paths.directory)).toBe(join(root, 'retained', 'testing-run'));
+    expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({ state: 'retained',
+      childState: 'closed', cleanup: { complete: true }, nativeCustody: { byteCustody: 'complete' } });
+    expect(readFileSync(packet.paths.phases, 'utf8')).toContain('start');
+    expect(readFileSync(report.reportPath, 'utf8')).toBe('{"passed":1}');
+    expect(JSON.parse(readFileSync(report.manifestPath, 'utf8')).report.sha256).toBe(report.sha256);
+  });
+  it('keeps the ordinary home layout when no retained evidence base is pinned', () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-home-')); roots.push(root);
+    vi.stubEnv('PAPERCUSP_HOME', root);
+    vi.stubEnv('VH_EVIDENCE_ROOT_BASE', '  ');
+    const packet = new TestRunArtifactPacket('ordinary-home', root, testRunDeadline(1000));
+    expect(dirname(packet.paths.directory)).toBe(join(root, 'test-artifacts', 'testing-run'));
+  });
+  it('honors an explicit packet directory while a launcher evidence base is pinned', () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-explicit-')); roots.push(root);
+    vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(root, 'retained'));
+    const explicit = join(root, 'explicit');
+    const packet = new TestRunArtifactPacket('explicit-root', root, testRunDeadline(1000), explicit);
+    expect(dirname(packet.paths.directory)).toBe(explicit);
+  });
   function nativePacket() {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-custody-')); roots.push(root);
     const source = join(root, 'producer'); mkdirSync(source);

@@ -11,6 +11,7 @@
  * before the caller may queue a cut, and a failed save leaves the session intact.
  */
 import { withBoundedTimeout } from './bounded-timeout';
+import type { BoundedOrgTxnWaitSnapshot } from './pg-bounded-txn';
 import { observeFallback } from './degradation/fallback-observations';
 import {
   decideFlushGate,
@@ -223,6 +224,7 @@ export interface FlushGateOutcome {
     checkpointStage?: 'load-writer' | 'read-held-items' | 'write-item';
     errorFingerprint?: string;
     completedWorkItemIds?: string[];
+    waitSnapshot?: BoundedOrgTxnWaitSnapshot;
   };
 }
 
@@ -328,6 +330,7 @@ export async function runFlushGate(input: {
     } catch (error) {
       const diagnostic = error && typeof error === 'object' ? error as {
         checkpointStage?: unknown; workItemId?: unknown; errorFingerprint?: unknown; completedWorkItemIds?: unknown;
+        waitSnapshot?: BoundedOrgTxnWaitSnapshot;
       } : null;
       const attributed = diagnostic && ['load-writer', 'read-held-items', 'write-item'].includes(String(diagnostic.checkpointStage)) &&
         typeof diagnostic.errorFingerprint === 'string' && /^[a-f0-9]{16}$/.test(diagnostic.errorFingerprint) &&
@@ -356,6 +359,7 @@ export async function runFlushGate(input: {
         elapsedMs: Date.now() - startedAt,
         ...(attributed ?? {}),
         ...(structured ?? {}),
+        ...(diagnostic?.waitSnapshot ? { waitSnapshot: diagnostic.waitSnapshot } : {}),
       };
       const refusalText = structured
         ? `The host checkpoint write was blocked for ${structured.workItemId} (${structured.blockedReason}). The session remains intact; inspect the concurrent checkpoint update before retrying.`

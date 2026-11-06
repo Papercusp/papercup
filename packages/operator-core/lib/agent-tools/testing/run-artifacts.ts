@@ -4,6 +4,7 @@ import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness/evidence-root';
 import type { OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
 import { retainNativeProofPacketAsync, verifyNativeProofPacket,
   type NativeCustodyAuxiliary, type NativeCustodyGroup, type NativeCustodyIdentity,
@@ -54,6 +55,13 @@ export interface RetainedDetachedVitestReport {
   byteLength: number;
 }
 
+/** The private-runtime launcher pins this existing root before replacing HOME. */
+function defaultTestRunArtifactBase(): string {
+  return process.env.VH_EVIDENCE_ROOT_BASE?.trim()
+    ? defaultEvidenceRoot('testing-run')
+    : papercuspPath('test-artifacts', 'testing-run');
+}
+
 async function ensureArtifactDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const stat = await lstat(path);
@@ -100,7 +108,7 @@ export async function retainDetachedVitestReport(input: {
   const identity = JSON.stringify({ runId: input.runId, root: input.root, reportName, sha256, scope: input.scope ?? null });
   const runKey = createHash('sha256').update(input.runId).digest('hex').slice(0, 24);
   const artifactKey = createHash('sha256').update(identity).digest('hex').slice(0, 24);
-  const base = papercuspPath('test-artifacts', 'testing-run', 'detached-recovery');
+  const base = join(defaultTestRunArtifactBase(), 'detached-recovery');
   const runDirectory = join(base, `run-${runKey}`);
   const packetDirectory = join(runDirectory, `report-${artifactKey}`);
   const reportsDirectory = join(packetDirectory, 'reports');
@@ -134,7 +142,7 @@ export class TestRunArtifactPacket {
   private custodyIdentity?: NativeCustodyIdentity;
   private nativeLocator?: NativeCustodyLocator;
   constructor(readonly runId: string, readonly root: string, readonly deadline: TestRunDeadline,
-    base = papercuspPath('test-artifacts', 'testing-run')) {
+    base = defaultTestRunArtifactBase()) {
     mkdirSync(base, { recursive: true, mode: 0o700 });
     const directory = mkdtempSync(join(base, 'run-'));
     this.paths = { directory, manifest: join(directory, 'manifest.json'), phases: join(directory, 'phases.jsonl'),

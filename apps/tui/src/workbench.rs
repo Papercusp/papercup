@@ -13,6 +13,238 @@
 use crate::models::{CrewMember, CrewRow, RosterEntry};
 use crate::mux::PaneSpec;
 
+/// An explicit native selection. Revalidate against the selected operator in
+/// the terminal as well: the panel's earlier read cannot authorize a later run.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResumeSelection {
+    pub id: i64,
+    pub host: String,
+    pub owner: Option<String>,
+}
+
+impl ResumeSelection {
+    pub fn parse(args: &[String]) -> anyhow::Result<Option<Self>> {
+        if args.is_empty() {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            matches!(args.len(), 3 | 4) && args[0] == "resume",
+            "Usage: pui workbench [resume ID HOST [OWNER]]"
+        );
+        let id: i64 = args[1].parse()?;
+        anyhow::ensure!(id > 0 && id <= 9_007_199_254_740_991, "invalid session ID");
+        let host = &args[2];
+        anyhow::ensure!(
+            !host.is_empty()
+                && host.len() <= 253
+                && host
+                    .bytes()
+                    .enumerate()
+                    .all(|(i, c)| c.is_ascii_alphanumeric()
+                        || (i > 0 && matches!(c, b'.' | b'_' | b'-'))),
+            "invalid session host"
+        );
+        let owner = args.get(3).filter(|s| !s.is_empty()).cloned();
+        Ok(Some(Self {
+            id,
+            host: host.clone(),
+            owner,
+        }))
+    }
+
+    pub fn resolve(
+        &self,
+        payload: &serde_json::Value,
+        local_host: &str,
+    ) -> anyhow::Result<PaneSpec> {
+        use anyhow::{anyhow, ensure};
+        ensure!(!local_host.is_empty(), "desktop host is unavailable");
+        ensure!(
+            payload.get("ok").and_then(|v| v.as_bool()) != Some(false)
+                && payload.get("error").is_none_or(|v| v.is_null()),
+            "agent roster unavailable"
+        );
+        let rows = payload["rows"]
+            .as_array()
+            .ok_or_else(|| anyhow!("agent roster unavailable"))?;
+        ensure!(rows.len() == 1, "agent roster unavailable");
+        let roster = &rows[0];
+        let ended = roster["ended"]
+            .as_array()
+            .ok_or_else(|| anyhow!("ended roster unavailable"))?;
+        let id = |row: &serde_json::Value| {
+            row.get("id")
+                .or_else(|| row.get("advSessionId"))
+                .and_then(|v| v.as_i64())
+        };
+        let owner = |row: &serde_json::Value| {
+            row.get("coordOwnerId")
+                .or_else(|| row.get("ownerId"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        let matches: Vec<_> = ended
+            .iter()
+            .filter(|row| id(row) == Some(self.id))
+            .collect();
+        ensure!(
+            matches.len() == 1,
+            "selected session unavailable or ambiguous"
+        );
+        let row = matches[0];
+        let host = row
+            .get("host")
+            .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+            .or_else(|| row.get("hostname"))
+            .and_then(|v| v.as_str());
+        ensure!(
+            host == Some(self.host.as_str()) && owner(row) == self.owner,
+            "selected session changed; refresh the results"
+        );
+        ensure!(
+            row["revoked"] != true
+                && row["pidAlive"] != true
+                && row
+                    .get("sessionState")
+                    .is_none_or(|v| v.is_null() || v == "ended"),
+            "selected session cannot be resumed"
+        );
+        for tier in ["active", "pending", "starting"] {
+            let values = match roster.get(tier) {
+                Some(serde_json::Value::Array(values)) => values.as_slice(),
+                None | Some(serde_json::Value::Null) if tier != "active" => &[],
+                _ => anyhow::bail!("{tier} roster unavailable"),
+            };
+            ensure!(
+                !values.iter().any(|other| id(other) == Some(self.id)
+                    || (self.owner.is_some() && owner(other) == self.owner)),
+                "selected session is running or starting; refresh the results"
+            );
+        }
+        let mut entry: RosterEntry = serde_json::from_value(row.clone())?;
+        entry.adv_session_id = Some(self.id);
+        entry.owner_id = self.owner.clone().unwrap_or_default();
+        entry.host = self.host.clone();
+        crate::app::App::resume_spec_on_host(&entry, local_host)
+            .ok_or_else(|| anyhow!("selected session has no safe resume route"))
+    }
+}
+
+#[cfg(test)]
+mod native_resume_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn selection() -> ResumeSelection {
+        ResumeSelection::parse(&["resume", "41", "desktop", "owner"].map(str::to_owned))
+            .unwrap()
+            .unwrap()
+    }
+    fn payload() -> Value {
+        json!({"rows":[{"active":[],"ended":[{"id":41,"coordOwnerId":"owner",
+            "hostname":"desktop","agent":"codex","cwd":"/exact directory"}]}]})
+    }
+
+    #[test]
+    fn native_resume_reuses_local_and_saved_connection_routes() {
+        let selected = selection();
+        let spec = selected.resolve(&payload(), "desktop").unwrap();
+        assert_eq!(spec.argv, ["psu", "--resume", "41"]);
+        assert_eq!(spec.adv_session_id, Some(41));
+        assert_eq!(spec.cwd.as_deref(), Some("/exact directory"));
+        let kdl = crate::layout::session_tab_kdl(&spec, "/bundle/pui").unwrap();
+        assert!(kdl.contains("pending:adv:41"));
+        assert!(kdl.contains("name=\"Terminal\" size=\"56%\" focus=true"));
+        let remote = selected.resolve(&payload(), "other-desktop").unwrap();
+        assert_eq!(
+            remote.argv,
+            [
+                "psu",
+                "--connect",
+                "--resume",
+                "41",
+                "--resume-host=desktop"
+            ]
+        );
+        assert_eq!(
+            remote.adv_session_id, None,
+            "remote ID must not bind local sidebars"
+        );
+        let mut ownerless = payload();
+        ownerless["rows"][0]["ended"][0]["coordOwnerId"] = Value::Null;
+        assert!(ResumeSelection {
+            owner: None,
+            ..selected
+        }
+        .resolve(&ownerless, "desktop")
+        .is_ok());
+    }
+
+    #[test]
+    fn native_resume_refuses_replaced_ambiguous_running_and_denied_records() {
+        let selected = selection();
+        for (key, value) in [
+            ("id", json!(42)),
+            ("hostname", json!("other")),
+            ("coordOwnerId", json!("replacement")),
+            ("revoked", json!(true)),
+            ("pidAlive", json!(true)),
+            ("sessionState", json!("live")),
+        ] {
+            let mut p = payload();
+            p["rows"][0]["ended"][0][key] = value;
+            assert!(
+                selected.resolve(&p, "desktop").is_err(),
+                "accepted changed {key}"
+            );
+        }
+        let mut duplicate = payload();
+        let row = duplicate["rows"][0]["ended"][0].clone();
+        duplicate["rows"][0]["ended"]
+            .as_array_mut()
+            .unwrap()
+            .push(row);
+        assert!(selected.resolve(&duplicate, "desktop").is_err());
+        for tier in ["active", "pending", "starting"] {
+            for other in [
+                json!({"advSessionId":41}),
+                json!({"ownerId":"owner","advSessionId":42}),
+            ] {
+                let mut p = payload();
+                p["rows"][0][tier] = json!([other]);
+                assert!(selected.resolve(&p, "desktop").is_err(), "accepted {tier}");
+            }
+        }
+        for p in [
+            json!({"ok":false,"rows":[]}),
+            json!({"error":"ACL refused","rows":[]}),
+            json!({"rows":[{"ended":[]}]}),
+            json!({"rows":[]}),
+        ] {
+            assert!(selected.resolve(&p, "desktop").is_err());
+        }
+    }
+
+    #[test]
+    fn native_resume_arguments_fail_closed_before_starting_a_terminal_session() {
+        assert_eq!(ResumeSelection::parse(&[]).unwrap(), None);
+        for args in [
+            vec!["resume"],
+            vec!["resume", "0", "desktop"],
+            vec!["resume", "9007199254740992", "desktop"],
+            vec!["resume", "41", "-host"],
+            vec!["resume", "41", "host;echo bad"],
+            vec!["unknown", "41", "desktop"],
+        ] {
+            assert!(ResumeSelection::parse(
+                &args.into_iter().map(str::to_owned).collect::<Vec<_>>()
+            )
+            .is_err());
+        }
+    }
+}
+
 /// A stable per-user owner key for workbench rows. Prefers an explicit override
 /// (`PAPERCUSP_TUI_OWNER`), then `$USER@$HOSTNAME`, then a constant — never empty
 /// (the `/api/tui/*` routes reject a blank owner).
