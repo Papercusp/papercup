@@ -9544,9 +9544,14 @@ impl App {
     /// EXACT agent/session). `None` when the entry carries no launch record to
     /// resume. Enter-by-location ended-session route (D-001).
     pub fn resume_spec(&self, entry: &RosterEntry) -> Option<PaneSpec> {
+        Self::resume_spec_on_host(entry, &self.local_host)
+    }
+
+    /// The native launcher and the in-workbench session menu use one route.
+    pub fn resume_spec_on_host(entry: &RosterEntry, local_host: &str) -> Option<PaneSpec> {
         let id = entry.adv_session_id.filter(|id| *id > 0)?;
         let agent = entry.agent.clone().unwrap_or_default();
-        if !entry.host.is_empty() && entry.host != self.local_host {
+        if !entry.host.is_empty() && entry.host != local_host {
             // Reuse psu's saved-profile picker; a remote numeric id must never
             // be interpreted by this computer's operator on cancel/failure.
             if entry.host.len() > 253
