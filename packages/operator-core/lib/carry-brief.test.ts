@@ -2232,6 +2232,34 @@ describe('EI-22436560948423011 — carry-note superseded by later session activi
   });
 });
 
+describe('EI-28053904627592588 — carry restrictions retain agent provenance', () => {
+  const note =
+    'AUTO/self authorized. Existingnative/precheck/fullsuitePAUSE PERSISTS ' +
+    'untilconcreteproposalreview. DoNOTlaunchv7/precheck/fullgate/deployyet.\n' +
+    'Required independent acceptance remains outstanding.';
+
+  it.each(['warm', 'cold'] as const)('reconciles approval restrictions on the %s delivery path', async (path) => {
+    const brief = await buildCarryBrief('su-abc', fullOpts({
+      getLoopCarryNoteWithMetaFn: async () => ({ note, updatedAtMs: Date.now() }),
+    }));
+    const out = path === 'warm' ? renderCarryBriefText(brief) : renderCarryBriefColdExtras(brief);
+    expect(out).toContain('CARRY-NOTE AUTHORITY');
+    expect(out).toContain('agent-authored snapshot');
+    expect(out).toContain('current owner/system gate');
+    expect(out).toContain('standing authorization');
+    expect(out).toContain('Required independent acceptance');
+    if (path === 'warm') expect(out).toContain(note);
+  });
+
+  it('does not add a note-authority warning when no note was carried', async () => {
+    const brief = await buildCarryBrief('su-abc', fullOpts({
+      getLoopCarryNoteWithMetaFn: async () => ({ note: null, updatedAtMs: null }),
+    }));
+    expect(renderCarryBriefText(brief)).not.toContain('CARRY-NOTE AUTHORITY');
+    expect(renderCarryBriefColdExtras(brief)).not.toContain('CARRY-NOTE AUTHORITY');
+  });
+});
+
 describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)', () => {
   it('leads with the loop note + write age, then the extras sections', async () => {
     const now = Date.now();

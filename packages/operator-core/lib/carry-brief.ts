@@ -2169,6 +2169,21 @@ export function renderCarryBriefColdExtras(
     .map(({ item }) => item);
   const unverifiedHeldItems = heldOwnership.filter(({ assessment }) => !assessment.verified);
   const sections: string[] = [];
+  // EI-28053904627592588: a fresh agent-authored note preserved an unsupported
+  // full-suite pause pending proposal review alongside standing AUTO authority.
+  // Age/liveness warnings cannot detect that conflict. Keep the note intact and
+  // require authority reconciliation on both warm and cold delivery paths.
+  if (brief.loop?.carryNote?.split('\n').some((line) =>
+    /paus(?:e|ed)|do\s*not\s*launch|pending|blocked|waiting/i.test(line)
+    && /approv|review/i.test(line),
+  )) {
+    sections.push(
+      '⚠ CARRY-NOTE AUTHORITY: this agent-authored snapshot contains an execution pause tied to ' +
+      'approval or review. Verify its current owner/system gate reference against standing authorization ' +
+      'before preserving that pause or requesting approval again. Required independent acceptance and ' +
+      'system-enforced safety gates remain binding; AUTO does not waive them.',
+    );
+  }
   // EI-22436560948423011: the loop carry-note is the first imperative a cold
   // successor reads, but its write can predate later turns in the predecessor
   // session. Keep the note intact and add a nearby warning rather than silently
