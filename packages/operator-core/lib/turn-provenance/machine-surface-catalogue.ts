@@ -129,7 +129,7 @@ export function parseCrossSessionSender(text: string): { from: string; fromName:
  * stop-context response enrolls its inner envelope; old/un-enrolled turns still
  * need a narrow non-owner fallback. */
 export const CODEX_STOP_HOOK_PROMPT_RE =
-  /^\s*<hook_prompt\b[^>\r\n]*\bhook_run_id=stop:\d+:[^>\r\n]+>/i;
+  /^\s*<hook_prompt\b[^>\r\n]*\bhook_run_id=(?:"stop:\d+:[^"\r\n]+"|'stop:\d+:[^'\r\n]+'|stop:\d+:[^>\r\n]+)>/i;
 
 export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   DAMAGED_EVENT_WAKE_RE,
