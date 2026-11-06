@@ -210,6 +210,9 @@ NATIVE_PKGS=(
   simdle-native fs-native-extensions
   bare-fs bare-os bare-url bare-inspect bare-type
   better-sqlite3
+  # Trusted handler bootstrap uses the maintained native FFI boundary. Keep
+  # its package loader and target addon together in host and desktop builds.
+  koffi
   ssh2
   onnxruntime-node
   onnxruntime-web
@@ -359,8 +362,24 @@ bundle_host_launcher() { # <repo root> <output> <source stem> [compaction args..
     "${HOST_BANNER_DEFINES[@]}" --external:@lydell/* --external:@iarna/toml "$@"
 }
 
+bundle_host_handler_bootstrap() { # <repo root> <out dir>
+  local repo_root="$1" out_dir="$2" tmp
+  local source="$repo_root/packages/plugin-loader/src/daemon/handler-bootstrap.ts"
+  mkdir -p "$out_dir" || return 1
+  tmp="$out_dir/handler-bootstrap.cjs.new.$$"
+  # A standalone guest entry: no host ESM banner, host defines or host imports.
+  # Koffi's Node loader and native addon are copied by the runtime closure stage.
+  if ! bundle_host_esbuild "$repo_root" "$source" \
+      --bundle --platform=node --format=cjs --target=node22 --external:koffi --outfile="$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$out_dir/handler-bootstrap.cjs"
+}
+
 bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
+  bundle_host_handler_bootstrap "$repo_root" "$out_dir" || return 1
   # A private dependency snapshot still shares npx's package cache with every
   # checkout. The repo install lease cannot protect it from cache maintenance.
   local -a sources=(
