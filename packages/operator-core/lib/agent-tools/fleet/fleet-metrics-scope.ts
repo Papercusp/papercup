@@ -395,8 +395,11 @@ export function fleetMetricClaimFiltersUseSummary(filters: readonly (FilterNode 
  * lifetime cutoff or display cap may turn this into an incomplete census.
  * The existing facade retains its visibility, family and parent semantics.
  */
-export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope): Promise<WorkItem[]> {
-  return readFleetMetricRows(scope);
+export async function readFleetMetricSourceItems(
+  scope: ResolvedFleetMetricScope,
+  options: { notTerminal?: boolean; fullPayload?: boolean; sql?: OrgSql } = {},
+): Promise<WorkItem[]> {
+  return readFleetMetricRows(scope, options.notTerminal, false, options.sql, options.fullPayload);
 }
 
 async function readFleetMetricRows(
@@ -404,6 +407,7 @@ async function readFleetMetricRows(
   notTerminal = false,
   metricProjection = false,
   sql: OrgSql = getOrgPg().sql,
+  fullPayload = false,
 ): Promise<WorkItem[]> {
   const { compileFilter } = await import('../../scheduler/get-next');
   const filters = [scope.claimSpec.current, ...scope.claimSpec.segments.map(segment => segment.spec)]
@@ -433,7 +437,7 @@ async function readFleetMetricRows(
     kind,
     ids: identities,
     notTerminal,
-    payloadProjection: 'fleetMetricsCensus',
+    ...(fullPayload ? {} : { payloadProjection: 'fleetMetricsCensus' as const }),
     ...(bodyProjection ? { bodyProjection } : {}),
   }, sql);
 }

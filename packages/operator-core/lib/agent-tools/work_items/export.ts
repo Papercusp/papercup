@@ -34,6 +34,7 @@
 import { z } from 'zod';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import {
@@ -42,10 +43,22 @@ import {
   listAllWorkItemsForFileExport,
   TERMINAL_WORK_ITEM_STATES,
   WORK_ITEMS_MAX_LIMIT,
+  explainIssueClaimFloors,
   type WorkItem,
 } from '../../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { resolveSelfRef } from '../coordination/self-marker';
+import {
+  readFleetMetricSourceItems,
+  resolveFleetMetricScope,
+  selectFleetMetricCurrentItems,
+  withFleetMetricReadSql,
+} from '../fleet/fleet-metrics-scope';
 
 const argsSchema = z.object({
+  fleet: z.string().min(1).max(80).optional().describe(
+    'Freeze the complete stored-spec nonterminal issue-bug cohort for this fleet. Requires harness; cannot combine with ids, limit, terminalOnly or includeObservations. Writes full rows and an immutable manifest with all scheduler floors from one repeatable-read snapshot.',
+  ),
   harness: z
     .string()
     .max(80)
@@ -87,6 +100,8 @@ const argsSchema = z.object({
 function serializeRow(row: WorkItem): string {
   return `${JSON.stringify(row, null, 2)}\n`;
 }
+
+const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
 export const WORK_ITEM_EXPORT_WRITE_CONCURRENCY = 64;
 
@@ -149,7 +164,71 @@ export default defineTool({
       message: z.string().optional(),
     })
     .passthrough(),
-  async handler(args) {
+  async handler(args, ctx) {
+    if (args.fleet) {
+      if (!args.harness || args.ids !== undefined || args.limit !== undefined ||
+          args.terminalOnly !== undefined || args.includeObservations !== undefined) {
+        return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({
+          error: 'invalid_fleet_export_scope',
+          message: 'Fleet export requires harness and excludes ids, limit, terminalOnly and includeObservations.',
+        }) }] };
+      }
+      const workspaceId = (ctx as { workspaceId?: string }).workspaceId;
+      if (!workspaceId) throw new Error('Fleet export requires a concrete workspace identity');
+      const resolution = await resolveFleetMetricScope({
+        workspaceId, harness: args.harness, fleet: args.fleet, flowMode: 'current-spec',
+      });
+      if (!resolution.ok) return { isError: true, content: [{ type: 'text' as const,
+        text: JSON.stringify(resolution) }] };
+      const assignee = resolveSelfRef(ctx)?.ownerId;
+      const snapshot = await withFleetMetricReadSql(async sql => {
+        const [database] = await sql<{ snapshot_id: string; snapshot_at: string }[]>`
+          SELECT pg_current_snapshot()::text AS snapshot_id, transaction_timestamp()::text AS snapshot_at`;
+        if (!database) throw new Error('Fleet export database snapshot identity is unavailable');
+        const source = await readFleetMetricSourceItems(resolution, { notTerminal: true, fullPayload: true, sql });
+        const rows = selectFleetMetricCurrentItems(resolution, source).filter(row =>
+          row.family === 'issue' && row.kind === 'bug' && !ANY_FAMILY_TERMINAL_STATES.includes(row.state) &&
+          (row.payload as { lane?: unknown } | null)?.lane !== 'observation',
+        ).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        const floors = await explainIssueClaimFloors(args.harness!, rows.map(row => row.id),
+          { assignee, includeAllFloors: true }, sql);
+        const byId = new Map(floors.map(floor => [floor.id, floor]));
+        if (new Set(rows.map(row => row.id)).size !== rows.length || rows.some(row => {
+          const floor = byId.get(row.id);
+          return !floor || typeof floor.admissible !== 'boolean' ||
+            (!floor.admissible && !Array.isArray(floor.failedFloors));
+        })) throw new Error('Fleet export requires unique IDs and complete scheduler-floor coverage');
+        return { database, rows, byId };
+      });
+      const ids = snapshot.rows.map(row => row.id);
+      const manifest = {
+        schemaVersion: 'work-items-fleet-export-v1',
+        workspaceId, fleet: args.fleet, harness: args.harness,
+        specResolvedAt: resolution.generatedAt,
+        database: snapshot.database,
+        query: { reader: 'readFleetMetricSourceItems', selector: 'selectFleetMetricCurrentItems',
+          notTerminal: true, family: 'issue', kind: 'bug', includeObservations: false,
+          fullPayload: true, isolation: 'repeatable read read only',
+          floors: 'explainIssueClaimFloors', includeAllFloors: true, assignee: assignee ?? null },
+        scope: resolution.scope, claimSpec: resolution.claimSpec.current,
+        specSha256: sha256(JSON.stringify(resolution.claimSpec.current)),
+        ids, idsSha256: sha256(JSON.stringify(ids)),
+        population: ids.length,
+        entries: snapshot.rows.map(row => ({ id: row.id, file: `${row.id}.json`,
+          sha256: sha256(serializeRow(row)), restrictions: snapshot.byId.get(row.id)! })),
+        disposition: 'unassessed; restrictions alone do not establish legitimacy or authorize release',
+      };
+      // A fleet snapshot never overwrites an earlier cohort, including a partial export.
+      await fs.mkdir(args.toDir);
+      const written = await writeWorkItemFiles(args.toDir, snapshot.rows);
+      const manifestBody = `${JSON.stringify(manifest, null, 2)}\n`;
+      await fs.writeFile(path.join(args.toDir, 'manifest.json'), manifestBody, { encoding: 'utf8', flag: 'wx' });
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true,
+        toDir: args.toDir, written, missing: [], truncatedByLimit: false,
+        manifest: path.join(args.toDir, 'manifest.json'), manifestSha256: sha256(manifestBody),
+        idsSha256: manifest.idsSha256, specSha256: manifest.specSha256,
+      }) }] };
+    }
     if (!args.ids && !args.harness) {
       return {
         content: [

@@ -1,17 +1,34 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkItem } from '../../work-items';
 
 const getWorkItem = vi.fn();
 const listWorkItems = vi.fn();
 const listAllWorkItemsForFileExport = vi.fn();
+const explainIssueClaimFloors = vi.fn();
+const resolveFleetMetricScope = vi.fn();
+const readFleetMetricSourceItems = vi.fn();
+const snapshotSql = vi.fn();
+
+vi.mock('../fleet/fleet-metrics-scope', async () => {
+  const { matchesWorkItemClaimSpec } = await import('../../scheduler/claim-spec-match');
+  return {
+    selectFleetMetricCurrentItems: (scope: { claimSpec: { current: Parameters<typeof matchesWorkItemClaimSpec>[1] } }, rows: WorkItem[]) =>
+      rows.filter(row => matchesWorkItemClaimSpec(row, scope.claimSpec.current)),
+    resolveFleetMetricScope: (...args: unknown[]) => resolveFleetMetricScope(...args),
+    readFleetMetricSourceItems: (...args: unknown[]) => readFleetMetricSourceItems(...args),
+    withFleetMetricReadSql: (read: (sql: unknown) => unknown) => read(snapshotSql),
+  };
+});
 
 vi.mock('../../work-items', () => ({
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
   listWorkItems: (...args: unknown[]) => listWorkItems(...args),
   listAllWorkItemsForFileExport: (...args: unknown[]) => listAllWorkItemsForFileExport(...args),
+  explainIssueClaimFloors: (...args: unknown[]) => explainIssueClaimFloors(...args),
   TERMINAL_WORK_ITEM_STATES: ['done', 'resolved'],
   WORK_ITEMS_MAX_LIMIT: 2_000,
 }));
@@ -23,7 +40,7 @@ type ExportResult = {
 };
 
 const handler = (tool as unknown as {
-  handler: (args: Record<string, unknown>) => Promise<ExportResult>;
+  handler: (args: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<ExportResult>;
 }).handler;
 
 const cleanup: string[] = [];
@@ -36,6 +53,78 @@ beforeEach(() => {
   getWorkItem.mockReset();
   listWorkItems.mockReset();
   listAllWorkItemsForFileExport.mockReset();
+  explainIssueClaimFloors.mockReset();
+  resolveFleetMetricScope.mockReset();
+  readFleetMetricSourceItems.mockReset();
+  snapshotSql.mockReset();
+});
+
+describe('work_items:export fixed fleet cohort', () => {
+  async function setup() {
+    const toDir = join(await directory(), 'cohort');
+    const rows = ['WI-2', 'WI-1', 'WI-terminal', 'WI-observation', 'WI-outside', 'WI-feature', 'WI-task']
+      .map(id => ({ ...row(id), kind: 'bug', state: 'open', closedAt: null,
+        payload: { completeEvidence: { text: 'retain the full payload', source: id } } }));
+    rows[2]!.state = 'done';
+    rows[3]!.payload = { lane: 'observation' } as never;
+    rows[5]!.family = 'feature';
+    rows[6]!.kind = 'task';
+    const scope = { ok: true, generatedAt: '2026-11-06T16:00:00Z', scope: { stock: { revision: 23 } },
+      claimSpec: { current: { specId: 'fleet:bugs', revision: 23, view: {
+        filter: { field: 'id', op: 'in', value: rows.filter(r => r.id !== 'WI-outside').map(r => r.id) },
+      } } } };
+    resolveFleetMetricScope.mockResolvedValue(scope);
+    readFleetMetricSourceItems.mockResolvedValue(rows);
+    snapshotSql.mockResolvedValue([{ snapshot_id: '10:20:', snapshot_at: '2026-11-06 16:00:01+00' }]);
+    explainIssueClaimFloors.mockResolvedValue([
+      { id: 'WI-1', admissible: false, refusedBy: 'claim-hold', failedFloors: ['claim-hold', 'agent-review'], detail: 'preserve' },
+      { id: 'WI-2', admissible: true, refusedBy: null, failedFloors: [], detail: null },
+    ]);
+    return { toDir, scope };
+  }
+
+  it('freezes every matching nonterminal bug with full payload, all floors and verifiable file/spec/ID hashes', async () => {
+    const { toDir, scope } = await setup();
+    const result = payload(await handler({ harness: 'demo', fleet: 'bugs', toDir }, { workspaceId: 'ws' }));
+    const body = await readFile(join(toDir, 'manifest.json'), 'utf8');
+    const manifest = JSON.parse(body);
+    const hash = (s: string) => createHash('sha256').update(s).digest('hex');
+    expect(result).toMatchObject({ written: 2, missing: [], truncatedByLimit: false, manifestSha256: hash(body) });
+    expect(manifest.ids).toEqual(['WI-1', 'WI-2']);
+    expect(manifest.idsSha256).toBe(hash(JSON.stringify(manifest.ids)));
+    expect(manifest.specSha256).toBe(hash(JSON.stringify(scope.claimSpec.current)));
+    expect(manifest.database).toEqual({ snapshot_id: '10:20:', snapshot_at: '2026-11-06 16:00:01+00' });
+    expect(readFleetMetricSourceItems).toHaveBeenCalledWith(scope, { notTerminal: true, fullPayload: true, sql: snapshotSql });
+    expect(explainIssueClaimFloors).toHaveBeenCalledWith('demo', ['WI-1', 'WI-2'],
+      { assignee: undefined, includeAllFloors: true }, snapshotSql);
+    expect(manifest.entries[0].restrictions.failedFloors).toEqual(['claim-hold', 'agent-review']);
+    for (const entry of manifest.entries) {
+      const file = await readFile(join(toDir, entry.file), 'utf8');
+      expect(entry.sha256).toBe(hash(file));
+      expect(JSON.parse(file).payload.completeEvidence.text).toBe('retain the full payload');
+    }
+    expect(listWorkItems).not.toHaveBeenCalled();
+    expect(listAllWorkItemsForFileExport).not.toHaveBeenCalled();
+    const repeated = handler({ harness: 'demo', fleet: 'bugs', toDir }, { workspaceId: 'ws' });
+    await expect(repeated).rejects.toThrow('EEXIST');
+    expect(await readFile(join(toDir, 'manifest.json'), 'utf8')).toBe(body);
+  });
+
+  it('refuses a partial floor ledger without publishing a manifest', async () => {
+    const { toDir } = await setup();
+    explainIssueClaimFloors.mockResolvedValue([{ id: 'WI-1', admissible: false, refusedBy: 'claim-hold' }]);
+    await expect(handler({ harness: 'demo', fleet: 'bugs', toDir }, { workspaceId: 'ws' }))
+      .rejects.toThrow('complete scheduler-floor coverage');
+    await expect(readFile(join(toDir, 'manifest.json'))).rejects.toThrow('ENOENT');
+  });
+
+  it.each([{ ids: ['WI-1'] }, { limit: 1 }, { terminalOnly: false }, { includeObservations: true }])(
+    'refuses scope narrowing %j before any cohort read', async extra => {
+      const result = payload(await handler({ harness: 'demo', fleet: 'bugs', toDir: '/unused', ...extra }));
+      expect(result.error).toBe('invalid_fleet_export_scope');
+      expect(resolveFleetMetricScope).not.toHaveBeenCalled();
+    },
+  );
 });
 
 function row(id: string): WorkItem {

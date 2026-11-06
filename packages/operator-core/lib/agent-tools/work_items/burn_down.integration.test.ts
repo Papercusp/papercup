@@ -6,6 +6,10 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({
@@ -62,6 +66,7 @@ vi.mock('../../bounded-timeout', async (orig) => {
 });
 
 const { default: burnDownTool, buildFleetMetricsResult } = await import('./burn_down');
+const { default: exportTool } = await import('./export');
 const { default: leaderBriefTool, readLeaderBriefFleetMetrics } = await import('../fleet/leader-brief');
 const { resolveFleetMetricScope, readFleetMetricSourceItems, readFleetMetricSource, withFleetMetricReadSql } = await import('../fleet/fleet-metrics-scope');
 const { shapeLeaderBrief } = await import('../fleet/leader-brief-shape');
@@ -277,6 +282,56 @@ describe('default fleet reports over the real current-spec queue', () => {
     }).handler({ harness: HARNESS, fleet: FLEET, window: 'fleet-lifetime',
       flowMode: 'current-spec', limit: 5 }, CTX);
   }
+
+  it('exports the exact fleet bug cohort and real overlapping floors with complete source bytes', async () => {
+    await seedFleet();
+    await seedQueue();
+    const body = 'full source evidence '.repeat(2000);
+    await sql`UPDATE harness_shared.work_items SET summary = ${body}
+      WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${ids[1]}`;
+    const parent = await mkdtemp(join(tmpdir(), 'fleet-cohort-export-integration-'));
+    const toDir = join(parent, 'snapshot');
+    try {
+      const response = await (exportTool as unknown as {
+        handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }> }>;
+      }).handler({ harness: HARNESS, fleet: FLEET, toDir }, CTX);
+      const result = JSON.parse(response.content[0]!.text);
+      const manifestBody = await readFile(join(toDir, 'manifest.json'), 'utf8');
+      const manifest = JSON.parse(manifestBody);
+      expect(result).toMatchObject({ written: ids.length, truncatedByLimit: false, missing: [] });
+      expect(result.manifestSha256).toBe(createHash('sha256').update(manifestBody).digest('hex'));
+      expect(manifest.ids).toEqual([...ids].sort());
+      expect(manifest.database.snapshot_id).toEqual(expect.any(String));
+      const held = manifest.entries.find((entry: { id: string }) => entry.id === ids[1]);
+      expect(held.restrictions.failedFloors).toEqual(expect.arrayContaining(['claim-hold', 'agent-review']));
+      const file = await readFile(join(toDir, held.file), 'utf8');
+      expect(held.sha256).toBe(createHash('sha256').update(file).digest('hex'));
+      expect(JSON.parse(file)).toMatchObject({ summary: body, payload: {
+        claim_hold_by: 'su-parker', claim_hold_release: { owner: 'su-condition-owner' },
+      } });
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('keeps fleet export rows and floors on the same snapshot across concurrent restriction changes', async () => {
+    await seedFleet();
+    await seedQueue();
+    const scope = await resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
+      fleet: FLEET, flowMode: 'current-spec' });
+    expect(scope.ok).toBe(true);
+    if (!scope.ok) return;
+    await withFleetMetricReadSql(async tx => {
+      const rows = await readFleetMetricSourceItems(scope, { notTerminal: true, fullPayload: true, sql: tx });
+      expect(rows.find(row => row.id === ids[1])?.payload).toHaveProperty('_claimHold', true);
+      await sql`UPDATE harness_shared.work_items SET payload = payload - '_claimHold'
+        WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${ids[1]}`;
+      const floors = await explainIssueClaimFloors(HARNESS, [ids[1]!], { includeAllFloors: true }, tx);
+      expect(floors[0]?.failedFloors).toContain('claim-hold');
+    });
+    const current = await explainIssueClaimFloors(HARNESS, [ids[1]!], { includeAllFloors: true });
+    expect(current[0]?.failedFloors).not.toContain('claim-hold');
+  }, 60_000);
 
   it('aggregates uncapped terminal stock with exact report, actor and verification-service identity parity', async () => {
     const filter: FilterNode = { all: [
