@@ -13,6 +13,68 @@
 use crate::models::{CrewMember, CrewRow, RosterEntry};
 use crate::mux::PaneSpec;
 
+// Reuse the desktop's installed CLI runtime (wsl_setup::windows_cli_cmd_contents).
+// Zellij and the vendor CLIs run in this distro; native pui.exe remains the WPF
+// read helper. User input is forwarded as positional arguments, never shell code.
+#[cfg(any(windows, test))]
+const WINDOWS_WORKBENCH_SCRIPT: &str =
+    "if [ -x \"$HOME/.papercusp/bin/pui\" ]; then exec \"$HOME/.papercusp/bin/pui\" \"$@\"; fi; exec pui \"$@\"";
+
+#[cfg(any(windows, test))]
+pub fn windows_terminal_command(
+    selection: Option<&ResumeSelection>,
+    endpoint: &str,
+    inherited_wslenv: &str,
+) -> std::process::Command {
+    let mut command = std::process::Command::new("wsl.exe");
+    command.args([
+        "--distribution",
+        "papercup-runtime",
+        "--cd",
+        "~",
+        "--exec",
+        "/usr/bin/env",
+        "TERM=xterm-256color",
+        "/bin/bash",
+        "-lc",
+        WINDOWS_WORKBENCH_SCRIPT,
+        "pui",
+        "workbench",
+    ]);
+    if let Some(selected) = selection {
+        command.args(["resume", &selected.id.to_string(), &selected.host]);
+        if let Some(owner) = &selected.owner {
+            command.arg(owner);
+        }
+    }
+    // WSL does not inherit arbitrary Windows environment variables. Preserve the
+    // exact selected endpoint and its scoped token without putting secrets in
+    // argv. Replace conflicting WSLENV flags: /p would corrupt an HTTP URL.
+    let forwarded = [
+        "PUI_OPERATOR",
+        "PAPERCUSP_OPERATOR_URL",
+        "PUI_OPERATOR_TOKEN",
+    ];
+    let mut wslenv: Vec<_> = inherited_wslenv
+        .split(':')
+        .filter(|entry| {
+            !entry.is_empty()
+                && !forwarded.iter().any(|name| {
+                    entry
+                        .split('/')
+                        .next()
+                        .is_some_and(|key| key.eq_ignore_ascii_case(name))
+                })
+        })
+        .collect();
+    wslenv.extend(forwarded);
+    command.env("WSLENV", wslenv.join(":"));
+    for name in ["PUI_OPERATOR", "PAPERCUSP_OPERATOR_URL"] {
+        command.env(name, endpoint);
+    }
+    command
+}
+
 /// An explicit native selection. Revalidate against the selected operator in
 /// the terminal as well: the panel's earlier read cannot authorize a later run.
 #[derive(Debug, PartialEq, Eq)]
@@ -147,6 +209,101 @@ impl ResumeSelection {
 mod native_resume_tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn windows_workbench_preserves_selection_and_operator_without_shell_interpolation() {
+        let selected = ResumeSelection {
+            id: 41,
+            host: "desktop".into(),
+            owner: Some("literal owner; $(not-a-command) 中文".into()),
+        };
+        let command = windows_terminal_command(
+            Some(&selected),
+            "https://operator.example:9443",
+            "KEEP/u:PUI_OPERATOR/p:papercusp_operator_url/l:PUI_OPERATOR_TOKEN/u",
+        );
+        assert_eq!(command.get_program(), "wsl.exe");
+        let argv: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        let script = argv
+            .iter()
+            .position(|arg| *arg == WINDOWS_WORKBENCH_SCRIPT)
+            .unwrap();
+        assert_eq!(
+            &argv[script + 1..],
+            [
+                "pui",
+                "workbench",
+                "resume",
+                "41",
+                "desktop",
+                "literal owner; $(not-a-command) 中文"
+            ]
+        );
+        assert!(!WINDOWS_WORKBENCH_SCRIPT.contains(selected.owner.as_deref().unwrap()));
+        let env: std::collections::HashMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_str().unwrap(), value.unwrap().to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            env["WSLENV"],
+            "KEEP/u:PUI_OPERATOR:PAPERCUSP_OPERATOR_URL:PUI_OPERATOR_TOKEN"
+        );
+        assert_eq!(env["PUI_OPERATOR"], "https://operator.example:9443");
+        assert_eq!(env["PAPERCUSP_OPERATOR_URL"], env["PUI_OPERATOR"]);
+        assert!(!argv.iter().any(|arg| arg.contains("https://operator")));
+    }
+
+    #[test]
+    fn windows_workbench_without_selection_opens_the_same_installed_workspace() {
+        let command = windows_terminal_command(None, "http://operator:3170", "");
+        let argv: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            &argv[..4],
+            ["--distribution", "papercup-runtime", "--cd", "~"]
+        );
+        assert_eq!(&argv[argv.len() - 2..], ["pui", "workbench"]);
+        assert!(!argv.contains(&"resume"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn windows_workbench_runtime_script_forwards_literal_arguments_and_child_exit() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".papercusp/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let program = bin.join("pui");
+        std::fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 23\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let payload = "literal; $(touch SHOULD_NOT_EXIST) 中文 \\\"";
+        let result = std::process::Command::new("bash")
+            .args([
+                "-c",
+                WINDOWS_WORKBENCH_SCRIPT,
+                "pui",
+                "workbench",
+                "resume",
+                "41",
+                "desktop",
+                payload,
+            ])
+            .env("HOME", home.path())
+            .current_dir(home.path())
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(23));
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            format!("workbench\nresume\n41\ndesktop\n{payload}\n")
+        );
+        assert!(!home.path().join("SHOULD_NOT_EXIST").exists());
+    }
 
     fn selection() -> ResumeSelection {
         ResumeSelection::parse(&["resume", "41", "desktop", "owner"].map(str::to_owned))
