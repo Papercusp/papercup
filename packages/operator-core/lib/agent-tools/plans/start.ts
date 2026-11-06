@@ -131,11 +131,11 @@ const argsSchema = z
 export default defineTool({
   name: 'plans:start',
   description:
-    "Approve a plan and promote its open items to claimable work-items. A draft moves to ready only after `plans:audit { phase:'activation' }`; plans with first-class clauses also require the spec-quality chain and a settled non-author `grading-integrity` audit. Re-starting is a no-op. Runs a plan-start consult and may return `consult_available`; override with `consulted` + `consult_reason`.",
+    "Approve a plan and promote its open items to claimable work-items. A draft moves to ready only after `plans:audit { phase:'activation' }`; plans with first-class clauses also require `plans:evaluate-spec-quality`, its terminal `scorecards:emit` scorecard, and a settled independent non-author `grading-integrity` audit. Re-starting is a no-op. Runs a plan-start consult and may return `consult_available`; override with `consulted` + `consult_reason`.",
   guidance: {
-    when: "After scoped Discovery findings are incorporated and finalized with plans:audit { slug, phase:'discovery' }, full implementation review and the complete source-conversation activation audit. First-class clauses also need spec-quality → terminal scorecard → independent grading-integrity audit. In-flight work and historical terminal records are preserved.",
+    when: "After scoped Discovery findings are incorporated and finalized with plans:audit { slug, phase:'discovery' }, full implementation review and the complete source-conversation activation audit. First-class clauses must follow `plans:evaluate-spec-quality` → `scorecards:emit` with `terminal:true` → settled, automatically routed independent non-author `grading-integrity` audit before `plans:start`. In-flight work and historical terminal records are preserved.",
     notWhen: 'The plan is already started; use plans:pause or plans:set-run-status.',
-    chaining: "Brief → scoped discovery → findings incorporated → plans:audit { slug, phase:'discovery' } → full independent implementation review → activation audit → plans:evaluate-spec-quality → terminal scorecard and settled independent audit → plans:start { slug }. Relevant changes reopen affected discovery judgments; cosmetic edits reuse them. See `/internal/docs/system/plan-inputs`.",
+    chaining: "Brief → scoped discovery → findings incorporated → plans:audit { slug, phase:'discovery' } → full independent implementation review → activation audit → plans:evaluate-spec-quality → `scorecards:emit` the returned draft with `terminal:true` → settled automatically routed non-author `grading-integrity` audit → plans:start { slug }. Relevant changes reopen affected discovery judgments; cosmetic edits reuse them. See `/internal/docs/system/plan-inputs`.",
     seeAlso: [
       'plans:launch (have an agent autonomously advance the started plan)',
       'plans:set-status (manually move items along once started)',

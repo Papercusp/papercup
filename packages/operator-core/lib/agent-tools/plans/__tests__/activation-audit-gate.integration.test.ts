@@ -161,12 +161,12 @@ const MATERIAL_CHANGE_TAXONOMY = [
   'acceptance criteria',
   'open questions',
   'promised follow-ups',
+  'strict execution meaning as enforced by plans:start',
 ] as const;
 
 const COSMETIC_CHANGE_TAXONOMY = [
-  'spelling',
-  'formatting',
-  'cosmetic-only wording',
+  'spelling or formatting changes that preserve strict execution meaning',
+  'cosmetic-only wording that preserves strict execution meaning',
 ] as const;
 
 describe('conversation activation audit gate', () => {
@@ -432,13 +432,51 @@ describe('conversation activation audit gate', () => {
         },
         changedSinceAudit: true,
         revisionGap: 1,
+        executionAuthority: {
+          auditedSnapshotAvailable: true,
+          strictMeaningChanged: false,
+          activationAuditBlocker: null,
+        },
         reAudit: {
           decision: 'editing_agent',
           requiredWhen: MATERIAL_CHANGE_TAXONOMY,
           notRequiredWhen: COSMETIC_CHANGE_TAXONOMY,
+          instruction: expect.stringContaining('only when strict execution meaning is unchanged'),
         },
       },
       value: { ok: true, activationAudit: { status: 'preserved' } },
+    });
+
+    const cosmeticWording = await withPlanLock<{ ok: true }>(
+      {} as never,
+      {
+        slug: SLUG,
+        harnessSlug: HARNESS,
+        workspaceId: fx.workspaceId,
+        intent: 'test cosmetic wording against strict execution authority',
+        afterWrite: async (body) => { await appendPlanRevision(fx.admin, body); },
+      },
+      async (current) => ({
+        newBody: current!.replace('# Activation gate ', '# Activation gate overview'),
+        value: { ok: true },
+      }),
+    );
+
+    expect(cosmeticWording).toMatchObject({
+      kind: 'applied',
+      activationAudit: {
+        currentPlanRevision: { seq: 3, recorded: true },
+        revisionGap: 2,
+        executionAuthority: {
+          auditedSnapshotAvailable: true,
+          strictMeaningChanged: true,
+          activationAuditBlocker: 'activation_audit_stale',
+        },
+        reAudit: {
+          notRequiredWhen: COSMETIC_CHANGE_TAXONOMY,
+          instruction: expect.stringContaining('activation_audit_stale'),
+        },
+      },
     });
 
     const substantive = await withPlanLock<{ ok: true }>(
@@ -463,11 +501,16 @@ describe('conversation activation audit gate', () => {
         auditedPlanRevision: { id: audited.id, seq: 1, contentHash: audited.contentHash },
         currentPlanRevision: {
           id: expect.any(Number),
-          seq: 3,
+          seq: 4,
           contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
           recorded: true,
         },
-        revisionGap: 2,
+        revisionGap: 3,
+        executionAuthority: {
+          auditedSnapshotAvailable: true,
+          strictMeaningChanged: true,
+          activationAuditBlocker: 'activation_audit_stale',
+        },
         reAudit: {
           decision: 'editing_agent',
           requiredWhen: MATERIAL_CHANGE_TAXONOMY,

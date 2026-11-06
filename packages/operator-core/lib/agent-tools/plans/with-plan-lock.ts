@@ -1314,6 +1314,7 @@ export async function withPlanLock<T>(
             harnessSlug,
             planSlug: slug,
             currentContentHash: hashPlanContent(writtenBody),
+            currentContent: writtenBody,
             planVersion: applied.version,
           });
         } catch (err) {

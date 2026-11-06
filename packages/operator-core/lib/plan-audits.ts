@@ -65,6 +65,7 @@ import {
   PLAN_ADVISORY_LOCK_NAMESPACE,
   planAdvisoryLockKey,
 } from './agent-tools/plans/plan-lock-key';
+import { planExecutionMeaning } from './agent-tools/plans/plan-execution-meaning';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { evaluateDiscoveryReadiness, previewDiscoveryDeclaration, type DiscoveryReadiness,
   type DiscoveryReadinessContext } from './agent-tools/plans/plan-declarations';
@@ -626,12 +627,12 @@ export const ACTIVATION_REAUDIT_MATERIAL_CHANGES = [
   'acceptance criteria',
   'open questions',
   'promised follow-ups',
+  'strict execution meaning as enforced by plans:start',
 ] as const;
 
 export const ACTIVATION_REAUDIT_COSMETIC_CHANGES = [
-  'spelling',
-  'formatting',
-  'cosmetic-only wording',
+  'spelling or formatting changes that preserve strict execution meaning',
+  'cosmetic-only wording that preserves strict execution meaning',
 ] as const;
 
 export interface ActivationAuditEditNotice {
@@ -651,6 +652,11 @@ export interface ActivationAuditEditNotice {
   };
   changedSinceAudit: boolean;
   revisionGap: number | null;
+  executionAuthority: {
+    auditedSnapshotAvailable: boolean;
+    strictMeaningChanged: boolean | null;
+    activationAuditBlocker: 'activation_audit_stale' | null;
+  };
   reAudit: {
     decision: 'editing_agent';
     requiredWhen: readonly string[];
@@ -2072,6 +2078,8 @@ export function buildActivationAuditEditNotice(input: {
   audit: PlanAudit;
   currentPlanRevision: { id: number; seq: number; contentHash: string } | null;
   currentContentHash: string;
+  currentContent: string;
+  auditedContentSnapshot: string | null;
   planVersion: number;
 }): ActivationAuditEditNotice | null {
   const audited = input.audit.auditedPlanRevision;
@@ -2087,6 +2095,26 @@ export function buildActivationAuditEditNotice(input: {
   const currentLabel = current
     ? `revision ${current.seq}`
     : `plan version ${input.planVersion} (revision row unavailable)`;
+  let strictMeaningChanged: boolean | null = null;
+  if (input.auditedContentSnapshot !== null) {
+    try {
+      strictMeaningChanged = planExecutionMeaning(input.auditedContentSnapshot)
+        !== planExecutionMeaning(input.currentContent);
+    } catch {
+      // The execution gate fails closed when either snapshot cannot be compared.
+      strictMeaningChanged = null;
+    }
+  }
+  const activationAuditBlocker = changedSinceAudit && strictMeaningChanged !== false
+    ? 'activation_audit_stale'
+    : null;
+  const authorityGuidance = activationAuditBlocker
+    ? strictMeaningChanged === true
+      ? `Current plans:start authority returns ${activationAuditBlocker} because strict execution meaning changed; ` +
+        `re-run the activation audit against ${currentLabel} before starting.`
+      : `Current plans:start authority returns ${activationAuditBlocker} because the audited execution snapshot ` +
+        `is unavailable; re-run the activation audit against ${currentLabel} before starting.`
+    : 'The current revision does not have the activation_audit_stale authority blocker.';
 
   return {
     status: 'preserved',
@@ -2101,6 +2129,11 @@ export function buildActivationAuditEditNotice(input: {
     },
     changedSinceAudit,
     revisionGap,
+    executionAuthority: {
+      auditedSnapshotAvailable: input.auditedContentSnapshot !== null,
+      strictMeaningChanged,
+      activationAuditBlocker,
+    },
     reAudit: {
       decision: 'editing_agent',
       requiredWhen: ACTIVATION_REAUDIT_MATERIAL_CHANGES,
@@ -2109,7 +2142,8 @@ export function buildActivationAuditEditNotice(input: {
         `Activation audit #${input.audit.auditSeq} covered revision ${audited.seq}; the plan is now ${currentLabel}. ` +
         `The audit remains recorded. Re-run plans:audit { phase:'activation' } if this edit materially changes ` +
         `${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}. ` +
-        `${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} do not require another audit.`,
+        `${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} do not require another audit only when strict ` +
+        `execution meaning is unchanged. ${authorityGuidance}`,
     },
   };
 }
@@ -2125,32 +2159,59 @@ export async function getActivationAuditEditNotice(input: {
   harnessSlug: string;
   planSlug: string;
   currentContentHash: string;
+  currentContent: string;
   planVersion: number;
 }): Promise<ActivationAuditEditNotice | null> {
   const audit = await getLatestActivationAudit(input.planSlug, {
     workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
   });
   if (!audit?.auditedPlanRevision) return null;
 
-  const currentPlanRevision = await withWorkspace(input.workspaceId, async (tx) => {
-    const rows = await tx<Array<{ id: number | string; seq: number; content_hash: string }>>`
-      SELECT id, seq, content_hash
-        FROM harness_shared.plan_revisions
-       WHERE workspace_id = ${input.workspaceId}
-         AND harness_slug = ${input.harnessSlug}
-         AND plan_slug = ${input.planSlug}
-       ORDER BY seq DESC
-       LIMIT 1`;
+  const revisionEvidence = await withWorkspace(input.workspaceId, async (tx) => {
+    const rows = await tx<Array<{
+      id: number | string | null;
+      seq: number | null;
+      content_hash: string | null;
+      audited_content_snapshot: string | null;
+    }>>`
+      WITH current_revision AS (
+        SELECT id, seq, content_hash
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${input.harnessSlug}
+           AND plan_slug = ${input.planSlug}
+         ORDER BY seq DESC
+         LIMIT 1
+      ), audited_revision AS (
+        SELECT content_snapshot
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${input.harnessSlug}
+           AND plan_slug = ${input.planSlug}
+           AND id = ${audit.auditedPlanRevision!.id}
+         LIMIT 1
+      )
+      SELECT current_revision.id, current_revision.seq, current_revision.content_hash,
+             audited_revision.content_snapshot AS audited_content_snapshot
+        FROM (VALUES (1)) AS anchor(n)
+        LEFT JOIN current_revision ON true
+        LEFT JOIN audited_revision ON true`;
     const row = rows[0];
-    return row
-      ? { id: Number(row.id), seq: Number(row.seq), contentHash: row.content_hash }
-      : null;
+    return {
+      currentPlanRevision: row?.id != null && row.seq != null && row.content_hash != null
+        ? { id: Number(row.id), seq: row.seq, contentHash: row.content_hash }
+        : null,
+      auditedContentSnapshot: row?.audited_content_snapshot ?? null,
+    };
   });
 
   return buildActivationAuditEditNotice({
     audit,
-    currentPlanRevision,
+    currentPlanRevision: revisionEvidence.currentPlanRevision,
     currentContentHash: input.currentContentHash,
+    currentContent: input.currentContent,
+    auditedContentSnapshot: revisionEvidence.auditedContentSnapshot,
     planVersion: input.planVersion,
   });
 }
