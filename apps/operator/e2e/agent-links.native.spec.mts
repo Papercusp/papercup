@@ -11,6 +11,8 @@ import { recordNativeCollectionJourney } from './_ongoing-work-native-fixture';
 
 const exec = promisify(execFile);
 const TEST_PATH = 'apps/operator/e2e/agent-links.native.spec.mts';
+// The instrument binder can verify the committed runner used by this spec.
+const NATIVE_RUNNER = 'scripts/verify-tauri-headless.sh';
 const sha = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
 // This test never mounts a component or substitutes a router/PTY. Persisted
@@ -50,7 +52,7 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
   }
   const evaluate = (expression: string) => native('eval', expression);
   const wait = (expression: string) => expect.poll(() => evaluate(expression), { timeout: 60_000 }).toBe(true);
-  const conversationId = randomUUID(), turnId = randomUUID();
+  const conversationId = randomUUID(), turnId = randomUUID(), reportTurnId = randomUUID();
   let windowId = '';
   async function capture(name: string) {
     const state = await evaluate(`({ url: location.href, origin: location.origin,
@@ -61,7 +63,7 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
       reader: document.querySelector('.reports-reader')?.outerHTML,
       terminal: document.querySelector('.xterm')?.outerHTML })`);
     const dom = info.outputPath(`${name}.json`);
-    await writeFile(dom, JSON.stringify({ state, sourceReceipt, pid, conversationId, turnId }, null, 2));
+    await writeFile(dom, JSON.stringify({ state, sourceReceipt, pid, conversationId, turnId, reportTurnId }, null, 2));
     const png = info.outputPath(`${name}.png`);
     await exec(tool, ['screenshot', '--pid', pid, '--window-id', windowId, '--output', png],
       { env: xenv, timeout: 30_000 });
@@ -116,9 +118,13 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
         const reportCard = { title: 'Agent links report lines', plans: [{ title: 'Native reference check',
           items: [{ text: `Report card route ${href}`, status: 'done' }] }] };
         await sql.unsafe(`INSERT INTO harness_shared.operator_turns
-          (id,conversation_id,workspace_id,seq,role,text,source,created_at,chat_state,report)
-          VALUES ($1,$2,$3,0,'assistant',$4,'text_typed',$5,$6::jsonb,$7::jsonb)`,
-        [turnId, conversationId, workspace, text, Date.now(), sql.json({ schemaVersion: 1, results }), sql.json(reportCard)]);
+          (id,conversation_id,workspace_id,seq,role,text,source,created_at,chat_state)
+          VALUES ($1,$2,$3,0,'assistant',$4,'text_typed',$5,$6::jsonb)`,
+        [turnId, conversationId, workspace, text, Date.now(), sql.json({ schemaVersion: 1, results })]);
+        await sql.unsafe(`INSERT INTO harness_shared.operator_turns
+          (id,conversation_id,workspace_id,seq,role,text,source,created_at,report)
+          VALUES ($1,$2,$3,1,'assistant','Report card fixture','text_typed',$4,$5::jsonb)`,
+        [reportTurnId, conversationId, workspace, Date.now() + 1, sql.json(reportCard)]);
         const fixture = await sql.unsafe(`SELECT id,workspace_id,text,chat_state,current_database() AS database,
           inet_server_port() AS port FROM harness_shared.operator_turns WHERE id=$1`, [turnId]);
         expect(fixture).toMatchObject([{ id: turnId, workspace_id: workspace, text }]);
@@ -147,7 +153,8 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
         expect(routes.some((route: string) => route?.startsWith('/api/') || route?.includes('%2e'))).toBe(false);
         await select(`/reports?sel=${first.reportId}`, first.reportId, 'Exact native report A marker.', 'native-chat');
         await chat();
-        await native('click', `[data-turn="${turnId}"] .pc-chat__report a[href=${JSON.stringify(href)}]`);
+        await wait(`!!document.querySelector('[data-turn="${reportTurnId}"] .pc-chat__report')`);
+        await native('click', `[data-turn="${reportTurnId}"] .pc-chat__report a[href=${JSON.stringify(href)}]`);
         await wait(`location.pathname === '/reports' && location.hash === '#details'
           && new URLSearchParams(location.search).get('sel') === ${JSON.stringify(first.reportId)}
           && new URLSearchParams(location.search).get('view') === 'all'
@@ -210,11 +217,11 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
           && new URLSearchParams(location.search).get('probe') === ${JSON.stringify('w'.repeat(160))}
           && document.querySelector('.reports-reader')?.textContent.includes('Exact native report A marker.') === true`);
         await noExternalization(); await capture('native-terminal-wrapped');
-        expect((await sql.unsafe('SELECT count(*)::integer AS count FROM harness_shared.operator_turns WHERE conversation_id=$1', [conversationId]))[0].count).toBe(1);
+        expect((await sql.unsafe('SELECT count(*)::integer AS count FROM harness_shared.operator_turns WHERE conversation_id=$1', [conversationId]))[0].count).toBe(2);
       } });
     const proof = { sourceReceipt, completedRuntime, runtimeUnits: [`verify-tauri-headless:${pid}`],
-      fixture: { workspace, conversationId, turnId, database: database.pathname, port: database.port },
-      observations, retained, pid, launchProvenance: process.env.VERIFY_TAURI_LAUNCH_PROVENANCE };
+      fixture: { workspace, conversationId, turnId, reportTurnId, database: database.pathname, port: database.port },
+      runner: NATIVE_RUNNER, observations, retained, pid, launchProvenance: process.env.VERIFY_TAURI_LAUNCH_PROVENANCE };
     const proofPath = info.outputPath('native-agent-links-proof.json');
     await writeFile(proofPath, JSON.stringify(proof, null, 2));
     await info.attach('native-completed-runtime', { body: JSON.stringify({ completedRuntime,

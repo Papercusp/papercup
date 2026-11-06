@@ -2178,7 +2178,7 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   // subsequent source checks still reject unfinished copies. Runtime assets
   // are seeded only after the committed source itself has been verified.
   await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
-    { runtimeArtifacts: false, dependencyStaging: true }));
+    { runtimeArtifacts: true, dependencyStaging: true }));
   const runtimeSetup = join(dest, 'apps/operator/scripts/setup-porcupine-runtime.sh');
   if (existsSync(runtimeSetup)) {
     const modelDonor = join(donor, 'apps/operator/public/porcupine/porcupine_params.pv');

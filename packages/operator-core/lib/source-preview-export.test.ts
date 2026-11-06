@@ -761,7 +761,34 @@ describe('verifier dependency staging preparation boundary', () => {
     },
   );
 
-  it.each(['input.mjs', 'node_modules.pinned-deps-tmp/source.mjs',
+  it('resumes completed dependency and workspace-output trees while fencing unfinished staging after the helper', async () => {
+    const { dest, receipt } = fixture();
+    const retained = ['node_modules/dependency/index.js',
+      'apps/operator/node_modules/dependency/index.js', 'packages/omp-plugin/dist/cli.js'];
+    for (const path of retained) write(dest, path, 'retained dependency bytes');
+    await fsPromises.mkdir(join(dest, 'apps/operator/node_modules.pinned-deps-tmp.12345'));
+    const phases: string[] = [];
+    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+      .rejects.toThrow('unexpected dependency staging');
+    expect(phases).toEqual(['deps.source.before', 'deps.source.after-runtime-assets',
+      'deps.snapshot', 'deps.source.after-snapshot']);
+    for (const path of retained) expect(readFileSync(join(dest, path), 'utf8')).toBe('retained dependency bytes');
+  });
+
+  it('refuses unrelated added source before resuming retained dependencies', async () => {
+    const { dest, receipt } = fixture();
+    write(dest, 'node_modules/dependency/index.js', 'retained dependency bytes');
+    write(dest, 'apps/operator/unexpected.mjs', 'unaccepted source');
+    const phases: string[] = [];
+    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+      .rejects.toThrow('added apps/operator/unexpected.mjs');
+    expect(phases).toEqual(['deps.source.before']);
+  });
+
+  it.each(['input.mjs', 'node_modules/source.mjs', 'apps/operator/node_modules/source.mjs',
+    'packages/omp-plugin/dist/source.mjs', 'node_modules.pinned-deps-tmp/source.mjs',
     'node_modules.pinned-deps-tmp.12345/source.mjs', 'apps/operator/node_modules.pinned-deps-tmp/source.mjs'])(
     'never exempts changed recorded source at %s', async input => {
       const { dest, receipt } = fixture(input === 'input.mjs' ? undefined : dirname(input));

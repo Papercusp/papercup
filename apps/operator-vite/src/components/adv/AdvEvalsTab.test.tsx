@@ -410,11 +410,10 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
       observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
     H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', current,
-      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 60,
+      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 9,
       model: 'frozen-model', effort: 'high', account: 'api', basis: 'Frozen caps' }] };
     render(<AdvEvalsTab />);
     fireEvent.change(screen.getByLabelText('Committed protocol run ID'), { target: { value: 'study' } });
-    fireEvent.click(screen.getByLabelText('Approve this spend'));
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
   });

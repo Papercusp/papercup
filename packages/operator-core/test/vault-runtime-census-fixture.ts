@@ -12,6 +12,7 @@ import { readProcessIdentity } from '../lib/process-identity';
 import { loadImmutableTextArtifact } from '../lib/text-artifacts';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { verifyAuthenticatedRuntimeSecurityCensus } from '../lib/coverage-census/security-qualification';
+import { operatorArtifactSource, writeOperatorArtifactManifest } from '../lib/release/operator-artifact';
 import { preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -59,6 +60,14 @@ async function main() {
     timeoutMs: 240_000, maxMs: 420_000,
     onProgress: progress => console.log('VAULT_CENSUS_STAGE=build-' + progress.step),
   } });
+  // The generic private HTTP builder returns byte pins, not a release-artifact
+  // manifest. Publish the existing source/blob binding before this child boots;
+  // boot measurement must never borrow a caller's digest or checkout HEAD.
+  const sourceSha = await operatorArtifactSource(root);
+  const artifact = await writeOperatorArtifactManifest({ root, entry: prepared.path, sourceSha,
+    artifactRoot: evidenceDir });
+  assert.equal(artifact.status, 'measured', 'private artifact source binding required before boot');
+  writeFileSync(join(evidenceDir, 'operator-artifact-preflight.json'), JSON.stringify(artifact));
   const originalBundle = readFileSync(prepared.path);
   host = spawn(process.execPath, [prepared.path], { cwd: root, env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'] });
@@ -158,5 +167,8 @@ async function main() {
 }
 
 try { await main(); }
-catch (error) { console.error('VAULT_CENSUS_FAILURE ' + String(error)); process.exitCode = 1; }
+catch (error) {
+  console.error('VAULT_CENSUS_FAILURE ' + (error instanceof Error ? error.stack : String(error)));
+  process.exitCode = 1;
+}
 finally { await stopHost(); await getOrgPg().sql.end({ timeout: 5 }); }
