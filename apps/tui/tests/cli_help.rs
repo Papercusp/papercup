@@ -41,6 +41,45 @@ fn workbench_help_is_side_effect_free_without_a_controlling_tty() {
 }
 
 #[test]
+fn native_read_help_is_side_effect_free_without_a_controlling_tty() {
+    assert_help_is_side_effect_free(&["native-read", "--help"]);
+}
+
+#[test]
+fn native_read_rejects_mutations_as_structured_json_without_a_controlling_tty() {
+    use std::io::Write;
+
+    let mut child = Command::new(pui_binary())
+        .arg("native-read")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run native model command");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"name":"goals.pause","args":{}}"#)
+        .expect("write unsupported request");
+    let output = child
+        .wait_with_output()
+        .expect("read native model rejection");
+    assert!(!output.status.success(), "mutation request succeeded");
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("stdout must contain exactly one structured response");
+    assert_eq!(payload["ok"], false);
+    assert!(payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("unknown variant"));
+    assert!(
+        !output.stdout.contains(&0x1b),
+        "native command started terminal rendering"
+    );
+}
+
+#[test]
 fn version_is_side_effect_free_without_a_controlling_tty() {
     let output = Command::new(pui_binary())
         .arg("--version")

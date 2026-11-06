@@ -2497,6 +2497,31 @@ impl OperatorClient {
         serde_json::from_value(rows).with_context(|| format!("parse {name} rows"))
     }
 
+    /// OS-native widgets use the same selected operator and authorization as
+    /// PUI. Retain version/partial metadata and distinguish unavailable data
+    /// from a successfully returned empty collection.
+    pub async fn native_panel_read(
+        &self,
+        request: &crate::native_panel::ReadRequest,
+    ) -> Result<serde_json::Value> {
+        let payload = self
+            .get_json(&format!(
+                "/api/zero-harness/rest-query?name={}&args={}",
+                urlencode(request.name.as_str()),
+                urlencode(&serde_json::to_string(&request.args)?),
+            ))
+            .await?;
+        if payload.get("error").is_some_and(|error| !error.is_null())
+            || payload.get("ok") == Some(&serde_json::Value::Bool(false))
+        {
+            anyhow::bail!("Native model {} unavailable: {payload}", request.name.as_str());
+        }
+        if !payload.get("rows").is_some_and(serde_json::Value::is_array) {
+            anyhow::bail!("Native model {} returned no row envelope", request.name.as_str());
+        }
+        Ok(payload)
+    }
+
     /// Read the one server-normalized context projection consumed by both pui
     /// and the operator GUI. An empty row set is a supported capability-tier
     /// absence, not an error and not permission to synthesize local frames.
@@ -3831,6 +3856,61 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn native_panel_read_preserves_identity_auth_errors_and_empty_vs_unavailable() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = OperatorClient {
+            transport: Transport::Http(HttpClient::new(base.clone(), Some("native-fixture".into()))),
+            endpoint: base,
+            selection_source: "test".into(),
+        };
+        let server = tokio::spawn(async move {
+            for (status, payload) in [
+                (200, json!({"rows":[],"version":"exact-version","partial":true})),
+                (200, json!({"error":"source unavailable","rows":[]})),
+                (200, json!({"version":"missing-rows"})),
+                (503, json!({"error":"offline"})),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 1024];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                assert!(request.to_ascii_lowercase().contains("authorization: bearer native-fixture"));
+                let target = request.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                let url = reqwest::Url::parse(&format!("http://fixture{target}")).unwrap();
+                assert_eq!(url.path(), "/api/zero-harness/rest-query");
+                let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+                assert_eq!(params.get("name").unwrap(), "plans.list");
+                let args: serde_json::Value = serde_json::from_str(params.get("args").unwrap()).unwrap();
+                assert_eq!(args, json!({"harness":"same & exact","query":"a+/=?"}));
+                let body = payload.to_string();
+                socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let request = crate::native_panel::read_request(
+            br#"{"name":"plans.list","args":{"harness":"same & exact","query":"a+/=?"}}"#.as_slice(),
+        ).unwrap();
+        assert_eq!(client.native_panel_read(&request).await.unwrap(), json!({"rows":[],"version":"exact-version","partial":true}));
+        let unavailable = client.native_panel_read(&request).await.unwrap_err().to_string();
+        assert!(unavailable.contains("source unavailable"), "{unavailable}");
+        assert!(client.native_panel_read(&request).await.unwrap_err().to_string().contains("no row envelope"));
+        let offline = client.native_panel_read(&request).await.unwrap_err().to_string();
+        assert!(offline.contains("503"), "{offline}");
+        server.await.unwrap();
+    }
+
     #[test]
     fn agent_sidebar_rejects_missing_duplicate_foreign_and_error_rows() {
         use serde_json::json;

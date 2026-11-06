@@ -1740,7 +1740,7 @@ export function renderCompactionPlanAuthority(authority: CompactionPlanAuthority
   ];
   if (authority.decisions.length > 0) {
     lines.push(
-      `  - latest governing decisions${authority.decisionsMore ? ` (+${authority.decisionsMore} older)` : ''}:`,
+      `  - ${authority.taskLinkedDecisions ? 'task-linked then recent governing decisions' : 'latest governing decisions'}${authority.decisionsMore ? ` (+${authority.decisionsMore} omitted)` : ''}:`,
       ...authority.decisions.map(
         (decision) =>
           `    - ${decision.id} ${singleLine(decision.title)} — ${singleLine(decision.body)}` +
@@ -1749,6 +1749,10 @@ export function renderCompactionPlanAuthority(authority: CompactionPlanAuthority
     );
   } else {
     lines.push('  - latest governing decisions: none');
+  }
+  if (authority.omittedDecisionRefs?.length) {
+    lines.push(`  - omitted governing refs: ${authority.omittedDecisionRefs.join(', ')}${authority.omittedDecisionRefsMore
+      ? ` (+${authority.omittedDecisionRefsMore} more; plans:get { slug: '${authority.planSlug}', heading: 'Decisions', harness: '${authority.harness}' })` : ''}`);
   }
   lines.push(
     `  - scoped item states: ${authority.items.length > 0

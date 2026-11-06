@@ -228,6 +228,25 @@ async function defaultAffectedDecisionLookup(scope: {
  * for allocation; authoring decisions via `plans:add-decision` (rather than
  * hand-editing the plan body) keeps them in the structured, surfaced form.
  */
+/** Shared bounded decision policy for claims and deterministic recovery. */
+export function selectTaskLinkedPlanDecisions<T extends { id: string; itemRefs: readonly string[] }>(
+  decisions: readonly T[], taskItems: ReadonlySet<string>, limit: number,
+): { selected: T[]; omitted: T[]; taskLinkedCount: number } {
+  const taskLinked = decisions.filter((d) => d.itemRefs.some((id) => taskItems.has(id)));
+  const taskWindow = limit > 0 ? taskLinked.slice(-limit) : [];
+  const recentSlots = Math.max(0, limit - taskWindow.length);
+  const taskIds = new Set(taskWindow.map((d) => d.id));
+  const recent = recentSlots > 0 ? decisions.filter((d) => !taskIds.has(d.id)).slice(-recentSlots) : [];
+  const selected = [...taskWindow, ...recent];
+  const selectedIds = new Set(selected.map((d) => d.id));
+  return { selected, omitted: decisions.filter((d) => !selectedIds.has(d.id)), taskLinkedCount: taskWindow.length };
+}
+
+export function planDecisionBodyForItems(body: string, taskItems: ReadonlySet<string>): string {
+  return body.split(/\n\s*\n/).find((paragraph) =>
+    (paragraph.match(/\bP-\d{3,}\b/g) ?? []).some((id) => taskItems.has(id))) ?? body;
+}
+
 export async function getClaimTimePlanDecisions(opts: {
   workItem?: Pick<WorkItem, 'payload'> & Partial<Pick<WorkItem, 'sourcePlanSlug' | 'sourcePlanItemIds'>>;
   planSlug?: string | null;
@@ -270,16 +289,8 @@ export async function getClaimTimePlanDecisions(opts: {
 
     const affectedRows = affected.decisions.slice(0, MAX_DECISIONS);
     const remainingLocalSlots = Math.max(0, MAX_DECISIONS - affectedRows.length);
-    const taskLinked = localDecisions.filter((d) => d.itemRefs.some((id) => taskItems.has(id)));
-    const taskWindow = remainingLocalSlots > 0 ? taskLinked.slice(-remainingLocalSlots) : [];
-    const remainingRecentSlots = remainingLocalSlots - taskWindow.length;
-    const taskIds = new Set(taskWindow.map((d) => d.id));
-    const recentWindow = remainingRecentSlots > 0
-      ? localDecisions.filter((d) => !taskIds.has(d.id)).slice(-remainingRecentSlots)
-      : [];
-    const localWindow = [...taskWindow, ...recentWindow];
-    const selectedIds = new Set(localWindow.map((d) => d.id));
-    const omitted = localDecisions.filter((d) => !selectedIds.has(d.id));
+    const { selected: localWindow, omitted, taskLinkedCount } =
+      selectTaskLinkedPlanDecisions(localDecisions, taskItems, remainingLocalSlots);
     const unjoined: UnjoinedPlanDecision[] = [
       ...affectedRows.map((d) => ({
         id: d.decisionId,
@@ -293,8 +304,7 @@ export async function getClaimTimePlanDecisions(opts: {
         id: d.id,
         title: d.title,
         snippet: clampSnippet(
-          d.body.split(/\n\s*\n/).find((paragraph) =>
-            (paragraph.match(/\bP-\d{3,}\b/g) ?? []).some((id) => taskItems.has(id))) ?? d.body,
+          planDecisionBodyForItems(d.body, taskItems),
           SNIPPET_CHARS,
         ),
       })),
@@ -311,7 +321,7 @@ export async function getClaimTimePlanDecisions(opts: {
       // Cross-plan execution authority consumes the bounded window first;
       // remaining space carries task-linked and then recent local rulings.
       decisions,
-      ...(taskWindow.length > 0 ? { taskLinkedDecisions: taskWindow.length } : {}),
+      ...(taskLinkedCount > 0 ? { taskLinkedDecisions: taskLinkedCount } : {}),
       ...(omitted.length > 0 ? {
         omittedDecisionRefs: omitted.slice(0, MAX_DECISIONS)
           .map((d) => planDecisionRef(planSlug, d.id)).filter((ref): ref is string => ref !== null),

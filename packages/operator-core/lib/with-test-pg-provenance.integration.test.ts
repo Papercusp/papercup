@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve, join } from 'node:path';
+import { basename, dirname, resolve, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -25,7 +25,12 @@ describe('ordinary PostgreSQL endpoint isolation', () => {
       try {
         await sql.unsafe('CREATE DATABASE "${name}"');
         registerOwnedTestDatabase('${name}', adminUri)('deferred');
+        console.log('OWNED_DB_SCOPE=' + JSON.stringify(process.env.PAPERCUSP_TEST_OWNED_DB_DIR));
       } finally { await sql.end(); }
+      // Cancel the actual owning wrapper after the deferred database exists.
+      // It must reap that database while PG lives and await private removal.
+      process.kill(process.ppid, 'SIGTERM');
+      setInterval(() => {}, 1000);
     `;
     try {
       const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
@@ -33,10 +38,20 @@ describe('ordinary PostgreSQL endpoint isolation', () => {
         cwd: root, env: { ...process.env, PAPERCUSP_TEST_OWNED_DB_DIR: registry,
           PAPERCUSP_TEST_RUN_GROUP: 'private-pg-owned-cleanup-regression' },
         timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
-      });
-      expect(JSON.parse(readFileSync(join(registry, `${name}.json`), 'utf8')).outcome).toBe('dropped');
+      }).then(() => { throw new Error('private PG wrapper exited successfully instead of SIGTERM'); },
+        error => {
+          expect(error.signal, error.stderr || error.message).toBe('SIGTERM');
+          return { stdout: error.stdout as string };
+        });
+      const scopeLine = stdout.split('\n').find(line => line.startsWith('OWNED_DB_SCOPE='));
+      expect(scopeLine).toBeDefined();
+      const ownedScope = JSON.parse(scopeLine!.slice('OWNED_DB_SCOPE='.length));
+      // The wrapper issues a private child scope, preserving the parent's receipts.
+      expect(dirname(ownedScope)).toBe(registry);
+      expect(basename(ownedScope)).toMatch(/^private-pg-/);
+      expect(JSON.parse(readFileSync(join(ownedScope, `${name}.json`), 'utf8')).outcome).toBe('dropped');
       expect(stdout).toContain('[with-test-pg] owned database cleanup {"complete":true');
-      const receipt = readFileSync(join(registry, 'cleanup.jsonl'), 'utf8');
+      const receipt = readFileSync(join(ownedScope, 'cleanup.jsonl'), 'utf8');
       expect(receipt).not.toContain('ECONNREFUSED');
       expect(receipt).not.toContain('postgres://');
       const dataDir = stdout.match(/booting throwaway PG[^\n]*\(datadir ([^\)]+)\)/)?.[1];

@@ -25,6 +25,9 @@ export interface CompactionPlanAuthorityCurrent {
   planStatus: string | null;
   decisions: Array<{ id: string; title: string; body: string; truncated: boolean }>;
   decisionsMore?: number;
+  taskLinkedDecisions?: number;
+  omittedDecisionRefs?: string[];
+  omittedDecisionRefsMore?: number;
   items: Array<{ id: string; status: string | null; text: string | null; missing: boolean }>;
   specs: Array<{
     specId: string;
@@ -384,12 +387,19 @@ export async function buildCompactionRecovery(
             }
             if (specRows) {
               const allDecisions = parsed.decisions;
-              const decisions = allDecisions.slice(-MAX_PLAN_AUTHORITY_DECISIONS).map((decision) => ({
-                id: decision.id,
-                title: decision.title,
-                body: decision.body.slice(0, PLAN_AUTHORITY_DECISION_BODY_CAP),
-                truncated: decision.body.length > PLAN_AUTHORITY_DECISION_BODY_CAP,
-              }));
+              const { selectTaskLinkedPlanDecisions, planDecisionBodyForItems } =
+                await import('../../plan-decisions-claim-port');
+              const taskItems = new Set(control.state.scope.items);
+              const window = selectTaskLinkedPlanDecisions(allDecisions, taskItems, MAX_PLAN_AUTHORITY_DECISIONS);
+              const decisions = window.selected.map((decision) => {
+                const body = planDecisionBodyForItems(decision.body, taskItems);
+                return {
+                  id: decision.id,
+                  title: decision.title,
+                  body: body.slice(0, PLAN_AUTHORITY_DECISION_BODY_CAP),
+                  truncated: body !== decision.body || body.length > PLAN_AUTHORITY_DECISION_BODY_CAP,
+                };
+              });
               const itemById = new Map(parsed.items.map((item) => [item.id, item]));
               const specs = specRows.slice(0, MAX_PLAN_AUTHORITY_SPECS);
               recovery.planAuthority = {
@@ -402,6 +412,13 @@ export async function buildCompactionRecovery(
                 contentHash: row.contentHash,
                 planStatus: row.status,
                 decisions,
+                ...(window.taskLinkedCount > 0 ? { taskLinkedDecisions: window.taskLinkedCount } : {}),
+                ...(window.omitted.length > 0 ? {
+                  omittedDecisionRefs: window.omitted.slice(0, MAX_PLAN_AUTHORITY_DECISIONS)
+                    .map((decision) => `${scopedPlan}#${decision.id}`),
+                  ...(window.omitted.length > MAX_PLAN_AUTHORITY_DECISIONS
+                    ? { omittedDecisionRefsMore: window.omitted.length - MAX_PLAN_AUTHORITY_DECISIONS } : {}),
+                } : {}),
                 ...(allDecisions.length > decisions.length
                   ? { decisionsMore: allDecisions.length - decisions.length }
                   : {}),

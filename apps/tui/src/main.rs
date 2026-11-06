@@ -43,6 +43,7 @@ mod lexicon;
 mod markdown;
 mod models;
 mod mux;
+mod native_panel;
 mod network;
 mod notify;
 mod operator_voice_bus;
@@ -103,6 +104,7 @@ Usage:
 Subcommands:
   workbench                  Open the full zellij workbench (boards, fleet, panes)
   doctor                     Verify local artifacts, stale panes, and selected operator identity
+  native-read                Read a native desktop model (JSON request on stdin)
   self <COMMAND>             Install, update, roll back or uninstall this PUI (`pui self --help`)
   hud                      Open the HUD pane
   chat                       Open the operator chat dock
@@ -456,6 +458,7 @@ async fn main() -> Result<()> {
     match subcommand.as_deref() {
         Some("workbench") => return run_workbench().await,
         Some("doctor") => return run_doctor().await,
+        Some("native-read") => return native_panel::run().await,
         // The chat-only DOCK (operator chat | brain) — the desktop-docked native
         // terminal surface (native-terminal-desktop P-013 / D-011). Materialises
         // its own 2-pane layout and hands off to zellij.

@@ -846,6 +846,20 @@ describe('renderCarryDoc (pure)', () => {
     );
   });
 
+  it('renders task-linked recovery and exact omitted authority refs before the standing carry', () => {
+    const recovery = automaticRecovery();
+    const authority = recovery.recovery.planAuthority;
+    if (authority?.resolution !== 'current') throw new Error('fixture requires current authority');
+    authority.taskLinkedDecisions = 1;
+    authority.decisionsMore = 8;
+    authority.omittedDecisionRefs = ['task-plan#D-002', 'task-plan#D-003'];
+    authority.omittedDecisionRefsMore = 6;
+    const text = renderCarryDoc(doc({ automaticRecovery: recovery }), NOW);
+    expect(text).toContain('task-linked then recent governing decisions (+8 omitted)');
+    expect(text).toContain('omitted governing refs: task-plan#D-002, task-plan#D-003 (+6 more; plans:get');
+    expect(text.indexOf('omitted governing refs:')).toBeLessThan(text.indexOf('## Standing carry'));
+  });
+
   it('renders an unavailable plan authority as an incomplete recovery instruction', () => {
     const recovery = automaticRecovery(false);
     recovery.marker.controlGeneration = 17;
