@@ -9,6 +9,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readVerifierSourceReceiptSync } from '../../../../libs/test-config/src/verifier-source.ts';
 
 const RECEIPT = '.papercusp-workspace-build.json';
 const CLOSURE = '.verifier-closure.json';
@@ -108,15 +109,26 @@ function files(root, rel) {
 // Conservatively bind the whole source census, including submodules and dirty
 // files. A package build may bundle inputs outside its package (OMP does).
 // This intentionally prefers a rebuild to guessing a compiler's import graph.
+function sourceInput(path) {
+  return !path.split('/').some(p => ['node_modules', 'dist', '.papercusp', '.next'].includes(p)
+    || p.startsWith('.verifier-') || p.startsWith('.papercusp-'));
+}
+function archiveSource(root) {
+  if (existsSync(join(root, '.git'))) return null;
+  // An internal marker alone cannot attest itself. Reuse the same external
+  // receipt, selected ref and full byte census as the native test reporters.
+  return readVerifierSourceReceiptSync(root);
+}
 function sourcePaths(root) {
+  const archive = archiveSource(root);
+  if (archive) return archive.files.map(file => file.path).filter(sourceInput).sort();
   const result = new Set();
   function visit(repo, prefix = '') {
     const names = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
       { cwd: repo, maxBuffer: 64 * 1024 * 1024 }).toString().split('\0').filter(Boolean);
     for (const name of names) {
       const path = prefix + name;
-      if (path.split('/').some(p => ['node_modules', 'dist', '.papercusp', '.next'].includes(p)
-        || p.startsWith('.verifier-') || p.startsWith('.papercusp-'))) continue;
+      if (!sourceInput(path)) continue;
       const file = safe(root, path), stat = lstatSync(file);
       if (stat.isDirectory()) {
         if (existsSync(join(file, '.git'))) visit(file, path + '/');
@@ -172,6 +184,11 @@ export function verifierInputFingerprint(root) {
 // census used by the producing build.
 export function checkSource(root, ref) {
   root = realpathSync(root);
+  const archive = archiveSource(root);
+  if (archive) {
+    equal(archive.sourceCommit, ref, 'source-ref-mismatch');
+    return;
+  }
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   equal(realpathSync(git(['rev-parse', '--show-toplevel']).trim()), root, 'source-is-not-checkout-root');
   equal(git(['rev-parse', 'HEAD']).trim(), ref, 'source-ref-mismatch');
@@ -234,6 +251,8 @@ function checkWorkspace(root, entry, sourceRoot = root) {
 
 function workspaceRequirements(root) {
   const required = [];
+  const archive = archiveSource(root);
+  const archived = archive ? new Set(archive.files.map(file => file.path)) : null;
   for (const path of manifests(root)) {
     const pkg = JSON.parse(readFileSync(join(root, path), 'utf8'));
     const bins = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin || {});
@@ -243,8 +262,10 @@ function workspaceRequirements(root) {
     for (const target of targets) safe(root, packagePath + '/' + target.replace(/^\.\//, ''));
     // Tracked output already belongs to the independently verified source.
     // Git absence/errors never waive generated-output custody.
-    const tracked = targets.every(target => spawnSync('git', ['ls-files', '--error-unmatch', '--', target],
-      { cwd: join(root, packagePath), stdio: 'ignore' }).status === 0);
+    const tracked = targets.every(target => archived
+      ? archived.has(packagePath + '/' + target.replace(/^\.\//, ''))
+      : spawnSync('git', ['ls-files', '--error-unmatch', '--', target],
+        { cwd: join(root, packagePath), stdio: 'ignore' }).status === 0);
     if (!tracked) required.push({ path, packagePath, output, targets });
   }
   return required;

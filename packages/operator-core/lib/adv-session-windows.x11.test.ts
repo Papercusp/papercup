@@ -3,8 +3,52 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
-import { focusWindowId, sameX11WindowId } from './adv-session-windows';
+import {
+  focusWindowId,
+  matchWindowIdForPidInWmctrlOutput,
+  parseBusctlConnectionPid,
+  resolveWindowIdForGnomeTerminalService,
+  sameX11WindowId,
+} from './adv-session-windows';
 import { createTextCollector } from './child-output';
+
+describe('GNOME terminal service window resolution', () => {
+  it('maps a verified D-Bus service PID only when wmctrl identifies one window', async () => {
+    const calls: Array<[string, string[]]> = [];
+    const runCommand = vi.fn(async (command: string, args: string[]) => {
+      calls.push([command, args]);
+      if (command === 'busctl') return { status: 0, stdout: 'u 3120658\n' };
+      return { status: 0, stdout: '0x05c00006 0 3120658 localhost papercusp terminal\n' };
+    });
+    const readIdentity = vi.fn(() => 'linux:boot:terminal-server');
+
+    await expect(resolveWindowIdForGnomeTerminalService(':1.19596', {
+      platform: 'linux', windowsDesktopHost: false, runCommand, readIdentity,
+    })).resolves.toBe('0x05c00006');
+    expect(calls).toEqual([
+      ['busctl', ['--user', 'call', 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'GetConnectionUnixProcessID', 's', ':1.19596']],
+      ['wmctrl', ['-lp']],
+      ['busctl', ['--user', 'call', 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'GetConnectionUnixProcessID', 's', ':1.19596']],
+    ]);
+    expect(readIdentity).toHaveBeenCalledTimes(3);
+  });
+
+  it('refuses malformed service names, malformed PIDs, and ambiguous process windows', async () => {
+    const runCommand = vi.fn(async (command: string) => command === 'busctl'
+      ? { status: 0, stdout: 'not a pid' }
+      : { status: 0, stdout: '0x05c00006 0 3120658 localhost first\n0x05c00007 0 3120658 localhost second\n' });
+    const deps = { platform: 'linux' as NodeJS.Platform, windowsDesktopHost: false, runCommand, readIdentity: () => 'linux:boot:1' };
+
+    await expect(resolveWindowIdForGnomeTerminalService('not-a-bus-name', deps)).resolves.toBeNull();
+    expect(runCommand).not.toHaveBeenCalled();
+    await expect(resolveWindowIdForGnomeTerminalService(':1.19596', deps)).resolves.toBeNull();
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(parseBusctlConnectionPid('u 3120658')).toBe(3120658);
+    expect(parseBusctlConnectionPid('u 0')).toBeNull();
+    expect(matchWindowIdForPidInWmctrlOutput('0x5c00006 0 3120658 host one\n', 3120658)).toBe('0x5c00006');
+    expect(matchWindowIdForPidInWmctrlOutput('0x5c00006 0 3120658 host one\n0x5c00007 0 3120658 host two\n', 3120658)).toBeNull();
+  });
+});
 
 const exec = promisify(execFile);
 const supported = process.platform === 'linux' && existsSync('/usr/bin/Xvfb') && existsSync('/usr/bin/openbox') && existsSync('/usr/bin/xmessage');

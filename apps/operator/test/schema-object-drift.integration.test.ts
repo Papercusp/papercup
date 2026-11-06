@@ -31,7 +31,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { writeFileSync, readdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
@@ -44,6 +44,7 @@ import {
   indexAccessMethod,
   EXTENSION_GATED_INDEX_METHODS,
   type IndexCensusEntry,
+  type IndexManifest,
 } from '@papercusp/operator-core/lib/schema-object-drift';
 import { INDEX_MANIFEST } from '@papercusp/operator-core/lib/db-schema-reference/index-manifest';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
@@ -111,6 +112,13 @@ function renderManifest(indexes: IndexCensusEntry[], migrationCount: number): st
     indexes,
   };
   return `${MANIFEST_HEADER}${JSON.stringify(body, null, 2)};\n`;
+}
+
+function readManifestForAssertions(): IndexManifest {
+  if (!UPDATE) return INDEX_MANIFEST;
+  const body = readFileSync(MANIFEST_FILE, 'utf8').slice(MANIFEST_HEADER.length).trim();
+  if (!body.startsWith('{') || !body.endsWith(';')) throw new Error('generated index manifest has an invalid shape');
+  return JSON.parse(body.slice(0, -1)) as IndexManifest;
 }
 
 let adminUri: string;
@@ -245,8 +253,9 @@ describe('the migration-derived index manifest', () => {
     // every bm25 entry, and a fresh install WITH the extension then read its own
     // indexes as drift. Migration 1447 builds bm25 indexes, so the manifest must carry
     // them regardless of which PG generated it.
+    const manifest = readManifestForAssertions();
     for (const method of EXTENSION_GATED_INDEX_METHODS) {
-      const inManifest = INDEX_MANIFEST.indexes.filter((e) => indexAccessMethod(e.definition) === method);
+      const inManifest = manifest.indexes.filter((e) => indexAccessMethod(e.definition) === method);
       expect(inManifest.length, `the manifest carries no '${method}' index`).toBeGreaterThan(0);
       if (gatedMethodsHere.has(method)) {
         // Where the method exists, the migrations must really build what the manifest claims.

@@ -15,6 +15,7 @@
  */
 import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './windows-desktop-windows';
 import { focusMacWindow, resolveMacWindow } from './macos-desktop-windows';
+import { readProcessIdentity } from './process-identity';
 
 /** Keep a refused X11 focus request from blocking the operator request loop. */
 const X11_FOCUS_TIMEOUT_MS = 2_000;
@@ -137,6 +138,76 @@ export async function resolveWindowIdForPid(pid: number): Promise<string | null>
       if (Number(parts[2]) === pid) return parts[0];
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve only when one X11 window belongs to this exact process id. */
+export function matchWindowIdForPidInWmctrlOutput(stdout: string, pid: number): string | null {
+  if (!Number.isSafeInteger(pid) || pid <= 1) return null;
+  const matches = new Set<string>();
+  for (const line of stdout.split('\n')) {
+    const parts = line.trim().split(/\s+/, 5);
+    if (parts.length < 4 || !/^\d+$/.test(parts[2] ?? '')) continue;
+    if (Number(parts[2]) !== pid || parseX11WindowId(parts[0] ?? '') === null) continue;
+    matches.add(parts[0]!);
+  }
+  return matches.size === 1 ? [...matches][0] ?? null : null;
+}
+
+/** Parse `busctl call ... GetConnectionUnixProcessID`'s `u <pid>` result. */
+export function parseBusctlConnectionPid(stdout: string): number | null {
+  const match = /^u\s+([1-9]\d*)$/.exec(stdout.trim());
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 1 ? pid : null;
+}
+
+interface GnomeTerminalWindowDeps {
+  runCommand?: X11CommandRunner;
+  readIdentity?: (pid: number) => string | null;
+  platform?: NodeJS.Platform;
+  windowsDesktopHost?: boolean;
+}
+
+/**
+ * Resolve a GNOME Terminal D-Bus service to its one visible X11 window.
+ * Client-server terminals expose the shell's bus name, while wmctrl reports the
+ * terminal server PID. Ambiguous PID-to-window mappings fail closed.
+ */
+export async function resolveWindowIdForGnomeTerminalService(
+  serviceName: string,
+  deps: GnomeTerminalWindowDeps = {},
+): Promise<string | null> {
+  const service = serviceName.trim();
+  if (!/^:[0-9]+\.[0-9]+$/.test(service)) return null;
+  if ((deps.platform ?? process.platform) !== 'linux' || (deps.windowsDesktopHost ?? isWindowsDesktopHost())) return null;
+
+  try {
+    const runCommand = deps.runCommand ?? (await createX11CommandRunner());
+    const readIdentity = deps.readIdentity ?? readProcessIdentity;
+    const busArgs = [
+      '--user', 'call', 'org.freedesktop.DBus', '/org/freedesktop/DBus',
+      'org.freedesktop.DBus', 'GetConnectionUnixProcessID', 's', service,
+    ];
+    const owner = await runCommand('busctl', busArgs);
+    if (owner.status !== 0) return null;
+    const pid = parseBusctlConnectionPid(owner.stdout);
+    if (pid === null) return null;
+    const identity = readIdentity(pid);
+    if (!identity) return null;
+
+    const listed = await runCommand('wmctrl', ['-lp']);
+    if (listed.status !== 0) return null;
+    const windowId = matchWindowIdForPidInWmctrlOutput(listed.stdout, pid);
+    if (!windowId || readIdentity(pid) !== identity) return null;
+
+    // Unique D-Bus names cannot be reassigned. Confirm it still resolves to the
+    // same live process after the window census, closing the PID-reuse race.
+    const confirmedOwner = await runCommand('busctl', busArgs);
+    if (confirmedOwner.status !== 0 || parseBusctlConnectionPid(confirmedOwner.stdout) !== pid) return null;
+    return readIdentity(pid) === identity ? windowId : null;
   } catch {
     return null;
   }

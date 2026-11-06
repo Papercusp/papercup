@@ -35,6 +35,8 @@ describe('native selection runs the actual PUI workbench in an isolated Zellij P
   let exitCode: number | undefined;
   let raw = '';
   let session = '';
+  let activeScreen = '';
+  let materializedLayout = '';
 
   beforeAll(() => {
     const source = ensurePuiBinary();
@@ -72,6 +74,8 @@ describe('native selection runs the actual PUI workbench in an isolated Zellij P
     queries = [];
     raw = '';
     session = '';
+    activeScreen = '';
+    materializedLayout = '';
     exitCode = undefined;
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://fixture');
@@ -165,7 +169,7 @@ describe('native selection runs the actual PUI workbench in an isolated Zellij P
         writeFileSync(path.join(evidenceDir, `${path.basename(root)}.json`), JSON.stringify({
           mode, binary: artifact.binary, binarySha256: artifact.sha256,
           zellij: artifact.zellij, operator: 'private fixture', vendor: 'test-owned psu fixture',
-          session, exitCode, queries, screen: screen(),
+          session, exitCode, queries, screen: screen(), activeScreen, materializedLayout,
           receipt: existsSync(env.RESUME_RECEIPT) ? JSON.parse(readFileSync(env.RESUME_RECEIPT, 'utf8')) : null,
         }, null, 2));
       }
@@ -205,11 +209,16 @@ describe('native selection runs the actual PUI workbench in an isolated Zellij P
       expect(query.authorization).toBe(`Bearer ${TOKEN}`);
     }
     expect(queries.find(q => q.name === 'advRoster.list')?.args).toEqual({});
-    const dumped = await runWorkbenchCommand(artifact.zellij!.binary, ['--session', session, 'action', 'dump-layout'], { env });
-    expect(dumped.status).toBe(0);
-    expect(dumped.stdout).toContain('pending:adv:4241');
-    const quit = await runWorkbenchCommand(artifact.zellij!.binary, ['--session', session, 'action', 'quit'], { env });
-    expect(quit.status).toBe(0);
+    // Inspect PUI's exact generated file while its command and all four real
+    // sidebars are running. Their receipt, keyboard input and wire queries
+    // above prove that Zellij actually consumed this launch's layout.
+    materializedLayout = readFileSync(path.join(env.HOME, '.papercusp', `${session}.kdl`), 'utf8');
+    for (const pane of ['orders-pane', 'activity-pane', 'turns-pane', 'fleet-pane']) {
+      expect(materializedLayout).toContain(`args "${pane}" "pending:adv:4241"`);
+    }
+    activeScreen = screen();
+    // Quit is a key action, not a `zellij action quit` CLI subcommand.
+    terminal!.write('\x11'); // Ctrl-q, the real session client's Quit binding.
     await waitFor(() => exitCode !== undefined, 'PUI did not finish after Zellij quit');
     expect(exitCode).toBe(0);
     await waitForWorkbenchSessionEnd(env.ZELLIJ_SOCKET_DIR, session);

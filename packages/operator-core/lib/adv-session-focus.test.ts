@@ -103,6 +103,77 @@ describe('shared adv-session focus service', () => {
     expect(rememberWindowId).toHaveBeenCalledWith(42, '0x01e70b14');
   });
 
+  it('resolves a carried session through its verified current GNOME terminal attachment', async () => {
+    const latest = row({ id: 51525, windowId: null, pid: 813943, sessionId: 'prior-native-session' });
+    const host = {
+      ownerId: latest.coordOwnerId!, advSessionId: String(latest.id), pid: 3121532, ptyPid: 3121533,
+      terminalPid: 3121051, sock: '/tmp/psu.sock', command: 'psu', startedAt: 1, bridgeTty: true,
+      nativeSessionId: 'current-native-session',
+    };
+    const identity = 'linux:boot-id:terminal-start';
+    const findLiveHost = vi.fn(async () => host);
+    const readTerminalEnviron = vi.fn(async () => [
+      'PAPERCUSP_HARNESS_SLUG=papercusp',
+      `PAPERCUSP_CONSOLE_IDENTITY=${identity}`,
+      'GNOME_TERMINAL_SERVICE=:1.19596',
+    ].join('\0'));
+    const readTerminalProcessIdentity = vi.fn(() => identity);
+    const resolveByGnomeTerminalService = vi.fn(async () => '0x05c00006');
+    const rememberWindowId = vi.fn(async () => {});
+    const resolveByTitle = vi.fn(async () => null);
+
+    await expect(resolveSessionWindowId({}, latest, {
+      findLiveHost,
+      readTerminalEnviron,
+      readTerminalProcessIdentity,
+      resolveByGnomeTerminalService,
+      resolveByTitle,
+      rememberWindowId,
+    })).resolves.toBe('0x05c00006');
+
+    expect(findLiveHost).toHaveBeenCalledWith(latest.coordOwnerId);
+    expect(readTerminalEnviron).toHaveBeenCalledWith(host.terminalPid);
+    expect(resolveByGnomeTerminalService).toHaveBeenCalledWith(':1.19596');
+    expect(rememberWindowId).toHaveBeenCalledWith(latest.id, '0x05c00006');
+  });
+
+  it('fails closed when the managed terminal console birth identity does not match', async () => {
+    const latest = row({ id: 51525, windowId: null, pid: 813943 });
+    const host = {
+      ownerId: latest.coordOwnerId!, advSessionId: String(latest.id), pid: 3121532, ptyPid: 3121533,
+      terminalPid: 3121051, sock: '/tmp/psu.sock', command: 'psu', startedAt: 1, bridgeTty: true,
+    };
+    const resolveByGnomeTerminalService = vi.fn(async () => '0x05c00006');
+    const resolveByTitle = vi.fn(async () => null);
+
+    await expect(resolveSessionWindowId({}, latest, {
+      findLiveHost: async () => host,
+      readTerminalEnviron: async () => [
+        'PAPERCUSP_HARNESS_SLUG=papercusp',
+        'PAPERCUSP_CONSOLE_IDENTITY=linux:another-process',
+        'GNOME_TERMINAL_SERVICE=:1.19596',
+      ].join('\0'),
+      readTerminalProcessIdentity: () => 'linux:boot-id:terminal-start',
+      resolveByGnomeTerminalService,
+      resolveByTitle,
+    })).resolves.toBeNull();
+    expect(resolveByGnomeTerminalService).not.toHaveBeenCalled();
+  });
+
+  it('does not use a live host terminal attached to a different ADV row', async () => {
+    const latest = row({ id: 51525, windowId: null });
+    const resolveByGnomeTerminalService = vi.fn(async () => '0x05c00006');
+
+    await expect(resolveSessionWindowId({}, latest, {
+      findLiveHost: async () => ({
+        ownerId: latest.coordOwnerId!, advSessionId: '51526', pid: 3121532, ptyPid: 3121533,
+        terminalPid: 3121051, sock: '/tmp/psu.sock', command: 'psu', startedAt: 1, bridgeTty: true,
+      }),
+      resolveByGnomeTerminalService,
+    })).resolves.toBeNull();
+    expect(resolveByGnomeTerminalService).not.toHaveBeenCalled();
+  });
+
   it('returns a typed no_window result when nothing resolves', async () => {
     const resolveByTitle = vi.fn(async () => null);
     const result = await focusSessionWindow({}, row(), { resolveByTitle });
