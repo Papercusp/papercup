@@ -4180,7 +4180,7 @@ dependency_generation_prepare_exact_ref_root() {
 dependency_generation_ensure_verifier_ref() (
   local integration_root="$1" ref="$2" source_root="$3" generation_root="$4" retain_as="$5"
   local helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}"
-  local parent scratch nm rel input key indexed='' rc=0
+  local parent scratch native_source nm rel input key indexed='' rc=0
   source_root="$(cd "$source_root" && pwd -P)" || return 1
   [ "$source_root" != "$integration_root" ] || {
     dependency_generation_log 'FATAL: --verifier-source requires an independent frozen checkout'
@@ -4221,24 +4221,28 @@ dependency_generation_ensure_verifier_ref() (
     DEPENDENCY_GENERATION_EXACT_SCRATCH="$scratch"
     dependency_generation_ensure_store_root "$scratch" || return $?
     dependency_generation_write_owner "$scratch/.papercusp-exact-ref-writer" || return $?
-    cp -a -- "$source_root/." "$scratch/" || return $?
-    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" check-source "$scratch" "$ref" || return $?
-    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" same-source "$scratch" "$source_root" || return $?
+    # Keep lifecycle metadata outside the source census. In archive mode the
+    # independent receipt must attest this copy without ownership-file exceptions.
+    native_source="$scratch/source"
+    mkdir "$native_source" || return $?
+    cp -a -- "$source_root/." "$native_source/" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" check-source "$native_source" "$ref" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" same-source "$native_source" "$source_root" || return $?
     while IFS= read -r nm; do
       [ -n "$nm" ] || continue
       rel="${nm#"$DEPENDENCY_GENERATION_TREE"/}"
       DEPENDENCY_GENERATION_ALLOW_HARDLINK=0 DEPENDENCY_GENERATION_FORCE_COPY=1 \
-        dependency_generation_materialize_tree "$nm" "$scratch/$rel" || return $?
+        dependency_generation_materialize_tree "$nm" "$native_source/$rel" || return $?
     done < <(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_TREE")
     dependency_generation_release_selector_lease
     dependency_generation_log "rebuilding verifier workspace closure for exact ref $ref"
-    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" build-closure "$scratch" || return $?
-    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" same-source "$scratch" "$source_root" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" build-closure "$native_source" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" same-source "$native_source" "$source_root" || return $?
     # Publishing uses the existing provenance-bound identity, token, atomic
     # rename, selector, retention and lease machinery, including torn-source checks.
     # Bridge publication through native verification/ref pinning with the
     # existing controller-owned selector lease, including competing retention.
-    dependency_generation_main --integration "$scratch" --generation-root "$generation_root" \
+    dependency_generation_main --integration "$native_source" --generation-root "$generation_root" \
       --lease-owner-pid "${BASHPID:-$$}" >/dev/null || return $?
     # Another source with the same lock inputs can replace the ordinary
     # selector after publication. Consume our leased identity and token;
