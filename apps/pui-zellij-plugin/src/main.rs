@@ -60,6 +60,39 @@ use std::collections::BTreeMap;
 /// The `--name` `pui` opens the pipe with. We bind only to this name.
 const PIPE_NAME: &str = "pui";
 
+struct PendingSessionTab {
+    tab_id: Option<usize>,
+    marker: String,
+    display_name: String,
+    previous_tab_ids: Vec<usize>,
+    session: pui_companion_proto::TabSession,
+    remaining: u8,
+}
+
+/// Correlate one layout-created tab even when the host omits its return id.
+/// Edit the parsed property so quoted names, argv and cwd survive unchanged.
+fn mark_session_tab_layout(layout: &str, marker: &str) -> Option<(String, String)> {
+    let mut document: kdl::KdlDocument = layout.parse().ok()?;
+    let children = document.get_mut("layout")?.children_mut().as_mut()?;
+    if children
+        .nodes()
+        .iter()
+        .filter(|n| n.name().value() == "tab")
+        .count()
+        != 1
+    {
+        return None;
+    }
+    let tab = children.get_mut("tab")?;
+    let name = tab
+        .get("name")
+        .and_then(|e| e.value().as_string())
+        .unwrap_or("Session")
+        .to_owned();
+    tab.insert("name", marker);
+    Some((document.to_string(), name))
+}
+
 #[derive(Default)]
 struct PuiCompanion {
     /// CLI pipe id we echo events back on (see the routing fact above). `None`
@@ -85,6 +118,12 @@ struct PuiCompanion {
     /// A zero budget means the pane has appeared in a manifest. Once observed,
     /// its absence invalidates the binding; an unobserved open expires too.
     session_bindings: BTreeMap<u32, (i64, u8)>,
+    /// Exact created-tab identity, command and bounded manifest budget. Some
+    /// hosts create a tab but return no ids; a unique temporary layout name
+    /// then correlates the stable id from TabUpdate, never from command/name
+    /// similarity to an existing tab.
+    unresolved_session_tabs: Vec<PendingSessionTab>,
+    session_tab_serial: u64,
     /// Stable host-returned tab id, exact command and bounded manifest budget.
     pending_session_tabs: Vec<(usize, pui_companion_proto::TabSession, u8)>,
     /// One-shot latch for the EI-9 self-hide retry. zellij launches a
@@ -99,24 +138,68 @@ struct PuiCompanion {
 }
 
 impl PuiCompanion {
-    fn reconcile_session_tabs(&mut self) {
-        let mut bindings = Vec::new();
-        self.pending_session_tabs.retain_mut(|(tab_id, session, remaining)| {
-            let matches: Vec<_> = self.tabs.iter().find(|tab| tab.tab_id == *tab_id)
-                .and_then(|tab| self.panes.panes.get(&tab.position))
-                .into_iter().flatten()
-                .filter(|pane| !pane.is_plugin && !pane.exited && pane.terminal_command.as_deref() == Some(session.command.as_str()))
-                .map(|pane| pane.id).collect();
-            if let [pane_id] = matches.as_slice() {
-                bindings.push((*pane_id, session.adv_session_id));
+    fn reconcile_session_tabs(&mut self) -> Vec<(usize, String)> {
+        let mut renames = Vec::new();
+        self.unresolved_session_tabs.retain_mut(|pending| {
+            let mut candidates = self.tabs.iter().filter(|tab| {
+                !pending.previous_tab_ids.contains(&tab.tab_id)
+                    && pending
+                        .tab_id
+                        .map_or(tab.name == pending.marker, |id| tab.tab_id == id)
+            });
+            if let (Some(tab), None) = (candidates.next(), candidates.next()) {
+                self.pending_session_tabs.push((
+                    tab.tab_id,
+                    pending.session.clone(),
+                    pending.remaining,
+                ));
+                renames.push((tab.tab_id, pending.display_name.clone()));
                 return false;
             }
-            *remaining = remaining.saturating_sub(1);
-            *remaining > 0
+            pending.remaining = pending.remaining.saturating_sub(1);
+            if pending.remaining == 0 {
+                eprintln!(
+                    "[pui-companion] created session tab was not observed: tab_id={:?}, marker={}",
+                    pending.tab_id, pending.marker
+                );
+            }
+            pending.remaining > 0
         });
+        let mut bindings = Vec::new();
+        self.pending_session_tabs
+            .retain_mut(|(tab_id, session, remaining)| {
+                let matches: Vec<_> = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tab_id == *tab_id)
+                    .and_then(|tab| self.panes.panes.get(&tab.position))
+                    .into_iter()
+                    .flatten()
+                    .filter(|pane| {
+                        !pane.is_plugin
+                            && !pane.exited
+                            && pane.terminal_command.as_deref() == Some(session.command.as_str())
+                    })
+                    .map(|pane| pane.id)
+                    .collect();
+                if let [pane_id] = matches.as_slice() {
+                    bindings.push((*pane_id, session.adv_session_id));
+                    return false;
+                }
+                *remaining = remaining.saturating_sub(1);
+                if *remaining == 0 {
+                    eprintln!(
+                        "[pui-companion] session tab binding expired: tab_id={tab_id}, observed_tabs={:?}, command_matches={}",
+                        self.tabs.iter().map(|t| (t.tab_id, t.position)).collect::<Vec<_>>(),
+                        matches.len()
+                    );
+                }
+                *remaining > 0
+            });
         for (pane_id, id) in bindings {
             self.bind_opened_session(pane_id, Some(id));
         }
+        renames
     }
 
     fn bind_opened_session(&mut self, pane_id: u32, adv_session_id: Option<i64>) {
@@ -177,14 +260,27 @@ mod session_tab_tests {
     #[test]
     fn session_tab_waits_for_both_manifests_and_binds_only_host_returned_tab() {
         let mut p = PuiCompanion::default();
-        p.pending_session_tabs.push((77, pui_companion_proto::TabSession {
-            adv_session_id: 41, command: "vendor argument with spaces".into(),
-        }, 64));
-        let command_pane = |id| PaneInfo { id, terminal_command: Some("vendor argument with spaces".into()), ..Default::default() };
+        p.pending_session_tabs.push((
+            77,
+            pui_companion_proto::TabSession {
+                adv_session_id: 41,
+                command: "vendor argument with spaces".into(),
+            },
+            64,
+        ));
+        let command_pane = |id| PaneInfo {
+            id,
+            terminal_command: Some("vendor argument with spaces".into()),
+            ..Default::default()
+        };
         p.panes.panes.insert(0, vec![command_pane(1)]);
         p.reconcile_session_tabs();
         assert!(p.session_bindings.is_empty());
-        p.tabs = vec![TabInfo { position: 3, tab_id: 77, ..Default::default() }];
+        p.tabs = vec![TabInfo {
+            position: 3,
+            tab_id: 77,
+            ..Default::default()
+        }];
         p.reconcile_session_tabs();
         assert!(p.session_bindings.is_empty());
         p.panes.panes.insert(3, vec![command_pane(2)]);
@@ -197,19 +293,155 @@ mod session_tab_tests {
     #[test]
     fn session_tab_rejects_ambiguous_matches_and_expires_missing_panes() {
         let mut p = PuiCompanion::default();
-        p.tabs = vec![TabInfo { position: 0, tab_id: 77, ..Default::default() }];
-        p.pending_session_tabs.push((77, pui_companion_proto::TabSession {
-            adv_session_id: 41, command: "same".into(),
-        }, 2));
-        p.panes.panes.insert(0, vec![
-            PaneInfo { id: 1, terminal_command: Some("same".into()), ..Default::default() },
-            PaneInfo { id: 2, terminal_command: Some("same".into()), ..Default::default() },
-        ]);
+        p.tabs = vec![TabInfo {
+            position: 0,
+            tab_id: 77,
+            ..Default::default()
+        }];
+        p.pending_session_tabs.push((
+            77,
+            pui_companion_proto::TabSession {
+                adv_session_id: 41,
+                command: "same".into(),
+            },
+            2,
+        ));
+        p.panes.panes.insert(
+            0,
+            vec![
+                PaneInfo {
+                    id: 1,
+                    terminal_command: Some("same".into()),
+                    ..Default::default()
+                },
+                PaneInfo {
+                    id: 2,
+                    terminal_command: Some("same".into()),
+                    ..Default::default()
+                },
+            ],
+        );
         p.reconcile_session_tabs();
         assert!(p.session_bindings.is_empty());
         p.panes.panes.clear();
         p.reconcile_session_tabs();
         assert!(p.pending_session_tabs.is_empty());
+    }
+
+    #[test]
+    fn empty_host_response_recovers_only_unique_new_tab_and_waits_for_panes() {
+        let mut p = PuiCompanion::default();
+        p.tabs.push(TabInfo {
+            tab_id: 9,
+            position: 0,
+            name: "launch-marker".into(),
+            ..Default::default()
+        });
+        p.unresolved_session_tabs.push(PendingSessionTab {
+            tab_id: None,
+            marker: "launch-marker".into(),
+            display_name: "User session".into(),
+            previous_tab_ids: vec![9],
+            session: pui_companion_proto::TabSession {
+                adv_session_id: 41,
+                command: "same".into(),
+            },
+            remaining: 64,
+        });
+        let pane = |id| PaneInfo {
+            id,
+            terminal_command: Some("same".into()),
+            ..Default::default()
+        };
+        p.panes.panes.insert(0, vec![pane(1)]);
+        assert!(p.reconcile_session_tabs().is_empty());
+        assert!(p.session_bindings.is_empty());
+        p.tabs.push(TabInfo {
+            tab_id: 77,
+            position: 3,
+            name: "launch-marker".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            p.reconcile_session_tabs(),
+            vec![(77, "User session".into())]
+        );
+        // Restore the user-visible name before the pane manifest arrives.
+        p.tabs[1].name = "User session".into();
+        p.reconcile_session_tabs();
+        assert!(p.session_bindings.is_empty());
+        p.panes.panes.insert(3, vec![pane(2)]);
+        p.reconcile_session_tabs();
+        assert_eq!(
+            p.bound_topology()
+                .panes
+                .iter()
+                .find(|p| p.id == 2)
+                .unwrap()
+                .adv_session_id,
+            Some(41)
+        );
+        assert!(!p.session_bindings.contains_key(&1));
+        assert!(p.unresolved_session_tabs.is_empty());
+        assert!(p.pending_session_tabs.is_empty());
+    }
+
+    #[test]
+    fn missing_or_ambiguous_created_tab_expires_without_binding_or_rename() {
+        for ids in [vec![], vec![7, 8]] {
+            let mut p = PuiCompanion::default();
+            p.tabs = ids
+                .into_iter()
+                .enumerate()
+                .map(|(position, tab_id)| TabInfo {
+                    tab_id,
+                    position,
+                    name: "marker".into(),
+                    ..Default::default()
+                })
+                .collect();
+            p.unresolved_session_tabs.push(PendingSessionTab {
+                tab_id: None,
+                marker: "marker".into(),
+                display_name: "User session".into(),
+                previous_tab_ids: vec![],
+                session: pui_companion_proto::TabSession {
+                    adv_session_id: 41,
+                    command: "same".into(),
+                },
+                remaining: 2,
+            });
+            for _ in 0..2 {
+                assert!(p.reconcile_session_tabs().is_empty());
+                assert!(p.session_bindings.is_empty());
+                assert!(p.pending_session_tabs.is_empty());
+            }
+            assert!(p.unresolved_session_tabs.is_empty());
+        }
+    }
+
+    #[test]
+    fn marked_layout_preserves_argv_cwd_and_quoted_display_name() {
+        let layout = "layout {\n tab name=\"A \\\"quoted\\\" session\" cwd=\"/a path\" {\n pane command=\"vendor\" { args \"with spaces\"; }\n }\n}";
+        let (marked, name) = mark_session_tab_layout(layout, "pui-unique-1").unwrap();
+        assert_eq!(name, "A \"quoted\" session");
+        let doc: kdl::KdlDocument = marked.parse().unwrap();
+        let tab = doc
+            .get("layout")
+            .unwrap()
+            .children()
+            .as_ref()
+            .unwrap()
+            .get("tab")
+            .unwrap();
+        assert_eq!(
+            tab.get("name").unwrap().value().as_string(),
+            Some("pui-unique-1")
+        );
+        assert_eq!(tab.get("cwd").unwrap().value().as_string(), Some("/a path"));
+        assert!(marked.contains("args \"with spaces\""));
+        assert!(mark_session_tab_layout("layout { tab; tab; }", "x").is_none());
+        assert!(mark_session_tab_layout("invalid {", "x").is_none());
     }
 }
 
@@ -364,7 +596,7 @@ impl ZellijPlugin for PuiCompanion {
         match event {
             Event::PaneUpdate(manifest) => {
                 self.panes = manifest;
-                self.reconcile_session_tabs();
+                self.reconcile_and_rename_session_tabs();
                 self.reconcile_session_bindings();
                 // EI-9 race insurance: if our floating pane wasn't part of the
                 // session yet when `load()` fired `hide_self()`, it is now.
@@ -378,7 +610,7 @@ impl ZellijPlugin for PuiCompanion {
             }
             Event::TabUpdate(tabs) => {
                 self.tabs = tabs;
-                self.reconcile_session_tabs();
+                self.reconcile_and_rename_session_tabs();
                 // Drive any in-flight SelectSwapLayout toward its target: each
                 // next_swap_layout fires a fresh TabUpdate, so this re-enters
                 // until the active preset matches (or the budget runs out).
@@ -503,20 +735,50 @@ impl PuiCompanion {
                     }
                 }
             }
-            Command::NewTab { name, layout, session } => {
+            Command::NewTab {
+                name,
+                layout,
+                session,
+            } => {
                 // new_tabs_with_layout needs a stringified KDL layout. An explicit
                 // layout wins; a bare name → synthesize a minimal single-pane tab
                 // so `{name}` alone still opens a usable named tab.
                 match layout {
                     Some(l) => {
-                        let tabs = new_tabs_with_layout(&l);
-                        if let Some(session) = session.filter(|s| s.adv_session_id > 0 && !s.command.is_empty()) {
-                            // A session layout creates exactly one tab. Bind only
-                            // inside that host-returned tab, never a same-label tab.
-                            if let [tab_id] = tabs.as_slice() {
-                                self.pending_session_tabs.push((*tab_id, session, 64));
-                                self.reconcile_session_tabs();
+                        if let Some(session) =
+                            session.filter(|s| s.adv_session_id > 0 && !s.command.is_empty())
+                        {
+                            self.session_tab_serial += 1;
+                            let marker = format!(
+                                "pui-session-{}-{}-{}",
+                                get_plugin_ids().plugin_id,
+                                session.adv_session_id,
+                                self.session_tab_serial
+                            );
+                            if let Some((layout, display_name)) =
+                                mark_session_tab_layout(&l, &marker)
+                            {
+                                let previous_tab_ids = self.tabs.iter().map(|t| t.tab_id).collect();
+                                let tabs = new_tabs_with_layout(&layout);
+                                eprintln!("[pui-companion] session tab creation returned tab_ids={tabs:?}, marker={marker}");
+                                if tabs.len() <= 1 {
+                                    self.unresolved_session_tabs.push(PendingSessionTab {
+                                        tab_id: tabs.first().copied(),
+                                        marker,
+                                        display_name,
+                                        previous_tab_ids,
+                                        session,
+                                        remaining: 64,
+                                    });
+                                    self.reconcile_and_rename_session_tabs();
+                                }
+                            } else {
+                                eprintln!(
+                                    "[pui-companion] session layout must contain exactly one tab"
+                                );
                             }
+                        } else {
+                            new_tabs_with_layout(&l);
                         }
                     }
                     None => {
@@ -625,6 +887,12 @@ impl PuiCompanion {
 
         if ids.len() >= 2 {
             stack_panes(ids.into_iter().map(PaneId::Terminal).collect());
+        }
+    }
+
+    fn reconcile_and_rename_session_tabs(&mut self) {
+        for (id, name) in self.reconcile_session_tabs() {
+            rename_tab_with_id(id as u64, name);
         }
     }
 

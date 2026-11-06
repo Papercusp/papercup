@@ -163,6 +163,13 @@ describe('discovery uses existing revision and audit authorities', () => {
     const first = await recordCurrentDiscoveryAudit(input(), { context });
     const again = await recordCurrentDiscoveryAudit(input(), { context });
     expect(again).toMatchObject({ ok: true, reused: true, audit: { auditSeq: first.ok && 'audit' in first ? first.audit?.auditSeq : -1 } });
+    const preview = await recordCurrentDiscoveryAudit({ ...input(), dryRun: true }, { context });
+    expect(preview).toMatchObject({ ok: true, preview: true, dryRun: true,
+      audit: { auditSeq: first.ok && 'audit' in first ? first.audit?.auditSeq : -1 } });
+    const changedEvidence = async () => ({ ...await context(), evidence: [] });
+    const stalePreview = await recordCurrentDiscoveryAudit({ ...input(), dryRun: true }, { context: changedEvidence });
+    expect(stalePreview).toMatchObject({ ok: true, preview: true, discovery: { readiness: { ready: false } } });
+    expect(stalePreview).not.toHaveProperty('audit');
     await revision(draft.replace('## Now\nDraft', '## Now\nChanged bookkeeping').replace('Wire the existing helper', 'Wire   the existing helper'));
     expect(discoverySubjectSnapshot(draft)).toEqual(discoverySubjectSnapshot(draft.replace('Wire the existing helper', 'Wire   the existing helper')));
     expect(await recordCurrentDiscoveryAudit(input(), { context })).toMatchObject({ ok: true, reused: true });

@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-001 isolated Zellij session-tab binding",
+  "framework": "operational",
+  "command": [
+    "env",
+    "PUI_COMPANION_WASM=/mnt/data/cargo-target/wasm32-wasip1/debug/pui_companion.wasm",
+    "python3",
+    "apps/pui-zellij-plugin/scripts/live-smoke.py"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T09:30:59.595Z",
+  "finishedAt": "2026-11-06T09:31:14.524Z",
+  "summary": "The maintained live smoke passed 14 assertions against an isolated real Zellij 0.44.3 session and the rebuilt WASM plugin. Only the new centered terminal received the canonical launch binding; an existing identical command in another tab stayed unbound. Display-name restoration and close cleanup passed. This is Linux current-build terminal evidence, not three-OS installed-app acceptance or shipment.",
+  "workItem": "WI-6554700010029572",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "runtime": {
+    "platform": "linux",
+    "zellijVersion": "0.44.3",
+    "wasmPath": "/mnt/data/cargo-target/wasm32-wasip1/debug/pui_companion.wasm",
+    "wasmSha256": "50ebfbf060d7cf4214fa9b48173b2c4802e8f2b719f2958dbf7912ed068a99d5",
+    "isolation": "Unique pui-smoke-2281710 session, private XDG directories and permission cache, test-owned PTY; driver tears down its own session and temporary directories."
+  },
+  "sourceSha256AtRecording": {
+    "apps/pui-zellij-plugin/scripts/live-smoke.py": "b8e1accecdc8e2fb7a86dc02a4fb207edb8ca43909e8af060e90a0cf3ff031dc",
+    "apps/pui-zellij-plugin/src/main.rs": "da3501ddf5a3934a67a86451f54babe4be3bd9956aaae334c4a286e28fa2afe0"
+  },
+  "provenance": {
+    "session": "01a1b026-41e5-7593-9cac-85f90204b978",
+    "commandExecution": "exec-4fad6035-2609-4811-90dd-314cc64c0a52",
+    "timestampSource": "Retained completed CommandExecution record with exit_code 0, started_at_ms 1793957459595 and completed_at_ms 1793957474524.",
+    "logPath": "/tmp/wb-p001-session-tab-fixed-live-20261106.log",
+    "logSha256": "0f5f9d77239e29b0d9d11171890ee17b9e945c1ba5e7a2673daf4caf03778cad",
+    "recordingMethod": "Recovered the completed command and unchanged output from the predecessor transcript and filesystem; did not rerun passing checks to reconstruct proof."
+  },
+  "assertions": [
+    { "id": "isolated-session", "passed": true, "evidence": "isolated session pui-smoke-2281710 is up" },
+    { "id": "duplex-handshake", "passed": true, "evidence": "plugin handshake (hello) received over the pipe" },
+    { "id": "live-topology", "passed": true, "evidence": "live topology snapshot received; baseline 1 tab, 6 panes" },
+    { "id": "open-pane", "passed": true, "evidence": "open_command_pane command opened a pane (seen in topology)" },
+    { "id": "focus-pane", "passed": true, "evidence": "focus_pane command moved focus (reflected in topology)" },
+    { "id": "close-pane", "passed": true, "evidence": "close_pane command closed the pane (pane_closed event)" },
+    { "id": "natural-exit", "passed": true, "evidence": "command-pane natural exit detected with real exit code (7)" },
+    { "id": "same-command-control", "passed": true, "evidence": "same-command control exists in original tab" },
+    { "id": "exact-session-identity", "passed": true, "evidence": "new tab preserves exact session identity in live topology" },
+    { "id": "unique-binding", "passed": true, "evidence": "only one terminal acquires the launch binding" },
+    { "id": "other-tab-unbound", "passed": true, "evidence": "same command in another tab remains unbound" },
+    { "id": "center-command-focus", "passed": true, "evidence": "new session tab focuses the actual command" },
+    { "id": "display-name-restored", "passed": true, "evidence": "temporary tab marker is replaced by the session display name" },
+    { "id": "closed-binding-removed", "passed": true, "evidence": "closed session terminal no longer carries a launch binding" }
+  ],
+  "rawOutput": "[smoke] PASS: isolated session pui-smoke-2281710 is up\n[smoke] PASS: plugin handshake (hello) received over the pipe\n[smoke] PASS: live topology snapshot received\n[smoke] baseline: 1 tab(s), 6 pane(s)\n[smoke] PASS: open_command_pane command opened a pane (seen in topology)\n[smoke] PASS: focus_pane command moved focus (reflected in topology)\n[smoke] PASS: close_pane command closed the pane (pane_closed event)\n[smoke] PASS: command-pane natural exit detected with real exit code (7)\n[smoke] PASS: same-command control exists in original tab\n[smoke] PASS: new tab preserves exact session identity in live topology\n[smoke] PASS: only one terminal acquires the launch binding\n[smoke] PASS: same command in another tab remains unbound\n[smoke] PASS: new session tab focuses the actual command\n[smoke] PASS: temporary tab marker is replaced by the session display name\n[smoke] PASS: closed session terminal no longer carries a launch binding\n\n[smoke] RESULT: ALL LIVE CHECKS PASSED\n",
+  "rootCause": "Zellij 0.44.3 creates the tab but returns no new tab IDs; binding only IDs returned by that host call silently omitted the actual command's launch identity.",
+  "recurrenceGuard": "The maintained live-smoke.py drives a real tab creation with a same-command negative control in another tab and checks exact binding, focus, display-name restoration and close lifecycle. Plugin native unit tests separately cover the unique parsed KDL marker fallback.",
+  "scopeLimits": [
+    "Linux current-build plugin and terminal only",
+    "No native Ubuntu/macOS/Windows desktop-panel acceptance",
+    "No installed-artifact fresh-install, upgrade or login proof",
+    "No release or shipment certificate",
+    "The actual vendor agent CLI, clipboard and scrollback acceptance remain separate"
+  ]
+}

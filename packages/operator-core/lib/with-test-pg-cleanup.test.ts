@@ -10,6 +10,67 @@ import { cleanupOwnedTestState, createPrivateTestPgReleaseHandler, createSingleF
   removePrivateState, requestPrivateTestPgRelease } from '../../../scripts/lib/with-test-pg-cleanup.mjs';
 
 describe('private PostgreSQL dependency signal ownership', () => {
+  it.each([false, true])('launcher finishes asynchronous cleanup before SIGTERM exit (isolated=%s)', isolatedRuntime => {
+    const root = resolve(import.meta.dirname, '../../..');
+    const source = readFileSync(join(root, 'scripts/with-test-pg.mjs'), 'utf8');
+    const signals = source.slice(source.indexOf('const ownProcessGroup ='), source.indexOf('\nfunction assertNotTerminating('));
+    const finish = source.slice(source.indexOf('function finishChild(code, signal)'), source.indexOf('\nmain().catch('));
+    const helper = join(root, 'scripts/lib/with-test-pg-cleanup.mjs');
+    const dataDir = mkdtempSync(join(tmpdir(), 'pg-launcher-signal-'));
+    writeFileSync(join(dataDir, 'owned-evidence'), 'cleanup must finish');
+    try {
+      const program = `
+        import exitHook from 'async-exit-hook';
+        import { readFileSync, existsSync } from 'node:fs';
+        import { rm } from 'node:fs/promises';
+        import { unhookRegisteredExitSignals } from ${JSON.stringify(helper)};
+        const AsyncExitHook = exitHook;
+        exitHook(() => {});
+        const isolatedRuntime = ${isolatedRuntime};
+        const dataDir = ${JSON.stringify(dataDir)};
+        const runtimeRoot = dataDir;
+        const pg = {};
+        const profileProcess = null;
+        let cleanupStartedAt = null;
+        let terminatingSignal;
+        let childFinishPromise;
+        const persistIsolatedProgress = () => {};
+        const sendCleanupReceipt = async () => {};
+        const recordCleanupReceiptFailure = (_stage, error) => { throw error; };
+        const cleanup = async () => {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          await rm(dataDir, { recursive: true, force: true });
+          console.log('PRIVATE_CLEANUP_FINISHED');
+        };
+        const child = { pid: process.pid + 1, kill: signal => { void finishChild(null, signal); } };
+        // The real child keeps this supervisor alive until its signal arrives.
+        // Without a live handle, the legacy hook can exit on beforeExit first.
+        setInterval(() => {}, 1000);
+        ${signals}
+        ${finish}
+        process.kill(process.pid, 'SIGTERM');
+      `;
+      if (!isolatedRuntime) {
+        const legacy = program.replace('unhookRegisteredExitSignals(AsyncExitHook);',
+          'if (isolatedRuntime) { unhookRegisteredExitSignals(AsyncExitHook); }');
+        expect(legacy).not.toBe(program);
+        const control = spawnSync(process.execPath, ['--input-type=module', '-e', legacy],
+          { cwd: root, encoding: 'utf8', timeout: 10_000 });
+        expect(control.error, control.stderr).toBeUndefined();
+        expect(control.status, control.stderr).toBe(143);
+        expect(control.stdout).not.toContain('PRIVATE_CLEANUP_FINISHED');
+        expect(existsSync(dataDir)).toBe(true);
+      }
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', program],
+        { cwd: root, encoding: 'utf8', timeout: 10_000 });
+      expect(result.error, result.stderr).toBeUndefined();
+      expect(result.stdout, result.stderr).toContain('PRIVATE_CLEANUP_FINISHED');
+      expect(existsSync(dataDir)).toBe(false);
+      expect(result.signal).toBe('SIGTERM');
+      expect(result.status).toBeNull();
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
   it.each([false, true])('handles actual lazy exit-hook registration (registered=%s)', registered => {
     const helper = resolve(import.meta.dirname, '../../../scripts/lib/with-test-pg-cleanup.mjs');
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', `

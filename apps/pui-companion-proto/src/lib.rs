@@ -28,7 +28,9 @@ mod session_tab_tests {
 
     #[test]
     fn legacy_tab_commands_remain_compatible() {
-        let cmd = Command::from_line(r#"{"cmd":"new_tab","name":"legacy","layout":"layout { pane }"}"#).unwrap();
+        let cmd =
+            Command::from_line(r#"{"cmd":"new_tab","name":"legacy","layout":"layout { pane }"}"#)
+                .unwrap();
         assert!(matches!(cmd, Command::NewTab { session: None, .. }));
         assert!(!cmd.to_line().contains("session"));
     }
@@ -258,7 +260,10 @@ mod tests {
             Command::NewTab {
                 name: Some("papercup".into()),
                 layout: Some("layout { pane }".into()),
-                session: Some(TabSession { adv_session_id: 41, command: "psu --resume 41".into() }),
+                session: Some(TabSession {
+                    adv_session_id: 41,
+                    command: "psu --resume 41".into(),
+                }),
             },
             Command::RenameTab {
                 tab_id: 2,
@@ -391,10 +396,18 @@ mod tests {
             ],
         };
         let cases = vec![
-            PluginEvent::Hello { plugin_version: "0.1.0".into() },
+            PluginEvent::Hello {
+                plugin_version: "0.1.0".into(),
+            },
             PluginEvent::Topology(topo),
-            PluginEvent::PaneExited { pane_id: 1, exit_code: Some(0) },
-            PluginEvent::PaneExited { pane_id: 4, exit_code: None },
+            PluginEvent::PaneExited {
+                pane_id: 1,
+                exit_code: Some(0),
+            },
+            PluginEvent::PaneExited {
+                pane_id: 4,
+                exit_code: None,
+            },
             PluginEvent::PaneClosed { pane_id: 2 },
         ];
         for e in cases {
@@ -408,7 +421,11 @@ mod tests {
     #[test]
     fn plugin_event_tag_is_stable() {
         assert_eq!(
-            PluginEvent::PaneExited { pane_id: 9, exit_code: Some(1) }.to_line(),
+            PluginEvent::PaneExited {
+                pane_id: 9,
+                exit_code: Some(1)
+            }
+            .to_line(),
             r#"{"ev":"pane_exited","pane_id":9,"exit_code":1}"#
         );
         assert_eq!(

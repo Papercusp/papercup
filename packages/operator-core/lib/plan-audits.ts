@@ -2889,7 +2889,10 @@ export async function recordCurrentDiscoveryAudit(input: CurrentDiscoveryInput, 
         AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug} AND audit_kind='discovery'
         AND discovery->>'requestKey'=${discovery.requestKey} ORDER BY audit_seq DESC LIMIT 1`;
     if (prior && !input.dryRun) return { ok: true as const, reused: true, audit: rowToAudit(prior), discovery, auditedPlanRevision };
-    if (input.dryRun) return { ok: true as const, preview: true, dryRun: true, discovery, auditedPlanRevision };
+    if (input.dryRun) return { ok: true as const, preview: true, dryRun: true, discovery, auditedPlanRevision,
+      // A normal read keeps the finalized stage only for this exact current
+      // basis. Returning its existing receipt performs no audit write.
+      ...(prior ? { audit: rowToAudit(prior) } : {}) };
     const audit = await insertPlanAudit({ auditKind: 'discovery', ...input, discovery, auditedPlanRevision,
       summary: discovery.readiness.nextAction }, executor, input.workspaceId);
     return { ok: true as const, reused: false, audit, discovery, auditedPlanRevision };

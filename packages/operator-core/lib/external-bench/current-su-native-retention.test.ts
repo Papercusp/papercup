@@ -9,8 +9,12 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
   const fixture = mkdtempSync(join(tmpdir(), 'current-su-retention-'));
   const evidenceRoot = join(fixture, 'isolated-integration');
   const requests = '[{"model":"private-fixture","managedCarry":true}]\n';
+  const egressPreflight = '{"status":"ready","runId":"original-egress-fixture","cleanupErrors":[]}\n';
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
   vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
+  // The runner also publishes at the canonical reader root. Keep that namespace
+  // private: fixed fixture run IDs must never collide with another case/run.
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', fixture);
   try {
     const original = await runHarness({
       contract: { name: 'isolated-integration', phases: [{ id: 'prepare' }, { id: 'execute' }] },
@@ -19,6 +23,7 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
         if (phase === 'prepare') {
           writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original build\n');
           writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), '{"status":0}\n');
+          writeFileSync(join(evidenceDir, 'native-egress-preflight.json'), egressPreflight);
           writeFileSync(join(evidenceDir, 'bundle-restricted-hold-inputs.json'), '[]\n');
           writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"event":"end"}\n');
         } else if (managedCarry) writeFileSync(join(evidenceDir, 'native-model-requests.json'), requests);
@@ -37,6 +42,8 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
     else expect(existsSync(retainedRequests)).toBe(false);
     expect(readFileSync(join(evidenceRoot, 'retained', original.runId,
       'phases/prepare/operator-api-build.log'), 'utf8')).toBe('original build\n');
+    expect(readFileSync(join(evidenceRoot, 'retained', original.runId,
+      'phases/prepare/native-egress-preflight.json'), 'utf8')).toBe(egressPreflight);
   } finally {
     vi.unstubAllEnvs();
     rmSync(fixture, { recursive: true, force: true });

@@ -293,12 +293,15 @@ fn session_tab_command(spec: &PaneSpec) -> Option<Command> {
     let layout = crate::layout::session_tab_kdl(spec, pui.to_str()?)?;
     let (program, args) = spec.argv.split_first()?;
     let command = std::iter::once(crate::remote_connect::pane_program(program))
-        .chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
+        .chain(args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
     Some(Command::NewTab {
         name: spec.title.clone(),
         layout: Some(layout),
         session: Some(pui_companion_proto::TabSession {
-            adv_session_id: spec.adv_session_id?, command,
+            adv_session_id: spec.adv_session_id?,
+            command,
         }),
     })
 }
@@ -320,7 +323,12 @@ mod tests {
     #[test]
     fn session_tab_command_retains_exact_launch_binding() {
         let spec = PaneSpec::new(["vendor", "--native", "argument with spaces"]).for_session(41);
-        let Command::NewTab { session: Some(session), layout: Some(layout), .. } = session_tab_command(&spec).unwrap() else {
+        let Command::NewTab {
+            session: Some(session),
+            layout: Some(layout),
+            ..
+        } = session_tab_command(&spec).unwrap()
+        else {
             panic!("expected session tab");
         };
         assert_eq!(session.adv_session_id, 41);

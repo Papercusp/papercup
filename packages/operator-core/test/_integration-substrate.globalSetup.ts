@@ -12,6 +12,8 @@ declare module 'vitest' {
 // Self-contained fixtures: no shared baseline. Some own a private native cluster
 // with an explicit teardown; others use no database. Keep integration reporting.
 const NO_SHARED_PG_TESTS = new Set([
+  // Real inspector/native profiler subprocesses and temporary files; no SQL.
+  '../lib/event-loop-cpu-recorder.integration.test.ts',
   // Read-only metadata worker over isolated filesystem fixtures; no SQL.
   '../lib/storage/retention-census-walk.integration.test.ts',
   // Installed Codex processes use an isolated home and local provider/MCP server; no SQL.
