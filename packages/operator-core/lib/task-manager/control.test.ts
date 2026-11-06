@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { linuxProcStateFromStat } from '../process-identity';
 import { onTaskKillRequested } from './kill-notify';
 import type { TaskRow, TaskState } from './types';
 
@@ -687,6 +690,99 @@ describe('killTask — residue diagnostics on an incomplete kill (EI-21065795494
 });
 
 describe('killScopeUnit — explicit orphan-scope teardown', () => {
+  it.runIf(process.platform === 'linux').each([false, true])('keeps a real child service alive for its owner cleanup only with cooperative TERM=%s', async cooperativeRoots => {
+    const source = [
+      "const {spawn}=require('node:child_process');",
+      "const child=spawn(process.execPath,['-e',\"process.stdout.write('READY');setInterval(()=>{},1000)\"],{stdio:['ignore','pipe','inherit']});",
+      "child.stdout.once('data',()=>process.stdout.write(JSON.stringify({child:child.pid})+'\\n'));",
+      "process.on('SIGTERM',()=>setTimeout(()=>{let alive=true;try{process.kill(child.pid,0)}catch{alive=false}process.stdout.write(alive?'CLEANUP_SERVICE_ALIVE\\n':'CLEANUP_SERVICE_DEAD\\n');if(alive){child.once('exit',()=>process.exit(0));child.kill('SIGTERM')}else process.exit(0)},75));",
+    ].join('\n');
+    const owner = spawn(process.execPath, ['-e', source], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    owner.stdout.on('data', chunk => { output += chunk; });
+    const stat = (pid: number): string | null => {
+      try { return readFileSync(`/proc/${pid}/stat`, 'utf8'); } catch { return null; }
+    };
+    try {
+      await vi.waitFor(() => expect(output).toContain('\n'), { timeout: 5_000 });
+      const childPid = (JSON.parse(output.split('\n')[0]!) as { child: number }).child;
+      const out = await killScopeUnit('pc-realcleanup.scope', {
+        cooperativeRoots, escalateAfterMs: 500,
+        fs: {
+          readFile: path => {
+            if (path.endsWith('/cgroup.procs')) return [owner.pid!, childPid].filter(pid => {
+              const value = stat(pid);
+              return value !== null && linuxProcStateFromStat(value) !== 'Z';
+            }).join('\n');
+            try { return readFileSync(path, 'utf8'); } catch { return null; }
+          },
+          readDir: () => [], isDir: () => true,
+        },
+        execFileAsync: (async (_file: string, args: string[]) => {
+          if (args[1] === 'show') return { stdout: '/papercusp.slice/pc-realcleanup.scope', stderr: '' };
+          // The negative control reproduces the old all-descendant signal.
+          process.kill(-owner.pid!, args.includes('--signal=SIGKILL') ? 'SIGKILL' : 'SIGTERM');
+          return { stdout: '', stderr: '' };
+        }) as never,
+      });
+      expect(out).toMatchObject({ ok: true, detail: expect.stringContaining('verified empty') });
+      expect(output).toContain(cooperativeRoots ? 'CLEANUP_SERVICE_ALIVE' : 'CLEANUP_SERVICE_DEAD');
+      await vi.waitFor(() => expect(owner.exitCode).toBe(0));
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) {
+        try { process.kill(-owner.pid!, 'SIGKILL'); } catch { /* owned group already exited */ }
+      }
+    }
+  }, 10_000);
+
+  it.each([false, true])('lets the scope root clean up its live child before whole-scope escalation (stubborn=%s)', async stubborn => {
+    let alive = true;
+    const calls: string[][] = [];
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      expect(alive).toBe(true); // The private service is still available to its owner.
+      expect([pid, signal]).toEqual([101, 'SIGTERM']);
+    });
+    const out = await killScopeUnit('pc-cleanup123.scope', {
+      cooperativeRoots: true, escalateAfterMs: 30,
+      fs: {
+        readFile: path => path.endsWith('/cgroup.procs') ? (alive ? '101\n202\n' : '')
+          : path === '/proc/101/stat' ? '101 (owner with ) in name) S 1 101'
+          : path === '/proc/202/stat' ? '202 (private service) S 101 101' : null,
+        readDir: () => [], isDir: () => true,
+      },
+      readIdentity: pid => `kernel:${pid}:original`, kill,
+      sleep: async ms => { expect(ms).toBe(30); if (!stubborn) alive = false; },
+      execFileAsync: (async (_file: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === 'show') return { stdout: '/papercusp.slice/pc-cleanup123.scope', stderr: '' };
+        expect(args).toEqual(['--user', 'kill', '--signal=SIGKILL', 'pc-cleanup123.scope']);
+        alive = false;
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: true, detail: expect.stringContaining('verified empty') });
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(calls.filter(args => args[1] === 'kill')).toHaveLength(stubborn ? 1 : 0);
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it.each(['missing-parent', 'recycled-root', 'unbounded'] as const)('refuses unsafe cooperative TERM (%s)', async failure => {
+    const kill = vi.fn();
+    let reads = 0;
+    const exec = vi.fn(async (_file: string, _args: string[]) => ({ stdout: '/papercusp.slice/pc-cleanup123.scope', stderr: '' }));
+    const out = await killScopeUnit('pc-cleanup123.scope', {
+      cooperativeRoots: true, ...(failure === 'unbounded' ? {} : { escalateAfterMs: 30 }),
+      fs: { readFile: path => path.endsWith('/cgroup.procs') ? '101\n'
+        : failure === 'missing-parent' ? null : '101 (owner) S 1 101', readDir: () => [], isDir: () => true },
+      readIdentity: () => `kernel:${failure === 'recycled-root' ? ++reads : 1}`,
+      kill, execFileAsync: exec as never,
+    });
+    expect(out.ok).toBe(false);
+    expect(kill).not.toHaveBeenCalled();
+    expect(exec.mock.calls.length).toBeGreaterThan(0);
+    expect(exec.mock.calls.every(([, args]) => args[1] === 'show')).toBe(true);
+  });
+
   it.each([false, true])('distinguishes SIGKILL delivery from failed escalation (failure=%s)', async (failure) => {
     const calls: string[][] = [];
     const out = await killScopeUnit('pc-orphan123.scope', {

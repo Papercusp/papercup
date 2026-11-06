@@ -1110,12 +1110,18 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       // later capped root from preparing its read-only measurement. Preparation
       // never consumes output or supplies selection/continuation authority.
       if (options.yieldAfterPendingCensus && options.inspectTrees && options.inspectInitialCappedTrees) {
+        // Enrollment is speculative: its audit writes and FIFO waits must not
+        // spend the whole pass before the first validating inspection. Reuse
+        // the inspection allowance, reserving at least half the remaining
+        // window for consumers. Unprepared roots still use the normal path.
+        const preparationDeadline = Date.now() + Math.min(options.budgetMs ?? 60_000,
+          Math.max(0, (runDeadline - Date.now()) / 2));
         for (const root of roots) {
           const cls = policy.classes.get(root.classId)!;
           if (retentionRootSizeCap(cls) === undefined) continue;
-          if (Date.now() >= runDeadline) break;
+          if (Date.now() >= preparationDeadline) break;
           yield* yieldToWaiter();
-          if (Date.now() >= runDeadline) break;
+          if (Date.now() >= preparationDeadline) break;
           const began = performance.now();
           let prepared: DetachedRetentionCensus | undefined, error: string | undefined;
           try {
@@ -1125,7 +1131,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             prepared = await options.inspectInitialCappedTrees(root.path, {
               prepareOnly: true, retainAfterMs: Infinity, includeRecent: true, excludedPaths,
               collectBuildDirs: cls.keep.kind === 'max-age' && cls.keep.buildDirMaxAgeHours !== undefined,
-              timeoutMs: Math.max(1, runDeadline - Date.now()), progressTimeoutMs: options.budgetMs ?? 60_000,
+              timeoutMs: Math.max(1, preparationDeadline - Date.now()), progressTimeoutMs: options.budgetMs ?? 60_000,
             }, mutex);
           } catch (err) { error = message(err); }
           const measured = { root: root.path, classId: root.classId, preparationOnly: true,

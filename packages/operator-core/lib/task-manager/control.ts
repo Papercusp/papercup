@@ -23,7 +23,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { linuxProcStateFromStat, readProcessGroupId, readProcessIdentity } from '../process-identity';
+import { linuxPpidFromProcStat, linuxProcStateFromStat, readProcessGroupId, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { reportFreezeDeadlines, type InnerTimeoutHint, type LedgerDeadline } from './freeze-deadline';
 import { notifyTaskKillRequested } from './kill-notify';
@@ -195,6 +195,8 @@ export interface KillTaskOptions extends ControlDeps {
 export interface KillScopeUnitOptions extends ControlDeps {
   signal?: NodeJS.Signals;
   escalateAfterMs?: number;
+  /** Let verified scope roots order resource cleanup before the existing whole-scope KILL. */
+  cooperativeRoots?: boolean;
 }
 
 const MANAGED_SCOPE_UNIT = /^pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]{1,60})?\.(?:scope|service)$/;
@@ -559,7 +561,13 @@ export async function killScopeUnit(
   }
 
   const signal = opts.signal ?? 'SIGTERM';
-  const res = await systemctl(['kill', `--signal=${signal}`, scopeUnit], d);
+  if (opts.cooperativeRoots && (signal !== 'SIGTERM' || (opts.escalateAfterMs ?? 0) <= 0)) {
+    return { ok: false, scopeUnit, action, error: 'unsupported',
+      detail: 'cooperative scope termination requires SIGTERM and bounded whole-scope escalation' };
+  }
+  const res = opts.cooperativeRoots
+    ? signalScopeCleanupRoots(resolved.cgroupPath, d)
+    : await systemctl(['kill', `--signal=${signal}`, scopeUnit], d);
   if (!res.ok) {
     // Collected between the probe above and the signal (WI-10004447).
     const collected = await collectedAfterFailedSignal(scopeUnit, d);
@@ -606,6 +614,38 @@ export async function killScopeUnit(
     action,
     detail: `scope ${scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} — verified empty`,
   };
+}
+
+/** Only roots inside the validated scope receive TERM. In particular, a private
+ * PostgreSQL child must remain alive while its wrapper drops owned databases.
+ * Snapshot kernel identities, then recheck identity and membership immediately
+ * before each signal; the existing scope-wide escalation still owns every survivor. */
+function signalScopeCleanupRoots(
+  cgroupPath: string,
+  d: ReturnType<typeof deps>,
+): { ok: boolean; detail?: string } {
+  const members = collectCgroupPids(cgroupPath, d);
+  const roots: Array<{ pid: number; identity: string }> = [];
+  for (const pid of members) {
+    const stat = d.fs.readFile(`/proc/${pid}/stat`);
+    const parent = stat === null ? null : linuxPpidFromProcStat(stat);
+    if (parent === null) return { ok: false, detail: `scope process ${pid} has no verified parent` };
+    if (!members.has(parent)) {
+      const identity = d.readIdentity(pid);
+      if (!identity) return { ok: false, detail: `scope root ${pid} has no verified kernel identity` };
+      roots.push({ pid, identity });
+    }
+  }
+  if (!roots.length) return { ok: false, detail: 'scope has no verified cleanup root' };
+  for (const root of roots) {
+    if (!collectCgroupPids(cgroupPath, d).has(root.pid)) continue;
+    if (d.readIdentity(root.pid) !== root.identity) {
+      return { ok: false, detail: `scope root ${root.pid} changed kernel identity before TERM` };
+    }
+    try { d.kill(root.pid, 'SIGTERM'); }
+    catch (error) { return { ok: false, detail: `scope root TERM failed: ${(error as Error).message.slice(0, 200)}` }; }
+  }
+  return { ok: true };
 }
 
 /** How many bounded re-probe retries to give a scope to actually empty after the

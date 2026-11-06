@@ -226,6 +226,41 @@ it.each([true, false])('preserves foreground task ownership with parent context 
   });
 });
 
+it.each([false, true])('preserves ordered wrapper cleanup with bounded escalation (confined=%s)', async confined => {
+  const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-ordered-cleanup-'));
+  directories.push(outputDir);
+  const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+  const killScope = vi.fn(async () => ({ ok: true, scopeUnit: 'pc-orderedcleanup.scope', action: 'kill' }));
+  const killGroup = vi.fn();
+  const launched = await launchManagedTestProcess({
+    command: process.execPath, args: [], cwd: process.cwd(), env: {}, timeoutMs: 60_000,
+    cooperativeTermination: true, runGroup: 'ordered-cleanup', workspaceId: 'papercusp-workspace',
+    outputPath: join(outputDir, 'router.log'),
+  }, {
+    managedSpawnFn: async () => ({ child, taskId: 'orderedcleanup',
+      scopeUnit: confined ? 'pc-orderedcleanup.scope' : null, confined,
+      waitForCompletion: async () => ({ status: 'recorded' }) }),
+    killScopeUnitFn: killScope, killProcessGroupFn: killGroup,
+  });
+  vi.useFakeTimers();
+  try {
+    launched.terminate();
+    if (confined) {
+      expect(killScope).toHaveBeenCalledWith('pc-orderedcleanup.scope', expect.objectContaining({
+        signal: 'SIGTERM', cooperativeRoots: true, escalateAfterMs: expect.any(Number),
+      }));
+      expect(child.kill).not.toHaveBeenCalled();
+    } else {
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(killGroup).not.toHaveBeenCalled();
+      await vi.runOnlyPendingTimersAsync();
+      expect(killGroup).toHaveBeenCalledExactlyOnceWith(4242, 'SIGKILL');
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.each(['close', 'error', 'blocked'] as const)('settles a %s child before handoff without confusing cancellation and exit', async event => {
   const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-handoff-'));
   directories.push(outputDir);

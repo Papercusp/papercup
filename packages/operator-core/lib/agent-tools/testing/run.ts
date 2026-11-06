@@ -2474,6 +2474,8 @@ export async function launchManagedTestProcess(
     workspaceId: string;
     outputPath: string;
     stderrPath?: string;
+    /** The wrapper owns ordered child/service cleanup during its reserved grace. */
+    cooperativeTermination?: boolean;
     /** Observe terminal events before managedSpawn awaits its post-fork ledger write. */
     onSpawn?: (child: ChildProcess, taskId: string) => void;
     stage?: (stage: string) => void;
@@ -2560,7 +2562,8 @@ export async function launchManagedTestProcess(
         }
       }
     };
-    signal('SIGTERM');
+    if (opts.cooperativeTermination) launched.child.kill('SIGTERM');
+    else signal('SIGTERM');
     setTimeout(() => signal('SIGKILL'), terminationGraceMs()).unref();
   };
 
@@ -2592,6 +2595,7 @@ export async function launchManagedTestProcess(
       void killOwnedScope(launched.scopeUnit, {
         signal: 'SIGTERM',
         escalateAfterMs: terminationGraceMs(),
+        ...(opts.cooperativeTermination ? { cooperativeRoots: true } : {}),
       }).then(
         (outcome) => {
           if (!outcome.ok && outcome.error !== 'already_gone') {
@@ -3019,6 +3023,7 @@ export function runTestProcess(
               workspaceId: env.PAPERCUSP_WORKSPACE_ID ?? activeWorkspaceId(),
               outputPath: routerOutputPath,
               stderrPath: routerStderrPath,
+              cooperativeTermination: commandArgs[0] === join(checkoutRoot, 'scripts', 'with-test-pg.mjs'),
               stage: stage => recordProcessPhase(stage),
               onSpawn: (child, taskId) => {
                 observedTaskId = taskId;

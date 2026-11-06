@@ -710,6 +710,52 @@ describe('retention on a real fixture tree', () => {
     } finally { now.mockRestore(); }
   });
 
+  it.each(['remove', 'pinned', 'unavailable'] as const)('bounds speculative census preparation before validating %s effects', async mode => {
+    const { root, options } = await setup();
+    const later = ['later-one', 'later-two', 'later-three'].map(name => join(fixture!, name));
+    for (const path of later) await mkdir(path);
+    const expired = join(root, 'expired'); await mkdir(expired); await writeFile(join(expired, 'data'), 'old');
+    const roots = [root, ...later];
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const prepared: string[] = [], validated: string[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 100_000, budgetMs: 40_000,
+        roots: roots.map(path => ({ path, classId: 'fixture' })),
+        policy: options.policy.map(cls => ({ ...cls, roots, maxBytes: 1024 * 1024 })),
+        yieldAfterPendingCensus: true, inspectTrees: inspectRetentionTrees,
+        readProtection: async () => ({ paths: mode === 'pinned' ? [expired] : [] }),
+        inspectInitialCappedTrees: async (path, input) => {
+          if (input.prepareOnly) {
+            prepared.push(path);
+            return { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+              error: 'retention census previous measurement consumed' };
+          }
+          validated.push(path);
+          return mode === 'unavailable'
+            ? { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0, error: 'allocation census unavailable' }
+            : inspectRetentionTrees(path, input);
+        },
+        record: async (phase, details) => {
+          // Durable audit/queue latency for many consumed slots used to exhaust
+          // the pass before any root could obtain selection authority.
+          if (phase === 'progress' && (details as { phase?: string }).phase === 'census-prepare') clock += 40_000;
+        },
+      });
+      expect(prepared).toEqual([root]);
+      expect(validated).toEqual(roots);
+      expect(receipt.complete, receipt.errors.join('; ')).toBe(mode !== 'unavailable');
+      if (mode === 'remove') {
+        expect(receipt.entries).toContainEqual(expect.objectContaining({ path: expired, status: 'removed' }));
+        await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+      } else {
+        expect(receipt.entries.filter(entry => entry.status === 'removed')).toEqual([]);
+        expect(await readFile(join(expired, 'data'), 'utf8')).toBe('old');
+        if (mode === 'unavailable') expect(receipt.errors).toContain(`inspect:${root}: allocation census unavailable`);
+      }
+    } finally { now.mockRestore(); }
+  });
+
   it('still requires the complete census for an empty capped root', async () => {
     const { root, options } = await setup();
     const inspectTrees = vi.fn(async () => ({ entries: [], retained: [], inspectedNodes: 0,
