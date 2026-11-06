@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 Windows exact session actions and nonoverlapping pinned panels",
+  "command": "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase all -Interactive",
+  "startedAt": "2026-11-06T20:04:52.234Z",
+  "finishedAt": "2026-11-06T20:05:08.293895Z",
+  "exitCode": 0,
+  "summary": "42 assertions passed in the signed-in Windows desktop. Canonical source SHA256 matched native Get-FileHash before and after. Current-build fixture proof; installed artifact, live canonical-operator journey, foreground/resume integration and shipment acceptance remain pending.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "sourcePrefix": "papercusp-desktop/",
+  "sourceSha256": {
+    "native/windows/PuiReadBridge.cs": "334ef3d73c12d31149a7f616f95ca2bb7f1a32fe7e2332499fea3a8e99ccc2b2",
+    "native/windows/WorkbenchModel.cs": "cfdd8b98e1260c0b8b4dab4d242d914708c64398d2c1b557bb812fbb233aa4de",
+    "native/windows/WorkbenchHost.cs": "3d853746f5a90d7d93609628896869941e366987b186653e31ba6f92f62750b0",
+    "native/windows/workbench.ps1": "cdd917d7571fa90d4f6ec7592ead86ff01e26594614d4c8e88d7115a001947da",
+    "test/fixtures/native-workbench-windows-host.ps1": "e284a59ee37f97cc550fe762f48d3963a8855b2d372440b5f7013bf6738156f4"
+  },
+  "custody": "Native Get-FileHash before and after the run matched each other and canonical source bytes.",
+  "runs": [
+    {
+      "taskId": "0mw5elh0g1rsjh271d4",
+      "log": ".papercusp/scratch/bash-30d93ba0-05d.log",
+      "exitCode": 0,
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "all",
+        "cases": [
+          "plan identity includes canonical harness and slug",
+          "canonical version retained",
+          "all search terms match canonical text",
+          "unmatched query returns no results",
+          "ended roster preserves launch owner and host identity",
+          "stale refresh cannot replace a newer request",
+          "missing canonical identity fails closed",
+          "unavailable empty and partial are distinct",
+          "result paging retains undisplayed canonical rows",
+          "show more exposes the remaining results",
+          "pinned outside focus retains draft and selection",
+          "Escape closes detail before panel",
+          "detail routes exact harness and literal identity",
+          "focus revalidates exact owner session host and recorded window",
+          "same owner with a different session cannot steal focus",
+          "operator locality cannot authorize a remote desktop focus",
+          "recycled session identity with another owner is refused",
+          "ambiguous canonical session rows are refused",
+          "live session cannot be resumed",
+          "ended remote resume uses canonical PUI command and exact saved identity",
+          "changed recorded host cannot authorize resume",
+          "another live session for the owner blocks ended resume",
+          "partial roster cannot authorize a terminal action",
+          "agent label without exact session or window cannot authorize focus",
+          "recorded hexadecimal HWND selects the exact terminal",
+          "recycled HWND with conflicting session marker is refused",
+          "missing recorded HWND cannot fall back to another matching title",
+          "duplicate session window markers cannot choose an arbitrary terminal",
+          "pinned geometry fits a narrow work area with negative monitor coordinates",
+          "Windows native argv roundtrip preserves empty Unicode shell-looking quotes and trailing slashes",
+          "native shortcut collision preserves live owner",
+          "duplicate shortcut edit preserves both prior bindings",
+          "reserved F12 is rejected before replacing live shortcuts",
+          "failed multi-shortcut edit releases newly acquired keys and retains prior owner",
+          "real HWND is chrome-free tool window without taskbar identity",
+          "failed PUI reads remain visible as unavailable",
+          "shortcut toggle retains resident window and query",
+          "independent pin permits both surfaces",
+          "real pinned WPF panels remain separate inside the desktop work area",
+          "dismissing a pinned companion returns its slot to the remaining panel",
+          "atomic shortcut swap reuses native registrations",
+          "disable releases shortcuts for another native owner"
+        ],
+        "count": 42,
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-model-and-WPF-HWND-fixture"
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": "plan identity includes canonical harness and slug",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "canonical version retained",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "all search terms match canonical text",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "unmatched query returns no results",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "ended roster preserves launch owner and host identity",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "stale refresh cannot replace a newer request",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "missing canonical identity fails closed",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "unavailable empty and partial are distinct",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "result paging retains undisplayed canonical rows",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "show more exposes the remaining results",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "pinned outside focus retains draft and selection",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "Escape closes detail before panel",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "detail routes exact harness and literal identity",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "focus revalidates exact owner session host and recorded window",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "same owner with a different session cannot steal focus",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "operator locality cannot authorize a remote desktop focus",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "recycled session identity with another owner is refused",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "ambiguous canonical session rows are refused",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "live session cannot be resumed",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "ended remote resume uses canonical PUI command and exact saved identity",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "changed recorded host cannot authorize resume",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "another live session for the owner blocks ended resume",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "partial roster cannot authorize a terminal action",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "agent label without exact session or window cannot authorize focus",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "recorded hexadecimal HWND selects the exact terminal",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "recycled HWND with conflicting session marker is refused",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "missing recorded HWND cannot fall back to another matching title",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "duplicate session window markers cannot choose an arbitrary terminal",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "pinned geometry fits a narrow work area with negative monitor coordinates",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "Windows native argv roundtrip preserves empty Unicode shell-looking quotes and trailing slashes",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "native shortcut collision preserves live owner",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "duplicate shortcut edit preserves both prior bindings",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "reserved F12 is rejected before replacing live shortcuts",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "failed multi-shortcut edit releases newly acquired keys and retains prior owner",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "real HWND is chrome-free tool window without taskbar identity",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "failed PUI reads remain visible as unavailable",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "shortcut toggle retains resident window and query",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "independent pin permits both surfaces",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "real pinned WPF panels remain separate inside the desktop work area",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "dismissing a pinned companion returns its slot to the remaining panel",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "atomic shortcut swap reuses native registrations",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    },
+    {
+      "id": "disable releases shortcuts for another native owner",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5elh0g1rsjh271d4 terminal exit0."
+    }
+  ]
+}
