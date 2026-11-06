@@ -5,7 +5,7 @@ import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { isWorkOnEverything } from '../app/adv/hud/ongoing-work-draft.mts';
-import { basename, dirname } from 'node:path';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 
@@ -198,7 +198,7 @@ async function recordJourney(info: TestInfo, run: () => Promise<void>) {
   const sourceReceipt = JSON.parse(await readFile(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
   const completedRuntime = await recordNativeCollectionJourney({ sourceReceipt,
     sourceRoot: process.env.OPERATOR_SOURCE_ROOT!,
-    verifierRunId: basename(dirname(dirname(process.env.VH_PHASE_DIR!))),
+    verifierPhaseDirectory: process.env.VH_PHASE_DIR!,
     testPath: 'apps/operator/e2e/ongoing-work-native-collection.spec.mts', run });
   await attachNativeEvidence(info, 'native-completed-runtime', { body: JSON.stringify({ completedRuntime,
     runtimeUnits: [`verify-tauri-headless:${process.env.VERIFY_TAURI_PID}`] }), contentType: 'application/json' });

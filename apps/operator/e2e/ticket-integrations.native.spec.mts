@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { recordNativeCollectionJourney } from './_ongoing-work-native-fixture';
 
@@ -29,7 +29,7 @@ test('native ticket integrations list providers and persist isolated source conf
   }
   const completedRuntime = await recordNativeCollectionJourney({
     sourceRoot: root!, sourceReceipt,
-    verifierRunId: basename(dirname(dirname(phase!))),
+    verifierPhaseDirectory: phase!,
     testPath: 'apps/operator/e2e/ticket-integrations.native.spec.mts',
     run: async () => {
       let stdout: string, stderr: string;

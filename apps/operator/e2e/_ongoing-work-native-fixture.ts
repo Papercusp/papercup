@@ -2,23 +2,28 @@ import type { Sql } from 'postgres';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 /** Record an original journey inside the test's measured lifetime, never at import time. */
 export async function recordNativeCollectionJourney(input: {
   sourceRoot: string;
   sourceReceipt: { schemaVersion: string; sourceCommit: string; testedInputs: Array<{ path: string; sha256: string }> };
-  verifierRunId: string;
+  verifierPhaseDirectory: string;
   testPath: string;
   evidenceRoot?: string;
   run: () => Promise<void>;
 }) {
   const { defaultEvidenceRoot, runHarness } = await import('@papercusp/verification-harness');
   const receipt = input.sourceReceipt;
+  // The maintained shell harness writes <run>/phases/<phase>. Keep that
+  // derivation here so callers cannot accidentally bind the literal "phases".
+  const phaseDirectory = resolve(input.verifierPhaseDirectory);
+  const verifierRunId = basename(dirname(dirname(phaseDirectory)));
   if (receipt.schemaVersion !== 'verifier-source-v1' || !/^[a-f0-9]{40,64}$/.test(receipt.sourceCommit)
-    || !/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/.test(input.verifierRunId)
+    || basename(dirname(phaseDirectory)) !== 'phases'
+    || !/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/.test(verifierRunId)
     || !Array.isArray(receipt.testedInputs) || !receipt.testedInputs.some(file => file.path === input.testPath))
-    throw new Error('Native journey requires the original verifier source and test custody');
+    throw new Error(`Native journey requires the original verifier source and test custody (phase=${phaseDirectory}, run=${verifierRunId})`);
   const sourceRoot = resolve(input.sourceRoot);
   const measure = async () => Promise.all(receipt.testedInputs.map(async file => {
     const path = resolve(sourceRoot, file.path);
@@ -41,13 +46,13 @@ export async function recordNativeCollectionJourney(input: {
         if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('Native journey source drift');
         await writeFile(join(evidenceDir, 'manifest.json'), JSON.stringify({ result: 'pass',
           sourceCommit: receipt.sourceCommit, sourceFingerprints: after, testPath: input.testPath,
-          verifierRunId: input.verifierRunId }));
+          verifierRunId }));
         return { ok: true };
       } catch (error) { failure = error; throw error; }
     },
   });
   if (result.verdict !== 'pass') throw failure ?? new Error('Native journey did not pass');
-  return { kind: 'verification-harness' as const, verifierRunId: input.verifierRunId,
+  return { kind: 'verification-harness' as const, verifierRunId,
     journeyHarness: 'native-journey', journeyRunId: result.runId };
 }
 
