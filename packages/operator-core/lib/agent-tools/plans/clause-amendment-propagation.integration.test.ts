@@ -127,7 +127,16 @@ describe('clause amendment propagation', () => {
     expect(await setSpecClause(spec(1))).toMatchObject({status:'revised',revision:2});
     const rows = await h.sql`SELECT body FROM harness_shared.coord_event_log`;
     expect(rows).toHaveLength(1);
-    expect(rows[0].body).toMatchObject({to:['builder'],from:'author',plan_slug:'plan',expects:'none'});
+    expect(rows[0].body).toMatchObject({
+      to:['builder'],from:'author',plan_slug:'plan',expects:'none',auto:true,
+      fieldProvenance:{expects:'system-emitter-derived'},
+    });
+    // The origin predicate used by fleet communication measurements must not
+    // attribute this automatic notice to the agent whose amendment caused it.
+    const [authored] = await h.sql`SELECT count(*)::int AS n FROM harness_shared.coord_event_log
+      WHERE body->>'kind'='message' AND COALESCE(body->>'auto','') <> 'true'
+        AND NOT COALESCE(body->'fieldProvenance' ? 'expects', false)`;
+    expect(authored.n).toBe(0);
     expect(rows[0].body.body).toContain('revision 1 → 2');
     expect(rows[0].body.body).toContain('WI-edge'); expect(rows[0].body.body).toContain('WI-stamp');
     const untouched = await h.sql`SELECT payload FROM harness_shared.work_items WHERE feature_id IN ('WI-other','WI-done','WI-tenant')`;
