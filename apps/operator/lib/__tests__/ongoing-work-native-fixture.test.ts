@@ -7,7 +7,7 @@ import { recordNativeCollectionJourney } from '../../e2e/_ongoing-work-native-fi
 import { pruneRuns } from '@papercusp/verification-harness';
 
 describe('native collection journey custody', () => {
-  it.each(['pass', 'assertion-failure', 'source-drift', 'missing-test'])(
+  it.each(['pass', 'assertion-failure', 'source-drift', 'missing-test', 'invalid-run-id', 'wrong-phase-layout'])(
     'retains an authentic %s verdict without inventing a pass', async outcome => {
       const root = await mkdtemp(join(tmpdir(), 'native-journey-custody-'));
       try {
@@ -15,18 +15,26 @@ describe('native collection journey custody', () => {
         const file = join(root, 'test/native.spec.mts');
         await writeFile(file, 'original source');
         const startedAt = Date.now();
+        const verifierRunId = '20261009T000000Z-100';
+        const verifierPhaseDirectory = outcome === 'wrong-phase-layout'
+          ? join(root, 'verifier', verifierRunId, 'assert')
+          : join(root, 'verifier', outcome === 'invalid-run-id' ? 'not-a-run' : verifierRunId, 'phases', 'assert');
+        let ran = false;
         const run = async () => {
+          ran = true;
           if (outcome === 'assertion-failure') throw new Error('native assertion failed');
           if (outcome === 'source-drift') await writeFile(file, 'changed source');
         };
         const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
           testedInputs: [{ path: 'test/native.spec.mts', sha256: createHash('sha256').update('original source').digest('hex') }] };
         const execute = recordNativeCollectionJourney({ sourceRoot: root, sourceReceipt: receipt,
-          verifierRunId: '20261009T000000Z-100', evidenceRoot: join(root, 'evidence'),
+          verifierPhaseDirectory, evidenceRoot: join(root, 'evidence'),
           testPath: outcome === 'missing-test' ? 'test/other.spec.mts' : 'test/native.spec.mts', run });
         if (outcome !== 'pass') {
           await expect(execute).rejects.toThrow();
-          if (outcome !== 'missing-test') {
+          if (['missing-test', 'invalid-run-id', 'wrong-phase-layout'].includes(outcome)) {
+            expect(ran).toBe(false);
+          } else {
             const [runId] = (await readdir(join(root, 'evidence'))).filter(name => /^\d{8}T/.test(name));
             const result = JSON.parse(await readFile(join(root, 'evidence', runId, 'result.json'), 'utf8'));
             expect(result.verdict).toBe('fail');
@@ -36,6 +44,7 @@ describe('native collection journey custody', () => {
           return;
         }
         const selector = await execute;
+        expect(selector.verifierRunId).toBe(verifierRunId);
         const result = JSON.parse(await readFile(join(root, 'evidence', selector.journeyRunId, 'result.json'), 'utf8'));
         const manifest = JSON.parse(await readFile(join(root, 'evidence', selector.journeyRunId, 'phases/native/manifest.json'), 'utf8'));
         expect(result).toMatchObject({ harness: 'native-journey', verdict: 'pass', reuseFromRunId: null });
@@ -45,7 +54,7 @@ describe('native collection journey custody', () => {
           sourceFingerprints: receipt.testedInputs, verifierRunId: selector.verifierRunId });
         const original = await readFile(join(root, 'evidence', selector.journeyRunId, 'phases/native/manifest.json'));
         await recordNativeCollectionJourney({ sourceRoot: root, sourceReceipt: receipt,
-          verifierRunId: selector.verifierRunId, evidenceRoot: join(root, 'evidence'),
+          verifierPhaseDirectory, evidenceRoot: join(root, 'evidence'),
           testPath: 'test/native.spec.mts', run });
         await pruneRuns(join(root, 'evidence'), 1);
         await expect(readFile(join(root, 'evidence', selector.journeyRunId, 'result.json')))

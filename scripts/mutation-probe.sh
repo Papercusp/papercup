@@ -2379,6 +2379,10 @@ run_guard() {
       # supervised child so it reaches every test process without leaking into
       # the caller's environment.
       export PAPERCUSP_MUTATION_PROBE=1
+      # A missing canonical receipt is ambiguous without the reporter's own
+      # source-snapshot and write-rows spans. Keep this diagnostic enabled for
+      # every probe leg so a later close timeout can be classified from its log.
+      export PAPERCUSP_TEST_REPORTER_STAGE_TRACE=1
       export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
       # P-001: one descriptor per invocation, identical on every leg; a caller's
       # stale value must never ride along when this invocation withheld its own.
