@@ -862,6 +862,84 @@ exec "$TEST_REAL_GIT" "$@"
   }, NATIVE_SHELL_TIMEOUT_MS);
 });
 
+describe('Bun input-only proposal guards', () => {
+  const guards = join(__dirname, 'fixtures/bun-dependency-input-only-guards.sh');
+
+  function inputOnly(mode = 'ok', missingSubmodule = false, override = '') {
+    const integration = makeIntegration();
+    commitAllFixture(integration, 'seed input-only guard fixture');
+    if (missingSubmodule) {
+      writeFileSync(join(integration, '.gitmodules'), '[submodule "vendor"]\npath = libs/vendor\nurl = https://invalid.example/vendor\n');
+      mkdirSync(join(integration, 'libs/vendor'), { recursive: true });
+      execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${'1'.repeat(40)},libs/vendor`], { cwd: integration });
+    }
+    const ref = missingSubmodule
+      ? commitAllFixture(integration, 'record unavailable input-only submodule')
+      : execFileSync('git', ['rev-parse', 'HEAD'], { cwd: integration, encoding: 'utf8' }).trim();
+    const bin = join(dirname(integration), 'input-only-git-bin');
+    const trace = join(dirname(integration), 'input-only-git-trace');
+    const errors = join(dirname(integration), 'input-only-errors');
+    mkdirSync(bin);
+    const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
+    writeFileSync(join(bin, 'git'), `#!/bin/bash
+printf '%s\\n' "$*" >> "$INPUT_ONLY_TRACE"
+if { [ "$INPUT_ONLY_MODE" = list-fail ] && [ "$3" = ls-tree ] && [ "$4" = -r ]; } ||
+   { [ "$INPUT_ONLY_MODE" = blob-fail ] && [ "$3" = cat-file ] && [ "$4" = blob ]; } ||
+   { [ "$INPUT_ONLY_MODE" = ref-fail ] && [ "$3" = rev-parse ] && [ "$4" = --verify ]; }; then
+  "$INPUT_ONLY_REAL_GIT" "$@"
+  exit 42
+fi
+if [ "$INPUT_ONLY_MODE" = modules-fail ] && [ "$3" = config ]; then exit 42; fi
+exec "$INPUT_ONLY_REAL_GIT" "$@"
+`, { mode: 0o755 });
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail', 'source "$SCRIPT"', 'source "$GUARDS"', override,
+      'dependency_generation_input_only "$INTEGRATION" "$REF" "$ERRORS"',
+      'printf "INPUT_ONLY_READY\\n"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SCRIPT, GUARDS: guards,
+        INTEGRATION: integration, REF: ref, ERRORS: errors, INPUT_ONLY_MODE: mode,
+        INPUT_ONLY_TRACE: trace, INPUT_ONLY_REAL_GIT: realGit },
+    });
+    return { result, integration, ref, trace, errors };
+  }
+
+  it('matches the maintained fingerprint without a generation record or store', () => {
+    const { result, integration, ref } = inputOnly();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('INPUT_ONLY_READY');
+    expect(publishedInputFingerprint(result.stdout)).toBe(publishedInputFingerprint(fingerprintRef(integration, ref).stdout));
+    expect(existsSync(join(integration, '.papercusp/dependency-generation-root'))).toBe(false);
+    expect(existsSync(join(integration, '.papercusp/dependency-generations'))).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['list-fail', 'blob-fail', 'ref-fail', 'modules-fail'])('withholds readiness after %s even when Git emitted correct bytes', mode => {
+    const { result } = inputOnly(mode);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).not.toContain('INPUT_ONLY_READY');
+    expect(result.stdout).not.toContain('DEPENDENCY_INPUT_FINGERPRINT');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('refuses a missing submodule without fetching or initializing it', () => {
+    const { result, integration, trace, errors } = inputOnly('ok', true);
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stdout).not.toContain('INPUT_ONLY_READY');
+    expect(readFileSync(errors, 'utf8')).toContain('hydration forbidden');
+    expect(readFileSync(trace, 'utf8')).not.toMatch(/\b(fetch|submodule)\b/);
+    expect(existsSync(join(integration, 'libs/vendor/.git'))).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('blocks a mutating Git command before it reaches Git', () => {
+    const { result, trace, errors } = inputOnly('ok', false,
+      'dependency_generation_input_manifest_ref() { git -C "$INTEGRATION" fetch origin; }');
+    expect(result.status, result.stderr).toBe(74);
+    expect(readFileSync(errors, 'utf8')).toContain('forbidden git command: fetch');
+    expect(readFileSync(trace, 'utf8')).not.toContain('fetch');
+    expect(result.stdout).not.toContain('INPUT_ONLY_READY');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
 describe('WI-6554700010017090: an unhydrated integration submodule is hydrated once, then fails closed', () => {
   // Local-path submodule URLs need file protocol explicitly allowed (git >= 2.38.1).
   const FILE_PROTOCOL_ENV = {
