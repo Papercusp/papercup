@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
-import { startReportViewer, sanitizeReportMarkup } from './report-sharing-browser';
+import { REPORT_READER_SOURCE } from './report-sharing-browser-source';
 
 export const REPORT_VIEWER_REPO = 'papercusp-reports';
 export const REPORT_VIEWER_MARKER = 'papercusp-report-viewer-v1';
@@ -20,11 +20,10 @@ import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 mermaid.initialize({startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:30000,maxEdges:300,
   flowchart:{htmlLabels:false},secure:['secure','securityLevel','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering','flowchart']});
-const start = ${startReportViewer.toString()};
-const sanitize = ${sanitizeReportMarkup.toString()};
-void start(document, {
+${REPORT_READER_SOURCE}
+void PapercuspReportReader.startReportViewer(document, {
  markdown: source => marked.parse(source,{async:false}),
- sanitize: (html,svg) => sanitize(DOMPurify,html,svg),
+ sanitize: (html,svg) => PapercuspReportReader.sanitizeReportMarkup(DOMPurify,html,svg),
  diagram: async (text,id) => (await mermaid.render(id,text)).svg
 });`;
   const require = createRequire(import.meta.url);

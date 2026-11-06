@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { changeReportSharing, type ReportShare, type ReportShareStore, type SharingGithub } from './report-sharing';
 import type { ReportRecord } from './report-library';
 import { buildReportViewer } from './report-sharing-viewer';
+import { REPORT_READER_SOURCE } from './report-sharing-browser-source';
 
 const report: ReportRecord = { workspaceId:'w',reportId:'old-edition',title:'Older edition',summary:'',bodyMd:'# Selected\n\nOld snapshot',
   bodySha256:'',goalOwnerReport:null,kind:'other',subject:{kind:'none',ref:null,label:null},
@@ -132,6 +134,13 @@ describe('selected-edition Gist sharing',()=>{
 });
 
 describe('reusable Pages bundle',()=>{
+  it('embeds the current typed reader without compiler-injected runtime helpers', async () => {
+    const { code } = await transform(readFileSync(new URL('./report-sharing-browser.ts', import.meta.url), 'utf8'), {
+      loader: 'ts', format: 'iife', globalName: 'PapercuspReportReader',
+      target: 'es2022', minify: true, legalComments: 'none',
+    });
+    expect(REPORT_READER_SOURCE, 'Run node scripts/generate-report-viewer-source.mjs').toBe(code);
+  });
   it('keeps the same verified viewer assets after host bundle compaction', async () => {
     const entry = new URL('./report-sharing-viewer.ts', import.meta.url);
     const result = await build({ entryPoints: [fileURLToPath(entry)], bundle: true, write: false,

@@ -2,7 +2,13 @@
  * recovery delivery for Claude, Codex, and OMP. A complete current-generation
  * marker requires zero recovery-orient calls; a failed/incomplete injection
  * requires exactly one fallback. */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+const carryPolicy = vi.hoisted(() => vi.fn());
+vi.mock('./capability-envelope/session-confinement-port', async importOriginal => ({
+  ...await importOriginal<typeof import('./capability-envelope/session-confinement-port')>(),
+  sessionCarryPolicy: carryPolicy,
+}));
+beforeEach(() => carryPolicy.mockReset().mockResolvedValue(undefined));
 import type { CarryBrief } from './carry-brief';
 import { buildCarryDoc, type BuildCarryDocOpts, type CarryDoc } from './carry-doc';
 import { buildOwnerRespawnLaunchSpec } from './carry-respawn';
