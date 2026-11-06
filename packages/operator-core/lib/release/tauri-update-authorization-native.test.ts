@@ -225,8 +225,73 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
             println!("native-vector: {}",v.name);
         }
     }
+    #[cfg(unix)] #[test] fn current_trust_lease_covers_admission_and_reloads_revocation() {
+        use super::update_authorization::{activate_test_update,with_test_update_trust};
+        use std::fs::{self,File,Permissions};
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let vectors:Vec<Vector>=serde_json::from_str(include_str!(${JSON.stringify(fixtures)})).unwrap();
+        let v=&vectors[0]; let i=&v.candidate;
+        let candidate=|| Candidate { artifact:i.artifact.as_bytes(),policy:i.policy.as_bytes(),
+            configuration:i.configuration.as_bytes(),source_revision:&i.source_revision,
+            version:&i.version,product:&i.product,platform:&i.platform,author_ids:&i.author_ids };
+        let path=std::path::Path::new(${JSON.stringify(root)}).join("runtime-trust-lease");
+        fs::create_dir(&path).unwrap(); fs::set_permissions(&path,Permissions::from_mode(0o700)).unwrap();
+        let directory=File::open(&path).unwrap(); let policy_path=path.join("managed-policy.json");
+        let mut policy=serde_json::json!({"version":1,"update_channel":"stable","updateAuthorization":v.trust});
+        let write=|p:&serde_json::Value| {
+            fs::write(&policy_path,serde_json::to_vec(p).unwrap()).unwrap();
+            fs::set_permissions(&policy_path,Permissions::from_mode(0o600)).unwrap();
+        };
+        write(&policy);
+        let original=fs::read(&policy_path).unwrap();
+        let effects=AtomicUsize::new(0);
+        let (locked_tx,locked_rx)=std::sync::mpsc::channel();
+        let (resume_tx,resume_rx)=std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let directory=&directory; let effects=&effects; let candidate=&candidate;
+            let first=scope.spawn(move || with_test_update_trust(directory,|trust| {
+                verify(trust,&v.envelope,&candidate(),v.now)?;
+                locked_tx.send(()).unwrap();
+                resume_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                effects.fetch_add(1,Ordering::SeqCst);
+                Ok("READY")
+            }));
+            locked_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let blocked=activate_test_update(directory,&v.envelope,&candidate(),v.now,
+                || -> Result<(),String> { panic!("activation ran during runtime admission") });
+            assert!(blocked.unwrap_err().contains("busy"));
+            // A separate descriptor may hold another shared lease concurrently.
+            with_test_update_trust(directory,|trust| verify(trust,&v.envelope,&candidate(),v.now).map(|_| ())).unwrap();
+            resume_tx.send(()).unwrap(); assert_eq!(first.join().unwrap().unwrap(),"READY");
+        });
+        assert_eq!(effects.load(Ordering::SeqCst),1);
+        assert_eq!(fs::read(&policy_path).unwrap(),original,"admission never advances install floors");
+        let failed=with_test_update_trust(&directory,|_| Err::<(),String>("admission failed".into()));
+        assert_eq!(failed.unwrap_err(),"admission failed");
+        // Error and panic both release the lease even while directory stays open.
+        assert!(std::panic::catch_unwind(|| with_test_update_trust(&directory,
+            |_| -> Result<(),String> { panic!("admission unwound") })).is_err());
+        activate_test_update(&directory,&v.envelope,&candidate(),v.now,|| Ok(())).unwrap();
+        policy["updateAuthorization"]["approvers"][0]["revoked"]=true.into(); write(&policy);
+        let refused=with_test_update_trust(&directory,|trust| {
+            verify(trust,&v.envelope,&candidate(),v.now)?;
+            effects.fetch_add(1,Ordering::SeqCst); Ok(())
+        });
+        assert!(refused.unwrap_err().contains("revoked"));
+        fs::write(&policy_path,b"{}").unwrap();
+        assert!(with_test_update_trust(&directory,|_| -> Result<(),String> {
+            panic!("invalid policy reached admission")
+        }).is_err());
+        fs::remove_file(&policy_path).unwrap();
+        assert!(with_test_update_trust(&directory,|_| -> Result<(),String> {
+            panic!("missing policy reached admission")
+        }).is_err());
+        assert_eq!(effects.load(Ordering::SeqCst),1);
+        println!("native-trust-lease: shared admission, excluded activation, current revocation, error/unwind release");
+    }
     #[cfg(unix)] #[test] fn current_trust_activation_is_serialized_and_floors_survive_failure() {
-        use super::update_authorization::activate_test_update;
+        use super::update_authorization::{activate_test_update,with_test_update_trust};
         use std::fs::{self, File, Permissions};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -275,6 +340,10 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
             let competing=activate_test_update(directory,&v.envelope,&candidate(),v.now,
                 || -> Result<(),String> { panic!("concurrent install ran") });
             assert!(competing.unwrap_err().contains("busy"));
+            let admission=with_test_update_trust(directory,|_| -> Result<(),String> {
+                panic!("admission ran during exclusive activation")
+            });
+            assert!(admission.unwrap_err().contains("busy"));
             resume_tx.send(()).unwrap();
             assert_eq!(first.join().unwrap().unwrap_err(),"simulated installer failure");
         });
@@ -328,6 +397,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
     expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('0 failed; 0 ignored');
     if (process.platform !== 'win32') {
+      expect(result.stdout).toContain('native-trust-lease: shared admission, excluded activation, current revocation, error/unwind release');
       expect(result.stdout).toContain('native-activation: serialized install, current revocation and crash-conservative monotonic floors');
       expect(result.stdout).toContain('protected_policy_reloads_current_revocation_and_floors ... ok');
       expect(result.stdout).toContain('protected_policy_refuses_missing_symlink_hardlink_fifo_and_permissions ... ok');

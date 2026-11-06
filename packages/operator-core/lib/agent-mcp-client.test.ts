@@ -88,12 +88,12 @@ describe('owned MCP listed generation', () => {
 });
 
 describe('owned MCP initialization failure evidence', () => {
-  it('moves an HTTP SU profile only for an owned original-call observer, preserving its connection', () => {
+  it('moves managed HTTP SU profiles to the owned client while preserving their connection', () => {
     const server = { url: 'http://127.0.0.1:3170/api/mcp?client=private-owner',
       headers: { Authorization: 'Bearer private-token' } };
     const text = JSON.stringify({ mcpServers: { 'papercusp-su': server } });
-    expect(prepareNativeOmpConfig(text, { mode: 'http' })).toBe(text);
     const prepared = prepareNativeOmpConfig(text, { mode: 'http', observeNativeCalls: true });
+    expect(prepareNativeOmpConfig(text, { mode: 'http' })).toBe(prepared);
     expect(JSON.parse(prepared)).toEqual({ mcpServers: {}, papercuspNativeMcp: {
       version: 1, mode: 'http', servers: { 'papercusp-su': server },
     } });
@@ -104,6 +104,23 @@ describe('owned MCP initialization failure evidence', () => {
       .toEqual({ version: 1, mode: 'uds', home: '/saved-home', servers: {
         'papercusp-su': server, other: { url: 'http://localhost:3170/api/mcp', headers: {} },
       } });
+  });
+  it('resolves the installed harness carrier without executing unknown shell headers', () => {
+    const entry = { type: 'http', url: 'http://127.0.0.1:3170/api/mcp', headers: {
+      'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
+      'x-papercusp-harness': '!printf %s "${PAPERCUSP_HARNESS_SLUG:-}"',
+    } };
+    const text = JSON.stringify({ mcpServers: { 'papercusp-su': entry } });
+    const result = JSON.parse(prepareNativeOmpConfig(text, { mode: 'http',
+      env: { PAPERCUSP_SID: 'actual-session', PAPERCUSP_HARNESS_SLUG: 'actual-harness' } }));
+    expect(result.mcpServers).toEqual({});
+    expect(result.papercuspNativeMcp.servers['papercusp-su'].headers).toEqual({
+      'x-papercusp-client': 'actual-session', 'x-papercusp-harness': 'actual-harness',
+    });
+    entry.headers['x-papercusp-harness'] = '!unknown-command';
+    const unknown = JSON.stringify({ mcpServers: { 'papercusp-su': entry } });
+    expect(JSON.parse(prepareNativeOmpConfig(unknown, { mode: 'http' })).mcpServers['papercusp-su'])
+      .toEqual(entry);
   });
   it.each([
     [new McpError(ErrorCode.RequestTimeout, 'secret timeout'), { category: 'request-timeout' }],

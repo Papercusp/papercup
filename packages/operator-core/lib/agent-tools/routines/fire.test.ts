@@ -47,6 +47,7 @@ beforeEach(() => {
     status: 'enqueued',
     routineId: row.id,
     deduplicationId: `routine:${row.id}`,
+    workflowId: 'admitted-workflow-id',
     queueName: 'routines-critical',
     timeoutMs: 7_200_000,
   });
@@ -90,7 +91,7 @@ describe('routines:fire', () => {
     expect(queryArgs).toContain('@singleton');
     expect(queryArgs).toContain('bp-singleton-memory-precision-0');
     expect(enqueueMock).toHaveBeenCalledWith(singleton);
-    expect(body(result)).toMatchObject({ ok: true, routine: '@singleton/bp-singleton-memory-precision-0' });
+    expect(body(result)).toMatchObject({ ok: true, workflowId: 'admitted-workflow-id', routine: '@singleton/bp-singleton-memory-precision-0' });
   });
 
   it('supports exact row-id lookup and preserves a deduplicated result', async () => {
@@ -99,12 +100,13 @@ describe('routines:fire', () => {
       status: 'deduplicated',
       routineId: row.id,
       deduplicationId: `routine:${row.id}`,
+      workflowId: null,
       queueName: 'routines-critical',
       timeoutMs: 7_200_000,
     });
     const result = await tool.handler({ id: row.id } as never, { role: 'operator' } as never);
     expect(enqueueMock).toHaveBeenCalledWith(row);
-    expect(body(result)).toMatchObject({ ok: true, status: 'deduplicated' });
+    expect(body(result)).toMatchObject({ ok: true, status: 'deduplicated', workflowId: null });
   });
 
   it('explains DBOS-primary unavailability and keeps release promotion on release:deploy', async () => {

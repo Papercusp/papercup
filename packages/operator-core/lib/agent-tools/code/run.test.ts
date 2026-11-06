@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { listAllProjectedTools, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import * as agentMcp from '@papercusp/agent-mcp';
 import { encode } from '@papercusp/result-encoding';
 import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
@@ -17,6 +17,7 @@ const {
   captureRecipeMock,
   recordRecipeRunMock,
   normalizeExecutionTraceMock,
+  readManagedOperationsMock,
   resolveLiveBoundRefsMock,
   resolvePresenceFleetMock,
   normalizedTrace,
@@ -36,6 +37,7 @@ const {
     captureRecipeMock: vi.fn<typeof import('./capture-recipe').captureRecipe>(async () => null),
     recordRecipeRunMock: vi.fn(async () => {}),
     normalizeExecutionTraceMock: vi.fn<typeof import('../../orchestration-trace').normalizeExecutionTrace>(async () => trace),
+    readManagedOperationsMock: vi.fn<ReturnType<typeof import('../../agent-opportunities/source-readers').productionOpportunityReaders>['readManagedOperations']>(async () => []),
     resolveLiveBoundRefsMock: vi.fn(async () => ({
       workspaces: [],
       fleets: [],
@@ -57,6 +59,13 @@ vi.mock('../../code-recipes-store', async (importOriginal) => ({
 }));
 vi.mock('../../orchestration-trace', () => ({
   normalizeExecutionTrace: normalizeExecutionTraceMock,
+}));
+vi.mock('../../agent-opportunities/source-readers', () => ({
+  productionOpportunityReaders: () => ({ readManagedOperations: readManagedOperationsMock }),
+}));
+vi.mock('../../agent-opportunities/privacy', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  productionMiningScope: (workspaceId: string) => ({ workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch: 'test', key: new Uint8Array(32).fill(71) }),
 }));
 vi.mock('../../recipe-authority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -145,6 +154,7 @@ import { createPhaseTracker, type FieldMiss } from '@papercusp/tooldef';
 beforeEach(() => {
   recordRecipeRunMock.mockClear();
   normalizeExecutionTraceMock.mockClear();
+  readManagedOperationsMock.mockReset().mockResolvedValue([]);
 });
 
 /**
@@ -499,7 +509,7 @@ describe('code:run → recipe capture (P-003)', () => {
     if (!tool) throw new Error('code:run not registered');
     return tool;
   };
-  const mkCtx = () =>
+  const mkCtx = (): UnifiedToolContext =>
     ({
       log: () => {},
       // minimal spawn-context identity the capture path reads
@@ -508,7 +518,10 @@ describe('code:run → recipe capture (P-003)', () => {
       role: 'su',
       isSuperuser: true,
       uiClientId: 'su-test',
-    }) as never;
+      signal: new AbortController().signal,
+      emit: () => {},
+      progress: () => {},
+    });
 
   beforeEach(() => {
     captureRecipeMock.mockClear();
@@ -551,15 +564,60 @@ describe('code:run → recipe capture (P-003)', () => {
     });
     try {
       const actual = await vi.importActual<typeof import('../../orchestration-trace')>('../../orchestration-trace');
+      const evidence: import('../../orchestration-trace').OperationAdapterEvidence = {
+        operationId: 'operation:child', family: 'native-operation', adapterVersion: 'managed-operation:v1',
+        semanticIdentity: { version: 'managed-semantics:v1', fingerprint: 'a'.repeat(64), workspaceId: 'ws-test', sourceBoundary: 'authorized-tool-ledger', epoch: 'test' },
+        source: { ref: 'source:child', authorityRef: 'scope:child', observedAt: new Date().toISOString(), expiresAt: null,
+          parentOperationId: 'operation:parent', choice: 'agent' },
+        outcome: { status: 'success', final: true }, replayClass: 'non-replayable', decisionRefs: [],
+      };
+      readManagedOperationsMock.mockResolvedValueOnce([evidence]);
       normalizeExecutionTraceMock.mockImplementationOnce(actual.normalizeExecutionTrace);
-      await codeRun().fn({ script: 'return 1;' }, mkCtx());
+      await codeRun().fn({ script: 'return 1;' }, { ...mkCtx(), dispatchCallId: 'host:parent' });
+      expect(readManagedOperationsMock).toHaveBeenCalledWith(expect.objectContaining({ callIds: ['host-call:actual-1'],
+        actor: 'owner-x', parentCallId: 'host:parent' }));
       expect(normalizeExecutionTraceMock).toHaveBeenCalledWith(expect.objectContaining({ callRecords, dispatchTimings }));
       expect(captureRecipeMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        executionTrace: expect.objectContaining({ toolGraph: expect.objectContaining({ runtimeCalls: [
+        executionTrace: expect.objectContaining({ operations: [evidence], toolGraph: expect.objectContaining({ runtimeCalls: [
           expect.objectContaining({ ordinal: 0, tool: 'code:tools', disposition: 'settled', dispatchCallId: 'host-call:actual-1' }),
         ] }) }),
       }));
     } finally { run.mockRestore(); }
+  });
+
+  it('P005 timing-only mentions never hydrate an executed child operation', async () => {
+    const timing = { ordinal: 0, tool: 'code:tools', effect: 'read' as const, disposition: 'settled' as const,
+      outputReferences: [], callId: 'host:unexecuted', elapsedMs: 1 };
+    const run = vi.spyOn(agentMcp, 'runToolOrchestration').mockResolvedValueOnce({
+      ok: true, logs: [], dryRun: false, plannedMutations: [], dispatchCount: 0, callRecords: [],
+      dispatchTimings: { calls: [timing], totalCount: 1, omittedCount: 0, maxCalls: 24 },
+      runtimeObservations: { authorizationObservationCount: 0, authorityWideningDetected: false,
+        midTurnPromptInjectionObservability: 'not-observable' },
+    });
+    try {
+      await codeRun().fn({ script: 'return 1;' }, { ...mkCtx(), dispatchCallId: 'host:parent' });
+      expect(readManagedOperationsMock).not.toHaveBeenCalled();
+      expect(normalizeExecutionTraceMock).toHaveBeenCalledWith(expect.objectContaining({ operations: [] }));
+    } finally { run.mockRestore(); }
+  });
+
+  it('P005 an unavailable optional ledger read preserves the actual run and base trace', async () => {
+    const call = { ordinal: 0, tool: 'code:tools', effect: 'read' as const, disposition: 'settled' as const, outputReferences: [] };
+    const run = vi.spyOn(agentMcp, 'runToolOrchestration').mockResolvedValueOnce({
+      ok: true, logs: [], dryRun: false, plannedMutations: [], dispatchCount: 1, callRecords: [call],
+      dispatchTimings: { calls: [{ ...call, callId: 'host:actual', elapsedMs: 1 }], totalCount: 1, omittedCount: 0, maxCalls: 24 },
+      runtimeObservations: { authorizationObservationCount: 1, authorityWideningDetected: false,
+        midTurnPromptInjectionObservability: 'not-observable' },
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    readManagedOperationsMock.mockRejectedValueOnce(new Error('ledger unavailable'));
+    try {
+      const result = await codeRun().fn({ script: 'return 1;' }, { ...mkCtx(), dispatchCallId: 'host:parent' });
+      expect(JSON.parse(String(result.content[0]?.type === 'text' ? result.content[0].text : '{}')).ok).toBe(true);
+      expect(normalizeExecutionTraceMock).toHaveBeenCalledWith(expect.objectContaining({ callRecords: [call], operations: [] }));
+      expect(captureRecipeMock).toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('code:run operation receipts failed: ledger unavailable'));
+    } finally { warning.mockRestore(); run.mockRestore(); }
   });
 
   it('does NOT capture on a dry-run preview, but records one trace-only execution', async () => {

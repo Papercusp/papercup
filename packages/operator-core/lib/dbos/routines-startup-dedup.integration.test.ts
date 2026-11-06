@@ -146,13 +146,17 @@ describe('startup routine duplicate admission (real DBOS and PostgreSQL)', () =>
       expect(deliveries.map(result => result.status).sort()).toEqual(['deduplicated', 'enqueued']);
       expect(deliveries.every(result => result.ok && result.deduplicationId === `routine:${row.id}`)).toBe(true);
       await expect.poll(() => executions.get(row.id)?.length ?? 0, { timeout: 15_000 }).toBe(1);
+      expect(deliveries.find(result => result.status === 'enqueued')?.workflowId).toBe(executions.get(row.id)![0]);
+      expect(deliveries.find(result => result.status === 'deduplicated')?.workflowId).toBeNull();
     } finally { release(); }
     await complete(row.id);
     expect(executions.get(row.id)).toHaveLength(1);
 
     // The mutex guards concurrent deliveries, not every future occurrence of this routine.
-    await expect(enqueue(row)).resolves.toMatchObject({ ok: true, status: 'enqueued' });
+    const later = await enqueue(row);
+    expect(later).toMatchObject({ ok: true, status: 'enqueued' });
     await expect.poll(() => executions.get(row.id)?.length, { timeout: 15_000 }).toBe(2);
+    expect(later.workflowId).toBe(executions.get(row.id)![1]);
     await complete(row.id);
     expect(new Set(executions.get(row.id)).size).toBe(2);
   }, 90_000);

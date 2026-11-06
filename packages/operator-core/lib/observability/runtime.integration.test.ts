@@ -4,6 +4,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { trace, propagation } from '@opentelemetry/api';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { productionOpportunityReaders } from '../agent-opportunities/source-readers';
 
 const fixture = vi.hoisted(() => ({ host: '', consent: true, since: 0, db: null as OrgTestDb | null }));
 vi.mock('../operator-state-pg', async original => ({
@@ -487,8 +488,8 @@ describe('production observability composition', () => {
     });
     expect((await runDispatchStack(parent, 'synthetic:p005-parent', {}, callCtx, deps)).ok).toBe(true);
     await flushPendingTelemetry();
-    const records = await fixture.db!.adminSql<{ tool_name: string; metadata_json: Record<string, unknown> }[]>`
-      SELECT tool_name,metadata_json FROM harness_shared.tool_invocations
+    const records = await fixture.db!.adminSql<{ id: string; tool_name: string; metadata_json: Record<string, unknown> }[]>`
+      SELECT id::text,tool_name,metadata_json FROM harness_shared.tool_invocations
       WHERE workspace_id='synthetic-workspace' AND plugin_name='p005-fixture' ORDER BY id`;
     expect(records).toHaveLength(3);
     const receipts = records.map(row => row.metadata_json.managedOperation as {
@@ -506,5 +507,22 @@ describe('production observability composition', () => {
     expect(pollReceipt).toMatchObject({ parentCallId: parentReceipt.callId, role: 'poll', job: shellReceipt.job,
       outcome: { status: 'error', final: true } });
     expect(JSON.stringify(receipts)).not.toMatch(/PRIVATE|spoofed/);
+    // Continue through the real current-source reader and shared adapter. A
+    // dispatch's safe metadata alone is not the final consumer contract.
+    const scope = { workspaceId: 'synthetic-workspace', sourceBoundary: 'authorized-tool-ledger',
+      epoch: 'fixture', key: new Uint8Array(32).fill(71) };
+    const reader = productionOpportunityReaders({ workspaceId: scope.workspaceId, harnessSlug: 'papercusp',
+      sourceBoundary: scope.sourceBoundary, client: fixture.db!.adminSql, authorize: async () => fixture.consent });
+    const operations = await reader.readManagedOperations({ ids: records.map(row => row.id), scope });
+    expect(operations).toHaveLength(2);
+    const command = operations.find(operation => operation.family === 'shell')!;
+    const enclosing = operations.find(operation => operation.family === 'native-operation')!;
+    expect(command).toMatchObject({ outcome: { status: 'error', final: true }, replayClass: 'non-replayable',
+      source: { parentOperationId: enclosing.operationId } });
+    expect(command.lifecycle?.polls).toHaveLength(1);
+    expect(JSON.stringify(operations)).not.toMatch(/PRIVATE|spoofed|su-observability-fixture|p005-job|p005-task/);
+    fixture.consent = false;
+    expect(await reader.readManagedOperations({ ids: records.map(row => row.id), scope })).toEqual([]);
+    fixture.consent = true;
   });
 });

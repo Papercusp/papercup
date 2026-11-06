@@ -22,7 +22,7 @@ const state = vi.hoisted(() => ({
     detail: 'owner is parked on a blocking await',
   } as const,
   dbosStarted: true,
-  startWorkflow: vi.fn((_workflow: unknown, _options: unknown) => async (..._args: unknown[]) => undefined),
+  startWorkflow: vi.fn((_workflow: unknown, _options: unknown) => async (..._args: unknown[]) => ({ workflowID: 'direct-routine-workflow' })),
   createDbosClient: vi.fn(),
   clientEnqueue: vi.fn(),
   scheduledTick: undefined as (() => Promise<void>) | undefined,
@@ -210,7 +210,7 @@ beforeEach(() => {
   state.dbosStarted = true;
   state.policyAllowed.mockResolvedValue(true);
   state.createDbosClient.mockResolvedValue({ enqueue: state.clientEnqueue });
-  state.clientEnqueue.mockResolvedValue({ workflowID: 'routine:rt_home_git_sync' });
+  state.clientEnqueue.mockResolvedValue({ workflowID: 'client-routine-workflow' });
 });
 
 afterEach(() => {
@@ -1402,6 +1402,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       status: 'enqueued',
       routineId: routine.id,
       deduplicationId: `routine:${routine.id}`,
+      workflowId: 'direct-routine-workflow',
       queueName: ROUTINES_CRITICAL_QUEUE,
     });
     expect(state.startWorkflow).toHaveBeenCalledWith(
@@ -1422,6 +1423,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       ok: true,
       status: 'deduplicated',
       deduplicationId: `routine:${routine.id}`,
+      workflowId: null,
     });
   });
 
@@ -1434,6 +1436,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       ok: true,
       status: 'enqueued',
       deduplicationId: `routine:${routine.id}`,
+      workflowId: 'client-routine-workflow',
     });
     expect(state.createDbosClient).toHaveBeenCalledWith({
       systemDatabaseUrl: 'postgres://system-db?test-idle-grace',
@@ -1492,6 +1495,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       ok: true,
       status: 'deduplicated',
       deduplicationId: `routine:${routine.id}`,
+      workflowId: null,
     });
     expect(state.startWorkflow).not.toHaveBeenCalled();
   });

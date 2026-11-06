@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "Workbench P-005 native Windows PUI read bridge",
-  "framework": "powershell",
+  "framework": "shell",
   "command": [
     "powershell.exe",
     "-NoProfile",
@@ -43,6 +43,20 @@
     "timeout reaps only owned PUI helper",
     "cancellation reaps owned helper",
     "oversized request and mutation rejected before spawn"
+  ],
+  "assertions": [
+    {"id":"literal executable path and Unicode identity round-trip","passed":true,"evidence":"Retained native fixture stdout cases[0]; task 0mw5as1skilv99xcpe3 exited 0; bridge and fixture Windows hashes matched canonical source."},
+    {"id":"canonical empty result preserved","passed":true,"evidence":"Retained native fixture stdout cases[1]; exact-empty version and zero rows checked."},
+    {"id":"reject malformed","passed":true,"evidence":"Retained native fixture stdout cases[2]; malformed JSON rejected and owned child reaped."},
+    {"id":"reject missing","passed":true,"evidence":"Retained native fixture stdout cases[3]; missing envelope rejected and owned child reaped."},
+    {"id":"reject badrows","passed":true,"evidence":"Retained native fixture stdout cases[4]; invalid row type rejected and owned child reaped."},
+    {"id":"reject denied","passed":true,"evidence":"Retained native fixture stdout cases[5]; unavailable envelope rejected and owned child reaped."},
+    {"id":"reject exit","passed":true,"evidence":"Retained native fixture stdout cases[6]; child exit and ACL error propagated; owned child reaped."},
+    {"id":"reject oversize","passed":true,"evidence":"Retained native fixture stdout cases[7]; oversized response rejected and owned child reaped."},
+    {"id":"large stderr drains concurrently","passed":true,"evidence":"Retained native fixture stdout cases[8]; 100000-byte stderr did not block the response."},
+    {"id":"timeout reaps only owned PUI helper","passed":true,"evidence":"Retained native fixture stdout cases[9]; deadline raised and recorded owned PID absent."},
+    {"id":"cancellation reaps owned helper","passed":true,"evidence":"Retained native fixture stdout cases[10]; cancellation raised and recorded owned PID absent."},
+    {"id":"oversized request and mutation rejected before spawn","passed":true,"evidence":"Retained native fixture stdout cases[11]; 70000-character request and goals.pause model rejected."}
   ],
   "scopeLimits": [
     "Fixture process boundary only; actual native PUI/operator integration remains required",

@@ -484,7 +484,7 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     );
   });
 
-  it('repairs a stale subjectPlanRevision only when the canonical BAR set still matches', async () => {
+  it.each([false, true])('repairs a stale subjectPlanRevision with canonical key-only BARs=%s', async (keyOnly) => {
     const before = subjectPlan();
     const after = subjectPlan({ now: 'the Now block changed' });
     const seeded = buildAcceptanceBarSeed({
@@ -502,6 +502,18 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     expect(seeded.ok).toBe(true);
     if (!seeded.ok) return;
 
+    const canonicalCriteria = seeded.templateData.criteria.map((criterion) => {
+      const { barKey: _alias, ...stored } = normalizeAcceptanceBarCriterion({
+        ...criterion, key: criterion.barKey ?? criterion.key,
+      });
+      return stored;
+    });
+    const templateData = keyOnly ? {
+      ...seeded.templateData,
+      criteria: canonicalCriteria,
+      barSetHash: computeAcceptanceBarSetHash(canonicalCriteria),
+    } : seeded.templateData;
+
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
       if (statement.includes('SELECT status, acceptance_bar_rubric_slug')) {
@@ -509,12 +521,12 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
           status: 'active',
           acceptance_bar_rubric_slug: 'acceptance-subject-plan',
           acceptance_bar_rubric_revision: 4,
-          acceptance_bar_set_hash: seeded.barSetHash,
+          acceptance_bar_set_hash: templateData.barSetHash,
         }];
       }
       if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
       if (statement.includes('SELECT version, template_data')) {
-        return [{ version: 4, template_data: seeded.templateData }];
+        return [{ version: 4, template_data: templateData }];
       }
       if (statement.includes('UPDATE harness_shared.harness_plans')) return [{ plan_slug: 'acceptance-subject-plan' }];
       throw new Error(`unexpected SQL: ${statement}`);
@@ -533,6 +545,15 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     ).resolves.toBe(true);
 
     expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.harness_plans'))).toBe(true);
+
+    sql.mockClear();
+    await expect(synchronizeAcceptanceBarSubjectRevision(sql as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'subject-plan',
+      previousBody: before,
+      nextBody: subjectPlan({ requirements: '**R-1 — Canonical outcome.** A different promise.' }),
+      previousVersion: 2, nextVersion: 3,
+    })).resolves.toBe(false);
+    expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE '))).toBe(false);
   });
 
   // WI-10000058. Two defects made the pin repair silently impossible for a real plan.

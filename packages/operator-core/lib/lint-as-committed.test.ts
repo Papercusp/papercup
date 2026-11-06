@@ -1641,7 +1641,9 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     for (const name of ['alpha', 'beta', 'gamma'])
       writeFileSync(join(f.root, 'node_modules', name + '.txt'), 'payload-v1');
     gitFixture(f.root, ['clone', '--local', '--shared', '--quiet', f.root, workRoot]);
-    cpSync(join(f.root, 'node_modules'), join(workRoot, 'node_modules'), { recursive: true, dereference: false });
+    cpSync(join(f.root, 'node_modules'), join(workRoot, 'node_modules'), {
+      recursive: true, dereference: false, verbatimSymlinks: true,
+    });
     const markerPath = join(workRoot, '.git/lint-as-committed-owner.json');
     const marker = { sha: f.head, sourceRepoRoot: f.root };
     writeFileSync(markerPath, JSON.stringify(marker));

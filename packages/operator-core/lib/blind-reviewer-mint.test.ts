@@ -500,6 +500,19 @@ describe('mintBlindGapReviewer', () => {
     const reserveNativeAttempt = vi.fn<NonNullable<MintBlindGapReviewerDeps['reserveNativeAttempt']>>(async ({ permit }) =>
       ({ ...permit, nativeAttempt: { id: 21, key: 'attempt-1', requestHash: 'a'.repeat(64) } }));
     const verifyNativeNoOpen = vi.fn(async () => true);
+    const resolveResumeTarget = vi.fn<NonNullable<MintBlindGapReviewerDeps['resolveResumeTarget']>>(async () => ({
+      ok: true, ownerId: binding.reviewerOwnerId, workspaceId: binding.workspaceId,
+      advSessionId: binding.advSessionId, sessionId: binding.nativeSessionId,
+      binding: { coordOwnerId: binding.reviewerOwnerId, sessionId: binding.nativeSessionId, startedAt: '2026-11-06T12:00:00Z' },
+      live: false, agent: 'claude', account: 'auto', model: null, headless: true, harnessSlug: 'papercusp',
+      resumeId: binding.nativeSessionId, ompThreadId: null, role: null, feature: null, cwd: REPO,
+      modelSource: null, endedAt: '2026-11-06T12:01:00Z', endedBy: null,
+    }));
+    const verifyLiveBinding = vi.fn<NonNullable<MintBlindGapReviewerDeps['verifyLiveBinding']>>(async () => ({ ok: true }));
+    const wakeReviewer = vi.fn<NonNullable<MintBlindGapReviewerDeps['wakeReviewer']>>(async () => ({
+      targets: [binding.reviewerOwnerId], keys: ['coord:inbox-wake:su-reviewer-1'], queued: 1, woken: 1, pickupConfirmed: false,
+      pickup: [], staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [],
+    }));
     const readConfinement = vi.fn(async (): Promise<ReturnType<typeof blindReviewerConfinement> | null> => {
       const call = handler.mock.calls.at(-1) as unknown as [unknown, Record<symbol, ReturnType<typeof blindReviewerConfinement>>];
       return call?.[1][KEY] ?? null;
@@ -507,8 +520,10 @@ describe('mintBlindGapReviewer', () => {
     const knownTools = async () => new Set(['capability:bash', 'testing:run', 'work_items:create', 'coord:send', 'events:emit']);
     return { handler, loadBrief, launcher, binding, findSessionBinding, createSessionBinding, killTask,
       acquireSessionResume, releaseSessionResume, readConfinement, reserveNativeAttempt, verifyNativeNoOpen,
+      resolveResumeTarget, verifyLiveBinding, wakeReviewer,
       deps: { loadBrief, launcher, findSessionBinding, createSessionBinding, killTask,
-        acquireSessionResume, releaseSessionResume, reserveNativeAttempt, verifyNativeNoOpen, readConfinement, knownTools } };
+        acquireSessionResume, releaseSessionResume, reserveNativeAttempt, verifyNativeNoOpen,
+        resolveResumeTarget, verifyLiveBinding, wakeReviewer, readConfinement, knownTools } };
   }
 
   // EI-27120299877087815: review #109 was told to call tools its ceiling refuses.
@@ -917,6 +932,57 @@ describe('mintBlindGapReviewer', () => {
     expect(result).toMatchObject({ ok: false, code: 'recruiter_only' });
     expect(d.launcher).not.toHaveBeenCalled();
     expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it('wakes the exact live confined reviewer without opening or reserving another native process', async () => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    if (!target.ok) throw new Error('fixture target missing');
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: true, bindingId: 7, leaseReleased: true,
+      launch: { mode: 'wake', opened: 0, pickupConfirmed: false } });
+    expect(d.verifyLiveBinding).toHaveBeenCalledWith(expect.objectContaining({ id: 7, advSessionId: 42,
+      nativeSessionId: 'native-review-1', confinementSnapshot: CONFINEMENT }));
+    expect(d.wakeReviewer).toHaveBeenCalledWith(['su-reviewer-1'], expect.objectContaining({
+      workspaceId: 'ws-1', source: BLIND_GAP_REVIEW_ACTOR }));
+    expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it.each([
+    { ownerId: 'su-other' }, { workspaceId: 'ws-other' }, { advSessionId: 99 },
+    { sessionId: 'other-native' }, { binding: null }, { headless: false }, { harnessSlug: 'other' },
+    { agent: 'codex' }, { account: 'default' }, { model: 'changed' },
+  ])('refuses a changed live reviewer endpoint without wake or launch: %j', async drift => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    if (!target.ok) throw new Error('fixture target missing');
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null, ...drift });
+    expect(await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1' } }, d.deps)).toMatchObject({ ok: false, code: 'resume_failed' });
+    expect(d.wakeReviewer).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it('fails closed on an expired live confinement and on an unqueued wake, never falling back to launch', async () => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    if (!target.ok) throw new Error('fixture target missing');
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    d.verifyLiveBinding.mockResolvedValueOnce({ ok: false, code: 'confinement_mismatch', message: 'expired' });
+    const input = { slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author', ctx: { workspaceId: 'ws-1' } };
+    expect(await resumeBlindGapReviewer(input, d.deps)).toMatchObject({ ok: false, code: 'resume_failed' });
+    expect(d.wakeReviewer).not.toHaveBeenCalled();
+    d.wakeReviewer.mockResolvedValueOnce({ targets: [], keys: [], queued: 0, woken: 0,
+      pickup: [], staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+    expect(await resumeBlindGapReviewer(input, d.deps)).toMatchObject({ ok: false, code: 'reviewer_wake_unavailable' });
+    expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.releaseSessionResume).toHaveBeenCalledTimes(2);
   });
 
   it('commits the exact attempt before handler entry and preserves uncertainty after a thrown handler', async () => {

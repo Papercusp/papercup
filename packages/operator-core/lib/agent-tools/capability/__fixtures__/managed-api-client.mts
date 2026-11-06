@@ -6,8 +6,8 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { connectAgentMcp } from '../../../agent-mcp-client.ts';
 import { assertManagedToolSuccess, finishManagedApiTeardown } from './managed-api-result.ts';
 import { privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost,
   waitForPrivateOperator } from '../../../../test/private-http-workspace-preflight.ts';
@@ -53,11 +53,9 @@ async function client(owner: string) {
   const url = new URL(base + '/api/mcp');
   for (const [key, value] of Object.entries({ superuser: '1', workspace, harness: workspace,
     client: owner, format: 'json', structured: '1' })) url.searchParams.set(key, value);
-  const current = new Client({ name: 'managed-parity-private-client', version: '1' });
+  const { client: current } = await connectAgentMcp({ name: 'managed-parity-private-client',
+    url: url.href, mode: 'http', headers: { Authorization: `Bearer ${token}` } });
   clients.push(current);
-  await current.connect(new StreamableHTTPClientTransport(url, { requestInit: {
-    headers: { Authorization: `Bearer ${token}` },
-  } }));
   await current.listTools(); // Establish the current catalog contract on each fresh transport.
   const identity = (await invoke(current, 'coord:whoami', {})).body;
   assert.equal(identity.workspaceId, workspace);

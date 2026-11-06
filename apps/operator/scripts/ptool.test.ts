@@ -3435,8 +3435,8 @@ describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
         { type: 'text', text: JSON.stringify(result) },
       ] }));
       const split = payload.indexOf(Buffer.from('é')) + 1;
-      const readReference = vi.fn(async (args: { uri?: string; file_path?: string; byte_offset: number }) => {
-        const start = args.byte_offset;
+      const readReference = vi.fn(async (args: Record<string, unknown>) => {
+        const start = args.byte_offset as number;
         const end = start === 0 ? split : payload.length;
         return {
           ok: true, encoding: 'base64', data: payload.subarray(start, end).toString('base64'),
@@ -4839,7 +4839,7 @@ describe('ptool stdio catalog generation bridge', () => {
 
   it('forwards a metadata-free legacy request with its actual listed generation and preserves the result', async () => {
     const result = { isError: true, content: [{ type: 'text', text: 'unknown tool negative control' }] };
-    const callTool = vi.fn(async () => result);
+    const callTool = vi.fn(async (_params: Record<string, unknown>) => result);
     const listed = entry();
     const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools: async () => [listed] });
     const shown = await bridge.listTools();

@@ -1336,6 +1336,43 @@ export function outputFilePathFrom(vitestArgs) {
   return trimmed === '' ? null : trimmed;
 }
 
+const COMPLETED_JSON_FILE_STATUSES = new Set(['passed', 'failed', 'skipped']);
+
+/**
+ * Requested files whose terminal results are present in a flushed Vitest JSON report.
+ * A report is only a completion signal for an exact requested path with a terminal
+ * file status; malformed reports and unrelated report rows remain non-signals.
+ *
+ * @param {string|null} reportPath value of `--outputFile`, if any
+ * @param {string} [cwd] the group's cwd
+ * @param {string[]} requestedFiles exact files passed to this child
+ * @returns {string[]}
+ */
+function completedRequestedFilesFromJsonReport(reportPath, cwd, requestedFiles) {
+  if (!reportPath || requestedFiles.length === 0) return [];
+  const base = cwd ?? process.cwd();
+  const resolveFile = (file) => resolve(base, String(file).replaceAll('\\', sep));
+  const requestedByPath = new Map(requestedFiles.map((file) => [resolveFile(file), file]));
+  const resolvedReportPath = resolveFile(reportPath);
+  let report;
+  try {
+    report = JSON.parse(readFileSync(resolvedReportPath, 'utf8'));
+  } catch {
+    return [];
+  }
+  if (!report || typeof report !== 'object' || !Array.isArray(report.testResults)) return [];
+
+  const completed = new Set();
+  for (const result of report.testResults) {
+    if (!result || typeof result !== 'object' ||
+        !COMPLETED_JSON_FILE_STATUSES.has(result.status) ||
+        typeof result.name !== 'string' || result.name.trim() === '') continue;
+    const requested = requestedByPath.get(resolveFile(result.name));
+    if (requested) completed.add(requested);
+  }
+  return [...completed];
+}
+
 /**
  * EI-19380376466745152 — A SKIPPED ASSERTION IS AN ABSENT MEASUREMENT WEARING A PASS.
  *
@@ -3116,6 +3153,10 @@ export function runCapturedTestProcess(command, args, options = {}) {
 
     const normalized = (file) => String(file).replaceAll('\\', '/');
     const requestedFiles = files.map(normalized);
+    const jsonReportPath = outputFilePathFrom(args);
+    const expectedJsonReportPath = jsonReportPath
+      ? resolve(cwd ?? process.cwd(), jsonReportPath.replaceAll('\\', sep))
+      : null;
     const emitProgress = (state, status = null, signal = null, isSettled = false) => {
       const pendingFiles = requestedFiles.filter((file) => !completedFiles.has(file));
       const outcome = formatTaskOutcomeFields({ status, signal, settled: isSettled });
@@ -3294,6 +3335,26 @@ export function runCapturedTestProcess(command, args, options = {}) {
       const before = completedFiles.size;
       const progress = parseBatchProgress(completeLines, { totalFiles: requestedFiles.length });
       for (const file of progress.completedFilePaths) completedFiles.add(normalized(file));
+      if (expectedJsonReportPath && jsonReportPath) {
+        const reportNotice = 'JSON report written to ';
+        for (const line of completeLines.split(/\r?\n/)) {
+          const cleanLine = stripVitestAnsi(line).trim();
+          const noticeIndex = cleanLine.lastIndexOf(reportNotice);
+          if (noticeIndex < 0) continue;
+          const printedPath = cleanLine.slice(noticeIndex + reportNotice.length).trim();
+          if (!printedPath) continue;
+          let resolvedPrintedPath;
+          try {
+            resolvedPrintedPath = resolve(cwd ?? process.cwd(), printedPath.replaceAll('\\', sep));
+          } catch {
+            continue;
+          }
+          if (resolvedPrintedPath !== expectedJsonReportPath) continue;
+          for (const file of completedRequestedFilesFromJsonReport(jsonReportPath, cwd, requestedFiles)) {
+            completedFiles.add(normalized(file));
+          }
+        }
+      }
       return completedFiles.size > before;
     };
     const notifyAllFilesComplete = () => {

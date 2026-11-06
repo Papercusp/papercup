@@ -36,6 +36,7 @@ import {
   createBlindReviewSessionBinding,
   findBlindReviewSessionBinding,
   releaseBlindReviewSessionResume,
+  verifyBlindReviewSessionBinding,
   BLIND_GAP_REVIEW_ACTOR,
   INTERNAL_BLIND_REVIEW_RESUME,
   type BlindReviewResumePermit,
@@ -305,6 +306,9 @@ export interface MintBlindGapReviewerDeps {
   releaseSessionResume?: typeof releaseBlindReviewSessionResume;
   reserveNativeAttempt?: typeof reserveBlindReviewNativeAttempt;
   verifyNativeNoOpen?: typeof verifyBlindReviewNativeNoOpen;
+  resolveResumeTarget?: typeof import('./agent-launch-core').resolveResumeTarget;
+  verifyLiveBinding?: typeof verifyBlindReviewSessionBinding;
+  wakeReviewer?: typeof import('./agent-tools/coordination/inbox-wake').wakeRecipients;
   /** Registered tool names for the howToRun ceiling check; injected in tests. */
   knownTools?: () => Promise<ReadonlySet<string>>;
   /** Re-read the original launch cohort when its verifier returned no identity receipt. */
@@ -583,44 +587,79 @@ export async function resumeBlindGapReviewer(
 
   let result: ResumeBlindGapReviewerResult;
   try {
-    const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
-    let permit: BlindReviewResumePermit = {
-      bindingId: acquired.binding.id, leaseId: acquired.leaseId, workspaceId, planSlug: input.slug,
-      activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId: acquired.binding.reviewerOwnerId,
-      advSessionId: acquired.endpoint.advSessionId, nativeSessionId: acquired.endpoint.nativeSessionId,
-    };
-    const request = {
-      resume: { sessionId: acquired.endpoint.nativeSessionId }, fork: false, headless: true,
-      harness: input.harness, brief: buildBlindReviewerKickoff(brief),
-      idempotencyKey: `blind-review-resume:${randomUUID()}`,
-    };
-    permit = await (deps.reserveNativeAttempt ?? reserveBlindReviewNativeAttempt)({ permit, request });
-    const systemCtx = {
-      ...input.ctx, harnessSlug: input.harness, uiClientId: null, isSuperuser: false, isPowerUser: false,
-      principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId },
-      ownerId: BLIND_GAP_REVIEW_ACTOR, ownerLabel: 'blind gap review', userId: null,
-      [confinementKey]: acquired.binding.confinementSnapshot,
-      [INTERNAL_BLIND_REVIEW_RESUME]: permit,
-    };
-    let launch = await handler(request, systemCtx as never);
-    if (blindReviewProviderRefused(launch) &&
-        await (deps.verifyNativeNoOpen ?? verifyBlindReviewNativeNoOpen)(permit)) {
-      for (const backend of BLIND_REVIEWER_BACKENDS) {
-        if (backend.agent === acquired.backend) continue;
-        // Every rung carries the original logical identity, native transcript,
-        // lease and ceiling. The launcher validates this private selection.
-        launch = await handler({
-          resume: { sessionId: acquired.endpoint.nativeSessionId }, fork: false,
-          headless: true, harness: input.harness, brief: buildBlindReviewerKickoff(brief),
-          ...backend, account: BLIND_GAP_REVIEW_ACCOUNT,
-        }, { ...systemCtx, [INTERNAL_BLIND_REVIEW_RESUME]: { ...permit, recoveryBackend: backend } } as never);
-        if (!blindReviewProviderRefused(launch)) break;
+    const resolveTarget = deps.resolveResumeTarget ?? (await import('./agent-launch-core')).resolveResumeTarget;
+    const target = await resolveTarget({ sessionId: acquired.endpoint.nativeSessionId });
+    if (!target.ok) throw new Error(`The bound reviewer endpoint could not be resolved: ${target.detail}`);
+    if (target.live) {
+      // A wake never opens a native process or changes its authority. Require the
+      // exact currently confined endpoint; an expired ceiling needs ended-session
+      // recovery, not a wake that pretends to renew the declaration.
+      if (target.ownerId !== acquired.binding.reviewerOwnerId || target.workspaceId !== workspaceId ||
+          target.advSessionId !== acquired.endpoint.advSessionId ||
+          target.sessionId !== acquired.endpoint.nativeSessionId ||
+          target.binding?.coordOwnerId !== acquired.binding.reviewerOwnerId ||
+          target.binding?.sessionId !== acquired.endpoint.nativeSessionId || !target.binding?.startedAt ||
+          target.harnessSlug !== input.harness || target.headless !== true ||
+          target.agent !== acquired.backend || target.account !== acquired.binding.accountRoute ||
+          target.model !== acquired.endpoint.modelSpec) {
+        throw new Error('The live reviewer no longer matches its exact bound launch profile. No process was opened.');
       }
+      const verified = await (deps.verifyLiveBinding ?? verifyBlindReviewSessionBinding)({
+        ...acquired.binding, ...acquired.endpoint,
+      });
+      if (!verified.ok) throw new Error(`The live reviewer binding was refused: ${verified.code}: ${verified.message}`);
+      const wake = await (deps.wakeReviewer ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients)(
+        [acquired.binding.reviewerOwnerId], {
+          workspaceId, source: BLIND_GAP_REVIEW_ACTOR,
+          summary: 'Continue your existing blind product review from its original brief; post the outcome through plans:blind-review.',
+        });
+      const queued = wake.queued ?? wake.woken;
+      result = queued > 0 || (wake.staged ?? 0) > 0 || (wake.deferred ?? 0) > 0
+        ? { ok: true, launch: { mode: 'wake', opened: 0, pickupConfirmed: false, wake },
+            activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId: acquired.binding.reviewerOwnerId,
+            leaseReleased: false, bindingId: acquired.binding.id }
+        : { ok: false, code: 'reviewer_wake_unavailable',
+            message: 'The exact live reviewer has no wake delivery. No process was opened; reconcile its host before retrying.' };
+    } else {
+      const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
+      let permit: BlindReviewResumePermit = {
+        bindingId: acquired.binding.id, leaseId: acquired.leaseId, workspaceId, planSlug: input.slug,
+        activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId: acquired.binding.reviewerOwnerId,
+        advSessionId: acquired.endpoint.advSessionId, nativeSessionId: acquired.endpoint.nativeSessionId,
+      };
+      const request = {
+        resume: { sessionId: acquired.endpoint.nativeSessionId }, fork: false, headless: true,
+        harness: input.harness, brief: buildBlindReviewerKickoff(brief),
+        idempotencyKey: `blind-review-resume:${randomUUID()}`,
+      };
+      permit = await (deps.reserveNativeAttempt ?? reserveBlindReviewNativeAttempt)({ permit, request });
+      const systemCtx = {
+        ...input.ctx, harnessSlug: input.harness, uiClientId: null, isSuperuser: false, isPowerUser: false,
+        principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId },
+        ownerId: BLIND_GAP_REVIEW_ACTOR, ownerLabel: 'blind gap review', userId: null,
+        [confinementKey]: acquired.binding.confinementSnapshot,
+        [INTERNAL_BLIND_REVIEW_RESUME]: permit,
+      };
+      let launch = await handler(request, systemCtx as never);
+      if (blindReviewProviderRefused(launch) &&
+          await (deps.verifyNativeNoOpen ?? verifyBlindReviewNativeNoOpen)(permit)) {
+        for (const backend of BLIND_REVIEWER_BACKENDS) {
+          if (backend.agent === acquired.backend) continue;
+          // Every rung carries the original logical identity, native transcript,
+          // lease and ceiling. The launcher validates this private selection.
+          launch = await handler({
+            resume: { sessionId: acquired.endpoint.nativeSessionId }, fork: false,
+            headless: true, harness: input.harness, brief: buildBlindReviewerKickoff(brief),
+            ...backend, account: BLIND_GAP_REVIEW_ACCOUNT,
+          }, { ...systemCtx, [INTERNAL_BLIND_REVIEW_RESUME]: { ...permit, recoveryBackend: backend } } as never);
+          if (!blindReviewProviderRefused(launch)) break;
+        }
+      }
+      result = (launch as { isError?: unknown } | null)?.isError === true
+        ? { ok: false, code: 'resume_failed', message: resumeLaunchRefusal(launch) }
+        : { ok: true, launch, activationAuditSeq: brief.activationAuditSeq,
+            reviewerOwnerId: acquired.binding.reviewerOwnerId, leaseReleased: false, bindingId: acquired.binding.id };
     }
-    result = (launch as { isError?: unknown } | null)?.isError === true
-      ? { ok: false, code: 'resume_failed', message: resumeLaunchRefusal(launch) }
-      : { ok: true, launch, activationAuditSeq: brief.activationAuditSeq,
-          reviewerOwnerId: acquired.binding.reviewerOwnerId, leaseReleased: false, bindingId: acquired.binding.id };
   } catch (error) {
     result = { ok: false, code: 'resume_failed', message: error instanceof Error ? error.message : String(error) };
   }

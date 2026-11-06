@@ -697,6 +697,8 @@ export type RoutineFireEnqueueResult = {
   status: 'enqueued' | 'deduplicated' | 'unavailable';
   routineId: string;
   deduplicationId: string;
+  /** Exact admitted execution; a dedup conflict supplies no workflow handle. */
+  workflowId: string | null;
   queueName: string;
   timeoutMs: number;
   reason?: 'dbos-not-started';
@@ -725,14 +727,16 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
       routine.targetOwnerId,
       routineFireProvenance(routine, 'manual'),
     ] as const;
+    let workflowId: string;
     if (dbosStarted()) {
-      await DBOS.startWorkflow(routineFireWorkflow, {
+      const handle = await DBOS.startWorkflow(routineFireWorkflow, {
         queueName,
         timeoutMS: timeoutMs,
         enqueueOptions: { deduplicationID: deduplicationId },
       })(...workflowArgs);
+      workflowId = handle.workflowID;
     } else {
-      await (await getRoutineFireDbosClient()).enqueue<typeof routineFireImpl>(
+      const handle = await (await getRoutineFireDbosClient()).enqueue<typeof routineFireImpl>(
         {
           queueName,
           workflowName: ROUTINE_FIRE_WORKFLOW_NAME,
@@ -742,12 +746,14 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
         },
         ...workflowArgs,
       );
+      workflowId = handle.workflowID;
     }
     return {
       ok: true,
       status: 'enqueued',
       routineId: routine.id,
       deduplicationId,
+      workflowId,
       queueName,
       timeoutMs,
     };
@@ -758,6 +764,7 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
       status: 'deduplicated',
       routineId: routine.id,
       deduplicationId,
+      workflowId: null,
       queueName,
       timeoutMs,
     };

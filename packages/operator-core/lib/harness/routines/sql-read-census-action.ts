@@ -28,8 +28,7 @@
  * is an incremental ingester that never re-reads bytes (migration 811).
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { createHmac } from 'node:crypto';
-import { getDbEncryptionKey } from '../../db-encryption';
+import { productionMiningScope } from '../../agent-opportunities/privacy';
 import { mineSqlCandidateSlice, purgeSqlCandidateData, readSqlCandidates, type SqlMiningDeps, type SqlMiningOptions,
   type SqlMiningResult } from '../../bash-substitution/sql-tool-candidates';
 import { rankSqlToolCandidates, SQL_DEMAND_SCORE_VERSION } from '../../sql-tool-candidate-score';
@@ -311,10 +310,8 @@ export const SQL_CENSUS_REVIEW_LIMIT = 10;
 export const DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS = 30_000;
 export function censusMiningOptions(opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> &
   Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>): SqlMiningOptions {
-  const epoch = new Date(opts.now ?? Date.now()).toISOString().slice(0, 7);
   return { ...opts, timeBudgetMs: opts.timeBudgetMs ?? DEFAULT_INTENT_CENSUS_TIME_BUDGET_MS,
-    scope: opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
-    key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() },
+    scope: opts.scope ?? productionMiningScope(opts.workspaceId, opts.now),
   authorize: opts.authorize ?? (async () => true) };
 }
 

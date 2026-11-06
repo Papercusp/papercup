@@ -27,7 +27,9 @@ import {
   type ToolResult,
 } from '@papercusp/tooldef';
 import { completedResultPayload } from '../abort-completion-payload';
-import { PROJECTED_DEPS } from '../../projected-tool-deps';
+import { PROJECTED_DEPS, flushPendingTelemetry } from '../../projected-tool-deps';
+import { productionOpportunityReaders } from '../../agent-opportunities/source-readers';
+import { productionMiningScope } from '../../agent-opportunities/privacy';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
@@ -51,6 +53,7 @@ import { storeVolatileScratchReference, writeScratchReference } from '../../scra
 import {
   normalizeExecutionTrace,
   type NormalizedExecutionTrace,
+  type OperationAdapterEvidence,
 } from '../../orchestration-trace';
 import type {
   CapabilityManifestV1,
@@ -617,6 +620,26 @@ export default defineTool({
           label: `code:run ${label}`,
         }),
       );
+    // The host ledger is the authority for actual child execution. Timing IDs
+    // select only matching runtime call records; static wrapper source is never
+    // consulted. Missing/delayed telemetry leaves this optional evidence empty.
+    const operationRead = await trackPhase(ctx.phases, 'code:run:operation receipts', () => withCodeRunResponseBudget(async () => {
+      const workspaceId = ctx.workspaceId, harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+      const actor = resolveAgentIdentity(ctx).ownerId, parentCallId = ctx.dispatchCallId;
+      const callIds = (result.dispatchTimings?.calls ?? []).filter(timing => timing.callId
+        && result.callRecords?.some(call => call.ordinal === timing.ordinal && call.tool === timing.tool
+          && call.effect === timing.effect && call.disposition === timing.disposition)).map(timing => timing.callId!);
+      if (!workspaceId || !harnessSlug || !actor || !parentCallId || !callIds.length || args.dryRun) return [];
+      await flushPendingTelemetry();
+      const scope = productionMiningScope(workspaceId, runStartedAtMs);
+      return productionOpportunityReaders({ workspaceId, harnessSlug, sourceBoundary: scope.sourceBoundary,
+        authorize: async boundary => boundary.workspaceId === ctx.workspaceId
+          && boundary.harnessSlug === resolveConcreteHarnessSlug(undefined, ctx)
+          && boundary.sourceBoundary === scope.sourceBoundary && resolveAgentIdentity(ctx).ownerId === actor,
+      }).readManagedOperations({ scope, callIds, actor, parentCallId,
+        since: new Date(runStartedAtMs).toISOString(), until: new Date().toISOString() });
+    }, { deadlineAtMs: Math.min(postprocessingDeadlineAtMs, Date.now() + 750),
+      fallback: [] as OperationAdapterEvidence[], label: 'code:run operation receipts' }));
     const traceNormalization = await runPostprocessing(
       'trace normalization',
       () =>
@@ -627,6 +650,7 @@ export default defineTool({
           allowed,
           callRecords: result.callRecords,
           dispatchTimings: result.dispatchTimings,
+          operations: operationRead.value,
         }),
       null,
     );

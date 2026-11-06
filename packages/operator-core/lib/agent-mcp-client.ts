@@ -247,7 +247,9 @@ export function prepareNativeOmpConfig(
   text: string,
   options: { mode: AgentMcpMode; home?: string; platform?: string; env?: NodeJS.ProcessEnv; observeNativeCalls?: boolean },
 ): string {
-  if (options.mode === 'http' && !options.observeNativeCalls) return text;
+  // The managed launcher already loads our native extension for HTTP too.
+  // OMP 18's built-in HTTP client drops listed tool metadata, so eligible
+  // profiles must use the owned client regardless of native-call observation.
   const config = JSON.parse(text) as NativeOmpConfig;
   const servers: Record<string, ServerConfig> = {};
   for (const [name, server] of Object.entries(config.mcpServers ?? {})) {
@@ -259,6 +261,7 @@ export function prepareNativeOmpConfig(
       'x-papercusp-client': 'PAPERCUSP_SID',
       'x-papercusp-workspace': 'PAPERCUSP_WORKSPACE',
       'x-papercusp-profile': 'PAPERCUSP_PROFILE',
+      'x-papercusp-harness': 'PAPERCUSP_HARNESS_SLUG',
     };
     for (const [header, variable] of Object.entries(known)) {
       if (headers[header] === `!printf %s "\${${variable}:-}"`) {

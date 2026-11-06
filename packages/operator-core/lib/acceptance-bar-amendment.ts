@@ -165,11 +165,18 @@ export async function synchronizeAcceptanceBarSubjectRevision(
       !parsedRubric.data.barContract || parsedRubric.data.barSetHash !== subject.acceptance_bar_set_hash) {
     return false;
   }
-  const existingBarCriteria = parsedRubric.data.criteria.filter((criterion) => criterion.barKey);
+  const { normalizeAcceptanceBarCriterion } = await import('./rubrics');
+  // Amendments may store the canonical BAR identity in `key` alone. Retain
+  // server-hashed BARs and use the same identity fallback as the BAR hash reader;
+  // ordinary legacy criteria without a BAR identity/hash still stay excluded.
+  const existingBarCriteria = parsedRubric.data.criteria
+    .filter((criterion) => criterion.barKey || criterion.barHash)
+    .map((criterion) => normalizeAcceptanceBarCriterion({
+      ...criterion, barKey: criterion.barKey?.trim() || criterion.key.trim(),
+    }));
   if (existingBarCriteria.length === 0) return false;
   if (materialized.length > 0) {
     const { verificationNeutralCriterion } = await import('./acceptance-live-requirements');
-    const { normalizeAcceptanceBarCriterion } = await import('./rubrics');
     const meaning = (criterion: (typeof existingBarCriteria)[number]) => {
       // Provenance belongs to the canonical writer, not the authored block; verificationNeutralCriterion
       // already drops it (f75a6e5600). Preserve every other field except the verification-HOW allowlist.

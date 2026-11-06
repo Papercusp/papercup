@@ -2057,6 +2057,76 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     }
   }, 45_000);
 
+  it('completes exact files from a flushed JSON report before child close and ignores invalid report results', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vitest-json-report-completion-'));
+    const file = 'controlled.test.mjs';
+    const reportCases: Array<{ name: string; body: (path: string) => object | string; completes: boolean }> = [
+      {
+        name: 'passed exact file',
+        body: (path: string) => ({ testResults: [{ name: path, status: 'passed' }] }),
+        completes: true,
+      },
+      {
+        name: 'failed exact file',
+        body: (path: string) => ({ testResults: [{ name: path, status: 'failed' }] }),
+        completes: true,
+      },
+      { name: 'malformed report', body: () => '{ not json', completes: false },
+      {
+        name: 'unmatched file',
+        body: (path: string) => ({ testResults: [{ name: `${path}.other`, status: 'passed' }] }),
+        completes: false,
+      },
+      {
+        name: 'nonterminal file status',
+        body: (path: string) => ({ testResults: [{ name: path, status: 'running' }] }),
+        completes: false,
+      },
+    ];
+    try {
+      for (const [index, scenario] of reportCases.entries()) {
+        const reportPath = join(dir, `report-${index}.json`);
+        const child = Object.assign(new EventEmitter(), {
+          pid: 4350 + index, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+        });
+        const progress: string[] = [];
+        const events: string[] = [];
+        const completed = vi.fn(() => events.push('all-files-complete'));
+        child.once('close', () => events.push('close'));
+        const reportBody = scenario.body(resolve(dir, file));
+        writeFileSync(reportPath, typeof reportBody === 'string' ? reportBody : JSON.stringify(reportBody));
+        const pending = runCapturedTestProcess('vitest', [
+          'run', '--reporter=json', `--outputFile=${reportPath}`, file,
+        ], {
+          cwd: dir, files: [file], env: { PATH: '/usr/bin' },
+          systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+          onProgress: (line: string) => progress.push(line), onAllFilesComplete: completed,
+          governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+        });
+        try {
+          child.stdout.write(`JSON report written to ${reportPath}\n`);
+          await new Promise<void>(resolveNext => setImmediate(resolveNext));
+          if (scenario.completes) {
+            expect(completed).toHaveBeenCalledTimes(1);
+            expect(progress.find(line => line.includes('state=file-completed')))
+              .toContain('completedFiles=["controlled.test.mjs"]');
+            expect(events).toEqual(['all-files-complete']);
+          } else {
+            expect(completed).not.toHaveBeenCalled();
+            expect(progress.some(line => line.includes('state=file-completed'))).toBe(false);
+            expect(events).toEqual([]);
+          }
+        } finally {
+          child.emit('close', 0, null);
+          await pending;
+        }
+        expect(events.at(-1)).toBe('close');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('prefers a detached systemd user scope while keeping the owned process-group watchdog', async () => {
     vi.useFakeTimers();
     try {
