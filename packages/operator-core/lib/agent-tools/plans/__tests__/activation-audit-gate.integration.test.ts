@@ -414,7 +414,7 @@ describe('conversation activation audit gate', () => {
         afterWrite: async (body) => { await appendPlanRevision(fx.admin, body); },
       },
       async (current) => ({
-        newBody: current!.replace('# Activation gate', '# Activation gate '),
+        newBody: current!.replace('prove the gate', 'prove the  gate'),
         value: { ok: true },
       }),
     );
@@ -457,7 +457,7 @@ describe('conversation activation audit gate', () => {
         afterWrite: async (body) => { await appendPlanRevision(fx.admin, body); },
       },
       async (current) => ({
-        newBody: current!.replace('# Activation gate ', '# Activation gate overview'),
+        newBody: current!.replace('# Activation gate', '# Activation gate overview'),
         value: { ok: true },
       }),
     );
