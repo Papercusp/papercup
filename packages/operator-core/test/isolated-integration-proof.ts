@@ -21,6 +21,19 @@ import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog
 // @ts-ignore -- reuse the router's immutable diagnostic artifact archive.
 import { createNativeArtifactPersister } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
+/** Vitest deliberately scrubs the process workspace pin. The launcher-owned
+ * workspace survives worker setup; its lifetime is independently observed by
+ * observeIsolatedWorkerLifetime before this worker is released. */
+export function assertIsolatedIntegrationWorkerEnvironment(env: NodeJS.ProcessEnv = process.env) {
+  const workspace = env.PAPERCUSP_WORKSPACE;
+  assert.ok(/^test-runtime-/.test(workspace ?? '')
+    && env.PAPERCUSP_SKIP_PG_DISCOVERY === '1'
+    && env.PC_ISOLATED_RUNTIME_PROOF === '1'
+    && (env.PAPERCUSP_WORKSPACE_ID === undefined || env.PAPERCUSP_WORKSPACE_ID === workspace),
+  'Proof worker requires the owned isolated runtime');
+  return workspace!;
+}
+
 /** Own the parent reader's delayed telemetry until it has been flushed. The
  * child runtime's private DB does not route getOrgPg() in this process. Reuse
  * the migrated org fixture and its canonical pool/URL pinning, preserving the
@@ -195,7 +208,7 @@ export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string,
 /** Snapshot native child diagnostics while its disposable home still exists.
  * Missing or shrinking files are explicit and never erase captured output. */
 export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: Record<string, unknown>,
-  sources: Partial<Record<'stdout' | 'normalized' | 'boot' | 'host-events', string>>, codexHome?: string) {
+  sources: Partial<Record<'stdout' | 'stderr' | 'normalized' | 'boot' | 'host-events', string>>, codexHome?: string) {
   const files = Object.fromEntries(Object.entries({ ...sources,
     ...(codexHome ? { 'codex-tui': join(codexHome, 'log', 'codex-tui.log'),
       'codex-config': join(codexHome, 'config.toml') } : {}),
@@ -243,12 +256,21 @@ export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: R
  * either outcome before the caller can dispose of its native home. A failed
  * diagnostic must remain visible without replacing the original launch error. */
 export async function withIsolatedNativeLaunchDiagnostics<T>(evidenceDir: string,
-  launch: () => Promise<T>, capture: () => Promise<void>): Promise<T> {
+  launch: () => Promise<T>, capture: (outcome:
+    { status: 'fulfilled'; result: T } | { status: 'rejected'; error: unknown }) => Promise<void>): Promise<T> {
   let launchFailed = false;
-  try { return await launch(); }
-  catch (error) { launchFailed = true; throw error; }
+  let outcome!: { status: 'fulfilled'; result: T } | { status: 'rejected'; error: unknown };
+  try {
+    const result = await launch();
+    outcome = { status: 'fulfilled', result };
+    return result;
+  } catch (error) {
+    launchFailed = true;
+    outcome = { status: 'rejected', error };
+    throw error;
+  }
   finally {
-    try { await capture(); }
+    try { await capture(outcome); }
     catch (error) {
       retainIsolatedWorkerProgress(evidenceDir, 'launch-diagnostics-failed', { error: String(error) });
       if (!launchFailed) throw error;
@@ -1005,6 +1027,8 @@ export async function recordIsolatedIntegrationProof(options: {
 export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[] {
   return ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build-result.json',
     'phases/prepare/worker-progress.ndjson',
+    'phases/prepare/native-task-diagnostics.json', 'phases/prepare/native-task-stdout.log',
+    'phases/prepare/native-task-stderr.log',
     'phases/prepare/operator-api-inputs.json',
     'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
     'phases/execute/lifecycle-observation.json',
@@ -1017,6 +1041,7 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/execute/roster-stop-cleanup.jsonl', 'phases/execute/roster-stop-resources.json',
     'phases/execute/roster-stop-native.jsonl',
     'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
+    'phases/execute/native-task-stderr.log',
     'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',
     'phases/execute/native-task-host-events.log',
     'phases/execute/native-task-codex-tui.log', 'phases/execute/native-task-config.json',

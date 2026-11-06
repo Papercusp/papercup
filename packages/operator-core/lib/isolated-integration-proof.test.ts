@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { fork, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, fork, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
@@ -890,6 +891,39 @@ it.for(['receipt', 'throw'] as const)('retains native launch %s diagnostics befo
       .toMatchObject({ task: { taskId: 'native-refused', state: 'failed', exitCode: 1, nativeStreamError: refusal.message },
         files: { stdout: { captured: true }, normalized: { captured: true }, boot: { captured: true } } });
   } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+});
+
+it.for([0, 7])('retains real native command output before home cleanup on exit %i', async code => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-native-command-'));
+  const evidenceDir = join(root, 'phases', 'execute');
+  const nativeHome = join(root, 'native-home');
+  mkdirSync(evidenceDir, { recursive: true });
+  mkdirSync(nativeHome);
+  const sources = { stdout: join(nativeHome, 'stdout.log'), stderr: join(nativeHome, 'stderr.log') };
+  let observedError: unknown;
+  try {
+    const operation = withIsolatedNativeLaunchDiagnostics(evidenceDir, () => promisify(execFile)(process.execPath,
+      ['-e', `process.stdout.write('original stdout'); process.stderr.write('original stderr'); process.exit(${code})`],
+      { cwd: nativeHome, encoding: 'utf8', timeout: 5_000 }), async outcome => {
+      observedError = outcome.status === 'rejected' ? outcome.error : undefined;
+      const streams = outcome.status === 'fulfilled' ? outcome.result
+        : outcome.error as { stdout: string; stderr: string };
+      writeFileSync(sources.stdout, streams.stdout);
+      writeFileSync(sources.stderr, streams.stderr);
+      retainIsolatedNativeTaskDiagnostics(evidenceDir, { state: code ? 'failed' : 'completed', exitCode: code }, sources);
+    }).finally(() => rmSync(nativeHome, { recursive: true, force: true }));
+    if (code) {
+      await expect(operation).rejects.toMatchObject({ code });
+      expect(observedError).toMatchObject({ code });
+    } else await expect(operation).resolves.toMatchObject({ stdout: 'original stdout', stderr: 'original stderr' });
+    expect(existsSync(nativeHome)).toBe(false);
+    expect(readFileSync(join(evidenceDir, 'native-task-stdout.log'), 'utf8')).toBe('original stdout');
+    expect(readFileSync(join(evidenceDir, 'native-task-stderr.log'), 'utf8')).toBe('original stderr');
+    expect(isolatedIntegrationDiagnosticArtifacts(root)).toEqual(expect.arrayContaining([
+      'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
+      'phases/execute/native-task-stderr.log',
+    ]));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it('records failed launch diagnostics while preserving the original launch error', async () => {

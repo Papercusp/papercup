@@ -13,7 +13,7 @@ import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEviden
   readMinecraftEvidenceExport } from './minecraft-evidence';
 import { liveProcExec } from './grader/index';
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
+import { assertIsolatedIntegrationWorkerEnvironment, captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 const assets = fileURLToPath(new URL('../../vendor/minecraft-runtime/', import.meta.url));
@@ -25,10 +25,7 @@ const repoRoot = resolve(import.meta.dirname, '../../../..');
 const worker = process.env.PC_MINECRAFT_RUNTIME_WORKER === '1';
 
 if (worker) {
-if (!/^test-runtime-/.test(process.env.PAPERCUSP_WORKSPACE_ID ?? '')
-  || process.env.PAPERCUSP_SKIP_PG_DISCOVERY !== '1') {
-  throw Error('Minecraft proof worker requires the owned isolated runtime');
-}
+assertIsolatedIntegrationWorkerEnvironment();
 beforeAll(async () => {
   // Fail the expensive setup at its actual prerequisite, with bounded diagnostics.
   const daemon = await liveProcExec('docker', ['version', '--format', '{{.Server.Version}}'], { timeoutMs: 15_000 });

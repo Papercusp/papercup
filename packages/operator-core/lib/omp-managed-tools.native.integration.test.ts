@@ -13,7 +13,8 @@ import { resumeArgsFor, roleLaunchArgs, suLaunchArgs } from '../../../apps/opera
 import { resumeCommandFor } from './events/await/wake-executor';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { captureIsolatedWorker, isolatedWorkerOptions, isolatedWorkerFailureDetail,
-  recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+  recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics,
+  withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -77,7 +78,9 @@ export default function(pi) {
 `;
 
 async function measureLifecycle(url: string, token: string, policy: CapabilityPolicyRequest, lifecycle: boolean,
-  { viaInvoke = false, expectRestricted = true } = {}) {
+  { viaInvoke = false, expectRestricted = true,
+    evidenceDir = process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR } = {}) {
+  expect(evidenceDir, 'Native command diagnostics require retained evidence').toBeTruthy();
   const omp = wellKnownBackendBin('omp') ?? resolveOnPath('omp');
   expect(omp, 'Installed OMP is required').toBeTruthy();
   const version = execFileSync(omp!, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
@@ -134,6 +137,8 @@ async function measureLifecycle(url: string, token: string, policy: CapabilityPo
         args = composeOmpCapabilityTools([...selection, ...wake!.args], { ...policy, surface: 'wake' });
       }
       let result: { stdout: string; stderr: string };
+      let observedResult: typeof result | undefined;
+      result = await withIsolatedNativeLaunchDiagnostics(evidenceDir!, async () => {
       if (surface === 'invoke') {
         const stateDir = join(home, '.papercusp');
         const logDir = join(stateDir, 'logs');
@@ -147,9 +152,10 @@ async function measureLifecycle(url: string, token: string, policy: CapabilityPo
           log: line => logs.push(line) }, 'reviewer', [], { capabilityPolicy: policy,
           inlinePrompt: prompt, cwd: home, extraEnv: Object.fromEntries(Object.entries({ ...env,
             OMP_PROOF_SURFACE: surface }).filter((entry): entry is [string, string] => entry[1] !== undefined)) });
-        result = { stdout: readFileSync(invoked.jsonlPath, 'utf8'),
+        observedResult = { stdout: readFileSync(invoked.jsonlPath, 'utf8'),
           stderr: readFileSync(invoked.jsonlPath.replace(/\.jsonl$/, '.err'), 'utf8') };
-        expect(invoked.exitCode, JSON.stringify({ logs, stderr: result.stderr })).toBe(0);
+        expect(invoked.exitCode, JSON.stringify({ logs, stderr: observedResult.stderr })).toBe(0);
+        return observedResult;
       } else {
         const execution = promisify(execFile)(omp!, [...common, ...args], {
           cwd: home, env: { ...env, OMP_PROOF_SURFACE: surface }, timeout: 30_000,
@@ -157,8 +163,18 @@ async function measureLifecycle(url: string, token: string, policy: CapabilityPo
         });
         // OMP reads piped stdin before the positional prompt.
         execution.child.stdin?.end();
-        result = await execution;
+        return await execution;
       }
+      }, async outcome => {
+        if (outcome.status !== 'rejected') return;
+        const error = outcome.error as { code?: unknown; signal?: unknown; stdout?: string; stderr?: string };
+        const sources = { stdout: join(home, 'stdout.log'), stderr: join(home, 'stderr.log') };
+        writeFileSync(sources.stdout, error?.stdout ?? observedResult?.stdout ?? '', { mode: 0o600 });
+        writeFileSync(sources.stderr, error?.stderr ?? observedResult?.stderr ?? '', { mode: 0o600 });
+        retainIsolatedNativeTaskDiagnostics(evidenceDir!, { client: 'omp', surface, version,
+          state: 'failed', exitCode: error?.code ?? null, signal: error?.signal ?? null,
+          expectRestricted, error: String(outcome.error) }, sources);
+      });
       expect(result.stderr).not.toMatch(/Invalid tool names/);
       const measured = JSON.parse(readFileSync(resultPath, 'utf8'));
       if (privateMcpUrl && process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR) {
@@ -197,7 +213,7 @@ async function measureLifecycle(url: string, token: string, policy: CapabilityPo
 }
 
 /** Cheap native MCP preflight before paying for private API/PG setup. */
-async function localPreflight() {
+async function localPreflight(evidenceDir: string) {
   const requests: { method: string; rpc?: string }[] = [];
   const server = createServer(async (req, res) => {
     const request: { method: string; rpc?: string } = { method: req.method ?? '' };
@@ -228,9 +244,13 @@ async function localPreflight() {
     const address = server.address() as { port: number };
     try {
       const url = 'http://127.0.0.1:' + address.port + '/mcp';
-      const lifecycle = await measureLifecycle(url, 'local-only', admitted, true);
-      const invoked = await measureLifecycle(url, 'local-only', admitted, false, { viaInvoke: true });
-      return { lifecycle, invoked };
+      // The retained-native control exercises OMP's real bash before paying
+      // for the private build; restricted-only preflight never covered it.
+      const retained = await measureLifecycle(url, 'local-only', { ...admitted, cutoverStaging: {} }, false,
+        { expectRestricted: false, evidenceDir });
+      const lifecycle = await measureLifecycle(url, 'local-only', admitted, true, { evidenceDir });
+      const invoked = await measureLifecycle(url, 'local-only', admitted, false, { viaInvoke: true, evidenceDir });
+      return { retained, lifecycle, invoked };
     } catch (error) {
       throw new Error('Native MCP preflight requests=' + JSON.stringify(requests), { cause: error });
     }
@@ -280,7 +300,7 @@ if (privateMcpUrl) {
         'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json',
         'phases/execute/managed-tool-replies.ndjson'],
       prepare: async evidenceDir => {
-        const preflight = await localPreflight();
+        const preflight = await localPreflight(evidenceDir);
         await writeFile(join(evidenceDir, 'native-mcp-preflight.json'), JSON.stringify(preflight));
         prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
           builder: { timeoutMs: 240_000, maxMs: 420_000, env: { ...process.env, VITEST: 'true' } },

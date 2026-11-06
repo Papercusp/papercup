@@ -2460,10 +2460,12 @@ export function parseCli(argv) {
   // options (`test:file -- file -t pattern`). Once the first option appears, the remainder is
   // Vitest's argv; `--dry` is this router's own option and may still appear before it.
   // This router's OWN options must not be mistaken for the first vitest arg, or everything after
-  // them (including the file list) would be forwarded to vitest as argv. `--require-ran` takes the
-  // `=` form only, deliberately: a space-separated value would be indistinguishable from a test
-  // path in exactly this scan.
-  const isOwnOption = (arg) => arg === '--dry' || arg === '--startup-only' || arg.startsWith('--require-ran=');
+  // them (including the file list) would be forwarded to vitest as argv. `--require-ran`,
+  // `--budget-from`, and `--child-estimate-ms` take the `=` form only: a space-separated value
+  // would be indistinguishable from a test path in exactly this scan.
+  const isOwnOption = (arg) => arg === '--dry' || arg === '--startup-only' || arg.startsWith('--require-ran=')
+    || arg === '--budget-from' || arg.startsWith('--budget-from=')
+    || arg === '--child-estimate-ms' || arg.startsWith('--child-estimate-ms=');
   const firstVitestArg = separator < 0
     ? argv.findIndex((arg) => !isOwnOption(arg) && arg.startsWith('-'))
     : -1;
@@ -2477,13 +2479,38 @@ export function parseCli(argv) {
     : firstVitestArg >= 0
       ? argv.slice(firstVitestArg)
       : [];
+  const budgetFromArgs = own.filter(arg => arg === '--budget-from' || arg.startsWith('--budget-from='));
+  const childEstimateArgs = own.filter(arg => arg === '--child-estimate-ms' || arg.startsWith('--child-estimate-ms='));
+  const misplacedBudgetArg = vitestArgs.find(arg => arg === '--budget-from' || arg.startsWith('--budget-from=')
+    || arg === '--child-estimate-ms' || arg.startsWith('--child-estimate-ms='));
+  let verifierBudgetError;
+  let verifierBudget;
+  if (misplacedBudgetArg) {
+    verifierBudgetError = 'private verifier budget options must appear before the Vitest `--` separator';
+  } else if (budgetFromArgs.length > 1 || childEstimateArgs.length > 1) {
+    verifierBudgetError = 'private verifier budget options may be specified only once';
+  } else if (budgetFromArgs.some(arg => arg === '--budget-from')
+    || childEstimateArgs.some(arg => arg === '--child-estimate-ms')) {
+    verifierBudgetError = 'use --budget-from=<phase-jsonl> and --child-estimate-ms=<positive-ms>';
+  } else if (Boolean(budgetFromArgs.length) !== Boolean(childEstimateArgs.length)) {
+    verifierBudgetError = 'private verifier forecast requires --budget-from and --child-estimate-ms together';
+  } else if (budgetFromArgs.length) {
+    const budgetFrom = budgetFromArgs[0].slice('--budget-from='.length);
+    const childEstimateText = childEstimateArgs[0].slice('--child-estimate-ms='.length);
+    const childEstimateMs = Number(childEstimateText);
+    if (!budgetFrom) verifierBudgetError = '--budget-from must name a saved phase receipt';
+    else if (!/^\d+$/.test(childEstimateText) || !Number.isSafeInteger(childEstimateMs) || childEstimateMs <= 0)
+      verifierBudgetError = '--child-estimate-ms must be a positive safe integer';
+    else verifierBudget = { budgetFrom, childEstimateMs };
+  }
   const dry = own.includes('--dry');
   const requireRan = requireRanFrom(own);
   const files = own.filter((arg) => !isOwnOption(arg));
   // WI-39830: normalize the name filter to the joined form ONCE, here, so every downstream
   // consumer of `vitestArgs` gets it — the main `vitest run` spawn, the per-file fallback
   // re-run, and `nameFilterFrom` (which already accepts both forms) alike.
-  return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs),
+  return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs), verifierBudget,
+    verifierBudgetError,
     ...(own.includes('--startup-only') ? { startupOnly: true } : {}) };
 }
 
@@ -3882,7 +3909,16 @@ export async function main(
     },
   });
   try {
-  const { dry, requireRan, files, startupOnly, vitestArgs: requestedVitestArgs } = parseCli(argv);
+  const { dry, requireRan, files, startupOnly, verifierBudget, verifierBudgetError,
+    vitestArgs: requestedVitestArgs } = parseCli(argv);
+  if (verifierBudgetError) {
+    console.error(formatRouteError(verifierBudgetError));
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
+  if (dry && verifierBudget) {
+    console.error(formatRouteError('private verifier budget options require an executable committed private-integration route'));
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
   let loaderPolicy;
   try { loaderPolicy = vitestConfigLoaderPolicy(requestedVitestArgs); }
   catch (error) { console.error(formatRouteError(error.message)); return 2; }
@@ -3890,7 +3926,8 @@ export async function main(
   try { assertExecutedProofOutputCustody(repoRoot); }
   catch (error) { console.error(formatRouteError(error.message)); return 2; }
   if (files.length === 0) {
-    console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
+    console.error('usage: npm run test:file -- [--budget-from=<phase-jsonl> ' +
+      '--child-estimate-ms=<positive-ms>] <test-file> [test-file…] [-- <vitest args>]');
     return TEST_FILE_EXIT_NOT_MEASURED;
   }
   const nonVerdictOption = nonVerdictOptionFrom(vitestArgs);
@@ -3949,6 +3986,10 @@ export async function main(
   if (!dry) {
     try {
       const inputs = privateIntegrationVerifierInputs(repoRoot, routes.map(route => route.absolute));
+      if (verifierBudget && !inputs) {
+        console.error(formatRouteError('private verifier budget options require a committed private-integration verifier route'));
+        return TEST_FILE_EXIT_NOT_MEASURED;
+      }
       if (inputs) {
         assertPrivateIntegrationEvidence();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
@@ -3966,7 +4007,11 @@ export async function main(
         // A parent's ambient admin URL must not bypass that ordering.
         delete verifierEnv.HARNESS_ADMIN_DATABASE_URL;
         try {
+          const verifierArgv = argv.filter(arg => !arg.startsWith('--budget-from=')
+            && !arg.startsWith('--child-estimate-ms='));
           return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,
+            ...(verifierBudget ? { budgetFrom: resolve(repoRoot, verifierBudget.budgetFrom),
+              childEstimateMs: verifierBudget.childEstimateMs } : {}),
             releaseParentPrivatePg: Boolean(process.env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV]),
             // The verifier must finish committed source/dependency preparation
             // before this callback allocates private PG. Ordinary test children
@@ -3977,7 +4022,7 @@ export async function main(
             },
             env: verifierEnv,
             command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',
-              ...argv.map(arg => sourceArgs.get(arg) ?? arg)] });
+              ...verifierArgv.map(arg => sourceArgs.get(arg) ?? arg)] });
         } finally {
           if (!existsSync(receiptPath)) rmSync(receiptDir, { recursive: true, force: true });
         }

@@ -3,8 +3,8 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
-import { readdirSync } from 'node:fs';
-import { expect, it, type TestContext } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { expect, it, type TestContext, vi } from 'vitest';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
@@ -115,18 +115,35 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
 }
 
 it('checks native egress startup without private API compilation or model requests', async context => {
-  const result = await runHarness({
-    contract: { name: 'native-egress-prerequisite', phases: [{ id: 'prepare' }] },
-    evidenceRoot: defaultEvidenceRoot('native-egress-prerequisite'),
-    retainedArtifacts: ['phases/prepare/native-egress-preflight.json'],
-    runPhase: async phase => {
-      await preflightCurrentSuNativeEgress(phase.evidenceDir);
-      return { ok: true };
-    },
-  });
-  Object.assign(context.task.meta, { papercuspNativeEgressRunId: result.runId });
-  console.info('CURRENT_SU_NATIVE_EGRESS_PROOF_RUN ' + result.runId);
-  expect(result.verdict, JSON.stringify({ runId: result.runId, phases: result.phases })).toBe('pass');
+  const benchDockerHost = privateNativeDockerHost(['--native-docker-host=unix:///run/docker-bench.sock']);
+  vi.stubEnv('DOCKER_HOST', benchDockerHost);
+  try {
+    const result = await runHarness({
+      contract: { name: 'native-egress-prerequisite', phases: [{ id: 'prepare' }] },
+      evidenceRoot: defaultEvidenceRoot('native-egress-prerequisite'),
+      retainedArtifacts: ['phases/prepare/native-egress-preflight.json'],
+      runPhase: async phase => {
+        await preflightCurrentSuNativeEgress(phase.evidenceDir);
+        const receipt = JSON.parse(readFileSync(join(phase.evidenceDir, 'native-egress-preflight.json'), 'utf8')) as {
+          status: string;
+          dockerHost: string | null;
+          relayConnections: number | null;
+          cleanupErrors: string[];
+          commands: Array<{ args: string[]; elapsedMs: number }>;
+        };
+        expect(receipt).toMatchObject({ status: 'ready', dockerHost: benchDockerHost,
+          relayConnections: 0, cleanupErrors: [] });
+        expect(receipt.commands.length).toBeGreaterThan(0);
+        expect(receipt.commands.every(command => Number.isFinite(command.elapsedMs) && command.elapsedMs >= 0)).toBe(true);
+        return { ok: true };
+      },
+    });
+    Object.assign(context.task.meta, { papercuspNativeEgressRunId: result.runId });
+    console.info('CURRENT_SU_NATIVE_EGRESS_PROOF_RUN ' + result.runId);
+    expect(result.verdict, JSON.stringify({ runId: result.runId, phases: result.phases })).toBe('pass');
+  } finally {
+    vi.unstubAllEnvs();
+  }
 }, 120_000);
 
 it('launches autonomous current-su through the native container adapter without provider forwarding',

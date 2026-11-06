@@ -2,8 +2,48 @@
  * as the worker's own failure (WI-6554700010042656: a 180s execute deadline killed
  * the process group mid-import, tsx's esbuild service died with it, and the phase
  * detail reported only "TransformError: The service is no longer running"). */
-import { describe, expect, it } from 'vitest';
-import { codexManagedToolsNativeIntegrationSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions } from './isolated-integration-proof';
+import { describe, expect, it, vi } from 'vitest';
+import { assertIsolatedIntegrationWorkerEnvironment, codexManagedToolsNativeIntegrationSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions } from './isolated-integration-proof';
+
+describe('isolated integration worker environment', () => {
+  const owned = { PAPERCUSP_WORKSPACE: 'test-runtime-private',
+    PAPERCUSP_WORKSPACE_ID: 'test-runtime-private', PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+    PC_ISOLATED_RUNTIME_PROOF: '1' };
+
+  it('accepts the owned workspace after actual Vitest setup scrubs its process pin', async () => {
+    const previous = { ...process.env };
+    try {
+      Object.assign(process.env, owned);
+      vi.resetModules();
+      await import('../../../libs/test-config/src/setup-hermetic-env');
+      expect(process.env.PAPERCUSP_WORKSPACE_ID).toBeUndefined();
+      expect(process.env.PAPERCUSP_WORKSPACE).toBe(owned.PAPERCUSP_WORKSPACE);
+      expect(process.env.PAPERCUSP_SKIP_PG_DISCOVERY).toBe('1');
+      // Reproduces the former guard's failure after the launcher's correct handoff.
+      expect(/^test-runtime-/.test(process.env.PAPERCUSP_WORKSPACE_ID ?? '')).toBe(false);
+      expect(assertIsolatedIntegrationWorkerEnvironment()).toBe(owned.PAPERCUSP_WORKSPACE);
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+      Object.assign(process.env, previous);
+    }
+  });
+
+  it('accepts matching launcher pins before worker setup', () => {
+    expect(assertIsolatedIntegrationWorkerEnvironment(owned)).toBe(owned.PAPERCUSP_WORKSPACE);
+  });
+
+  it.each([
+    { PAPERCUSP_WORKSPACE: 'papercusp-workspace', PAPERCUSP_WORKSPACE_ID: undefined },
+    { PAPERCUSP_WORKSPACE: undefined },
+    { PAPERCUSP_WORKSPACE_ID: 'test-runtime-another' },
+    { PAPERCUSP_SKIP_PG_DISCOVERY: undefined },
+    { PAPERCUSP_SKIP_PG_DISCOVERY: '0' },
+    { PC_ISOLATED_RUNTIME_PROOF: undefined },
+  ])('refuses an unowned or inconsistent runtime: %j', override => {
+    expect(() => assertIsolatedIntegrationWorkerEnvironment({ ...owned, ...override }))
+      .toThrow('Proof worker requires the owned isolated runtime');
+  });
+});
 
 it('pins the private registry writer and PG state store in the Codex proof source manifest', () => {
   expect(codexManagedToolsNativeIntegrationSourcePaths).toEqual(expect.arrayContaining([

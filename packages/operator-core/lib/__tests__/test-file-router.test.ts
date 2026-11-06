@@ -28,7 +28,11 @@ it('records a real node:test child when the focused router starts without a TS l
       const rows = [];
       const session = await beginNodeTestLedger({ repoRoot: dir,
         readSnapshot: async () => ({ commit: 'feedface00', porcelain: '' }),
-        writeRows: async batch => { rows.push(...batch); } });
+        writeRows: async batch => {
+          rows.push(...batch);
+          return batch.map(row => ({ filePath: row.filePath, status: row.status,
+            outcome: 'inserted', id: '12345' }));
+        } });
       console.error('NODE_LEDGER_STAGE run-child');
       const run = spawnSync(process.execPath, ['--test', ...session.reporterArgs, 'fx.test.mjs'],
         { cwd: dir, encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } });
@@ -474,7 +478,7 @@ describe('test-files router', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('defers private PG admission until verifier dependency preparation and before any test child', async () => {
+  it('forwards the private verifier forecast and defers PG admission until dependency preparation', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
     const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
@@ -501,7 +505,9 @@ describe('test-files router', () => {
         });
         stages.push('child-environment-ready'); receiptDir = join(options.receiptPath, '..'); return 7;
       });
-      const result = await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
+      const budgetFrom = join(tmpdir(), 'saved-private-verifier-phases.jsonl');
+      const result = await main([`--budget-from=${budgetFrom}`, '--child-estimate-ms=197058',
+        resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
         preflightPrivateIntegrationPgImpl: preflight,
         restrictedHoldPreflightImpl: restricted,
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
@@ -513,6 +519,7 @@ describe('test-files router', () => {
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
       expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
         ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
+        budgetFrom, childEstimateMs: 197058,
         releaseParentPrivatePg: true, prepareChildEnv: expect.any(Function),
         command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
           '--', '--testNamePattern=private Create'],
@@ -528,6 +535,42 @@ describe('test-files router', () => {
       if (oldAdminDatabaseUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
       else process.env.HARNESS_ADMIN_DATABASE_URL = oldAdminDatabaseUrl;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an incomplete or unknown verifier budget forecast before source copying, PG admission, or a test child', async () => {
+    const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+    const oldOptions = process.env.NODE_OPTIONS;
+    const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+    const frozen = vi.fn(), preflight = vi.fn(), list = vi.fn(), run = vi.fn();
+    const restricted = vi.fn(() => ({ verdict: 'admit' }));
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      const cases = [
+        { args: ['--budget-from=/tmp/saved-verifier-phases.jsonl'],
+          reason: 'requires --budget-from and --child-estimate-ms together' },
+        { args: ['--child-estimate-ms=197058'],
+          reason: 'requires --budget-from and --child-estimate-ms together' },
+        { args: ['--budget-from=/tmp/saved-verifier-phases.jsonl', '--child-estimate-ms=0'],
+          reason: '--child-estimate-ms must be a positive safe integer' },
+      ];
+      for (const { args, reason } of cases) {
+        expect(await main([...args, resolve(REPO_ROOT, file)], {
+          restrictedHoldPreflightImpl: restricted,
+          preflightPrivateIntegrationPgImpl: preflight,
+          runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+        })).toBe(2);
+        expect(warning).toHaveBeenLastCalledWith(expect.stringContaining(reason));
+      }
+      expect(restricted).not.toHaveBeenCalled(); expect(preflight).not.toHaveBeenCalled();
+      expect(frozen).not.toHaveBeenCalled(); expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    } finally {
+      if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
+      warning.mockRestore();
     }
   });
 
