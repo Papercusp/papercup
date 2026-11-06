@@ -1,0 +1,7 @@
+---
+rel_path: "git-sync/content-errors/af63a87d580c99530525704b6dec8d03095a5a17ece8c5b466ac3318d45cc2da.json"
+updated_at: 1793953886909
+_body: "content"
+---
+
+{"schemaVersion":1,"workspaceId":"papercusp-workspace","harness":"papercusp","files":[{"scope":"superproject","file":"packages/operator-core/lib/agent-tools/sessions/digest.selected-operator.integration.test.ts","detectorKey":"secrets","error":"credential-shaped content would enter git history (1 finding(s) at line 92 [secret-assignment]). This file is EXCLUDED from the commit and left on disk — fix it in place, do not retry the write. If this is a credential STAND-IN for a test, replace it with a low-entropy, role-named constant (the in-tree convention is NEVER_EMIT_MARKER = 'never-emit-me'; six social adapter suites use it with zero incidents) — the conformance check is a plain substring search, so a realistic-looking value buys nothing. Only if the file must genuinely carry credential shapes as fixtures, register the exact path: pot_git:secrets_exemptions { action:'add', path:'packages/operator-core/lib/agent-tools/sessions/digest.selected-operator.integration.test.ts', reason:'<why this is a false positive>' }. Detail: refusing to publish — 1 secret(s): packages/operator-core/lib/agent-tools/sessions/digest.selected-operator.integration.test.ts:92 [secret-assignment] sk-v…ue (25 chars)","fixerRole":"content-fixer","contentHash":"f94031bf964d2a4d656bc0365e8ce79f5ea9af1e7f1285f19a415a6b2755fd6f","detectorResultHash":"fe097b7e9a7d787c1969afb90fe5e6d22a2997338413370f3b2c478952e947cf"}]}

@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045122-3ba05df775661c3fb557387691e7b19d-reconcile.json"
+updated_at: 1793953115405
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045122:3ba05df775661c3fb557387691e7b19d",
+  "inputSha256": "3ba05df775661c3fb557387691e7b19d93b05e309059b247c51e03ab51b1e330",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-06T08:18:35.404Z",
+  "actor": "su-d990b197-6745-4723-abd6-977d9686780c",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045122",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "5cb9ee5c62923c98dae286e6d0543bdc186ebbbe7d4482f05fbee451391d3d2e",
+      "observedParkFingerprint": "5cb9ee5c62923c98dae286e6d0543bdc186ebbbe7d4482f05fbee451391d3d2e",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi verified owner AUTO SELF grant mode-instructions:auto authorizes cell-identity-context-delta-integration-2026-11-02 original14. P008 temporary custody WI-6554700010030915 is held by d990 after D011/D016/D017 and scoped prior adoption receipts read. Canonical P001 WI5121 now DONE/committed, plans:items confirms done. Adopt ONLY canonical P002 WI5122 conversion-owned/unassigned migration park; preserve IDs, DAG, BARs, every nonmigration hold and independent Discovery admission. Global P008 remains open/unimplemented.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045122-3ba05df775661c3fb557387691e7b19d-reconcile.json"
+}
