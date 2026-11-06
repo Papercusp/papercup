@@ -579,6 +579,84 @@ describe('original authority context fidelity', () => {
     });
   });
 
+  it.each(['distinct', 'r-finding-merge'] as const)(
+    'compares a signed recovery against a needs-human neighbor read-only for a %s result', async verdict => {
+      const original = await create('Signed recovery with a human-blocked comparison');
+      const neighbor = await create(original.title);
+      await setNeedsHumanBlockers(neighbor.id);
+      const neighborBefore = await row(neighbor.id);
+      const [a, b] = [original.id, neighbor.id].sort();
+      h.model.mockResolvedValue(distinctPair(a, b));
+
+      const signed = await request(original.id);
+      await tick();
+      const heldRecovery = (await row(original.id)).payload._admissionRecovery;
+      expect(heldRecovery).toMatchObject({ requestId: signed.request.requestId, state: 'held', stage: 'screen' });
+
+      h.model.mockResolvedValueOnce(verdict === 'distinct' ? distinctPair(a, b) : {
+        text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+        json: { judgements: [{ pairKey: [a, b].sort().join('::'), verdict, reason: 'Same finding' }] },
+      });
+      const ordinary = await tick();
+      expect(h.model).toHaveBeenCalled();
+      expect(await row(neighbor.id)).toEqual(neighborBefore);
+      expect((await row(original.id)).payload._admissionRecovery).toEqual(heldRecovery);
+      expect(h.claim).not.toHaveBeenCalled();
+      expect(h.wake).not.toHaveBeenCalled();
+      if (verdict === 'distinct') {
+        expect(ordinary).toMatchObject({ promoted: 1, merged: 0 });
+        expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+      } else {
+        expect(ordinary).toMatchObject({ promoted: 0, merged: 0 });
+        expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+        expect(await db.sql`SELECT * FROM harness_shared.dedup_edges`).toEqual([]);
+        expect(await db.sql`SELECT * FROM harness_shared.coord_links`).toEqual([]);
+      }
+    },
+  );
+
+  it('does not compare a signed target when a needs-human neighbor also has a non-human blocker', async () => {
+    const original = await create('Signed recovery with a mixed-blocker comparison');
+    const neighbor = await create(original.title);
+    await setNeedsHumanBlockers(neighbor.id, true);
+    const neighborBefore = await row(neighbor.id);
+    const [a, b] = [original.id, neighbor.id].sort();
+    h.model.mockResolvedValue(distinctPair(a, b));
+    await request(original.id);
+    await tick();
+    const callsAfterExact = h.model.mock.calls.length;
+    const heldRecovery = (await row(original.id)).payload._admissionRecovery;
+
+    await tick();
+    expect(h.model).toHaveBeenCalledTimes(callsAfterExact);
+    expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null,
+      payload: { _admissionRecovery: { state: 'held', stage: 'screen' } } });
+    expect((await row(original.id)).payload._admissionRecovery).toEqual(heldRecovery);
+    expect(await row(neighbor.id)).toEqual(neighborBefore);
+  });
+
+  it('completes the signed recovery comparison against an audited watchdog park without changing the park', async () => {
+    const original = await create('Signed recovery against watchdog duplicate');
+    const parked = await create(original.title);
+    await setWatchdogPark(parked.id);
+    const parkedBefore = await row(parked.id);
+    const [a, b] = [original.id, parked.id].sort();
+    h.model.mockResolvedValue(distinctPair(a, b));
+
+    const signed = await request(original.id);
+    await tick();
+    const heldRecovery = (await row(original.id)).payload._admissionRecovery;
+    expect(heldRecovery).toMatchObject({ requestId: signed.request.requestId, state: 'held', stage: 'screen' });
+
+    const ordinary = await tick();
+    expect(ordinary).toMatchObject({ promoted: 1, merged: 0 });
+    expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+    expect((await row(original.id)).payload._admissionRecovery).toEqual(heldRecovery);
+    expect(await row(parked.id)).toEqual(parkedBefore);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
   it('persists a refused component request on the ordinary ledger without granting priority or mutating it', async () => {
     const original = await create('Refused component target');
     const twin = await create(original.title);
@@ -708,6 +786,40 @@ async function row(id: string) {
     FROM harness_shared.work_items WHERE workspace_id = ${scope.workspaceId}
       AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
   return r!;
+}
+
+async function setNeedsHumanBlockers(id: string, includeRuntime = false) {
+  const at = new Date().toISOString();
+  const blockers = [
+    { ref: `consult:human-decision:${id}`, kind: 'human', status: 'active',
+      capability: 'product-decision', capabilitySource: 'explicit', summary: 'A human decision remains open',
+      createdAt: at, updatedAt: at, createdBy: 'owner' },
+    ...(includeRuntime ? [{ ref: `runtime:secondary:${id}`, kind: 'runtime', status: 'active',
+      capability: 'live-dependency', capabilitySource: 'explicit', summary: 'A runtime dependency remains active',
+      createdAt: at, updatedAt: at, createdBy: 'system:test' }] : []),
+  ];
+  await db.sql`UPDATE harness_shared.work_items SET status = 'needs-human', taken_by = NULL,
+    payload = payload || ${db.sql.typed(JSON.stringify({ needsOwnerAction: true, externalBlockers: blockers }), 25)}::jsonb
+    WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
+}
+
+async function setWatchdogPark(id: string) {
+  const actor = 'su-22222222-2222-4222-8222-222222222222';
+  const at = new Date().toISOString();
+  const reason = 'watchdog duplicate remains parked until its canonical test issue is resolved';
+  const releaseContract = { owner: actor, trigger: 'work-item:done:WI-canonical',
+    condition: 'WI-canonical reaches done, then reconcile this duplicate.',
+    evidence: 'canonical work item', reachability: 'reachable' };
+  const payload = { _claimHold: true,
+    _ei: { source: 'su', created_by: 'system:improvement-watchdog', found_during: 'improvement-watchdog' },
+    claim_hold_by: actor, claim_hold_reason: reason, claim_hold_at: at, claim_hold_release: releaseContract };
+  await db.sql`UPDATE harness_shared.work_items SET kind = 'bug', status = 'open', admission = 'admitted',
+    taken_by = NULL, payload = payload || ${db.sql.typed(JSON.stringify(payload), 25)}::jsonb
+    WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
+  await db.sql`INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
+    VALUES (${id + '-watchdog-park'}, ${Date.parse(at)}, ${scope.workspaceId}, ${actor},
+      'work_items:claim_hold:set', ${id},
+      ${db.sql.typed(JSON.stringify({ mode: 'claim_hold', by: actor, reason, releaseContract }), 25)}::jsonb)`;
 }
 
 const reviewLeader = 'su-11111111-1111-4111-8111-111111111111';

@@ -53,6 +53,17 @@ export function verifyCommittedWorkRoot(workRoot: any, expectedSha: any, require
 export function writePreparedWorkRootReceipt(workRoot: any, expectedSha: any, receiptPath: any): string;
 /** A shadow install is a source reader, not a physical dependency donor. */
 export function committedWorkRootDependencyDonor(workRoot: any): string;
+/**
+ * Freeze dependency bytes under the donor reader, using the maintained generation
+ * copier (independent inodes/CoW, headroom and copy admission). Builds and tests
+ * run after this bounded reader is released. Retained roots own their copies;
+ * they need neither a live donor lease nor a second dependency cache.
+ * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
+ */
+export function materializeIndependentDependencies(repoRoot: any, workRoot: any): Promise<{
+    paths: string[];
+    workspacePaths: Set<string>;
+}>;
 export function retainCommittedWorkRoot(workRoot: any, expectedSha: any, artifactPath: any): Promise<{
     root: string;
     sha: any;

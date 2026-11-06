@@ -86,13 +86,17 @@ export function enumerateSecuritySourcePopulation(snapshot: SecuritySourceSnapsh
   }
   const inventory = inventorySources({ sources: selected, repositories, unresolved,
     ...(snapshot.selection ? { selection: snapshot.selection } : {}) });
+  // Archival admission can exceed the parser budget. Reuse the inventory's
+  // refusal so the independent site pass cannot parse a blob it left unknown.
+  const parserLimited = new Set(inventory.unresolved
+    .filter(row => row.reason === 'non-utf8-or-over-parser-budget').map(row => row.path));
   const fileKinds = new Map(inventory.files.map(file => [file.path, file.sourceKind]));
   const sites: Array<ReturnType<typeof siteEvidence> & { fileSha256: string; sourceKind: string }> = [];
   let siteBytes = 2;
   // Leave room for file metadata, discovery groups and explicit omission gaps.
   const siteByteLimit = Math.floor(budget.maxEvidenceBytes / 2);
   for (const source of selected) {
-    if (!/\.[cm]?[jt]sx?$/.test(source.path)) continue;
+    if (!/\.[cm]?[jt]sx?$/.test(source.path) || parserLimited.has(source.path)) continue;
     try {
       const unit = censusSites(source.path, source.bytes.toString('utf8'));
       const sourceKind = fileKinds.get(source.path)!;

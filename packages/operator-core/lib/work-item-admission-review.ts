@@ -56,31 +56,39 @@ async function authorize(sql: Sql, scope: AdmissionRecoveryScope, request: Revie
   }
   const item = await snapshot(sql, scope);
   if (item.assignee !== request.caller) {
-    const membership = await latestFleetMembership(scope.workspaceId, request.caller, sql);
-    if (membership?.fleetRole !== 'leader' || !membership.fleetSlug) {
-      throw new AdmissionAuthorityRefused('review requester is neither current custodian nor canonical fleet leader');
-    }
-    const rows = await sql<{ agent_id: string }[]>`
-      SELECT DISTINCT agent_id FROM harness_shared.fleet_assignment
+    const rows = await sql<{ agent_id: string; fleet_slug: string }[]>`
+      SELECT DISTINCT agent_id, fleet_slug FROM harness_shared.fleet_assignment
        WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
-         AND work_item_id = ${scope.workItemId} AND fleet_slug = ${membership.fleetSlug}
-         AND agent_id IS NOT NULL`;
-    let placedTarget = rows.length === 1 ? rows[0]!.agent_id : null;
+         AND work_item_id = ${scope.workItemId} AND agent_id IS NOT NULL`;
+    let placedTarget: string | null = null;
+    let exactSignedRecoveryCaller = false;
     // An unassigned screening reservation retains signed placement for review
-    // only. It cannot override a custodian or ambiguous current placement.
+    // only. The exact live requester may ask for review without acquiring or
+    // fabricating custody; it cannot override a custodian or any current placement.
     if (rows.length === 0 && !item.assignee) {
       try {
         placedTarget = await readVerifiedAdmissionRecoveryTarget(scope, sql);
+        exactSignedRecoveryCaller = placedTarget === request.caller;
       } catch (error) {
         if (!(error instanceof AdmissionRecoveryRefused)) throw error;
         throw new AdmissionAuthorityRefused(error.message);
       }
     }
-    if (!placedTarget) throw new AdmissionAuthorityRefused('exact same-fleet placement unknown or ambiguous');
-    const target = await latestFleetMembership(scope.workspaceId, placedTarget, sql);
-    if (target?.fleetSlug !== membership.fleetSlug ||
-        item.assignee && item.assignee !== placedTarget) {
-      throw new AdmissionAuthorityRefused('current membership and review placement disagree');
+    if (!exactSignedRecoveryCaller) {
+      const membership = await latestFleetMembership(scope.workspaceId, request.caller, sql);
+      if (membership?.fleetRole !== 'leader' || !membership.fleetSlug) {
+        throw new AdmissionAuthorityRefused('review requester is neither current custodian nor canonical fleet leader');
+      }
+      if (rows.length > 0) {
+        const sameFleetRows = rows.filter(row => row.fleet_slug === membership.fleetSlug);
+        placedTarget = sameFleetRows.length === 1 ? sameFleetRows[0]!.agent_id : null;
+      }
+      if (!placedTarget) throw new AdmissionAuthorityRefused('exact same-fleet placement unknown or ambiguous');
+      const target = await latestFleetMembership(scope.workspaceId, placedTarget, sql);
+      if (target?.fleetSlug !== membership.fleetSlug ||
+          item.assignee && item.assignee !== placedTarget) {
+        throw new AdmissionAuthorityRefused('current membership and review placement disagree');
+      }
     }
     const contract = (item.payload as Record<string, unknown>).claim_hold_release as { owner?: unknown } | undefined;
     if (contract && contract.owner !== request.caller) {

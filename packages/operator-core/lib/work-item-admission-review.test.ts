@@ -11,6 +11,8 @@ type Candidate = {
 
 const mocks = vi.hoisted(() => ({
   getPresence: vi.fn(),
+  latestFleetMembership: vi.fn(),
+  readVerifiedRecoveryTarget: vi.fn(),
   readSnapshots: vi.fn(),
   authorizeReplay: vi.fn(),
   runPromoter: vi.fn(),
@@ -20,6 +22,11 @@ vi.mock('./operator-secret-key', () => ({
   decodeOperatorSecretKey: () => Buffer.from('unit-review-key'),
 }));
 vi.mock('./agent-tools/coordination/presence', () => ({ getPresence: mocks.getPresence }));
+vi.mock('./fleet-membership-store', () => ({ latestFleetMembership: mocks.latestFleetMembership }));
+vi.mock('./work-item-admission-recovery', async importOriginal => ({
+  ...(await importOriginal<typeof import('./work-item-admission-recovery')>()),
+  readVerifiedAdmissionRecoveryTarget: mocks.readVerifiedRecoveryTarget,
+}));
 vi.mock('./work-item-admission-authority', async importOriginal => ({
   ...(await importOriginal<typeof import('./work-item-admission-authority')>()),
   authorizeAdmissionReviewReplay: mocks.authorizeReplay,
@@ -76,6 +83,45 @@ const makeValidRequest = (sequence: number, featureId: string) => {
   const signature = createHmac('sha256', 'unit-review-key')
     .update(canonical(['admission-review-v1', scope, unsigned])).digest('hex');
   return { ...unsigned, signature };
+};
+
+const makeReviewSql = (candidates: Candidate[], selectedIds: readonly string[]) => {
+  const writes: Array<{ query: string; values: unknown[] }> = [];
+  let clock = 1_800_000_000_000;
+  const sql = Object.assign(vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+    const query = parts.join('?').replace(/\s+/g, ' ').trim();
+    writes.push({ query, values });
+    if (query.startsWith("SELECT feature_id, payload->'_admissionReviewRequest' AS request")) {
+      return candidates.filter(candidate => selectedIds.includes(candidate.feature_id) && candidate.receiptId === null)
+        .map(({ feature_id, request }) => ({ feature_id, request }));
+    }
+    if (query.startsWith('UPDATE harness_shared.work_items') &&
+        query.includes('_admissionReviewLastAttemptAtMs')) {
+      const candidate = candidates.find(row => values.includes(row.feature_id));
+      expect(candidate).toBeDefined();
+      expect(values).toContain(JSON.stringify(candidate!.request));
+      candidate!.attemptedAtMs = clock++;
+      return [{ feature_id: candidate!.feature_id }];
+    }
+    if (query.startsWith('SELECT value_b64 FROM harness_shared.operator_secrets')) {
+      return [{ value_b64: 'dW5pdC1yZXZpZXcta2V5' }];
+    }
+    if (query.startsWith('SELECT id FROM harness_shared.routines')) return [{ id: 'rt-test-reviewer' }];
+    if (query.startsWith('SELECT DISTINCT agent_id, fleet_slug FROM harness_shared.fleet_assignment')) return [];
+    if (query.startsWith('UPDATE harness_shared.work_items') &&
+        query.includes('_admissionReviewReceipt')) {
+      const candidate = candidates.find(row => values.includes(row.feature_id));
+      const receiptText = values.find(value => typeof value === 'string' && value.includes('"requestId"'));
+      expect(candidate).toBeDefined();
+      expect(receiptText).toBeDefined();
+      candidate!.receiptId = (JSON.parse(String(receiptText)) as { requestId: string }).requestId;
+      return [{ feature_id: candidate!.feature_id }];
+    }
+    throw new Error('unexpected admission-review SQL: ' + query);
+  }), {
+    typed: vi.fn((value: string) => value),
+  }) as unknown as Sql;
+  return { sql, writes };
 };
 
 describe('admission review queue fairness', () => {
@@ -182,5 +228,114 @@ describe('admission review queue fairness', () => {
     expect(validCandidate.attemptedAtMs).not.toBeNull();
     expect(validCandidate.receiptId).toBe(validRequest.requestId);
     expect(candidates.filter(row => row !== validCandidate).every(row => row.receiptId === null)).toBe(true);
+  });
+});
+
+describe('signed admission review recovery', () => {
+  const workspaceId = 'ws-test';
+  const harnessSlug = 'papercusp';
+  const featureId = 'EI-review-signed-original';
+  const neighborId = 'EI-review-protected-neighbor';
+  const scope = { workspaceId, harnessSlug, workItemId: featureId };
+
+  const prepare = (candidates: Candidate[], targetReads: Array<string | null>) => {
+    mocks.getPresence.mockReset().mockImplementation(async (ownerId: string) => ({
+      ownerId, revoked: false, workspaceId,
+    }));
+    mocks.latestFleetMembership.mockReset().mockResolvedValue(null);
+    mocks.readVerifiedRecoveryTarget.mockReset().mockImplementation(async () => targetReads.shift() ?? null);
+    mocks.authorizeReplay.mockReset().mockResolvedValue(7);
+    mocks.readSnapshots.mockReset().mockImplementation(async (_sql: unknown, selection: { ids: string[] }) =>
+      new Map(selection.ids.map(id => {
+        const candidate = candidates.find(row => row.feature_id === id);
+        return [id, {
+          fingerprint: 'fingerprint:' + id,
+          assignee: null,
+          payload: { _admissionReviewRequest: candidate?.request },
+        }];
+      })));
+    mocks.runPromoter.mockReset().mockImplementation(async (...args) => {
+      const input = args[0] as ReviewPromoterInput & { targetItemIds: string[] };
+      await input.reviewOnly.beforeWrite(input.sql);
+      await input.reviewOnly.afterWrite(input.sql);
+      return { reviewedItemId: input.reviewOnly.itemId };
+    });
+  };
+
+  it('allows the live signed target to request review of only its unassigned original', async () => {
+    const request = makeValidRequest(40, featureId);
+    const candidates: Candidate[] = [
+      { feature_id: featureId, request, attemptedAtMs: null, receiptId: null },
+      { feature_id: neighborId, request: { version: 1 }, attemptedAtMs: null, receiptId: null },
+    ];
+    prepare(candidates, ['su-reviewer', 'su-reviewer']);
+    const { sql, writes } = makeReviewSql(candidates, [featureId]);
+
+    const result = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'signed-review', targetItemIds: [featureId] },
+      sql,
+      vi.fn() as never,
+    );
+
+    expect(result.reviewedItemId).toBe(featureId);
+    expect(mocks.readVerifiedRecoveryTarget).toHaveBeenCalledTimes(2);
+    expect(mocks.latestFleetMembership).not.toHaveBeenCalled();
+    expect(mocks.runPromoter).toHaveBeenCalledTimes(1);
+    expect((mocks.runPromoter.mock.calls[0]![0] as { targetItemIds: string[] }).targetItemIds).toEqual([featureId]);
+    expect(candidates[0]!.receiptId).toBe(request.requestId);
+    expect(candidates[1]!.attemptedAtMs).toBeNull();
+    expect(candidates[1]!.receiptId).toBeNull();
+    const receiptWrites = writes.filter(write =>
+      write.query.startsWith('UPDATE harness_shared.work_items') && write.query.includes('_admissionReviewReceipt'));
+    expect(receiptWrites).toHaveLength(1);
+    expect(receiptWrites[0]!.values).toContain(featureId);
+    expect(mocks.readVerifiedRecoveryTarget).toHaveBeenCalledWith(scope, sql);
+  });
+
+  it('refuses when the signed recovery target changes during model judging', async () => {
+    const request = makeValidRequest(41, featureId);
+    const candidates: Candidate[] = [
+      { feature_id: featureId, request, attemptedAtMs: null, receiptId: null },
+      { feature_id: neighborId, request: { version: 1 }, attemptedAtMs: null, receiptId: null },
+    ];
+    prepare(candidates, ['su-reviewer', 'su-other']);
+    const { sql } = makeReviewSql(candidates, [featureId]);
+
+    await expect(runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'signed-review-drift', targetItemIds: [featureId] },
+      sql,
+      vi.fn() as never,
+    )).rejects.toThrow('review requester is neither current custodian nor canonical fleet leader');
+
+    expect(mocks.readVerifiedRecoveryTarget).toHaveBeenCalledTimes(2);
+    expect(mocks.runPromoter).toHaveBeenCalledTimes(1);
+    expect(candidates[0]!.receiptId).toBeNull();
+    expect(candidates[1]!.attemptedAtMs).toBeNull();
+    expect(candidates[1]!.receiptId).toBeNull();
+  });
+
+  it.each([
+    ['caller', (request: ReturnType<typeof makeValidRequest>) => ({ ...request, caller: 'su-other' }), featureId],
+    ['item scope', (request: ReturnType<typeof makeValidRequest>) => request, neighborId],
+  ])('refuses a signed review request rebound to a different %s', async (_label, rebind, queueId) => {
+    const request = rebind(makeValidRequest(42, featureId));
+    const candidates: Candidate[] = [
+      { feature_id: queueId, request, attemptedAtMs: null, receiptId: null },
+    ];
+    prepare(candidates, ['su-reviewer']);
+    const { sql } = makeReviewSql(candidates, [queueId]);
+
+    const result = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'signed-review-rebound', targetItemIds: [queueId] },
+      sql,
+      vi.fn() as never,
+    );
+
+    expect(result.reviewedItemId).toBeUndefined();
+    expect(result.guardRefusals).toHaveLength(1);
+    expect(result.guardRefusals[0]!.detail).toContain('review signature does not bind this exact scope/request/purpose');
+    expect(mocks.runPromoter).not.toHaveBeenCalled();
+    expect(mocks.readVerifiedRecoveryTarget).not.toHaveBeenCalled();
+    expect(candidates[0]!.receiptId).toBeNull();
   });
 });

@@ -50,7 +50,8 @@
  * tmpdir. `--local --shared` means the clone borrows the source object store via
  * alternates instead of copying it, so this costs ~3s and almost no disk beyond the
  * checked-out files, and it touches the shared checkout only for reads. node_modules
- * is linked in (never copied or installed); missing workspace runtime exports are
+ * is independently copied with the existing generation materializer; the donor
+ * reader ends before any build or command. Missing workspace runtime exports are
  * built with each package's committed build command inside the disposable tree.
  *
  * The alternates borrow is safe for a run of this length but is a borrow: if the
@@ -114,9 +115,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '@papercusp/test-config/tmpdir-guard';
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
-import { withFsMutex } from './lib/fs-mutex.mjs';
+import { withFsMutex, withFsMutexRead } from './lib/fs-mutex.mjs';
 import { withRetentionPinProtection } from './lib/retention-pins.mjs';
-import { installLockNameForRoot, installMutexIsHeld } from './lib/install-lock-name.mjs';
+import { installLockNameForRoot } from './lib/install-lock-name.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
   if (typeof environment.PAPERCUSP_TEST_RUNS_DB_URL !== 'string' ||
@@ -332,12 +333,103 @@ export function committedWorkRootDependencyDonor(workRoot) {
     visited.add(root);
     const marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8'));
     verifyCommittedWorkRoot(root, marker.sha);
+    if (marker.dependencyMode === 'independent-copy-v1') return root;
     if (typeof marker.sourceRepoRoot !== 'string' || !isAbsolute(marker.sourceRepoRoot)) {
       throw new Error('lint-as-committed: retained source has no dependency donor provenance; rematerialize the recorded commit');
     }
     root = realpathSync(marker.sourceRepoRoot);
   }
   return root;
+}
+
+/**
+ * Freeze dependency bytes under the donor reader, using the maintained generation
+ * copier (independent inodes/CoW, headroom and copy admission). Builds and tests
+ * run after this bounded reader is released. Retained roots own their copies;
+ * they need neither a live donor lease nor a second dependency cache.
+ * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
+ */
+export async function materializeIndependentDependencies(repoRoot, workRoot) {
+  const donor = committedWorkRootDependencyDonor(repoRoot);
+  const materializer = fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
+  return withFsMutexRead(installLockNameForRoot(donor), async () => {
+    const result = spawnSync('bash', ['-c', `
+set -euo pipefail
+source "$1"
+dependency_generation_configure_workspace_dirs "$2"
+sources="$(dependency_generation_enumerate_node_modules "$2")"
+while IFS= read -r source; do
+  [ -n "$source" ] || continue
+  rel="\${source#"$2"/}"
+  [ -d "$3/$(dirname "$rel")" ] || continue
+  [ ! -L "$source" ] || { echo "dependency root must be physical: $source" >&2; exit 1; }
+  dependency_generation_materialize_tree "$source" "$3/$rel"
+  printf '%s\\n' "$rel"
+done <<< "$sources"
+`, 'committed-dependencies', materializer, donor, workRoot], {
+      encoding: 'utf8', env: { ...process.env, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0' },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    if (result.error || result.status !== 0) {
+      throw new Error(`independent dependency materialization failed (${result.error?.message ?? `exit ${result.status}, signal ${result.signal}`})`);
+    }
+    const paths = (result.stdout ?? '').trim().split('\n').filter(Boolean);
+    const workspacePaths = new Set();
+    const links = [];
+    const visit = directory => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isSymbolicLink()) {
+          const original = join(donor, relative(workRoot, path));
+          const target = resolve(dirname(original), readlinkSync(path));
+          const mapped = cloneWorkspaceTarget(target, donor, workRoot);
+          const rel = relative(donor, target);
+          if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+            throw new Error(`dependency symlink escapes its snapshot: ${relative(workRoot, path)}`);
+          }
+          if (mapped) {
+            if (!existsSync(join(mapped, 'package.json'))) {
+              throw new Error(`dependency workspace is absent at the committed ref: ${rel}`);
+            }
+            workspacePaths.add(mapped);
+          }
+          rmSync(path);
+          symlinkSync(relative(dirname(path), join(workRoot, rel)), path);
+          links.push(path);
+        } else if (entry.isDirectory()) visit(path);
+      }
+    };
+    for (const path of paths) {
+      visit(join(workRoot, path));
+      const installCache = join(workRoot, path, '.package-lock.json');
+      if (existsSync(installCache)) {
+        renameSync(installCache, join(workRoot, path, '.papercusp-installed-package-lock.json'));
+      }
+    }
+    // Resolve only after every link has been rewritten: .bin and package aliases
+    // can point through other links. A lexical remap alone cannot prove that a
+    // copied graph is complete or that its eventual target stays in this root.
+    const snapshotRoot = realpathSync(workRoot);
+    for (const path of links) {
+      if (!existsSync(path)) {
+        throw new Error(`dependency symlink target is absent from its snapshot: ${relative(workRoot, path)}`);
+      }
+      const target = realpathSync(path);
+      if (target !== snapshotRoot && !target.startsWith(snapshotRoot + sep)) {
+        throw new Error(`dependency symlink escapes its snapshot: ${relative(workRoot, path)}`);
+      }
+    }
+    // Publish only after copying AND checking links succeeded. Legacy shadows
+    // continue to protect their full donor chain in npm-install-safe.
+    const markerPath = join(workRoot, OWNER_MARKER);
+    const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+    const temporary = markerPath + '.' + randomUUID() + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify({ ...marker, dependencyMode: 'independent-copy-v1' }), { flag: 'wx' });
+      renameSync(temporary, markerPath);
+    } finally { rmSync(temporary, { force: true }); }
+    return { paths, workspacePaths };
+  });
 }
 
 /** Keep the existing owner marker alive for the lifetime of a dependent artifact. */
@@ -1300,18 +1392,6 @@ async function main() {
     process.exit(2);
   }
 
-  // Prepared clones borrow installed bytes from this physical donor. Protect
-  // shadow creation, workspace builds and the forwarded command with the same
-  // reader boundary as install:safe; a clone's own mutex cannot protect it.
-  if (!installMutexIsHeld(installLockNameForRoot(repoRoot))) {
-    const { runCommandUnderInstallMutex } = await import('./npm-install-safe.mjs');
-    process.exitCode = await runCommandUnderInstallMutex({
-      repoRoot,
-      commandArgs: [process.execPath, fileURLToPath(import.meta.url), ...process.argv.slice(2)],
-    });
-    return;
-  }
-
   let sha;
   try {
     sha = git(['rev-parse', '--verify', `${args.ref}^{commit}`], repoRoot);
@@ -1508,75 +1588,16 @@ async function main() {
       );
     }
 
-    // ── symlink (never copy, never install) every node_modules the workspaces need ──
-    // These are the ONE thing not versioned against the ref, and that is stated in the
-    // header rather than papered over: a lint whose behaviour depends on a dependency
-    // version is not made reproducible by this tool.
-    let linked = 0;
-    const linkedPaths = [];
-    const shadow = { remapped: 0, fallback: 0 };
-    const workspacePaths = new Set();
-    const discoveredPackages = new Set();
-    const nmDirs = spawnSync(
-      'bash',
-      ['-c', `find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*' 2>/dev/null`],
-      { cwd: repoRoot, encoding: 'utf8' },
-    );
-    const modulePaths = new Set((nmDirs.stdout || '').split('\n').map((s) => s.replace(/^\.\//, '').trim()).filter(Boolean));
-    for (const rel of modulePaths) {
-      const target = join(repoRoot, rel);
-      const linkPath = join(workRoot, rel);
-      if (existsSync(linkPath)) continue;
-      try {
-        mkdirSync(dirname(linkPath), { recursive: true });
-      } catch {
-        continue; /* a workspace absent at this ref simply has nowhere to link — fine */
-      }
-      try {
-        // Entry-by-entry, so workspace packages resolve INTO this tree (EI-24790229053787032).
-        const s = linkNodeModulesShadow(target, linkPath, repoRoot, workRoot, workspacePaths);
-        shadow.remapped += s.remapped;
-        shadow.fallback += s.fallback;
-      } catch (err) {
-        // Never leave a half-built directory: fall back to the whole-directory link, loudly,
-        // because that link re-opens the shared-tree import escape for this location.
-        rmSync(linkPath, { recursive: true, force: true });
-        try {
-          symlinkSync(target, linkPath, 'dir');
-        } catch {
-          continue;
-        }
-        console.warn(
-          `  ⚠ ${rel}: per-entry link failed (${err instanceof Error ? err.message : String(err)}); ` +
-            `linked the whole directory, so @papercusp/* imports there run the SHARED tree`,
-        );
-      }
-      // The shallow inventory cannot see installs in deeper selected packages.
-      // Follow the existing pinned-package set, including its resolution ancestors,
-      // rather than scanning scratch trees or descending into installed dependencies.
-      // Set iteration also visits the additional directories discovered here.
-      for (const packageRoot of workspacePaths) {
-        if (discoveredPackages.has(packageRoot)) continue;
-        discoveredPackages.add(packageRoot);
-        for (let owner = packageRoot; owner !== workRoot; owner = dirname(owner)) {
-          const localModules = relative(workRoot, join(owner, 'node_modules'));
-          const sourceModules = join(repoRoot, localModules);
-          if (existsSync(sourceModules) && statSync(sourceModules).isDirectory()) {
-            modulePaths.add(localModules);
-          }
-        }
-      }
-      linked += 1;
-      linkedPaths.push(rel);
-    }
+    // Only snapshot acquisition borrows the mutable install. Commands use private
+    // bytes, including after --keep/--materialize-only outlive this process.
+    const { paths: linkedPaths, workspacePaths } = await materializeIndependentDependencies(repoRoot, workRoot);
     // Keep the extracted tree CLEAN to `git status` (WI-10004898, see planLinkExcludes):
     // a run inside it must be able to record worktree_dirty=false.
     const excludePlan = planLinkExcludes(linkedPaths, submodules.map((s) => s.path));
     writeLinkExcludes(workRoot, excludePlan);
     console.log(
-      `  linked ${linked} node_modules dir(s) (not installed, not copied; excluded from git status); ` +
-        `${shadow.remapped} workspace package link(s) resolve into this tree` +
-        (shadow.fallback ? `, ${shadow.fallback} fell back to the SHARED tree (package absent here)` : ''),
+      `  copied ${linkedPaths.length} node_modules dir(s) (independent snapshot; excluded from git status); ` +
+        `${workspacePaths.size} workspace package link(s) resolve into this tree`,
     );
     try {
       prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets: args.any, sourceRoot: repoRoot });

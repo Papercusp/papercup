@@ -129,6 +129,30 @@ describe('pinned security source discovery', () => {
     expect(() => advanceSecuritySourceProgress(queue, unavailable, receipt(unavailable.discovery.fingerprint))).toThrow('no_progress');
   });
 
+  it('archives large JavaScript without parsing past the inventory budget and still reports small syntax errors', () => {
+    const large = source('generated.js', 'function broken( {' + ' '.repeat(2 * 1024 * 1024));
+    const queue = progress([large]);
+    const shard = prepareSecuritySourceShard(queue, [large.path], selectedSnapshot([large], [large.path]),
+      { maxInputBytes: large.bytes.length, maxBytes: large.bytes.length });
+    expect(shard.discovery.inventory.files).toContainEqual(expect.objectContaining({
+      path: large.path, blobOid: large.blobOid,
+      sourceSha256: createHash('sha256').update(large.bytes).digest('hex'),
+    }));
+    expect(shard.discovery.sites).toEqual([]);
+    expect(shard.discovery.inventory.unresolved).toEqual([
+      { path: large.path, reason: 'non-utf8-or-over-parser-budget' },
+    ]);
+    const next = advanceSecuritySourceProgress(queue, shard, receipt(shard.discovery.fingerprint));
+    expect(next.pending).toEqual([]);
+    expect(next.populationComplete).toBe(false); expect(next.closureAccepted).toBe(false);
+    expect(shard.discovery.executionAdmitted).toBe(false);
+
+    const small = enumerateSecuritySourcePopulation(snapshot([source('small.js', 'function broken( {')]));
+    expect(small.inventory.unresolved).toContainEqual(expect.objectContaining({
+      path: 'small.js', reason: 'source-site-parser-failed',
+    }));
+  });
+
   it('captures an explicitly budgeted large committed shard without turning archival into closure', () => {
     const root = mkdtempSync(join(tmpdir(), 'security-large-source-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 20_000 });
