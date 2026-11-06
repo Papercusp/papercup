@@ -401,7 +401,23 @@ describe('conversation activation audit gate', () => {
 
   it('preserves the audit after cosmetic and substantive edits while surfacing exact revision/materiality guidance', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
-    const audited = await appendPlanRevision(fx.admin, DRAFT);
+    // Record the exact representation the production lock/read path exposes. A raw
+    // seed snapshot can differ from the rendered plan body before any author edit.
+    let audited: Awaited<ReturnType<typeof appendPlanRevision>> | null = null;
+    const baseline = await withPlanLock<{ ok: true }>(
+      {} as never,
+      {
+        slug: SLUG,
+        harnessSlug: HARNESS,
+        workspaceId: fx.workspaceId,
+        intent: 'capture the persisted activation-audit baseline',
+        afterWrite: async (body) => { audited = await appendPlanRevision(fx.admin, body); },
+      },
+      async (current) => ({ newBody: current!, value: { ok: true } }),
+    );
+    if (baseline.kind !== 'applied' || audited === null) {
+      throw new Error('failed to capture the persisted activation-audit baseline');
+    }
     await activationAuditAt(fx.admin, audited);
 
     const cosmetic = await withPlanLock<{ ok: true }>(
