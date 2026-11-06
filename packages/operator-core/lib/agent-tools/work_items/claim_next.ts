@@ -443,13 +443,13 @@ export default defineTool({
     // (recallFor); rendered via the shared helper so the note text cannot drift from
     // scheduler:get_next's / work_items:claim's copies.
     const planDecisionsFor = async (
-      wi: { payload?: unknown; harness?: string | null } | null,
+      wi: { payload?: unknown; harness?: string | null; sourcePlanSlug?: string | null; sourcePlanItemIds?: string[] | null } | null,
     ): Promise<{ decisions: unknown; note: string } | null> => {
       if (!wi) return null;
       return import('../../plan-decisions-claim-port')
         .then(async (m) => {
           const brief = await m.getClaimTimePlanDecisions({
-            workItem: { payload: wi.payload },
+            workItem: { payload: wi.payload, sourcePlanSlug: wi.sourcePlanSlug, sourcePlanItemIds: wi.sourcePlanItemIds },
             harness: wi.harness ?? args.harness,
             workspaceId: ident.workspaceId,
           });

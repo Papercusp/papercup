@@ -2911,7 +2911,7 @@ export default defineTool({
           trackPhase(ctx.phases, 'get_next:hint:planDecisions', () => import('../../plan-decisions-claim-port')
             .then(async (m) => {
               const brief = await m.getClaimTimePlanDecisions({
-                workItem: { payload: wi.payload },
+                workItem: { payload: wi.payload, sourcePlanSlug: wi.sourcePlanSlug, sourcePlanItemIds: wi.sourcePlanItemIds },
                 harness: wi.harness ?? args.harness,
                 workspaceId: ident.workspaceId ?? undefined,
               });

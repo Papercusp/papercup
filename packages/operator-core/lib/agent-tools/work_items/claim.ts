@@ -895,7 +895,8 @@ async function claimOne(
       import('../../plan-decisions-claim-port')
         .then(async (m) => {
           const brief = await m.getClaimTimePlanDecisions({
-            workItem: { payload: workItem.payload },
+            workItem: { payload: workItem.payload, sourcePlanSlug: workItem.sourcePlanSlug,
+              sourcePlanItemIds: workItem.sourcePlanItemIds },
             harness: workItem.harness ?? it.harness ?? null,
             workspaceId: identity.workspaceId ?? undefined,
           });

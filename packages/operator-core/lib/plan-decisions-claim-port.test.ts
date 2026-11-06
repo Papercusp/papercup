@@ -123,6 +123,56 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
     expect(r?.totalDecisions).toBeGreaterThan(r!.decisions.length);
   });
 
+  it('keeps an older task-linked ruling ahead of recent unrelated decisions, with exact omitted refs', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITH_MANY_DECISIONS.replace('Body of early ruling 1.', 'P-003 must preserve the selected route.'),
+    });
+    const r = await getClaimTimePlanDecisions({ workItem: workItemWithPlan('busy-plan') });
+    expect(r?.decisions.map((d) => d.id)).toEqual([
+      'D-001', 'D-006', 'D-007', 'D-008', 'D-009', 'D-010', 'D-011', 'D-012',
+    ]);
+    expect(r?.taskLinkedDecisions).toBe(1);
+    expect(r?.omittedDecisionRefs).toEqual([
+      'busy-plan#D-002', 'busy-plan#D-003', 'busy-plan#D-004', 'busy-plan#D-005',
+    ]);
+    expect(renderPlanDecisionsNote(r!)).toContain('task-linked');
+    expect(renderPlanDecisionsNote(r!)).not.toContain('8 MOST RECENT');
+  });
+
+  it('uses direct plan-item scope and excerpts the applicable paragraph beyond the body prefix', async () => {
+    const content = PLAN_WITH_MANY_DECISIONS.replace('Body of early ruling 1.',
+      `${'Historical preparation details. '.repeat(30)}\n\nP-003 remains paused until the original author releases it.`);
+    mockGetPlanRow.mockResolvedValueOnce({ content });
+    const r = await getClaimTimePlanDecisions({ planSlug: 'busy-plan', planItemIds: ['P-003'] });
+    expect(r?.decisions[0]?.id).toBe('D-001');
+    expect(r?.decisions[0]?.snippet).toContain('P-003 remains paused');
+    expect(r?.decisions[0]?.snippet.length).toBeLessThanOrEqual(240);
+    expect(r?.decisions).toHaveLength(8);
+  });
+
+  it('uses canonical physical plan and item identity over a stale payload stamp', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITH_MANY_DECISIONS.replace('Body of early ruling 1.', 'P-019 preserves the original author.'),
+    });
+    const r = await getClaimTimePlanDecisions({ workItem: {
+      ...workItemWithPlan('old-plan'), sourcePlanSlug: 'current-plan', sourcePlanItemIds: ['P-019'],
+    } });
+    expect(mockGetPlanRow).toHaveBeenLastCalledWith('current-plan', {});
+    expect(r?.decisions[0]?.id).toBe('D-001');
+    expect(r?.decisions[0]?.snippet).toContain('P-019 preserves');
+  });
+
+  it('retains a newer task-linked superseding ruling when task history exceeds the window', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITH_MANY_DECISIONS.replaceAll('Body of early ruling', 'P-003 history: body of early ruling')
+        .replace('P-004 has no evidence', 'P-003 has no evidence'),
+    });
+    const r = await getClaimTimePlanDecisions({ workItem: workItemWithPlan('busy-plan') });
+    expect(r?.decisions.at(-1)?.id).toBe('D-012');
+    expect(r?.taskLinkedDecisions).toBe(8);
+    expect(r?.omittedDecisionRefs).toContain('busy-plan#D-001');
+  });
+
   it('puts source-qualified affected-plan authority before local decisions and warns explicitly', async () => {
     mockGetPlanRow.mockResolvedValueOnce({
       content: PLAN_WITH_DECISIONS,

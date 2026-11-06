@@ -11134,6 +11134,8 @@ export async function commentWorkItem(
     writerOwnerId?: string | null;
     /** Retry identity for system-templated text; incompatible with sealed agent prose. */
     idempotencyKey?: string;
+    /** Caller-owned transaction for an atomic checkpoint archive; fan-out stays with the caller. */
+    transaction?: Sql | TransactionSql;
   } = {},
 ): Promise<ThreadPostRow | null> {
   const wi = await getWorkItem(id, opts.harness);
@@ -11147,7 +11149,7 @@ export async function commentWorkItem(
   // issue-family: commentIssue already creates the thread + fires the issue_commented fan-out.
   if (wi.family === 'issue') {
     return commentIssue(id, body, authorId, { workspaceId, harness, writerOwnerId: opts.writerOwnerId,
-      idempotencyKey: commentKey });
+      idempotencyKey: commentKey, transaction: opts.transaction });
   }
   // feature-family: thread on the feature ObjectRef + fan out to the work-item's subscribers.
   const ref = workItemObjectRef(wi);
@@ -11156,7 +11158,7 @@ export async function commentWorkItem(
   // statement_timeout) so a stalled admin-pool query fails fast + typed rather
   // than hanging the MCP call. Mirrors commentIssue. See pg-bounded-txn.ts.
   let replayed = false;
-  const post = await boundedOrgTxn(async (tx) => {
+  const writePost = async (tx: Sql | TransactionSql) => {
     const txThreads = new PgThreadStore({
       ...coordOpts,
       getSql: () => tx,
@@ -11203,14 +11205,15 @@ export async function commentWorkItem(
     if (postKey) await tx`UPDATE harness_shared.coord_thread_posts SET post_msg_id = ${postKey}
       WHERE workspace_id = ${ws} AND id = ${added.id}`;
     return added;
-  });
+  };
+  const post = opts.transaction ? await writePost(opts.transaction) : await boundedOrgTxn(writePost);
   const ev: InjectEvent = {
     from: authorId ?? 'substrate',
     subject: `${FEATURE_KIND}:${ref.ref}`,
     summary: `work_item ${id} — new comment${authorId ? ` from ${authorId}` : ''}`,
     notify_kind: 'work_item_commented',
   };
-  if (!replayed) await fanoutForObject(ref, ev, { excludeId: authorId });
+  if (!opts.transaction && !replayed) await fanoutForObject(ref, ev, { excludeId: authorId });
   return post;
 }
 

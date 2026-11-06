@@ -18,10 +18,14 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getBuildInfo } from '../../build-info';
 import { SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
 import { specQualityEvaluatorBuildSchema, specQualityIdentityRefusal } from './spec-quality-identity';
+import { scorecardEvidenceFingerprint } from '../../scorecards';
 
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
+  detail: z.enum(['full', 'summary']).default('full').describe(
+    'Full returns the emit-compatible draft. Summary returns its server-derived scorecardBinding (subject and complete rating/evidence fingerprint) for bounded internal replay; it contains no partial draft.',
+  ),
   evaluatorBuild: specQualityEvaluatorBuildSchema.optional(),
   specSetHashVersion: z.number().int().positive().optional(),
   expectedSpecSetHash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe(
@@ -87,6 +91,10 @@ export default defineTool({
       verdict: z.string().optional(),
       details: z.unknown().optional(),
       scorecardDraft: z.unknown().optional(),
+      scorecardBinding: z.object({
+        subject: z.object({ kind: z.literal('plan'), ref: z.string() }),
+        evidenceFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      }).optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
@@ -120,6 +128,16 @@ export default defineTool({
           wouldBlock: ['spec_set_hash_mismatch'],
         } };
       }
+      if (args.detail === 'summary') return { data: {
+        ok: true, slug: args.slug, harnessSlug, replaySnapshot, ...identity,
+        specSetHash: evaluation.specSetHash, verdict: evaluation.verdict, wouldBlock: evaluation.wouldBlock,
+        scorecardBinding: {
+          subject: evaluation.scorecardDraft.subject,
+          evidenceFingerprint: scorecardEvidenceFingerprint({
+            rubricRef: evaluation.scorecardDraft.rubricRef, ratings: evaluation.scorecardDraft.ratings,
+          }),
+        },
+      } };
       return { data: { ok: true, slug: args.slug, harnessSlug, replaySnapshot, ...identity, ...evaluation } };
     };
     if (args.replaySnapshot) {

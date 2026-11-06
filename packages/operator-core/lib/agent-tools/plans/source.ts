@@ -210,6 +210,8 @@ export interface PlanRow {
   harnessSlug: string;
   planSlug: string;
   content: string;
+  /** Exact saved bytes, before graph rendering; present on the mutable full-row read. */
+  storedContent?: string;
   contentHash: string;
   version: number;
   title: string | null;
@@ -738,7 +740,6 @@ export async function getPlanRow(
           { items: rows[0].items, content: rows[0].content },
         );
         rows[0].items = items;
-        rows[0].content = renderPlanLines(rows[0].content, items);
       }
       return rows;
     }, timings ? { onAcquisitionPhase: (phase) => {
@@ -754,6 +755,10 @@ export async function getPlanRow(
     } } : undefined);
     mark('finishTransaction');
     const row = rows[0] ? rowFromDb(rows[0]) : null;
+    if (row) {
+      row.storedContent = row.content;
+      row.content = renderPlanLines(row.content, row.items);
+    }
     mark('row');
     return row;
   } catch (err: unknown) {

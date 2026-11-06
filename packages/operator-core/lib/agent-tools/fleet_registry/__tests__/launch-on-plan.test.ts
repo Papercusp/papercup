@@ -270,6 +270,16 @@ vi.mock('../../../plan-types/pins', async (importOriginal) => ({
 }));
 
 const acceptanceBarLifecycleMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ satisfied: true })));
+const currentDiscoveryMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{
+  ok: boolean; error?: string; nextAction?: string;
+}>>());
+
+// Discovery admission has its own migrated-PG tests. Keep its storage read out
+// of this unit fixture while exercising the real start gate and its refusals.
+vi.mock('../../../plan-audits', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../plan-audits')>()),
+  withCurrentDiscovery: (...args: unknown[]) => currentDiscoveryMock(...args),
+}));
 
 vi.mock('../../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../acceptance-bar-lifecycle-evaluator')>()),
@@ -605,6 +615,8 @@ beforeEach(() => {
   });
   acceptanceBarLifecycleMock.mockReset();
   acceptanceBarLifecycleMock.mockResolvedValue({ satisfied: true });
+  currentDiscoveryMock.mockReset();
+  currentDiscoveryMock.mockResolvedValue({ ok: true });
   assembleRolePromptMock.mockReset();
   assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/tmp/fleet' } });
   resolveProjectDirMock.mockReset();
@@ -3055,6 +3067,25 @@ describe('fleet:launch-on-plan handler — P-006 start gate', () => {
     spawnConsoleMock.mockReset();
     fetchGatewayHeadroomMock.mockReset();
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('preserves a discovery refusal before creating a fleet or opening member terminals', async () => {
+    currentDiscoveryMock.mockResolvedValueOnce({
+      ok: false, error: 'discovery_not_ready', nextAction: 'Finalize current discovery before launching.',
+    });
+
+    const res = await invokeLaunchHandler(
+      { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toContain('Finalize current discovery before launching.');
+    expect(currentDiscoveryMock).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'my-plan' }), expect.any(Function));
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(acceptanceBarLifecycleMock).not.toHaveBeenCalled();
   });
 
   it('refuses an under-specified plan, names the missing input, and opens NO member terminal', async () => {

@@ -121,16 +121,30 @@ export async function checkPlanStartable(
   opts: PlanSourceOpts = {},
   overrides?: Record<string, unknown> | null,
   door: PlanAdmissionDoor = 'start',
-  evaluationOptions: Pick<AcceptanceBarLifecycleOptions, 'proofMode' | 'onRead'> = {},
+  evaluationOptions: Pick<AcceptanceBarLifecycleOptions, 'proofMode' | 'onRead'> & {
+    discoveryAdmission?: 'start' | 'continuation';
+  } = {},
 ): Promise<PlanStartGateResult> {
   const row = await getPlanRow(slug, opts);
   // Absent plan: not this gate's error to report (see the module header).
   if (!row) return { ok: true, row: null, inputs: overrides ?? null };
   const verdict = startVerdictForRow(row, slug, overrides);
   if (!verdict.ok) return verdict;
-  const { withCurrentDiscovery } = await import('../../plan-audits');
-  const discovery = await withCurrentDiscovery({ workspaceId: row.workspaceId, harnessSlug: row.harnessSlug,
-    planSlug: slug, createdBy: 'system:plan-start' }, async () => undefined);
+  const { discoveryAdmission = 'start', ...lifecycleOptions } = evaluationOptions;
+  // Source changes are expected during admitted implementation. Preserve its
+  // discovery baseline only while the immutable canonical start still matches.
+  const discovery = await (async () => {
+    if (discoveryAdmission === 'continuation') {
+      const { readPlanExecutionStart } = await import('./plan-execution-authority');
+      const blockers = await readPlanExecutionStart({ planSlug: slug, harnessSlug: row.harnessSlug }, row.workspaceId);
+      return blockers.length ? { ok: false as const, error: blockers.join(','),
+        nextAction: 'Complete plans:start for the current reconciled plan before continuing implementation.' }
+        : { ok: true as const };
+    }
+    const { withCurrentDiscovery } = await import('../../plan-audits');
+    return withCurrentDiscovery({ workspaceId: row.workspaceId, harnessSlug: row.harnessSlug,
+      planSlug: slug, createdBy: 'system:plan-start' }, async () => undefined);
+  })();
   if (!discovery.ok) return { ok: false, kind: 'inputs', row, refusal: {
     error: 'plan_inputs_not_ready', code: 'discovery_not_ready', slug, missing: [],
     issues: [discovery.error], source: 'plan-discovery',
@@ -169,7 +183,7 @@ export async function checkPlanStartable(
       () => readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start', {
         harnessSlug: row.harnessSlug,
         requireCompleteContractBeforeProof: door === 'start',
-        ...evaluationOptions,
+        ...lifecycleOptions,
       }),
     );
   };

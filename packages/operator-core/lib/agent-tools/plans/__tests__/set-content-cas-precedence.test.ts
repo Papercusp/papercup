@@ -67,6 +67,21 @@ const STALE_VERSION = 6; // != LIVE_VERSION
 const META = { version: LIVE_VERSION, contentHash: LIVE_HASH };
 
 describe('evaluateSetContent — CAS precedence when BOTH baselines are supplied', () => {
+  it('checks the saved-byte preimage even when the mutator receives rendered text', async () => {
+    const rendered = CURRENT.replace('Some prose.', 'Some prose.  ');
+    const meta = { ...META, storedContent: CURRENT };
+    expect(hashPlanContent(rendered)).not.toBe(LIVE_HASH);
+    const accepted = await evaluateSetContent(rendered, NEXT, SLUG, LIVE_HASH, {
+      expectedVersion: LIVE_VERSION, meta,
+    });
+    expect(accepted.value.ok).toBe(true);
+    const rejected = await evaluateSetContent(rendered, NEXT, SLUG, hashPlanContent(rendered), {
+      expectedVersion: LIVE_VERSION, meta,
+    });
+    expect(rejected.value).toMatchObject({ ok: false, code: 'stale', currentHash: LIVE_HASH });
+    expect(rejected.newBody).toBeNull();
+  });
+
   it('matching version + STALE hash → hash CAS still rejects (version passing does not bypass the hash guard)', async () => {
     const r = await evaluateSetContent(CURRENT, NEXT, SLUG, STALE_HASH, {
       expectedVersion: LIVE_VERSION, // matches → version CAS passes

@@ -59,7 +59,7 @@ import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import { boundedPgReadTxn } from './pg-read-query';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { boundedExactTopK, bm25LegIfAvailable, mergeExactAndBm25 } from './search/lexical/rank';
 import { getBuildInfo } from './build-info';
 import { createBugFreshnessEnvelope, isFreshnessTrackedKind } from './work-item-claim-freshness';
@@ -4498,7 +4498,14 @@ export async function commentIssue(
   body: string,
   authorId?: string,
   /** `writerOwnerId`: see commentWorkItem — the agent whose own text `body` is (P-012 / D-006). */
-  opts: { workspaceId?: string; harness?: string | null; writerOwnerId?: string | null; idempotencyKey?: string } = {},
+  opts: {
+    workspaceId?: string;
+    harness?: string | null;
+    writerOwnerId?: string | null;
+    idempotencyKey?: string;
+    /** Caller-owned transaction for an atomic checkpoint archive; fan-out stays with the caller. */
+    transaction?: Sql | TransactionSql;
+  } = {},
 ): Promise<ThreadPostRow | null> {
   const issue = await getIssue(id);
   if (!issue) return null;
@@ -4514,7 +4521,7 @@ export async function commentIssue(
   // hanging the MCP call indefinitely (the admin pool has no default
   // statement_timeout). A tx-bound PgThreadStore reuses the exact tested store SQL.
   let replayed = false;
-  const post = await boundedOrgTxn(async (tx) => {
+  const writePost = async (tx: Sql | TransactionSql) => {
     const txThreads = new PgThreadStore({
       ...coordOpts,
       getSql: () => tx,
@@ -4558,10 +4565,11 @@ export async function commentIssue(
     if (postKey) await tx`UPDATE harness_shared.coord_thread_posts SET post_msg_id = ${postKey}
       WHERE workspace_id = ${ws} AND id = ${added.id}`;
     return added;
-  });
+  };
+  const post = opts.transaction ? await writePost(opts.transaction) : await boundedOrgTxn(writePost);
   // Fan-out is best-effort + deadline-bounded (fanoutForObject) — it runs AFTER the
   // durable write commits and can never hang or roll back the caller's comment.
-  if (!replayed) await deliver(
+  if (!opts.transaction && !replayed) await deliver(
     issue,
     'commented',
     `issue ${id} — new comment${authorId ? ` from ${authorId}` : ''}`,

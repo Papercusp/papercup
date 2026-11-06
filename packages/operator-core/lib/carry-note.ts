@@ -3122,7 +3122,11 @@ export async function setCarryNoteWithPrior(
      * Runs AFTER `guard`, so a blocked write never transforms. Returning
      * null/blank still means CLEAR, exactly as passing a blank `note` does.
      */
-    transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+    transform?: (
+      priorNote: string | null,
+      note: string | null | undefined,
+      tx: Sql | TransactionSql,
+    ) => string | null | undefined | Promise<string | null | undefined>;
     /**
      * personal-data-reader-set-labels P-012 / D-006: replace the note about to be
      * stored with what may be shared (a sealed stub when the writer holds a
@@ -3211,7 +3215,7 @@ export async function setCarryNoteWithPrior(
     // The merge seam (see `transform`). Deliberately AFTER the guard — a blocked
     // write must not transform — and BEFORE journaling, so the ring records what was
     // actually stored rather than the caller's pre-merge draft.
-    const effectiveNote = opts?.transform ? opts.transform(priorNote, note) : note;
+    const effectiveNote = opts?.transform ? await opts.transform(priorNote, note, tx) : note;
     let trimmed = (effectiveNote ?? '').trim();
     if (trimmed && opts?.seal) trimmed = (await opts.seal(tx, trimmed)).trim();
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.

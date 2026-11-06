@@ -374,7 +374,7 @@ export async function evaluateSetContent(
   expectedHash: string | undefined,
   opts: {
     expectedVersion?: number;
-    meta?: { version: number; contentHash: string; planStatus?: string | null } | null;
+    meta?: { version: number; contentHash: string; storedContent?: string; planStatus?: string | null } | null;
     allowShrink?: boolean;
     allowDecisionDrop?: boolean;
     /**
@@ -397,18 +397,19 @@ export async function evaluateSetContent(
   // 1. Compare-and-swap — reject a write against a plan that changed since the
   //    editor loaded it. Prefer the optimistic version CAS (D-005); fall back to
   //    the equivalent content-hash CAS for callers that still send expectedHash.
-  const currentHash = hashPlanContent(current);
+  const storedContent = opts.meta?.storedContent ?? current;
+  const currentHash = hashPlanContent(storedContent);
   const currentVersion = opts.meta?.version;
   if (opts.expectedVersion != null && currentVersion != null && opts.expectedVersion !== currentVersion) {
     return {
       newBody: null,
-      value: { ok: false, code: 'stale', currentContent: current, currentHash, currentVersion },
+      value: { ok: false, code: 'stale', currentContent: storedContent, currentHash, currentVersion },
     };
   }
   if (expectedHash && expectedHash !== currentHash) {
     return {
       newBody: null,
-      value: { ok: false, code: 'stale', currentContent: current, currentHash, currentVersion },
+      value: { ok: false, code: 'stale', currentContent: storedContent, currentHash, currentVersion },
     };
   }
 

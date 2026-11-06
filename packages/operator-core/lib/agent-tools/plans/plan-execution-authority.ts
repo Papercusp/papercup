@@ -123,7 +123,7 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
       { items: row.items, content: row.content },
     );
     if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, items))
-      || !isDeepStrictEqual(await normalizeExecutionTimestamps(sql, receipt.inputs),
+      || !isDeepStrictEqual(executionPlanInputs(await normalizeExecutionTimestamps(sql, receipt.inputs)),
         executionPlanInputs(await normalizeExecutionTimestamps(sql, row)))) return ['plan_start_revision_stale'];
     return [];
   } catch { return ['plan_start_revision_invalid']; }

@@ -34,7 +34,7 @@
  * plan slug, or a parse error degrades to `null` — this is decoration on a
  * claim, never a new way for the claim path to fail.
  */
-import { planSlugOfWorkItem } from './scheduler/claim-spec-match';
+import { claimSpecSubjectFromWorkItem, planSlugOfWorkItem } from './scheduler/claim-spec-match';
 import type { WorkItem } from './work-items';
 import { getPlanRow } from './agent-tools/plans/source';
 import { parsePlan } from './agent-tools/plans/parser';
@@ -96,9 +96,14 @@ async function attachProvenance(
 
 export interface ClaimTimePlanDecisionsBrief {
   planSlug: string;
-  /** The surfaced window — the `MAX_DECISIONS` most RECENT decisions, oldest-first
-   *  within the window. May be shorter than `totalDecisions`. */
+  /** Bounded authority window: affected-plan authority, task-linked local rulings,
+   * then recent local rulings. Recency breaks ties within a scope. */
   decisions: ClaimTimePlanDecision[];
+  /** Present when task scope changed selection; older consumers remain compatible. */
+  taskLinkedDecisions?: number;
+  /** Exact local authority references outside the window; bounded, not a census. */
+  omittedDecisionRefs?: string[];
+  omittedDecisionRefsTruncated?: boolean;
   /**
    * How many structured decisions the plan actually has. ALWAYS report this
    * alongside `decisions.length` — never describe the window as if it were the
@@ -161,11 +166,10 @@ const SNIPPET_CHARS = 240;
  * P-004/005/006 — sat at ordinal 21 and never surfaced, so an agent handed P-004
  * was told it had seen the governing decisions and started building.
  *
- * So: keep the most RECENT window, and always report `totalDecisions` so the
- * window is never mistaken for the whole set. A foundational early ruling that
- * falls out of the window is the acceptable trade — it is one `plans:get` away,
- * and the note now says so — whereas a missed SUPERSEDING ruling sends the
- * claimer to do work the plan has already ruled out.
+ * Preserve recency within a scope, but select task-linked rulings before unrelated
+ * recent entries. A governing early restriction must not disappear merely because
+ * other plan lanes accumulated decisions. Newer task-linked supersession still wins
+ * if the applicable set itself exceeds the window. Report omissions explicitly.
  */
 const MAX_DECISIONS = 8;
 
@@ -225,8 +229,10 @@ async function defaultAffectedDecisionLookup(scope: {
  * hand-editing the plan body) keeps them in the structured, surfaced form.
  */
 export async function getClaimTimePlanDecisions(opts: {
-  workItem?: Pick<WorkItem, 'payload'>;
+  workItem?: Pick<WorkItem, 'payload'> & Partial<Pick<WorkItem, 'sourcePlanSlug' | 'sourcePlanItemIds'>>;
   planSlug?: string | null;
+  /** Direct plan-item claims already have this identity, including before conversion. */
+  planItemIds?: readonly string[];
   harness?: string | null;
   workspaceId?: string | null;
   lookupAffectedDecisions?: ClaimTimeAffectedDecisionLookup;
@@ -242,6 +248,8 @@ export async function getClaimTimePlanDecisions(opts: {
     });
     if (!row) return null;
     const localDecisions = parsePlan(row.content).decisions;
+    const taskItems = new Set(opts.planItemIds ??
+      (opts.workItem ? claimSpecSubjectFromWorkItem(opts.workItem as WorkItem).planItem : []));
     let affected: ClaimTimeAffectedDecisionLookupResult = { decisions: [], totalDecisions: 0 };
     let authorityReadFailed = false;
     try {
@@ -262,7 +270,16 @@ export async function getClaimTimePlanDecisions(opts: {
 
     const affectedRows = affected.decisions.slice(0, MAX_DECISIONS);
     const remainingLocalSlots = Math.max(0, MAX_DECISIONS - affectedRows.length);
-    const localWindow = remainingLocalSlots > 0 ? localDecisions.slice(-remainingLocalSlots) : [];
+    const taskLinked = localDecisions.filter((d) => d.itemRefs.some((id) => taskItems.has(id)));
+    const taskWindow = remainingLocalSlots > 0 ? taskLinked.slice(-remainingLocalSlots) : [];
+    const remainingRecentSlots = remainingLocalSlots - taskWindow.length;
+    const taskIds = new Set(taskWindow.map((d) => d.id));
+    const recentWindow = remainingRecentSlots > 0
+      ? localDecisions.filter((d) => !taskIds.has(d.id)).slice(-remainingRecentSlots)
+      : [];
+    const localWindow = [...taskWindow, ...recentWindow];
+    const selectedIds = new Set(localWindow.map((d) => d.id));
+    const omitted = localDecisions.filter((d) => !selectedIds.has(d.id));
     const unjoined: UnjoinedPlanDecision[] = [
       ...affectedRows.map((d) => ({
         id: d.decisionId,
@@ -275,7 +292,11 @@ export async function getClaimTimePlanDecisions(opts: {
       ...localWindow.map((d) => ({
         id: d.id,
         title: d.title,
-        snippet: clampSnippet(d.body, SNIPPET_CHARS),
+        snippet: clampSnippet(
+          d.body.split(/\n\s*\n/).find((paragraph) =>
+            (paragraph.match(/\bP-\d{3,}\b/g) ?? []).some((id) => taskItems.has(id))) ?? d.body,
+          SNIPPET_CHARS,
+        ),
       })),
     ];
     const decisions = await attachProvenance(
@@ -288,8 +309,14 @@ export async function getClaimTimePlanDecisions(opts: {
     return {
       planSlug,
       // Cross-plan execution authority consumes the bounded window first;
-      // remaining space carries the most recent local rulings.
+      // remaining space carries task-linked and then recent local rulings.
       decisions,
+      ...(taskWindow.length > 0 ? { taskLinkedDecisions: taskWindow.length } : {}),
+      ...(omitted.length > 0 ? {
+        omittedDecisionRefs: omitted.slice(0, MAX_DECISIONS)
+          .map((d) => planDecisionRef(planSlug, d.id)).filter((ref): ref is string => ref !== null),
+        omittedDecisionRefsTruncated: omitted.length > MAX_DECISIONS,
+      } : {}),
       totalDecisions: totalAffectedDecisions + localDecisions.length,
       totalLocalDecisions: localDecisions.length,
       totalAffectedDecisions,
@@ -316,6 +343,13 @@ export function renderPlanDecisionsNote(brief: ClaimTimePlanDecisionsBrief): str
     : brief.totalAffectedDecisions > 0
       ? `⚠ CROSS-PLAN AUTHORITY CONFLICT/SUPERSESSION WARNING: ${brief.totalAffectedDecisions} current decision(s) on other plan(s) explicitly affect '${brief.planSlug}' and are listed BEFORE plan-local rulings. If one conflicts with or supersedes local checkpoint/carry prose, do not let the local prose silently win; resolve the source-qualified decision before acting. `
       : '';
+
+  if (brief.taskLinkedDecisions) {
+    const omitted = brief.totalDecisions - brief.decisions.length;
+    return authorityWarning + `Showing ${brief.decisions.length} of ${brief.totalDecisions} governing decision(s), prioritized as affected-plan authority, task-linked local rulings, then recent local rulings. Recency breaks ties within each scope; excerpts do not establish absence of other restrictions. ` +
+      (omitted > 0 ? `${omitted} decision(s) are NOT shown. Omitted local refs${brief.omittedDecisionRefsTruncated ? ' (bounded)' : ''}: ${(brief.omittedDecisionRefs ?? []).join(', ')}. ` : '') +
+      `Read full bodies and remaining authority: plans:get { slug:'${brief.planSlug}', heading:'Decisions' }.`;
+  }
 
   if (brief.totalAffectedDecisions > 0) {
     const omitted = brief.totalDecisions - brief.decisions.length;

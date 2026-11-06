@@ -4,13 +4,16 @@ import type { PlanRow } from './source';
 import { PLAN_ADMISSION_DOORS } from './plan-admission-enforcement';
 
 const h = vi.hoisted(() => ({
-  row: vi.fn(), discovery: vi.fn(), lifecycle: vi.fn(), admission: vi.fn(), promote: vi.fn(),
+  row: vi.fn(), discovery: vi.fn(), lifecycle: vi.fn(), admission: vi.fn(), promote: vi.fn(), startReceipt: vi.fn(),
 }));
 vi.mock('./source', async original => ({
   ...await original<typeof import('./source')>(), getPlanRow: h.row,
 }));
 vi.mock('../../plan-audits', async original => ({
   ...await original<typeof import('../../plan-audits')>(), withCurrentDiscovery: h.discovery,
+}));
+vi.mock('./plan-execution-authority', async original => ({
+  ...await original<typeof import('./plan-execution-authority')>(), readPlanExecutionStart: h.startReceipt,
 }));
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async original => ({
   ...await original<typeof import('../../acceptance-bar-lifecycle-evaluator')>(),
@@ -49,9 +52,34 @@ beforeEach(() => {
   h.discovery.mockResolvedValue(refusal);
   h.lifecycle.mockResolvedValue({ satisfied: true, codes: [], blockingBars: [] });
   h.admission.mockResolvedValue({ admitted: true });
+  h.startReceipt.mockResolvedValue([]);
 });
 
 describe('current discovery at shared start and admission doors', () => {
+  it('preserves admitted continuation after source changes while rechecking current policy', async () => {
+    expect(await checkPlanStartable(slug, scope, undefined, 'start', {
+      discoveryAdmission: 'continuation', proofMode: 'metadata',
+    })).toMatchObject({ ok: true });
+    expect(h.startReceipt).toHaveBeenCalledWith({ planSlug: slug, harnessSlug: scope.harnessSlug }, scope.workspaceId);
+    expect(h.discovery).not.toHaveBeenCalled();
+    expect(h.lifecycle).toHaveBeenCalledWith(slug, 'pre-start', expect.objectContaining({ proofMode: 'metadata' }));
+    h.admission.mockResolvedValueOnce({ admitted: false, refusal: { code: 'current-policy-refused' } });
+    expect(await checkPlanStartable(slug, scope, undefined, 'start', {
+      discoveryAdmission: 'continuation',
+    })).toMatchObject({ ok: false, refusal: { code: 'current-policy-refused' } });
+    expect(await checkPlanStartable(slug, scope)).toMatchObject({ ok: false, refusal: { code: 'discovery_not_ready' } });
+  });
+
+  it.each(['plan_not_started', 'plan_start_revision_stale'])('refuses continuation without a matching start receipt: %s', async blocker => {
+    h.startReceipt.mockResolvedValueOnce([blocker]);
+    expect(await checkPlanStartable(slug, scope, undefined, 'start', {
+      discoveryAdmission: 'continuation',
+    })).toMatchObject({ ok: false, refusal: { code: 'discovery_not_ready', issues: [blocker] } });
+    expect(h.discovery).not.toHaveBeenCalled();
+    expect(h.lifecycle).not.toHaveBeenCalled();
+    expect(h.admission).not.toHaveBeenCalled();
+  });
+
   it.each(PLAN_ADMISSION_DOORS)('%s refuses before BAR repair or governance effects, then admits reconciled discovery', async door => {
     const denied = await checkPlanStartable(slug, scope, undefined, door);
     expect(denied).toMatchObject({ ok: false, kind: 'inputs', refusal: {

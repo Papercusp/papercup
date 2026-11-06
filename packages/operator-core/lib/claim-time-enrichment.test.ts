@@ -46,6 +46,14 @@ vi.mock('./stale-path-hints-claim-port', () => ({
 
 import { buildClaimTimeEnrichment } from './claim-time-enrichment';
 
+it('passes direct plan-item scope into governing-decision delivery before a work-item exists', async () => {
+  const ports = await import('./plan-decisions-claim-port');
+  await buildClaimTimeEnrichment({ planSlug: 'task-plan', planItemId: 'P-018' });
+  expect(ports.getClaimTimePlanDecisions).toHaveBeenLastCalledWith(expect.objectContaining({
+    planSlug: 'task-plan', planItemIds: ['P-018'],
+  }));
+});
+
 describe('buildClaimTimeEnrichment behavior-contract leg', () => {
   it('does not call the resolver when a partial subject has no work-item id', async () => {
     const enrichment = await buildClaimTimeEnrichment({

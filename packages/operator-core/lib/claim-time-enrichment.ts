@@ -351,7 +351,9 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
         // whichever the surface has (or both) is correct.
         const brief = await m.getClaimTimePlanDecisions({
           ...(opts.planSlug ? { planSlug: opts.planSlug } : {}),
-          ...(wi ? { workItem: { payload: wi.payload } } : {}),
+          ...(opts.planItemId ? { planItemIds: [opts.planItemId] } : {}),
+          ...(wi ? { workItem: { payload: wi.payload, sourcePlanSlug: wi.sourcePlanSlug,
+            sourcePlanItemIds: wi.sourcePlanItemIds } } : {}),
           harness,
           workspaceId,
         });

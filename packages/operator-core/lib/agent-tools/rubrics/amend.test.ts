@@ -27,6 +27,7 @@ const rubricsMocks = vi.hoisted(() => ({
 }));
 
 const reviewMocks = vi.hoisted(() => ({
+  assertReviewerModelAllowed: vi.fn(),
   inspectFreshAmendmentReviewer: vi.fn(),
   openAcceptanceBarAmendmentReview: vi.fn(),
 }));
@@ -145,6 +146,7 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'amend-test', workspaceId: 'ws-amend-test' }),
 }));
 vi.mock('../../consult/acceptance-bar-amendment-review', () => ({
+  assertReviewerModelAllowed: reviewMocks.assertReviewerModelAllowed,
   inspectFreshAmendmentReviewer: reviewMocks.inspectFreshAmendmentReviewer,
   openAcceptanceBarAmendmentReview: reviewMocks.openAcceptanceBarAmendmentReview,
 }));
@@ -189,6 +191,7 @@ afterEach(() => workItemMocks.commentWorkItem.mockReset());
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reviewMocks.assertReviewerModelAllowed.mockReset().mockResolvedValue(undefined);
   reviewMocks.inspectFreshAmendmentReviewer.mockReset().mockResolvedValue({ state: 'unknown' });
   runtimeMocks.hostIdentity.mockReturnValue('pid-test');
   runtimeMocks.held.clear();
@@ -1295,7 +1298,51 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(5_000);
   });
 
-  it('returns a structured refusal when the requested reviewer model is outside the workspace allowlist', async () => {
+  it.each([
+    { requestReview: { workItemId: 'WI-9', harness: 'papercusp' } },
+    { reviewPreviewPost: 'thread-post:42' },
+  ])('rejects a disallowed reviewer before posting or routing: %j', async (reviewRequest) => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    reviewMocks.assertReviewerModelAllowed.mockRejectedValueOnce(new Error(
+      'reviewer_model_not_allowed: codex/gpt-5.5 is absent from the workspace expert allowlist',
+    ));
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({ state: 'routed' });
+
+    const result = await body({
+      ...patchArgs,
+      ...reviewRequest,
+      reviewerModel: { agent: 'codex', model: 'gpt-5.5' },
+    });
+
+    expect(result).toMatchObject({ ok: false, dryRun: true, code: 'reviewer_model_not_allowed' });
+    expect(reviewMocks.assertReviewerModelAllowed).toHaveBeenCalledWith(
+      'ws-amend-test', { agent: 'codex', model: 'gpt-5.5' },
+    );
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+  });
+
+  it('posts and routes an admitted reviewer only after checking the workspace policy', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    workItemMocks.commentWorkItem.mockResolvedValue({ id: 77 });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({ state: 'routed' });
+    const reviewerModel = { agent: 'codex' as const, model: 'gpt-6.1-sol' };
+
+    const result = await body({
+      ...patchArgs, requestReview: { workItemId: 'WI-9' }, reviewerModel,
+    });
+
+    expect(result).toMatchObject({ ok: true, review: { state: 'routed' } });
+    expect(workItemMocks.commentWorkItem).toHaveBeenCalledTimes(1);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewerModel, previewPostRef: 'thread-post:77' }),
+    );
+    expect(reviewMocks.assertReviewerModelAllowed.mock.invocationCallOrder[0]).toBeLessThan(
+      workItemMocks.commentWorkItem.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('returns a structured refusal when reviewer policy changes during routing', async () => {
     rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
     const error = new Error(
       'reviewer_model_not_allowed: codex/gpt-6-sol is absent from the workspace expert allowlist',

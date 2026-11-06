@@ -4,6 +4,9 @@ import { hashPlanContent } from './content-hash';
 import { evaluatePlanSpecQuality } from './spec-quality';
 import { computeSpecSetHash, SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
 import { getBuildInfo } from '../../build-info';
+import { scorecardEvidenceFingerprint } from '../../scorecards';
+import { applyPayloadTier } from '@papercusp/tooldef';
+import { applyResultDoor } from '../../result-door';
 
 const reads = vi.hoisted(() => ({ plan: vi.fn(), clauses: vi.fn(), snapshot: vi.fn(), rubrics: vi.fn(), discovery: vi.fn() }));
 vi.mock('../../plan-audits', async original => ({ ...await original<typeof import('../../plan-audits')>(),
@@ -54,6 +57,35 @@ beforeEach(() => {
 });
 
 describe('immutable spec-quality replay (WI-10007284)', () => {
+  it('keeps an exact complete evidence binding through the bounded replay transport (WI-6554700010045887)', async () => {
+    const full = await call(replayArgs);
+    const summary = await call({ ...replayArgs, detail: 'summary' });
+    const tiered = applyPayloadTier({ toolName: 'plans:evaluate-spec-quality', shape: undefined,
+      response: { data: summary }, tier: 'full', explicitFullRequest: true,
+      args: { ...replayArgs, detail: 'summary', payloadTier: 'full' } });
+    const doored = applyResultDoor({ content: [{ type: 'text' as const, text: JSON.stringify(tiered.data) }] },
+      { toolName: 'plans:evaluate-spec-quality', workspaceId: 'spec-quality-replay-test' });
+    const delivered = JSON.parse(doored.content[0].text);
+    expect(delivered).toMatchObject({ ok: true, evaluatorBuild: full.evaluatorBuild,
+      specSetHashVersion: full.specSetHashVersion, specSetHash: full.specSetHash,
+      scorecardBinding: { subject: full.scorecardDraft.subject,
+        evidenceFingerprint: scorecardEvidenceFingerprint({ rubricRef: full.scorecardDraft.rubricRef,
+          ratings: full.scorecardDraft.ratings }) } });
+    expect(JSON.stringify(tiered.data).length).toBeLessThan(2000);
+    expect(tiered.data).not.toHaveProperty('scorecardDraft');
+    expect(tiered.data).not.toHaveProperty('ratings');
+    const changed = { ...full.scorecardDraft, ratings: { ...full.scorecardDraft.ratings,
+      falsifiability: { ...full.ratings.falsifiability, evidence: full.ratings.falsifiability.evidence + ' changed' } } };
+    expect(scorecardEvidenceFingerprint({ rubricRef: changed.rubricRef, ratings: changed.ratings }))
+      .not.toBe(summary.scorecardBinding.evidenceFingerprint);
+  });
+
+  it('keeps summary replay fail-closed on a different spec set', async () => {
+    const result = await call({ ...replayArgs, detail: 'summary', expectedSpecSetHash: 'f'.repeat(64) });
+    expect(result).toMatchObject({ ok: false, error: 'spec_set_hash_mismatch' });
+    expect(result).not.toHaveProperty('scorecardBinding');
+  });
+
   it('binds the executable quality recipe to the serving evaluator and hash protocol', async () => {
     const result = await call({ slug: 'quality-plan', harness: 'papercusp' });
     expect(result.scorecardDraft.rerunRecipe).toMatchObject({

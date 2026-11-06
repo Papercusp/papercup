@@ -22,6 +22,7 @@
  * federated.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
@@ -202,7 +203,11 @@ export async function setWorkItemCheckpointWithPrior(
      * replace without a racy read-then-write in the caller. Forwarded verbatim to
      * {@link setCarryNoteWithPrior}; see its `transform` doc for the contract.
      */
-    transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+    transform?: (
+      priorNote: string | null,
+      note: string | null | undefined,
+      tx: Sql | TransactionSql,
+    ) => string | null | undefined | Promise<string | null | undefined>;
     /**
      * personal-data-reader-set-labels P-012 / D-006: the agent that authored this
      * checkpoint. While it holds a restricted Personal Vault disclosure the stored

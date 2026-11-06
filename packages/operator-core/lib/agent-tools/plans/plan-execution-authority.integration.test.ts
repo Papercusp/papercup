@@ -5,7 +5,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { hashPlanContent } from './content-hash';
 
 const gates = vi.hoisted(() => ({ blocker: '', unavailable: false,
-  beforeReadiness: null as (() => Promise<void>) | null }));
+  beforeReadiness: null as (() => Promise<void>) | null, startGate: vi.fn() }));
 const connection = vi.hoisted(() => ({ sql: null as unknown, idleTimeout: '0', timeZone: 'UTC' }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
@@ -26,8 +26,11 @@ vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: a
     code: 'conversation_audit_required' };
 } }));
 // The canonical start gate includes the pre-start BAR contract check.
-vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async () => ['initial_change_scope_missing', 'bar_contract_not_ready'].includes(gates.blocker)
-  ? { ok: false, refusal: { code: gates.blocker } } : { ok: true } }));
+vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async (...args: unknown[]) => {
+  gates.startGate(...args);
+  return ['initial_change_scope_missing', 'bar_contract_not_ready'].includes(gates.blocker)
+    ? { ok: false, refusal: { code: gates.blocker } } : { ok: true };
+} }));
 vi.mock('./plan-spec-quality-gate', () => ({ evaluatePlanSpecQualityGate: async () => ({
   satisfied: gates.blocker !== 'spec_quality_not_current', applicable: true, mode: 'enforced', code: 'spec_quality_not_current',
 }) }));
@@ -152,6 +155,20 @@ beforeEach(async () => {
 });
 
 describe('canonical successful-start revision authority (real PG)', () => {
+  it('uses new-start discovery for issuance and continuation only after a matching immutable receipt', async () => {
+    gates.startGate.mockClear();
+    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+    expect(gates.startGate).not.toHaveBeenCalled();
+    await issue();
+    expect(gates.startGate).toHaveBeenLastCalledWith('feature', expect.any(Object), null, 'start',
+      expect.objectContaining({ discoveryAdmission: 'start' }));
+    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
+    expect(gates.startGate).toHaveBeenLastCalledWith('feature', expect.any(Object), null, 'start',
+      expect.objectContaining({ discoveryAdmission: 'continuation' }));
+    gates.blocker = 'bar_contract_not_ready';
+    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual(['bar_contract_not_ready']);
+  });
+
   const seedLine = async (id: string, seq = 0) => db.sql`
     INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,
       plan_slug,plan_line_id,plan_line_text,plan_importance,plan_decision_refs,plan_deliverable,plan_seq)
@@ -196,6 +213,29 @@ describe('canonical successful-start revision authority (real PG)', () => {
     await db.sql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=NULL`;
     expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
   });
+
+  it.each([null, { reason: 'prior author edit', priorRevision: 17 }])(
+    'admits legacy lifecycle metadata %j without admitting changed authority inputs or body', async invalidation => {
+      const receipt = await issue();
+      const [stored] = await db.sql<{ content_snapshot: string }[]>`
+        SELECT content_snapshot FROM harness_shared.plan_revisions WHERE seq=${receipt.seq}`;
+      const legacy = JSON.parse(stored!.content_snapshot);
+      legacy.inputs.execution_start_invalidation = invalidation;
+      const replaceReceipt = async (snapshot: unknown) => db.sql`
+        UPDATE harness_shared.plan_revisions SET content_snapshot=${JSON.stringify(snapshot)}
+        WHERE seq=${receipt.seq}`;
+
+      await replaceReceipt(legacy);
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+      expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
+
+      await replaceReceipt({ ...legacy, inputs: { ...legacy.inputs, template_data: { changed: true } } });
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_start_revision_stale']);
+
+      await replaceReceipt({ ...legacy, body: legacy.body.replace('Preserve findings', 'Discard findings') });
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_start_revision_stale']);
+    },
+  );
 
   it('normalizes the final locked start snapshot across reader and writer TimeZone', async () => {
     const reader = postgres(db.url, { max: 1, prepare: false, connection: { TimeZone: 'America/New_York' } });

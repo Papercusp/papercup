@@ -136,6 +136,7 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { DbCallDeadlineError } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
@@ -147,7 +148,13 @@ import {
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { dependsOnSpec } from '../../freshness/tool-schema';
 import { resolveCurrentTokens } from '../../freshness/resolvers';
-import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerRecord } from '../../work-items';
+import {
+  commentWorkItem,
+  markFeatureProgress,
+  markIssueProgress,
+  isClaimHoldParked,
+  isSelfOwnerRecord,
+} from '../../work-items';
 import { lookupWorkItem } from './_lookup';
 import { workItemsCheckpointAbortCompletionReceipt } from './checkpoint-abort-completion';
 import { deriveRepoPathsFromText } from './_derive-paths';
@@ -757,6 +764,50 @@ function enforceFrozenWorkItemCarry<T extends string | null | undefined>(text: T
  */
 const CHECKPOINT_CAP = CHECKPOINT_BODY_CAP_CHARS;
 const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
+const CHECKPOINT_ARCHIVE_REFERENCE_PREFIX = 'Earlier full checkpoint: ';
+
+function takeCheckpointArchiveReference(body: string): { body: string; reference: string | null } {
+  const newline = body.indexOf('\n');
+  if (newline < 0) return { body, reference: null };
+  const line = body.slice(0, newline).replace(/\r$/, '');
+  const match = /^Earlier full checkpoint: (thread-post:[1-9][0-9]*) \(sha256:([a-f0-9]{64})\)$/.exec(line);
+  if (!match) return { body, reference: null };
+  let nextLine = newline + 1;
+  if (body[nextLine] === '\n') nextLine += 1;
+  return { body: body.slice(nextLine), reference: line };
+}
+
+function withCheckpointArchiveReference(body: string, reference: string | null): string {
+  return reference ? reference + '\n\n' + body : body;
+}
+
+function renderCheckpointWithArchiveWithinCap(
+  note: string,
+  reference: string,
+  preserveNewestFirst: boolean,
+): string {
+  const checksSplit = splitCarryNoteChecks(note);
+  const wallsSplit = splitCarryNoteWalls(checksSplit.body);
+  const archiveSplit = takeCheckpointArchiveReference(wallsSplit.body);
+  const render = (body: string) =>
+    withStableCarryRowIds(
+      withCarryNoteChecks(
+        withCarryNoteWalls(withCheckpointArchiveReference(body, reference), wallsSplit.walls),
+        checksSplit.checks,
+      ),
+    );
+  const rendered = render(archiveSplit.body);
+  if (rendered.length <= CHECKPOINT_CAP) return rendered;
+
+  const overflow = rendered.length - CHECKPOINT_CAP + TRUNCATION_MARKER.length;
+  const keepBody = Math.max(archiveSplit.body.length - overflow, 0);
+  const trimmedBody = preserveNewestFirst
+    ? archiveSplit.body.slice(0, keepBody) + TRUNCATION_MARKER
+    : TRUNCATION_MARKER + archiveSplit.body.slice(Math.min(overflow, archiveSplit.body.length));
+  const trimmed = render(trimmedBody);
+  if (trimmed.length > CHECKPOINT_CAP) throw new Error('checkpoint_archive_reference_exceeds_cap');
+  return trimmed;
+}
 
 /**
  * Normalize the structured carry-note shape accepted by loop:checkpoint when it
@@ -2092,9 +2143,12 @@ export default defineTool({
         let unmatchedCheckRefs: string[] = [];
         let suppliedChecksNotRetained: AppendChecksOverflowRow[] = [];
         let preserveCarriedChecksOnOverflow = false;
+        let overflowedAtCap = false;
         const checksTransform =
             (priorNote: string | null, incoming: string | null | undefined) => {
+                overflowedAtCap = false;
                 const priorSplit = splitCarryNoteChecks(priorNote);
+                const priorArchive = takeCheckpointArchiveReference(priorSplit.body);
                 const originalPrior = priorSplit.checks;
                 // P-025: resolve a one-row reword against the authoritative locked
                 // prior before capacity checks/upsert. The resolver promotes an
@@ -2109,15 +2163,25 @@ export default defineTool({
                 unmatchedCheckRefs = resolvedRefs.unmatched;
                 // `incoming` may carry its OWN rendered `## Checks` — strip it before
                 // re-attaching or the note ends up with two Checks sections.
-                const { body: incomingBody } = splitCarryNoteChecks(incoming ?? '');
+                const { body: incomingBodyWithArchive } = splitCarryNoteChecks(incoming ?? '');
+                const incomingArchive = takeCheckpointArchiveReference(incomingBodyWithArchive);
+                const archiveReference = priorArchive.reference ?? incomingArchive.reference;
+                const incomingBody = incomingArchive.body;
                 // Append the body using the authoritative row locked by the store.
                 // The prior may have changed since any caller read, and no separate
                 // pre-read is required to build the submitted note. Keep structured
                 // checks/walls out of the join and restore the carried walls last.
-                const { body: priorBodyForAppend, walls: priorWallsForAppend } = splitCarryNoteWalls(priorSplit.body);
+                const { body: priorBodyForAppend, walls: priorWallsForAppend } = splitCarryNoteWalls(priorArchive.body);
                 const bodyWithAppend = didAttemptJoin
                   ? withCarryNoteWalls(joinCheckpoint(priorBodyForAppend, incomingBody), priorWallsForAppend)
                   : incomingBody;
+                if (didAttemptJoin && priorNote?.trim()) {
+                  const rawJoinLength =
+                    priorBodyForAppend.length +
+                    (priorBodyForAppend.length > 0 ? '\n\n---\n'.length : 0) +
+                    incomingBody.length;
+                  overflowedAtCap = rawJoinLength > CHECKPOINT_CAP;
+                }
                 // EI-19447043119380534: on a checks-only patch the caller supplied no body
                 // at all, so the STORED one is the body — read authoritatively here, inside
                 // the store's locked transaction, so a concurrent writer cannot interleave.
@@ -2129,9 +2193,9 @@ export default defineTool({
                   newLength < priorNote.length * 0.5 &&
                   incomingBody.length > 0;
                 let body = isBodyPreservingPatch
-                  ? priorSplit.body
+                  ? priorArchive.body
                   : shouldAppendRefresh
-                    ? joinCheckpointNewestFirst(incomingBody, priorSplit.body)
+                    ? joinCheckpointNewestFirst(incomingBody, priorArchive.body)
                     : bodyWithAppend;
                 body = normalizeUnverifiedOwnerAttributionMarkers(body) ?? body;
                 if (ownerEnforcement.unverified) body = markUnverifiedOwnerAttribution(body) ?? body;
@@ -2289,8 +2353,13 @@ export default defineTool({
                   throw new ReplaceWouldDropError(droppedCheckClaims);
                 }
                 if (merged.length === 0)
-                  return enforceFrozenWorkItemCarry(body.length > 0 ? body : null, currentProvenanceText);
-                const rendered = withStableCarryRowIds(withCarryNoteChecks(body, merged));
+                  return enforceFrozenWorkItemCarry(
+                    withStableCarryRowIds(withCheckpointArchiveReference(body, archiveReference)) || null,
+                    currentProvenanceText,
+                  );
+                const rendered = withStableCarryRowIds(
+                  withCarryNoteChecks(withCheckpointArchiveReference(body, archiveReference), merged),
+                );
                 if (rendered.length <= CHECKPOINT_CAP)
                   return enforceFrozenWorkItemCarry(withStableCarryRowIds(rendered), currentProvenanceText);
                 // Over cap: trim the BODY and re-attach, so the checks — bounded to
@@ -2300,18 +2369,64 @@ export default defineTool({
                 // front — the oldest bytes. The newest-first AUTO-preserved refresh
                 // cuts from the END instead: what must never be trimmed is the fresh
                 // authority sitting at the head.
+                overflowedAtCap = true;
                 const overflow = rendered.length - CHECKPOINT_CAP + TRUNCATION_MARKER.length;
                 const keepBody = Math.max(body.length - overflow, 0);
                 const trimmedBody = shouldAppendRefresh
                   ? body.slice(0, keepBody) + TRUNCATION_MARKER
                   : TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
-                return enforceFrozenWorkItemCarry(withStableCarryRowIds(withCarryNoteChecks(trimmedBody, merged)), currentProvenanceText);
+                return enforceFrozenWorkItemCarry(
+                  withStableCarryRowIds(
+                    withCarryNoteChecks(
+                      withCheckpointArchiveReference(trimmedBody, archiveReference),
+                      merged,
+                    ),
+                  ),
+                  currentProvenanceText,
+                );
               };
-        const timedChecksTransform = (priorNote: string | null, incoming: string | null | undefined) =>
-          observeCheckpointSyncPhase(
+        const timedChecksTransform = (
+          priorNote: string | null,
+          incoming: string | null | undefined,
+          tx: Sql | TransactionSql,
+        ) =>
+          observeCheckpointPhase(
             ctx,
             phaseDetail('locked-check-row-transform'),
-            () => checksTransform(priorNote, incoming),
+            async () => {
+              const transformed = checksTransform(priorNote, incoming);
+              if (
+                !overflowedAtCap ||
+                !didAttemptJoin ||
+                !priorNote?.trim() ||
+                typeof transformed !== 'string' ||
+                transformed.length === 0
+              ) {
+                return transformed;
+              }
+              const archiveHash = createHash('sha256').update(priorNote, 'utf8').digest('hex');
+              const post = await observeCheckpointPhase(
+                ctx,
+                phaseDetail('locked-checkpoint-archive'),
+                () =>
+                  commentWorkItem(it.id, priorNote, ident.ownerId, {
+                    harness,
+                    workspaceId,
+                    writerOwnerId: ident.ownerId,
+                    transaction: tx,
+                  }),
+                checkpointTraceMode,
+              );
+              if (!post) throw new Error('work-item ' + it.id + ' disappeared while archiving its checkpoint');
+              const reference =
+                CHECKPOINT_ARCHIVE_REFERENCE_PREFIX +
+                'thread-post:' + post.id +
+                ' (sha256:' + archiveHash + ')';
+              return enforceFrozenWorkItemCarry(
+                renderCheckpointWithArchiveWithinCap(transformed, reference, shouldAppendRefresh),
+                currentProvenanceText,
+              );
+            },
             checkpointTraceMode,
           );
         /**

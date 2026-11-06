@@ -381,8 +381,14 @@ const withAssumptions = (x: unknown): unknown => {
     }
     if (typeof completion !== 'object' || completion === null || Array.isArray(completion)) return item;
     const completionRecord = completion as Record<string, unknown>;
+    // These fixtures exercise other close contracts. Declare their result just
+    // as a current caller must; the dedicated outcome tests use oneRaw instead.
+    if (['done', 'resolved', 'passed'].includes(state)) {
+      const verification = completionRecord.verification as Record<string, unknown> | undefined;
+      item.completion = { ...completionRecord, verification: { workOutcome: 'other-no-new-change', ...verification } };
+    }
     if (['done', 'resolved', 'passed'].includes(state) && completionRecord.rootCauseVerification === undefined) {
-      item.completion = { ...completionRecord, rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE };
+      item.completion = { ...(item.completion as Record<string, unknown>), rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE };
     }
     return item;
   };
@@ -409,6 +415,21 @@ const envRaw = async (x: unknown) => {
   return res.data;
 };
 const oneRaw = async (x: unknown) => (await envRaw(x)).results[0];
+
+// Other raw-schema fixtures declare their outcome explicitly through this helper;
+// outcome omission regressions call oneRaw and receive no contract defaults.
+const oneWithOutcome = async (x: unknown) => {
+  const input = x as Record<string, unknown>;
+  const completion = input.completion as Record<string, unknown> | undefined;
+  const withOutcome = completion && !input.recordOnly ? {
+    ...input,
+    completion: { ...completion, verification: {
+      workOutcome: 'other-no-new-change',
+      ...(completion.verification as Record<string, unknown> | undefined),
+    } },
+  } : input;
+  return (await envRaw(withOutcome)).results[0];
+};
 
 const item = { id: 'F-12', kind: 'feature', family: 'feature', state: 'in_progress', harness: 'papercup' };
 
@@ -598,7 +619,7 @@ describe('EI-20286699547467039 — unmet completion gates accumulate into one re
   it('names BOTH unmet gates in one refusal instead of only the first', async () => {
     // `oneRaw` does not inject `assumptions` (unlike `one`), so this successful bug close
     // leaves TWO independent gates unmet on the same call: assumptions and the causal record.
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-acc',
       state: 'resolved',
       completion: { summary: 'fixed the cache', tests: '5 green' },
@@ -625,7 +646,7 @@ describe('EI-20286699547467039 — unmet completion gates accumulate into one re
   });
 
   it('CONTROL — a single unmet gate refuses byte-identically to before accumulation', async () => {
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-acc',
       state: 'resolved',
       assumptions: 'none',
@@ -643,7 +664,7 @@ describe('EI-20286699547467039 — unmet completion gates accumulate into one re
   });
 
   it('CALIBRATION — a completion meeting both gates still closes', async () => {
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-acc',
       state: 'resolved',
       assumptions: 'none',
@@ -670,7 +691,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
   });
 
   it('refuses a successful bug close without the causal record before any write', async () => {
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-root',
       state: 'resolved',
       assumptions: 'none',
@@ -950,7 +971,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
   });
 
   it('accepts a plain procedure description when typed predictions distinguish the hypotheses', async () => {
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-root',
       state: 'resolved',
       assumptions: 'none',
@@ -988,7 +1009,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
   });
 
   it('accepts and persists a contrastive record on a successful bug close', async () => {
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-root',
       state: 'resolved',
       assumptions: 'none',
@@ -1011,7 +1032,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
   });
 
   it('returns every missing causal-evidence v2 field together without writing', async () => {
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-root',
       state: 'resolved',
       assumptions: 'none',
@@ -1064,6 +1085,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
 
     const completion = {
       summary: 'Verify that a completion preview remains read-only across projected dispatch.',
+      verification: { workOutcome: 'other-no-new-change' },
       verifiedHow: 'unit',
       testsRun: 'complete.test.ts projected-dispatch regression',
       testResult: 'The preview preserved both open rows until their explicit close calls.',
@@ -1132,7 +1154,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
   });
 
   it('validates the full versioned contract without mutating or emitting a completion', async () => {
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-root',
       state: 'resolved',
       assumptions: 'none',
@@ -1184,7 +1206,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
       assumptions: 'none',
       completion: { summary: 'Verified focused behavior', verifiedHow: 'unit', testResult: 'passed', filesChanged: [path] },
     };
-    const preview = await oneRaw({ ...args, validateOnly: true });
+    const preview = await oneWithOutcome({ ...args, validateOnly: true });
     expect(preview).toMatchObject({ ok: true, validationOnly: true, completionAuthority: 'proposed', countsTowardBurnDown: false });
     expect(preview.authorityWarning).toContain(path);
     expect(preview.authorityWarning).toContain(reason);
@@ -1194,7 +1216,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
 
-    const closed = await oneRaw(args);
+    const closed = await oneWithOutcome(args);
     expect(closed.completionAuthority).toBe(preview.completionAuthority);
     expect(closed.authorityWarning).toContain(path);
     expect(closed.authorityWarning).toContain(reason);
@@ -1207,7 +1229,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
       headSha: 'a'.repeat(40),
       contentIdentity: [{ path, workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'b'.repeat(40) }],
     });
-    const preview = await oneRaw({
+    const preview = await oneWithOutcome({
       id: 'WI-content-preview', state: 'resolved', assumptions: 'none', validateOnly: true,
       completion: { summary: 'Verified focused behavior', verifiedHow: 'unit', testResult: 'passed', filesChanged: [path] },
     });
@@ -1280,7 +1302,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     getWorkItem.mockResolvedValue(closeItem);
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...closeItem, state: 'resolved' }));
 
-    const validation = await oneRaw({
+    const validation = await oneWithOutcome({
       id: closeItem.id,
       state: 'resolved',
       assumptions: 'none',
@@ -1299,7 +1321,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     });
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
 
-    const realClose = await oneRaw({
+    const realClose = await oneWithOutcome({
       id: closeItem.id,
       state: 'resolved',
       assumptions: 'none',
@@ -1330,7 +1352,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
       };
       getWorkItem.mockResolvedValue(closeItem);
 
-      const validation = await oneRaw({
+      const validation = await oneWithOutcome({
         id: closeItem.id,
         state: 'resolved',
         assumptions: 'none',
@@ -1359,7 +1381,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
 
   it('keeps discard/wontfix bug closes drainable without inventing a causal record', async () => {
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'dropped' }));
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-root',
       state: 'dropped',
       assumptions: 'none',
@@ -1370,7 +1392,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
 
   it('recognizes an explicit capability-gap tag without treating prose mentions as a type', async () => {
     getWorkItem.mockResolvedValue({ ...bug, id: 'WI-gap', kind: 'change', tags: ['capability-gap'] });
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'WI-gap',
       state: 'resolved',
       assumptions: 'none',
@@ -2414,7 +2436,7 @@ describe('work_items:complete (keyed-array)', () => {
 
     it('does not report success when terminal-close assumptions are supplied without state', async () => {
       getWorkItem.mockResolvedValue(issue);
-      const r = await oneRaw({
+      const r = await oneWithOutcome({
         id: 'WI-1',
         assumptions: 'none',
         completion: { summary: 'fixed and verified', tests: '5 green' },
@@ -2429,7 +2451,7 @@ describe('work_items:complete (keyed-array)', () => {
 
     it('does not report success for an ambiguous bare completion without state', async () => {
       getWorkItem.mockResolvedValue(issue);
-      const r = await oneRaw({ id: 'WI-1', completion: { summary: 'fixed and verified', tests: '5 green' } });
+      const r = await oneWithOutcome({ id: 'WI-1', completion: { summary: 'fixed and verified', tests: '5 green' } });
       expect(r.ok).toBe(false);
       expect(r.error).toContain('recordOnly:true was not requested');
       expect(r.workItem.state).toBe('open');
@@ -2437,7 +2459,7 @@ describe('work_items:complete (keyed-array)', () => {
 
     it('keeps an explicitly requested record-only completion successful', async () => {
       getWorkItem.mockResolvedValue(issue);
-      const r = await oneRaw({ id: 'WI-1', recordOnly: true, completion: { summary: 'progress', tests: 'n/a' } });
+      const r = await oneWithOutcome({ id: 'WI-1', recordOnly: true, completion: { summary: 'progress', tests: 'n/a' } });
       expect(r.ok).toBe(true);
       expect(r.workItem.state).toBe('open');
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
@@ -3137,6 +3159,84 @@ describe('work_items:complete (keyed-array)', () => {
         }),
       }),
     );
+  });
+
+  describe('modern terminal work outcome', () => {
+    const evidence = { verifiedHow: 'unit', testsRun: 'npm test', testResult: 'passed' };
+
+    beforeEach(() => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    });
+
+    it.each([false, true])('refuses an undeclared outcome before writing (validateOnly=%s)', async (validateOnly) => {
+      const r = await oneRaw({
+        id: 'F-12', state: 'passed', assumptions: 'none', validateOnly,
+        completion: { summary: 'verified work', verification: evidence },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.workOutcomeError).toContain('completion.verification.workOutcome');
+      expect(r.completionContract.requirements).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: 'work-outcome', evaluated: true, applicable: true, satisfied: false }),
+      ]));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r).not.toHaveProperty('completion');
+    });
+
+    it.each(['introduced-change', 'verified-existing', 'invalid-or-expected', 'other-no-new-change'])
+      ('persists the explicit %s outcome', async (workOutcome) => {
+        const r = await oneRaw({
+          id: 'F-12', state: 'passed', assumptions: 'none',
+          completion: { summary: 'verified work', verification: { ...evidence, workOutcome } },
+        });
+        expect(r.ok).toBe(true);
+        expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({
+          completionEvidence: expect.objectContaining({ workOutcome }),
+        }));
+      });
+
+    it('derives duplicate only from a non-self structured duplicate disposition', async () => {
+      const r = await oneRaw({
+        id: 'F-12', state: 'passed', assumptions: 'none',
+        completion: { summary: 'superseded', duplicateOf: 'F-13', verification: evidence },
+      });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({
+        completionEvidence: expect.objectContaining({ workOutcome: 'duplicate' }),
+      }));
+    });
+
+    it('does not derive an outcome from a self duplicate, authority, or absent changed paths', async () => {
+      const r = await oneRaw({
+        id: 'F-12', state: 'passed', assumptions: 'none',
+        completion: { summary: 'verified work', duplicateOf: 'F-12', verification: evidence },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.workOutcomeError).toContain('workOutcome');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('derives the non-remediating outcome for a discard disposition', async () => {
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'deprecated' }));
+      const r = await oneRaw({
+        id: 'F-12', state: 'deprecated', assumptions: 'none', completion: { summary: 'discarded' },
+      });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'deprecated', expect.objectContaining({
+        completionEvidence: expect.objectContaining({ workOutcome: 'other-no-new-change' }),
+      }));
+    });
+
+    it('keeps historical evidence attachments optional without inferring a new change', async () => {
+      getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
+      const r = await oneRaw({
+        id: 'F-12', recordOnly: true, completion: { summary: 'historical evidence', verification: evidence },
+      });
+      expect(r.ok).toBe(true);
+      expect(r).not.toHaveProperty('workOutcomeError');
+      expect(r.completion.verification ?? {}).not.toHaveProperty('workOutcome');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
   });
 
   it('persists the canonical declared work outcome without interpreting authority as a new change', async () => {
@@ -5015,6 +5115,38 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r).not.toHaveProperty('completion');
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
+
+    it.each([false, true])(
+      'refuses the truthful report with 25 unknown requested measurements even after artifact acceptance (validateOnly=%s)',
+      async (validateOnly) => {
+        const measurements = Array.from({ length: 26 }, (_, index) => `Measure requested fleet criterion ${index + 1}`);
+        const fleetAssessment = {
+          ...verificationItem,
+          title: 'Grade fleet execution against every requested criterion',
+          payload: { workDefinition: { acceptanceCriteria: measurements } },
+        };
+        getWorkItem.mockResolvedValue(fleetAssessment);
+        setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...fleetAssessment, state: 'resolved' }));
+        const artifacts = ['published report read back in full', 'independent report integrity audit passed'];
+        const r = await one({
+          id: 'WI-verify',
+          state: 'resolved',
+          validateOnly,
+          completion: {
+            summary: 'Report accurately records 1 degraded criterion and 25 unknown measurements; its integrity audit passed.',
+            verifiedHow: 'manual',
+            testResult: 'Complete report read back; independent audit accepted its truthful evidence.',
+            coverage: { population: artifacts, checked: artifacts, residue: [] },
+          },
+        });
+
+        expect(r.ok).toBe(false);
+        expect(r.verificationCoverageError).toContain('workDefinition.acceptanceCriteria');
+        for (const measurement of measurements) expect(r.verificationCoverageError).toContain(measurement);
+        expect(r).not.toHaveProperty('completion');
+        expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      },
+    );
 
     it.each(['notChecked', 'notApplicable'] as const)(
       'rejects declared acceptance criteria left in %s even with an honest partial summary',
@@ -7482,7 +7614,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     it('accepts a direct record-only completion without assumptions', async () => {
       getWorkItem.mockResolvedValue(openIssue);
 
-      const r = await oneRaw({ id: 'WI-1', recordOnly: true, completion: { summary: 'progress note' } });
+      const r = await oneWithOutcome({ id: 'WI-1', recordOnly: true, completion: { summary: 'progress note' } });
 
       expect(r.ok).toBe(true);
       expect(r.error).toBeUndefined();
@@ -7492,7 +7624,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     it('rejects a direct terminal close without assumptions before writing state', async () => {
       getWorkItem.mockResolvedValue(openIssue);
 
-      const r = await oneRaw({ id: 'WI-1', state: 'resolved', completion: { summary: 'closed' } });
+      const r = await oneWithOutcome({ id: 'WI-1', state: 'resolved', completion: { summary: 'closed' } });
 
       expect(r.ok).toBe(false);
       expect(r.error).toContain('a terminal close requires `assumptions`');
@@ -7503,7 +7635,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       getWorkItem.mockResolvedValue(openIssue);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...openIssue, state: 'resolved' }));
 
-      const direct = await oneRaw({
+      const direct = await oneWithOutcome({
         id: 'WI-1',
         state: 'resolved',
         assumptions: 'none',
@@ -7515,7 +7647,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
             id: 'WI-1',
             state: 'resolved',
             assumptions: 'none',
-            completion: { summary: 'closed' },
+            completion: { summary: 'closed', verification: { workOutcome: 'other-no-new-change' } },
           },
         ],
       });
@@ -7529,7 +7661,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     it('applies the same gate to an inferred issue terminal close', async () => {
       getWorkItem.mockResolvedValue(openIssue);
 
-      const r = await oneRaw({ id: 'WI-1', completion: { summary: 'closed', status: 'resolved' } });
+      const r = await oneWithOutcome({ id: 'WI-1', completion: { summary: 'closed', status: 'resolved' } });
 
       expect(r.ok).toBe(false);
       expect(r.error).toContain('a terminal close requires `assumptions`');
@@ -8687,7 +8819,7 @@ describe('record-only completion of an already-terminal item (EI-193624410379864
   it('does NOT demand `assumptions` — the caller is closing nothing', async () => {
     // Routing this through the close-intent path would convert a silent no-op into a HARD
     // REFUSAL for callers who never asked to close anything.
-    const r = await oneRaw({
+    const r = await oneWithOutcome({
       id: 'EI-1',
       completion: { summary: 'progress note', status: 'done', verifiedHow: 'unit', testResult: 'ok' },
     });

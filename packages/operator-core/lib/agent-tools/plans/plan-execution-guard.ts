@@ -282,12 +282,12 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
   const { readPlanExecutionStart } = await import('./plan-execution-authority');
   const proof = await measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId));
   if (proof.length) return proof;
-  return checkPlanExecutionReadiness(binding, workspaceId, observe);
+  return checkPlanExecutionReadiness(binding, workspaceId, observe, 'continuation');
 }
 
 /** Current policy is required both when issuing authority and on every use. */
 export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding, workspaceId: string,
-  observe?: PlanExecutionTimingObserver): Promise<string[]> {
+  observe?: PlanExecutionTimingObserver, discoveryAdmission: 'start' | 'continuation' = 'start'): Promise<string[]> {
   return runWithWorkspace(workspaceId, async () => {
     const { sql } = getOrgPg();
     // A known harness already scopes the canonical rendered read. Start it with
@@ -359,6 +359,7 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
       measurePlanStage('start_gate', observe,
         () => checkPlanStartable(binding.planSlug, opts, null, 'start', {
           proofMode: 'metadata',
+          discoveryAdmission,
           ...(observe ? { onRead: (source: AcceptanceBarSnapshotSource, durationMs: number) => {
             try { observe({ stage: `start_gate_snapshot_${source}`, durationMs }); }
             catch { /* Diagnostics do not grant or refuse authority. */ }

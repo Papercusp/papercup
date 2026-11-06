@@ -137,9 +137,10 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v7',
+  version: 'work-items-completion-v8',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
+    { key: 'work-outcome', description: 'New successful closes declare a result; structural duplicate and discard dispositions can derive it.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
     { key: 'spec-test-adequacy', description: 'Affected first-class specs have current independently audited proof.' },
     { key: 'design-evidence', description: 'Enforced ratified design cases have current passing evidence.' },
@@ -4054,11 +4055,23 @@ async function completeOneTracked(
       completionPrefill = filled.prefill;
     }
   }
-  const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
   const duplicateCloseCoverageException =
     typeof it.completion.duplicateOf === 'string' &&
     it.completion.duplicateOf.trim().length > 0 &&
     it.completion.duplicateOf.trim() !== it.id;
+  // These structured dispositions establish a result without interpreting prose,
+  // authority, or absent changed files. Historical records stay readable; every
+  // other new successful close must supply its own canonical declaration.
+  const dispositionWorkOutcome = duplicateCloseCoverageException
+    ? 'duplicate'
+    : isAbandonmentCloseState(effectiveState) ? 'other-no-new-change' : undefined;
+  if (closeIntentRequested && dispositionWorkOutcome && !it.completion.verification?.workOutcome) {
+    it.completion = {
+      ...it.completion,
+      verification: { ...it.completion.verification, workOutcome: dispositionWorkOutcome },
+    };
+  }
+  const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
   // Duplicate and discard closes are administrative settlements, not claims that
   // remediation evidence made the item authoritative. They still leave the item
   // settled in the queue, so the caller-facing burn-down result must use the shared
@@ -4167,6 +4180,15 @@ async function completeOneTracked(
     closeIntentRequested && it.assumptions === undefined ? ASSUMPTIONS_REQUIRED_MESSAGE : undefined;
   setContractRequirement('assumptions', closeIntentRequested, assumptionsContractError);
   if (assumptionsContractError) refuseGate(assumptionsContractError);
+
+  const workOutcomeRequired = closeIntentRequested && successfulClose;
+  const workOutcomeError = workOutcomeRequired && !completionEvidenceForGate?.workOutcome
+    ? `REJECTED — ${it.id} requires completion.verification.workOutcome for a new successful close: ` +
+      'introduced-change, verified-existing, duplicate, invalid-or-expected, or other-no-new-change. ' +
+      'Completion authority and absent filesChanged do not establish a result. No completion record or state transition was written.'
+    : undefined;
+  setContractRequirement('work-outcome', workOutcomeRequired, workOutcomeError);
+  if (workOutcomeError) refuseGate(workOutcomeError, { workOutcomeError });
 
   // EI-18793465701838962: successful defect closes need a falsifiable causal
   // record, not a plausible post-hoc explanation. `capability-gap` is not a

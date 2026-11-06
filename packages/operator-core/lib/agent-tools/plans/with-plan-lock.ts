@@ -209,6 +209,8 @@ export async function settleRoutedPlanIdeaOnTerminalEntry(
 export interface PlanWriteMeta {
   version: number;
   contentHash: string;
+  /** Saved preimage captured under the lock, before graph-owned lines are rendered. */
+  storedContent?: string;
   /** Canonical plan lifecycle status, read under the same lock as `body`. */
   planStatus: string | null;
   /** Operational lifecycle read under the same lock as the candidate body. */
@@ -588,6 +590,7 @@ export async function withPlanLock<T>(
          AND plan_slug = ${slug}
     `;
     const cur = rows[0] ?? null;
+    const storedContent = cur?.content;
     const lineNodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
     if (cur) {
       // Match the reader's validated legacy fallback. Rendering an empty graph
@@ -614,6 +617,7 @@ export async function withPlanLock<T>(
       ? {
           version: curVersion,
           contentHash: cur.content_hash,
+          storedContent,
           planStatus: cur.status ?? null,
           opStatus: cur.op_status ?? null,
           verificationProfile: cur.verification_profile ?? null,

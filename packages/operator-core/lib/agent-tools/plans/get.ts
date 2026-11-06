@@ -957,6 +957,8 @@ export default defineTool({
             if (!result) throw new Error('not_found');
 
             const { parsed, archived, row } = result;
+            // Raw/CAS identity belongs to the saved document; parsed remains the graph projection.
+            const storedRaw = row.storedContent ?? parsed.raw;
             ctxAny.metadata?.({ slug, archived, legacy: parsed.isLegacy });
 
             if (parsed.isLegacy) {
@@ -979,7 +981,7 @@ export default defineTool({
                 title: row.title,
                 status: legacyStatus,
                 startStatus: reconcileStartStatus(row.opStatus, legacyStatus),
-                contentHash: hashPlanContent(parsed.raw),
+                contentHash: hashPlanContent(storedRaw),
                 // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
                 // contentHash kept for callers that still pass expectedHash.
                 version: row.version,
@@ -1003,7 +1005,7 @@ export default defineTool({
                 payload = {
                   ...legacyBase,
                   prose: parsed.prose,
-                  ...(includeRaw ? { raw: parsed.raw } : {}),
+                  ...(includeRaw ? { raw: storedRaw } : {}),
                 };
               }
               markStage('legacyShape');
@@ -1439,7 +1441,7 @@ export default defineTool({
                       note: { writtenAt: row.nowNote.writtenAt, eventId: row.nowNote.eventId, source: row.nowNote.source },
                     }
                   : nowWithDerivedNext,
-              contentHash: hashPlanContent(parsed.raw),
+              contentHash: hashPlanContent(storedRaw),
               version: row.version,
               // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
               // agents read it here instead of parsing the `## Promote` markdown. null until mig-331 repopulate.
@@ -1570,7 +1572,7 @@ export default defineTool({
                     // Edit mode round-trips the whole document through set-content,
                     // whose CAS hashes the raw bytes — prose+frontmatter reconstructed
                     // would not byte-match.
-                    ...(includeRaw ? { raw: parsed.raw } : {}),
+                    ...(includeRaw ? { raw: storedRaw } : {}),
                   }
                 : structured;
             markStage('shape');
