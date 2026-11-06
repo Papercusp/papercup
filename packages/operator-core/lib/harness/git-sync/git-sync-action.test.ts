@@ -594,6 +594,10 @@ let counterRows: Array<{
   cs?: string | null;
   lastyield?: string | null;
   lastsynced?: string | null;
+  lastyieldboundary?: string | null;
+  lastyieldsynced?: string | number | null;
+  lastyieldtotal?: string | number | null;
+  lastyieldpathssha256?: string | null;
   // Own-head publish refusal snapshot columns read by readEscalationCounters.
   pubrefused?: string | null;
   pubblocked?: string | null;
@@ -725,7 +729,6 @@ import {
   GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
   computeConflictAuthorship,
   gitSyncContentErrorKey,
-  gitSyncYieldCapped,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
@@ -7038,7 +7041,9 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(releaseTrace.some((r) => r.resource === 'git-sync')).toBe(true);
     expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'complete', outcome_status: null });
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('barrier released; the next tick redoes the pass'));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('barrier released; the next tick resumes only a verified submodule prefix, otherwise it starts a full pass'),
+    );
     // Nothing landed before this yield, so there is no commit to announce.
     expect(emitGitSyncCommittedEventMock).not.toHaveBeenCalled();
     log.mockRestore();
@@ -7084,55 +7089,67 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
   });
 });
 
-/**
- * WI-6554700010009238 — the yield must not starve commits. Measured 2026-10-12: a bg-host
- * auto-remediator requested a restart drain every ~4 min, every drain timed out, and the
- * papercusp pass (39 submodules) yielded to each one, so nothing was committed for 30 min.
- */
-describe('WI-6554700010009238: anti-starvation cap on the cooperative yield', () => {
-  async function probeFor(rows: typeof counterRows): Promise<unknown> {
+describe('WI-6554700010009238: cooperative yield progress', () => {
+  async function optionsFor(rows: typeof counterRows): Promise<Record<string, unknown>> {
     counterRows = rows;
-    let probe: unknown = 'not-captured';
+    let captured: Record<string, unknown> | undefined;
     runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
-      probe = opts.shouldYield;
+      captured = opts as Record<string, unknown>;
       return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
     });
     await action(ctx);
-    return probe;
+    return captured ?? {};
   }
 
-  it('the fire after an unanswered yield runs its pass to the end (no yield probe)', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it('keeps yielding enabled and carries the unsettled submodule batch cursor', async () => {
     const now = Date.now();
-
-    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(now - 60_000), lastsynced: String(now - 600_000) }]);
-
-    expect(probe).toBeUndefined();
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('this pass will not yield to a restart drain (anti-starvation)'));
-    log.mockRestore();
+    const digest = 'a'.repeat(64);
+    const opts = await optionsFor([{
+      et: 0,
+      lo: [],
+      lastyield: String(now - 60_000),
+      lastsynced: String(now - 600_000),
+      lastyieldboundary: 'submodule-batch',
+      lastyieldsynced: '8',
+      lastyieldtotal: '41',
+      lastyieldpathssha256: digest,
+    }]);
+    expect(typeof opts.shouldYield).toBe('function');
+    expect(opts.resumeSubmoduleProgress).toEqual({
+      submodulesSynced: 8,
+      submodulesTotal: 41,
+      submodulePathsSha256: digest,
+    });
   });
 
-  it('a yield with no completed pass ever recorded is also capped', async () => {
-    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(Date.now() - 60_000), lastsynced: null }]);
-    expect(probe).toBeUndefined();
-  });
-
-  it('a completed pass since the last yield restores the probe', async () => {
+  it('does not carry a cursor after a completed pass superseded the yield', async () => {
     const now = Date.now();
-    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(now - 600_000), lastsynced: String(now - 60_000) }]);
-    expect(typeof probe).toBe('function');
+    const opts = await optionsFor([{
+      et: 0,
+      lo: [],
+      lastyield: String(now - 600_000),
+      lastsynced: String(now - 60_000),
+      lastyieldboundary: 'submodule-batch',
+      lastyieldsynced: '8',
+      lastyieldtotal: '41',
+      lastyieldpathssha256: 'b'.repeat(64),
+    }]);
+    expect(typeof opts.shouldYield).toBe('function');
+    expect(opts.resumeSubmoduleProgress).toBeUndefined();
   });
 
-  it('a routine that never yielded keeps the probe', async () => {
-    const probe = await probeFor([{ et: 0, lo: [] }]);
-    expect(typeof probe).toBe('function');
-  });
-
-  it('gitSyncYieldCapped: capped only while the last yield is newer than the last completed pass', () => {
-    expect(gitSyncYieldCapped({ lastYieldAt: null, lastSyncedAt: null })).toBe(false);
-    expect(gitSyncYieldCapped({ lastYieldAt: null, lastSyncedAt: 5 })).toBe(false);
-    expect(gitSyncYieldCapped({ lastYieldAt: 5, lastSyncedAt: null })).toBe(true);
-    expect(gitSyncYieldCapped({ lastYieldAt: 6, lastSyncedAt: 5 })).toBe(true);
-    expect(gitSyncYieldCapped({ lastYieldAt: 5, lastSyncedAt: 6 })).toBe(false);
+  it('does not carry a cursor from a yield after the submodule walk', async () => {
+    const now = Date.now();
+    const opts = await optionsFor([{
+      et: 0,
+      lo: [],
+      lastyield: String(now - 60_000),
+      lastsynced: String(now - 600_000),
+      lastyieldboundary: 'before-pointer-bump',
+      lastyieldsynced: '41',
+      lastyieldtotal: '41',
+      lastyieldpathssha256: 'c'.repeat(64),
+    }]);
+    expect(opts.resumeSubmoduleProgress).toBeUndefined();
   });
 });

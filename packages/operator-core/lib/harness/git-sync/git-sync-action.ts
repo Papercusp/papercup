@@ -1885,6 +1885,10 @@ async function readEscalationCounters(
   /** WI-6554700010009238: `last_yield.at` and `last_synced_at` (epoch ms) from earlier fires. */
   lastYieldAt: number | null;
   lastSyncedAt: number | null;
+  lastYieldBoundary: string | null;
+  lastYieldSubmodulesSynced: number | null;
+  lastYieldSubmodulesTotal: number | null;
+  lastYieldSubmodulePathsSha256: string | null;
 }> {
   const { sql } = getOrgPg();
   const rows = await sql<
@@ -1904,10 +1908,18 @@ async function readEscalationCounters(
       lastpub: string | null;
       lastyield?: string | number | null;
       lastsynced?: string | number | null;
+      lastyieldboundary?: string | null;
+      lastyieldsynced?: string | number | null;
+      lastyieldtotal?: string | number | null;
+      lastyieldpathssha256?: string | null;
     }[]
   >`
     SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
            metadata->'last_yield'->>'at' AS lastyield,
+           metadata->'last_yield'->>'boundary' AS lastyieldboundary,
+           metadata->'last_yield'->>'submodules_synced' AS lastyieldsynced,
+           metadata->'last_yield'->>'submodules_total' AS lastyieldtotal,
+           metadata->'last_yield'->>'submodules_paths_sha256' AS lastyieldpathssha256,
            metadata->>'last_synced_at' AS lastsynced,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_bulk_excluded', '[]'::jsonb))) AS lb,
@@ -1950,6 +1962,10 @@ async function readEscalationCounters(
     prevPublishBlockedAtCommit: rows[0]?.lastpub ?? null,
     lastYieldAt: epochMsOrNull(rows[0]?.lastyield),
     lastSyncedAt: epochMsOrNull(rows[0]?.lastsynced),
+    lastYieldBoundary: rows[0]?.lastyieldboundary ?? null,
+    lastYieldSubmodulesSynced: nonNegativeIntegerOrNull(rows[0]?.lastyieldsynced),
+    lastYieldSubmodulesTotal: nonNegativeIntegerOrNull(rows[0]?.lastyieldtotal),
+    lastYieldSubmodulePathsSha256: rows[0]?.lastyieldpathssha256 ?? null,
   };
 }
 
@@ -1959,22 +1975,10 @@ function epochMsOrNull(value: string | number | null | undefined): number | null
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * WI-6554700010009238: anti-starvation cap on the cooperative yield (WI-10007606).
- *
- * A yield gives up the whole pass, and the next tick starts it over. A papercusp pass
- * (39 submodules) outlasts the interval between bg-host auto-remediator restart
- * requests, and those restarts kept timing out their drains anyway. So every pass
- * yielded and none reached the superproject commit: measured 2026-10-12, 30 min with
- * no papercusp commit, four yields to four refused drains.
- *
- * Rule: if the previous fire yielded and no pass has completed since, this fire runs to
- * the end. At most every other pass yields, so commits keep landing however often
- * restarts are requested, and a restart waits at most one pass.
- */
-export function gitSyncYieldCapped(prev: { lastYieldAt: number | null; lastSyncedAt: number | null }): boolean {
-  if (prev.lastYieldAt == null) return false;
-  return prev.lastSyncedAt == null || prev.lastYieldAt > prev.lastSyncedAt;
+function nonNegativeIntegerOrNull(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
 /**
@@ -4422,15 +4426,22 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // WI-10007606: cooperative yield. Only meaningful while THIS fire holds the shared
     // restart barrier — an unlocked best-effort fire blocks no drain, so it never yields.
     const holdsRestartBarrier = acquired.some((r) => r.resource === GIT_SYNC_RESTART_BARRIER_RESOURCE);
-    // WI-6554700010009238: the fire after an unanswered yield finishes its pass.
-    const yieldCapped = holdsRestartBarrier && gitSyncYieldCapped(prev);
-    if (yieldCapped) {
-      console.log(
-        `[git-sync] ${slug}: the previous fire yielded and no pass has completed since — ` +
-          'this pass will not yield to a restart drain (anti-starvation)',
-      );
-    }
-    const shouldYield = holdsRestartBarrier && !yieldCapped
+    const resumeSubmoduleProgress =
+      holdsRestartBarrier &&
+      prev.lastYieldAt !== null &&
+      (prev.lastSyncedAt === null || prev.lastYieldAt > prev.lastSyncedAt) &&
+      prev.lastYieldBoundary === 'submodule-batch' &&
+      prev.lastYieldSubmodulesSynced !== null &&
+      prev.lastYieldSubmodulesTotal !== null &&
+      prev.lastYieldSubmodulesSynced < prev.lastYieldSubmodulesTotal &&
+      /^[a-f0-9]{64}$/.test(prev.lastYieldSubmodulePathsSha256 ?? '')
+        ? {
+            submodulesSynced: prev.lastYieldSubmodulesSynced,
+            submodulesTotal: prev.lastYieldSubmodulesTotal,
+            submodulePathsSha256: prev.lastYieldSubmodulePathsSha256!,
+          }
+        : undefined;
+    const shouldYield = holdsRestartBarrier
       ? async (): Promise<string | null> => {
           // The dedicated SU pool avoids the workspace advisory lock. Bound relation
           // lock waits locally and retry only PG 55P03: slow statements and pool
@@ -4561,6 +4572,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
         step: runCheckpointedStep,
         shouldYield,
+        resumeSubmoduleProgress,
         onProgress: () => {
           liveness.touch();
           enqueueActivityHeartbeat(liveness, 'local-sync', null);
@@ -4644,6 +4656,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           boundary: error.boundary,
           submodules_synced: error.submodulesSynced,
           submodules_total: error.submodulesTotal,
+          ...(error.submodulePathsSha256 ? { submodules_paths_sha256: error.submodulePathsSha256 } : {}),
           ...(error.localCommitSha ? { local_commit_sha: error.localCommitSha } : {}),
         },
       }).catch(() => {});
@@ -4658,7 +4671,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           { includedShas: error.localCommitShas },
         );
       }
-      console.log(`[git-sync] ${slug}: ${error.message} — barrier released; the next tick redoes the pass`);
+      console.log(
+        `[git-sync] ${slug}: ${error.message} — barrier released; the next tick resumes only a verified submodule prefix, otherwise it starts a full pass`,
+      );
       return { status: 'skipped', reason: 'yielded-to-restart', blockedOn: error.reason };
     }
     if (error instanceof GitSyncActionTimeoutError) {

@@ -21,6 +21,7 @@
  * timeout error instead of hanging the fire into a reap.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 // WI-6824: runGitSync's `log` sink defaults to console.warn (it used to be a no-op, which is
 // why a real ~10h git-sync fault left zero trace in journald). This suite deliberately drives
@@ -38,6 +39,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  GitSyncYieldError,
   runGitSync,
   runGitBounded,
   gitTimeoutMsFor,
@@ -161,6 +163,108 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     const subHead = git(join(repo, 'libs/sub'), 'rev-parse', 'HEAD');
     expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(subHead);
     expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
+  });
+
+  it('ACCEPTANCE: repeated restart yields advance one batch and require a full rescan before publication', async () => {
+    const childOrigins: string[] = [];
+    const childPaths: string[] = [];
+    for (let i = 0; i < 9; i++) {
+      const origin = join(root, `resume-origin-${i}.git`);
+      git(root, 'init', '--bare', '-b', 'main', origin);
+      const child = join(repo, 'libs', `resume-${i}`);
+      mkdirSync(child, { recursive: true });
+      git(child, 'init', '-b', 'main');
+      configUser(child);
+      writeFileSync(join(child, 'base.txt'), `base ${i}\n`);
+      git(child, 'add', '-A');
+      git(child, 'commit', '--no-verify', '-m', 'child init');
+      git(child, 'remote', 'add', 'origin', origin);
+      git(child, 'push', '-u', 'origin', 'main');
+      writeFileSync(join(child, 'change.txt'), `change ${i}\n`);
+      childOrigins.push(origin);
+      childPaths.push(child);
+    }
+    const submodulePaths = childPaths.map((_, i) => `libs/resume-${i}`);
+    const submodulePathsSha256 = createHash('sha256').update(JSON.stringify(submodulePaths)).digest('hex');
+    writeFileSync(join(repo, 'super-work.txt'), 'super work\n');
+
+    const callsByChild = new Map<string, number>();
+    const recordingRunGit: RunGit = async (args, cwd, options) => {
+      if (childPaths.includes(cwd)) callsByChild.set(cwd, (callsByChild.get(cwd) ?? 0) + 1);
+      return runGitBounded(args, cwd, gitTimeoutMsFor(args), { env: options?.env });
+    };
+    const restartReason = 'exclusive git-sync drain requested by system:dev-restart:test';
+    const fire = (
+      resumeSubmoduleProgress?: {
+        submodulesSynced: number;
+        submodulesTotal: number;
+        submodulePathsSha256: string;
+      },
+      restartWaiting = true,
+    ) => runGitSync('ckpt', {
+      repoPath: repo,
+      runGit: recordingRunGit,
+      submodulePaths,
+      config: { push: true },
+      shouldYield: async () => restartWaiting ? restartReason : null,
+      ...(resumeSubmoduleProgress ? { resumeSubmoduleProgress } : {}),
+    });
+    const yielded = async (
+      resumeSubmoduleProgress?: {
+        submodulesSynced: number;
+        submodulesTotal: number;
+        submodulePathsSha256: string;
+      },
+    ): Promise<GitSyncYieldError> => {
+      try {
+        await fire(resumeSubmoduleProgress, true);
+      } catch (error) {
+        if (error instanceof GitSyncYieldError) return error;
+        throw error;
+      }
+      throw new Error('expected git-sync to yield to the queued restart');
+    };
+
+    const first = await yielded();
+    expect(first).toMatchObject({
+      boundary: 'submodule-batch',
+      submodulesSynced: 0,
+      submodulesTotal: 9,
+      submodulePathsSha256,
+    });
+    const second = await yielded({ submodulesSynced: 0, submodulesTotal: 9, submodulePathsSha256 });
+    expect(second).toMatchObject({
+      boundary: 'submodule-batch',
+      submodulesSynced: 8,
+      submodulesTotal: 9,
+      submodulePathsSha256,
+    });
+    expect(childPaths.slice(0, 8).every((path) => (callsByChild.get(path) ?? 0) > 0)).toBe(true);
+    expect(callsByChild.has(childPaths[8]!)).toBe(false);
+    expect(childOrigins.slice(0, 8).map(revCount)).toEqual(Array(8).fill(2));
+    expect(revCount(childOrigins[8]!)).toBe(1);
+    expect(() => git(superOrigin, 'show', 'main:super-work.txt')).toThrow();
+
+    callsByChild.clear();
+    const third = await yielded({ submodulesSynced: 8, submodulesTotal: 9, submodulePathsSha256 });
+    expect(third).toMatchObject({
+      boundary: 'before-pointer-bump',
+      submodulesSynced: 9,
+      submodulesTotal: 9,
+      submodulePathsSha256,
+    });
+    expect(childPaths[8] && (callsByChild.get(childPaths[8]) ?? 0)).toBeGreaterThan(0);
+    expect(childOrigins.map(revCount)).toEqual(Array(9).fill(2));
+    expect(() => git(superOrigin, 'show', 'main:super-work.txt')).toThrow();
+
+    // No restart waiter: the saved cursor is ignored and every child is revalidated
+    // before the superproject pointer-bump and push can publish.
+    callsByChild.clear();
+    const completed = await fire(undefined, false);
+    expect(completed.status).toBe('synced');
+    expect(childPaths.every((path) => (callsByChild.get(path) ?? 0) > 0)).toBe(true);
+    expect(childOrigins.map(revCount)).toEqual(Array(9).fill(2));
+    expect(git(superOrigin, 'show', 'main:super-work.txt')).toBe('super work');
   });
 
   it('commits ordinary root work locally before the first child fetch, but publishes only after child sync', async () => {

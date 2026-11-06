@@ -124,6 +124,25 @@ const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', '
 // but allow eight independent repositories per batch before advancing to parents.
 const SUBMODULE_SYNC_CONCURRENCY = 8;
 
+function hashSubmodulePaths(paths: readonly string[]): string {
+  return createHash('sha256').update(JSON.stringify(paths)).digest('hex');
+}
+
+function isSubmoduleBatchBoundary(paths: readonly string[], count: number): boolean {
+  if (!Number.isInteger(count) || count < 0 || count > paths.length) return false;
+  if (count === 0 || count === paths.length) return true;
+  for (let depthStart = 0; depthStart < paths.length; ) {
+    const depth = paths[depthStart]!.split('/').length;
+    let depthEnd = depthStart + 1;
+    while (depthEnd < paths.length && paths[depthEnd]!.split('/').length === depth) depthEnd++;
+    for (let batchStart = depthStart; batchStart < depthEnd; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
+      if (Math.min(batchStart + SUBMODULE_SYNC_CONCURRENCY, depthEnd) === count) return true;
+    }
+    depthStart = depthEnd;
+  }
+  return false;
+}
+
 /**
  * WI-5111: git-sync commits under the box's GLOBAL git identity, which on every
  * shared dev box is the OWNER's own `user.name`/`user.email` (agents never commit
@@ -2186,6 +2205,13 @@ type GitSyncSuperprojectYieldBoundary = 'before-superproject-stage' | 'before-su
 /** Completed Git boundaries; publication's shared-index refresh and CAS remain together. */
 export type GitSyncYieldBoundary = 'submodule-batch' | 'before-pointer-bump' | GitSyncSuperprojectYieldBoundary;
 
+/** A previously yielded, fully reconciled prefix of the current submodule census. */
+export interface GitSyncSubmoduleProgress {
+  submodulesSynced: number;
+  submodulesTotal: number;
+  submodulePathsSha256: string;
+}
+
 /**
  * WI-10007606: thrown by {@link runGitSync} when `opts.shouldYield` reports a waiting
  * exclusive at a batch or phase boundary. It is NOT a failure: the caller records a
@@ -2198,6 +2224,8 @@ export class GitSyncYieldError extends Error {
   /** Submodules fully synced before the yield (all of them at `before-pointer-bump`). */
   readonly submodulesSynced: number;
   readonly submodulesTotal: number;
+  /** Census identity required before a later fire may resume after this prefix. */
+  readonly submodulePathsSha256?: string;
   /**
    * WI-6554700010018899: root commit proof when the superproject pass had ALREADY
    * published commits before it yielded. A per-agent group commit lands, then a
@@ -2216,6 +2244,7 @@ export class GitSyncYieldError extends Error {
     submodulesSynced: number,
     submodulesTotal: number,
     landed?: { localCommitSha: string; localCommitAtMs: number; localCommitShas?: readonly string[]; localCommits?: readonly GitSyncRootCommit[] },
+    submodulePathsSha256?: string,
   ) {
     super(`git-sync yielded at ${boundary} (${submodulesSynced}/${submodulesTotal} submodules synced): ${reason}`);
     this.name = 'GitSyncYieldError';
@@ -2223,6 +2252,7 @@ export class GitSyncYieldError extends Error {
     this.boundary = boundary;
     this.submodulesSynced = submodulesSynced;
     this.submodulesTotal = submodulesTotal;
+    if (submodulePathsSha256) this.submodulePathsSha256 = submodulePathsSha256;
     if (landed) {
       this.localCommitSha = landed.localCommitSha;
       this.localCommitAtMs = landed.localCommitAtMs;
@@ -2270,6 +2300,12 @@ export interface RunGitSyncOpts {
    * broken probe must never stop commits.
    */
   shouldYield?: () => Promise<string | null>;
+  /**
+   * Progress from the prior yielded fire. It is used only while a restart drain is
+   * still queued and only when the current, filtered submodule census has the same
+   * digest and batch boundary. Otherwise this pass starts from the first submodule.
+   */
+  resumeSubmoduleProgress?: GitSyncSubmoduleProgress;
   config?: GitSyncConfig;
   /** Override submodule discovery (tests). Repo-relative paths. */
   submodulePaths?: string[];
@@ -8526,7 +8562,13 @@ async function runGitSyncPass(
     /** WI-10007606: set when the walk stopped at a batch boundary to yield. Part of the
      *  checkpointed output, so a crash-replay of this step yields again instead of
      *  treating the partial walk as a complete phase. */
-    yielded?: { reason: string; synced: number; total: number };
+    yielded?: {
+      reason: string;
+      synced: number;
+      total: number;
+      boundary: GitSyncYieldBoundary;
+      submodulePathsSha256: string;
+    };
     /** A guarded, local-only root commit made before child remote sync begins. */
     earlyRootCommit?: CommitRepoResult & {
       localCommitSha?: string;
@@ -8635,6 +8677,9 @@ async function runGitSyncPass(
     };
     timingLog('phase-start', { sourceUrl: timing.sourceUrl, startedAt: timing.startedAt });
     let subPaths: string[] = [];
+    let submodulePathsSha256 = hashSubmodulePaths(subPaths);
+    let resumeFromSubmodule = 0;
+    let resumingFromYield = false;
     let setupStepStartedAt = phaseStartedAt;
     const recordSetupStep = (name: string): void => {
       const now = performance.now();
@@ -8736,7 +8781,14 @@ async function runGitSyncPass(
         subPaths = kept;
       }
       out.submodulePaths = [...subPaths];
-
+      submodulePathsSha256 = hashSubmodulePaths(subPaths);
+      const resumeProgress = opts.resumeSubmoduleProgress;
+      const resumeProgressMatches =
+        resumeProgress !== undefined &&
+        resumeProgress.submodulesTotal === subPaths.length &&
+        resumeProgress.submodulesSynced < subPaths.length &&
+        resumeProgress.submodulePathsSha256 === submodulePathsSha256 &&
+        isSubmoduleBatchBoundary(subPaths, resumeProgress.submodulesSynced);
       // EI-26790085278063139: child fetch/merge/push can take minutes, but ordinary
       // superproject work is safe to commit locally before that remote walk. This pass
       // publishes nothing, and excludes every child/nested gitlink plus protected and
@@ -8744,11 +8796,26 @@ async function runGitSyncPass(
       if (subPaths.length > 0) {
         const yieldBeforeEarlyCommit = await checkYield();
         if (yieldBeforeEarlyCommit) {
-          out.yielded = { reason: yieldBeforeEarlyCommit, synced: 0, total: subPaths.length };
-          recordSetupComplete();
-          return out;
+          if (resumeProgressMatches) {
+            // Prior child pushes are durable. Resume only while this restart drain is
+            // still queued; a missing waiter falls through to the normal full pass.
+            resumeFromSubmodule = resumeProgress.submodulesSynced;
+            resumingFromYield = true;
+          } else {
+            out.yielded = {
+              reason: yieldBeforeEarlyCommit,
+              synced: 0,
+              total: subPaths.length,
+              boundary: 'submodule-batch',
+              submodulePathsSha256,
+            };
+            recordSetupComplete();
+            return out;
+          }
         }
+      }
 
+      if (subPaths.length > 0 && !resumingFromYield) {
         const nestedPotPaths = cfg.nestedPotCheckouts ?? [];
         const rootProtectedPaths = protectedPaths.filter(
           (path) => !subPaths.some((subPath) => path === subPath || path.startsWith(`${subPath}/`)),
@@ -8774,7 +8841,7 @@ async function runGitSyncPass(
                 }
               : undefined;
           recordSetupComplete();
-          throw new GitSyncYieldError(reason, boundary, 0, subPaths.length, landed);
+          throw new GitSyncYieldError(reason, boundary, 0, subPaths.length, landed, submodulePathsSha256);
         };
 
         // Preserve the normal root commit guards before taking the early local snapshot.
@@ -8943,73 +9010,161 @@ async function runGitSyncPass(
         attribution: attributionMapForRepo(roster, s, repo),
         onAttribution,
       });
-    // WI-10003100: syncing every repo serially delayed the superproject commit
-    // behind a 338s submodule phase on a 38-submodule checkout. Sync only
-    // independent repos together; finish every child depth before starting a
-    // parent so a parent's pushed gitlink always resolves on the child origin.
-    let synced = 0;
-    for (let depthStart = 0; depthStart < subPaths.length; ) {
-      const depth = subPaths[depthStart]!.split('/').length;
-      let depthEnd = depthStart + 1;
-      while (depthEnd < subPaths.length && subPaths[depthEnd]!.split('/').length === depth) depthEnd++;
-      for (let batchStart = depthStart; batchStart < depthEnd; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
-        // WI-10007606: the only safe yield point inside the walk — the previous batch
-        // has fully settled and the next has not started a single git command.
+    // WI-10003100: sync independent repos together, deepest-first, so each parent's
+    // pushed gitlink resolves on the child origin. A resumed cursor skips only a
+    // previously successful prefix while the same restart drain remains queued.
+    const mergeUnique = <T>(target: T[], source: readonly T[]): void => {
+      const seen = new Set(target.map((entry) => JSON.stringify(entry)));
+      for (const entry of source) {
+        const key = JSON.stringify(entry);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        target.push(entry);
+      }
+    };
+    const mergePhaseResults = (target: PhaseCollect, source: PhaseCollect): void => {
+      target.dirtyPathCount += source.dirtyPathCount;
+      target.committedCount += source.committedCount;
+      target.didSomething ||= source.didSomething;
+      mergeUnique(target.conflicts, source.conflicts);
+      mergeUnique(target.errors, source.errors);
+      mergeUnique(target.pushed, source.pushed);
+      mergeUnique(target.merged, source.merged);
+      mergeUnique(target.mergeCompleted, source.mergeCompleted);
+      mergeUnique(target.oversized, source.oversized);
+      mergeUnique(target.contentErrors, source.contentErrors);
+      mergeUnique(target.skippedPaths, source.skippedPaths);
+    };
+    const syncSubmoduleBatches = async (
+      target: PhaseCollect,
+      startAt: number,
+      resumeMode: boolean,
+    ): Promise<'complete' | 'full-rescan-required'> => {
+      let synced = startAt;
+      let processedResumeBatch = false;
+      let successfulPrefix = true;
+      for (let depthStart = 0; depthStart < subPaths.length; ) {
+        const depth = subPaths[depthStart]!.split('/').length;
+        let depthEnd = depthStart + 1;
+        while (depthEnd < subPaths.length && subPaths[depthEnd]!.split('/').length === depth) depthEnd++;
+        for (let batchStart = depthStart; batchStart < depthEnd; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
+          const batchEnd = Math.min(batchStart + SUBMODULE_SYNC_CONCURRENCY, depthEnd);
+          if (resumeMode && batchEnd <= startAt) continue;
+
+          // In resume mode the first remaining batch is the bounded progress unit.
+          // If its waiter cleared before this boundary, fall back to a complete scan.
+          const yieldReason = await checkYield();
+          if (resumeMode && !processedResumeBatch) {
+            if (!yieldReason) return 'full-rescan-required';
+          } else {
+            if (yieldReason) {
+              target.yielded = {
+                reason: yieldReason,
+                synced,
+                total: subPaths.length,
+                boundary: 'submodule-batch',
+                submodulePathsSha256,
+              };
+              return 'complete';
+            }
+            if (resumeMode) return 'full-rescan-required';
+          }
+
+          const batch = subPaths.slice(batchStart, batchEnd);
+          const batchStartedAt = performance.now();
+          const measurement: NonNullable<PhaseCollect['submoduleTiming']>['batches'][number] = {
+            index: timing.batches.length + timing.omittedBatches,
+            depth,
+            startOffsetMs: Math.round(batchStartedAt - phaseStartedAt),
+            durationMs: 0,
+            repositories: [],
+          };
+          timingLog('batch-start', { batch: measurement.index, depth, scopes: batch });
+          // allSettled is a safety barrier: an unexpected rejection must not let a
+          // sibling start more Git commands after the action releases its locks.
+          const results = await Promise.allSettled(batch.map(async (scope) => {
+            const startedAt = performance.now();
+            let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
+            try {
+              const result = await syncSubmodule(scope);
+              status = result.status;
+              return result;
+            } finally {
+              const repository = { scope, durationMs: Math.round(performance.now() - startedAt), status };
+              measurement.repositories.push(repository);
+              timingLog('repository-settled', { batch: measurement.index, ...repository });
+            }
+          }));
+          measurement.durationMs = Math.round(performance.now() - batchStartedAt);
+          // Retain at most 256 repositories in the durable phase output. Logs retain
+          // later batches; the omission count makes the checkpoint's coverage explicit.
+          if (timing.batches.length < 64) timing.batches.push(measurement);
+          else timing.omittedBatches++;
+          timingLog('batch-settled', measurement);
+          for (let i = 0; i < results.length; i++) {
+            const result = results[i]!;
+            if (result.status === 'rejected') throw result.reason;
+            absorb(target, batch[i]!, result.value);
+          }
+          const batchSucceeded = results.every(
+            (result) => result.status === 'fulfilled' && result.value.status !== 'error' && result.value.status !== 'conflict',
+          );
+          if (successfulPrefix && batchSucceeded) synced += batch.length;
+          else if (!batchSucceeded) successfulPrefix = false;
+          if (resumeMode) processedResumeBatch = true;
+        }
+        depthStart = depthEnd;
+      }
+
+      if (resumeMode) {
         const yieldReason = await checkYield();
         if (yieldReason) {
-          out.yielded = { reason: yieldReason, synced, total: subPaths.length };
-          return out;
+          target.yielded = {
+            reason: yieldReason,
+            synced,
+            total: subPaths.length,
+            boundary: 'before-pointer-bump',
+            submodulePathsSha256,
+          };
+          return 'complete';
         }
-        const batch = subPaths.slice(batchStart, Math.min(batchStart + SUBMODULE_SYNC_CONCURRENCY, depthEnd));
-        const batchStartedAt = performance.now();
-        const measurement: NonNullable<PhaseCollect['submoduleTiming']>['batches'][number] = {
-          index: timing.batches.length + timing.omittedBatches,
-          depth,
-          startOffsetMs: Math.round(batchStartedAt - phaseStartedAt),
-          durationMs: 0,
-          repositories: [],
-        };
-        timingLog('batch-start', { batch: measurement.index, depth, scopes: batch });
-        // allSettled is a safety barrier: an unexpected rejection must not let a
-        // sibling start more Git commands after the action releases its locks.
-        const results = await Promise.allSettled(batch.map(async (scope) => {
-          const startedAt = performance.now();
-          let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
-          try {
-            const result = await syncSubmodule(scope);
-            status = result.status;
-            return result;
-          } finally {
-            const repository = { scope, durationMs: Math.round(performance.now() - startedAt), status };
-            measurement.repositories.push(repository);
-            timingLog('repository-settled', { batch: measurement.index, ...repository });
-          }
-        }));
-        measurement.durationMs = Math.round(performance.now() - batchStartedAt);
-        // Retain at most 256 repositories in the durable phase output. Logs retain
-        // later batches; the omission count makes the checkpoint's coverage explicit.
-        if (timing.batches.length < 64) timing.batches.push(measurement);
-        else timing.omittedBatches++;
-        timingLog('batch-settled', measurement);
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i]!;
-          if (result.status === 'rejected') throw result.reason;
-          absorb(out, batch[i]!, result.value);
-        }
-        synced += batch.length;
+        return 'full-rescan-required';
       }
-      depthStart = depthEnd;
+      return 'complete';
+    };
+
+    if (resumingFromYield) {
+      const partial = emptyPhase();
+      const progressPass = await syncSubmoduleBatches(partial, resumeFromSubmodule, true);
+      if (partial.yielded) {
+        out.yielded = partial.yielded;
+        return out;
+      }
+      if (progressPass === 'full-rescan-required') {
+        await syncSubmoduleBatches(out, 0, false);
+        if (!out.yielded) mergePhaseResults(out, partial);
+      }
+    } else {
+      await syncSubmoduleBatches(out, 0, false);
     }
     return out;
   });
   if (sub.yielded) {
-    throw new GitSyncYieldError(sub.yielded.reason, 'submodule-batch', sub.yielded.synced, sub.yielded.total);
+    throw new GitSyncYieldError(
+      sub.yielded.reason,
+      sub.yielded.boundary,
+      sub.yielded.synced,
+      sub.yielded.total,
+      undefined,
+      sub.yielded.submodulePathsSha256,
+    );
   }
   const strandedSubmodules = sub.strandedSubmodules;
   // `submodulePaths` is part of the checkpointed phase output. The fallback keeps
   // compatibility with an older in-flight checkpoint created before that field
   // existed when the caller supplied an explicit path list.
   const submodulePaths = sub.submodulePaths ?? opts.submodulePaths ?? [];
+  const submodulePathsSha256 = hashSubmodulePaths(submodulePaths);
   const superprojectGitlinkPaths = submodulePaths.filter(
     (path) => !submodulePaths.some((candidate) => candidate !== path && path.startsWith(candidate + '/')),
   );
@@ -9061,7 +9216,14 @@ async function runGitSyncPass(
   // submodule commits above are already durable, and the next tick bumps their pointers.
   const pointerBumpYield = await checkYield();
   if (pointerBumpYield) {
-    throw new GitSyncYieldError(pointerBumpYield, 'before-pointer-bump', submodulePaths.length, submodulePaths.length);
+    throw new GitSyncYieldError(
+      pointerBumpYield,
+      'before-pointer-bump',
+      submodulePaths.length,
+      submodulePaths.length,
+      undefined,
+      submodulePathsSha256,
+    );
   }
   // WI-6554700010018899: a yield INSIDE the commit phase can follow published group
   // commits (the residual and earlier per-agent groups publish before a later group's
@@ -9099,7 +9261,7 @@ async function runGitSyncPass(
             localCommits,
           }
         : undefined;
-    throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length, landed);
+    throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length, landed, submodulePathsSha256);
   };
 
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
