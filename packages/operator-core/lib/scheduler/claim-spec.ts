@@ -1176,7 +1176,7 @@ export function appendIdsToClaimSpec(spec: ClaimSpec, ids: readonly string[]): C
   return { ...spec, view: { ...spec.view, filter } };
 }
 
-/** Positive kind bounds share the ID extractor's conservative boolean rules. */
+/** Positive kind bounds can traverse nested lanes; unbounded alternatives remain unknown. */
 export function positiveKindCohortKinds(filter: unknown): string[] | null {
   return positiveFieldCohortValues(filter, 'kind');
 }
@@ -1197,15 +1197,30 @@ function positiveFieldCohortValues(filter: unknown, field: 'id' | 'kind'): strin
     );
   }
 
-  const bare = leafSet(filter);
-  if (bare) return [...bare];
-  if (filter === null || typeof filter !== 'object' || Array.isArray(filter)) return null;
-  const all = (filter as { all?: unknown }).all;
-  if (!Array.isArray(all)) return null;
-  const sets = all.map(leafSet).filter((set): set is Set<string> => set !== null);
-  if (sets.length === 0) return null;
-  const [head, ...rest] = sets;
-  return [...head].filter((id) => rest.every((set) => set.has(id)));
+  function bounds(node: unknown): Set<string> | null {
+    const bare = leafSet(node);
+    if (bare) return bare;
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return null;
+    const obj = node as Record<string, unknown>;
+    // Keep the scheduler's documented direct-ID admission fallback unchanged.
+    // Metrics need kind bounds through wrappers introduced by lane exclusions.
+    const childBound = field === 'kind' ? bounds : leafSet;
+    if (Array.isArray(obj.all)) {
+      const sets = obj.all.map(childBound).filter((set): set is Set<string> => set !== null);
+      if (sets.length === 0) return null;
+      const [head, ...rest] = sets;
+      return new Set([...head].filter((value) => rest.every((set) => set.has(value))));
+    }
+    if (field === 'kind' && Array.isArray(obj.any) && obj.any.length > 0) {
+      const sets = obj.any.map(bounds);
+      // One unbounded branch can admit any kind: never infer from its siblings.
+      if (sets.some((set) => set === null)) return null;
+      return new Set((sets as Set<string>[]).flatMap((set) => [...set]));
+    }
+    return null;
+  }
+  const result = bounds(filter);
+  return result ? [...result] : null;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

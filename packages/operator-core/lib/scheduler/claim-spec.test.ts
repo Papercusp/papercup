@@ -1028,6 +1028,40 @@ describe('fixedCohortIds — exact fixed-wave extraction', () => {
 });
 
 describe('positiveKindCohortKinds — sound kind bounds', () => {
+  it('finds the bug bound through nested fleet lane wrappers', () => {
+    const filter = { all: [
+      { all: [{ any: [{ all: [
+        { field: 'kind', op: 'in', value: ['bug'] },
+        { not: { any: [
+          { field: 'title', op: 'word', value: 'p2p' },
+          { field: 'summary', op: 'word', value: 'federation' },
+        ] } },
+      ] }] }] },
+      { not: { field: 'id', op: 'in', value: ['EI-excluded'] } },
+    ] };
+    expect(positiveKindCohortKinds(filter)).toEqual(['bug']);
+    // The ID admission fallback deliberately supports only direct positive IDs.
+    expect(positiveIdCohortIds(filter)).toBeNull();
+  });
+
+  it('unions fully bounded alternatives and intersects nested conjunctions', () => {
+    expect(positiveKindCohortKinds({ all: [
+      { any: [
+        { field: 'kind', op: 'in', value: ['bug', 'task'] },
+        { all: [{ field: 'kind', op: '=', value: 'feature' }] },
+      ] },
+      { all: [{ field: 'kind', op: 'in', value: ['task', 'feature'] }] },
+    ] })).toEqual(['task', 'feature']);
+    expect(positiveKindCohortKinds({ all: [
+      { all: [{ field: 'kind', op: '=', value: 'bug' }] },
+      { field: 'kind', op: '=', value: 'task' },
+    ] })).toEqual([]);
+    expect(positiveKindCohortKinds({ any: [
+      { field: 'kind', op: '=', value: 'bug' },
+      { all: [{ not: { field: 'kind', op: '=', value: 'feature' } }] },
+    ] })).toBeNull();
+  });
+
   it('intersects positive kind bounds while retaining unrelated narrowing predicates', () => {
     expect(positiveKindCohortKinds({ all: [
       { field: 'kind', op: 'in', value: ['bug', 'task', 'bug'] },
