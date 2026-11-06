@@ -46,7 +46,11 @@ const launcher: typeof realLauncher = launcherOverride
   : realLauncher;
 const {
   codexGatewayConfigPatch,
+  applyCodexGatewayRoute,
   codexRolloutModelProvider,
+  installedCodexCliVersion,
+  codexResumeProviderSwitchPreflight,
+  codexResumeProviderSwitchRefusal,
   codexResumeRouteNotice,
   stripCodexGatewayRoot,
   codexAuthJsonReady,
@@ -992,19 +996,15 @@ describe('codexGatewayConfigPatch — a default-mode RESUME must not strip a bou
   });
 });
 
-describe('codexResumeRouteNotice — a cross-family account switch is APPLIED and disclosed, never refused', () => {
-  // EI-22086713788860638: the predecessor of this function (codexResumeAccountRouteError,
-  // EI-22039) threw here, asserting Codex "does not permit changing model providers on
-  // resume/fork". Measured false on Codex 0.152.0 in both directions (exec + TUI). The
-  // notice is what survives: the owner learns the thread is moving families.
-  const NEVER_REFUSE = ['cannot resume', 'cannot fork', 'NOT applied', 'no agent process was spawned'];
+describe('codexResumeRouteNotice — disclose a switch after native preflight', () => {
+  const NEVER_REFUSE = ['cannot resume', 'cannot fork', 'NOT applied'];
 
   it('direct-born thread + gateway route (the owner-hit case): a notice naming both sides, no refusal', () => {
     const notice = codexResumeRouteNotice('openai', { mode: 'auto' }, { sessionId: 'thread-direct' });
     expect(notice).toContain('resuming Codex thread thread-direct through the inference gateway');
     expect(notice).toContain('auto-routed');
     expect(notice).toContain("born on direct provider 'openai'");
-    expect(notice).toContain('the switch is applied');
+    expect(notice).toContain('installed Codex version passed the provider-switch compatibility preflight');
     for (const refusal of NEVER_REFUSE) expect(notice).not.toContain(refusal);
   });
 
@@ -1037,6 +1037,88 @@ describe('codexResumeRouteNotice — a cross-family account switch is APPLIED an
     expect(codexResumeRouteNotice(null, { mode: 'auto' })).toBe(null);
     expect(codexResumeRouteNotice('openai', null)).toBe(null);
     expect(codexResumeRouteNotice('openai', { mode: 'weird' })).toBe(null);
+  });
+});
+
+describe('Codex cross-provider resume compatibility preflight', () => {
+  it('reads the version from the exact resolved Codex executable', () => {
+    const bin = join(dir, 'codex');
+    writeFileSync(bin, '#!/bin/sh\nprintf "codex-cli 0.166.0\\\\n"\n');
+    chmodSync(bin, 0o755);
+    expect(installedCodexCliVersion({
+      ...process.env,
+      PAPERCUSP_BACKEND_BIN_CODEX: bin,
+    })).toBe('0.166.0');
+  });
+
+  it('allows the measured 0.152 route and rejects 0.166 or an unmeasured version', () => {
+    const measured = codexResumeProviderSwitchPreflight(
+      'openai',
+      { mode: 'auto' },
+      { readVersion: () => '0.152.0' },
+    );
+    expect(measured).toMatchObject({
+      allowed: true,
+      required: true,
+      targetProvider: 'papercusp-codex-gateway',
+      compatibility: 'verified-supported',
+    });
+
+    const rejected = codexResumeProviderSwitchPreflight(
+      'openai',
+      { mode: 'auto' },
+      { readVersion: () => '0.166.0' },
+    );
+    expect(rejected).toMatchObject({
+      allowed: false,
+      required: true,
+      compatibility: 'known-rejected',
+    });
+
+    const unmeasured = codexResumeProviderSwitchPreflight(
+      'openai',
+      { mode: 'auto' },
+      { readVersion: () => '0.167.0' },
+    );
+    expect(unmeasured).toMatchObject({
+      allowed: false,
+      required: true,
+      compatibility: 'unverified',
+    });
+  });
+
+  it('leaves CODEX_HOME unchanged and starts no resume session for the Codex 0.166 provider mismatch', () => {
+    const configPath = join(dir, 'config.toml');
+    const before = 'model_provider = "openai"\n';
+    writeFileSync(configPath, before);
+    const spawnNative = vi.fn();
+    const attempt = () => {
+      const preflight = codexResumeProviderSwitchPreflight(
+        'openai',
+        { mode: 'auto' },
+        { readVersion: () => '0.166.0' },
+      );
+      const refusal = codexResumeProviderSwitchRefusal(preflight, {
+        sessionId: 'thread-direct',
+      });
+      if (refusal) throw new Error(refusal);
+      applyCodexGatewayRoute(dir, { mode: 'auto' });
+      spawnNative();
+    };
+
+    expect(attempt).toThrow(/Codex 0.166.0 rejects this with modelProviderMismatch/);
+    expect(readFileSync(configPath, 'utf8')).toBe(before);
+    expect(spawnNative).not.toHaveBeenCalled();
+  });
+
+  it('does not query native support when the thread and requested provider match', () => {
+    const readVersion = vi.fn();
+    expect(codexResumeProviderSwitchPreflight(
+      'papercusp-codex-gateway',
+      { mode: 'auto' },
+      { readVersion },
+    )).toMatchObject({ allowed: true, required: false, compatibility: 'not-needed' });
+    expect(readVersion).not.toHaveBeenCalled();
   });
 });
 

@@ -15868,6 +15868,23 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(spawn).toBeGreaterThan(claim);
   });
 
+  it("preflights Codex provider compatibility before claiming, home repair, route writes, or spawn", () => {
+    const preflight = body.indexOf("codexResumeProviderSwitchPreflight(");
+    const claim = body.indexOf(
+      "const claim = await acquireSessionResumeWithRecovery(session.id,",
+    );
+    const homeRepair = body.indexOf("await ensureCodexHomeViaOperator(");
+    const authSync = body.indexOf("reconcileCodexSystemAuth()");
+    const routeWrite = body.indexOf("applyCodexGatewayRoute(env.CODEX_HOME");
+    const spawn = body.indexOf("runWrapper({");
+
+    expect(preflight).toBeGreaterThan(-1);
+    for (const effect of [claim, homeRepair, authSync, routeWrite, spawn]) {
+      expect(effect).toBeGreaterThan(-1);
+      expect(preflight).toBeLessThan(effect);
+    }
+  });
+
   it("reheals default-account Codex auth after home repair and before route/spawn", () => {
     const codexBranch = body.indexOf(
       'if (session.agent === "codex" && env.CODEX_HOME)',

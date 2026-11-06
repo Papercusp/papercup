@@ -8241,7 +8241,7 @@ export function codexResumeProviderSwitchRefusal(
     preflight.targetProvider +
     "'. " +
     detail +
-    " No CODEX_HOME repair, auth sync, or route write was performed, and no native process was spawned. Retry with the thread's original provider, or use a supported successor recovery only after exact terminal session custody is confirmed. Do not edit rollout provider metadata."
+    " No CODEX_HOME repair, auth sync, or route write was performed, and no resume/fork session was started. Retry with the thread's original provider, or use a supported successor recovery only after exact terminal session custody is confirmed. Do not edit rollout provider metadata."
   );
 }
 
