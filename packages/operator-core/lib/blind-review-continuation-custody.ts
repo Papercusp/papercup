@@ -87,7 +87,7 @@ async function managedBinding(tx: Sql, workspaceId: string, advSessionId: number
 }
 
 async function managedAuthority(tx: Sql, b: Binding, source: Native) {
-  const [row] = await tx`SELECT request_hash, request_snapshot, attempt_seq, review_id
+  const [row] = await tx`SELECT request_hash, request_snapshot, replacement_of, attempt_seq, review_id
     FROM harness_shared.plan_blind_review_sessions WHERE workspace_id = ${b.workspaceId} AND id = ${b.id}`;
   const [brief] = await tx`SELECT control_state->'activation' AS activation FROM harness_shared.session_briefs
     WHERE workspace_id = ${b.workspaceId} AND owner_id = ${b.reviewerOwnerId} FOR SHARE`;
@@ -96,12 +96,19 @@ async function managedAuthority(tx: Sql, b: Binding, source: Native) {
     FROM harness_shared.operator_session_confinements WHERE workspace_id = ${b.workspaceId} FOR SHARE`;
   const activation = brief?.activation;
   const spec = source.launch_spec as { specificationRevision?: string; stateRevision?: string } | null;
+  const original = row?.replacement_of === null && row.attempt_seq === 0 &&
+    row.request_hash === null && row.request_snapshot === null;
+  const replacement = row?.replacement_of !== null && Number(row?.replacement_of) > 0 &&
+    Number.isInteger(row?.attempt_seq) && row!.attempt_seq > 0 &&
+    typeof row!.request_hash === 'string' && /^[a-f0-9]{64}$/.test(row!.request_hash) &&
+    row!.request_snapshot !== null && typeof row!.request_snapshot === 'object' && !Array.isArray(row!.request_snapshot);
   if (!row || policy?.live !== true || activation?.status !== 'applied' || !activation.applied ||
+      !(original || replacement) ||
       !equal(activation.desired, activation.applied) || !spec?.specificationRevision || !spec.stateRevision ||
       spec.specificationRevision !== activation.applied.specificationRevision ||
       spec.stateRevision !== activation.applied.stateRevision) return refuse('managed_authority_stale');
-  return { activation, manifest: row.request_snapshot ?? null, manifestHash: row.request_hash ?? null,
-    attemptSeq: row.attempt_seq, reviewId: row.review_id ?? null };
+  return { activation, replacementRequest: { sourceBindingId: row.replacement_of,
+    hash: row.request_hash, snapshot: row.request_snapshot }, attemptSeq: row.attempt_seq, reviewId: row.review_id ?? null };
 }
 
 async function managedHost(request: ManagedSuccessionRequest, successor: boolean, deps: ManagedDeps) {

@@ -181,6 +181,41 @@ describe('blind reviewer continuation custody, real transaction boundaries', () 
     expect(row!.session_id).toBe(f.sourceNative);
   });
 
+  it.each(['hash-only', 'snapshot-only', 'snapshot-array'] as const)(
+    'rejects malformed original request metadata: %s', async fault => {
+      const f = await managedFixture();
+      // Original attempts permit null metadata at the schema layer. Mixed or
+      // malformed pairs must never acquire managed continuation authority.
+      await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET
+        request_hash = ${fault === 'snapshot-only' ? null : 'a'.repeat(64)},
+        request_snapshot = ${fault === 'hash-only' ? null : JSON.stringify(fault === 'snapshot-array' ? [] : {})}::jsonb
+        WHERE id = ${f.b.id}`;
+      await expect(f.reserve()).rejects.toThrow('managed_authority_stale');
+      const [count] = await fx.admin`SELECT count(*)::int AS n FROM harness_shared.blind_review_continuation_custody
+        WHERE binding_id = ${f.b.id}`;
+      expect(count!.n).toBe(0);
+    });
+
+  it.each(['hash', 'snapshot', 'attempt-shape'] as const)(
+    'rejects incomplete replacement metadata even if a damaged store admits it: %s', async fault => {
+      const f = await managedFixture();
+      // Exercise fail-closed reads of damaged storage without changing shared
+      // schema or leaving this private transaction's constraint removed.
+      const rollback = new Error('rollback malformed replacement fixture');
+      await expect(fx.admin.begin(async tx => {
+        await tx`ALTER TABLE harness_shared.plan_blind_review_sessions
+          DROP CONSTRAINT plan_blind_review_sessions_attempt_shape_check`;
+        await tx`UPDATE harness_shared.plan_blind_review_sessions SET replacement_of = ${f.b.id},
+          attempt_seq = ${fault === 'attempt-shape' ? 0 : 1},
+          request_hash = ${fault === 'hash' ? null : 'a'.repeat(64)},
+          request_snapshot = ${fault === 'snapshot' ? null : '{}'}::jsonb WHERE id = ${f.b.id}`;
+        await expect(reserveBlindReviewManagedSuccession(f.b.workspaceId, f.request, { ...f.deps,
+          sql: { begin: (run: (value: unknown) => Promise<unknown>) => run(tx) } as never }))
+          .rejects.toThrow('managed_authority_stale');
+        throw rollback;
+      })).rejects.toBe(rollback);
+    });
+
   it('preserves an unchanged native report without creating succession custody', async () => {
     const f = await managedFixture();
     let writes = 0;
