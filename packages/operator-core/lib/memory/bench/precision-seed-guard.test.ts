@@ -74,6 +74,7 @@ const HEALTHY_RETRIEVAL = {
   overall: { r10: 0.82, p5: 0.9, mrr: 0.7, medianTopScore: 0.6 },
   byClass: { 'hard-negative': { fpAt5: 0.17 } },
   latency: { p50: 12 },
+  perQuery: [{ queryId: 'one' }, { queryId: 'two' }],
 };
 
 beforeEach(() => {
@@ -172,6 +173,7 @@ describe('benchMemoryPrecision — WI-7179: admission shape must come from pushS
 describe('runMemoryPrecisionMonitor — a failed seed writes NO row and fires NO alarm', () => {
   const deps = () => ({
     flag: async () => true,
+    jevEffective: async () => 'off' as const,
     // This suite deliberately exercises the in-process core so its seed guard
     // is reached; the scheduled default worker route is covered separately in
     // precision-monitor.test.ts.
