@@ -8,10 +8,9 @@ import { checkpointLogDirFromEnv } from './release/checkpoint-log-dir';
  * Through coord/condition-object.ts that once put database I/O into every pot
  * tool module (WI-10005170; mug-kettle-tool-gate.test.ts, "P-010 import hygiene").
  *
- * Keep this in sync with green-checkpoint.ts's CHECKPOINT_LOCK_STALE_MS. The writer
- * reclaims a lock at this age even when its recorded PID still appears alive; the reader
- * must not continue presenting that same over-age lock as a measured in-flight run when no
- * contender has arrived to trigger the writer-side cleanup.
+ * Keep this in sync with green-checkpoint.ts's identity-safe lock writer. The review
+ * horizon below is diagnostic only: neither age nor an unreadable process identity proves
+ * that a live owner released custody. Only measured death or a changed identity does.
  */
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -74,8 +73,6 @@ function checkRunLockHeld(
   if (!owner || typeof owner.pid !== 'number' || !pidAlive(owner.pid)) return { held: false };
   const startedMs = owner.startedAt ? Date.parse(owner.startedAt) : NaN;
   if (Number.isFinite(startedMs)) {
-    const ageMs = Date.now() - startedMs;
-    if (ageMs > CHECKPOINT_RUN_LOCK_STALE_MS) return { held: false };
     const processStartedMs = readProcessStartMs(owner.pid);
     if (Number.isFinite(processStartedMs) && processStartedMs! > startedMs + PROCESS_START_AFTER_LOCK_TOLERANCE_MS) return { held: false };
   }

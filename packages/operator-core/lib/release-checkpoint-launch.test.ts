@@ -1461,6 +1461,18 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
   }
   const inactiveUnit = fakeSystemctlShow({ ActiveState: 'inactive', ExecMainStartTimestamp: '' });
 
+  it('retains an old live lock in manual launch admission beyond timer horizons', () => {
+    const startedAt = new Date(Date.now() - 3 * (2 ** 31 - 1)).toISOString();
+    const execFn = vi.fn((cmd: string) => cmd === 'systemctl' ? inactiveUnit()
+      : { status: 1, stdout: '', stderr: '' });
+    const active = checkActiveCheckpointRun('/tree', execFn, () => null, () => true,
+      () => ({ pid: 4242, startedAt }), undefined, undefined, () => null);
+    expect(active.active).toBe(true);
+    expect(active.held_externally).toBe(true);
+    expect(active.candidate_stale).toBe(false);
+    expect(active.elapsed_sec).toBeGreaterThan(CHECKPOINT_RUN_LOCK_STALE_MS / 1000);
+  });
+
   it('reports active:true (held_externally) when the manual unit is idle but a live process holds the shared run-lock', () => {
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
     const checkpointHead = 'a0d9300182aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';

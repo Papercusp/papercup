@@ -14,8 +14,8 @@ import { checkpointLogDirFromEnv } from './release/checkpoint-log-dir';
  * test battery under load for up to ~55 min — far past any MCP call budget — so an awaited
  * child would time out the tool. We launch it as a transient systemd unit with NO run-level
  * wall clock (WI-6554700010042457): no RuntimeMaxSec or inherited TASK_DEADLINE, so a
- * progressing main-greening run always reaches its verdict. The in-process self-watchdog's
- * IDLE (no-progress) budget is what stops a run that has genuinely gone silent.
+ * main-greening run retains its owned lifetime. Independent observation diagnoses stalled
+ * work; individual test, hook and I/O guards retain their own stop authority.
  * The OUTCOME lands on /admin/git (the pipeline event the CLI emits), not this caller.
  *
  * OOM-safety: green-checkpoint.ts self-locks (its status vocabulary includes 'skipped-locked'),
@@ -134,7 +134,7 @@ export const CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS = 5_000;
  *
  * Both scheduled and detached main-greening paths have no parent execution-age
  * cutoff or systemd runtime fuse. The manual launcher transports this compatibility
- * duration as an idle/no-progress budget; advancing work keeps its owned lifetime.
+ * duration for compatibility; the CLI disables aggregate and silence-only watchdog stops.
  * Explicit bounded validation retains its separately supplied fixed cutoff.
  *
  * This used to be a hand-typed COPY of that window, because importing release-actions.ts
@@ -1164,9 +1164,6 @@ function checkRunLockHeld(
   if (!owner || typeof owner.pid !== 'number' || !pidAlive(owner.pid)) return { held: false };
   const startedMs = owner.startedAt ? Date.parse(owner.startedAt) : NaN;
   if (Number.isFinite(startedMs)) {
-    const ageMs = Date.now() - startedMs;
-    if (ageMs > CHECKPOINT_RUN_LOCK_STALE_MS) return { held: false };
-
     const processStartedMs = readProcessStartMs(owner.pid);
     if (Number.isFinite(processStartedMs) && processStartedMs! > startedMs + PROCESS_START_AFTER_LOCK_TOLERANCE_MS) {
       // kill(pid, 0) proved only that *a* process exists. Its start time proves it cannot be
@@ -1529,10 +1526,8 @@ export async function readCheckpointProcessAuthorityCheap(
     }
     const startedAtMs = start.value;
     const elapsedSec = Number.isFinite(startedAtMs) ? Math.max(0, Math.floor((nowMs - startedAtMs!) / 1000)) : null;
-    // A process tree that somehow retained the launch stamps past the run-lock's own
-    // hard stale horizon must not wedge the gate forever. The same bound guards the
-    // canonical lock owner above; an unmeasured start remains positive live evidence.
-    if (elapsedSec !== null && elapsedSec * 1000 > CHECKPOINT_RUN_LOCK_STALE_MS) return { status: 'ok', match: null };
+    // Exact live cgroup/root/authority custody outlives any review horizon. An old or
+    // unmeasured start is not proof of death and cannot authorize an overlapping launch.
     return { status: 'ok', match: { pid, startedAtMs, elapsedSec, cgroupPath, workspace, harness } };
   };
 
@@ -1949,7 +1944,7 @@ export function buildCheckpointSystemdArgv(
 ): string[] {
   // WI-6554700010042457: this detached job owns its lifetime independently of the request
   // that launches it. A request's inherited deadline must not become a full-suite cutoff.
-  // MANUAL_CHECKPOINT_WATCHDOG_MS below is the run's IDLE (no-progress) budget.
+  // MANUAL_CHECKPOINT_WATCHDOG_MS is compatibility transport, not stop authority.
   // launchStartedAtMs no longer bounds anything; it stays in the signature for its callers.
   void launchStartedAtMs;
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
@@ -2055,8 +2050,8 @@ export function buildCheckpointSystemdArgv(
     // guards above have proved that replacement is allowed.
     '--property=RefuseManualStop=yes',
     `--property=ExecStopPost=${terminalMarkerCommand}`,
-    // WI-6554700010042457: no RuntimeMaxSec. systemd killing a progressing run at 3h discarded
-    // its work; the in-process progress-aware self-watchdog is the stop for a silent run.
+    // WI-6554700010042457: no RuntimeMaxSec. The CLI also disables aggregate and
+    // silence-only watchdog stops; independent observation and scoped guards remain.
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
     ...greenCheckpointDbPoolSetenvArgs(),

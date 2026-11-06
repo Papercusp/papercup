@@ -2996,8 +2996,8 @@ export interface SelfWatchdogFireContext {
 }
 
 /** Compatibility duration transport from the manual launcher. The main-greening
- * CLI uses the resolved duration as an idle budget and explicitly disables its
- * absolute ceiling. The legacy minimum remains derived
+ * CLI explicitly disables aggregate and silence-only watchdog stops. The legacy
+ * minimum remains derived
  * from the bounded suite and escalation defaults, never a detached run lifetime.
  */
 export const MANUAL_SELF_WATCHDOG_ENV =
@@ -9830,8 +9830,8 @@ export const ISOLATION_PHASE_RESERVE_MS = 15 * 60_000;
  *
  * WI-6554700010042457 (Avi #2574): on the main-greening path nothing kills a run from its
  * start any more — the scheduled parent no longer group-kills at the suite budget, a manual
- * launch carries no RuntimeMaxSec, and the self-watchdog's budget is an IDLE (no-progress)
- * budget, not a clock from process start. A deadline inherited from a short-lived caller
+ * launch carries no RuntimeMaxSec, and the self-watchdog has neither an aggregate nor
+ * a silence-only stop. A deadline inherited from a short-lived caller
  * must not bound this detached job either. The phase is unbounded (+Infinity, which
  * attemptFlakeAbsorption and the salvage gate both accept).
  *
@@ -22356,8 +22356,8 @@ export function realCheckpointDeps(
   // a fresh `vitest run <file>` scoped to its workspace, at SINGLE concurrency
   // (VITEST_MAX_FORKS/THREADS=1) so the 8-fork load contention that caused the flake is
   // gone. Same committed-defaults env (buildGreenCheckpointEnv) + the same checkpoint
-  // tree the suite ran in. A renewable idle timeout (ISOLATION_RUN_TIMEOUT_MS) catches a genuine
-  // hang; on timeout/spawn-error the result is errored:true so the decision treats the
+  // tree the suite ran in. Individual test guards remain; rescueTaskWatchdogOptions adds
+  // a subprocess deadline only for an explicit override. On timeout/spawn-error the result is errored:true so the decision treats the
   // file as still-failing (never a false-green). `--no-file-parallelism` + the fork cap
   // give a clean, deterministic single-file run. Defined as a const (not `this`) so
   // runGreen can call it directly without depending on call-site binding.
@@ -22467,8 +22467,8 @@ export function realCheckpointDeps(
       // cross-test state) — a defect that surfaces as an assertion failure or an error, and
       // still does so at 60s. Being merely SLOWER when co-executed is not a defect at all;
       // it is what contention is, and scoring it as one was the category error. A genuine
-      // co-execution DEADLOCK is unaffected: it blows 60s exactly as it blew 5s, and
-      // CONCURRENT_CONFIRM_TIMEOUT_MS still catches a run that stops producing output.
+      // co-execution DEADLOCK is still subject to the individual test guard. Opaque output
+      // silence does not authorize cancellation of the whole confirmation run.
       const bashFiles = files.filter((file) =>
         needsOwnFileRunner(cfg.checkpointRoot, workspace, file),
       );
@@ -22516,7 +22516,8 @@ export function realCheckpointDeps(
   // run, but VITEST_MAX_FORKS/THREADS forced to 1 so the load contention that crashed the
   // pool is gone. We classify the re-run: code 0 ⇒ passed (load-crash flake); a fresh
   // worker-pool crash ⇒ crashedAgain (undecided ⇒ stay red); any other non-zero ⇒
-  // realFailure. A bounded timeout caps a genuine hang; on timeout/spawn-error this throws,
+  // realFailure. Individual test guards remain, with a subprocess cap only for an explicit
+  // override; on timeout/spawn-error this throws,
   // and attemptWorkerCrashAbsorption treats a throwing re-run as still-failing (never a
   // false green).
   const workspaceRerun = async ({
