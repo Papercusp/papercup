@@ -636,7 +636,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
           trigger: s,
           log,
           signal: profileLifetime.signal,
-          record: (durationMs, signal) => cpuRecorder.record(durationMs, signal),
+          record: (durationMs, signal) => cpuRecorder.recordTriggered(durationMs, signal),
         }).catch(() => {}).finally(() => { profiling = false; });
       })().finally(() => {
         profileGatePending = false;
@@ -829,10 +829,14 @@ export async function captureCpuProfile(args: {
     session?.connect();
     try {
       let profile: unknown;
-      let observer: Omit<CpuRecording, 'profile'> | undefined;
+      let observer: Omit<CpuRecording, 'profile' | 'signal'> | undefined;
+      let publicationSignal = signal;
       if (args.record) {
         const recording = await args.record(durationMs, signal);
-        ({ profile, ...observer } = recording);
+        const { signal: recorderSignal, ...measured } = recording;
+        ({ profile, ...observer } = measured);
+        publicationSignal = recorderSignal && signal
+          ? AbortSignal.any([recorderSignal, signal]) : recorderSignal ?? signal;
       } else {
         await session!.post('Profiler.enable');
         signal?.throwIfAborted();
@@ -840,18 +844,18 @@ export async function captureCpuProfile(args: {
         await delay(durationMs, undefined, { signal });
         ({ profile } = await session!.post('Profiler.stop') as { profile: unknown });
       }
-      signal?.throwIfAborted();
+      publicationSignal?.throwIfAborted();
       // Reserve one slot before the write. A post-write-only prune briefly made
       // maxProfiles + 1 artifacts observable and allowed another capture/test to
       // race through that overflow window.
       await pruneCpuProfiles(maxProfiles - 1);
-      signal?.throwIfAborted();
+      publicationSignal?.throwIfAborted();
       // Timestamp without Date.now-in-name collisions: epoch ms + pid.
       const stamp = `${Date.now()}-pid${process.pid}-p95_${Math.round(trigger.p95Ms)}ms`;
       const file = path.join(dir, `loop-saturation-${stamp}.cpuprofile`);
       try {
-        await fs.writeFile(file, JSON.stringify(profile), { signal });
-        signal?.throwIfAborted();
+        await fs.writeFile(file, JSON.stringify(profile), { signal: publicationSignal });
+        publicationSignal?.throwIfAborted();
       } catch (error) {
         // writeFile cancellation can leave partial bytes. Never publish them as
         // a loadable CPU profile, including abort just after the write resolves.
@@ -861,7 +865,9 @@ export async function captureCpuProfile(args: {
       log('[event-loop-lag] captured CPU profile of the saturated loop — load in DevTools/speedscope', {
         p95Ms: trigger.p95Ms,
         maxMs: trigger.maxMs,
-        durationMs,
+        durationMs: observer?.coverage === 'pre-trigger'
+          ? observer.windowEndMonoMs! - observer.windowStartMonoMs! : durationMs,
+        requestedDurationMs: durationMs,
         file,
         ...observer,
       });

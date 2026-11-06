@@ -7,6 +7,8 @@ function fixture() {
   let threadSystem = 0;
   const live = new Set<string>();
   const events: string[] = [];
+  const endedNames: string[] = [];
+  let notifyImmediately = true;
   let finished: ((event: { params: { title: string; profile: unknown } }) => void) | undefined;
   const precedingProfile = { nodes: [], samples: [7, 8, 9] };
   const session = {
@@ -34,16 +36,87 @@ function fixture() {
   const recorder = new LoopCpuRecorder(300, log, {
     session: make,
     begin: (name) => { live.add(name); maxLive = Math.max(maxLive, live.size); events.push('begin'); },
-    end: (name) => { live.delete(name); events.push('end'); finished?.({ params: { title: name, profile: precedingProfile } }); },
+    end: (name) => {
+      live.delete(name);
+      events.push('end');
+      endedNames.push(name);
+      if (notifyImmediately) finished?.({ params: { title: name, profile: precedingProfile } });
+    },
     now: () => now,
     threadCpuUsage,
   });
-  return { recorder, session, make, log, events, live, threadCpuUsage, precedingProfile,
+  return { recorder, session, make, log, events, live, threadCpuUsage, precedingProfile, endedNames,
+    deferNotifications: () => { notifyImmediately = false; },
     notify: (title: string) => finished?.({ params: { title, profile: precedingProfile } }),
     advance: (ms: number) => { now += ms; }, maxLive: () => maxLive };
 }
 
 describe('monitor-owned warm CPU recorder', () => {
+  it.each(['disabled', 'unsafe', 'stop', 'overdue'] as const)('revokes an already returned trigger window on %s', async (reason) => {
+    const f = fixture();
+    try {
+      await f.recorder.update(true, true);
+      f.advance(100);
+      await f.recorder.update(true, true);
+      const recording = await f.recorder.recordTriggered(1);
+      expect(recording.coverage).toBe('pre-trigger');
+      expect(recording.signal?.aborted).toBe(false);
+      if (reason === 'stop') f.recorder.stop();
+      else {
+        if (reason === 'overdue') f.advance(301);
+        await f.recorder.update(reason !== 'disabled', reason !== 'unsafe');
+      }
+      expect(recording.signal?.aborted).toBe(true);
+    } finally { f.recorder.stop(); }
+  });
+
+  it('accepts only the latest completed anchor when notifications arrive after another rotation', async () => {
+    const f = fixture();
+    f.deferNotifications();
+    try {
+      await f.recorder.update(true, true);
+      f.advance(100);
+      await f.recorder.update(true, true);
+      const first = f.endedNames[0]!;
+      f.advance(100);
+      await f.recorder.update(true, true);
+      f.notify(first);
+      f.notify('unrelated-console-profile');
+      f.notify(f.endedNames[1]!);
+      expect(await f.recorder.recordTriggered(1)).toMatchObject({
+        coverage: 'pre-trigger', windowStartMonoMs: 100, windowEndMonoMs: 200,
+      });
+      expect(f.session.post).not.toHaveBeenCalledWith('Profiler.start');
+    } finally { f.recorder.stop(); }
+  });
+
+  it.each(['disabled', 'unsafe', 'stop', 'overdue', 'stale'] as const)('rejects a pending profile notification after %s', async (reason) => {
+    const f = fixture();
+    f.deferNotifications();
+    try {
+      await f.recorder.update(true, true);
+      f.advance(100);
+      await f.recorder.update(true, true);
+      const pending = f.endedNames[0]!;
+      if (reason === 'stop') f.recorder.stop();
+      else if (reason === 'stale') f.advance(201);
+      else {
+        if (reason === 'overdue') f.advance(301);
+        await f.recorder.update(reason !== 'disabled', reason !== 'unsafe');
+      }
+      f.notify(pending);
+      if (reason === 'stale') {
+        expect(await f.recorder.recordTriggered(1)).toMatchObject({ coverage: 'post-trigger' });
+      } else if (reason === 'stop') {
+        await expect(f.recorder.recordTriggered(1)).rejects.toThrow('unavailable');
+      } else {
+        await f.recorder.update(true, true);
+        f.notify(pending);
+        expect(await f.recorder.recordTriggered(1)).toMatchObject({ coverage: 'post-trigger' });
+      }
+    } finally { f.recorder.stop(); }
+  });
+
   it('captures the completed triggering interval once without starting a later profiler', async () => {
     const f = fixture();
     try {

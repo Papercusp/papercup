@@ -41,6 +41,8 @@ export interface CpuRecording {
   coverage?: 'pre-trigger' | 'post-trigger';
   windowStartMonoMs?: number;
   windowEndMonoMs?: number;
+  /** Revocation also covers the asynchronous artifact write after sampling. */
+  signal?: AbortSignal;
 }
 
 let nextRecorder = 0;
@@ -54,6 +56,7 @@ export class LoopCpuRecorder {
   private initializing = false;
   private closed = false;
   private capture: AbortController | null = null;
+  private lifetime: AbortController | null = null;
   private finishing: { name: string; start: number; end: number } | null = null;
   private preceding: CpuRecording | null = null;
   private readonly prefix = `papercusp-loop-${process.pid}-${++nextRecorder}-`;
@@ -117,6 +120,8 @@ export class LoopCpuRecorder {
       if (this.closed || revision !== this.revision) return false;
       session.connect();
       this.session = session;
+      const lifetime = new AbortController();
+      this.lifetime = lifetime;
       const connected = session;
       session.on('Profiler.consoleProfileFinished', ({ params }) => {
         const window = this.finishing;
@@ -129,6 +134,7 @@ export class LoopCpuRecorder {
           profile: params.profile, samplingIntervalUs: LOOP_CPU_SAMPLING_INTERVAL_US,
           startMs: 0, stopMs: 0, coverage: 'pre-trigger',
           windowStartMonoMs: window.start, windowEndMonoMs: window.end,
+          signal: lifetime.signal,
         };
       });
       await session.post('Profiler.enable');
@@ -173,7 +179,8 @@ export class LoopCpuRecorder {
   async record(durationMs: number, signal?: AbortSignal): Promise<CpuRecording> {
     signal?.throwIfAborted();
     const session = this.session;
-    if (!session || !this.anchor || this.closed || this.capture) throw new Error('CPU recorder unavailable');
+    const lifetime = this.lifetime;
+    if (!session || !lifetime || !this.anchor || this.closed || this.capture) throw new Error('CPU recorder unavailable');
     const capture = new AbortController();
     this.capture = capture;
     const abort = () => capture.abort();
@@ -193,7 +200,7 @@ export class LoopCpuRecorder {
       capture.signal.throwIfAborted();
       if (this.session !== session) throw new Error('CPU recorder revoked');
       return { profile, startMs, stopMs: this.deps.now() - stopAt, samplingIntervalUs: LOOP_CPU_SAMPLING_INTERVAL_US,
-        coverage: 'post-trigger', windowStartMonoMs, windowEndMonoMs: stopAt };
+        coverage: 'post-trigger', windowStartMonoMs, windowEndMonoMs: stopAt, signal: lifetime.signal };
     } finally {
       signal?.removeEventListener('abort', abort);
       if (recording && this.session === session) {
@@ -206,6 +213,8 @@ export class LoopCpuRecorder {
   private suspend(): void {
     this.revision++;
     this.capture?.abort();
+    this.lifetime?.abort();
+    this.lifetime = null;
     this.anchor = null;
     this.finishing = null;
     this.preceding = null;

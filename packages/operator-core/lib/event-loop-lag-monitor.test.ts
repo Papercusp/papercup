@@ -33,6 +33,7 @@ import {
   type LagMonitorHandle,
 } from './event-loop-lag-monitor';
 import { SENTINEL_SAB_IDX, SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
+import { LoopCpuRecorder } from './event-loop-cpu-recorder';
 import { getManaged, managedSetInterval, stopManaged } from '@papercusp/scheduled-registry';
 
 function blockFor(ms: number): void {
@@ -242,6 +243,7 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
   afterEach(async () => {
     handle?.stop();
     handle = undefined;
+    vi.restoreAllMocks();
     for (const d of dirs.splice(0)) await fs.rm(d, { recursive: true, force: true }).catch(() => {});
   });
   const tmp = (tag: string) => {
@@ -249,6 +251,13 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
     dirs.push(d);
     return d;
   };
+
+  // These cases need an active recording to revoke. A retained window may
+  // already have finished publication before the test observes its directory.
+  const useFallbackRecording = () => vi.spyOn(LoopCpuRecorder.prototype, 'recordTriggered')
+    .mockImplementation(function (this: LoopCpuRecorder, durationMs, signal) {
+      return this.record(durationMs, signal);
+    });
 
   it('captureCpuProfile writes a valid .cpuprofile (or degrades to null, never throws)', async () => {
     const dir = tmp('cap');
@@ -267,6 +276,49 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
     // A V8 CPU profile has a node tree + samples.
     expect(parsed).toHaveProperty('nodes');
     expect(parsed).toHaveProperty('samples');
+  });
+
+  it.each(['pre-trigger', 'post-trigger'] as const)('preserves %s coverage and duration when publishing a CPU profile', async (coverage) => {
+    const dir = tmp('trigger-coverage-' + coverage);
+    const profile = { nodes: [], samples: [1, 2], startTime: 125000, endTime: 375000 };
+    const log = vi.fn();
+    const record = vi.fn(async () => ({
+      profile, samplingIntervalUs: 10000, startMs: 1, stopMs: 2,
+      coverage, windowStartMonoMs: 125, windowEndMonoMs: 375,
+    }));
+    const file = await captureCpuProfile({
+      durationMs: 1000,
+      dir,
+      maxProfiles: 1,
+      trigger: { p50Ms: 1, p95Ms: 700, p99Ms: 800, maxMs: 900 },
+      log,
+      record,
+    });
+    expect(file).not.toBeNull();
+    expect(JSON.parse(await fs.readFile(file!, 'utf8'))).toEqual(profile);
+    expect(record).toHaveBeenCalledWith(1000, undefined);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('captured CPU profile'), expect.objectContaining({
+      coverage, durationMs: coverage === 'pre-trigger' ? 250 : 1000, requestedDurationMs: 1000,
+      windowStartMonoMs: 125, windowEndMonoMs: 375, file,
+    }));
+  });
+
+  it.each(['pre-trigger', 'post-trigger'] as const)('does not publish a %s window revoked after sampling returns', async (coverage) => {
+    const dir = tmp('revoked-' + coverage);
+    const lifetime = new AbortController();
+    const log = vi.fn();
+    const file = await captureCpuProfile({
+      durationMs: 1000, dir, maxProfiles: 1,
+      trigger: { p50Ms: 1, p95Ms: 700, p99Ms: 800, maxMs: 900 }, log,
+      record: async () => {
+        queueMicrotask(() => lifetime.abort());
+        return { profile: { nodes: [], samples: [1] }, startMs: 0, stopMs: 0,
+          samplingIntervalUs: 10000, coverage, signal: lifetime.signal };
+      },
+    });
+    expect(file).toBeNull();
+    expect((await fs.readdir(dir)).filter((entry) => entry.endsWith('.cpuprofile'))).toEqual([]);
+    expect(log).not.toHaveBeenCalled();
   });
 
   it('pre-prunes a slot before writing so the retention cap is never transiently exceeded', async () => {
@@ -350,6 +402,7 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
   });
 
   it('monitor stop cancels its active capture without publishing an artifact', async () => {
+    useFallbackRecording();
     const dir = tmp('stop-active-capture');
     const log = vi.fn();
     handle = startEventLoopLagMonitor({
@@ -401,6 +454,7 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
   });
 
   it('gate OFF cancels active recording before the five-minute artifact gap elapses', async () => {
+    useFallbackRecording();
     const dir = tmp('off-active');
     let enabled = true;
     const log = vi.fn();
@@ -417,6 +471,7 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
   });
 
   it('a flag read spanning a tick revokes sampling and its stale true result cannot restart it', async () => {
+    useFallbackRecording();
     const dir = tmp('slow-gate');
     const log = vi.fn();
     let resolveGate: ((value: boolean) => void) | undefined;
