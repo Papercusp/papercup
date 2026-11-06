@@ -58,6 +58,7 @@ it('P005 managed yielded jobs settle from exact same-actor polls and retain conf
 });
 
 it('P005 managed adapters retain SQL semantics, shell context, origin and refused dispositions without minting replay', () => {
+  expect(managedOperationEvidence([managed('1', { tool: 'code:tools', args: {} })], scope)).toHaveLength(1);
   const sql = managed('1', { tool: 'dev:pg_query', args: { sql: 'SELECT id FROM jobs ORDER BY id LIMIT 2' } });
   const a = managedOperationEvidence([sql], scope)[0]!;
   expect(a.family).toBe('sql');

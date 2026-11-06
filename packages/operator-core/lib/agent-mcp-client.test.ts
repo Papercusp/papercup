@@ -4,14 +4,18 @@ import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamable
 
 const mock = vi.hoisted(() => ({
   connect: vi.fn(), clientClose: vi.fn(), transportClose: vi.fn(), transport: vi.fn(),
-  readDiscovery: vi.fn(),
+  readDiscovery: vi.fn(), listTools: vi.fn(), callTool: vi.fn(),
 }));
 vi.mock('./endpoint-ipc-discovery', async original => ({
   ...await original<typeof import('./endpoint-ipc-discovery')>(),
   readAgentMcpDiscoveryForPort: mock.readDiscovery,
 }));
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
-  Client: class { connect = mock.connect; close = mock.clientClose; },
+  Client: class {
+    connect = mock.connect; close = mock.clientClose;
+    listTools(...args: unknown[]) { return mock.listTools(...args); }
+    callTool(...args: unknown[]) { return mock.callTool(...args); }
+  },
 }));
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', async original => ({
   ...await original<typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js')>(),
@@ -28,6 +32,59 @@ beforeEach(() => {
   mock.connect.mockResolvedValue(undefined);
   mock.clientClose.mockResolvedValue(undefined);
   mock.transportClose.mockResolvedValue(undefined);
+  mock.listTools.mockResolvedValue({ tools: [] });
+  mock.callTool.mockResolvedValue({ content: [] });
+});
+
+describe('owned MCP listed generation', () => {
+  const listed = (generation: string | undefined) => ({ tools: [{ name: 'tools:invoke',
+    inputSchema: { type: 'object' }, _meta: { 'papercusp/servingGeneration': generation } }] });
+  const request = { name: 'tools:invoke', arguments: { name: 'work_items:complete', args: {} } };
+
+  it('requires a measured generation and preserves the caller native identity with it', async () => {
+    const { client } = await connectAgentMcp({ url: 'http://127.0.0.1:1/api/mcp' });
+    await expect(client.callTool(request)).rejects.toThrow(/listed serving generation/);
+    mock.listTools.mockResolvedValueOnce(listed(undefined));
+    await client.listTools();
+    await expect(client.callTool(request)).rejects.toThrow(/listed serving generation/);
+    expect(mock.callTool).not.toHaveBeenCalled();
+    const catalog = listed('generation:first');
+    mock.listTools.mockResolvedValueOnce(catalog);
+    const page = await client.listTools();
+    page.tools[0]._meta!['papercusp/servingGeneration'] = 'caller-mutated';
+    await client.callTool({ ...request, _meta: { threadId: 'native', callId: 'call-1' } });
+    expect(mock.callTool.mock.calls[0][0]).toMatchObject({ _meta: {
+      threadId: 'native', callId: 'call-1', 'papercusp/servingGeneration': 'generation:first' } });
+  });
+
+  it('does not refresh or replay a stale mutation and refuses a contradictory declaration', async () => {
+    const { client } = await connectAgentMcp({ url: 'http://127.0.0.1:1/api/mcp' });
+    mock.listTools.mockResolvedValueOnce(listed('generation:first'));
+    await client.listTools();
+    mock.callTool.mockRejectedValueOnce(new Error('stale_tool_contract'));
+    await expect(client.callTool(request)).rejects.toThrow(/stale_tool_contract/);
+    expect(mock.listTools).toHaveBeenCalledTimes(1);
+    expect(mock.callTool).toHaveBeenCalledTimes(1);
+    await expect(client.callTool({ ...request, _meta: {
+      'papercusp/servingGeneration': 'generation:second' } })).rejects.toThrow(/differs/);
+    expect(mock.callTool).toHaveBeenCalledTimes(1);
+    mock.listTools.mockResolvedValueOnce(listed('generation:second'));
+    await client.listTools();
+    await client.callTool(request);
+    expect(mock.callTool.mock.calls[1][0]._meta).toEqual({ 'papercusp/servingGeneration': 'generation:second' });
+  });
+
+  it('invalidates a failed refresh and retains generations across catalog pages', async () => {
+    const { client } = await connectAgentMcp({ url: 'http://127.0.0.1:1/api/mcp' });
+    mock.listTools.mockResolvedValueOnce({ ...listed('generation:first'), nextCursor: 'next' });
+    await client.listTools();
+    await client.listTools({ cursor: 'next' });
+    await client.callTool(request);
+    mock.listTools.mockRejectedValueOnce(new Error('catalog unavailable'));
+    await expect(client.listTools()).rejects.toThrow(/catalog unavailable/);
+    await expect(client.callTool(request)).rejects.toThrow(/listed serving generation/);
+    expect(mock.callTool).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('owned MCP initialization failure evidence', () => {

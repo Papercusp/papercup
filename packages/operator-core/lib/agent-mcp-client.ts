@@ -130,7 +130,39 @@ export class AgentMcpOutcomeUnknownError extends Error {
   }
 }
 
-class UdsAgentMcpClient extends Client {
+/** Retain the catalog this connection actually showed its caller. A refresh is
+ * explicit: a refused mutation must never trigger listing or replay. */
+class CatalogAgentMcpClient extends Client {
+  private readonly listedGenerations = new Map<string, unknown>();
+
+  override async listTools(...args: Parameters<Client['listTools']>): ReturnType<Client['listTools']> {
+    if (!args[0]?.cursor) this.listedGenerations.clear();
+    try {
+      const page = await super.listTools(...args);
+      for (const tool of page.tools)
+        this.listedGenerations.set(tool.name, tool._meta?.['papercusp/servingGeneration']);
+      return page;
+    } catch (error) {
+      this.listedGenerations.clear();
+      throw error;
+    }
+  }
+
+  override async callTool(...args: Parameters<Client['callTool']>): ReturnType<Client['callTool']> {
+    const [params, ...rest] = args;
+    const generation = this.listedGenerations.get(params.name);
+    if (params.name === 'tools:invoke' && (typeof generation !== 'string' || !generation.trim()))
+      throw new Error('stale_tool_contract: tools:invoke requires its listed serving generation');
+    if (typeof generation !== 'string' || !generation.trim()) return super.callTool(...args);
+    const declared = params._meta?.['papercusp/servingGeneration'];
+    if (declared !== undefined && declared !== generation)
+      throw new Error('stale_tool_contract: caller generation differs from its listed catalog');
+    return super.callTool({ ...params, _meta: { ...params._meta,
+      'papercusp/servingGeneration': generation } }, ...rest);
+  }
+}
+
+class UdsAgentMcpClient extends CatalogAgentMcpClient {
   override async callTool(...args: Parameters<Client['callTool']>): ReturnType<Client['callTool']> {
     try {
       return await super.callTool(...args);
@@ -182,7 +214,7 @@ export async function connectAgentMcp(options: AgentMcpClientOptions): Promise<{
       requestInit: { headers: options.headers },
     });
   }
-  const ClientClass = endpoint ? UdsAgentMcpClient : Client;
+  const ClientClass = endpoint ? UdsAgentMcpClient : CatalogAgentMcpClient;
   const client = new ClientClass({ name: options.name ?? 'papercusp-native', version: '1' });
   try {
     await client.connect(transport, options.timeoutMs ? { timeout: options.timeoutMs } : undefined);

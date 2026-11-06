@@ -201,7 +201,8 @@ export function managedOperationEvidence(sources: readonly ManagedOperationSourc
     owners.set(key, new Set([...(owners.get(key) ?? []), identity(row)]));
   return attempts.flatMap(row => {
     const { source, receipt } = row, args = object(source.args);
-    if (!Object.keys(args).length || args._truncated === true || args._partial === true
+    if (source.args === null || typeof source.args !== 'object' || Array.isArray(source.args)
+      || args._truncated === true || args._partial === true
       || object(args._projection).truncated === true) return [];
     const shell = source.tool === 'capability:bash' ? semantics(source.tool, args, scope) : null;
     const sql = source.tool === 'dev:pg_query' ? fingerprintSqlIntent(text(args.sql), scope) : null;

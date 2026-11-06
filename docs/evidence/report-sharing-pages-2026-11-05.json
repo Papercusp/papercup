@@ -18,29 +18,99 @@
   "snapshotSha256": "036956c8375b3112e2eb7718586cd001875736f2e55dfb9413c4877c28287fc7",
   "providerState": "removed",
   "network": [
-    { "phase": "before", "url": "https://api.github.com/gists/b701861afcedd902e97a0703113e0664?read=2910393708-3118279728-3152997293-1837683900", "status": 200 },
-    { "phase": "after", "url": "https://api.github.com/gists/b701861afcedd902e97a0703113e0664?read=3206786543-212440718-178460996-2357773981", "status": 404 }
+    {
+      "phase": "before",
+      "url": "https://api.github.com/gists/b701861afcedd902e97a0703113e0664?read=2910393708-3118279728-3152997293-1837683900",
+      "status": 200
+    },
+    {
+      "phase": "after",
+      "url": "https://api.github.com/gists/b701861afcedd902e97a0703113e0664?read=3206786543-212440718-178460996-2357773981",
+      "status": 404
+    }
   ],
-  "verified": ["fresh anonymous contexts", "exact viewer meta version", "headings", "tables", "code", "Mermaid SVG", "no credential headers", "no localhost or operator request", "fresh reader refuses deleted Gist"],
-  "notVerified": ["exact deployed operator artifact", "native desktop Share/Copy/Stop journey", "independent acceptance grading"],
+  "verified": [
+    "fresh anonymous contexts",
+    "exact viewer meta version",
+    "headings",
+    "tables",
+    "code",
+    "Mermaid SVG",
+    "no credential headers",
+    "no localhost or operator request",
+    "fresh reader refuses deleted Gist"
+  ],
+  "notVerified": [
+    "exact deployed operator artifact",
+    "native desktop Share/Copy/Stop journey",
+    "independent acceptance grading"
+  ],
   "sourceEvidence": "apps/operator/test-results/report-sharing/report-sharing-SHARE-SHIPM-61558-reader-fails-after-deletion-chromium/fixture-recovery-state.json",
   "latestRun": {
-    "testRunId": 23427292,
-    "commitStamp": "c53388e3d8eb9d6ea5726b304afe1202241604b6",
-    "verifiedAt": "2026-11-05T23:28:01.866Z",
-    "reasonForRerun": "Verify the real provider lifecycle after independent review corrections to viewer attestation, readiness, removal, account state and cancellation.",
-    "url": "https://papercupai.github.io/papercusp-reports/?v=d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29#gist=papercupai%2F75269bcfc1c1268cda741f3bd248d989",
-    "viewerVersion": "d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29",
-    "reportId": "sharing-fixture-c93eb202-62ab-482d-b47f-bbcfecda5415",
-    "operationId": "e4abdbdb-987f-470e-800e-aca338214560",
-    "gistId": "75269bcfc1c1268cda741f3bd248d989",
+    "testRunId": 23503160,
+    "commitStamp": "4639cff1b2a3a1282df2da7664885c1a9870dbb2",
+    "verifiedAt": "2026-11-06T18:50:50.443Z",
+    "reasonForRerun": "Verify canonical reader assets after the measured host-compaction identity fix; preserve prior trusted viewer tree for the exact adapter-controlled upgrade.",
+    "taskId": "0mw5bwn5k1awre50184",
+    "url": "https://papercupai.github.io/papercusp-reports/?v=bab988bea0404b7477751706bd65a32ebda9d1912006c06f6ca2b3e2137befd1#gist=papercupai%2F57f89c6fd6fb9c533f2ef3e5aab276f6",
+    "viewerVersion": "bab988bea0404b7477751706bd65a32ebda9d1912006c06f6ca2b3e2137befd1",
+    "reportId": "sharing-fixture-8a595258-1618-45ee-ab39-8b836bafe888",
+    "operationId": "8578b1af-c6b1-4819-b83c-bf6bdd6ae9a3",
+    "gistId": "57f89c6fd6fb9c533f2ef3e5aab276f6",
     "providerState": "removed",
-    "viewerTreeSha": "2c1f01822044902559e0d417b2b84593a72ab400",
+    "repoId": 1447561040,
+    "viewerTreeSha": "795a7008b9ad341b857c9c42daf0fb007680b0c4",
     "viewerGeneration": 1,
+    "previousTreeSha": "2c1f01822044902559e0d417b2b84593a72ab400",
     "network": [
-      { "phase": "before", "url": "https://api.github.com/gists/75269bcfc1c1268cda741f3bd248d989?read=2416668055-2254326051-3196642599-1403103646", "status": 200 },
-      { "phase": "after", "url": "https://api.github.com/gists/75269bcfc1c1268cda741f3bd248d989?read=1563049889-213335910-2036963425-1126869823", "status": 404 }
+      {
+        "phase": "before",
+        "url": "https://api.github.com/gists/57f89c6fd6fb9c533f2ef3e5aab276f6?read=2175907794-2440762285-171881953-2833920260",
+        "status": 200
+      },
+      {
+        "phase": "after",
+        "url": "https://api.github.com/gists/57f89c6fd6fb9c533f2ef3e5aab276f6?read=1385810160-766442979-3038396761-2907225095",
+        "status": 404
+      }
     ],
-    "notVerified": ["exact deployed operator artifact", "native desktop Share/Copy/Stop journey", "independent acceptance grading"]
-  }
+    "notVerified": [
+      "exact deployed operator artifact",
+      "native desktop Share/Copy/Stop journey",
+      "independent acceptance grading"
+    ]
+  },
+  "previousRuns": [
+    {
+      "testRunId": 23427292,
+      "commitStamp": "c53388e3d8eb9d6ea5726b304afe1202241604b6",
+      "verifiedAt": "2026-11-05T23:28:01.866Z",
+      "reasonForRerun": "Verify the real provider lifecycle after independent review corrections to viewer attestation, readiness, removal, account state and cancellation.",
+      "url": "https://papercupai.github.io/papercusp-reports/?v=d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29#gist=papercupai%2F75269bcfc1c1268cda741f3bd248d989",
+      "viewerVersion": "d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29",
+      "reportId": "sharing-fixture-c93eb202-62ab-482d-b47f-bbcfecda5415",
+      "operationId": "e4abdbdb-987f-470e-800e-aca338214560",
+      "gistId": "75269bcfc1c1268cda741f3bd248d989",
+      "providerState": "removed",
+      "viewerTreeSha": "2c1f01822044902559e0d417b2b84593a72ab400",
+      "viewerGeneration": 1,
+      "network": [
+        {
+          "phase": "before",
+          "url": "https://api.github.com/gists/75269bcfc1c1268cda741f3bd248d989?read=2416668055-2254326051-3196642599-1403103646",
+          "status": 200
+        },
+        {
+          "phase": "after",
+          "url": "https://api.github.com/gists/75269bcfc1c1268cda741f3bd248d989?read=1563049889-213335910-2036963425-1126869823",
+          "status": 404
+        }
+      ],
+      "notVerified": [
+        "exact deployed operator artifact",
+        "native desktop Share/Copy/Stop journey",
+        "independent acceptance grading"
+      ]
+    }
+  ]
 }
