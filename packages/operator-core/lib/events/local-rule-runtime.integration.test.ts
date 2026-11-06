@@ -40,7 +40,9 @@ describe('enabled local runtime', () => {
   it('uses the supplied applied harness scope and re-reads current sync rules', async () => {
     const id = 'fresh-sync-scope';
     const row = await putLocalRule({ ...scope, authorId: 'author',
-      definition: { ...definition(id), delivery: 'sync' } }, db.adminSql);
+      definition: { schemaVersion: 1, id, title: id, description: 'Runtime fixture', version: '1.0.0',
+        delivery: 'sync', sink: 'pre-tool', tools: ['Bash'],
+        guard: { deny: { 'input.command': { matches: 'rm -rf' } } } } }, db.adminSql);
     await recordLocalRuleTest(scope, row.id, 1, { passed: true, samples: 1 }, db.adminSql);
     await setLocalRuleEnabled(scope, row.id, true, db.adminSql);
 

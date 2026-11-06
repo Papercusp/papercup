@@ -263,14 +263,22 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
   it('holds the shared package-cache reader for every actual worker compiler invocation', () => {
     expect(esbuiltScriptWorkers()).toEqual(['cpu-task-worker.script.mjs']);
     expect((buildOutput.match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? []).length)
-      .toBe(ESBUILD_WORKERS.length + esbuiltScriptWorkers().length + 1); // one pin resolution, then every compile
+      .toBe(ESBUILD_WORKERS.length + esbuiltScriptWorkers().length + 2); // pin resolution, guest bootstrap, workers
+  });
+
+  it('emits the handler guest entry as standalone CommonJS accepted by plain Node', () => {
+    const guest = join(output, 'handler-bootstrap.cjs');
+    expect(existsSync(guest)).toBe(true);
+    const result = spawnSync(process.execPath, ['--check', guest], { encoding: 'utf8', timeout: 10_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
   });
 
   it('control: successful compilation without the package-cache lease is detected', () => {
     const original = readFileSync(recipe, 'utf8');
     const guarded = 'bundle_host_esbuild "$repo_root" "$source"';
-    // One guarded call for the TypeScript loop, one per esbuilt `.script.mjs` branch.
-    expect(original.split(guarded)).toHaveLength(2 + esbuiltScriptWorkers().length);
+    // Guest bootstrap, TypeScript loop, and each esbuilt `.script.mjs` branch.
+    expect(original.split(guarded)).toHaveLength(3 + esbuiltScriptWorkers().length);
     const subject = join(output, 'recipe-without-cache-lease.sh');
     writeFileSync(subject, original.replaceAll(guarded, 'npx --yes esbuild@0.25.0 "$source"'));
     const result = build({}, subject, join(output, 'cache-lease-control'));

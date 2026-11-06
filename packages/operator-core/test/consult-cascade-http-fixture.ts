@@ -160,6 +160,7 @@ async function main() {
       assert.ok(until - observedAt <= 120_000, 'accepted lease exceeds its production bound');
       assert.equal(diagnosticEmbeds.get(question), 1, 'accepted timeout must reach HTTP exactly once');
       acceptedLease = { until: lease.leaseUntil, initialObservedAt: new Date(observedAt).toISOString() };
+      console.log('CONSULT_CASCADE_HTTP_PHASE accepted-lease-wait ' + JSON.stringify(acceptedLease));
       writeFileSync(join(evidenceDir, 'embedding-timeout-before-lease-expiry.json'), JSON.stringify({
         control, workspace, conversationId: accepted.conversation_id, accepted, lastObserved,
         diagnosticEmbedRequests: diagnosticEmbeds.get(question), acceptedLease,
@@ -195,6 +196,7 @@ async function main() {
       assert.equal(measurement.stages.embedding.errorCode, 'ETIMEDOUT');
       assert.equal(measurement.outcome, 'degraded');
       assert.equal(measurement.errorCode, null, 'recovered stage failure must not become a terminal router exception');
+      console.log('CONSULT_CASCADE_HTTP_PHASE accepted-lease-settled ' + JSON.stringify(acceptedLease));
     }
     const [recorded] = await sql`SELECT metadata_json FROM harness_shared.route_invocations
       WHERE workspace_id = ${workspace} AND method = 'INTERNAL' AND path = 'internal:expertise-routing'

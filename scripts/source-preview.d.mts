@@ -111,16 +111,25 @@ export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInp
     paths: string[];
 }>;
 /** Prepare a source snapshot only after all declared inputs match their pin.
- * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
+ * `runtimeOutputs: 'preserve'` retains committed outputs in an independent Git
+ * checkout for read-only consumers (for example a host build with an external
+ * output directory). They remain recorded source: rebuilding them invalidates
+ * the receipt. The default archive/rebuild contract is unchanged.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, runtimeOutputs?: 'rebuild' | 'preserve', tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
  */
-export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, tauriInputs, operatorApi }: {
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, runtimeOutputs, tauriInputs, sourceArchive, operatorApi }: {
     repo: string;
     ref: string;
     dest: string;
     inputs?: string[];
     inputsFile?: string;
     gitCheckout?: boolean;
+    runtimeOutputs?: "rebuild" | "preserve";
     tauriInputs?: boolean;
+    sourceArchive?: {
+        root: string;
+        receiptSha256: string;
+    };
     operatorApi?: {
         root: string;
         sourceReceiptPath: string;
@@ -2086,11 +2095,11 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, prepareChildEnv, releaseParentPrivatePg, requestParentPgReleaseImpl, signal, clock }: {
+export function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs, inputsFile, tauriInputs, sourceArchive, command, env, budgetFrom, childEstimateMs, preparationMaxMs, prepareChildEnv, releaseParentPrivatePg, requestParentPgReleaseImpl, signal, clock }: {
     repo: string;
     runtimeAssetDonor?: string;
     ref: string;
@@ -2098,6 +2107,10 @@ export function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, 
     inputs?: string[];
     inputsFile?: string;
     tauriInputs?: boolean;
+    sourceArchive?: {
+        root: string;
+        receiptSha256: string;
+    };
     command: string[];
     env?: NodeJS.ProcessEnv;
     budgetFrom?: string;
