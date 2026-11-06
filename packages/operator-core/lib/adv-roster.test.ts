@@ -864,7 +864,8 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
       backend: 'codex',
       source: 'adv_sessions',
       ownerId: 'codex-owner',
-      exactResumeSupported: false,
+      rolloutId: '01a032b7-147a-7cc2-8411-e59c26bb6a02',
+      exactResumeSupported: true,
     });
     expect(codex.nativeSession && 'codexHome' in codex.nativeSession ? codex.nativeSession.codexHome : '').toContain('session-9');
 

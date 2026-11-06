@@ -176,6 +176,25 @@ describe('nativeSessionHandleForAdvSession', () => {
     expect(calls, 'no owner id ⇒ nothing to resolve against').toHaveLength(0);
   });
 
+  it('preserves a recorded Codex thread without requiring a filesystem lookup', () => {
+    const rolloutId = '01a1b1a8-9f0e-7013-9e0f-ade8d68b37f9';
+    expect(nativeSessionHandleForAdvSession(adv({ agent: 'codex', sessionId: rolloutId })))
+      .toMatchObject({ backend: 'codex', rolloutId, exactResumeSupported: true, missingReason: null });
+  });
+
+  it('prefers the recorded Codex binding over a different discovered rollout', () => {
+    const rolloutId = '01a1b1a8-9f0e-7013-9e0f-ade8d68b37f9';
+    expect(nativeSessionHandleForAdvSession(adv({ agent: 'codex', sessionId: rolloutId }), {
+      findCodexRolloutId: () => 'different-thread',
+    })).toMatchObject({ rolloutId, exactResumeSupported: true });
+  });
+
+  it('keeps an unlinked Codex thread explicitly unavailable', () => {
+    expect(nativeSessionHandleForAdvSession(adv({ agent: 'codex', sessionId: null })))
+      .toMatchObject({ backend: 'codex', rolloutId: null, exactResumeSupported: false,
+        missingReason: 'codex rollout id is not recorded under CODEX_HOME yet' });
+  });
+
   it('normalizes a Codex adv_session to CODEX_HOME plus latest rollout id', () => {
     expect(
       nativeSessionHandleForAdvSession(

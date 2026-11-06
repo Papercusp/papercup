@@ -191,7 +191,10 @@ export function nativeSessionHandleForAdvSession(
   }
   if (row.agent === 'codex') {
     const home = (deps.codexHomeForSessionKey ?? codexHomeForSessionKey)(row.id);
-    const rolloutId = deps.findCodexRolloutId?.(home) ?? null;
+    // The coord hook records Codex's exact thread id on the tracked row.
+    // Most roster callers have no filesystem lookup dependency; ignoring the
+    // persisted binding made their resumable sessions look unlinked forever.
+    const rolloutId = row.sessionId || deps.findCodexRolloutId?.(home) || null;
     return {
       backend: 'codex',
       source: 'adv_sessions',
