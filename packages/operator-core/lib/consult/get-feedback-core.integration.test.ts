@@ -58,6 +58,7 @@ import { advanceCascade, continueCascadeDispatchCore, selectionFromRouting } fro
 import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit, routeGoalTenureGrading, closeGoalTenureGradingRequests } from '../grading-audit-routing';
 import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
 import { specQualitySubjectRef } from '../agent-tools/plans/spec-quality';
+import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from '../agent-tools/plans/plan-lock-key';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { GRADING_INTEGRITY_AUDIT_POLICY } from './selection-policies';
 import type { ScorecardRow } from '../scorecards';
@@ -279,6 +280,12 @@ function makeDeps(
   const routeCalls: Array<Parameters<GetFeedbackDeps['route']>[0]> = [];
   const deps: GetFeedbackDeps = {
     getSql: () => rootSql,
+    // These tests exercise routing/reservations after Discovery admission. The
+    // bar-critique unit suite checks refusal before effects for stale Discovery;
+    // this fixture deliberately has no plan-audit tables or source evidence.
+    withCurrentDiscovery: (async (_input: unknown, accept: () => Promise<unknown>) =>
+      ({ ok: true, result: await accept() })) as
+      NonNullable<GetFeedbackDeps['withCurrentDiscovery']>,
     route: async (params) => {
       routeCalls.push(params);
       return route;
@@ -2828,7 +2835,46 @@ describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-
     expect(row).toEqual({ origin_task_ref: planSlug, policy: 'bar-critique' });
   });
 
-  it('excludes source responders and answer-author parties from existing same-plan critiques', async () => {
+  it('never serves a generic high-similarity archive for a plan target carried in originTaskRef', async () => {
+    const qv = vecAt(0);
+    const ws = 'ws-bar-critique-archive-' + randomBytes(5).toString('hex');
+    const planSlug = 'bar-critique-current-plan-' + randomBytes(5).toString('hex');
+    const question = 'Please critique the acceptance bars.';
+    await rootSql.unsafe(
+      'INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, owner) VALUES ($1, $2, $3, NULL)',
+      [ws, 'papercusp', planSlug],
+    );
+    // The archive has no named subject in its question, so the generic matcher
+    // considers it compatible. The exact plan target exists only in
+    // originTaskRef and must still force a fresh route.
+    await seedClosedConsult({
+      ws,
+      conv: 'archive-for-other-plan-' + randomBytes(5).toString('hex'),
+      vec: qv,
+      question,
+      outcome: { answer: 'A prior unrelated critique', confidence: 'high' },
+    });
+    const { deps, reached } = makeDeps(routeOf([cand('live-critic')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({
+      ...baseReq,
+      workspaceId: ws,
+      question,
+      policy: 'bar-critique',
+      originTaskRef: planSlug,
+      harnessSlug: 'papercusp',
+    }, deps));
+
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
+  it.each([
+    ['routing', 990101],
+    ['awaiting_responder', 990111],
+    ['active', 990121],
+  ] as const)(
+    'excludes source responders and answer-author parties from %s same-plan critiques', async (state, postId) => {
     const planSlug = 'bar-critique-lineage-' + randomBytes(5).toString('hex');
     const activeConversation = 'prior-active-' + planSlug;
     const closedConversation = 'prior-closed-' + planSlug;
@@ -2842,7 +2888,7 @@ describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          origin_task_ref, routing)
       VALUES (${WS}, ${activeConversation}, 'prior-requester', 'critique-source-open',
-              'active', 'prior critique question', ${planSlug},
+              ${state}, 'prior critique question', ${planSlug},
               ${rootSql.json({ policy: 'bar-critique' })})
     `;
     await rootSql`
@@ -2856,9 +2902,9 @@ describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-
     await rootSql`
       INSERT INTO harness_shared.consult_post_meta
         (workspace_id, post_id, conversation_id, author_id, kind, created_at)
-      VALUES (${WS}, 990101, ${activeConversation}, 'critique-open-fork', 'answer',
+      VALUES (${WS}, ${postId}, ${activeConversation}, 'critique-open-fork', 'answer',
               ${NOW.toISOString()}::timestamptz),
-             (${WS}, 990102, ${closedConversation}, 'critique-closed-fork', 'answer',
+             (${WS}, ${postId + 1}, ${closedConversation}, 'critique-closed-fork', 'answer',
               ${new Date(NOW.getTime() + 1000).toISOString()}::timestamptz)
     `;
 
@@ -2892,6 +2938,72 @@ describe('getFeedbackCore — bar-critique records its plan (P-007 / SPEC-P-007-
     ]));
     expect(route.qualified.map((candidate) => candidate.ownerId)).toEqual(['critique-fresh']);
     expect(route.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual(['critique-fresh']);
+  });
+
+  it('reserves concurrent same-plan critiques before routing and excludes the first pending lineage on retry', async () => {
+    const planSlug = 'bar-critique-concurrent-' + randomBytes(5).toString('hex');
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, owner)
+      VALUES (${WS}, 'papercusp', ${planSlug}, NULL)
+    `;
+    const lockSql = postgres(fixtureDb.url, { max: 2, onnotice: () => {} });
+    // Discovery is already admitted by this fixture. Exercise its real shared
+    // PostgreSQL lock identity while keeping the absent audit tables out of it.
+    const admission = (async (
+      input: { workspaceId: string; harnessSlug: string; planSlug: string },
+      accept: () => Promise<unknown>,
+    ) => lockSql.begin(async tx => {
+      const [lock] = await tx<Array<{ ok: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+          hashtext(${planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug)})) AS ok
+      `;
+      if (!lock?.ok) return { ok: false, error: 'plan_busy', nextAction: 'Retry the same-plan critique after its reservation settles.' };
+      return { ok: true, result: await accept() };
+    })) as unknown as NonNullable<GetFeedbackDeps['withCurrentDiscovery']>;
+    const candidates = () => routeOf([cand('concurrent-source-a'), cand('concurrent-source-b')]);
+    const first = makeDeps(candidates());
+    const second = makeDeps(candidates());
+    for (const fixture of [first, second]) {
+      fixture.deps.withCurrentDiscovery = admission;
+      fixture.deps.getPartyKeys = async (_workspaceId, ownerIds) => new Map(ownerIds.map(id => [id, id]));
+    }
+    let entered!: () => void;
+    let release!: () => void;
+    const routingEntered = new Promise<void>(resolve => { entered = resolve; });
+    const routingReleased = new Promise<void>(resolve => { release = resolve; });
+    const routeFirst = first.deps.route;
+    first.deps.route = async input => {
+      entered();
+      await routingReleased;
+      return routeFirst(input);
+    };
+    const req = { ...baseReq, policy: 'bar-critique', originTaskRef: planSlug, harnessSlug: 'papercusp' };
+    const pending = getFeedbackCore(req, first.deps);
+    try {
+      await Promise.race([routingEntered, pending.then(() => { throw new Error('first critique never entered routing'); })]);
+      const blocked = await getFeedbackCore(req, second.deps);
+      expect(blocked).toMatchObject({ error: 'discovery_not_ready', hint: expect.stringContaining('reservation') });
+      expect(second.routeCalls).toHaveLength(0);
+      expect(second.opened).toHaveLength(0);
+      release();
+      const reserved = asOk(await pending);
+      expect(reserved.responder?.ownerId).toBe('concurrent-source-a');
+      expect((await stateRow(reserved.conversation_id)).state).toBe('awaiting_responder');
+      const retried = asOk(await getFeedbackCore(req, second.deps));
+      expect(retried.responder?.ownerId).toBe('concurrent-source-b');
+      expect(second.routeCalls[0]?.excludePartyOwners).toContain('concurrent-source-a');
+      const rows = await rootSql`
+        SELECT responder_id FROM harness_shared.consult_state
+        WHERE workspace_id = ${WS} AND origin_task_ref = ${planSlug}
+        ORDER BY responder_id
+      `;
+      expect(rows.map(row => row.responder_id)).toEqual(['concurrent-source-a', 'concurrent-source-b']);
+    } finally {
+      release();
+      await Promise.allSettled([pending]);
+      await lockSql.end({ timeout: 1 });
+    }
   });
 
   it.each([
