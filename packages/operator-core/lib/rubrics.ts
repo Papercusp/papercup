@@ -119,6 +119,8 @@ import {
   partitionAmendmentProof,
   invalidatedAdequacyCardSubjects,
   resolveAcceptanceBarApproval,
+  acceptanceBarReviewSourceHash,
+  type AcceptanceBarReviewSource,
   type AcceptanceBarApproval,
   type AcceptanceBarAmendmentSql,
 } from './acceptance-bar-amendment';
@@ -4363,6 +4365,8 @@ export interface AcceptanceBarAmendmentPreview {
   changedBars: string[];
   projectionCount: number;
   approval: AcceptanceBarApproval;
+  /** One complete supporting copy retained on the preview's existing thread. */
+  reviewSource?: AcceptanceBarReviewSource;
   /** False only when every change is mechanically additive (D-002); see approvalClassification. */
   approvalRequired: boolean;
   /** Which changed BARs were proven additive, and why each other one keeps the review. */
@@ -5423,12 +5427,22 @@ async function amendAcceptanceBarRubric(
           : null,
         mappingDelta: mappingDelta.length ? mappingDelta : null,
       }));
+      const reviewSource: AcceptanceBarReviewSource = {
+        schemaVersion: 1,
+        rubric: { ref: input.rubricId, revision: oldRubricRevision,
+          baseline: rubricRow.template_data, candidate: guard.data },
+        subjectPlan: { slug: subjectPlanHint, harness: subjectScope.harnessSlug,
+          revision: oldSubjectRevision, content: subjectRow.content, proposedContent: proposedSource },
+        reason,
+        mappingDelta,
+      };
       const approvalRequest: AcceptanceBarApproval = {
         schemaVersion: 1,
         kind: 'acceptance-bar-amendment-approval',
         rubricRef: input.rubricId,
         subjectPlan: subjectPlanHint,
         proposedPatchHash,
+        reviewSourceHash: acceptanceBarReviewSourceHash(reviewSource),
         // A moved BAR appears with prior == next hash: the review covers its map, not its meaning.
         bars: approvalBars.map((barKey) => ({
           barKey,
@@ -5925,6 +5939,7 @@ async function amendAcceptanceBarRubric(
             changedBars,
             projectionCount: candidate.bars.reduce((count, bar) => count + bar.mappings.length, 0),
             approval: approvalRequest,
+            reviewSource,
             approvalRequired,
             approvalClassification: {
               additiveBars: additivity.additiveBars,

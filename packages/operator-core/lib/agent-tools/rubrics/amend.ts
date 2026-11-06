@@ -40,7 +40,8 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 import { assertReviewerModelAllowed, inspectFreshAmendmentReviewer, openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
-import { acceptanceBarMappingDeltaEntrySchema } from '../../acceptance-bar-amendment';
+import { acceptanceBarMappingDeltaEntrySchema, acceptanceBarReviewPostBody,
+  type AcceptanceBarApproval, type AcceptanceBarReviewSource } from '../../acceptance-bar-amendment';
 import { AcceptanceBarCandidateError } from '../../acceptance-bar-projection';
 import { hostIdentity } from '../../serving-host-identity';
 import { readIdentity, type IdentityCtx } from '../locks/identity';
@@ -301,12 +302,13 @@ async function reviewReceiptKey(
  */
 async function postPreviewApproval(
   target: { workItemId: string; harness?: string },
-  approval: unknown,
+  approval: AcceptanceBarApproval,
   identity: ReturnType<typeof resolveAgentIdentity>,
   idempotencyKey: string,
+  source?: AcceptanceBarReviewSource,
 ): Promise<{ ref: string } | { ok: false; code: string; error: string; next: string }> {
   const { commentWorkItem } = await import('../../work-items');
-  const post = await commentWorkItem(target.workItemId, JSON.stringify(approval), identity.ownerId, {
+  const post = await commentWorkItem(target.workItemId, acceptanceBarReviewPostBody(approval, source), identity.ownerId, {
     ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
     ...(target.harness ? { harness: target.harness } : {}),
     // The post may commit before this worker can publish its review receipt.
@@ -815,7 +817,7 @@ export default defineTool({
         let previewPostRef = recoveredReview?.previewPostRef ?? args.reviewPreviewPost;
         if (!previewPostRef && args.requestReview) {
           reportPhase('preview-post-approval');
-          const posted = await postPreviewApproval(args.requestReview, preview.approval, identity, receiptKey);
+          const posted = await postPreviewApproval(args.requestReview, preview.approval, identity, receiptKey, preview.reviewSource);
           if (!('ref' in posted)) return { ...posted, dryRun: true, preview };
           previewPostRef = posted.ref;
         }

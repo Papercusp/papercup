@@ -292,6 +292,8 @@ export const acceptanceBarApprovalSchema = z
     /** Hash of the complete reviewer-visible amendment, including verification methods, reason,
      * source and mapping. BAR hashes intentionally exclude method-only edits. */
     proposedPatchHash: z.string().regex(/^[a-f0-9]{64}$/),
+    /** Complete retained baseline and normalized candidate, not a presentation excerpt. */
+    reviewSourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     /** EI-24358433996857425: the reviewed proposed-source fingerprint
      * (acceptanceBarSourceFingerprint) when the amendment rewrites the subject's Requirements
      * or Bar-to-work map, e.g. a retirement. Absent when the amendment leaves the source alone. */
@@ -308,6 +310,40 @@ export const acceptanceBarApprovalSchema = z
   );
 
 export type AcceptanceBarApproval = z.infer<typeof acceptanceBarApprovalSchema>;
+
+/** Stored once on the existing immutable preview post. No separate source store. */
+export interface AcceptanceBarReviewSource {
+  schemaVersion: 1;
+  rubric: { ref: string; revision: number; baseline: unknown; candidate: unknown };
+  subjectPlan: { slug: string; harness: string; revision: number; content: string; proposedContent: string };
+  reason: string;
+  mappingDelta: unknown;
+}
+
+export function acceptanceBarReviewSourceHash(source: AcceptanceBarReviewSource): string {
+  return createHash('sha256').update(canonicalJson(source), 'utf8').digest('hex');
+}
+
+export function acceptanceBarReviewPostBody(approval: AcceptanceBarApproval, source?: AcceptanceBarReviewSource): string {
+  if (!approval.reviewSourceHash) return JSON.stringify(approval);
+  if (!source || acceptanceBarReviewSourceHash(source) !== approval.reviewSourceHash) {
+    throw new Error('acceptance_bar_review_source_mismatched');
+  }
+  return ['```json', JSON.stringify(approval), '```', '```amendment-source', JSON.stringify(source), '```'].join('\n');
+}
+
+/** Hash the entire recovered record. Missing, clipped, or altered bytes fail closed. */
+export function readAcceptanceBarReviewSource(body: string, expectedHash: string): AcceptanceBarReviewSource {
+  const blocks = [...body.matchAll(/^```amendment-source\r?\n([\s\S]*?)\r?\n```[ \t]*$/gm)];
+  if (blocks.length !== 1) throw new Error('acceptance_bar_review_source_incomplete');
+  let source: AcceptanceBarReviewSource;
+  try { source = JSON.parse(blocks[0]![1]!) as AcceptanceBarReviewSource; }
+  catch { throw new Error('acceptance_bar_review_source_incomplete'); }
+  if (acceptanceBarReviewSourceHash(source) !== expectedHash) {
+    throw new Error('acceptance_bar_review_source_mismatched');
+  }
+  return source;
+}
 
 /** EI-22617748468342848: reviewers routinely post the approval receipt inside a
  * ```json fence, which is the natural way to post JSON in a comment thread. The
@@ -424,7 +460,7 @@ export async function resolveAcceptanceBarApproval(
            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS approved_at
       FROM harness_shared.coord_thread_posts
      WHERE workspace_id = ${args.workspaceId} AND id = ${match[1]}::bigint
-       AND origin = 'local' AND octet_length(body) <= 262144
+       AND origin = 'local' AND octet_length(body) <= 16777216
      FOR SHARE`;
   if (!post?.author_id?.trim()) throw new Error('acceptance_bar_approval_unreadable');
   // The requester posts the preview's exact approval JSON once. The outside-lineage
@@ -453,7 +489,7 @@ export async function resolveAcceptanceBarApproval(
       SELECT author_id, body
         FROM harness_shared.coord_thread_posts
        WHERE workspace_id = ${args.workspaceId} AND id = ${previewPointer[1]}::bigint
-         AND origin = 'local' AND octet_length(body) <= 262144
+         AND origin = 'local' AND octet_length(body) <= 16777216
        FOR SHARE`;
     if (!previewPost?.author_id?.trim()) throw new Error('acceptance_bar_approval_preview_unreadable');
     receiptBody = previewPost.body;
@@ -474,6 +510,12 @@ export async function resolveAcceptanceBarApproval(
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
+  if (args.expected.reviewSourceHash) {
+    if (receipt.reviewSourceHash !== args.expected.reviewSourceHash) {
+      throw new Error('acceptance_bar_review_source_mismatched');
+    }
+    readAcceptanceBarReviewSource(receiptBody, args.expected.reviewSourceHash);
+  }
   if (receipt.rubricRef !== args.expected.rubricRef || receipt.subjectPlan !== args.expected.subjectPlan) {
     throw new Error('acceptance_bar_approval_stale_or_mismatched');
   }

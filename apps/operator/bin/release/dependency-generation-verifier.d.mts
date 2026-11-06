@@ -2,34 +2,14 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // apps/operator/bin/release/dependency-generation-verifier.mjs and regenerate.
 export function copyDependencyTree(source: any, destination: any, reflink: any): Promise<void>;
-export function buildInputs(root: any): ({
-    path: any;
-    link: string;
-    sha256?: undefined;
-    executable?: undefined;
-} | {
-    path: any;
-    sha256: string;
-    executable: boolean;
-    link?: undefined;
-})[];
+export function buildInputs(root: any): any;
 export function verifierInputFingerprint(root: any): string;
 export function checkSource(root: any, ref: any): void;
 export function buildWorkspace(root: any, packagePath: any, command: any): {
     schema: number;
     packagePath: any;
-    inputs: ({
-        path: any;
-        link: string;
-        sha256?: undefined;
-        executable?: undefined;
-    } | {
-        path: any;
-        sha256: string;
-        executable: boolean;
-        link?: undefined;
-    })[];
-    outputs: any[];
+    inputs: any;
+    outputs: any;
 };
 export function buildClosure(root: any): {
     schema: number;

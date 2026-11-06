@@ -43,6 +43,7 @@ import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 import { analyzeClaudeResumeTranscriptFile } from '../claude-resume-tool-references.mjs';
 import { isTerminalState, type TaskState } from '../task-manager/types';
 import { defaultStopFailedLaunch } from './consult-dispatch';
+import { acceptanceBarReviewSourceHash, type AcceptanceBarReviewSource } from '../acceptance-bar-amendment';
 
 import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../work-nature/agent-work-predicate';
 /** One candidate's verdict from the check-approver screen. */
@@ -242,7 +243,7 @@ export interface AmendmentReviewBriefInput {
   rubricRef: string;
   /** `thread-post:<id>` — the requester's post carrying the exact preview approval JSON. */
   previewPostRef: string;
-  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'criterionChanges'>;
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'criterionChanges' | 'reviewSource' | 'candidateValidation'>;
   /** Revision-pinned live baseline supplied to the reviewer independently of transcript spans. */
   reviewSources?: AmendmentReviewSourceContext;
   reason?: string;
@@ -250,6 +251,8 @@ export interface AmendmentReviewBriefInput {
   patch: Record<string, unknown>;
   /** Validated immutable evidence on the preview's thread; never an arbitrary retry salt. */
   reviewEvidence?: { postRef: string; body: string };
+  /** Existing work-item that owns the preview's retained complete source. */
+  sourceTarget?: FreshReviewerAnswerTarget;
 }
 
 export interface AmendmentReviewSourceContext {
@@ -289,6 +292,7 @@ export function buildAmendmentReviewBrief(
   input: AmendmentReviewBriefInput,
   answerOn?: FreshReviewerAnswerTarget,
 ): string {
+  if (input.preview.approval.reviewSourceHash) return buildPinnedAmendmentReviewBrief(input, answerOn);
   const shownPatch = reviewPatch(input);
   const bars = input.preview.changes
     .map((change) => `${change.barKey} (${[...change.kinds].join('+')}${change.fields?.length ? `: ${change.fields.join(', ')}` : ''})`)
@@ -353,6 +357,47 @@ export function buildAmendmentReviewBrief(
     !answerOn
       ? "If you are the headless one-shot reviewer launched for this consult, after the review settles (consult:reply then consult:close, or consult:decline), call session:end { reason: 'BAR amendment review complete' } to close this session; do not just finish the turn."
       : '',
+  ].join('\n');
+}
+
+/** Presentation only: all complete source bytes remain on the preview post. */
+function buildPinnedAmendmentReviewBrief(input: AmendmentReviewBriefInput, answerOn?: FreshReviewerAnswerTarget): string {
+  const hash = input.preview.approval.reviewSourceHash!;
+  const source = input.preview.reviewSource;
+  if (!source || acceptanceBarReviewSourceHash(source) !== hash) throw new Error('acceptance_bar_review_source_mismatched');
+  const changes = input.preview.criterionChanges;
+  if (!changes || !input.preview.candidateValidation) throw new Error('acceptance_bar_review_packet_incomplete');
+  const fieldDelta = changes.map(({ barKey, before, after }) => {
+    const prior = (before ?? {}) as Record<string, unknown>;
+    const next = (after ?? {}) as Record<string, unknown>;
+    const fields = Object.fromEntries([...new Set([...Object.keys(prior), ...Object.keys(next)])]
+      .filter((key) => JSON.stringify(prior[key]) !== JSON.stringify(next[key]))
+      .map((key) => [key, { before: prior[key] ?? null, after: next[key] ?? null }]));
+    return { barKey, disposition: after === null ? 'removed' : before === null ? 'added' : 'changed', fields };
+  });
+  const target = answerOn ?? input.sourceTarget;
+  if (!target) throw new Error('acceptance_bar_review_source_target_missing');
+  const read = target
+    ? `work_items:get { id:'${target.workItemId}'${target.harness ? `, harness:'${target.harness}'` : ''}, priorAttemptRefs:['${target.workItemId}#comment:${input.previewPostRef.slice('thread-post:'.length)}'], payloadTier:'full' }`
+    : `Read ${input.previewPostRef} on its existing work-item thread with work_items:get priorAttemptRefs (the raw ref is <work-item-id>#comment:${input.previewPostRef.slice('thread-post:'.length)}).`;
+  const signature = `approve ${input.previewPostRef}`;
+  return [
+    `Outside-lineage PRE-APPLY review of ${input.rubricRef}.`,
+    `Purpose: ${input.reason?.trim() || source.reason}.`,
+    `Semantic field changes (delta only, not a replacement patch): ${JSON.stringify(fieldDelta)}`,
+    `Removals: ${JSON.stringify(input.preview.approval.bars.filter((bar) => bar.nextBarHash === null).map((bar) => bar.barKey))}.`,
+    `Dependency changes (Bar-to-work map): ${JSON.stringify(source.mappingDelta)}. Other source/dependency edits remain in the complete pinned plan.`,
+    `Preflight: passed; normalized candidate ${input.preview.candidateValidation.candidateHash}; generated clauses ${input.preview.candidateValidation.generatedSpecCount}.`,
+    `Approval identity: ${input.previewPostRef}; candidate/source SHA-256 ${hash}; proposed patch ${input.preview.approval.proposedPatchHash}.`,
+    'Supporting material — one complete immutable copy, including the entire baseline rubric, normalized candidate, complete plan and proposed source:',
+    read,
+    `The amendment-source JSON block on ${input.previewPostRef} must hash to ${hash} using canonical JSON and SHA-256. The approval JSON on that SAME post must name that reviewSourceHash. Later live source edits do not replace this pinned copy.`,
+    'Recover every page if a read is truncated: capability:read with its byte cursor, follow next_cursor until eof:true and next_cursor:null. An excerpt, missing source, failed retrieval or hash mismatch cannot satisfy approval. The apply guard independently verifies the complete retained source.',
+    'Judge the complete acceptance contract and surrounding context. Presentation compaction grants no weaker approval. A newly added BAR is expected to be absent from the baseline. Do not call rubrics:amend or recruit another reviewer.',
+    ...(input.reviewEvidence ? [`New verification evidence ${input.reviewEvidence.postRef}: ${JSON.stringify(input.reviewEvidence.body)}`] : []),
+    answerOn
+      ? `To approve after complete source verification, use work_items:comment { id:'${answerOn.workItemId}'${answerOn.harness ? `, harness:'${answerOn.harness}'` : ''}, body:'${signature}' }. Put objections on the same thread instead. Then session:end { reason:'BAR amendment review complete' }.`
+      : `To approve after complete source verification, consult:reply { conversation_id:'<this consult>', kind:'answer', body:'${signature}', evidence:[...] }; otherwise reply with the objection. Then consult:close with outcome:'answered' and session:end { reason:'BAR amendment review complete' }.`,
   ].join('\n');
 }
 
@@ -1087,7 +1132,7 @@ async function verifyPreviewPostWithApplyResolver(args: {
 }
 
 export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
-  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'approvalRequired' | 'rubricRevision' | 'subjectPlanRevision' | 'candidateValidation'>;
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'criterionChanges' | 'reviewSource' | 'approvalRequired' | 'rubricRevision' | 'subjectPlanRevision' | 'candidateValidation'>;
   identity: AgentIdentity;
   workspaceId: string;
   harness?: string;
@@ -1269,6 +1314,7 @@ export async function openAcceptanceBarAmendmentReview(
     resolveEvidence?: typeof resolveAmendmentReviewEvidence;
     hasLaterPost?: typeof previewThreadHasLaterPost;
     resolveSources?: typeof resolveAmendmentReviewSources;
+    resolveSourceTarget?: typeof resolvePreviewPostWorkItem;
     verifyCandidate?: typeof verifyAmendmentReviewCandidate;
   } = {},
 ): Promise<AmendmentReviewRequestResult> {
@@ -1300,18 +1346,23 @@ export async function openAcceptanceBarAmendmentReview(
       evidencePostRef: input.reviewEvidencePost.trim(), applierId: input.identity.ownerId,
     }) : undefined;
   input.onPhase?.('review-sources');
-  const reviewSources = input.reviewSources ?? await (deps.resolveSources ?? resolveAmendmentReviewSources)({
+  const reviewSources = input.reviewSources ?? (input.preview.reviewSource ? undefined : await (deps.resolveSources ?? resolveAmendmentReviewSources)({
     rubricRef: input.rubricRef,
     preview: input.preview,
     workspaceId: input.workspaceId,
     ...(input.harness ? { harness: input.harness } : {}),
-  });
+  }));
   input.onPhase?.('review-candidate-revalidation');
   await (deps.verifyCandidate ?? verifyAmendmentReviewCandidate)(input);
+  const sourceTarget = input.preview.reviewSource
+    ? await (deps.resolveSourceTarget ?? resolvePreviewPostWorkItem)({ workspaceId: input.workspaceId, previewPostRef })
+    : undefined;
+  if (input.preview.reviewSource && !sourceTarget) throw new Error('acceptance_bar_review_source_target_missing');
   input.onPhase?.('review-route');
   const routed = await (deps.route ?? routeAcceptanceBarAmendmentReview)({
     rubricRef: input.rubricRef,
-    brief: buildAmendmentReviewBrief({ ...input, previewPostRef, reviewEvidence, reviewSources }),
+    brief: buildAmendmentReviewBrief({ ...input, previewPostRef, reviewEvidence, reviewSources,
+      ...(sourceTarget ? { sourceTarget } : {}) }),
     identity: input.identity,
     workspaceId: input.workspaceId,
     ...(input.harness ? { harness: input.harness } : {}),
