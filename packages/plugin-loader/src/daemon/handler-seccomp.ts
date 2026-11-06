@@ -8,6 +8,7 @@
  * TSYNC covers Node's existing threads, and newly created threads inherit it.
  * There is deliberately no permissive fallback or handler-supplied policy.
  */
+import { closeSync, readdirSync, readlinkSync } from 'node:fs';
 import koffi from 'koffi';
 
 const ALLOW = 0x7fff0000;
@@ -40,6 +41,68 @@ export interface HandlerProcessRestrictionReceipt {
   pid: number;
   noNewPrivileges: true;
   synchronizedThreads: true;
+  ioUringDisabled: true;
+}
+
+/**
+ * Compile, but DO NOT install, the early filter in the trusted supervisor.
+ * Pass this sealed anonymous descriptor to bubblewrap's --seccomp before it
+ * execs Node. The caller owns the descriptor and must close it after spawn.
+ * libuv's epoll batching ignores UV_USE_IO_URING=0; setup must fail before
+ * Node initializes ANY event loop, including the loader and worker loops.
+ */
+export function createHandlerBootstrapFilter(): number {
+  if (process.platform !== 'linux' || (process.arch !== 'x64' && process.arch !== 'arm64')) {
+    throw new HandlerProcessRestrictionError(`unsupported handler bootstrap profile: ${process.platform}/${process.arch}`);
+  }
+  let fd: number | undefined;
+  try {
+    const lib = koffi.load('libseccomp.so.2');
+    const libc = koffi.load('libc.so.6');
+    const init = lib.func('seccomp_init', 'void *', ['uint32_t']);
+    const release = lib.func('seccomp_release', 'void', ['void *']);
+    const attr = lib.func('seccomp_attr_set', 'int', ['void *', 'int', 'uint32_t']);
+    const nativeArch = lib.func('seccomp_arch_native', 'uint32_t', []);
+    const resolve = lib.func('seccomp_syscall_resolve_name', 'int', ['str']);
+    const add = lib.func('seccomp_rule_add_array', 'int', ['void *', 'uint32_t', 'int', 'unsigned int', 'void *']);
+    const exportBpf = lib.func('seccomp_export_bpf', 'int', ['void *', 'int']);
+    const memfd = libc.func('memfd_create', 'int', ['str', 'unsigned int']);
+    const seal = libc.func('fcntl', 'int', ['int', 'int', 'int']);
+    const seek = libc.func('lseek', 'int64_t', ['int', 'int64_t', 'int']);
+    const check = (result: number, stage: string) => {
+      if (result !== 0) throw new HandlerProcessRestrictionError(`${stage} returned ${result}`);
+    };
+    const expectedArch = process.arch === 'x64' ? 0xc000003e : 0xc00000b7;
+    if (nativeArch() !== expectedArch) throw new HandlerProcessRestrictionError('libseccomp native architecture mismatch');
+    const ctx = init(ALLOW);
+    if (ctx === null) throw new HandlerProcessRestrictionError('seccomp_init returned null');
+    try {
+      check(attr(ctx, BAD_ARCH, KILL_PROCESS), 'bootstrap bad-architecture action');
+      for (const name of ['io_uring_setup', 'io_uring_enter', 'io_uring_register']) {
+        const syscall = resolve(name);
+        if (syscall < 0) throw new HandlerProcessRestrictionError(`unresolved required syscall: ${name}`);
+        check(add(ctx, errnoAction(ENOSYS), syscall, 0, null), `bootstrap rule ${name}`);
+      }
+      // MFD_CLOEXEC | MFD_ALLOW_SEALING. spawn duplicates this as the bwrap fd.
+      const opened: number = memfd('handler-bootstrap-filter', 3);
+      if (opened < 0) throw new HandlerProcessRestrictionError('cannot allocate handler bootstrap filter descriptor');
+      fd = opened;
+      check(exportBpf(ctx, fd), 'export bootstrap filter');
+      // F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE.
+      check(seal(fd, 1033, 15), 'seal bootstrap filter');
+      check(seek(fd, 0, 0), 'rewind bootstrap filter');
+      const result = fd;
+      fd = undefined;
+      return result;
+    } finally {
+      release(ctx);
+    }
+  } catch (cause) {
+    if (cause instanceof HandlerProcessRestrictionError) throw cause;
+    throw new HandlerProcessRestrictionError('cannot prepare handler bootstrap restrictions', { cause });
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /** Irreversible. Only the trusted, dedicated guest may enter this phase. */
@@ -48,6 +111,25 @@ export function establishHandlerProcessRestrictions(): HandlerProcessRestriction
     throw new HandlerProcessRestrictionError(`unsupported handler process profile: ${process.platform}/${process.arch}`);
   }
   try {
+    // The supervisor must install the bootstrap filter BEFORE Node starts.
+    // Denying enter on an existing libuv ring aborts the process. The env
+    // setting also disables SQPOLL, but cannot disable epoll batching alone.
+    if (process.env.UV_USE_IO_URING !== '0') {
+      throw new HandlerProcessRestrictionError('guest must start with UV_USE_IO_URING=0');
+    }
+    for (const fd of readdirSync('/proc/self/fd')) {
+      let target: string;
+      try {
+        target = readlinkSync(`/proc/self/fd/${fd}`);
+      } catch (cause) {
+        // Another runtime thread may have closed a descriptor since the list.
+        if ((cause as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw cause;
+      }
+      if (target === 'anon_inode:[io_uring]') {
+        throw new HandlerProcessRestrictionError('guest has a pre-existing io_uring descriptor');
+      }
+    }
     const lib = koffi.load('libseccomp.so.2');
     const libc = koffi.load('libc.so.6');
     const comparison = koffi.struct({ arg: 'unsigned int', op: 'int', datum_a: 'uint64_t', datum_b: 'uint64_t' });
@@ -111,7 +193,7 @@ export function establishHandlerProcessRestrictions(): HandlerProcessRestriction
         || prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) !== 0) {
         throw new HandlerProcessRestrictionError('kernel process restriction readback mismatch');
       }
-      return { profile: 'linux-handler-process-v1', arch: process.arch, pid: process.pid, noNewPrivileges: true, synchronizedThreads: true };
+      return { profile: 'linux-handler-process-v1', arch: process.arch, pid: process.pid, noNewPrivileges: true, synchronizedThreads: true, ioUringDisabled: true };
     } finally {
       release(ctx);
     }

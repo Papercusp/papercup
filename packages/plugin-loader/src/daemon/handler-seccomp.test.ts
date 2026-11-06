@@ -1,31 +1,53 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const native = vi.hoisted(() => ({
-  init: vi.fn(), release: vi.fn(), attr: vi.fn(), arch: vi.fn(), resolve: vi.fn(), add: vi.fn(), load: vi.fn(), prctl: vi.fn(), library: vi.fn(),
+  init: vi.fn(), release: vi.fn(), attr: vi.fn(), arch: vi.fn(), resolve: vi.fn(), add: vi.fn(), load: vi.fn(), prctl: vi.fn(), library: vi.fn(), fds: vi.fn(), fdTarget: vi.fn(), close: vi.fn(), exportBpf: vi.fn(), memfd: vi.fn(), seal: vi.fn(), seek: vi.fn(),
 }));
+vi.mock('node:fs', () => ({ closeSync: native.close, readdirSync: native.fds, readlinkSync: native.fdTarget }));
 vi.mock('koffi', () => ({ default: {
   struct: () => ({}), pointer: () => ({}), load: native.library,
 } }));
-import { HandlerProcessRestrictionError, loadAfterHandlerProcessRestrictions } from './handler-seccomp';
+import { createHandlerBootstrapFilter, HandlerProcessRestrictionError, loadAfterHandlerProcessRestrictions } from './handler-seccomp';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('UV_USE_IO_URING', '0');
+  native.fds.mockReturnValue(['0', '1', '2']);
+  native.fdTarget.mockReturnValue('pipe:[1234]');
   native.init.mockReturnValue({ context: true });
   native.attr.mockReturnValue(0);
   native.arch.mockReturnValue(process.arch === 'x64' ? 0xc000003e : 0xc00000b7);
   native.resolve.mockReturnValue(42);
   native.add.mockReturnValue(0);
   native.load.mockReturnValue(0);
+  native.exportBpf.mockReturnValue(0);
+  native.memfd.mockReturnValue(77);
+  native.seal.mockReturnValue(0);
+  native.seek.mockReturnValue(0);
   native.prctl.mockImplementation((op: number) => op === 39 ? 1 : op === 21 ? 2 : 0);
   native.library.mockImplementation(() => ({ func: (name: string) => ({
     seccomp_init: native.init, seccomp_release: native.release, seccomp_attr_set: native.attr,
     seccomp_arch_native: native.arch, seccomp_syscall_resolve_name: native.resolve,
     seccomp_rule_add_array: native.add, seccomp_load: native.load, prctl: native.prctl,
+    seccomp_export_bpf: native.exportBpf, memfd_create: native.memfd, fcntl: native.seal, lseek: native.seek,
   })[name] }));
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch))('trusted handler restriction phase refusal', () => {
+  it('closes an incomplete bootstrap descriptor and refuses launch if filter sealing fails', () => {
+    native.seal.mockReturnValue(-1);
+    expect(() => createHandlerBootstrapFilter()).toThrow(HandlerProcessRestrictionError);
+    expect(native.close).toHaveBeenCalledWith(77);
+    expect(native.release).toHaveBeenCalledOnce();
+    expect(native.load).not.toHaveBeenCalled();
+  });
+
   it.each([
+    ['unsafe runtime startup', () => vi.stubEnv('UV_USE_IO_URING', '')],
+    ['pre-existing io_uring', () => native.fdTarget.mockReturnValue('anon_inode:[io_uring]')],
+    ['unreadable descriptor census', () => native.fds.mockImplementation(() => { throw new Error('cannot inspect'); })],
+    ['unreadable descriptor', () => native.fdTarget.mockImplementation(() => { throw Object.assign(new Error('cannot inspect'), { code: 'EACCES' }); })],
     ['missing library', () => native.library.mockImplementation(() => { throw new Error('not installed'); })],
     ['wrong ABI', () => native.arch.mockReturnValue(0)],
     ['allocation', () => native.init.mockReturnValue(null)],
@@ -57,5 +79,10 @@ describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process
     await expect(loadAfterHandlerProcessRestrictions(async () => undefined)).rejects.toThrow('rule execve');
     expect(native.release).toHaveBeenCalledOnce();
     expect(native.load).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a concurrently closed descriptor while inspecting the runtime', async () => {
+    native.fdTarget.mockImplementation(() => { throw Object.assign(new Error('closed'), { code: 'ENOENT' }); });
+    await expect(loadAfterHandlerProcessRestrictions(async () => 'loaded')).resolves.toBe('loaded');
   });
 });
