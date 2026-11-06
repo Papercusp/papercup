@@ -27,7 +27,7 @@ const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../li
 const EDGE_WS = 'default';
 const ITEM_WS = 'tenant-lifecycle';
 const H = 'lifecycle-harness';
-const REOPEN_MIGRATION = '1621-dependency-reopen-untouched-dependants.sql.DRAFT';
+const REOPEN_MIGRATION = '1621-dependency-reopen-untouched-dependants.sql';
 
 type Family = 'issue' | 'feature';
 type SeedOptions = {
