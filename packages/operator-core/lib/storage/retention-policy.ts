@@ -399,7 +399,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     stores: ['docker:'],
     keep: { kind: 'native', manager: 'docker/podman', rule: 'build cache 24h, unreferenced images 168h, dangling anonymous volumes 24h' },
     maxBytes: AGENT_ROOT_MAX_BYTES,
-    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '5025a9e6f3f6cb1f320e9d05bb4d3b90f8e2d16a92f3444f031ded2c64342767' }],
+    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '4cd713700a7d49ac5ef9d952b2247f7fe9054c42c63527f4b2aba29753299683' }],
     note: 'The native owner discovers DockerRootDir and both Podman GraphRoots, deduplicates physical stores, and reports allocated-byte cap residue; these default roots are not an exhaustive inventory. Native references, named volumes and pins remain protected. Leaked Postgres test containers are fixed at the source by P-005 (R-4).',
   },
   {
@@ -521,7 +521,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     keep: { kind: 'lease', record: 'a claimant lock, a live reference or a release retention lease', graceHours: 1 },
     maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [
-      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '7ff1ac08f1dbc5c80e1149caf27d9ebbea09e8bc4052733afcdd69c2c9fa1fdd' },
+      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: 'd7d42a619e96f85bd8c799687ef5b5795abbaf635f1ac6f1ca791f31bad69cbb' },
       { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh', sourceSha256: '45737910e89b2154dfbc6d0cc83ba190a1f53433a79cfde167bef7b69d3a9416' },
     ],
     note: 'The native owner eagerly removes every eligible dead private slot, oldest first; a 20 GiB cap receipt counts retained live/leased/recent roots and interrupted deletions. Protected overage is reported, never permission to bypass the owner guards.',
@@ -548,7 +548,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   {
     id: 'agent-evidence',
     acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
-    title: 'Evidence, test-evidence and artifact bundles under ~/.papercusp',
+    title: 'Evidence, test-evidence, test-run and artifact bundles under ~/.papercusp',
     origin: 'agent',
     roots: ['~/.papercusp/evidence', '~/.papercusp/test-evidence', '~/.papercusp/artifacts',
       '~/.papercusp/test-artifacts/testing-run'],

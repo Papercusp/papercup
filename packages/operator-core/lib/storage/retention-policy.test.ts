@@ -58,7 +58,7 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     // when it was added to an already-partitioned class. Use a fixed host root.
     const exactPopulation = scopes.map(({ classId, scopeKind, scope }) => ({ classId, scopeKind, scope }));
     expect(createHash('sha256').update(JSON.stringify(exactPopulation)).digest('hex'))
-      .toBe('4cac8e9927678bb673b8721ccdd98891b34a8993121632c6e0b7f411eb968579');
+      .toBe('b9c5df6678de4dd8a2c525cc81bae9d924be0d621eb061a0917abe9117d0a586');
     const failures = validateRetentionAcceptance(shipped);
     expect(failures.map(failure => failure.split(':')[0])).toEqual(expected.unresolved);
     expect(failures.every(failure => failure.includes(': unresolved R5 scope:'))).toBe(true);
