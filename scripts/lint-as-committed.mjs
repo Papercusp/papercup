@@ -120,6 +120,7 @@ import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex, withFsMutexRead } from './lib/fs-mutex.mjs';
 import { withRetentionPinProtection } from './lib/retention-pins.mjs';
 import { installLockNameForRoot } from './lib/install-lock-name.mjs';
+import { verifyRetainedDependencies } from './lib/committed-dependency-verification.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
   if (typeof environment.PAPERCUSP_TEST_RUNS_DB_URL !== 'string' ||
@@ -350,11 +351,15 @@ export function committedWorkRootDependencyDonor(workRoot) {
  * the mutable install is on another device. Small/unpublished installs retain
  * the bounded donor-reader fallback. Retained roots own their resulting bytes;
  * no generation pin or donor reader must outlive materialization.
- * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void }} [options]
- * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
+ * An opt-in resumeVerification verifies an existing retained copy without a
+ * generation selection or copy. Incomplete returns contain only progress;
+ * callers must resume before preparation, provenance or prepared receipts.
+ * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
+ * resumeVerification?: { checkpointDir: string, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
+ * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export async function materializeIndependentDependencies(repoRoot, workRoot, options = {}) {
-  const { prepareWorkspace } = options;
+  const { prepareWorkspace, resumeVerification } = options;
   // Emit before entering synchronous setup too: a killed copier cannot return
   // to explain which prerequisite consumed the enclosing command's budget.
   const phase = (name, operation) => {
@@ -365,8 +370,15 @@ export async function materializeIndependentDependencies(repoRoot, workRoot, opt
     emit('started');
     try {
       const result = operation();
-      emit(result === null ? 'miss' : 'complete');
-      return result;
+      const settled = value => {
+        emit(value === null ? 'miss' : value?.status === 'incomplete' ? 'incomplete' : 'complete');
+        return value;
+      };
+      if (result && typeof result.then === 'function') return result.then(settled, error => {
+        emit('failed');
+        throw error;
+      });
+      return settled(result);
     } catch (error) {
       emit('failed');
       throw error;
@@ -374,6 +386,53 @@ export async function materializeIndependentDependencies(repoRoot, workRoot, opt
   };
   const donor = committedWorkRootDependencyDonor(repoRoot);
   const materializer = fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
+  const repairSnapshot = (sourceRoot, paths, alreadyMapped = false) => {
+    const workspacePaths = new Set();
+    const links = [];
+    const visit = directory => {
+      // Published generations are read-only; copied directories/files have
+      // independent inodes and may safely become writable in this clone.
+      const directoryMode = statSync(directory).mode;
+      if ((directoryMode & 0o700) !== 0o700) chmodSync(directory, directoryMode | 0o700);
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isSymbolicLink()) {
+          const original = join(sourceRoot, relative(workRoot, path));
+          const linkedTarget = resolve(dirname(original), readlinkSync(path));
+          const target = alreadyMapped && (linkedTarget === workRoot || linkedTarget.startsWith(workRoot + sep))
+            ? join(sourceRoot, relative(workRoot, linkedTarget)) : linkedTarget;
+          const mapped = cloneWorkspaceTarget(target, sourceRoot, workRoot);
+          const rel = relative(sourceRoot, target);
+          if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+            throw new Error(`dependency symlink escapes its snapshot: ${relative(workRoot, path)}`);
+          }
+          if (mapped) {
+            if (!existsSync(join(mapped, 'package.json'))) {
+              throw new Error(`dependency workspace is absent at the committed ref: ${rel}`);
+            }
+            workspacePaths.add(mapped);
+          }
+          rmSync(path);
+          symlinkSync(relative(dirname(path), join(workRoot, rel)), path);
+          links.push(path);
+        } else if (entry.isDirectory()) visit(path);
+        else if (entry.isFile()) {
+          const mode = statSync(path).mode;
+          if ((mode & 0o600) !== 0o600) chmodSync(path, mode | 0o600);
+        }
+      }
+    };
+    phase('repair-links', () => {
+      for (const path of paths) {
+        visit(join(workRoot, path));
+        const installCache = join(workRoot, path, '.package-lock.json');
+        if (existsSync(installCache)) {
+          renameSync(installCache, join(workRoot, path, '.papercusp-installed-package-lock.json'));
+        }
+      }
+    });
+    return { paths, workspacePaths, links };
+  };
   const materialize = (useGeneration) => {
     const result = spawnSync('bash', ['-c', `
 set -euo pipefail
@@ -422,55 +481,28 @@ done <<< "$sources"
     }
     const [sourceRoot, ...paths] = (result.stdout ?? '').trim().split('\n').filter(Boolean);
     if (!sourceRoot || !isAbsolute(sourceRoot)) throw new Error('invalid dependency snapshot source');
-    const workspacePaths = new Set();
-    const links = [];
-    const visit = directory => {
-      // Published generations are read-only; copied directories/files have
-      // independent inodes and may safely become writable in this clone.
-      const directoryMode = statSync(directory).mode;
-      if ((directoryMode & 0o700) !== 0o700) chmodSync(directory, directoryMode | 0o700);
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isSymbolicLink()) {
-          const original = join(sourceRoot, relative(workRoot, path));
-          const target = resolve(dirname(original), readlinkSync(path));
-          const mapped = cloneWorkspaceTarget(target, sourceRoot, workRoot);
-          const rel = relative(sourceRoot, target);
-          if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-            throw new Error(`dependency symlink escapes its snapshot: ${relative(workRoot, path)}`);
-          }
-          if (mapped) {
-            if (!existsSync(join(mapped, 'package.json'))) {
-              throw new Error(`dependency workspace is absent at the committed ref: ${rel}`);
-            }
-            workspacePaths.add(mapped);
-          }
-          rmSync(path);
-          symlinkSync(relative(dirname(path), join(workRoot, rel)), path);
-          links.push(path);
-        } else if (entry.isDirectory()) visit(path);
-        else if (entry.isFile()) {
-          const mode = statSync(path).mode;
-          if ((mode & 0o600) !== 0o600) chmodSync(path, mode | 0o600);
-        }
-      }
-    };
-    phase('repair-links', () => {
-      for (const path of paths) {
-        visit(join(workRoot, path));
-        const installCache = join(workRoot, path, '.package-lock.json');
-        if (existsSync(installCache)) {
-          renameSync(installCache, join(workRoot, path, '.papercusp-installed-package-lock.json'));
-        }
-      }
-    });
-    return { paths, workspacePaths, links };
+    return repairSnapshot(sourceRoot, paths);
   };
-  const snapshot = phase('generation-selection-and-copy', () => materialize(true)) ?? await withFsMutexRead(installLockNameForRoot(donor), async () => {
-    const copied = phase('donor-copy', () => materialize(false));
-    if (!copied) throw new Error('missing independent dependency snapshot');
-    return copied;
-  });
+  let snapshot, verification;
+  if (resumeVerification) {
+    const owner = JSON.parse(readFileSync(join(workRoot, OWNER_MARKER), 'utf8'));
+    const verifySource = () => {
+      verifyCommittedWorkRoot(workRoot, owner.sha);
+      if (git(['status', '--porcelain', '--untracked-files=no'], workRoot))
+        throw new Error('retained dependency verification: tracked source changed');
+    };
+    verifySource();
+    verification = await phase('resume-verification', () => verifyRetainedDependencies(
+      donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource }));
+    if (verification.status === 'incomplete') return verification;
+    snapshot = repairSnapshot(donor, verification.paths, true);
+  } else {
+    snapshot = phase('generation-selection-and-copy', () => materialize(true)) ?? await withFsMutexRead(installLockNameForRoot(donor), async () => {
+      const copied = phase('donor-copy', () => materialize(false));
+      if (!copied) throw new Error('missing independent dependency snapshot');
+      return copied;
+    });
+  }
   // A workspace .bin can name ignored build output, absent in the committed
   // clone until its pinned build runs. Release the donor reader before building;
   // neither that build nor a failed graph may publish independent provenance.
@@ -500,7 +532,8 @@ done <<< "$sources"
       renameSync(temporary, markerPath);
     } finally { rmSync(temporary, { force: true }); }
   });
-  return { paths: snapshot.paths, workspacePaths: snapshot.workspacePaths };
+  return { paths: snapshot.paths, workspacePaths: snapshot.workspacePaths,
+    ...(verification ? { status: 'complete', verification: verification.progress } : {}) };
 }
 
 /** Keep the existing owner marker alive for the lifetime of a dependent artifact. */

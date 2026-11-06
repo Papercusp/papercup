@@ -59,17 +59,30 @@ export function committedWorkRootDependencyDonor(workRoot: any): string;
  * the mutable install is on another device. Small/unpublished installs retain
  * the bounded donor-reader fallback. Retained roots own their resulting bytes;
  * no generation pin or donor reader must outlive materialization.
- * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void }} [options]
- * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
+ * An opt-in resumeVerification verifies an existing retained copy without a
+ * generation selection or copy. Incomplete returns contain only progress;
+ * callers must resume before preparation, provenance or prepared receipts.
+ * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
+ * resumeVerification?: { checkpointDir: string, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
+ * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export function materializeIndependentDependencies(repoRoot: any, workRoot: any, options?: {
     prepareWorkspace?: (snapshot: {
         paths: string[];
         workspacePaths: Set<string>;
     }) => void;
+    resumeVerification?: {
+        checkpointDir: string;
+        maxBatches?: number;
+        maxDurationMs?: number;
+        batchSize?: number;
+    };
 }): Promise<{
     paths: string[];
     workspacePaths: Set<string>;
+} | {
+    status: "incomplete";
+    progress: object;
 }>;
 export function retainCommittedWorkRoot(workRoot: any, expectedSha: any, artifactPath: any): Promise<{
     root: string;

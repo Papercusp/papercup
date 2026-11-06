@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 native Windows PUI read bridge",
+  "framework": "powershell",
+  "command": [
+    "powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "test/fixtures/native-workbench-windows-bridge.ps1",
+    "-BridgeSource",
+    "native/windows/PuiReadBridge.cs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T18:18:00.639Z",
+  "finishedAt": "2026-11-06T18:18:14.887Z",
+  "summary": "Maintained PowerShell fixture compiled the adapter and a real child executable on native Windows. All 12 cases passed. The desktop test:native-workbench script registers the Windows node:test wrapper; this run invoked its exact PowerShell fixture directly because native Node is absent from the VM PATH. This proves the Windows process/JSON boundary, not the WPF host, installed application, canonical operator integration or shipment.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "taskId": "0mw5as1skilv99xcpe3",
+  "log": ".papercusp/scratch/bash-bc08974d-6eb.log",
+  "nativeRunDirectory": "C:/Users/user/AppData/Local/Temp/workbench-p005-bridge-20261106-b3cf9",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "334ef3d73c12d31149a7f616f95ca2bb7f1a32fe7e2332499fea3a8e99ccc2b2",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "f048e64e0d437a332043311c49a14d4c4f6da9ad216b54afff52e59692ae8423",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "3214d319b8c33cdb3430c57edb0989a867ae685249e598c08f1256debe9cb402"
+  },
+  "custody": "After the run, native Windows Get-FileHash matched the canonical bridge and fixture SHA-256 values exactly. The node:test wrapper was registered but not executed on this VM.",
+  "passed": [
+    "literal executable path and Unicode identity round-trip",
+    "canonical empty result preserved",
+    "reject malformed",
+    "reject missing",
+    "reject badrows",
+    "reject denied",
+    "reject exit",
+    "reject oversize",
+    "large stderr drains concurrently",
+    "timeout reaps only owned PUI helper",
+    "cancellation reaps owned helper",
+    "oversized request and mutation rejected before spawn"
+  ],
+  "scopeLimits": [
+    "Fixture process boundary only; actual native PUI/operator integration remains required",
+    "WPF resident panels, shortcuts, login, disable/upgrade and packaging remain required",
+    "Independent exact installed-artifact Ubuntu/macOS/Windows acceptance and shipment remain required"
+  ]
+}
