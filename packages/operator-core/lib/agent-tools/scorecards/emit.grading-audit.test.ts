@@ -685,7 +685,7 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
   });
 
   it('targets the newly filed card even without an explicit grading launch profile', async () => {
-    const launchContext = { workspaceId: 'ws-test', harnessSlug: 'papercusp' };
+    const launchContext = { workspaceId: 'ws-test', harnessSlug: 'papercusp', uiClientId: 'su-grader', isSuperuser: true };
     const res = await emitScorecard(
       { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
       { createdBy: 'su-grader', ctxHarness: 'papercusp', launchContext: launchContext as never },
@@ -718,7 +718,7 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     const res = await emitScorecard(
       { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
       { createdBy: 'su-grader', ctxHarness: 'papercusp',
-        launchContext: { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never },
+        launchContext: { workspaceId: 'ws-test', harnessSlug: 'papercusp', uiClientId: 'su-grader', isSuperuser: true } as never },
     );
     expect(res.ok).toBe(true);
     await vi.waitFor(() => expect(dispatchPendingGradingAudits).toHaveBeenCalledOnce());
@@ -737,13 +737,24 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
       const res = await emitScorecard(
         { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
         { createdBy: 'su-grader', ctxHarness: 'papercusp',
-          launchContext: { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never },
+          launchContext: { workspaceId: 'ws-test', harnessSlug: 'papercusp', uiClientId: 'su-grader', isSuperuser: true } as never },
       );
       expect(res).toMatchObject({ ok: true, issueId: 'EI-AUDIT-1', gradingAuditPending: true });
       await vi.waitFor(() => expect(warning).toHaveBeenCalledWith(
         'Scorecard audit dispatch deferred: staging-server held_exclusive'));
       expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
     } finally { warning.mockRestore(); }
+  });
+
+  it('preserves the persisted card if detached lease preparation rejects missing caller identity', async () => {
+    const res = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp',
+        launchContext: { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never },
+    );
+    expect(res).toMatchObject({ ok: true, issueId: 'EI-AUDIT-1', gradingAuditPending: true });
+    expect(guardResource).not.toHaveBeenCalled();
+    expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
   });
 
   it('names targeted repair instead of promising automatic dispatch without a launch context', async () => {

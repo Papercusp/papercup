@@ -1303,6 +1303,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     { reviewPreviewPost: 'thread-post:42' },
   ])('rejects a disallowed reviewer before posting or routing: %j', async (reviewRequest) => {
     rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    workItemMocks.commentWorkItem.mockResolvedValue({ id: 77 });
     reviewMocks.assertReviewerModelAllowed.mockRejectedValueOnce(new Error(
       'reviewer_model_not_allowed: codex/gpt-5.5 is absent from the workspace expert allowlist',
     ));
@@ -1337,6 +1338,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledWith(
       expect.objectContaining({ reviewerModel, previewPostRef: 'thread-post:77' }),
     );
+    expect(reviewMocks.assertReviewerModelAllowed).toHaveBeenCalledTimes(1);
     expect(reviewMocks.assertReviewerModelAllowed.mock.invocationCallOrder[0]).toBeLessThan(
       workItemMocks.commentWorkItem.mock.invocationCallOrder[0],
     );

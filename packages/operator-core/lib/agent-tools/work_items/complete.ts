@@ -6035,7 +6035,13 @@ async function completeOneTracked(
   // extraction as the state write (completionEvidenceFromRecord) as the one source
   // of truth, so "did this completion record verification" can never disagree
   // between the two call sites.
-  const hasTests = completionEvidenceForGate !== undefined;
+  // An outcome classifies the work; it does not say how it was verified.
+  // Requiring that declaration must not silence the missing-evidence warning.
+  const hasTests = Boolean(
+    completionEvidenceForGate?.testsRun?.trim() ||
+    completionEvidenceForGate?.testResult?.trim() ||
+    completionEvidenceForGate?.verifiedHow,
+  );
   const hasDeferred = Boolean(normalizedDeferred?.length);
   // Bare strings never reach this handler: completionSpec rejects them before
   // completeOne runs, with the exact structured-object example in its issue message.

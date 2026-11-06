@@ -338,6 +338,16 @@ async function main() {
     console.log('PRIVATE_COMPLETION_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'discovery-guidance') {
+    const receipt = await (await import('./discovery-guidance-http-scenario')).measureDiscoveryGuidanceScenario({
+      workspace, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    console.log('DISCOVERY_GUIDANCE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'shared-chat-recovery') {
     const receipt = await (await import('./shared-chat-recovery-http-scenario')).measureSharedChatRecovery({ workspace, base });
     await stopHost();

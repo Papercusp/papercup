@@ -4901,6 +4901,43 @@ describe('launch result after the dispatch deadline', () => {
 });
 
 describe('failure reporting', () => {
+  it('keeps the headless attempt empty until post-install preparation permits process creation', async () => {
+    const key = 'post-install-native-boundary';
+    spawnHeadlessMock.mockImplementationOnce(async (opts: unknown) => {
+      const summaries = () => recordAgentLaunchResultMock.mock.calls
+        .map(([call]) => (call as { summary: Record<string, unknown> }).summary);
+      expect(summaries().at(-1)).toMatchObject({
+        spawnAttempted: false, nativeSpawnAttempted: [], memberResults: {}, processHandles: {},
+      });
+      const beforeSpawn = (opts as { beforeSpawn: () => Promise<boolean> }).beforeSpawn;
+      expect(await beforeSpawn()).toBe(true);
+      expect(summaries().at(-1)).toMatchObject({
+        spawnAttempted: true, nativeSpawnAttempted: [0],
+        memberResults: { '0': { status: 'starting', outcome: 'unknown' } },
+      });
+      return headlessSpawnResult();
+    });
+
+    const result = await launchAgent.handler({ brief: 'grade', headless: true, idempotencyKey: key }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledOnce();
+  });
+
+  it('does not record a native attempt when headless preparation fails before its callback', async () => {
+    spawnHeadlessMock.mockResolvedValueOnce({ status: 'error', code: 503, error: 'install preparation failed' });
+    const result = await launchAgent.handler({
+      brief: 'grade', headless: true, idempotencyKey: 'pre-install-failure',
+    }, ctx);
+    expect(isError(result)).toBe(true);
+    const summaries = recordAgentLaunchResultMock.mock.calls
+      .map(([call]) => (call as { summary: Record<string, unknown> }).summary);
+    expect(summaries.every(summary => Array.isArray(summary.nativeSpawnAttempted) &&
+      summary.nativeSpawnAttempted.length === 0)).toBe(true);
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: 'pre-install-failure',
+    }));
+  });
+
   it('releases a claimed key after governed admission fails before any process opens, allowing the same-key retry', async () => {
     claimAgentLaunchMock
       .mockResolvedValueOnce({

@@ -58,6 +58,10 @@ export async function measureDiscoveryGuidanceScenario(o: Options) {
   await writeFile(join(home.path, sourcePath), 'export const existingGuidance = () => "review the reconciled draft";\n',
     { flag: 'wx' });
   const callerSid = 'private-discovery-warm-' + randomUUID();
+  // This caller carries the obsolete ordering into its next ordinary tool
+  // interaction. Only delivered response fields replace that retained context.
+  const initialGuidance = { stage: 'implementation', nextAction: 'Review the inventory task, then discover during implementation.' };
+  const warmContext = { callerSid, guidance: initialGuidance };
   const transcript: Array<{ name: string; callerSid: string; status: number; result: any }> = [];
   async function invoke(name: string, args: Record<string, unknown>) {
     const response = await fetch(o.base + '/api/agent-mcp/run-tool', {
@@ -101,6 +105,8 @@ export async function measureDiscoveryGuidanceScenario(o: Options) {
   assert.equal(preview.readiness.ready, false);
   assert.equal(preview.auditSeq, undefined, 'a preview must not finalize discovery');
   assert.match(preview.workflow.nextAction, /Reconcile Discovery/);
+  warmContext.guidance = preview.workflow;
+  assert.notDeepEqual(warmContext.guidance, initialGuidance);
   const refused = await invoke('plans:audit', { slug, phase: 'activation', dryRun: true });
   assert.equal(refused.error, 'discovery_not_ready', JSON.stringify(refused));
   assert.match(refused.nextAction, /Reconcile Discovery/);
@@ -129,12 +135,14 @@ export async function measureDiscoveryGuidanceScenario(o: Options) {
   const next = await invoke('plans:audit', { slug, phase: 'discovery', dryRun: true });
   assert.equal(next.workflow.stage, 'implementation-review', JSON.stringify(next));
   assert.deepEqual(next.workflow.evidenceRefs, [evidenceRef]);
+  warmContext.guidance = next.workflow;
   const identityAfter = await invoke('coord:whoami', {});
   assert.equal(identityAfter.ownerId, identityBefore.ownerId);
   const healthAfter = await health();
   const receipt = { workspace: o.workspace, slug, callerSid, actor: identityBefore.ownerId,
     actorPreserved: identityBefore.ownerId === identityAfter.ownerId,
     stages: [preview.workflow.stage, finalized.workflow.stage, next.workflow.stage],
+    initialGuidance, adoptedGuidance: warmContext.guidance,
     evidenceRefs: next.workflow.evidenceRefs, refusal: refused.error,
     recoveryTool: 'plans:set-content', healthBefore, healthAfter, transcript,
     scope: 'Real private HTTP tool responses to one existing session; no model-generation claim.' };

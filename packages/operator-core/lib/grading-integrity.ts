@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { proveOrphanedGradingAuditLaunch, type OrphanedGradingAuditLaunchProof } from './grading-audit-orphan-launch';
 import { launchTaskForKickoffRecovery, nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
@@ -642,6 +643,7 @@ export interface PendingGradingAuditDispatchReceipt {
     /** Backend the bounded retry actually launched on; omitted for cleanup without a retry. */
     routedTo?: 'claude' | 'codex';
   };
+  orphanedLaunchRecovery?: OrphanedGradingAuditLaunchProof;
 }
 
 type GradingAuditRecoveryCode =
@@ -746,6 +748,7 @@ export interface DispatchPendingGradingAuditsDeps {
   resolveOwnerLiveness?: (ownerId: string) => Promise<Pick<LivenessVerdict, 'sessionState'> | null>;
   /** Complete kernel and independent scope-release evidence for lost receipt task ids. */
   scanAuditProcesses?: typeof scanProcessesAsync;
+  proveOrphanedLaunch?: typeof proveOrphanedGradingAuditLaunch;
   inspectAuditScopes?: typeof inspectTaskUnitTerminals;
   killTask?: typeof killTask;
   /** Persist independently confirmed collected scopes before replacing their auditor. */
@@ -2805,6 +2808,7 @@ export async function dispatchPendingGradingAudits(
     const harnessResolved = Boolean(harness && harness !== '*');
     const retiredTaskIds: string[] = [];
     const terminalCodes: GradingAuditRecoveryCode[] = [];
+    let orphanedLaunchRecovery: OrphanedGradingAuditLaunchProof | undefined;
     let currentIdempotencyKey = idempotencyKey;
     let terminalFallbacks = 0;
     let preflightReroutes = 0;
@@ -2864,6 +2868,7 @@ export async function dispatchPendingGradingAudits(
       return false;
     };
     const recoveryFields = () => ({
+      ...(orphanedLaunchRecovery ? { orphanedLaunchRecovery } : {}),
       ...(routingFallback ? { routingFallback } : {}),
       ...(retiredTaskIds.length
         ? {
@@ -3889,6 +3894,29 @@ export async function dispatchPendingGradingAudits(
               launchBackend = await terminalRetryBackend(launchBackend, launchBackend);
               currentIdempotencyKey = recoveryKeyFor(recoveredIds.join(','), 'task_receipt_not_live');
               continue;
+            }
+            // The legacy native-attempt marker preceded install preparation.
+            // A dead host can therefore leave no enrolled task at all. Preserve
+            // that unknown base election and use the same bounded recovery only
+            // after independent host/log/native/kernel proof and fresh task reads.
+            if (typeof workspaceId === 'string' && workspaceId.trim() &&
+                launchData.expectedCount === 1 && Array.isArray(launchData.ownerIds) &&
+                launchData.ownerIds.length === 1 && typeof launchData.ownerIds[0] === 'string') {
+              const owner = launchData.ownerIds[0];
+              const ownerState = await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(owner);
+              const noTasks = async () => (await readTasks({ workspaceId, coordOwnerId: owner, includeEnded: true, limit: 1 })).length === 0;
+              if ((!ownerState || ownerState.sessionState === 'ended') && await noTasks()) {
+                const proof = await (deps.proveOrphanedLaunch ?? proveOrphanedGradingAuditLaunch)({
+                  workspaceId, label: idempotencyKey, launch: launchData as Record<string, unknown>,
+                });
+                if (proof && proof.ownerId === owner && await noTasks()) {
+                  if (!(await confirmOwnedPendingReservation())) break;
+                  terminalFallbacks += 1;
+                  orphanedLaunchRecovery = proof;
+                  currentIdempotencyKey = recoveryKeyFor(proof.proofKey, 'task_receipt_not_live');
+                  continue;
+                }
+              }
             }
           }
           const targetOwnerIds = Array.isArray(launchData.ownerIds)

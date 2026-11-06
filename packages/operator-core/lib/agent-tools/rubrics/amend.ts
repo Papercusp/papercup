@@ -39,7 +39,7 @@ import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
-import { inspectFreshAmendmentReviewer, openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
+import { assertReviewerModelAllowed, inspectFreshAmendmentReviewer, openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
 import { acceptanceBarMappingDeltaEntrySchema } from '../../acceptance-bar-amendment';
 import { AcceptanceBarCandidateError } from '../../acceptance-bar-projection';
 import { hostIdentity } from '../../serving-host-identity';
@@ -797,6 +797,18 @@ export default defineTool({
         }
         if (!identity.workspaceId) {
           throw new Error('acceptance_bar_amendment_review_unscoped: a routed review needs a concrete workspace identity');
+        }
+        // Refuse an inadmissible reviewer before creating an immutable approval
+        // post. Routing rechecks the policy in case it changes after this read.
+        if (args.reviewerModel) {
+          reportPhase('preview-review-model-policy');
+          try {
+            await assertReviewerModelAllowed(identity.workspaceId, args.reviewerModel);
+          } catch (error) {
+            const refusal = reviewerModelNotAllowedRefusal(error);
+            if (refusal) return { ...refusal, dryRun: true };
+            throw error;
+          }
         }
         // An inspected same-key recovery must reuse its original immutable
         // approval post; posting a new one would split the reviewer identity.

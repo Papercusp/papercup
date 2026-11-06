@@ -30,7 +30,7 @@ export const SCORECARD_REPAIR_RESOURCE = 'staging-server';
 export const SCORECARD_REPAIR_LOCK_TTL_SEC = SCORECARD_REPAIR_TIMEOUT_SEC + 60;
 
 /** Keep both callable repair and detached post-emit dispatch on their live host. */
-export function withScorecardAuditDispatchLease<T>(ctx: UnifiedToolContext, reason: string, run: () => Promise<T>) {
+export async function withScorecardAuditDispatchLease<T>(ctx: UnifiedToolContext, reason: string, run: () => Promise<T>) {
   const coordIdentity = resolveAgentIdentity(ctx);
   const { ownerId, ownerLabel } = readIdentity(ctx);
   return guardResource(

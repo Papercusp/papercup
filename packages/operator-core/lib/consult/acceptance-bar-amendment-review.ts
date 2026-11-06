@@ -96,7 +96,7 @@ export interface AmendmentReviewRouteInput {
 
 /** A constrained review may only use a model admitted by the workspace's
  * existing expert allowlist. Never silently use a different ranked model. */
-async function assertReviewerModelAllowed(workspaceId: string, choice: ConsultReviewerModel): Promise<void> {
+export async function assertReviewerModelAllowed(workspaceId: string, choice: ConsultReviewerModel): Promise<void> {
   const { readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings } = await import('./expert-routing-settings');
   const settings = bindConsultExpertRoutingSettings(await readConsultExpertRoutingSettings(workspaceId));
   const ranks = await resolveExpertModelAllowlist(workspaceId, { loadRanks: settings.loadRanks });

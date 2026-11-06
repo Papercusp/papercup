@@ -5463,8 +5463,10 @@ describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
     if (control === 'repeated-ambiguous') d.launch.mockResolvedValueOnce(launchResult(old));
     if (control === 'settled-during-proof') d.confirmReservation.mockResolvedValueOnce(true).mockResolvedValueOnce(true)
       .mockResolvedValueOnce(false);
+    let ownerTaskReads = 0;
     d.listTasks.mockImplementation(async filter => filter?.coordOwnerId
-      ? (control === 'missing-task' ? [] : [{ taskId: 'task-lost-from-receipt',
+      ? ((control === 'missing-task' || (control.startsWith('orphaned-') &&
+          !(control === 'orphaned-task-appears' && ++ownerTaskReads >= 3))) ? [] : [{ taskId: 'task-lost-from-receipt',
           state: control === 'running-task' ? 'running' : 'exited',
           workspaceId: control === 'wrong-workspace' ? 'ws-other' : 'ws-test',
           class: 'agent-session', detail: { coordOwnerId: control === 'wrong-owner' ? 'su-other' : 'su-old-auditor',
@@ -5488,6 +5490,12 @@ describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-no-task-terminal'],
       ctx: { ...ctx, gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' } } as DispatchPendingGradingAuditsInput['ctx'],
     }, { ...d, scanAuditProcesses, inspectAuditScopes,
+      proveOrphanedLaunch: async () => {
+        if (!control.startsWith('orphaned-') || control === 'orphaned-unproven') return null;
+        if (control === 'orphaned-settled') d.confirmReservation.mockResolvedValue(false);
+        return { ownerId: 'su-old-auditor', startedAt: 1000, hostPid: 42,
+          logPath: '/logs/old.log', proofKey: 'exact-old-launch-proof', checkedProcesses: 10 };
+      },
       resolveOwnerLiveness: async () => control === 'unknown-owner' ? null :
         { sessionState: control === 'live-owner' ? 'live' : 'ended' },
       readLogTail: path => path === '/tmp/no-task-terminal.log' ? "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)" : '',
@@ -5507,6 +5515,30 @@ describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
       idempotencyKey: expect.stringContaining(':recovery:') });
     expect(recovered.idempotencyKey).toBe(repeat.d.launch.mock.calls[1][0].idempotencyKey);
     expect(first.d.release).not.toHaveBeenCalled();
+  });
+
+  it('recovers a proven dead-host no-task attempt with a stable bounded key while retaining the base election', async () => {
+    const first = await run('orphaned-safe', 'spawning');
+    const repeat = await run('orphaned-safe', 'spawning');
+    expect(first.d.launch).toHaveBeenCalledTimes(2);
+    expect(first.result.receipts[0]).toMatchObject({ state: 'launched',
+      orphanedLaunchRecovery: { ownerId: 'su-old-auditor', proofKey: 'exact-old-launch-proof' } });
+    expect(first.d.launch.mock.calls[1][0].idempotencyKey).toContain(':recovery:');
+    expect(first.d.launch.mock.calls[1][0].idempotencyKey).toBe(repeat.d.launch.mock.calls[1][0].idempotencyKey);
+    expect(first.d.release).not.toHaveBeenCalled();
+  });
+
+  it.each(['orphaned-unproven', 'orphaned-task-appears'])('retains the old no-task election on %s', async control => {
+    const { d, result } = await run(control, 'spawning');
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({ state: 'reconciliation-required' });
+    expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('abandons no-task recovery when the exact pending reservation settles during proof', async () => {
+    const { d, result } = await run('orphaned-settled', 'spawning');
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({ state: 'skipped' });
   });
 
   it('reconciles a spawning receipt from exact terminal owner tasks and kernel absence without clearing its election', async () => {

@@ -3130,8 +3130,14 @@ export default defineTool({
               ...(startupReservation ? { [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify(startupReservation) } : {}),
             };
             if (foldedConfigs[i].headless) {
-              await markNativeSpawnAttempted(i);
               const result = await spawnHeadless({
+                // Installation preparation can outlive this host. Persist the
+                // native-attempt fence only at the spawner's post-install
+                // boundary, before task enrolment and process creation.
+                beforeSpawn: async () => {
+                  await markNativeSpawnAttempted(i);
+                  return true;
+                },
                 envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
                 writeMcpJson: true,
                 label: memberLabel,

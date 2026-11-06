@@ -3196,11 +3196,12 @@ describe('work_items:complete (keyed-array)', () => {
       });
 
     it('derives duplicate only from a non-self structured duplicate disposition', async () => {
+      resolveWorkItemRef.mockResolvedValue({ kind: 'feature', ref: 'papercup#F-13' });
       const r = await oneRaw({
         id: 'F-12', state: 'passed', assumptions: 'none',
         completion: { summary: 'superseded', duplicateOf: 'F-13', verification: evidence },
       });
-      expect(r.ok).toBe(true);
+      expect(r.ok, JSON.stringify(r)).toBe(true);
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({
         completionEvidence: expect.objectContaining({ workOutcome: 'duplicate' }),
       }));
@@ -5538,6 +5539,7 @@ describe('work_items:complete (keyed-array)', () => {
           summary: 'Captured the baseline.',
           verifiedHow: 'manual',
           testResult: 'baseline recorded',
+          verification: { workOutcome: 'verified-existing' },
           coverage: {
             population: ['browser baseline'],
             checked: ['browser baseline'],
@@ -5628,6 +5630,16 @@ describe('work_items:complete (keyed-array)', () => {
     beforeEach(() => {
       // A closed item so stateWarning stays silent and these assertions isolate verificationWarning.
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    });
+
+    it('does not treat an outcome declaration as verification evidence', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await oneRaw({
+        id: 'F-12', recordOnly: true,
+        completion: { summary: 'classified the result', verification: { workOutcome: 'other-no-new-change' } },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
     });
 
     it('warns when a completion has NEITHER `tests` nor `deferred`', async () => {
@@ -7291,7 +7303,10 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     );
 
     it('a FLAT completion (fields on args, no wrapper) now records instead of tripping the refine', async () => {
-      const r = await one({ id: 'WI-9', state: 'resolved', summary: 'landed flat', whatLanded: ['x.ts'] });
+      const r = await one({
+        id: 'WI-9', state: 'resolved', summary: 'landed flat', whatLanded: ['x.ts'],
+        verification: { workOutcome: 'introduced-change' },
+      });
       expect(r.ok).toBe(true);
       expect(r.completion.summary).toBe('landed flat');
       expect(r.completion.whatLanded).toEqual(['x.ts']);

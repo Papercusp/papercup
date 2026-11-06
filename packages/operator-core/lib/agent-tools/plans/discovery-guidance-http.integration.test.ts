@@ -54,6 +54,7 @@ it('delivers provisional, refusal, recovery and finalized discovery guidance to 
         actorPreserved: true, refusal: 'discovery_not_ready', recoveryTool: 'plans:set-content',
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/), health: { service: 'papercusp-operator' },
         stages: ['discovery', 'implementation-review', 'implementation-review'],
+        initialGuidance: { stage: 'implementation' }, adoptedGuidance: { stage: 'implementation-review' },
         evidenceRefs: ['source:existing-discovery-guidance.ts'] });
       expect(new Set(receipt.transcript.map((row: any) => row.callerSid))).toEqual(new Set([receipt.callerSid]));
       console.info('DISCOVERY_GUIDANCE_HTTP_VERIFIED ' + JSON.stringify(receipt));
