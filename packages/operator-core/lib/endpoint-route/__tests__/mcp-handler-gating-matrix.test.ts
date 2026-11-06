@@ -786,9 +786,9 @@ registerProjectedTool({
 const deltaRequested: Array<string | undefined> = [];
 // Server-wire fixtures exercise the real MCP proxy's reconstruction and recovery.
 const deltaWireRequested: Array<string | undefined> = [];
-const deltaWireReplies: McpCallResult[] = [];
-function deltaWireReply(data: unknown, delta: Record<string, unknown>): McpCallResult {
-  return { content: [{ type: 'text', text: JSON.stringify(data) }], _meta: { delta } };
+const deltaWireReplies: ReturnType<typeof deltaWireReply>[] = [];
+function deltaWireReply(data: unknown, delta: Record<string, unknown>) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(data) }], _meta: { delta } };
 }
 registerProjectedTool({
   pluginName: 'gating-matrix-test',
