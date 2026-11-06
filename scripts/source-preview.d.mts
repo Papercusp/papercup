@@ -2256,6 +2256,27 @@ export function admitVerifierCommandBudget(estimate: any, { env, nowMs, preparat
     cleanupReserveMs: number;
     childCutoffEpochMs: number | null;
 };
+/**
+ * Copy the managed verifier's receipts into the existing checkpoint-log store
+ * before the command can exit. Terminal wakes may be consumed hours later, after
+ * their caller's /tmp files have been removed. The task id names the bundle; the
+ * manifest is written last so readers never mistake a partial copy for a verdict.
+ * @param {{ evidenceRoot: string, taskId: string, sourceCommit: string, receiptPath: string,
+ *   taskReceiptPath: string, phaseArchivePath: string, cleanup: string,
+ *   childExitCode: number|null, error?: unknown }} args
+ * @returns {string}
+ */
+export function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, receiptPath, taskReceiptPath, phaseArchivePath, cleanup, childExitCode, error }: {
+    evidenceRoot: string;
+    taskId: string;
+    sourceCommit: string;
+    receiptPath: string;
+    taskReceiptPath: string;
+    phaseArchivePath: string;
+    cleanup: string;
+    childExitCode: number | null;
+    error?: unknown;
+}): string;
 export function noticeText(manifest: any): string;
 /**
  * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.

@@ -1,15 +1,94 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import nativeFs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { captureVerifierDependencies, readVerifierPhaseMeasurements, selectVerifierDependencySnapshot,
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { archiveVerifierTaskEvidence, captureVerifierDependencies, readVerifierPhaseMeasurements, selectVerifierDependencySnapshot,
   verifierPhaseRunner } from '../../../scripts/source-preview.mjs';
 
 const fixtures: string[] = [];
 afterEach(() => { for (const root of fixtures.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('verifier phase evidence retention', () => {
+  it.each(['source', 'manifest'])('keeps custody receipts and original bytes when the %s write runs out of space', failureStage => {
+    const root = mkdtempSync(join(tmpdir(), 'verifier-task-retention-'));
+    fixtures.push(root);
+    const evidenceRoot = join(root, 'retained');
+    mkdirSync(evidenceRoot);
+    const receiptPath = join(root, 'source.json');
+    const taskReceiptPath = join(root, 'task.json');
+    const phaseArchivePath = join(root, 'phases.jsonl');
+    const original = Buffer.from('original source receipt with a partial write');
+    writeFileSync(receiptPath, original);
+    writeFileSync(taskReceiptPath, '{"taskId":"retention-fixture","cleanup":"completed"}\n');
+    writeFileSync(phaseArchivePath, '{"phase":"deps.preflight","event":"failed"}\n');
+    const write = nativeFs.writeFileSync;
+    const spy = vi.spyOn(nativeFs, 'writeFileSync').mockImplementation((path, bytes, options) => {
+      const fail = Buffer.isBuffer(bytes) && (failureStage === 'source' ? bytes.equals(original)
+        : bytes.toString().includes('verifier-task-evidence-v1'));
+      if (typeof path === 'number' && fail) {
+        write(path, bytes.subarray(0, 5));
+        throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+      }
+      return write(path, bytes, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      const archive = () => archiveVerifierTaskEvidence({ evidenceRoot, taskId: 'retention-fixture',
+        sourceCommit: 'fixture', receiptPath, taskReceiptPath, phaseArchivePath,
+        cleanup: 'completed', childExitCode: null, error: new Error('preflight refused') });
+      if (failureStage === 'source') expect(archive)
+        .toThrow(`code=ENOSPC source=${receiptPath} destination=${join(evidenceRoot, 'source.json')} expectedBytes=${original.length}`);
+      else expect(archive)
+        .toThrow(`code=ENOSPC source=generated manifest destination=${join(evidenceRoot, 'manifest.json')}`);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(readFileSync(receiptPath)).toEqual(original);
+    for (const [name, source] of [['task.json', taskReceiptPath], ['phases.jsonl', phaseArchivePath]]) {
+      expect(readFileSync(join(evidenceRoot, name))).toEqual(readFileSync(source));
+      expect(statSync(join(evidenceRoot, name)).mode & 0o777).toBe(0o600);
+    }
+    expect(readdirSync(evidenceRoot).sort()).toEqual(failureStage === 'source'
+      ? ['phases.jsonl', 'task.json'] : ['phases.jsonl', 'source.json', 'task.json']);
+    if (failureStage === 'manifest') expect(readFileSync(join(evidenceRoot, 'source.json'))).toEqual(original);
+    expect(existsSync(join(evidenceRoot, 'manifest.json'))).toBe(false);
+  });
+
+  it('publishes a complete manifest with exact digests and never overwrites retained evidence', () => {
+    const root = mkdtempSync(join(tmpdir(), 'verifier-task-retention-'));
+    fixtures.push(root);
+    const evidenceRoot = join(root, 'retained');
+    mkdirSync(evidenceRoot);
+    const receiptPath = join(root, 'source.json');
+    const taskReceiptPath = join(root, 'task.json');
+    const phaseArchivePath = join(root, 'phases.jsonl');
+    writeFileSync(receiptPath, '{"source":"original"}\n');
+    writeFileSync(taskReceiptPath, '{"taskId":"retention-fixture"}\n');
+    writeFileSync(phaseArchivePath, '{"phase":"cleanup","event":"completed"}\n');
+    const args = { evidenceRoot, taskId: 'retention-fixture', sourceCommit: 'fixture',
+      receiptPath, taskReceiptPath, phaseArchivePath, cleanup: 'completed', childExitCode: 0 };
+    const path = archiveVerifierTaskEvidence(args);
+    const manifestBytes = readFileSync(path);
+    const manifest = JSON.parse(manifestBytes.toString());
+    expect(manifest).toMatchObject({ wrapperStatus: 'completed', cleanup: 'completed', childExitCode: 0 });
+    for (const artifact of Object.values(manifest.artifacts) as { path: string; sizeBytes: number; sha256: string }[]) {
+      const bytes = readFileSync(artifact.path);
+      expect(artifact.sizeBytes).toBe(bytes.length);
+      expect(artifact.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+      expect(statSync(artifact.path).mode & 0o777).toBe(0o600);
+    }
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const retainedTask = readFileSync(join(evidenceRoot, 'task.json'));
+    writeFileSync(taskReceiptPath, 'changed original');
+    expect(() => archiveVerifierTaskEvidence(args)).toThrow('code=EEXIST');
+    expect(readFileSync(join(evidenceRoot, 'task.json'))).toEqual(retainedTask);
+    expect(readFileSync(path)).toEqual(manifestBytes);
+    expect(readdirSync(evidenceRoot).sort()).toEqual(['manifest.json', 'phases.jsonl', 'source.json', 'task.json']);
+  });
+
   it('keeps exact completed and failed phase bytes after temporary receipt deletion', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verifier-phase-retention-'));
     fixtures.push(root);

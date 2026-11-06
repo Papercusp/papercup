@@ -3445,21 +3445,46 @@ export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs 
  *   childExitCode: number|null, error?: unknown }} args
  * @returns {string}
  */
-function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, receiptPath, taskReceiptPath,
+export function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, receiptPath, taskReceiptPath,
   phaseArchivePath, cleanup, childExitCode, error }) {
   const candidates = [
+    // Retain the small custody records before a potentially large source or
+    // dependency census. A bulk-copy failure must still leave its task and
+    // terminal phases available without publishing a complete manifest.
+    ['task.json', taskReceiptPath],
+    ['phases.jsonl', phaseArchivePath],
+    ['resources.jsonl', `${receiptPath}.resources.jsonl`],
     ['source.json', receiptPath],
     ['snapshot.txt', `${receiptPath}.snapshot.txt`],
     ['dependencies.json', `${receiptPath}.dependencies.json`],
     ['dependencies-after.json', `${receiptPath}.dependencies.after.json`],
-    ['task.json', taskReceiptPath],
-    ['resources.jsonl', `${receiptPath}.resources.jsonl`],
-    ['phases.jsonl', phaseArchivePath],
     ['child.json', `${receiptPath}.child.json`],
     ['stdout.log', `${receiptPath}.stdout.log`],
     ['stderr.log', `${receiptPath}.stderr.log`],
   ];
   const artifacts = {};
+  /** @param {string} name @param {string} sourcePath @param {Buffer} bytes */
+  const retain = (name, sourcePath, bytes) => {
+    const retainedPath = join(evidenceRoot, name);
+    const pendingPath = join(evidenceRoot, `.${name}.${process.pid}.tmp`);
+    let created = false;
+    try {
+      const descriptor = openSync(pendingPath, 'wx', 0o600);
+      created = true;
+      try { writeFileSync(descriptor, bytes); }
+      finally { closeSync(descriptor); }
+      // link is exclusive: an existing evidence artifact is never replaced.
+      // Readers see the final name only after the entire write has completed.
+      linkSync(pendingPath, retainedPath);
+    } catch (copyError) {
+      throw new Error(`Verifier task evidence copy failed: code=${copyError.code ?? 'unknown'} ` +
+        `source=${sourcePath} destination=${retainedPath} expectedBytes=${bytes.byteLength}; ` +
+        `original receipts remain at their source paths; ${copyError.message}`, { cause: copyError });
+    } finally {
+      if (created) unlinkSync(pendingPath);
+    }
+    return retainedPath;
+  };
   for (const [name, sourcePath] of candidates) {
     let sourceStat;
     try { sourceStat = lstatSync(sourcePath); }
@@ -3477,8 +3502,7 @@ function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, recei
       mtimeMs: sourceStat.mtimeMs, ctimeMs: sourceStat.ctimeMs },
     `Verifier task evidence changed while being retained: ${sourcePath}`);
     assert.equal(bytes.byteLength, sourceStat.size, `Verifier task evidence read was short: ${sourcePath}`);
-    const retainedPath = join(evidenceRoot, name);
-    writeFileSync(retainedPath, bytes, { flag: 'wx', mode: 0o600 });
+    const retainedPath = retain(name, sourcePath, bytes);
     artifacts[name] = { path: retainedPath, sizeBytes: bytes.byteLength,
       sha256: createHash('sha256').update(bytes).digest('hex') };
   }
@@ -3497,7 +3521,7 @@ function archiveVerifierTaskEvidence({ evidenceRoot, taskId, sourceCommit, recei
     childLogs: { stdout: 'stdout.log', stderr: 'stderr.log' },
     artifacts,
   };
-  writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, { flag: 'wx', mode: 0o600 });
+  retain('manifest.json', 'generated manifest', Buffer.from(`${JSON.stringify(manifest)}\n`));
   return manifestPath;
 }
 
