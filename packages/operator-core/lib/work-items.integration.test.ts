@@ -2914,7 +2914,7 @@ describe('unified work_items surface (real PG)', () => {
     async (kind) => {
       const item = await wi.createWorkItem({ kind, title: `checkpoint archive ${kind}`, harness: 'papercup', createdBy: 'agA' });
       const ref = { harness: 'papercup', workItemId: item.id, workspaceId: 'default' };
-      const prior = `complete prior checkpoint for ${kind}: ${'historical detail '.repeat(80)}`;
+      const prior = `complete prior checkpoint for ${kind}: ${'historical detail '.repeat(80).trimEnd()}`;
       const archive = async (lockedPrior: string | null, tx: Sql | TransactionSql) => {
         if (lockedPrior === null) throw new Error('locked checkpoint unexpectedly empty');
         const post = await wi.commentWorkItem(item.id, lockedPrior, 'agB', {

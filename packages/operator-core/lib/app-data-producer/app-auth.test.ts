@@ -13,16 +13,20 @@ const requireCjs = createRequire(import.meta.url);
 const { jwtVerify } = requireCjs('jose') as typeof import('jose');
 
 const SECRET = 'test-shared-secret-value';
-const touched: string[] = [];
+const originalEnv = new Map<string, string | undefined>();
 
 function setEnv(name: string, value: string | undefined): void {
-  touched.push(name);
+  if (!originalEnv.has(name)) originalEnv.set(name, process.env[name]);
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
 
 afterEach(() => {
-  for (const name of touched.splice(0)) delete process.env[name];
+  for (const [name, value] of originalEnv) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  originalEnv.clear();
 });
 
 /**
@@ -80,6 +84,9 @@ describe('app service auth (P-004)', () => {
 
   it('reads the secret from the app-specific env var', () => {
     setEnv('EMAIL_AUTH_SECRET', SECRET);
+    // The runner may inherit the other app's secret; this assertion must test
+    // the mapping, not depend on which credentials the host injected.
+    setEnv('CALENDAR_AUTH_SECRET', undefined);
     expect(readAppAuthSecret('email')).toBe(SECRET);
     expect(hasAppAuthSecret('email')).toBe(true);
     expect(hasAppAuthSecret('calendar')).toBe(false);
