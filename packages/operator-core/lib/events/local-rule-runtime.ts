@@ -6,7 +6,6 @@ import { listLocalRules, localRuleSource, type LocalAuthoredRule } from './local
 import { registerStandaloneReactionRule } from './standalone-rules';
 import { listReactionRules, registerReactionRule, unregisterReactionRule, matchReactions } from './registry';
 import { executeIdentityReaction, type IdentityReactionPayload } from './identity-reaction';
-import { readIdentityWearer } from '../agent-identities/identity-async-rules';
 import { setLocalSyncRulesReader, type WornSyncRules } from '../agent-identities/sync-hook-rules';
 import { keyMatchesPattern } from './await/pattern';
 import { setLocalRuleMatcher } from './engine';
@@ -83,11 +82,10 @@ export async function matchLocalRules(event: ToolInvocationEvent): Promise<Match
 
 /** Called only in an operator host. Each trigger reloads authoritative enabled rows,
  * including after a restart; no process cache can keep an edited rule enabled. */
-export async function readLocalSyncRules(ownerId: string, workspaceId: string): Promise<WornSyncRules> {
-  const wearer = await readIdentityWearer(ownerId, workspaceId);
-  if (!wearer?.harnessSlug) return { rules: [], unreadable: [] };
+export async function readLocalSyncRules(ownerId: string, workspaceId: string, harnessSlug: string | null): Promise<WornSyncRules> {
+  if (!harnessSlug) return { rules: [], unreadable: [] };
   const { resolvePotSlugsForHarnesses } = await import('../memory/hive-scope');
-  const potSlug = (await resolvePotSlugsForHarnesses(workspaceId, [wearer.harnessSlug]))[0];
+  const potSlug = (await resolvePotSlugsForHarnesses(workspaceId, [harnessSlug]))[0];
   if (!potSlug) return { rules: [], unreadable: [] };
   const rows = await withWorkspace(workspaceId, tx =>
     listLocalRules({ workspaceId, potSlug }, { includeWorkspace: true, enabledOnly: true }, tx));

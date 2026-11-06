@@ -12,7 +12,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../memory/hive-scope', () => ({ resolvePotSlugsForHarnesses: async (_ws: string, harnesses: string[]) => [harnesses[0] === 'demo' ? 'demo' : 'other'] }));
 import { defineCapabilityClass } from '../capability-class-registry-store';
 import { putLocalRule, recordLocalRuleTest, setLocalRuleEnabled, localRuleSource } from './local-rule-store';
-import { matchLocalRules, localReactionPayload, localRuleRegistrationId } from './local-rule-runtime';
+import { matchLocalRules, localReactionPayload, localRuleRegistrationId, readLocalSyncRules } from './local-rule-runtime';
 import { executeIdentityReaction } from './identity-reaction';
 import { buildWearerToolContext } from '../agent-identities/wearer-authority';
 import { listReactionRules } from './registry';
@@ -37,6 +37,19 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 
 describe('enabled local runtime', () => {
+  it('uses the supplied applied harness scope and re-reads current sync rules', async () => {
+    const id = 'fresh-sync-scope';
+    const row = await putLocalRule({ ...scope, authorId: 'author',
+      definition: { ...definition(id), delivery: 'sync' } }, db.adminSql);
+    await recordLocalRuleTest(scope, row.id, 1, { passed: true, samples: 1 }, db.adminSql);
+    await setLocalRuleEnabled(scope, row.id, true, db.adminSql);
+
+    expect((await readLocalSyncRules('author', workspaceId, 'demo')).rules.map(({ rule }) => rule.id)).toEqual([id]);
+
+    await setLocalRuleEnabled(scope, row.id, false, db.adminSql);
+    expect(await readLocalSyncRules('author', workspaceId, 'demo')).toEqual({ rules: [], unreadable: [] });
+  });
+
   it('restores enabled rows after a fresh module load and executes as the live author', async () => {
     const row = await putLocalRule({ ...scope, authorId: 'author', definition: definition('restore') }, db.adminSql);
     expect(await matchLocalRules(event())).toEqual([]);

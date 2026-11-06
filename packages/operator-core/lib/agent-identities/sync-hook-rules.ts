@@ -449,7 +449,7 @@ export async function turnStartSyncRuleRequests(input: {
  * applied (the session wears no identity); throws when a revision is applied
  * but its artifact cannot be resolved from the gate-selected launch record.
  */
-let localSyncReader: ((ownerId: string, workspaceId: string) => Promise<WornSyncRules>) | null = null;
+let localSyncReader: ((ownerId: string, workspaceId: string, harnessSlug: string | null) => Promise<WornSyncRules>) | null = null;
 export function setLocalSyncRulesReader(reader: typeof localSyncReader): void { localSyncReader = reader; }
 
 export type IdentityRuleReadTimingObserver = (timing: {
@@ -472,7 +472,8 @@ export async function readAppliedWornRules(ownerId: string, workspaceId: string,
   if (!applied) return null;
   if (!localSyncReader) return applied.sync;
   const readLocal = localSyncReader;
-  const local = await measureIdentityRead('local_rules', observeTiming, () => readLocal(ownerId, workspaceId));
+  const local = await measureIdentityRead('local_rules', observeTiming,
+    () => readLocal(ownerId, workspaceId, applied.harnessSlug));
   return local.rules.length || local.unreadable.length
     ? { rules: [...applied.sync.rules, ...local.rules], unreadable: [...applied.sync.unreadable, ...local.unreadable] }
     : applied.sync;
@@ -520,18 +521,22 @@ export function wearsPapercuspEngineer(identity: Pick<AppliedIdentityRules, 'pac
 export async function readAppliedIdentityRules(
   ownerId: string, workspaceId: string,
   observeTiming?: IdentityRuleReadTimingObserver,
-): Promise<AppliedIdentityRules | null> {
+): Promise<(AppliedIdentityRules & { readonly harnessSlug: string | null }) | null> {
   const sql = getOrgPg().sql;
-  const rows = await measureIdentityRead('applied_revision', observeTiming, async () => sql<{ applied: unknown }[]>`
-    SELECT control_state->'activation'->'applied' AS applied
+  const rows = await measureIdentityRead('applied_revision', observeTiming, async () => sql<{
+    applied: unknown; harness: string | null;
+  }[]>`
+    SELECT control_state->'activation'->'applied' AS applied,
+           control_state->'scope'->>'harness' AS harness
       FROM harness_shared.session_briefs
      WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
      LIMIT 1`);
   const applied = rows[0]?.applied as { specificationRevision?: unknown; stateRevision?: unknown } | null | undefined;
   if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return null;
   const revision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
-  return measureIdentityRead('applied_artifact', observeTiming,
+  const identity = await measureIdentityRead('applied_artifact', observeTiming,
     () => appliedIdentityRulesAt(ownerId, workspaceId, revision));
+  return { ...identity, harnessSlug: rows[0]?.harness || null };
 }
 
 /** The rules at one applied revision pair the caller already read; throws when unreadable. */

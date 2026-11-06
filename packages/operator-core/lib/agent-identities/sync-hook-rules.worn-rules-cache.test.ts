@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { appliedRows, readGateSelectedLaunchSpecMock, appliedIdentityArtifactMock } = vi.hoisted(() => ({
-  appliedRows: new Map<string, unknown>(),
+  appliedRows: new Map<string, { applied: unknown; harness: string | null }>(),
   readGateSelectedLaunchSpecMock: vi.fn(),
   appliedIdentityArtifactMock: vi.fn(),
 }));
@@ -19,10 +19,10 @@ const { appliedRows, readGateSelectedLaunchSpecMock, appliedIdentityArtifactMock
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    // The one query: the owner's applied revision from session_briefs.
+    // One query: the applied revision and its harness scope from session_briefs.
     sql: Object.assign(
       async (_strings: TemplateStringsArray, ownerId: string) =>
-        appliedRows.has(ownerId) ? [{ applied: appliedRows.get(ownerId) }] : [],
+        appliedRows.has(ownerId) ? [appliedRows.get(ownerId)!] : [],
       // Transaction-capable like the production org client (WI-40234); unused on this path.
       { begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(undefined) },
     ),
@@ -46,8 +46,8 @@ const ruleArtifact = {
       delivery: 'sync', sink: 'pre-tool', guard: { deny: { 'input.command': { matches: 'rm -rf' } } } },
   }],
 };
-const applied = (owner: string, stateRevision = 's1') =>
-  appliedRows.set(owner, { specificationRevision: `spec-${owner}`, stateRevision });
+const applied = (owner: string, stateRevision = 's1', harness = 'ops') =>
+  appliedRows.set(owner, { applied: { specificationRevision: `spec-${owner}`, stateRevision }, harness });
 
 beforeEach(() => {
   appliedRows.clear();
@@ -60,6 +60,21 @@ afterEach(() => {
 });
 
 describe('authoritative identity read timing', () => {
+  it('passes the current applied harness to each fresh local-rules read', async () => {
+    const owner = 'owner-local-harness-scope';
+    applied(owner, 's1', 'ops');
+    const local = vi.fn(async () => ({ rules: [], unreadable: [] }));
+    setLocalSyncRulesReader(local);
+
+    await readAppliedWornRules(owner, 'ws');
+    applied(owner, 's1', 'changed-scope');
+    await readAppliedWornRules(owner, 'ws');
+
+    expect(local).toHaveBeenCalledTimes(2);
+    expect(local).toHaveBeenNthCalledWith(1, owner, 'ws', 'ops');
+    expect(local).toHaveBeenNthCalledWith(2, owner, 'ws', 'changed-scope');
+  });
+
   it('attributes revision, artifact and local reads while preserving revision freshness and caching', async () => {
     applied('owner-read-timing');
     const local = vi.fn(async () => ({ rules: [], unreadable: [] }));

@@ -307,9 +307,20 @@ describe.skipIf(!live)('report sharing through the owned native operator', () =>
       evidence.scope = 'exact-deployed-artifact'; evidence.deployedHealth = health; save();
     } catch (error) {
       journeyFailed = true;
-      deployed.failure = { phase: deployed.phase, message: String(error),
-        stack: error instanceof Error ? error.stack : undefined };
-      save();
+      await recordReportSharingFailure(deployed, error, async () => {
+        const ui = await page.evaluate(() => {
+          const panel = document.querySelector('[aria-label="Report sharing"]');
+          return { url: location.href, text: panel?.textContent?.slice(0, 4000) ?? null,
+            actions: [...(panel?.querySelectorAll('button') ?? [])]
+              .map(button => ({ text: button.textContent, disabled: button.disabled })),
+            sharedLink: document.querySelector<HTMLInputElement>('[aria-label="Shared link"]')?.value ?? null };
+        });
+        deployed.failureUi = ui; save();
+        if (!reportId) return { ui, status: null };
+        const response = await owner.request.get('http://127.0.0.1:3070/api/zero-harness/rest-query',
+          { params: { name: 'reports.sharing', args: JSON.stringify({ reportId }) }, timeout: 15_000 });
+        return { ui, status: { status: response.status(), body: await response.json() } };
+      }, save);
       throw error;
     } finally {
       const cleanupErrors: unknown[] = [];
