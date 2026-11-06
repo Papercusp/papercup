@@ -728,6 +728,10 @@ pub enum AgentCtxMode {
     Orders,
     /// Current GUI Activity dossier (`agentDetail.byOwner`).
     Activity,
+    /// GUI turn index over the canonical owner conversation projection.
+    Turns,
+    /// GUI fleet peers, including the HUD's state/ordering/warnings.
+    Fleet,
 }
 
 /// Which agents the wake-pane board shows (owner ask 2026-06-11): the dock's
@@ -2615,6 +2619,8 @@ pub struct App {
     pub agent_ctx: Option<Result<crate::models::AgentCtxData, String>>,
     /// Agent-context pane scroll offset (j/k).
     pub agent_ctx_scroll: u16,
+    pub agent_ctx_selected: usize,
+    pub agent_ctx_detail: bool,
     /// True only in the dock's chat-pane: drive the reactive agent stack (a
     /// watch pane per active bee + an interactive pane per new local launch).
     pub dock_agent_panes: bool,
@@ -3148,6 +3154,8 @@ impl App {
             agent_ctx_mode: AgentCtxMode::default(),
             agent_ctx: None,
             agent_ctx_scroll: 0,
+            agent_ctx_selected: 0,
+            agent_ctx_detail: false,
             dock_agent_panes: false,
             hive_agent_tabs: false,
             paned_bees: std::collections::HashSet::new(),
@@ -12449,7 +12457,35 @@ impl App {
             Event::AgentCtx { result } => {
                 // Dock 4-pane split: an agent-context snapshot landed.
                 // Whole-snapshot replace, same shape as the wake board.
+                let selected_key = crate::agent_ctx::navigation_keys(self)
+                    .get(self.agent_ctx_selected)
+                    .cloned();
+                let owner_changed = self
+                    .agent_ctx
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .and_then(|d| d.owner.as_deref())
+                    != result.as_ref().ok().and_then(|d| d.owner.as_deref());
+                if owner_changed {
+                    self.agent_ctx_selected = 0;
+                    self.agent_ctx_scroll = 0;
+                    self.agent_ctx_detail = false;
+                }
                 self.agent_ctx = Some(result);
+                if !owner_changed {
+                    let keys = crate::agent_ctx::navigation_keys(self);
+                    let matches: Vec<_> = keys
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, key)| Some(*key) == selected_key.as_ref())
+                        .collect();
+                    if matches.len() == 1 {
+                        self.agent_ctx_selected = matches[0].0;
+                    } else {
+                        self.agent_ctx_selected = 0;
+                        self.agent_ctx_detail = false;
+                    }
+                }
                 Action::Render
             }
             Event::LexiconPack(payload) => {
@@ -13945,6 +13981,64 @@ impl App {
         // N opens the notifications history, everything else is swallowed
         // (no tab strip to navigate here either).
         if self.tab == Tab::AgentCtx {
+            if self.fleet_action_menu.is_some() {
+                return self.fleet_menu_key(code);
+            }
+            if matches!(
+                self.agent_ctx_mode,
+                AgentCtxMode::Turns | AgentCtxMode::Fleet
+            ) {
+                match code {
+                    KeyCode::Down | KeyCode::Up => {
+                        let max = crate::agent_ctx::navigation_len(self).saturating_sub(1);
+                        self.agent_ctx_selected = if code == KeyCode::Down {
+                            self.agent_ctx_selected.saturating_add(1).min(max)
+                        } else {
+                            self.agent_ctx_selected.saturating_sub(1)
+                        };
+                        self.agent_ctx_scroll = 0;
+                        return Action::Render;
+                    }
+                    KeyCode::Enter => {
+                        if self.agent_ctx_mode == AgentCtxMode::Turns {
+                            self.agent_ctx_detail = true;
+                            self.agent_ctx_scroll = 0;
+                            return Action::Render;
+                        }
+                        if let Some(owner) =
+                            crate::agent_ctx::selected_peer(self).map(|p| p.owner_id.clone())
+                        {
+                            if self
+                                .agent_ctx
+                                .as_ref()
+                                .and_then(|r| r.as_ref().ok())
+                                .and_then(|d| d.owner.as_deref())
+                                == Some(owner.as_str())
+                            {
+                                return Action::None;
+                            }
+                            let entry = self
+                                .agent_ctx
+                                .as_ref()
+                                .and_then(|r| r.as_ref().ok())
+                                .and_then(|d| d.peer_sessions.iter().find(|r| r.owner_id == owner))
+                                .cloned();
+                            if let Some(entry) = entry {
+                                return self.activate_session_entry(entry);
+                            }
+                            self.toast =
+                                Some("Peer session is unavailable; refresh before opening".into());
+                        }
+                        return Action::Render;
+                    }
+                    KeyCode::Esc => {
+                        self.agent_ctx_detail = false;
+                        self.agent_ctx_scroll = 0;
+                        return Action::Render;
+                    }
+                    _ => {}
+                }
+            }
             return match code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.agent_ctx_scroll = self.agent_ctx_scroll.saturating_add(1);
@@ -17592,6 +17686,107 @@ mod tests {
         let mut app = App::new();
         assert_eq!(app.update(Event::Resize(120, 40)), Action::Render);
         assert_eq!(app.viewport, (120, 40));
+    }
+
+    #[test]
+    fn turns_sidebar_selection_opens_answer_and_survives_push_reordering() {
+        let mut app = App::new();
+        app.tab = Tab::AgentCtx;
+        app.pinned = Some(Tab::AgentCtx);
+        app.agent_ctx_mode = AgentCtxMode::Turns;
+        let snapshot = |questions: &[&str]| crate::models::AgentCtxData {
+            owner: Some("su-exact".into()),
+            turns: Some(crate::agent_ctx::AgentTurns {
+                turns: Some(
+                    questions
+                        .iter()
+                        .map(|q| crate::agent_ctx::AgentTurn {
+                            question: (*q).into(),
+                            answer: Some(format!("answer to {q}")),
+                            answer_index: Some(1),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot(&["one", "two"])),
+        });
+        app.update(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(app.agent_ctx_selected, 1);
+        app.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.agent_ctx_detail);
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot(&["earlier", "one", "two"])),
+        });
+        assert_eq!(
+            app.agent_ctx_selected, 2,
+            "push must retain the selected question"
+        );
+        assert!(app.agent_ctx_detail);
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot(&["one", "two", "two"])),
+        });
+        assert_eq!(app.agent_ctx_selected, 0, "ambiguous identity fails closed");
+        assert!(!app.agent_ctx_detail);
+        app.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!app.agent_ctx_detail);
+    }
+
+    #[test]
+    fn fleet_sidebar_self_is_inert_and_foreign_peer_uses_existing_session_menu() {
+        let mut app = App::new();
+        app.tab = Tab::AgentCtx;
+        app.pinned = Some(Tab::AgentCtx);
+        app.agent_ctx_mode = AgentCtxMode::Fleet;
+        app.update(Event::AgentCtx {
+            result: Ok(crate::models::AgentCtxData {
+                owner: Some("su-exact".into()),
+                fleet_peers: Some(
+                    serde_json::from_value(json!({"unknownSession":false,"fleet":{
+                        "members":[{"ownerId":"su-exact"},{"ownerId":"su-peer"}]}
+                    }))
+                    .unwrap(),
+                ),
+                peer_sessions: vec![RosterEntry {
+                    owner_id: "su-peer".into(),
+                    label: "Peer".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        });
+        assert_eq!(
+            app.update(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Action::None
+        );
+        app.update(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            app.fleet_action_menu.is_some(),
+            "use the shared route resolver, never a label-based launch"
+        );
+        app.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(
+            app.fleet_action_menu.is_none(),
+            "the shared menu remains operable in a pinned pane"
+        );
     }
 
     fn key(c: char, mods: KeyModifiers) -> Event {
