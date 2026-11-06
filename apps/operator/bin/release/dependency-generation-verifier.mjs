@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
   realpathSync, renameSync, rmSync, writeFileSync, cpSync, chmodSync } from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -128,7 +129,35 @@ function sourcePaths(root) {
 }
 
 export function buildInputs(root) {
-  return sourcePaths(root).map(path => identity(root, path));
+  const paths = sourcePaths(root);
+  if (paths.length < 128) return paths.map(path => identity(root, path));
+  // Keep this synchronous producer API, but overlap file reads in the existing
+  // helper. Every build still measures the full population both before and after
+  // execution; neither a metadata cache nor a previous receipt supplies hashes.
+  return JSON.parse(execFileSync(process.execPath,
+    [fileURLToPath(import.meta.url), 'input-census', root], {
+      input: JSON.stringify(paths), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'inherit'],
+    }));
+}
+
+async function readInputCensus(root, paths) {
+  root = realpathSync(root);
+  if (!Array.isArray(paths)) fail('invalid-input-census');
+  const result = new Array(paths.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(16, paths.length) }, async () => {
+    while (next < paths.length) {
+      const index = next++, path = paths[index];
+      const file = safe(root, path), stat = lstatSync(file);
+      if (stat.isSymbolicLink()) result[index] = identity(root, path);
+      else {
+        if (!stat.isFile()) fail('non-file:' + path);
+        result[index] = { path, sha256: digest(await readFileAsync(file)), executable: Boolean(stat.mode & 0o111) };
+      }
+    }
+  }));
+  return result;
 }
 
 // Use the producing build's census so distinct frozen sources can share
@@ -156,16 +185,30 @@ export function checkSource(root, ref) {
 export function buildWorkspace(root, packagePath, command) {
   root = realpathSync(root);
   const packageDir = safe(root, packagePath), output = packagePath + '/dist';
-  const before = buildInputs(root);
+  const phase = (name, operation) => {
+    const start = performance.now();
+    const emit = state => console.error('VERIFIER_WORKSPACE_BUILD_PHASE ' + JSON.stringify({
+      packagePath, phase: name, state, elapsedMs: Math.round(performance.now() - start),
+    }));
+    emit('started');
+    try {
+      const result = operation();
+      emit('complete');
+      return result;
+    } catch (error) { emit('failed'); throw error; }
+  };
+  const before = phase('input-census-before', () => buildInputs(root));
   // Removing the prior output is essential: success cannot bless a stale file
   // which the producer did not emit in this invocation.
   rmSync(safe(root, output), { recursive: true, force: true });
-  const result = spawnSync(command[0], command.slice(1), { cwd: packageDir, stdio: 'inherit' });
-  if (result.error || result.status !== 0)
-    fail('build-failed:' + packagePath + ':status=' + result.status + ':signal=' + result.signal
-      + ':error=' + (result.error?.message ?? 'none'));
-  equal(buildInputs(root), before, 'source-changed-during-build:' + packagePath);
-  const outputs = files(root, output);
+  phase('command', () => {
+    const result = spawnSync(command[0], command.slice(1), { cwd: packageDir, stdio: 'inherit' });
+    if (result.error || result.status !== 0)
+      fail('build-failed:' + packagePath + ':status=' + result.status + ':signal=' + result.signal
+        + ':error=' + (result.error?.message ?? 'none'));
+  });
+  phase('input-census-after', () => equal(buildInputs(root), before, 'source-changed-during-build:' + packagePath));
+  const outputs = phase('output-census', () => files(root, output));
   if (!outputs.length) fail('empty-output:' + output);
   const receipt = { schema: 1, packagePath, inputs: before, outputs };
   const target = join(packageDir, 'dist', RECEIPT), tmp = target + '.tmp.' + process.pid;
@@ -319,6 +362,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else if (command === 'same-source') equal(buildInputs(root), buildInputs(dest), 'copied-source-mismatch');
     else if (command === 'build-closure') buildClosure(root);
     else if (command === 'copy-tree') await copyDependencyTree(root, dest, process.argv[5]);
+    else if (command === 'input-census') console.log(JSON.stringify(await readInputCensus(root, JSON.parse(readFileSync(0, 'utf8')))));
     else fail('unknown-command');
   } catch (error) { console.error(error.message); process.exitCode = 74; }
 }

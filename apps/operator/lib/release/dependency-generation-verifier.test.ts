@@ -129,6 +129,12 @@ describe('bounded independent verifier copy', () => {
     const run = (input: string, output: string, env: NodeJS.ProcessEnv = f.env) => spawnSync('bash', ['-c',
       'set -euo pipefail; source "$1"; dependency_generation_materialize_tree "$2" "$3" verifier',
       'verifier-copy', f.generationScript, input, output], { env, encoding: 'utf8', timeout: 30000 });
+    const forbidden = join(f.root, 'forbidden-helper.mjs');
+    writeFileSync(forbidden, 'process.stderr.write("SMALL_COPY_STARTED_HELPER");process.exit(99);');
+    const small = run(source, join(f.root, 'small'), { ...f.env, DEPENDENCY_GENERATION_VERIFIER_HELPER: forbidden });
+    expect(small.status, small.stderr).toBe(0);
+    expect(small.stderr).not.toContain('SMALL_COPY_STARTED_HELPER');
+    for (let i = 0; i < 64; i++) write(source, `pkg-${i}/index.js`, `module.exports = ${i};\n`);
     const result = run(source, dest);
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('published dependency');
