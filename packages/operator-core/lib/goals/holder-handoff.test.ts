@@ -5,6 +5,17 @@ import {
   type GoalHolderHandoffDeps,
 } from './holder-handoff';
 
+// Keep the default IO adapters outside this unit's import graph. The tests below
+// inject these collaborators; importing their live runtime bootstraps the whole
+// improvement/tool catalog against the intentionally narrow work-items mock.
+vi.mock('../modes/store', () => ({ clearImpliedModes: vi.fn(), setMode: vi.fn() }));
+vi.mock('../harness/routines/loop', () => ({ deactivateLoop: vi.fn() }));
+vi.mock('../agent-orders-notify', () => ({ notifyAgentOrdersChanged: vi.fn() }));
+vi.mock('../events/await/store', () => ({ cancelAwaitsForSubscribersOnKeys: vi.fn() }));
+vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage: vi.fn() }));
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi.fn() }));
+vi.mock('./vacate-drain-fleet-leadership', () => ({ vacateDrainFleetLeadership: vi.fn() }));
+
 // WI-10006948: the production former-holder release is lazy-imported, so these mocks
 // are what it resolves. Each records into one ordered log.
 const releaseLog = vi.hoisted(() => ({

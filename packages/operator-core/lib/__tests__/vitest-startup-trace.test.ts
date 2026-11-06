@@ -29,6 +29,12 @@ function retainNativeStartupFailure(dir: string, error: unknown) {
   failure.message += `\nNATIVE_STARTUP_FAILURE ${JSON.stringify({ retainedRoot: dir, retentionError })}`;
 }
 
+function cleanupNativeReporterFixture(dir: string, completed: boolean,
+  reportRetained: (message: string) => void = message => { process.stderr.write(message); }) {
+  if (completed) rmSync(dir, { recursive: true, force: true });
+  else reportRetained(`[native-reporter-channel] retained failure evidence: ${dir}\n`);
+}
+
 describe('focused runner startup tracing', () => {
   it('startup-only preserves native lifecycle send inputs, returns and errors even with a throwing sink', () => {
     const child = new EventEmitter() as any;
@@ -233,6 +239,18 @@ describe('focused runner startup tracing', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 180_000);
 
+  it('retains native reporter diagnostics when verification fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-reporter-retention-'));
+    const trace = join(dir, 'trace.json');
+    const retainedMessages: string[] = [];
+    writeFileSync(trace, '{"event":"reporter-started"}');
+    try {
+      cleanupNativeReporterFixture(dir, false, message => retainedMessages.push(message));
+      expect(existsSync(trace)).toBe(true);
+      expect(retainedMessages).toEqual([`[native-reporter-channel] retained failure evidence: ${dir}\n`]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('binds an actual native Vitest reporter through the original npm channel before reading outcomes', async () => {
     const root = fileURLToPath(new URL('../../../../', import.meta.url));
     const fixture = join(root, 'libs/test-config/src/__fixtures__/armed-capture');
@@ -313,8 +331,7 @@ describe('focused runner startup tracing', () => {
       expect(read()).toMatchObject({ status: 'refused', receipts: [] });
       completed = true;
     } finally {
-      if (completed) rmSync(dir, { recursive: true, force: true });
-      else process.stderr.write(`[native-reporter-channel] retained failure evidence: ${dir}\n`);
+      cleanupNativeReporterFixture(dir, completed);
     }
   }, 180_000);
 
