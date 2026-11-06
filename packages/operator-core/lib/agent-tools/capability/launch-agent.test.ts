@@ -2763,7 +2763,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('failed to invalidate predecessor context pressure');
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
-      workspaceId: 'ws-test', idempotencyKey: 'cold-wake:failed-clear',
+      workspaceId: 'ws-test', idempotencyKey: 'cold-wake:failed-clear', claimToken: expect.any(String),
     });
   });
 
@@ -2978,7 +2978,7 @@ describe('resume + fork (D-004/D-007)', () => {
       const noSpawn = () => {
         expect(spawnConsoleMock).not.toHaveBeenCalled();
         expect(spawnHeadlessMock).not.toHaveBeenCalled();
-        expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+        expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
       };
 
       it('qualifies only the newest exact row when older terminal history exists', async () => {
@@ -3174,7 +3174,7 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('positive terminal evidence is required');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
-      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
     });
 
     it.each([null, dead.endedAt])('an active native Codex writer blocks a successor with endedAt=%s before terminal reconciliation', async (endedAt) => {
@@ -3207,7 +3207,7 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('active native Codex writer appeared');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
-      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
     });
 
     it.each([
@@ -4897,6 +4897,7 @@ describe('failure reporting', () => {
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
       workspaceId: 'ws-test',
       idempotencyKey: 'retry-after-admission-failure',
+      claimToken: expect.any(String),
     });
     expect(recordAgentLaunchResultMock).not.toHaveBeenCalled();
 
@@ -4924,6 +4925,7 @@ describe('failure reporting', () => {
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
       workspaceId: 'ws-test',
       idempotencyKey: 'retry-after-governed-rejection',
+      claimToken: expect.any(String),
     });
     expect(textOf(res)).toContain('governed spawn failed: durable admission record could not be persisted');
   });
