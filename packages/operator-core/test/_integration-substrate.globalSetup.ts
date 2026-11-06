@@ -12,6 +12,8 @@ declare module 'vitest' {
 // Self-contained fixtures: no shared baseline. Some own a private native cluster
 // with an explicit teardown; others use no database. Keep integration reporting.
 const NO_SHARED_PG_TESTS = new Set([
+  // Actual PUI + Zellij with a private HTTP operator and owned command; no SQL.
+  '../lib/pui-e2e/workbench-resume-pty.integration.test.ts',
   // Real inspector/native profiler subprocesses and temporary files; no SQL.
   '../lib/event-loop-cpu-recorder.integration.test.ts',
   // Read-only metadata worker over isolated filesystem fixtures; no SQL.

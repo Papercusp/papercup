@@ -85,6 +85,7 @@ export async function propagateClauseAmendment(tx: SpecClauseSql, amendment: Cla
       msg_id: msgId, ts: new Date().toISOString(), kind: 'message', from: a.actorId,
       to: [holder], summary: `${a.specId}: revision ${a.oldRevision} → ${a.newRevision}`,
       body: text, expects: 'none', plan_slug: a.planSlug, harness_slug: a.harnessSlug,
+      auto: true, fieldProvenance: { expects: 'system-emitter-derived' },
       sections: [{ text }],
     }, { transactionSql: tx as unknown as postgres.TransactionSql });
   }
