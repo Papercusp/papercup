@@ -352,6 +352,40 @@ export function readAcceptanceBarReviewSource(body: string, expectedHash: string
   return source;
 }
 
+/** New BAR declaration times are generated when the amendment is applied.
+ * Keep the signed snapshot intact; compare only this server-owned future
+ * timestamp separately from the complete authored source and existing provenance.
+ */
+function reviewSourceWithoutNewDeclarationTimes(source: AcceptanceBarReviewSource): unknown | undefined {
+  const baseline = source.rubric.baseline as { criteria?: unknown[] } | null;
+  const candidate = source.rubric.candidate as { criteria?: unknown[] } | null;
+  if (!Array.isArray(baseline?.criteria) || !Array.isArray(candidate?.criteria)) return undefined;
+  const keyOf = (value: unknown): string | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const criterion = value as Record<string, unknown>;
+    const key = criterion.barKey ?? criterion.key;
+    return typeof key === 'string' && key.trim() ? key : undefined;
+  };
+  const priorKeys = new Set(baseline.criteria.map(keyOf));
+  if (priorKeys.has(undefined) || priorKeys.size !== baseline.criteria.length) return undefined;
+  const criteria: unknown[] = [];
+  for (const value of candidate.criteria) {
+    const key = keyOf(value);
+    if (!key) return undefined;
+    if (priorKeys.has(key)) {
+      criteria.push(value);
+      continue;
+    }
+    const criterion = value as Record<string, unknown>;
+    const provenance = criterion.barProvenance;
+    if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance) ||
+        typeof (provenance as Record<string, unknown>).declaredAt !== 'string') return undefined;
+    const { declaredAt: _applyTime, ...reviewedProvenance } = provenance as Record<string, unknown>;
+    criteria.push({ ...criterion, barProvenance: reviewedProvenance });
+  }
+  return { ...source, rubric: { ...source.rubric, candidate: { ...candidate, criteria } } };
+}
+
 /** EI-22617748468342848: reviewers routinely post the approval receipt inside a
  * ```json fence, which is the natural way to post JSON in a comment thread. The
  * fence is presentation, so strip the first one before parsing, even when review
@@ -452,7 +486,8 @@ export function approvalReceiptJsonSource(body: string): string {
 
 export async function resolveAcceptanceBarApproval(
   sql: SpecClauseSql,
-  args: { workspaceId: string; approvalRef?: string; approvedBy?: string; expected: AcceptanceBarApproval },
+  args: { workspaceId: string; approvalRef?: string; approvedBy?: string; expected: AcceptanceBarApproval;
+    expectedSource?: AcceptanceBarReviewSource },
 ): Promise<{
   approvalRef: string;
   approvedBy: string;
@@ -518,10 +553,19 @@ export async function resolveAcceptanceBarApproval(
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
   if (args.expected.reviewSourceHash) {
+    if (!receipt.reviewSourceHash) throw new Error('acceptance_bar_review_source_mismatched');
+    // Verify the complete immutable reviewed bytes before allowing an apply-time
+    // metadata difference. Nothing is omitted from the signed source hash.
+    const reviewedSource = readAcceptanceBarReviewSource(receiptBody, receipt.reviewSourceHash);
     if (receipt.reviewSourceHash !== args.expected.reviewSourceHash) {
-      throw new Error('acceptance_bar_review_source_mismatched');
+      const currentSource = args.expectedSource;
+      const reviewed = reviewSourceWithoutNewDeclarationTimes(reviewedSource);
+      const current = currentSource && reviewSourceWithoutNewDeclarationTimes(currentSource);
+      if (!currentSource || acceptanceBarReviewSourceHash(currentSource) !== args.expected.reviewSourceHash ||
+          reviewed === undefined || current === undefined || canonicalJson(reviewed) !== canonicalJson(current)) {
+        throw new Error('acceptance_bar_review_source_mismatched');
+      }
     }
-    readAcceptanceBarReviewSource(receiptBody, args.expected.reviewSourceHash);
   }
   if (receipt.rubricRef !== args.expected.rubricRef || receipt.subjectPlan !== args.expected.subjectPlan) {
     throw new Error('acceptance_bar_approval_stale_or_mismatched');

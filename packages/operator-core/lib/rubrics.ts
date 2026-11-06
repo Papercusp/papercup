@@ -5471,6 +5471,7 @@ async function amendAcceptanceBarRubric(
             approvalRef: input.approvalRef,
             approvedBy: input.approvedBy,
             expected: approvalRequest,
+            expectedSource: reviewSource,
           })
         : null;
       if (approval) {

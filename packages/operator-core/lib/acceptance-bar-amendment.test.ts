@@ -8,6 +8,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 import {
   acceptanceBarApprovalSchema,
+  acceptanceBarReviewPostBody,
+  acceptanceBarReviewSourceHash,
   approvalReceiptJsonSource,
   resolveAcceptanceBarApproval,
   acceptanceBarAmendmentKey,
@@ -502,7 +504,7 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     expect(seeded.ok).toBe(true);
     if (!seeded.ok) return;
 
-    const canonicalCriteria = seeded.templateData.criteria.map((criterion) => {
+    const canonicalCriteria = rubricTemplateDataAuthoringSchema.parse(seeded.templateData).criteria.map((criterion) => {
       const { barKey: _alias, ...stored } = normalizeAcceptanceBarCriterion({
         ...criterion, key: criterion.barKey ?? criterion.key,
       });
@@ -1138,6 +1140,75 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     const wrongSchema = JSON.stringify({ schemaVersion: 1, kind: 'not-an-approval' });
     await expect(resolve(wrongSchema)).rejects.toThrow(/acceptance_bar_approval_invalid_receipt/);
     await expect(resolve(wrongSchema)).rejects.not.toThrow(/unparseable/);
+  });
+});
+
+describe('WI-6554700010046154 approval survives apply-time new-BAR metadata', () => {
+  function source() {
+    const existing = { key: 'r-1', barKey: 'R-1', model: 'Existing outcome', method: 'Run the existing check',
+      barProvenance: { lifecycle: 'legacy-backfilled', declaredBy: 'author', declaredAt: '2026-11-05T00:00:00.000Z' } };
+    const added = { key: 'r-2', barKey: 'R-2', model: 'Added outcome', method: 'Run the maintained check',
+      barProvenance: { lifecycle: 'legacy-backfilled', declaredBy: 'author', declaredAt: '2026-11-06T00:00:00.000Z' } };
+    return { schemaVersion: 1 as const,
+      rubric: { ref: 'acceptance-plan', revision: 2, baseline: { criteria: [existing] },
+        candidate: { criteria: [structuredClone(existing), added] } },
+      subjectPlan: { slug: 'plan', harness: 'papercusp', revision: 3, content: 'Plan source', proposedContent: 'Plan source' },
+      reason: 'Add the second outcome', mappingDelta: [] as unknown[] };
+  }
+
+  function receipt(reviewSource: ReturnType<typeof source>) {
+    return { schemaVersion: 1 as const, kind: 'acceptance-bar-amendment-approval' as const,
+      rubricRef: 'acceptance-plan', subjectPlan: 'plan', proposedPatchHash: 'c'.repeat(64),
+      reviewSourceHash: acceptanceBarReviewSourceHash(reviewSource),
+      bars: [{ barKey: 'R-2', priorBarHash: null, nextBarHash: 'b'.repeat(64) }] };
+  }
+
+  function resolve(current: ReturnType<typeof source>, options: { omitExpectedSource?: boolean; tamperBody?: boolean } = {}) {
+    const reviewed = source();
+    const body = acceptanceBarReviewPostBody(receipt(reviewed), reviewed);
+    const sql = vi.fn()
+      .mockResolvedValueOnce([{ author_id: 'reviewer', body: 'approve thread-post:456', approved_at: '2026-11-06T00:01:00.000Z' }])
+      .mockResolvedValueOnce([{ author_id: 'author', body: options.tamperBody ? body.replace('Added outcome', 'Tampered outcome') : body }]);
+    return resolveAcceptanceBarApproval(sql as never, {
+      workspaceId: 'workspace', approvalRef: 'thread-post:123', expected: receipt(current),
+      ...(options.omitExpectedSource ? {} : { expectedSource: current }),
+    });
+  }
+
+  function atApplyTime() {
+    const current = source();
+    current.rubric.candidate.criteria[1]!.barProvenance.declaredAt = '2026-11-06T00:10:00.000Z';
+    return current;
+  }
+
+  it('accepts the immutable reviewed addition at a later declaration time', async () => {
+    await expect(resolve(atApplyTime())).resolves.toMatchObject({ approvedBy: 'reviewer' });
+  });
+
+  it.each<[string, (current: ReturnType<typeof source>) => void]>([
+    ['existing declaration time', (s) => { s.rubric.candidate.criteria[0]!.barProvenance.declaredAt = '2026-11-06T00:10:00.000Z'; }],
+    ['new declaration author', (s) => { s.rubric.candidate.criteria[1]!.barProvenance.declaredBy = 'other'; }],
+    ['new declaration lifecycle', (s) => { s.rubric.candidate.criteria[1]!.barProvenance.lifecycle = 'pre-implementation'; }],
+    ['criterion meaning', (s) => { s.rubric.candidate.criteria[1]!.model = 'Different outcome'; }],
+    ['verification method', (s) => { s.rubric.candidate.criteria[1]!.method = 'Different check'; }],
+    ['plan source', (s) => { s.subjectPlan.content = 'Changed source'; }],
+    ['proposed plan source', (s) => { s.subjectPlan.proposedContent = 'Changed proposed source'; }],
+    ['plan revision', (s) => { s.subjectPlan.revision++; }],
+    ['rubric baseline', (s) => { s.rubric.baseline.criteria[0]!.model = 'Changed baseline'; }],
+    ['reason', (s) => { s.reason = 'Different amendment'; }],
+    ['mapping', (s) => { s.mappingDelta.push({ barKey: 'R-2', next: ['P-002'] }); }],
+  ])('still rejects a changed %s', async (_name, mutate) => {
+    const current = atApplyTime();
+    mutate(current);
+    await expect(resolve(current)).rejects.toThrow('acceptance_bar_review_source_mismatched');
+  });
+
+  it('requires the complete current source to compare generated metadata', async () => {
+    await expect(resolve(atApplyTime(), { omitExpectedSource: true })).rejects.toThrow('acceptance_bar_review_source_mismatched');
+  });
+
+  it('checks the original complete source hash before comparing metadata', async () => {
+    await expect(resolve(atApplyTime(), { tamperBody: true })).rejects.toThrow('acceptance_bar_review_source_mismatched');
   });
 });
 

@@ -4789,8 +4789,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(preview!.readinessDelta.summary).toMatch(/^Ship readiness: \d+ of 2 BAR\(s\) blocking before, \d+ of 3 after/);
     expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-3', kinds: ['added'] }));
 
-    const approvalRef = await postApproval(amendment);
-    const after = await rubrics.amendRubric({ ...amendment, approvalRef });
+    // WI-6554700010046154: the reviewer signs the complete preview at one
+    // instant; only the new BAR's server-owned declaration time moves on apply.
+    let after: Awaited<ReturnType<typeof rubrics.amendRubric>> = null;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-11-06T00:00:00.000Z'));
+      const approvalRef = await postApproval(amendment);
+      vi.setSystemTime(new Date('2026-11-06T00:10:00.000Z'));
+      after = await rubrics.amendRubric({ ...amendment, approvalRef });
+      expect(after!.criteria.find((criterion) => criterion.barKey === 'R-3')!.barProvenance?.declaredAt)
+        .toBe('2026-11-06T00:10:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
     expect(after!.criteria).toHaveLength(3);
     expect(after!.criteria.every((criterion) => criterion.method && criterion.check?.kind === 'tests')).toBe(true);
     const projections = await db.adminSql<
@@ -4908,13 +4920,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const preview = await rubrics.previewAcceptanceBarAmendment(input);
     expect(preview).not.toBeNull();
     const receipt = { ...preview!.approval, ...receiptFields };
+    const { acceptanceBarReviewPostBody } = await import('./acceptance-bar-amendment');
+    const body = acceptanceBarReviewPostBody(receipt, preview!.reviewSource);
     const workspaceId = activeWorkspaceId();
     const thread = `approval-${preview!.approval.subjectPlan}`;
     await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id,thread_id,parent_kind,parent_ref)
       VALUES (${workspaceId},${thread},'plan',${preview!.approval.subjectPlan}) ON CONFLICT DO NOTHING`;
     const [post] = await db.adminSql`INSERT INTO harness_shared.coord_thread_posts
       (workspace_id,thread_id,author_id,body) VALUES
-      (${workspaceId},${thread},${author},${JSON.stringify(receipt)}) RETURNING id`;
+      (${workspaceId},${thread},${author},${body}) RETURNING id`;
     return `thread-post:${post.id}`;
   }
 
