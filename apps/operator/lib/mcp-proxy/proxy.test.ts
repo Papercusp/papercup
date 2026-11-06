@@ -77,6 +77,7 @@ import {
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from "./budgets.mjs";
 import { DEFAULT_KEEPALIVE_TIMEOUT_MS } from "../../bin/host-request-deadline";
 import { buildMcpUrl } from "../../scripts/ptool.mjs";
+import { reportSessionRespawned } from "../../scripts/psu-launcher.mjs";
 import { CHARS_PER_TOKEN_ESTIMATE } from "@papercusp/operator-core/lib/context-doors";
 import capabilityRead from "@papercusp/operator-core/lib/agent-tools/capability/read";
 import * as payloadSpool from "@papercusp/operator-core/lib/inference-gateway/payload-spool";
@@ -3270,6 +3271,8 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
               arguments: { script: "return 'controlled apply-then-reset';" },
             },
           }),
+          "/api/agent-mcp/console/bootstrap-su/session-respawned",
+          { "x-papercusp-mcp-attempt-id": "a9f3e4c2-740e-4f51-8c93-91865f2b4c10" },
         );
         expect(r.status).toBe(502);
         const payload = JSON.parse(r.body) as {
@@ -3341,6 +3344,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           connected: true,
           forwardingResult: "outcome_unknown",
           rpcMethods: ["tools/call"],
+          callerAttemptId: "a9f3e4c2-740e-4f51-8c93-91865f2b4c10",
         });
         expect(typeof failure?.traceId).toBe("string");
         expect(String(failure?.traceId)).not.toBe("");
@@ -3369,6 +3373,66 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
         else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
       }
     }),
+  );
+
+  it(
+    "joins the launcher respawn event to its proxy failure row by callerAttemptId",
+    async () => {
+      const fs = await import("node:fs");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const logFile = path.join(
+        os.tmpdir(),
+        `mcp-proxy-respawn-correlation-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+      );
+      const previousLogFile = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+      const upstream = track(http.createServer((_request, response) => response.destroy()));
+      const reportedEvents: Array<Record<string, unknown>> = [];
+      try {
+        await listen(upstream);
+        const proxy = track(
+          createMcpProxy({
+            listenPort: 0,
+            targetHost: "127.0.0.1",
+            targetPort: port(upstream),
+            retryWindowMs: 0,
+            retryBackoffMs: 1,
+            log: () => {},
+          }),
+        );
+        await listen(proxy);
+
+        await expect(reportSessionRespawned(null, "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f", {
+          coordOwnerId: "su-diagnostic-fixture",
+          operatorUrl: `http://127.0.0.1:${port(proxy)}`,
+          token: "must-not-be-logged",
+          timeoutMs: 3_000,
+          appendEventImpl: (_owner, _kind, event) => reportedEvents.push(event),
+        })).resolves.toBe(false);
+
+        const rows = fs
+          .readFileSync(logFile, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        const failure = rows.find((row) => row.kind === "upstream_error");
+        expect(reportedEvents).toHaveLength(1);
+        const callerAttemptId = reportedEvents[0]?.callerAttemptId;
+        expect(callerAttemptId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+        expect(failure).toMatchObject({ callerAttemptId });
+        expect(JSON.stringify(reportedEvents)).not.toContain("must-not-be-logged");
+        expect(JSON.stringify(failure)).not.toContain("must-not-be-logged");
+      } finally {
+        fs.rmSync(logFile, { force: true });
+        if (previousLogFile === undefined)
+          delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+        else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
+      }
+    },
   );
 
   it(

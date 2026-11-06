@@ -73,8 +73,13 @@ describe('lost host to restored native conversation', () => {
     boundary?: 'event' | 'deadline' | 'human'; duringDowntime?: boolean;
     fleetFirst?: boolean;
     productionGuarded?: boolean;
+    installInvalidation?: 'stop' | 'lease' | 'wait';
   }>([
     { headless: true, waiting: false, stopped: false, negative: null, productionGuarded: true },
+    ...(['stop', 'lease', 'wait'] as const).map(installInvalidation => ({
+      headless: true, waiting: false, stopped: false, negative: null,
+      productionGuarded: true, installInvalidation,
+    })),
     { headless: true, waiting: false, stopped: false, negative: null },
     ...[true, false].map(fleetFirst => ({ headless: fleetFirst, waiting: false,
       stopped: false, negative: null, fleetFirst })),
@@ -85,7 +90,7 @@ describe('lost host to restored native conversation', () => {
     { headless: true, waiting: false, stopped: false, negative: 'completed' },
     { headless: true, waiting: false, stopped: false, negative: 'unknown' },
     { headless: true, waiting: false, stopped: false, negative: 'stale' },
-  ])('preserves placement=$headless wait=$waiting stop=$stopped negative=$negative boundary=$boundary downtime=$duringDowntime fleetFirst=$fleetFirst production=$productionGuarded', async scenario => {
+  ])('preserves placement=$headless wait=$waiting stop=$stopped negative=$negative boundary=$boundary downtime=$duringDowntime fleetFirst=$fleetFirst production=$productionGuarded install=$installInvalidation', async scenario => {
     const root = mkdtempSync(join(tmpdir(), 'interrupted-host-journey-'));
     const owner = `ih-${process.pid}-${Date.now()}`;
     const ws = m.ws;
@@ -273,6 +278,22 @@ describe('lost host to restored native conversation', () => {
             expect(options.coordOwnerId).toBe(owner);
             expect(options.envelope.cwd).toBe(root);
             expect(options.envelope.greetingCmd).toContain(native);
+            // Model the install wait with a durable state transition, then
+            // honor the real spawner's last callback before any native child.
+            if (scenario.installInvalidation === 'stop') {
+              await db.adminSql`UPDATE harness_shared.psu_pty_host_events SET payload =
+                jsonb_set(payload, '{execution,ownerStopRequested}', 'true'::jsonb)
+                WHERE owner_id = ${owner} AND workspace_id = ${ws}`;
+            } else if (scenario.installInvalidation === 'lease') {
+              await db.adminSql`UPDATE harness_shared.session_briefs SET control_state =
+                jsonb_set(control_state, '{lifecycle,interruption,nextAttemptAt}', '0'::jsonb)
+                WHERE owner_id = ${owner} AND workspace_id = ${ws}`;
+            } else if (scenario.installInvalidation === 'wait') {
+              originalAwaitId = (await waits.registerAwait({ subscriberId: owner, eventKey, policy: 'wake',
+                timeoutSec: 3600, timeoutBehavior: 'wake' })).id;
+            }
+            expect(options.beforeSpawn).toBeTypeOf('function');
+            expect(await options.beforeSpawn()).toBe(true);
             const replacement = await start(false);
             const { nativeSessionIdFromHost } = await import('../../../packages/operator-core/lib/agent-launch-core');
             expect(nativeSessionIdFromHost(replacement)).toBe(native);
@@ -299,7 +320,14 @@ describe('lost host to restored native conversation', () => {
           const response = await production.default.handler({ ...args,
             [production.INTERNAL_INTERRUPTION_RECOVERY]: args[Symbol.for('host-journey')],
           }, launchContext);
-          expect('isError' in response && response.isError, JSON.stringify(response)).not.toBe(true);
+          expect(Boolean('isError' in response && response.isError), JSON.stringify(response))
+            .toBe(Boolean(scenario.installInvalidation));
+          if (scenario.installInvalidation) {
+            const refusal = scenario.installInvalidation === 'stop' ? 'interruption-revalidation:owner-stop'
+              : scenario.installInvalidation === 'lease' ? 'interruption-reservation-lost-or-expired'
+              : 'interruption-wake-boundary-changed';
+            expect(JSON.stringify(response)).toContain(refusal);
+          }
           expect(m.replacement).toHaveBeenCalledTimes(1);
           return response;
         }
@@ -340,7 +368,19 @@ describe('lost host to restored native conversation', () => {
         result = await sweepSessionInterruptions({ workspaceId: ws,
           installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null });
       }
-      if (scenario.stopped || scenario.negative) {
+      if (scenario.installInvalidation) {
+        expect(result.restored).not.toContain(owner);
+        expect(m.launch).toHaveBeenCalledTimes(1);
+        expect(m.replacement).toHaveBeenCalledTimes(1);
+        expect(children).toHaveLength(1);
+        expect(readFileSync(transcript, 'utf8')).toBe(transcriptBeforeRecovery);
+        const [settlement] = await db.adminSql`SELECT control_state #> '{lifecycle,interruption}' AS receipt
+          FROM harness_shared.session_briefs WHERE owner_id = ${owner} AND workspace_id = ${ws}`;
+        expect(settlement.receipt).toMatchObject({ attempts: 1, state: 'pending' });
+        await sweepSessionInterruptions(context);
+        expect(m.replacement).toHaveBeenCalledTimes(1);
+        expect(children).toHaveLength(1);
+      } else if (scenario.stopped || scenario.negative) {
         expect(m.launch).not.toHaveBeenCalled();
         if (scenario.stopped) expect(result.held[owner]).toBe('owner-stop');
         if (scenario.negative === 'completed') expect(result.held[owner]).toBe('completed-or-idle');

@@ -153,6 +153,17 @@ const UPSTREAM_AGENT = new http.Agent({
  * value into upstream logs or make two unrelated requests appear correlated.
  */
 export const MCP_PROXY_TRACE_HEADER = MCP_REQUEST_TRACE_HEADER;
+const MCP_PROXY_CALLER_ATTEMPT_ID_HEADER = "x-papercusp-mcp-attempt-id";
+const SESSION_RESPAWNED_REPORT_PATH = "/api/agent-mcp/console/bootstrap-su/session-respawned";
+const CALLER_ATTEMPT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function callerAttemptIdForRequest(req: http.IncomingMessage): string | undefined {
+  const path = req.url?.split("?", 1)[0];
+  if (req.method !== "POST" || path !== SESSION_RESPAWNED_REPORT_PATH) return undefined;
+  const value = req.headers[MCP_PROXY_CALLER_ATTEMPT_ID_HEADER];
+  if (typeof value !== "string" || !CALLER_ATTEMPT_ID_RE.test(value)) return undefined;
+  return value.toLowerCase();
+}
 export const MAX_MCP_PROXY_TRACE_ID_CHARS = MAX_MCP_REQUEST_TRACE_ID_CHARS;
 export const MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER =
   MCP_DATA_PLANE_DEGRADED_AT_HEADER;
@@ -4861,6 +4872,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
         const requestTraceId = randomUUID();
+        const callerAttemptId = callerAttemptIdForRequest(req);
         const reservedControlPlaneBase = isReservedControlPlaneCall(
           rawBody,
           req.url,
@@ -6247,6 +6259,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // no-header stall identifies its handler path without logging args.
           const rpcTrace = {
             traceId,
+            ...(callerAttemptId ? { callerAttemptId } : {}),
             ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
             ...(requestedBuild ? { build: requestedBuild } : {}),
             ...(defaultedBuildTools ? { buildDefaultedFor: defaultedBuildTools } : {}),

@@ -3740,6 +3740,40 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
+  it.each(['owner-stop', 'reservation-lost-or-expired', 'wake-boundary-changed'])(
+    'internal recovery refuses %s after headless installation before creating a process', async reason => {
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValue({ ...dead, headless: true });
+      let installationFinished = false;
+      const beforeNativeCreate = vi.fn(async () => {
+        if (installationFinished) throw new Error(`interruption-revalidation:${reason}`);
+      });
+      const createProcess = vi.fn(() => headlessSpawnResult());
+      spawnHeadlessMock.mockImplementationOnce(async (opts: unknown) => {
+        // The real spawner awaits its install lease before this callback.
+        installationFinished = true;
+        const { beforeSpawn } = opts as { beforeSpawn: () => Promise<boolean> };
+        if (!(await beforeSpawn())) return { status: 'error', code: 409, error: 'cancelled' };
+        return createProcess();
+      });
+
+      const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+        headless: true, idempotencyKey: `post-install-recovery-${reason}`,
+        [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId,
+          wait: true, beforeNativeCreate },
+      } as never, ctx);
+
+      expect(isError(res), textOf(res)).toBe(true);
+      expect(textOf(res)).toContain(`interruption-revalidation:${reason}`);
+      expect(spawnHeadlessMock).toHaveBeenCalledOnce();
+      expect(createProcess).not.toHaveBeenCalled();
+      const summaries = recordAgentLaunchResultMock.mock.calls
+        .map(([call]) => (call as { summary: Record<string, unknown> }).summary);
+      expect(summaries.every(summary => Array.isArray(summary.nativeSpawnAttempted) &&
+        summary.nativeSpawnAttempted.length === 0)).toBe(true);
+    },
+  );
+
   it('interruption recovery preserves a member role and uses that member launch record', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);

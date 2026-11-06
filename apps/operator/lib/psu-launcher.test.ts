@@ -16036,6 +16036,9 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
       "http://op:1/api/agent-mcp/console/bootstrap-su/session-respawned",
     );
     expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
+    expect(calls[0].opts.headers["x-papercusp-mcp-attempt-id"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(JSON.parse(calls[0].opts.body)).toEqual({
       advSessionId: 42,
       sessionId: freshId,
@@ -16122,7 +16125,9 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
   describe("respawn report diagnostics", () => {
     it.each([200, 503])("persists the real HTTP %i outcome without request or response secrets", async (status) => {
       const dir = mkdtempSync(join(tmpdir(), "respawn-report-events-"));
-      const server = createServer((_request, response) => {
+      const receivedAttemptIds: string[] = [];
+      const server = createServer((request, response) => {
+        receivedAttemptIds.push(String(request.headers["x-papercusp-mcp-attempt-id"] ?? ""));
         response.writeHead(status);
         response.end("response-body-that-must-not-be-logged");
       });
@@ -16139,6 +16144,10 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         const rows = readFileSync(eventLogPathForOwner("su-diagnostic-fixture", dir), "utf8")
           .trim().split("\n").map((line) => JSON.parse(line));
         expect(rows).toHaveLength(1);
+        expect(rows[0].callerAttemptId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+        expect(receivedAttemptIds).toEqual([rows[0].callerAttemptId]);
         expect(rows[0]).toMatchObject({
           kind: "respawn-report-attempt",
           nativeId: freshId,
@@ -16174,6 +16183,7 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
       })).resolves.toBe(false);
       expect(appendEventImpl).toHaveBeenCalledExactlyOnceWith("su-diagnostic-fixture", "respawn-report-attempt", {
         nativeId: freshId,
+        callerAttemptId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
         endpointClass: "session-respawned",
         outcome: "transport-error",
         status: null,
@@ -16201,6 +16211,7 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
       })).resolves.toBe(false);
       expect(appendEventImpl).toHaveBeenCalledExactlyOnceWith("su-diagnostic-fixture", "respawn-report-attempt", {
         nativeId: freshId,
+        callerAttemptId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
         endpointClass: "session-respawned",
         outcome: "timeout",
         status: null,

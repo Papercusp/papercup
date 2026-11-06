@@ -3135,6 +3135,15 @@ export default defineTool({
                 // native-attempt fence only at the spawner's post-install
                 // boundary, before task enrolment and process creation.
                 beforeSpawn: async () => {
+                  // Installation can also outlive a stop, recovery lease, or
+                  // source writer transition. Earlier admission is not current
+                  // authorization for the native effect after that wait.
+                  if (recheckInPlaceResume) await recheckInPlaceResume();
+                  if (recheckOriginalMember) await recheckOriginalMember();
+                  if (reconcileOriginalRouting) await reconcileOriginalRouting();
+                  await interruptionRecovery?.beforeNativeCreate?.();
+                  if (startupReservation && startupReservation.expiresAtMs <= Date.now())
+                    throw new Error('Ended-source resume startup reservation expired before process start.');
                   await markNativeSpawnAttempted(i);
                   return true;
                 },

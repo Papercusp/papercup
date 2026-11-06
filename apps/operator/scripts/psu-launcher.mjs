@@ -12085,6 +12085,7 @@ export async function reportSessionRespawned(
 ) {
   if (!sessionId || (!advSessionId && !coordOwnerId)) return false;
   const startedAt = Date.now();
+  const callerAttemptId = randomUUID();
   let signal;
   const finish = (accepted, outcome, status = null, errorName = null, errorCode = null) => {
     // Keep the existing per-owner lifecycle ledger diagnostic-only. Neither
@@ -12093,6 +12094,7 @@ export async function reportSessionRespawned(
       try {
         appendEventImpl(coordOwnerId, "respawn-report-attempt", {
           nativeId: String(sessionId),
+          callerAttemptId,
           endpointClass: "session-respawned",
           outcome,
           status,
@@ -12116,6 +12118,7 @@ export async function reportSessionRespawned(
         signal,
         headers: {
           "content-type": "application/json",
+          "x-papercusp-mcp-attempt-id": callerAttemptId,
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
         body: JSON.stringify({
