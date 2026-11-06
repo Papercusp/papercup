@@ -28,8 +28,11 @@ if (worker) {
 assertIsolatedIntegrationWorkerEnvironment();
 beforeAll(async () => {
   // Fail the expensive setup at its actual prerequisite, with bounded diagnostics.
+  const dockerHost = process.env.DOCKER_HOST;
+  if (!dockerHost) throw Error('Minecraft runtime proof requires an explicit local DOCKER_HOST before game allocation');
   const daemon = await liveProcExec('docker', ['version', '--format', '{{.Server.Version}}'], { timeoutMs: 15_000 });
   if (daemon.code !== 0 || !daemon.stdout.trim()) throw Error(`Minecraft Docker preflight failed (${daemon.code}): ${daemon.stderr.slice(-2000)}`);
+  console.info('MINECRAFT_RUNTIME_DOCKER ' + JSON.stringify({ host: dockerHost, serverVersion: daemon.stdout.trim() }));
   root = await mkdtemp(join(tmpdir(), 'mc-runtime-real-')); jar = join(root, 'server.jar');
   const response = await fetch(pins.serverUrl, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw Error(`Minecraft download HTTP ${response.status}`);

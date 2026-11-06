@@ -63,6 +63,16 @@ if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' &&
   process.exit(1);
 }
 
+// A selected local test engine is execution routing, not an ambient Docker
+// credential. Losing it makes Docker silently fall back to the main daemon.
+// Remote/context/TLS configuration remains outside the private-runtime contract.
+const isolatedDockerHost = isolatedRuntime && process.env.DOCKER_HOST !== undefined
+  ? process.env.DOCKER_HOST.trim() : null;
+if (isolatedDockerHost !== null && !/^unix:\/\/\/[^\s?#]+$/.test(isolatedDockerHost)) {
+  console.error('[with-test-pg] Docker preflight failed: isolated runtime requires an absolute local Unix socket in DOCKER_HOST');
+  process.exit(1);
+}
+
 // An explicit-but-empty sink commonly comes from expanding an unset shell
 // variable. Refuse before allocating PG instead of silently losing evidence.
 if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined && !process.env.PAPERCUSP_TEST_RUNS_DB_URL.trim()) {
@@ -759,6 +769,7 @@ if (isolatedRuntime) {
     'PAPERCUSP_ISOLATED_PROGRESS_FILE',
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
+    'PAPERCUSP_TEST_RUN_WORK_ITEM',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
     OWNED_TEST_DB_DIR_ENV,
     'PAPERCUSP_TEST_RUN_COMMIT', 'PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN',
@@ -775,6 +786,10 @@ if (isolatedRuntime) {
     'PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO',
     'PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED',
   ]);
+  if (isolatedDockerHost !== null) {
+    childEnv.DOCKER_HOST = isolatedDockerHost;
+    evidenceKeys.add('DOCKER_HOST');
+  }
   for (const key of Object.keys(childEnv)) {
     if (evidenceKeys.has(key)) continue;
     if (/^(PAPERCUSP_|HARNESS_|DBOS__|PG[A-Z]|DATABASE_URL$|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CLOUDSDK_|DOCKER_|GIT_ASKPASS$|GIT_CONFIG_|SSH_AUTH_SOCK$|CODEX_HOME$|VITEST(?:_|$)|DBUS_SESSION_BUS_ADDRESS$|GNOME_KEYRING_CONTROL$)/i.test(key)) {

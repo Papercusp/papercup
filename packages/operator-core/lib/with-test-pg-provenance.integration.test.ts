@@ -110,6 +110,35 @@ describe('ordinary PostgreSQL endpoint isolation', () => {
   }, 200_000);
 });
 
+describe('private PostgreSQL Docker routing', () => {
+  it('retains the selected local Docker socket and reporter attribution while isolating product identity and credentials', async () => {
+    const host = 'unix:///run/docker-bench.sock';
+    const workItem = 'WI-isolated-evidence';
+    const child = `
+      import assert from 'node:assert/strict';
+      assert.equal(process.env.DOCKER_HOST, ${JSON.stringify(host)});
+      assert.equal(process.env.PAPERCUSP_TEST_RUN_WORK_ITEM, ${JSON.stringify(workItem)});
+      assert.notEqual(process.env.PAPERCUSP_WORKSPACE_ID, 'parent-evidence-test');
+      for (const key of ['DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY',
+        'DOCKER_CERT_PATH', 'DOCKER_AUTH_CONFIG']) assert.equal(process.env[key], undefined, key);
+      console.log('PRIVATE_DOCKER_ROUTE_RETAINED=' + process.env.DOCKER_HOST);
+      console.log('PRIVATE_REPORTER_ATTRIBUTION_RETAINED=' + process.env.PAPERCUSP_TEST_RUN_WORK_ITEM);
+    `;
+    const { stdout, stderr } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '--input-type=module', '-e', child], {
+      cwd: root,
+      env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined, DOCKER_HOST: host,
+        PAPERCUSP_TEST_RUN_WORK_ITEM: workItem, PAPERCUSP_WORKSPACE_ID: 'parent-evidence-test',
+        DOCKER_CONTEXT: 'ambient-main', DOCKER_CONFIG: '/unavailable/credentials', DOCKER_TLS_VERIFY: '1',
+        DOCKER_CERT_PATH: '/unavailable/certs', DOCKER_AUTH_CONFIG: 'ambient-secret' },
+      timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
+    });
+    expect(stdout, stderr.slice(-1000)).toContain('PRIVATE_DOCKER_ROUTE_RETAINED=' + host);
+    expect(stdout, stderr.slice(-1000)).toContain('PRIVATE_REPORTER_ATTRIBUTION_RETAINED=' + workItem);
+    expect(stdout).toContain('"runtimeRemoved":true,"pgDataRemoved":true');
+  }, 200_000);
+});
+
 describe('private PostgreSQL pool admission', () => {
   it('bounds non-Vitest org pools to the owned server and serves a concurrent request burst without admission refusals', async () => {
     const child = `

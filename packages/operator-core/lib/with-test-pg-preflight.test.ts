@@ -49,6 +49,42 @@ function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): s
       code: (result.error as NodeJS.ErrnoException).code }, stdout: result.stdout, stderr: result.stderr });
 }
 
+describe('private Docker endpoint admission', () => {
+  it.each([
+    { host: undefined, admitted: true },
+    { host: 'unix:///run/docker-bench.sock', admitted: true },
+    { host: 'tcp://credential@remote.invalid:2376', admitted: false },
+    { host: 'unix://relative/docker.sock', admitted: false },
+    { host: '', admitted: false },
+  ])('checks the selected endpoint before allocating private state: %j', ({ host, admitted }) => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    const extension = 'data:text/javascript,' + encodeURIComponent(
+      'export function ensureRequiredEmbeddedExtensions() {}');
+    const hook = `export async function resolve(specifier, context, next) {
+      if (specifier === './install-embedded-pgvector.mjs') return { url: ${JSON.stringify(extension)}, shortCircuit: true };
+      if (specifier === 'async-exit-hook') throw new Error('DOCKER_ADMISSION_REACHED');
+      return next(specifier, context);
+    }`;
+    const script = `import { register } from 'node:module';
+      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+      process.argv = [process.execPath, ${JSON.stringify(entry)}, '--isolated-runtime',
+        '--', process.execPath, '-e', 'process.exit(91)'];
+      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const startedAt = performance.now();
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined, DOCKER_HOST: host },
+    });
+    const diagnostic = childDiagnostic(result, startedAt);
+    expect(result.status, diagnostic).toBe(1);
+    expect(result.signal, diagnostic).toBeNull();
+    expect(result.stderr, diagnostic).toContain(admitted ? 'DOCKER_ADMISSION_REACHED' : 'Docker preflight failed');
+    expect(result.stderr, diagnostic).not.toContain(admitted ? 'Docker preflight failed' : 'DOCKER_ADMISSION_REACHED');
+    expect(result.stdout, diagnostic).not.toContain('booting throwaway PG');
+    expect(result.stderr, diagnostic).not.toContain('credential@remote.invalid');
+  });
+});
+
 describe('private proof IPC admission', () => {
   it.each([
     { isolated: true, proof: true, ipc: false, admitted: false },
