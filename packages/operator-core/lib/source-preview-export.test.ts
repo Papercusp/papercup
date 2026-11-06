@@ -1877,7 +1877,10 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, setup, '#!/bin/bash\nexit 0\n');
     const receiptPath = join(tmp, 'runtime-asset-preflight.json');
     const options = { repo: fixture.repo, ref, receiptPath, inputs: [helper],
-      env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: join(tmp, 'runtime-asset-store') },
+      // Give this synthetic verifier task its own budget; the test worker's
+      // short outer deadline is below the verifier's 120s cleanup reserve.
+      env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: join(tmp, 'runtime-asset-store'),
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 300_000) },
       command: [process.execPath, '-e', 'throw Error("provider must not start")'] };
     await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');
     write(fixture.repo, model, 'wrong-model');
