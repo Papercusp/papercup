@@ -3405,6 +3405,20 @@ describe('BG inherited manifest and original source boundaries', () => {
     } finally { spy.mockRestore(); syncBuiltinESMExports(); }
   });
 
+  it('BG compiler final full-record fence rejects invocation identity drift after native compilation', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    let reached = false;
+    await expect(compileBgVerifierInvocation({ ...fixture, runPhase: async (phase, operation) => {
+      if (phase === 'bg.compiler.verify') {
+        reached = true;
+        fixture.invocation.argv = [...fixture.invocation.argv, '--define:BG_DRIFT=true'];
+      }
+      return operation();
+    } })).rejects.toThrow('BG builder configuration or toolchain identity changed');
+    expect(reached).toBe(true);
+    expect(existsSync(fixture.entry)).toBe(false);
+  });
+
   it.each(['bg.compiler.before-build', 'bg.compiler.custody', 'bg.compiler.verify'].flatMap(boundary =>
     ['source', 'dependency', 'configuration'].map(defect => ({ boundary, defect }))))(
     'BG compiler retains fresh $defect checks at $boundary after census composition', async ({ boundary, defect }) => {
