@@ -60,6 +60,11 @@ export interface OperationAdapterEvidence {
     final: boolean;
     receiptRef?: string;
   };
+  lifecycle?: {
+    attemptId: string;
+    yielded: boolean;
+    polls: Array<{ providerCallId: string; sourceRef: string; receiptRef?: string }>;
+  };
   replayClass: ReplayClass;
   bindingSchema?: RecipeBindingSchemaV1;
   decisionRefs: string[];
@@ -144,6 +149,11 @@ function copyOperationEvidence(operations: readonly OperationAdapterEvidence[]):
       || !['success', 'error', 'refused', 'preview', 'running', 'unknown'].includes(operation.outcome.status)
       || typeof operation.outcome.final !== 'boolean'
       || (operation.outcome.status === 'running' && operation.outcome.final)) throw new Error('invalid_operation_evidence');
+    const lifecycle = operation.lifecycle;
+    if (lifecycle && (lifecycle.attemptId !== operation.operationId || typeof lifecycle.yielded !== 'boolean'
+      || !Array.isArray(lifecycle.polls) || lifecycle.polls.length > 2000
+      || lifecycle.polls.some(poll => ![poll.providerCallId, poll.sourceRef,
+        ...(poll.receiptRef === undefined ? [] : [poll.receiptRef])].every(opaqueRef)))) throw new Error('invalid_operation_lifecycle');
     ids.add(operation.operationId);
     // Select declared fields only: an adapter's raw input/author privilege cannot
     // hitchhike on an otherwise valid runtime object.
@@ -156,6 +166,9 @@ function copyOperationEvidence(operations: readonly OperationAdapterEvidence[]):
         ...(source.parentOperationId ? { parentOperationId: source.parentOperationId } : {}) },
       outcome: { status: operation.outcome.status, final: operation.outcome.final,
         ...(operation.outcome.receiptRef ? { receiptRef: operation.outcome.receiptRef } : {}) },
+      ...(lifecycle ? { lifecycle: { attemptId: lifecycle.attemptId, yielded: lifecycle.yielded,
+        polls: lifecycle.polls.map(poll => ({ providerCallId: poll.providerCallId, sourceRef: poll.sourceRef,
+          ...(poll.receiptRef ? { receiptRef: poll.receiptRef } : {}) })) } } : {}),
       replayClass: operation.replayClass,
       ...(operation.bindingSchema ? { bindingSchema: recipeBindingSchemaV1Schema.parse(operation.bindingSchema) } : {}),
       decisionRefs: [...operation.decisionRefs],

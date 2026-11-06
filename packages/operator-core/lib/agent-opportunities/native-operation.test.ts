@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { recordActivity } from '@papercusp/activity-bridge';
 import { boundedStage } from './pipeline';
 import { observeNativeOperation, groupNativeOperations, readableNativeChains, nativeTranscriptSources, type NativeProvider } from './native-operation';
+import { normalizeExecutionTrace, readableOperationEvidence } from '../orchestration-trace';
 import type { SearchSource } from './search-reformulation';
 const scope = { workspaceId: 'native-test', sourceBoundary: 'authorized', epoch: 'v1', key: new Uint8Array(32).fill(91) };
 export const source = (id: string, over: Partial<SearchSource> = {}): SearchSource => ({
@@ -15,15 +16,56 @@ export const source = (id: string, over: Partial<SearchSource> = {}): SearchSour
 });
 const observe = (s: SearchSource, scoped = scope) => observeNativeOperation(s, scoped)!;
 
+it.each(['claude', 'codex', 'omp'] as const)('P005 actual %s receipts feed shared operation evidence without executable source or authority', async provider => {
+  const call = source('actual-receipt', { provider, args: { cmd: 'echo private-value', cwd: '/private/path',
+    env: { TOKEN: 'private-credential', MODE: 'inspect' } } });
+  call.result = { ...call.result!, provider };
+  const observed = observe(call), operation = observed.operationEvidence!;
+  expect(operation).toMatchObject({ operationId: observed.operationToken, family: 'shell',
+    semanticIdentity: { fingerprint: observed.fingerprint, workspaceId: scope.workspaceId },
+    source: { providerCallId: observed.operationToken }, outcome: { status: 'success', final: true },
+    replayClass: 'non-replayable' });
+  const trace = await normalizeExecutionTrace({ script: 'return 1;', tools: [], operations: [operation] });
+  expect(trace.operations).toEqual([operation]);
+  expect(readableOperationEvidence(trace, { workspaceId: scope.workspaceId, now: Date.now(), canRead: () => true })).toEqual([operation]);
+  expect(readableOperationEvidence(trace, { workspaceId: scope.workspaceId, now: Date.now(), canRead: () => false })).toEqual([]);
+  expect(readableOperationEvidence(trace, { workspaceId: 'other', now: Date.now(), canRead: () => true })).toEqual([]);
+  expect(JSON.stringify(observed)).not.toMatch(/private-value|private-credential|private\/path|actual-receipt/);
+  expect(observe({ ...call, tool: 'functions.exec' }).operationEvidence).toBeUndefined();
+  expect(observe({ ...call, tool: 'write_stdin' }).operationEvidence).toBeUndefined();
+  expect(observe({ ...call, sourceComplete: false }).operationEvidence).toBeUndefined();
+  expect(observe({ ...call, callId: null }).operationEvidence).toBeUndefined();
+  expect(observe({ ...call, result: null }).operationEvidence?.outcome).toEqual({ status: 'unknown', final: false });
+  for (const status of ['refused', 'denied', 'role-not-allowed', 'quota-exceeded'])
+    expect(observe({ ...call, result: { ...call.result!, status, body: {} } }).operationEvidence?.outcome)
+      .toMatchObject({ status: 'refused', final: true });
+});
+
+it('P005 shell environment, cwd, interpreter and effect remain semantically distinct after credential scrubbing', () => {
+  const baseline = { cmd: 'echo safe', cwd: '/repo', env: { MODE: 'read', TOKEN: 'first-private' },
+    shell: '/bin/bash', login: false, tty: false, effect: 'read', sandbox_permissions: 'use_default' };
+  const before = observe(source('one', { args: baseline }));
+  for (const change of [{ cwd: '/other' }, { env: { MODE: 'write', TOKEN: 'first-private' } },
+    { shell: '/bin/sh' }, { login: true }, { tty: true }, { effect: 'write' }, { sandbox_permissions: 'require_escalated' }])
+    expect(observe(source('changed', { args: { ...baseline, ...change } })).fingerprint).not.toBe(before.fingerprint);
+  expect(observe(source('secret-change', { args: { ...baseline, env: { MODE: 'read', TOKEN: 'second-private' } } })).fingerprint)
+    .toBe(before.fingerprint);
+  expect(observe(source('aliases', { args: { command: baseline.cmd, workdir: baseline.cwd,
+    environment: baseline.env, shell: baseline.shell, login: false, tty: false, effect: 'read', sandbox_permissions: 'use_default' } })).fingerprint)
+    .toBe(before.fingerprint);
+});
+
 it('native UNKNOWN observations retain exact output availability for current-source revision checks', () => {
   const call = source('unknown-result');
   const available = observe({ ...call, result: { ...call.result!, body: { unrecognized: true } } });
   const missing = observe({ ...call, result: null });
   expect(available.outcome).toBe('UNKNOWN');
   expect(missing.outcome).toBe('UNKNOWN');
-  const { resultAvailable: before, ...retained } = available;
-  const { resultAvailable: after, ...lost } = missing;
+  const { resultAvailable: before, operationEvidence: availableEvidence, ...retained } = available;
+  const { resultAvailable: after, operationEvidence: missingEvidence, ...lost } = missing;
   expect(before).toBe(true); expect(after).toBe(false);
+  expect(availableEvidence?.outcome.receiptRef).toBeTruthy();
+  expect(missingEvidence?.outcome.receiptRef).toBeUndefined();
   expect(retained).toEqual(lost);
 });
 
@@ -149,6 +191,87 @@ const wire = (provider: NativeProvider, id: string, command = 'rg private') => {
     { timestamp, type: 'message', message: { role: 'toolResult', toolCallId: id, content: [{ type: 'text', text: '{"exit_code":0}' }] } },
   ];
 };
+
+function receiptWire(provider: NativeProvider, id: string, tool: string, args: unknown, body: unknown) {
+  const timestamp = '2026-10-24T12:00:00Z';
+  return (provider === 'codex' ? [
+    { timestamp, type: 'response_item', payload: { type: 'function_call', name: tool, call_id: id, arguments: JSON.stringify(args) } },
+    { timestamp, type: 'response_item', payload: { type: 'function_call_output', call_id: id, output: JSON.stringify(body) } },
+  ] : provider === 'claude' ? [
+    { timestamp, type: 'assistant', message: { content: [{ type: 'tool_use', name: tool, id, input: args }] } },
+    { timestamp, type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: JSON.stringify(body) }] } },
+  ] : [
+    { timestamp, type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: tool, id, arguments: args }] } },
+    { timestamp, type: 'message', message: { role: 'toolResult', toolCallId: id, content: [{ type: 'text', text: JSON.stringify(body) }] } },
+  ]).map(record => JSON.stringify(record));
+}
+const transcriptContext = (provider: NativeProvider) => ({ workspaceId: scope.workspaceId, harnessSlug: 'native',
+  authorizationScope: scope.sourceBoundary, actor: 'su-native', verifiedAgent: true, origin: 'agent' as const,
+  provider, sessionId: 'session-1', complete: true });
+
+it.each(['claude', 'codex', 'omp'] as const)('P005 %s managed yielded receipts settle one attempt through exact polls', async provider => {
+  const start = (id: string, task: string) => receiptWire(provider, id, 'mcp__papercusp_su__capability_bash',
+    { command: 'echo private', cwd: '/repo' }, { task_id: task, bash_id: task + '-bash', status: 'running' });
+  const poll = (id: string, task: string, body: unknown) => receiptWire(provider, id, 'mcp__papercusp_su__capability_bash_output', { task_id: task }, body);
+  const lines = [...start('attempt-one', 'job-one'), ...poll('empty', 'job-one', { status: 'running', output: '' }),
+    ...poll('settled-one', 'job-one', { status: 'completed', exit_code: 0 }),
+    ...start('attempt-two', 'job-two'), ...poll('settled-two', 'job-two', { status: 'failed', exit_code: 3 })];
+  const calls = nativeTranscriptSources(lines, transcriptContext(provider));
+  const grouped = groupNativeOperations(calls.map(call => observe(call)));
+  expect(grouped.operations).toHaveLength(2);
+  expect(grouped.chains).toMatchObject([{ logicalDemand: 2, successCount: 1, errorCount: 1, unknownCount: 0 }]);
+  const first = grouped.operations[0]!.operationEvidence!;
+  expect(first.lifecycle).toMatchObject({ attemptId: first.operationId, yielded: true, polls: [{}, {}] });
+  expect(first.outcome).toMatchObject({ status: 'success', final: true });
+  expect(new Set(first.lifecycle!.polls.map(p => p.providerCallId)).size).toBe(2);
+  expect(first.source.providerCallId).not.toBe(first.lifecycle!.polls[0]!.providerCallId);
+  expect(first.outcome.receiptRef).toBe(first.lifecycle!.polls[1]!.receiptRef);
+  expect(grouped.operations[1]!.operationEvidence!.operationId).not.toBe(first.operationId);
+  expect(JSON.stringify(grouped)).not.toMatch(/attempt-one|job-one|echo private|\/repo|settled-one/);
+  const trace = await normalizeExecutionTrace({ script: 'return 1;', tools: [], operations: grouped.operations.map(o => o.operationEvidence!) });
+  expect(trace.operations?.[0]!.lifecycle).toEqual(first.lifecycle);
+  expect(groupNativeOperations(nativeTranscriptSources(lines, { ...transcriptContext(provider), complete: false }).map(call => observe(call))).operations).toEqual([]);
+});
+
+it('P005 Codex native polls settle only the recorded earlier command, preserving original yield and wrapper exclusions', () => {
+  const start = receiptWire('codex', 'command', 'functions.exec_command', { cmd: 'echo safe' }, { session_id: 42 });
+  const poll = receiptWire('codex', 'result', 'functions.write_stdin', { session_id: 42, chars: '' }, { exit_code: 0 });
+  const wrapper = receiptWire('codex', 'wrapper', 'functions.exec', { code: 'tools.exec_command({cmd:"echo invented"})' }, { session_id: 55 });
+  const fakePoll = receiptWire('codex', 'wrapper-poll', 'functions.write_stdin', { session_id: 55 }, { exit_code: 0 });
+  const calls = nativeTranscriptSources([...poll, ...start, ...wrapper, ...fakePoll, ...poll], transcriptContext('codex'));
+  const command = calls.find(c => c.callId === 'command')!;
+  expect(command.result!.body).toEqual({ session_id: 42 });
+  expect(command.continuations).toHaveLength(1);
+  const grouped = groupNativeOperations(calls.map(call => observe(call)));
+  expect(grouped.operations).toHaveLength(1);
+  expect(grouped.operations[0]!.operationEvidence).toMatchObject({ outcome: { status: 'success', final: true },
+    lifecycle: { yielded: true, polls: [{}] } });
+  const onlyEarly = nativeTranscriptSources([...poll, ...start], transcriptContext('codex'));
+  expect(observe(onlyEarly.find(c => c.callId === 'command')!).operationEvidence?.outcome).toMatchObject({ status: 'running', final: false });
+});
+
+it('P005 conflicting/reused handles, mismatched aliases and unsupported result bodies cannot certify settlement', () => {
+  const context = transcriptContext('codex');
+  const start = (id: string, handle = 42) => receiptWire('codex', id, 'exec_command', { cmd: 'echo safe' }, { session_id: handle });
+  const poll = (id: string, handle: number, body: unknown) => receiptWire('codex', id, 'write_stdin', { session_id: handle }, body);
+  for (const lines of [
+    [...start('one'), ...start('two'), ...poll('result', 42, { exit_code: 0 })],
+    [...start('one'), ...poll('result', 43, { exit_code: 0 })],
+    [...start('one'), ...poll('result', 42, { output: 'exit_code:0' })],
+    [...start('one'), ...poll('result', 42, { exit_code: 0, truncated: true })],
+    [...start('one'), ...poll('one-result', 42, { exit_code: 0 }), ...poll('two-result', 42, { exit_code: 1 })],
+    [...receiptWire('codex', 'one', 'capability:bash', { command: 'echo safe' }, { task_id: 'task-one', bash_id: 'bash-one', status: 'running' }),
+      ...receiptWire('codex', 'result', 'capability:bash_output', { task_id: 'task-one', bash_id: 'other' }, { exit_code: 0 })],
+  ]) {
+    const operations = groupNativeOperations(nativeTranscriptSources(lines, context).map(call => observe(call))).operations;
+    expect(operations.length).toBeGreaterThan(0);
+    expect(operations.every(o => o.outcome === 'UNKNOWN' && o.operationEvidence?.outcome.final === false)).toBe(true);
+  }
+  const structured = source('structured', { tool: 'capability:bash', result: { ...source('structured').result!, body: {
+    content: [{ type: 'text', text: 'exit 3 (human preview)' }], structuredContent: { exit_code: 3, status: 'failed' },
+  } } });
+  expect(observe(structured).operationEvidence?.outcome).toMatchObject({ status: 'error', final: true });
+});
 
 it('R26-PROVIDERS', () => {
   for (const provider of ['codex', 'claude', 'omp'] as const) {

@@ -38,6 +38,19 @@ function operation(overrides: Partial<OperationAdapterEvidence> = {}): Operation
 }
 
 describe('P002 operation adapter contracts', () => {
+  it('P005 copies scoped attempt/poll lifecycle without undeclared payload and rejects malformed identity', async () => {
+    const evidence = operation({ lifecycle: { attemptId: 'invocation:100', yielded: true,
+      polls: [{ providerCallId: 'call:101', sourceRef: 'source:101', receiptRef: 'result:101' }] } });
+    Object.assign(evidence.lifecycle!.polls[0]!, { command: 'secret payload', authorRole: 'admin' });
+    const trace = await normalizeExecutionTrace({ script: 'return 1;', tools: TOOLS, operations: [evidence] });
+    expect(trace.operations![0]!.lifecycle).toEqual({ attemptId: 'invocation:100', yielded: true,
+      polls: [{ providerCallId: 'call:101', sourceRef: 'source:101', receiptRef: 'result:101' }] });
+    for (const lifecycle of [
+      { ...evidence.lifecycle!, attemptId: 'other-attempt' },
+      { ...evidence.lifecycle!, polls: [{ providerCallId: 'raw command with spaces', sourceRef: 'source:101' }] },
+    ]) await expect(normalizeExecutionTrace({ script: 'return 1;', tools: TOOLS, operations: [{ ...evidence, lifecycle }] }))
+      .rejects.toThrow('invalid_operation_lifecycle');
+  });
   it('shell-equivalent-format: canonicalizes safe token formatting while retaining operators and bindings', () => {
     expect(shell()).toMatchObject({ status: 'supported' });
     expect(shell({ command: ' printf   %s  "${MODE}" | cat > result.txt' })).toMatchObject({ status: 'unknown' });

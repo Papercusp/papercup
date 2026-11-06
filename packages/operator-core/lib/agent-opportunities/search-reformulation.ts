@@ -27,6 +27,9 @@ export interface SearchSource {
     status: string; complete: boolean; body: unknown;
   };
   sourceComplete: boolean;
+  /** Exact job-handle matches made by the authorized transcript reader. These
+   * are result reads of this attempt, never additional command executions. */
+  continuations?: Array<{ callId: string; copyRef: string; result: SearchSource['result'] }>;
 }
 export interface SearchObservation {
   scopeToken: string; actorToken: string; sourceToken: string; operationToken: string | null;

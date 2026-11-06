@@ -6,6 +6,7 @@ import { summariseActivity } from '@papercusp/activity-bridge';
 import { normalizeMcpName } from '@papercusp/tooldef/tool-projection';
 import { atomizePipeline } from '../bash-substitution/atomize';
 import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
+import type { OperationAdapterEvidence } from '../orchestration-trace';
 import { isSensitiveValueKey, redactSensitiveText, redactStructuredSensitiveValue } from '../sensitive-text';
 import { createCodexTimelineParser, createOmpTimelineParser } from '../session-timeline-parsers';
 import { createAgentTimelineParser } from '../owner-sessions/timeline';
@@ -39,7 +40,7 @@ function operationToolName(tool: string): string {
   const name = original.startsWith('functions.mcp__') ? original.slice('functions.'.length) : original;
   if (name.startsWith('mcp__') && !/^mcp__papercusp(?:[-_]su)?__/.test(name)) return original;
   const normalized = normalizeMcpName(name);
-  return normalized === 'capability:bash' || normalized === 'capability:terminal' ? normalized : original;
+  return ['capability:bash', 'capability:terminal', 'capability:bash_output'].includes(normalized) ? normalized : original;
 }
 const hash = (scope: SqlIntentScope, domain: string, values: unknown[]) => createHmac('sha256', scope.key)
   .update(JSON.stringify(['native-operation-v1', scope.workspaceId, scope.sourceBoundary, scope.epoch, domain, values])).digest('hex');
@@ -100,7 +101,13 @@ function semantics(tool: string, input: unknown, scope: SqlIntentScope): { kind:
     if (!atoms.length) return null;
     // Preserve raw arguments, flags, runners and operators. Normalized atom heads
     // alone erase elevation/environment semantics and cannot identify demand.
-    return { kind: 'shell', value: { command, atoms: atoms.map(a => [a.raw, a.sepBefore]), cwd: args.cwd ?? args.workdir ?? null } };
+    return { kind: 'shell', value: { command, atoms: atoms.map(a => [a.raw, a.sepBefore]),
+      cwd: args.cwd ?? args.workdir ?? null,
+      // Missing runtime context is unknown, never an invented default. Keep
+      // environment and interpreter/effect distinctions after shared scrubbing.
+      environment: args.environment ?? args.env ?? null,
+      shell: args.shell ?? null, login: args.login ?? null, tty: args.tty ?? null,
+      effect: args.effect ?? null, sandbox: args.sandbox_permissions ?? null } };
   }
   if (!browserTools.has(name)) return null;
   const action = text(args.action) || name.split(/[._]/).at(-1)!;
@@ -115,13 +122,34 @@ export interface NativeObservation {
   kind: NativeKind | null; at: string; outcome: 'success' | 'error' | 'refused' | 'UNKNOWN';
   resultAvailable: boolean;
   evidenceGaps: string[];
+  /** Shared recipe-rail evidence, containing scoped opaque references only.
+   * An observed success is not an executable replay contract. */
+  operationEvidence?: OperationAdapterEvidence;
 }
 function resultBody(value: unknown): Obj {
   const body = object(value);
+  if (Object.keys(object(body.structuredContent)).length) return object(body.structuredContent);
   if (Array.isArray(body.content)) {
     try { return object(JSON.parse(body.content.map(b => text(object(b).text)).join('\n'))); } catch { return {}; }
   }
-  return Object.keys(object(body.structuredContent)).length ? object(body.structuredContent) : body;
+  return body;
+}
+function pairedResult(source: SearchSource, result = source.result, callId = source.callId) {
+  return source.identityAuthority === 'provider' && !!callId && result?.complete === true
+    && result.callId === callId && result.provider === source.provider && result.namespace === source.namespace;
+}
+function nativeOutcome(result: SearchSource['result'], kind: NativeKind | null): NativeObservation['outcome'] {
+  if (!result?.complete || !kind) return 'UNKNOWN';
+  const body = resultBody(result.body), exit = body.exit_code ?? body.exitCode;
+  if (body.truncated === true || body._partial === true || object(body._projection).truncated === true
+    || body.session_id != null && exit == null || body.running === true || body.status === 'running') return 'UNKNOWN';
+  if (['refused', 'denied', 'invalid-input', 'role-not-allowed', 'quota-exceeded'].includes(result.status)) return 'refused';
+  if (['error', 'timeout'].includes(result.status) || body.ok === false || body.isError === true || body.success === false
+    || ['failed', 'killed', 'timed_out'].includes(text(body.status)) || typeof exit === 'number' && exit !== 0) return 'error';
+  return result.status === 'ok' && (kind === 'shell' ? exit === 0 : body.success === true || body.ok === true) ? 'success' : 'UNKNOWN';
+}
+function yieldedResult(body: Obj) {
+  return (body.exit_code ?? body.exitCode) == null && (body.session_id != null || body.running === true || body.status === 'running');
 }
 export function observeNativeOperation(source: SearchSource, scope: SqlIntentScope): NativeObservation | null {
   miningScopeId(scope, source.harnessSlug);
@@ -130,19 +158,17 @@ export function observeNativeOperation(source: SearchSource, scope: SqlIntentSco
   if (!source.verifiedAgent || source.origin !== 'agent' || !providers.has(source.provider)) return null;
   const semantic = source.sourceComplete ? semantics(source.tool, source.args, scope) : null;
   const canonical = source.identityAuthority === 'provider' && !!source.callId;
-  const paired = canonical && source.result?.complete === true && source.result.callId === source.callId
-    && source.result.provider === source.provider && source.result.namespace === source.namespace;
+  const paired = pairedResult(source);
   const body = paired ? resultBody(source.result!.body) : {};
-  const bounded = body.truncated === true || body._partial === true || object(body._projection).truncated === true
-    || body.session_id != null && body.exit_code == null;
-  const status = paired ? source.result!.status : 'unknown';
-  const exit = body.exit_code ?? body.exitCode;
-  const outcome: NativeObservation['outcome'] = !paired || bounded || !semantic ? 'UNKNOWN'
-    : ['refused', 'denied', 'invalid-input'].includes(status) ? 'refused'
-      : ['error', 'timeout'].includes(status) || body.ok === false || body.isError === true || body.success === false
-        || typeof exit === 'number' && exit !== 0 ? 'error'
-        : status === 'ok' && (semantic.kind === 'shell' ? exit === 0 : body.success === true || body.ok === true) ? 'success' : 'UNKNOWN';
-  return {
+  const yielded = paired && !!semantic && yieldedResult(body);
+  const polls = yielded ? source.continuations ?? [] : [];
+  const settled = polls.filter(poll => pairedResult(source, poll.result, poll.callId)
+    && nativeOutcome(poll.result, semantic?.kind ?? null) !== 'UNKNOWN');
+  const conflicting = new Set(settled.map(poll => nativeOutcome(poll.result, semantic?.kind ?? null))).size > 1;
+  const settlement = !conflicting ? settled.at(-1) : undefined;
+  const outcome = conflicting ? 'UNKNOWN' : settlement ? nativeOutcome(settlement.result, semantic!.kind)
+    : paired ? nativeOutcome(source.result, semantic?.kind ?? null) : 'UNKNOWN';
+  const observed: NativeObservation = {
     scopeToken: miningScopeId(scope, source.harnessSlug), actorToken: hash(scope, 'actor', [source.actor]),
     provider: source.provider as NativeProvider, namespaceToken: hash(scope, 'namespace', [source.provider, source.namespace]),
     sourceToken: hash(scope, 'source', [source.copyRef]),
@@ -152,6 +178,71 @@ export function observeNativeOperation(source: SearchSource, scope: SqlIntentSco
     evidenceGaps: [...(!source.sourceComplete ? ['truncated-source'] : !semantic ? ['unsupported-operation'] : []),
       ...(!canonical ? ['unverified-operation-identity'] : []), ...(outcome === 'UNKNOWN' ? ['unmeasured-outcome'] : [])],
   };
+  if (observed.operationToken && observed.fingerprint && semantic) {
+    observed.operationEvidence = {
+      operationId: observed.operationToken,
+      family: semantic.kind === 'shell' ? 'shell' : 'native-operation', adapterVersion: 'native-operation:v2',
+      semanticIdentity: { version: `native-${semantic.kind}:semantics-v2`, fingerprint: observed.fingerprint,
+        workspaceId: scope.workspaceId, sourceBoundary: scope.sourceBoundary, epoch: scope.epoch },
+      source: { ref: observed.sourceToken, authorityRef: observed.scopeToken, observedAt: observed.at,
+        expiresAt: null, providerCallId: observed.operationToken },
+      outcome: { status: outcome === 'UNKNOWN' ? yielded && !conflicting ? 'running' : 'unknown' : outcome, final: outcome !== 'UNKNOWN',
+        ...(paired ? { receiptRef: hash(scope, 'result-receipt', [settlement?.copyRef ?? source.copyRef,
+          settlement?.callId ?? source.callId]) } : {}) },
+      lifecycle: { attemptId: observed.operationToken, yielded,
+        polls: polls.map(poll => ({ providerCallId: hash(scope, 'operation', [source.harnessSlug, source.provider, source.namespace, poll.callId]),
+          sourceRef: hash(scope, 'source', [poll.copyRef]),
+          ...(pairedResult(source, poll.result, poll.callId) ? { receiptRef: hash(scope, 'result-receipt', [poll.copyRef, poll.callId]) } : {}) })) },
+      replayClass: 'non-replayable', decisionRefs: [],
+    };
+  }
+  return observed;
+}
+
+/** Join only explicitly returned job handles within this authorized snapshot.
+ * Wrapper programs and displayed output are never searched for commands or IDs.
+ * Reused/ambiguous handles fail closed, even if a later read reports success. */
+function linkNativeContinuations(sources: SearchSource[]): SearchSource[] {
+  const jobKeys = (source: SearchSource, body: Obj, poll: boolean): string[] => {
+    const name = operationToolName(source.tool);
+    const family = (poll ? ['write_stdin', 'functions.write_stdin'] : ['exec_command', 'functions.exec_command']).includes(name) ? 'codex'
+      : (poll ? ['capability:bash_output'] : ['capability:bash']).includes(name) ? 'managed'
+        : (poll ? ['bashoutput', 'taskoutput'] : ['bash']).includes(name) ? 'claude' : null;
+    if (!family) return [];
+    return (family === 'codex' ? ['session_id'] : ['task_id', 'bash_id']).flatMap(key => {
+      const id = body[key];
+      if (!(typeof id === 'string' && id.length > 0 && id.length <= 256
+        || typeof id === 'number' && Number.isSafeInteger(id) && id >= 0)) return [];
+      return [stable([source.workspaceId, source.harnessSlug, source.authorizationScope, source.actor,
+        source.provider, source.namespace, family, key, String(id)])];
+    });
+  };
+  const owners = new Map<string, Set<number>>();
+  sources.forEach((source, index) => {
+    if (!source.sourceComplete || !pairedResult(source)) return;
+    const body = resultBody(source.result!.body);
+    if (!yieldedResult(body)) return;
+    for (const key of jobKeys(source, body, false)) {
+      const matches = owners.get(key) ?? new Set<number>(); matches.add(index); owners.set(key, matches);
+    }
+  });
+  const continuations = new Map<number, NonNullable<SearchSource['continuations']>>();
+  sources.forEach((source, index) => {
+    if (!source.sourceComplete || source.identityAuthority !== 'provider' || !source.callId) return;
+    const keys = jobKeys(source, object(source.args), true);
+    if (!keys.length) return;
+    const matches = keys.map(key => owners.get(key));
+    // Every provided handle must identify the SAME earlier attempt. A second
+    // alias or an unrelated session may not silently override a mismatch.
+    if (matches.some(match => match?.size !== 1)) return;
+    const indices = new Set(matches.flatMap(match => [...match!]));
+    if (indices.size !== 1) return;
+    const owner = [...indices][0]!;
+    if (owner >= index) return;
+    const polls = continuations.get(owner) ?? [];
+    polls.push({ callId: source.callId, copyRef: source.copyRef, result: source.result }); continuations.set(owner, polls);
+  });
+  return sources.map((source, index) => continuations.has(index) ? { ...source, continuations: continuations.get(index)! } : source);
 }
 
 /** Same-ID copies contribute once; conflicting requests or settled results are
@@ -245,11 +336,11 @@ export function createNativeTranscriptReader(context: NativeTranscriptContext) {
       }
     }
   }, retainedBytes: () => retainedBytes, sources(): SearchSource[] {
-    return calls.map(call => {
+    return linkNativeContinuations(calls.map(call => {
       const matches = results.get(call.callId ?? '') ?? [];
       // Replayed identical results are fine; incompatible same-ID results are not.
       return { ...call, result: matches.length && new Set(matches.map(stable)).size === 1 ? matches[0]! : null };
-    });
+    }));
   } };
 }
 
