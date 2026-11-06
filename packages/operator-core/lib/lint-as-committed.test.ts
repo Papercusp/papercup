@@ -54,6 +54,18 @@ const here = dirname(fileURLToPath(import.meta.url));
 const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
 const repoRoot = resolve(here, '../../..');
 
+// These CLI tests exercise this implementation, including uncommitted repairs.
+// The runner still selects committed fixture content itself; substituting an
+// older runner in the child would mix two implementations in one verdict.
+function currentRunnerEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
+  const loader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
+  env.NODE_OPTIONS = (env.NODE_OPTIONS ?? '').split(/\s+/)
+    .filter(option => option !== loader).join(' ');
+  if (!env.NODE_OPTIONS) delete env.NODE_OPTIONS;
+  return env;
+}
+
 type PublicDocsViteConfig = {
   resolve?: { preserveSymlinks?: boolean };
   plugins?: Array<{
@@ -1258,6 +1270,7 @@ describe('end-to-end — submodule content is materialised, not silently empty (
     // this test's subject: 11–44s normally, >60s at load ~130 on the gate (WI-10004340).
     const run = spawnSync('node', [scriptPath, 'lint:no-owner-name-tags', '--keep'], {
       cwd: repoRoot,
+      env: currentRunnerEnvironment(),
       encoding: 'utf8',
       timeout: 150_000,
       killSignal: 'SIGKILL',
@@ -1298,7 +1311,7 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       // reporter samples for worktree_dirty, or no run inside it can ever be current proof.
       // The linked node_modules are what dirtied it, so first prove the links exist (a tree
       // with nothing linked would be trivially clean and this assertion vacuous).
-      expect(run.stdout, `runner stderr:\n${run.stderr}`).toMatch(/linked [1-9]\d* node_modules dir\(s\)/);
+      expect(run.stdout, `runner stderr:\n${run.stderr}`).toMatch(/copied [1-9]\d* node_modules dir\(s\)/);
       const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
         cwd: workRoot,
         encoding: 'utf8',
@@ -1378,12 +1391,45 @@ console.log('CLONE_PREREQUISITES_OK');
 
   function run(root: string, arbitrary = false) {
     return spawnSync(process.execPath, [scriptPath, 'lint:probe', ...(arbitrary ? ['--any'] : [])], {
-      cwd: root, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+      cwd: root, env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
     });
   }
 
-  it('holds the physical donor install reader through preparation and the committed command', async () => {
+  it.each(['escaping-link', 'incomplete-copy', 'linked-root'] as const)
+    ('refuses independent dependency custody for %s before publishing its marker', async defect => {
+      const f = fixture('node build.cjs');
+      const parent = mkdtempSync(join(tmpdir(), 'lac-independent-custody-'));
+      const workRoot = join(parent, 'snapshot');
+      try {
+        gitFixture(f.root, ['clone', '--local', '--shared', '--quiet', f.root, workRoot]);
+        const markerPath = join(workRoot, '.git/lint-as-committed-owner.json');
+        const marker = { sha: f.head, sourceRepoRoot: f.root };
+        writeFileSync(markerPath, JSON.stringify(marker));
+        if (defect === 'linked-root') {
+          rmSync(join(f.root, 'node_modules'), { recursive: true });
+          mkdirSync(join(f.root, 'installed'));
+          symlinkSync('installed', join(f.root, 'node_modules'));
+        } else {
+          const target = defect === 'escaping-link' ? parent : './missing-package';
+          symlinkSync(target, join(f.root, 'node_modules/broken-package'));
+        }
+        await expect(mod.materializeIndependentDependencies(f.root, workRoot)).rejects.toThrow(
+          defect === 'linked-root' ? /independent dependency materialization failed/ :
+            defect === 'escaping-link' ? /escapes its snapshot/ : /absent from its snapshot/,
+        );
+        expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(marker);
+        if (defect !== 'linked-root') expect(lstatSync(join(workRoot, 'node_modules')).isDirectory()).toBe(true);
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+  it('releases the donor reader before the committed command while preserving independent dependency bytes', async () => {
     const f = fixture('node build.cjs');
+    const installed = join(f.root, 'node_modules/fixture-dependency/index.cjs');
+    mkdirSync(dirname(installed), { recursive: true });
+    writeFileSync(installed, 'module.exports = "original-install";\n');
     const ready = join(f.root, 'reader-ready');
     const release = join(f.root, 'reader-release');
     const lockDir = join(f.root, 'mutexes');
@@ -1392,22 +1438,24 @@ console.log('CLONE_PREREQUISITES_OK');
     const probe = `
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
-assert.ok(process.env.PAPERCUSP_INSTALL_MUTEX_HELD.split(',').includes(${JSON.stringify(lockName)}));
+assert.ok(!(process.env.PAPERCUSP_INSTALL_MUTEX_HELD ?? '').split(',').includes(${JSON.stringify(lockName)}));
 assert.equal(require('@fixture/runtime'), 'pinned-source');
+const dependency = require.resolve('fixture-dependency/index.cjs');
+assert.equal(require(dependency), 'original-install');
 fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
 const timer = setInterval(() => {
-  if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); console.log('DONOR_READER_OK'); }
+  if (fs.existsSync(${JSON.stringify(release)})) {
+    clearInterval(timer);
+    delete require.cache[dependency];
+    assert.equal(require(dependency), 'original-install');
+    assert.ok(fs.readFileSync(${JSON.stringify(installed)}, 'utf8').includes('new-install'));
+    console.log('INDEPENDENT_DEPENDENCIES_OK');
+  }
 }, 10);
 setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(9); }, 15000).unref();
 `;
     snapshot(f.root, { 'probe.cjs': probe }, f.head);
-    // This fixture exercises the runner under test, including an uncommitted
-    // repair; the launcher's committed-source loader would substitute HEAD.
-    const childEnv: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir };
-    const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
-    childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '').split(/\s+/)
-      .filter(option => option !== committedLoader).join(' ');
-    if (!childEnv.NODE_OPTIONS) delete childEnv.NODE_OPTIONS;
+    const childEnv = currentRunnerEnvironment({ PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir });
     const child = spawn(process.execPath, [scriptPath, 'lint:probe'], {
       cwd: f.root, env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1425,20 +1473,24 @@ setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(
         await new Promise(resolveWait => setTimeout(resolveWait, 20));
       }
       if (!existsSync(ready)) throw new Error(`Donor reader did not start (exit=${child.exitCode}): ${output}`);
-      // A real writer must time out while the committed reader is alive, then
-      // acquire the same lease after its command and cleanup finish.
+      // Reify the actual donor while the committed command remains paused. The
+      // child must re-read its old dependency bytes after this writer completes.
       const writer = `import { withFsMutex } from ${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)};
-await withFsMutex(${JSON.stringify(lockName)}, () => console.log('WRITER_ACQUIRED'), { timeoutMs: 200, retryMs: 10 });`;
+import { writeFileSync } from 'node:fs';
+await withFsMutex(${JSON.stringify(lockName)}, () => {
+  writeFileSync(${JSON.stringify(installed)}, 'module.exports = "new-install";\\n');
+  console.log('WRITER_ACQUIRED');
+}, { timeoutMs: 200, retryMs: 10 });`;
       const attempt = () => spawnSync(process.execPath, ['--input-type=module', '-e', writer], {
         env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir }, encoding: 'utf8', timeout: 5000,
       });
-      const blocked = attempt();
-      expect(blocked.status, blocked.stdout + blocked.stderr).not.toBe(0);
-      expect(blocked.stderr).toContain('waiting for fs-mutex');
-      expect(blocked.stdout).not.toContain('WRITER_ACQUIRED');
+      const concurrent = attempt();
+      expect(concurrent.status, concurrent.stdout + concurrent.stderr).toBe(0);
+      expect(concurrent.stdout).toContain('WRITER_ACQUIRED');
+      expect(child.exitCode).toBeNull();
       writeFileSync(release, 'release');
       expect(await exited, output).toBe(0);
-      expect(output).toContain('DONOR_READER_OK');
+      expect(output).toContain('INDEPENDENT_DEPENDENCIES_OK');
       const acquired = attempt();
       expect(acquired.status, acquired.stdout + acquired.stderr).toBe(0);
       expect(acquired.stdout).toContain('WRITER_ACQUIRED');
@@ -1544,18 +1596,11 @@ const { execFileSync } = require('node:child_process');
       writeFileSync(npmShim, ['#!/bin/sh', 'kill -TERM $$', ''].join(String.fromCharCode(10)));
       chmodSync(npmShim, 0o755);
 
-      const childEnv: NodeJS.ProcessEnv = {
-        ...process.env,
+      const childEnv = currentRunnerEnvironment({
         PATH: `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
         PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
         PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'leases'),
-      };
-      const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
-      childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '')
-        .split(/\s+/)
-        .filter((option) => option !== committedLoader)
-        .join(' ');
-      if (!childEnv.NODE_OPTIONS) delete childEnv.NODE_OPTIONS;
+      });
 
       const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
         cwd: root,
