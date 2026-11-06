@@ -125,8 +125,11 @@ describe('lost host to restored native conversation', () => {
         process.on('SIGINT',()=>{});
         let input=''; process.stdin.on('data',chunk=>{input+=chunk;
           while(input.includes(${JSON.stringify(boundaryMarker)})) {
+            const submitted=input;
             input=input.slice(input.indexOf(${JSON.stringify(boundaryMarker)})+${boundaryMarker.length});
             const at=new Date().toISOString();
+            fs.appendFileSync(${JSON.stringify(transcript)},JSON.stringify({type:'response_item',timestamp:at,
+              payload:{type:'message',role:'user',content:[{type:'input_text',text:submitted}]}})+String.fromCharCode(10));
             fs.appendFileSync(${JSON.stringify(transcript)},JSON.stringify({type:'event_msg',timestamp:at,
               payload:{type:'task_started',turn_id:'original-wait-boundary'}})+String.fromCharCode(10));
             fs.appendFileSync(${JSON.stringify(transcript)},JSON.stringify({type:'event_msg',timestamp:at,
@@ -300,9 +303,20 @@ describe('lost host to restored native conversation', () => {
               deliveries: (await waits.listRecentDeliveries(owner)).map(row => ({
                 id: row.id, status: row.status, channel: row.channel, lastError: row.lastError })),
               execution: readMeta()?.execution, transcript: readFileSync(transcript, 'utf8') }));
-          const deliveries = await waits.listRecentDeliveries(owner);
-          expect(deliveries).toHaveLength(1);
-          expect(deliveries[0]).toMatchObject({ awaitId: originalAwaitId, status: 'delivered' });
+          // Acceptance and native-turn confirmation are separate phases. The
+          // first pump can park while the host observes the original turn; the
+          // retry must reconcile that same delivery, never create another turn.
+          const deliveries = await vi.waitFor(async () => {
+            // Drive the private row across the production 45s park boundary;
+            // wall-clock waiting is not the behavior this scenario exercises.
+            await db.adminSql`UPDATE harness_shared.event_wake_deliveries SET next_attempt_at = now()
+              WHERE subscriber_id = ${owner} AND await_id = ${originalAwaitId!} AND status = 'parked'`;
+            await pumpWakeDeliveries(ws);
+            const current = await waits.listRecentDeliveries(owner);
+            expect(current).toHaveLength(1);
+            expect(current[0]).toMatchObject({ awaitId: originalAwaitId, status: 'delivered' });
+            return current;
+          }, { timeout: 15_000, interval: 100 });
           expect(await fireBoundary()).toHaveLength(0);
           await pumpWakeDeliveries(ws);
           await sweepSessionInterruptions({ workspaceId: ws, installSlug: 'papercusp',
