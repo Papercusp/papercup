@@ -23,6 +23,11 @@ type Invocation = Parameters<NonNullable<DispatchProjectedDeps['recordInvocation
 interface BoundaryContext { callId: string; workspaceId: string; harness: string; tool: string;
   receipts: ExecutionBoundaryReceipt[] }
 
+interface DispatchReceipt {
+  callId: string; tool: string; workspaceId: string; harness: string; startedAt: number;
+  parentCallId?: string; handlerEntered: boolean;
+}
+
 export interface RuntimeSecurityPopulation {
   surfaces: readonly ObservedSurface[];
   declaredSurfaces: readonly ObservedSurface[];
@@ -99,11 +104,13 @@ const state = pinModuleState('@papercusp/operator-core.otel-runtime', () => ({
   registration: null as ReturnType<ReturnType<typeof createTracing>['register']> | null,
   boundaryContext: new AsyncLocalStorage<BoundaryContext>(),
   boundaryReceipts: new Map<string, ExecutionBoundaryReceipt[]>(),
+  dispatchReceipts: new Map<string, DispatchReceipt>(),
   securityCapture: null as SecurityCapture | null,
 }));
 // An already running development host can retain the pre-extension singleton.
 state.boundaryContext ??= new AsyncLocalStorage<BoundaryContext>();
 state.boundaryReceipts ??= new Map<string, ExecutionBoundaryReceipt[]>();
+state.dispatchReceipts ??= new Map<string, DispatchReceipt>();
 
 /** The actual request host registers once on the existing observability state;
  * no transport argument can supply the population or replace this callback. */
@@ -207,6 +214,21 @@ export function beginToolTrace(event: DispatchStart): void {
   try {
     // Hosted customers have a separate verified tenant/consent transaction.
     if (!event.callId || (event.ctx.principal as { profile?: string } | undefined)?.profile === 'hosted') return;
+    const now = Date.now();
+    for (const [id, receipt] of state.dispatchReceipts) {
+      if (now - receipt.startedAt < 30 * 60_000) break;
+      state.dispatchReceipts.delete(id);
+    }
+    const workspaceId = event.ctx.workspaceId ?? '';
+    const harness = resolveConcreteHarnessSlug(undefined, event.ctx) ?? '';
+    const parent = state.boundaryContext.getStore();
+    if (workspaceId && harness && state.dispatchReceipts.size < 1024 && !state.dispatchReceipts.has(event.callId)) {
+      state.dispatchReceipts.set(event.callId, { callId: event.callId, tool: event.toolName, workspaceId, harness,
+        startedAt: now, handlerEntered: false,
+        ...(parent && state.dispatchReceipts.has(parent.callId)
+          && parent.workspaceId === workspaceId && parent.harness === harness
+          ? { parentCallId: parent.callId } : {}) });
+    }
     runtime().begin(event.callId, 'papercusp.tool', {
       'papercusp.call_id': event.callId, 'papercusp.tool': event.toolName,
       'papercusp.workspace_id': event.ctx.workspaceId,
@@ -218,14 +240,30 @@ export function beginToolTrace(event: DispatchStart): void {
 
 export function runToolTrace(request: InvokeRequest, invoke: () => ReturnType<InvokeRequest['invoke']>) {
   // Never retry a handler after a tracing failure: it might already have committed.
-  if (!state.runtime) return invoke();
   const receipts: ExecutionBoundaryReceipt[] = [];
-  if (state.boundaryReceipts.size < 1024) state.boundaryReceipts.set(request.callId, receipts);
-  return state.runtime.run(request.callId, () => state.boundaryContext.run({ callId: request.callId,
+  if (state.runtime && state.boundaryReceipts.size < 1024) state.boundaryReceipts.set(request.callId, receipts);
+  const run = () => state.boundaryContext.run({ callId: request.callId,
     // A receipt's harness is an identity: the operator `'*'` scope is not one, so it stays ''
     // (receipt validation then rejects it, exactly as the consumer's scope check did for '*').
     workspaceId: request.ctx.workspaceId ?? '', harness: resolveConcreteHarnessSlug(undefined, request.ctx) ?? '',
-    tool: request.toolName, receipts }, invoke));
+    tool: request.toolName, receipts }, invoke);
+  return state.runtime ? state.runtime.run(request.callId, run) : run();
+}
+
+/** Local dispatch evidence survives disabled/export-failed tracing. Neither a
+ * caller-supplied context ID nor handler metadata can manufacture a parent. */
+export function markToolHandlerEntered(callId: string): void {
+  const receipt = state.dispatchReceipts.get(callId);
+  if (receipt) receipt.handlerEntered = true;
+}
+
+export function finishToolDispatchReceipt(input: Invocation): DispatchReceipt | undefined {
+  if (!input.callId) return undefined;
+  const receipt = state.dispatchReceipts.get(input.callId);
+  state.dispatchReceipts.delete(input.callId);
+  if (!receipt || receipt.tool !== input.toolName || receipt.workspaceId !== input.ctx.workspaceId
+    || receipt.harness !== resolveConcreteHarnessSlug(undefined, input.ctx)) return undefined;
+  return receipt;
 }
 
 export function finishToolTrace(input: Invocation) {
@@ -284,4 +322,5 @@ export async function shutdownRuntimeObservability(): Promise<void> {
   state.exporter = null;
   state.registration = null;
   state.boundaryReceipts.clear();
+  state.dispatchReceipts.clear();
 }

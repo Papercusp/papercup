@@ -80,6 +80,73 @@ export interface OperationDependency {
 
 const OPAQUE_REF = /^[A-Za-z0-9][A-Za-z0-9_:/.@-]{0,399}$/;
 const opaqueRef = (value: unknown): value is string => typeof value === 'string' && OPAQUE_REF.test(value);
+
+/** Safe settlement fields on the existing invocation ledger. Raw results and
+ * executable source stay at their authorized source, never in this receipt. */
+export interface ManagedOperationReceipt {
+  version: 1;
+  callId: string;
+  parentCallId?: string;
+  handlerEntered: boolean;
+  role: 'operation' | 'wrapper' | 'poll';
+  disposition: string;
+  outcome: OperationAdapterEvidence['outcome'];
+  job?: { bashId?: string; taskId?: string };
+  exitCode?: number;
+  yielded?: boolean;
+}
+
+export function captureManagedOperation(input: {
+  toolName: string; status: string; resultSnapshot?: unknown;
+  receipt: { callId: string; parentCallId?: string; handlerEntered: boolean };
+}): ManagedOperationReceipt | null {
+  const { receipt, toolName, status } = input;
+  if (!opaqueRef(receipt.callId) || receipt.parentCallId !== undefined
+    && (!opaqueRef(receipt.parentCallId) || receipt.parentCallId === receipt.callId)) return null;
+  const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  const result = object(input.resultSnapshot);
+  let payload = object(result.structuredContent);
+  if (result.structuredContent === undefined && Array.isArray(result.content)) {
+    const first = result.content.find(block => object(block).type === 'text');
+    const text = object(first).text;
+    if (typeof text === 'string' && text.length <= 65536) {
+      try { payload = object(JSON.parse(text)); } catch { /* Rendered prose is not a receipt. */ }
+    }
+  }
+  const role = ['tools:invoke', 'functions.exec'].includes(toolName) ? 'wrapper'
+    : toolName === 'capability:bash_output' ? 'poll' : 'operation';
+  const shell = toolName === 'capability:bash' || role === 'poll';
+  const shellReceipt = object(object(result._meta).shellExecution);
+  if (shell && shellReceipt.version === 1) payload = shellReceipt;
+  const exit = payload.exit_code ?? payload.exitCode;
+  const exitCode = typeof exit === 'number' && Number.isSafeInteger(exit) ? exit : undefined;
+  const job = shell ? {
+    ...(opaqueRef(payload.bash_id) ? { bashId: payload.bash_id } : {}),
+    ...(opaqueRef(payload.task_id) ? { taskId: payload.task_id } : {}),
+  } : {};
+  const refused = ['refused', 'invalid-input', 'role-not-allowed', 'quota-exceeded'].includes(status);
+  const failed = ['error', 'timeout'].includes(status) || result.isError === true || payload.ok === false
+    || payload.success === false || ['failed', 'killed', 'timed_out'].includes(String(payload.status))
+    || exitCode !== undefined && exitCode !== 0;
+  const incomplete = payload._partial === true || object(payload._projection).truncated === true;
+  const running = shell && exitCode === undefined && (payload.running === true || payload.status === 'running');
+  const preview = payload.dryRun === true || payload.dry_run === true;
+  const outcome: OperationAdapterEvidence['outcome'] = refused ? { status: 'refused', final: true }
+    : failed ? { status: 'error', final: true }
+    : preview ? { status: 'preview', final: true }
+    : running ? { status: 'running', final: false }
+    : status !== 'ok' || !receipt.handlerEntered || incomplete || role === 'wrapper'
+      ? { status: 'unknown', final: false }
+      : shell ? exitCode === 0 ? { status: 'success', final: true } : { status: 'unknown', final: false }
+        : { status: 'success', final: true };
+  if (shell && payload.cleanup_pending === true) outcome.final = false;
+  return { version: 1, callId: receipt.callId,
+    ...(receipt.parentCallId ? { parentCallId: receipt.parentCallId } : {}),
+    handlerEntered: receipt.handlerEntered, role, disposition: status, outcome,
+    ...(Object.keys(job).length ? { job } : {}), ...(shell && exitCode !== undefined ? { exitCode } : {}),
+    ...(shell ? { yielded: payload.yielded === true || running } : {}) };
+}
 const FAMILIES = new Set<OperationAdapterFamily>(['composition', 'shell', 'sql', 'native-operation',
   'search-reformulation', 'result-recovery', 'workaround-funnel']);
 

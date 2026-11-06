@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OrchestrationCallRecord, ProjectedTool } from '@papercusp/tooldef';
-import { fingerprintShellOperation, normalizeExecutionTrace, readableOperationEvidence, type NormalizeExecutionTraceInput, type OperationAdapterEvidence } from './orchestration-trace';
+import { captureManagedOperation, fingerprintShellOperation, normalizeExecutionTrace, readableOperationEvidence, type NormalizeExecutionTraceInput, type OperationAdapterEvidence } from './orchestration-trace';
 import { fingerprintSqlIntent, type SqlIntentScope } from './bash-substitution/sql-intent-fingerprint';
 
 function tool(name: string, capabilities: string[], effect: 'read' | 'write' = 'read'): ProjectedTool {
@@ -22,6 +22,61 @@ const TOOLS = [
 ];
 
 const SCOPE: SqlIntentScope = { workspaceId: 'workspace-a', sourceBoundary: 'source-private', epoch: 'epoch-1', key: new Uint8Array(32).fill(31) };
+
+describe('P005 managed dispatch settlement', () => {
+  const capture = (toolName: string, status: string, body?: unknown, handlerEntered = true) => captureManagedOperation({
+    toolName, status, receipt: { callId: 'call:child', parentCallId: 'call:parent', handlerEntered },
+    ...(body === undefined ? {} : { resultSnapshot: { structuredContent: body } }),
+  });
+
+  it.each([
+    ['ok', { exit_code: 0 }, 'success', true],
+    ['ok', { exit_code: 3 }, 'error', true],
+    ['ok', { status: 'running', bash_id: 'job-1' }, 'running', false],
+    ['ok', { ok: true }, 'unknown', false],
+    ['ok', { _partial: true, exit_code: 0 }, 'unknown', false],
+    ['ok', { status: 'timed_out' }, 'error', true],
+    ['refused', {}, 'refused', true],
+    ['timeout', {}, 'error', true],
+    ['replayed', { exit_code: 0 }, 'unknown', false],
+  ] as const)('retains shell disposition %s with %j', (status, body, outcome, final) => {
+    expect(capture('capability:bash', status, body)).toMatchObject({ disposition: status,
+      outcome: { status: outcome, final }, callId: 'call:child', parentCallId: 'call:parent' });
+  });
+
+  it('retains job correlation while output truncation does not erase a measured exit', () => {
+    const receipt = capture('capability:bash_output', 'ok', { bash_id: 'job-1', task_id: 'task-1',
+      exit_code: 0, truncated: true, output: 'private command output', authorRole: 'su' });
+    expect(receipt).toMatchObject({ role: 'poll', job: { bashId: 'job-1', taskId: 'task-1' },
+      exitCode: 0, outcome: { status: 'success', final: true } });
+    expect(JSON.stringify(receipt)).not.toMatch(/private|authorRole/);
+    expect(capture('capability:bash', 'ok', { exit_code: 0, cleanup_pending: true, yielded: true }))
+      .toMatchObject({ yielded: true, outcome: { status: 'success', final: false } });
+  });
+
+  it('never promotes wrappers, prose, missing invocation or spoofed metadata to an execution', () => {
+    for (const toolName of ['tools:invoke', 'functions.exec']) {
+      expect(capture(toolName, 'ok', { ok: true, exit_code: 0 })).toMatchObject({ role: 'wrapper',
+        outcome: { status: 'unknown', final: false } });
+    }
+    expect(capture('capability:bash', 'ok', { exit_code: 0 }, false)?.outcome.status).toBe('unknown');
+    expect(captureManagedOperation({ toolName: 'capability:bash', status: 'ok',
+      receipt: { callId: 'call:1', handlerEntered: true },
+      resultSnapshot: { content: [{ type: 'text', text: 'exit 0\nprivate output' }],
+        _meta: { managedOperation: { outcome: { status: 'success' } } } } })?.outcome.status).toBe('unknown');
+  });
+
+  it('reads bounded real JSON results and refuses malformed call identities', () => {
+    expect(captureManagedOperation({ toolName: 'capability:bash', status: 'ok',
+      receipt: { callId: 'call:1', handlerEntered: true },
+      resultSnapshot: { content: [{ type: 'text', text: JSON.stringify({ exit_code: 0, bash_id: 'job-1' }) }] } }))
+      .toMatchObject({ job: { bashId: 'job-1' }, outcome: { status: 'success' } });
+    for (const receipt of [{ callId: 'call:1', parentCallId: 'call:1', handlerEntered: true },
+      { callId: 'raw command with spaces', handlerEntered: true }]) {
+      expect(captureManagedOperation({ toolName: 'x:probe', status: 'ok', receipt })).toBeNull();
+    }
+  });
+});
 const shell = (overrides: Partial<Parameters<typeof fingerprintShellOperation>[0]> = {}, scope = SCOPE) =>
   fingerprintShellOperation({ command: 'printf "%s" "$MODE" | cat > result.txt', cwd: '/work/alpha', environment: { MODE: 'report' }, effect: 'write', ...overrides }, scope);
 function operation(overrides: Partial<OperationAdapterEvidence> = {}): OperationAdapterEvidence {

@@ -45,6 +45,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 import { PROJECTED_DEPS, flushPendingTelemetry } from './projected-tool-deps';
+import { runDispatchStack, type DispatchProjectedDeps, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
+import { runToolTrace } from './observability/runtime';
 
 const ctx = (over: Record<string, unknown> = {}) =>
   ({
@@ -170,5 +172,89 @@ describe('nestedDispatch reaches tool_invocations.metadata_json', () => {
     const insert2 = captured.find((c) => c.sql.includes('INSERT INTO harness_shared.tool_invocations'));
     const raw2 = insert2!.params.find((p) => typeof p === 'string' && p.includes('handlerField')) as string;
     expect(JSON.parse(raw2)).toMatchObject({ nestedDispatch: { indirect: true, contextTier: 'full' } });
+  });
+});
+
+describe('P005 host-owned managed operation receipts', () => {
+  const deps: DispatchProjectedDeps = {
+    onDispatchStart: PROJECTED_DEPS.onDispatchStart,
+    aroundInvoke: PROJECTED_DEPS.aroundInvoke,
+    recordInvocation: PROJECTED_DEPS.recordInvocation,
+    recordWithoutWindow: () => true,
+  };
+  const context = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
+    workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su', spawnId: 's-materialization-test',
+    isSuperuser: true, log: vi.fn(), signal: new AbortController().signal, emit: vi.fn(), progress: vi.fn(), ...over,
+  });
+  const tool = (name: string, fn: ProjectedTool['fn']): ProjectedTool => ({
+    pluginName: 'fixture', description: 'P005 lifecycle control', inputSchema: { type: 'object' },
+    capabilities: [], effect: 'read', expose: { mcp: { name } }, fn,
+  });
+  const rows = () => captured.filter(row => row.sql.includes('INSERT INTO harness_shared.tool_invocations'))
+    .map(row => ({ tool: row.params[3], metadata: JSON.parse(String(row.params[19])) }));
+
+  beforeEach(() => { captured.length = 0; });
+  afterEach(async () => { await flushPendingTelemetry(); captured.length = 0; });
+
+  it('joins actual nested dispatches even when the child receives no inherited context ID', async () => {
+    const child = tool('x:p005-child', async (_args, ctx) => {
+      ctx.metadata?.({ managedOperation: { callId: 'spoofed', parentCallId: 'spoofed' }, safeField: 'kept' });
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, privateOutput: 'never persist' }) }] };
+    });
+    const parent = tool('tools:invoke', async () => {
+      await Promise.all([1, 2].map(() => runDispatchStack(child, 'x:p005-child', {}, context(), deps)));
+      return { content: [] };
+    });
+    await runDispatchStack(parent, 'tools:invoke', {}, context({ dispatchCallId: 'untrusted-inherited-id' }), deps);
+    await flushPendingTelemetry();
+    const receipts = rows();
+    const parentReceipt = receipts.find(row => row.tool === 'tools:invoke')!.metadata.managedOperation;
+    const children = receipts.filter(row => row.tool === 'x:p005-child');
+    expect(children).toHaveLength(2);
+    expect(parentReceipt).toMatchObject({ role: 'wrapper', handlerEntered: true, outcome: { status: 'unknown' } });
+    expect(parentReceipt).not.toHaveProperty('parentCallId');
+    expect(new Set(children.map(row => row.metadata.managedOperation.callId)).size).toBe(2);
+    for (const row of children) expect(row.metadata).toMatchObject({ safeField: 'kept', managedOperation: {
+      parentCallId: parentReceipt.callId, handlerEntered: true, disposition: 'ok', outcome: { status: 'success' },
+    } });
+    expect(JSON.stringify(receipts)).not.toMatch(/spoofed|never persist|untrusted-inherited-id/);
+  });
+
+  it('does not link parent identities across workspace boundaries', async () => {
+    const parent = tool('x:p005-parent', async () => {
+      await runDispatchStack(tool('x:p005-cross', async () => ({ content: [] })), 'x:p005-cross', {},
+        context({ workspaceId: 'other-workspace' }), deps);
+      return { content: [] };
+    });
+    await runDispatchStack(parent, 'x:p005-parent', {}, context(), deps);
+    await flushPendingTelemetry();
+    expect(rows().find(row => row.tool === 'x:p005-cross')!.metadata.managedOperation).not.toHaveProperty('parentCallId');
+  });
+
+  it('removes handler supplied receipts when no real start exists (including replay)', async () => {
+    for (const status of ['ok', 'replayed'] as const) {
+      await PROJECTED_DEPS.recordInvocation!({ toolName: 'x:p005-no-start', pluginName: 'fixture', ctx: context(),
+        status, windowKey: '', durationMs: 1, callId: 'fabricated-id',
+        metadataJson: { managedOperation: { callId: 'spoofed' }, safeField: 'kept' } });
+    }
+    await flushPendingTelemetry();
+    expect(rows()).toHaveLength(2);
+    for (const row of rows()) {
+      expect(row.metadata).toMatchObject({ safeField: 'kept' });
+      expect(row.metadata).not.toHaveProperty('managedOperation');
+    }
+  });
+
+  it('does not invent a parent from an unstarted invocation context', async () => {
+    const child = tool('x:p005-no-parent-start', async () => ({ content: [] }));
+    const request = { tool: child, toolName: 'x:unstarted-parent', input: {}, ctx: context(), callId: 'unstarted-parent',
+      invoke: async () => {
+        await runDispatchStack(child, 'x:p005-no-parent-start', {}, context(), deps);
+        return { content: [] };
+      } };
+    await runToolTrace(request, request.invoke);
+    await flushPendingTelemetry();
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]!.metadata.managedOperation).not.toHaveProperty('parentCallId');
   });
 });

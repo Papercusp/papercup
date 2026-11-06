@@ -106,7 +106,8 @@ import type { InvocationFrictionRef } from './harness/improvements/invocation-fr
 import { trackDetached } from './detached-imports';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { installedPerUseChokepoint, nativeCaptureChokepoint } from './agent-tools/per-use-chokepoint';
-import { beginToolTrace, runToolTrace, finishToolTrace } from './observability/runtime';
+import { beginToolTrace, runToolTrace, finishToolTrace, finishToolDispatchReceipt, markToolHandlerEntered } from './observability/runtime';
+import { captureManagedOperation } from './orchestration-trace';
 import { pluginInvocationChokepoint } from './plugin-invocation-policy';
 
 /**
@@ -2114,9 +2115,12 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
   const codeIntel = isNativeCodeIntelTool(input.toolName);
   if (codeIntel && isDuplicateCodeIntelRecord(input.callId)) return;
   const otel = finishToolTrace(input);
+  const dispatchReceipt = finishToolDispatchReceipt(input);
+  const managedOperation = dispatchReceipt ? captureManagedOperation({ ...input, receipt: dispatchReceipt }) : null;
   // OTel identity and child receipts are host-owned, including when tracing was
   // unavailable. Caller metadata must never survive as a guessed observation.
-  const { otel: _untrustedOtel, [CODE_INTEL_RESULT_METADATA_KEY]: _untrustedCodeIntel, ...metadata } = input.metadataJson ?? {};
+  const { otel: _untrustedOtel, managedOperation: _untrustedOperation,
+    [CODE_INTEL_RESULT_METADATA_KEY]: _untrustedCodeIntel, ...metadata } = input.metadataJson ?? {};
   const codeIntelResult = codeIntel
     ? classifyCodeIntelExit({
         toolName: input.toolName,
@@ -2132,6 +2136,7 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
     metadataJson: {
       ...metadata,
       ...(otel ? { otel } : {}),
+      ...(managedOperation ? { managedOperation } : {}),
       ...(codeIntelResult ? { [CODE_INTEL_RESULT_METADATA_KEY]: codeIntelResult } : {}),
     },
   };
@@ -2356,16 +2361,23 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
   resolvePremises: resolveDispatchPremises,
-  aroundInvoke: request => runToolTrace(request, async () => {
-    const invoke = () => nativeCaptureChokepoint({ ...request,
-      invoke: () => installedPerUseChokepoint(request) });
-    if (!request.tool.pluginInstallation) return invoke();
-    // Registered security cutover: P-019 owns enabling after qualification.
-    // Unknown control state enforces the strict adapter rather than authorizing.
-    let enforce = true;
-    try { enforce = await getFlag(FLAGS.PLUGIN_INVOCATION_POLICY, 'system'); } catch { /* fail closed */ }
-    return enforce ? pluginInvocationChokepoint({ ...request, invoke }) : invoke();
-  }),
+  aroundInvoke: request => {
+    const handler = request.invoke;
+    request = { ...request, invoke: () => {
+      markToolHandlerEntered(request.callId);
+      return handler();
+    } };
+    return runToolTrace(request, async () => {
+      const invoke = () => nativeCaptureChokepoint({ ...request,
+        invoke: () => installedPerUseChokepoint(request) });
+      if (!request.tool.pluginInstallation) return invoke();
+      // Registered security cutover: P-019 owns enabling after qualification.
+      // Unknown control state enforces the strict adapter rather than authorizing.
+      let enforce = true;
+      try { enforce = await getFlag(FLAGS.PLUGIN_INVOCATION_POLICY, 'system'); } catch { /* fail closed */ }
+      return enforce ? pluginInvocationChokepoint({ ...request, invoke }) : invoke();
+    });
+  },
   // D-030 kernel seat: the generic dispatcher invokes this before any
   // decorators and immediately before handler execution. The resolver is
   // replaceable by the activation/control owner without changing the shared

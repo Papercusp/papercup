@@ -31,12 +31,14 @@ import bashTool from './bash';
 import { __resetBashJobs, getJob, waitForJobResponse } from './bash-jobs';
 import { generateToolFacadeTypes, lookupByMcpName } from '@papercusp/agent-mcp';
 import { unwrapToolResult } from '@papercusp/tooldef';
+import { captureManagedOperation } from '../../orchestration-trace';
 import * as enrollSync from '../../task-manager/enroll-sync';
 
 type ToolResultish = {
   content: Array<{ text: string }>;
   isError?: boolean;
   structuredContent?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
 };
 type Tool = { handler: (a: unknown, c: unknown) => Promise<ToolResultish> };
 type BashArgsSchema = {
@@ -176,7 +178,7 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(typeof seen.duration_ms).toBe('number');
   });
 
-  it('leaves a DIRECT caller byte-identical — no duplicated output on the wire', async () => {
+  it('preserves direct text while carrying an output-free actual shell receipt', async () => {
     const r = await bash.handler({ command: 'echo HELLO-SHAPE-PROBE' }, makeCtx());
 
     // The cost control: capability:bash is one of the most-called tools here, so
@@ -187,6 +189,20 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     // And the raw-string fallback is still what such a result unwraps to — this is
     // the behaviour being deliberately confined to non-code-mode, not removed.
     expect(typeof unwrapToolResult(r as never)).toBe('string');
+    expect(r._meta?.shellExecution).toMatchObject({ version: 1, status: 'completed', exit_code: 0 });
+    expect(JSON.stringify(r._meta)).not.toContain('HELLO-SHAPE-PROBE');
+    expect(captureManagedOperation({ toolName: 'capability:bash', status: 'ok', resultSnapshot: r,
+      receipt: { callId: 'actual-direct-call', handlerEntered: true } })).toMatchObject({
+      role: 'operation', exitCode: 0, outcome: { status: 'success', final: true },
+    });
+  });
+
+  it('P005 observes a direct failed command from its receipt rather than output prose', async () => {
+    const r = await bash.handler({ command: 'echo "exit 0"; exit 7' }, makeCtx());
+    expect(captureManagedOperation({ toolName: 'capability:bash', status: 'ok', resultSnapshot: r,
+      receipt: { callId: 'actual-failed-direct-call', handlerEntered: true } })).toMatchObject({
+      exitCode: 7, outcome: { status: 'error', final: true },
+    });
   });
 
   it('provides the declared structured result to an MCP caller that requests it', async () => {

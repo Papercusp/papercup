@@ -1041,6 +1041,11 @@ export default defineTool({
     return {
       content: [{ type: 'text' as const, text: `${header}\n${processNotice ? `NOTICE: ${processNotice}\n` : ''}${r.output || '(no output)'}${timeoutHint}` }],
       isError,
+      // P005: direct callers get prose, but the dispatch observer still needs
+      // the actual job's terminal receipt. Never parse an exit code out of its
+      // output or duplicate that output into telemetry.
+      _meta: { shellExecution: { version: 1, bash_id: job.id, task_id: job.taskId,
+        status: r.status, exit_code: r.exitCode, running: false, yielded: false } },
       // EI-20066912585022608: the text above is the right answer for a MODEL reading
       // this result and the wrong one for a `code:run` script, which gets handed the
       // raw string and whose `result.<field>` then resolves to undefined SILENTLY —
