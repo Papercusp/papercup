@@ -59,9 +59,15 @@ export function committedWorkRootDependencyDonor(workRoot: any): string;
  * the mutable install is on another device. Small/unpublished installs retain
  * the bounded donor-reader fallback. Retained roots own their resulting bytes;
  * no generation pin or donor reader must outlive materialization.
+ * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> }>}
  */
-export function materializeIndependentDependencies(repoRoot: any, workRoot: any): Promise<{
+export function materializeIndependentDependencies(repoRoot: any, workRoot: any, options?: {
+    prepareWorkspace?: (snapshot: {
+        paths: string[];
+        workspacePaths: Set<string>;
+    }) => void;
+}): Promise<{
     paths: string[];
     workspacePaths: Set<string>;
 }>;

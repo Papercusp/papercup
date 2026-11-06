@@ -73,15 +73,10 @@ export function listGitlinks(repo: any, sha: any): {
 }[];
 /** The shared top-level allowlist, read from the selection library itself. */
 export function allowlistTops(selectionLib?: string): Set<string>;
-/** Conservative allocated source bytes for the exact recursive verifier export.
- * Count committed blobs, including desktop and private gitlinks, before creating
- * any destination. Per-file block rounding covers small-file allocation; the
- * existing disk reservation adds its separate dependency/metadata allowance.
- * export-ignore can only make the actual archive smaller than this census.
- */
-export function measureVerifierSourceBytes({ repo, ref }: {
+export function measureVerifierSourceBytes({ repo, ref, receiptSha256 }: {
     repo: any;
     ref: any;
+    receiptSha256: any;
 }): number;
 /**
  * Materialize `sha` of `repo` into `dest` from git objects only (no working-tree
@@ -101,16 +96,17 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
     sha: string;
 }[];
 /** Validate the explicit tested source population against its pinned commit.
- * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean }} options
+ * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, receiptSha256?: string }} options
  */
-export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs }: {
+export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs, receiptSha256 }: {
     repo: string;
     ref: string;
     inputs?: string[];
     inputsFile?: string;
     tauriInputs?: boolean;
+    receiptSha256?: string;
 }): Promise<{
-    sha: string;
+    sha: any;
     paths: string[];
 }>;
 /** Prepare a source snapshot only after all declared inputs match their pin.
@@ -143,7 +139,7 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         trackedFilesHash: string;
     } | undefined;
     schemaVersion: string;
-    sourceCommit: string;
+    sourceCommit: any;
     submodules: any[];
 } & {
     operatorApiInputs?: {
@@ -263,7 +259,7 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
         schemaVersion: string;
         scope: string;
         root: string;
-        sourceCommit: string;
+        sourceCommit: any;
         policy: {
             path: string;
             sha256: string;
@@ -328,7 +324,7 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
         schemaVersion: string;
         scope: string;
         root: string;
-        sourceCommit: string;
+        sourceCommit: any;
         policy: {
             path: string;
             sha256: string;
@@ -400,7 +396,7 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
             schemaVersion: string;
             scope: string;
             root: string;
-            sourceCommit: string;
+            sourceCommit: any;
             policy: {
                 path: string;
                 sha256: string;
@@ -546,7 +542,7 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
                 schemaVersion: string;
                 scope: string;
                 root: string;
-                sourceCommit: string;
+                sourceCommit: any;
                 policy: {
                     path: string;
                     sha256: string;
@@ -677,7 +673,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                     schemaVersion: string;
                     scope: string;
                     root: string;
-                    sourceCommit: string;
+                    sourceCommit: any;
                     policy: {
                         path: string;
                         sha256: string;
@@ -787,7 +783,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                 schemaVersion: string;
                 scope: string;
                 root: string;
-                sourceCommit: string;
+                sourceCommit: any;
                 policy: {
                     path: string;
                     sha256: string;
@@ -1012,7 +1008,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
                         schemaVersion: string;
                         scope: string;
                         root: string;
-                        sourceCommit: string;
+                        sourceCommit: any;
                         policy: {
                             path: string;
                             sha256: string;
@@ -1122,7 +1118,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     schemaVersion: string;
                     scope: string;
                     root: string;
-                    sourceCommit: string;
+                    sourceCommit: any;
                     policy: {
                         path: string;
                         sha256: string;
@@ -1321,7 +1317,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                         schemaVersion: string;
                         scope: string;
                         root: string;
-                        sourceCommit: string;
+                        sourceCommit: any;
                         policy: {
                             path: string;
                             sha256: string;
@@ -1431,7 +1427,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     schemaVersion: string;
                     scope: string;
                     root: string;
-                    sourceCommit: string;
+                    sourceCommit: any;
                     policy: {
                         path: string;
                         sha256: string;
@@ -1642,7 +1638,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                         schemaVersion: string;
                         scope: string;
                         root: string;
-                        sourceCommit: string;
+                        sourceCommit: any;
                         policy: {
                             path: string;
                             sha256: string;
@@ -1752,7 +1748,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     schemaVersion: string;
                     scope: string;
                     root: string;
-                    sourceCommit: string;
+                    sourceCommit: any;
                     policy: {
                         path: string;
                         sha256: string;
@@ -2025,7 +2021,7 @@ export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, si
     schemaVersion: string;
     scope: string;
     root: string;
-    sourceCommit: string;
+    sourceCommit: any;
     policy: {
         path: string;
         sha256: string;
@@ -2057,7 +2053,7 @@ export function captureVerifierDependencies({ dest, receipt, env, onProgress }: 
     schemaVersion: string;
     scope: string;
     root: string;
-    sourceCommit: string;
+    sourceCommit: any;
     policy: {
         path: string;
         sha256: string;
@@ -2137,7 +2133,7 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
         trackedFilesHash: string;
     } | undefined;
     schemaVersion: string;
-    sourceCommit: string;
+    sourceCommit: any;
     submodules: any[];
 } & {
     operatorApiInputs?: {
@@ -2166,7 +2162,7 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
         trackedFilesHash: string;
     } | undefined;
     schemaVersion: string;
-    sourceCommit: string;
+    sourceCommit: any;
     submodules: any[];
 } & {
     operatorApiInputs?: {

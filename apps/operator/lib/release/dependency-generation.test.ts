@@ -3032,7 +3032,7 @@ exec /bin/cp "$@"
     expect(torn.stderr).toContain('refusing a torn snapshot');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
-  it('ignores crash-left deployment swap siblings in both input and dependency manifests (WI-2144371)', () => {
+  it('ignores crash-left deployment and generation swap siblings in both input and dependency manifests (WI-2144371, EI-28039715774530069)', () => {
     const integration = makeIntegration();
     const first = publish(integration);
     expect(first.status, first.stderr).toBe(0);
@@ -3053,6 +3053,17 @@ exec /bin/cp "$@"
       join(integration, 'node_modules.deploy-tmp.1592326/package-lock.json'),
       '{"name":"runtime-debris","lockfileVersion":3,"packages":{}}\n',
     );
+    for (const scratch of [
+      'node_modules.generation-tmp.1592326',
+      'packages/a/node_modules.generation-old.1592326',
+    ]) {
+      const dir = join(integration, scratch);
+      mkdirSync(join(dir, 'vendor/patches'), { recursive: true });
+      mkdirSync(join(dir, 'nested/node_modules/stale-package'), { recursive: true });
+      writeFileSync(join(dir, 'vendor/patches/stale.patch'), 'abandoned vendor patch\n');
+      writeFileSync(join(dir, 'nested/node_modules/stale-package/index.js'), 'abandoned dependency\n');
+      writeFileSync(join(dir, 'package-lock.json'), '{"name":"generation-debris","lockfileVersion":3,"packages":{}}\n');
+    }
 
     const afterDebris = publish(integration);
     expect(afterDebris.status, afterDebris.stderr).toBe(0);
@@ -3062,6 +3073,8 @@ exec /bin/cp "$@"
     );
     expect(afterDebris.stderr).not.toContain('node_modules.deploy-tmp.1592326');
     expect(afterDebris.stderr).not.toContain('node_modules.deploy-old.1592326');
+    expect(afterDebris.stderr).not.toContain('node_modules.generation-tmp.1592326');
+    expect(afterDebris.stderr).not.toContain('node_modules.generation-old.1592326');
   });
 
   it('keeps emitted desktop dependency copies out of full source generations and input keys (WI-10006855)', () => {
