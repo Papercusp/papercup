@@ -2032,6 +2032,51 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     expect(String(failure.detail)).toContain('gpt-5.6-sol');
   });
 
+  it.each(['authentication_failed', 'unknown'])(
+    'recovers a Claude login refusal through the persisted cascade exactly once (%s)', async (error) => {
+      const login = 'Not logged in · Please run /login';
+      const prompt = { type: 'user', message: { role: 'user', content: 'Review the current contract.' } };
+      const rejection = { type: 'assistant', error, isApiErrorMessage: true,
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: login }] } };
+      const id = await nonDue();
+      await recordDispatch(id, { agent: 'claude', operation: 'fork', kickoffAt: kickoff,
+        transcriptPath: rolloutFile(`login-${id}`, prompt, rejection) });
+      const quoted = await nonDue();
+      await recordDispatch(quoted, { agent: 'claude', operation: 'fork', kickoffAt: kickoff,
+        transcriptPath: rolloutFile(`quoted-login-${quoted}`, prompt,
+          { type: 'assistant', message: { role: 'assistant', content: [
+            { type: 'text', text: `The previous reviewer said ${login}; I am reviewing the contract.` },
+          ] } }) });
+      const expired = await seedConsult({ state: 'expired', closedAt: PAST,
+        routing: menuSnapshot(['resp-1', 'resp-2']) });
+      await recordDispatch(expired, { agent: 'claude', operation: 'fork', kickoffAt: kickoff,
+        transcriptPath: rolloutFile(`expired-login-${expired}`, prompt, rejection) });
+      const terminalBefore = { row: await cascadeRow(expired), attempts: await attemptsOf(expired) };
+      const { deps, reachCalls } = makeDeps({ withReach: true });
+      deps.rejudgeFirstTurn = (unjudged) => rejudgeFirstTurn(unjudged);
+      const stops: string[] = [];
+      deps.stopAnsweringSession = async (target) => { stops.push(target.conversationId); return 'stopped'; };
+
+      const result = await sweepExpiredConsults(deps);
+
+      expect(await cascadeRow(id)).toMatchObject({ state: 'awaiting_responder', responder_id: 'resp-2', cascade_cursor: 1 });
+      expect(result.answerFailures.filter((failure) => failure.conversationId === id)).toEqual([
+        { conversationId: id, reason: 'answer-first-turn-rejected', stopOutcome: 'stopped', recorded: true },
+      ]);
+      expect(String((await attemptsOf(id)).at(-1)?.detail)).toContain(login);
+      expect(reachCalls.filter((call) => call.conversationId === id).map((call) => call.responder)).toEqual(['resp-2']);
+      expect(stops.filter((conversationId) => conversationId === id)).toEqual([id]);
+
+      await sweepExpiredConsults(deps);
+
+      expect(reachCalls.filter((call) => call.conversationId === id)).toHaveLength(1);
+      expect(stops.filter((conversationId) => conversationId === id)).toHaveLength(1);
+      expect(await cascadeRow(quoted)).toMatchObject({ state: 'awaiting_responder', responder_id: 'resp-1', cascade_cursor: 0 });
+      expect(reachCalls.filter((call) => call.conversationId === quoted || call.conversationId === expired)).toEqual([]);
+      expect({ row: await cascadeRow(expired), attempts: await attemptsOf(expired) }).toEqual(terminalBefore);
+    },
+  );
+
   it('leaves a slot whose first turn is still running, or ended cleanly, to wait (silence is not rejection)', async () => {
     const pending = await nonDue();
     await recordDispatch(pending, { transcriptPath: rolloutFile(`run-${pending}`, started), kickoffAt: kickoff });
