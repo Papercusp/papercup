@@ -62,24 +62,27 @@ describe('private Docker endpoint admission', () => {
       'export function ensureRequiredEmbeddedExtensions() {}');
     const hook = `export async function resolve(specifier, context, next) {
       if (specifier === './install-embedded-pgvector.mjs') return { url: ${JSON.stringify(extension)}, shortCircuit: true };
-      if (specifier === 'async-exit-hook') throw new Error('DOCKER_ADMISSION_REACHED');
       return next(specifier, context);
     }`;
     const script = `import { register } from 'node:module';
       register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
       process.argv = [process.execPath, ${JSON.stringify(entry)}, '--isolated-runtime',
-        '--', process.execPath, '-e', 'process.exit(91)'];
+        '--', '/papercusp-missing-docker-admission-child'];
       await import(${JSON.stringify(pathToFileURL(entry).href)});`;
     const startedAt = performance.now();
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: root, encoding: 'utf8', timeout: 10_000,
-      env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined, DOCKER_HOST: host },
+      // This child stops before allocation; the enclosing run owns its evidence.
+      env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined, DOCKER_HOST: host,
+        PAPERCUSP_TEST_RUNS_DB_URL: undefined, PAPERCUSP_TEST_RUN_WORKSPACE: undefined,
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: undefined, PC_EXECUTED_SOURCE_MAP_RESULT: undefined,
+        PC_EXECUTED_SOURCE_MAP_OUT: undefined },
     });
     const diagnostic = childDiagnostic(result, startedAt);
     expect(result.status, diagnostic).toBe(1);
     expect(result.signal, diagnostic).toBeNull();
-    expect(result.stderr, diagnostic).toContain(admitted ? 'DOCKER_ADMISSION_REACHED' : 'Docker preflight failed');
-    expect(result.stderr, diagnostic).not.toContain(admitted ? 'Docker preflight failed' : 'DOCKER_ADMISSION_REACHED');
+    expect(result.stderr, diagnostic).toContain(admitted ? 'child preflight failed' : 'Docker preflight failed');
+    expect(result.stderr, diagnostic).not.toContain(admitted ? 'Docker preflight failed' : 'child preflight failed');
     expect(result.stdout, diagnostic).not.toContain('booting throwaway PG');
     expect(result.stderr, diagnostic).not.toContain('credential@remote.invalid');
   });
