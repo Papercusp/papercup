@@ -85,8 +85,11 @@ describe('ordinary PostgreSQL endpoint isolation', () => {
         .map(value => JSON.parse(value.slice('[with-test-pg] cleanup '.length)));
       expect(stages.at(-1), output.slice(-6000)).toMatchObject({ stage: 'complete', pgDataRemoved: true });
       expect(output.indexOf('[with-test-pg] owned database cleanup {"complete":true')).toBeGreaterThanOrEqual(0);
+      // pg-stop is the enclosing operation's start, before its DB-drop
+      // preparation. The real server stop begins only after that preparation.
+      expect(output).toContain('[with-test-pg] pg stopping postgres');
       expect(output.indexOf('[with-test-pg] owned database cleanup {"complete":true'))
-        .toBeLessThan(output.indexOf('"stage":"pg-stop"'));
+        .toBeLessThan(output.indexOf('[with-test-pg] pg stopping postgres'));
       expect(existsSync(stages.at(-1).dataDir)).toBe(false);
       verified = true;
     } finally {
