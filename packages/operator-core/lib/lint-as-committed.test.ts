@@ -1768,6 +1768,69 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     } finally { f.cleanup(); }
   }, 60_000);
 
+  it.each(['valid', 'corrupt-selector', 'different-bytes'] as const)
+    ('resumes against a leased exact-input generation without source lockfiles (%s)', async variant => {
+      const f = retainedFixture();
+      const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
+      const store = join(f.parent, 'generations');
+      const priorStore = process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+      const makeWritable = (path: string) => {
+        if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !statSync(path).isDirectory()) return;
+        chmodSync(path, 0o700);
+        for (const name of readdirSync(path)) makeWritable(join(path, name));
+      };
+      try {
+        const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store], {
+          env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30_000,
+        });
+        expect(published.status, published.stdout + published.stderr).toBe(0);
+        const identity = published.stdout.match(/identity=(v1-[0-9a-f]{64})/)![1];
+        const generation = join(store, identity);
+        expect(existsSync(join(generation, 'tree/package.json'))).toBe(false);
+        expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
+        process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = store;
+        // No mutable install may supply the comparison after publication.
+        rmSync(join(f.root, 'node_modules'), { recursive: true });
+        const retained = join(f.workRoot, 'node_modules/alpha.txt');
+        const inode = statSync(retained).ino;
+        const options = (maxBatches = 64) => ({ resumeVerification: {
+          ...f.options(maxBatches).resumeVerification, generation: true,
+        } });
+        const leases = () => existsSync(join(store, '.leases')) ? readdirSync(join(store, '.leases')) : [];
+        if (variant === 'corrupt-selector') {
+          const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
+          writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
+          await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, options()))
+            .rejects.toThrow(/census failed/);
+        } else if (variant === 'different-bytes') {
+          writeFileSync(retained, 'PAYLOAD-V1');
+          await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, options()))
+            .rejects.toThrow(/dependency bytes differ/);
+        } else {
+          const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, options(1));
+          expect(paused.status).toBe('incomplete');
+          expect(paused.progress.hashedFiles).toBeGreaterThan(0);
+          expect(leases()).toEqual([]);
+          expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+          const complete = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+            ...options(), prepareWorkspace: (copied: { workspacePaths: Set<string> }) =>
+              mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths),
+          });
+          expect(complete.status).toBe('complete');
+          expect(complete.verification.reusedBatches).toBeGreaterThan(0);
+          expect(JSON.parse(readFileSync(f.markerPath, 'utf8')).dependencyMode).toBe('independent-copy-v1');
+        }
+        expect(leases()).toEqual([]);
+        expect(statSync(retained).ino).toBe(inode);
+        if (variant !== 'valid') expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      } finally {
+        if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+        else process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = priorStore;
+        makeWritable(store);
+        f.cleanup();
+      }
+    }, 60_000);
+
   it.each(['donor', 'destination'] as const)('rehashes and rejects same-size %s changes with restored mtime', async side => {
     const f = retainedFixture();
     try {
