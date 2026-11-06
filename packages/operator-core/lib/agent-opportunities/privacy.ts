@@ -1,10 +1,18 @@
 /** Shared read rail. Hydrate examples on each read; never copy them into history/results/cache packets. */
 import { createHmac } from 'node:crypto';
+import { getDbEncryptionKey } from '../db-encryption';
 import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
 import type { SqlDemandObservation } from '../bash-substitution/sql-intent-corpus';
 export const EXAMPLE_LIFETIME_MS = 30 * 86400_000;
 export const EXAMPLE_PURGE_GRACE_MS = 86400_000;
 export const AGGREGATE_LIFETIME_DAYS = 120;
+
+/** One production identity scope for the existing census and recipe adapters. */
+export function productionMiningScope(workspaceId: string, now = Date.now()): SqlIntentScope {
+  const epoch = new Date(now).toISOString().slice(0, 7);
+  return { workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
+    key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() };
+}
 
 export function miningScopeId(scope: SqlIntentScope, harnessSlug: string): string {
   if (!scope.workspaceId || !scope.sourceBoundary || !scope.epoch || !harnessSlug || scope.key.byteLength < 32)

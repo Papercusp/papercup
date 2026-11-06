@@ -3,7 +3,7 @@
 import {test,expect} from '@playwright/test';
 import {createServer,type Server} from 'node:http';
 import {randomUUID} from 'node:crypto';
-import {writeFile} from 'node:fs/promises';
+import {readFile,writeFile} from 'node:fs/promises';
 import {buildReportViewer} from '@papercusp/operator-core/lib/report-sharing-viewer';
 import {changeReportSharing,reportSharingGithub,type ReportShareStore,type ReportShare} from '@papercusp/operator-core/lib/report-sharing';
 import type {ReportRecord} from '@papercusp/operator-core/lib/report-library';
@@ -44,6 +44,23 @@ test('SHARE-READER actual bundled reader renders diagrams, tables and mobile out
 if(process.env.PAPERCUSP_REPORT_SHARING_LIVE==='1') {
   test('SHARE-SHIPMENT actual secret Gist renders anonymously on Pages and a fresh reader fails after deletion',async({browser},info)=>{
     const github=await reportSharingGithub();const user=await github.user();
+    // An explicitly supplied prior acceptance receipt can authorize an upgrade
+    // of its exact viewer tree. The adapter still checks account/repo ownership
+    // and refuses remote edits; a mutable remote manifest is never the pin.
+    const previousProof=process.env.PAPERCUSP_REPORT_SHARING_PREVIOUS_VIEWER_EVIDENCE;
+    if(previousProof){
+      const previous=JSON.parse(await readFile(previousProof,'utf8'));
+      expect(previous.kind).toBe('report-sharing-public-lifecycle');
+      expect(previous.accountId).toBe(user.id);
+      expect(previous.login.toLowerCase()).toBe(user.login.toLowerCase());
+      expect(Number.isSafeInteger(previous.repoId)&&previous.repoId>0).toBe(true);
+      expect(previous.latestRun?.viewerTreeSha).toMatch(/^[a-f0-9]{40}$/);
+      const assets=await buildReportViewer();
+      const prepared=await github.prepareViewer(assets,previous.repoId,previous.latestRun.viewerTreeSha);
+      await info.attach('viewer-upgrade',{body:JSON.stringify({previousProof,accountId:user.id,
+        repoId:prepared.repoId,previousTreeSha:previous.latestRun.viewerTreeSha,
+        treeSha:prepared.treeSha,viewerVersion:assets.version}),contentType:'application/json'});
+    }
     const rows=new Map<string,ReportShare>();
     const store:ReportShareStore={async locked(_key,work){return work({viewerState:async a=>{const row=[...rows.values()].filter(row=>row.accountId===a&&row.repoId&&row.viewerTreeSha&&row.viewerGeneration).sort((a,b)=>b.viewerGeneration!-a.viewerGeneration!)[0];return row?{repoId:row.repoId!,treeSha:row.viewerTreeSha!,generation:row.viewerGeneration!}:null;},list:async(w,r)=>[...rows.values()].filter(row=>row.workspaceId===w&&row.reportId===r),get:async(w,r,a)=>rows.get(JSON.stringify([w,r,a]))??null,
       put:async share=>{rows.set(JSON.stringify([share.workspaceId,share.reportId,share.accountId]),share);}});}};
