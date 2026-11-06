@@ -40,11 +40,12 @@
     "@papercusp/agent-mcp": "*",
     "@papercusp/plugin-loader-core": "*",
     "@papercusp/plugin-sdk": "*",
-    "@papercusp/scheduled-registry": "*"
+    "@papercusp/scheduled-registry": "*",
+    "koffi": "3.3.7"
   },
   "devDependencies": {
-    "tsx": "^4.7.0",
     "@papercusp/test-config": "*",
+    "tsx": "^4.7.0",
     "vitest": "^4.1.4"
   }
 }

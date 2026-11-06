@@ -47,6 +47,9 @@ export const HOST_EVENT_FILE_RETENTION_DAYS_DEFAULT = 14;
 /** Bound the work per tick so one sweep cannot monopolise a routine tick or the pool. */
 export const HOST_EVENT_MAX_FILES_PER_RUN_DEFAULT = 500;
 
+/** Bound each database retention DELETE so a conflicting tuple cannot abort the whole sweep. */
+export const HOST_EVENT_ROW_RETENTION_BATCH_SIZE_DEFAULT = 5_000;
+
 const DAY_MS = 86_400_000;
 
 export interface PsuPtyHostEventsIngestOptions {
@@ -428,12 +431,26 @@ export async function ingestPsuPtyHostEvents(
   }
 
   if (!dryRun) {
-    const expired = await sql`
-      DELETE FROM harness_shared.psu_pty_host_events
-       WHERE workspace_id = ${ws}
-         AND ts < now() - ${`${rowRetentionDays} days`}::interval
-    `;
-    result.rowsExpired = expired.count ?? 0;
+    const retentionInterval = `${rowRetentionDays} days`;
+    while (true) {
+      const expired = await sql`
+        WITH expired_batch AS (
+          SELECT id
+            FROM harness_shared.psu_pty_host_events
+           WHERE workspace_id = ${ws}
+             AND ts < now() - ${retentionInterval}::interval
+           ORDER BY ts ASC, id ASC
+           LIMIT ${HOST_EVENT_ROW_RETENTION_BATCH_SIZE_DEFAULT}
+           FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM harness_shared.psu_pty_host_events AS event
+         USING expired_batch
+         WHERE event.id = expired_batch.id
+      `;
+      const deleted = expired.count ?? 0;
+      result.rowsExpired += deleted;
+      if (deleted < HOST_EVENT_ROW_RETENTION_BATCH_SIZE_DEFAULT) break;
+    }
   }
 
   return result;

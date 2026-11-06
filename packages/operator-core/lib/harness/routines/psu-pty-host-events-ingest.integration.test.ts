@@ -191,4 +191,68 @@ describe('ingestPsuPtyHostEvents against a real Postgres', () => {
       logged.mockRestore();
     }
   });
+
+  it('skips a locked expired tuple, cleans the other rows, then removes the deferred row on a later run', async () => {
+    await sql`
+      INSERT INTO harness_shared.psu_pty_host_events
+        (workspace_id, owner_id, ts, kind, payload, row_digest)
+      VALUES
+        (${WS}, 'su-retention-test', now() - interval '93 days', 'retention-fixture', '{}'::jsonb, 'retention-locked'),
+        (${WS}, 'su-retention-test', now() - interval '92 days', 'retention-fixture', '{}'::jsonb, 'retention-free-1'),
+        (${WS}, 'su-retention-test', now() - interval '91 days', 'retention-fixture', '{}'::jsonb, 'retention-free-2')
+    `;
+    const dir = await seedDir({});
+
+    let signalLocked!: () => void;
+    let releaseLocked!: () => void;
+    const lockedReady = new Promise<void>((resolve) => { signalLocked = resolve; });
+    const releaseSignal = new Promise<void>((resolve) => { releaseLocked = resolve; });
+    const holder = sql.begin(async (tx) => {
+      const rows = await tx`
+        SELECT id FROM harness_shared.psu_pty_host_events
+         WHERE workspace_id = ${WS} AND row_digest = 'retention-locked'
+         FOR UPDATE
+      `;
+      expect(rows).toHaveLength(1);
+      signalLocked();
+      await releaseSignal;
+    });
+
+    await lockedReady;
+    try {
+      const first = await sql.begin(async (tx) => {
+        await tx`SET LOCAL lock_timeout = '250ms'`;
+        return ingestPsuPtyHostEvents({
+          sql: tx as unknown as Sql,
+          workspaceId: WS,
+          dir,
+          rowRetentionDays: 90,
+        });
+      });
+
+      expect(first.rowsExpired).toBe(2);
+      const remaining = await sql<{ row_digest: string }[]>`
+        SELECT row_digest FROM harness_shared.psu_pty_host_events
+         WHERE workspace_id = ${WS}
+         ORDER BY row_digest
+      `;
+      expect(remaining.map((row) => row.row_digest)).toEqual(['retention-locked']);
+    } finally {
+      releaseLocked();
+      await holder;
+    }
+
+    const second = await ingestPsuPtyHostEvents({
+      sql,
+      workspaceId: WS,
+      dir,
+      rowRetentionDays: 90,
+    });
+    expect(second.rowsExpired).toBe(1);
+    const remainingAfterRetry = await sql<{ row_digest: string }[]>`
+      SELECT row_digest FROM harness_shared.psu_pty_host_events
+       WHERE workspace_id = ${WS}
+    `;
+    expect(remainingAfterRetry).toHaveLength(0);
+  }, 20_000);
 });

@@ -2499,9 +2499,14 @@ async function verifyManagedCarryResumeLineage(
   try {
     const events = readHostEvents(ownerId);
     let deliveredIndex = -1;
+    let deliveryObserved = false;
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index] as Record<string, unknown>;
       const lineage = managedCarryLineageOf(events[index]);
+      if (event.kind === 'respawn-carry-delivered' && event.mode === 'carry-respawn' &&
+          event.ownerId === ownerId && event.nativeId === actualSessionId) {
+        deliveryObserved = true;
+      }
       if (event.kind !== 'respawn-carry-delivered' || event.mode !== 'carry-respawn' ||
           event.ownerId !== ownerId || event.nativeId !== actualSessionId ||
           event.turnStartVerified !== true || !lineage ||
@@ -2534,7 +2539,7 @@ async function verifyManagedCarryResumeLineage(
     // The confirmed child binding protects this successor from mismatch
     // rollback, but does not prove that its carried turn has started. Keep
     // observing until the durable carry-delivered event arrives.
-    if (deliveredIndex < 0) return null;
+    if (deliveredIndex < 0) return deliveryObserved ? false : null;
 
     const row = await readAdvSession(advSessionId);
     return Boolean(row && Number(row.id) === advSessionId && row.coordOwnerId === ownerId &&
