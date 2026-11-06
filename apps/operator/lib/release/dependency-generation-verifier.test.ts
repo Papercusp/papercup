@@ -126,15 +126,21 @@ describe('bounded independent verifier copy', () => {
   it('uses the bounded copy through the maintained materializer and refuses a missing source', () => {
     const f = fixture();
     const source = join(f.donor, 'node_modules'), dest = join(f.root, 'materialized');
-    const run = (input: string, output: string) => spawnSync('bash', ['-c',
+    const run = (input: string, output: string, env: NodeJS.ProcessEnv = f.env) => spawnSync('bash', ['-c',
       'set -euo pipefail; source "$1"; dependency_generation_materialize_tree "$2" "$3" verifier',
-      'verifier-copy', f.generationScript, input, output], { env: f.env, encoding: 'utf8', timeout: 30000 });
+      'verifier-copy', f.generationScript, input, output], { env, encoding: 'utf8', timeout: 30000 });
     const result = run(source, dest);
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('published dependency');
     expect(statSync(join(dest, 'pkg/index.js')).ino).not.toBe(statSync(join(source, 'pkg/index.js')).ino);
     const absent = join(f.root, 'not-published');
     expect(run(join(f.root, 'missing'), absent).status).not.toBe(0);
+    expect(existsSync(absent)).toBe(false);
+    const commands = join(f.root, 'commands');
+    write(commands, 'cp', '#!/bin/sh\nexit 17\n'); chmodSync(join(commands, 'cp'), 0o755);
+    const failed = run(source, absent, { ...f.env, PATH: commands + ':' + process.env.PATH });
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain('copy-worker-failed:status=17');
     expect(existsSync(absent)).toBe(false);
   }, 60000);
 });
