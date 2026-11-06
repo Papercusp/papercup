@@ -14026,8 +14026,10 @@ impl App {
                             if let Some(entry) = entry {
                                 return self.activate_session_entry(entry);
                             }
-                            self.toast =
-                                Some("Peer session is unavailable; refresh before opening".into());
+                            self.chat_toast(
+                                "warning",
+                                "Peer session is unavailable; refresh before opening".into(),
+                            );
                         }
                         return Action::Render;
                     }
@@ -17787,6 +17789,29 @@ mod tests {
             app.fleet_action_menu.is_none(),
             "the shared menu remains operable in a pinned pane"
         );
+        app.agent_ctx
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .peer_sessions
+            .clear();
+        app.toast = None;
+        app.toast_is_ack = false;
+        assert_eq!(
+            app.update(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Action::Render
+        );
+        assert!(app.fleet_action_menu.is_none());
+        assert_eq!(app.toast.as_ref().unwrap().level, "warning");
+        assert_eq!(
+            toast_text(&app),
+            "Peer session is unavailable; refresh before opening"
+        );
+        assert!(app.toast_is_ack, "the peer action remains visible when muted");
     }
 
     fn key(c: char, mods: KeyModifiers) -> Event {
