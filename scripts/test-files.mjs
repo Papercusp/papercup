@@ -2293,7 +2293,7 @@ export function formatProvenanceDrift(diff) {
  * (measured, nothing moved), `drifted` (a tested path changed mid-run), `unknown` (git unreadable or
  * HEAD moved beyond the named-path measurement radius — NOT a clean bill).
  */
-export function provenanceResultFields(snapshot, diff, childNotices, childNoticeOffsetBytes) {
+export function provenanceResultFields(snapshot, diff, childNotices, childNoticeOffsetBytes, launcherParentPid) {
   const entries = snapshot?.entries ?? [];
   const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN).length;
   const uncommitted = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked').length;
@@ -2316,11 +2316,14 @@ export function provenanceResultFields(snapshot, diff, childNotices, childNotice
   // The inherited channel may already contain a committed-source notice for this launcher before
   // main() opens its child sink. Report that sink's byte offset so consumers can compare this
   // child-only count with the matching suffix of the shared notice file.
+  // Record the measured parent PID too, so mutation-probe can bind a notice emitted by the
+  // npm-install-safe process that launched this runner without trusting entry text by itself.
   const childSuffix =
     childNotices === undefined
       ? ''
       : ` childSubstituted=${childNotices?.unreadable || !childNotices ? PROVENANCE_UNKNOWN : childNotices.records.length}` +
-        ` childNoticeOffsetBytes=${Number.isSafeInteger(childNoticeOffsetBytes) ? childNoticeOffsetBytes : PROVENANCE_UNKNOWN}`;
+        ` childNoticeOffsetBytes=${Number.isSafeInteger(childNoticeOffsetBytes) ? childNoticeOffsetBytes : PROVENANCE_UNKNOWN}` +
+        ` launcherParentPid=${Number.isSafeInteger(launcherParentPid) && launcherParentPid > 0 ? launcherParentPid : PROVENANCE_UNKNOWN}`;
   return (
     `head=${snapshot?.head ?? PROVENANCE_UNKNOWN} ` +
     `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}${startedAtSuffix}${childSuffix}`
@@ -5039,7 +5042,7 @@ export async function main(
       : 'unknown';
   console.log(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
-      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff, childSourceNotices, childSourceNoticeSink?.offset)} skippedTests=${skippedField}` +
+      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff, childSourceNotices, childSourceNoticeSink?.offset, process.ppid)} skippedTests=${skippedField}` +
       (summary.anyFinalizationError ? ' finalizationError=true' : ''),
   );
   if (summary.anyFinalizationError) return TEST_FILE_EXIT_FINALIZATION_ERROR;

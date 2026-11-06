@@ -497,20 +497,23 @@ describe('test-spawned child committed-source substitutions', () => {
     ]);
   });
 
-  it('appends childSubstituted LAST on the terminal fields, only when main() passes the notices', () => {
+  it('appends the child-source cursor and measured parent when main() passes the notices', () => {
     const snapshot = { head: 'aaa', entries: [entry()], startedAt: '2026-10-13T00:00:00.000Z' };
     const diff = { drifted: false, uncomparable: [] };
     const base = 'head=aaa uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-13T00:00:00.000Z';
     expect(provenanceResultFields(snapshot, diff)).toBe(base);
     expect(provenanceResultFields(snapshot, diff, { records: [{}, {}], malformed: 0, unreadable: false }, 0)).toBe(
-      `${base} childSubstituted=2 childNoticeOffsetBytes=0`,
+      `${base} childSubstituted=2 childNoticeOffsetBytes=0 launcherParentPid=unknown`,
     );
-    expect(provenanceResultFields(snapshot, diff, { records: [], malformed: 1, unreadable: false }, 0)).toBe(
-      `${base} childSubstituted=0 childNoticeOffsetBytes=0`,
+    expect(provenanceResultFields(snapshot, diff, { records: [{}, {}], malformed: 0, unreadable: false }, 0, 41)).toBe(
+      `${base} childSubstituted=2 childNoticeOffsetBytes=0 launcherParentPid=41`,
+    );
+    expect(provenanceResultFields(snapshot, diff, { records: [], malformed: 1, unreadable: false }, 0, 42)).toBe(
+      `${base} childSubstituted=0 childNoticeOffsetBytes=0 launcherParentPid=42`,
     );
     for (const unreadable of [{ records: [], malformed: 0, unreadable: true }, null]) {
       expect(provenanceResultFields(snapshot, diff, unreadable)).toBe(
-        `${base} childSubstituted=unknown childNoticeOffsetBytes=unknown`,
+        `${base} childSubstituted=unknown childNoticeOffsetBytes=unknown launcherParentPid=unknown`,
       );
     }
   });
