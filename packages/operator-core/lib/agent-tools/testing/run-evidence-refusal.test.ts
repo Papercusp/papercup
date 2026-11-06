@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { cleanupOwnedTestDatabases } from '@papercusp/test-config/pg';
 
 // EI-24100872054224181: a testing:run { evidence } refused by the mutation-probe fence used to
 // register pending spec-evidence rows first and then FINISH them, leaving two never-settling
@@ -185,6 +186,33 @@ const timedOutRouter = () => vi.fn(async (_args: string[], _root: string,
   _env: NodeJS.ProcessEnv, _timeoutMs: number) => ({
   code: null, signal: null, timedOut: true, aborted: false, output: '',
 }));
+
+it.each(['dropped', 'error'] as const)('retains nested private-PG %s cleanup in the root result and manifest', async outcome => {
+  const root = await makeTestRoot(true);
+  const drop = vi.fn(async () => {
+    if (outcome === 'error') throw new Error('the database system is shutting down');
+    return 'dropped' as const;
+  });
+  const runRouterFn = vi.fn(async (_args: string[], _root: string, env: NodeJS.ProcessEnv) => {
+    const child = await mkdtemp(join(env.PAPERCUSP_TEST_OWNED_DB_DIR!, 'private-pg-'));
+    await writeFile(join(child, 'org_abcdef012345.json'), JSON.stringify({
+      runId: env.PAPERCUSP_TEST_RUN_GROUP, name: 'org_abcdef012345',
+      adminUri: 'postgres://private@localhost:41236/postgres', outcome: 'owned',
+    }));
+    await cleanupOwnedTestDatabases({ dir: child, runId: env.PAPERCUSP_TEST_RUN_GROUP!,
+      adminUri: 'postgres://private@localhost:41236/postgres', deadlineAtMs: Date.now() + 1000, drop });
+    return { code: 1, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'],
+    allowDetachedRecovery: false, timeoutMs: 10_000 }, { runRouterFn, artifactBaseDir: root });
+  const expected = { complete: outcome === 'dropped', databases: [], scopes: [{ complete: outcome === 'dropped',
+    databases: [{ name: 'org_abcdef012345', outcome }] }] };
+  expect(result.cleanup).toMatchObject(expected);
+  const manifest = JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'));
+  expect(manifest.cleanup).toMatchObject(expected);
+  expect(drop).toHaveBeenCalledOnce();
+  expect(JSON.stringify(manifest.cleanup)).not.toContain('postgres://');
+});
 
 it.each(['WI-context', undefined])('binds task ownership from the current core request: %s', async workItemId => {
   vi.stubEnv('PAPERCUSP_TEST_RUN_WORK_ITEM', 'WI-stale-operator');

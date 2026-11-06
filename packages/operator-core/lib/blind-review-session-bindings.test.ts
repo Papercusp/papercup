@@ -33,6 +33,7 @@ import {
   recordBlindReviewSessionPost,
   releaseBlindReviewSessionResume,
   verifyBlindReviewSessionBinding,
+  verifyBlindReviewRecoveryPort,
 } from './blind-review-session-bindings';
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
 import { resolve } from 'node:path';
@@ -91,6 +92,87 @@ function bindingRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe('exact blind reviewer backend continuation receipt', () => {
+  function recovery(): Parameters<typeof verifyBlindReviewRecoveryPort>[0] {
+    const owner = 'su-reviewer';
+    const profile = { account: 'auto', headless: true, launchedBy: BLIND_GAP_REVIEW_ACTOR };
+    return {
+      now: Date.parse('2026-11-06T14:00:00Z'),
+      binding: { id: 7, workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'reviewed-plan',
+        activationAuditSeq: 4, reviewerOwnerId: owner, advSessionId: 42, nativeSessionId: 'native-source',
+        launchParentOwner: BLIND_GAP_REVIEW_ACTOR, accountRoute: 'auto', modelSpec: 'opus',
+        confinementSnapshot: CONFINEMENT, status: 'resuming', resumeLeaseId: 'lease-1',
+        resumeLeaseExpiresAt: '2026-11-06T14:05:00Z', reviewId: null },
+      source: { id: 42, workspace_id: 'ws-1', coord_owner_id: owner, session_id: 'native-source',
+        agent: 'claude', launch_spec: { ...profile, model: 'opus' }, launch_argv: [],
+        ended_at: '2026-11-06T13:59:00Z', resume_claim_key: null },
+      target: { id: 43, workspace_id: 'ws-1', coord_owner_id: owner, session_id: 'native-target',
+        agent: 'codex', launch_spec: { ...profile, model: 'sol:xhigh' }, launch_argv: [], ended_at: null,
+        port_id: 'port-1', port_source_adv_session_id: 42, port_status: 'delivered' },
+      port: { id: 'port-1', workspaceId: 'ws-1', idempotencyKey: 'request-1', protocolVersion: 2,
+        sourceAdvSessionId: 42, targetAdvSessionId: 43, sourceBackend: 'claude', targetBackend: 'codex',
+        targetModel: 'sol:xhigh', status: 'delivered', sourceHash: 'a'.repeat(64),
+        normalizedHash: 'b'.repeat(64), renderedHash: 'c'.repeat(64), tokenHash: 'd'.repeat(64),
+        artifactPath: '/managed/port.seed', error: null, preparedAt: '2026-11-06T13:59:00Z',
+        pendingAt: '2026-11-06T13:59:01Z', deliveredAt: '2026-11-06T13:59:02Z', failedAt: null,
+        expiresAt: '2026-11-06T14:05:00Z', metadata: {
+          sourceCoordOwnerId: owner, targetCoordOwnerId: owner, bootstrapReceiptCommitted: true,
+          bootstrapReceiptTargetAdvSessionId: 43, bootstrapRequestHash: 'e'.repeat(64),
+          targetNativeSessionId: 'native-target',
+          summary: { source: { workspaceId: 'ws-1', advSessionId: 42, nativeSessionId: 'native-source', backend: 'claude' },
+            target: { backend: 'codex' }, hashes: { rendered: 'c'.repeat(64) } },
+          persistenceProof: { persisted: true, renderedHash: 'c'.repeat(64), nativeRef: '/sessions/native-target.jsonl' },
+        } },
+    };
+  }
+
+  it('accepts only exact same-owner persisted conversion without changing original binding history', () => {
+    const input = recovery(), before = structuredClone(input);
+    expect(verifyBlindReviewRecoveryPort(input)).toEqual({ ok: true });
+    expect(input).toEqual(before);
+  });
+
+  it('accepts the maintained Codex rollout filename rather than requiring a bare UUID filename', () => {
+    const input = recovery();
+    input.port.metadata.persistenceProof = { persisted: true, renderedHash: input.port.renderedHash,
+      nativeRef: '/sessions/2026/11/06/rollout-2026-11-06T14-00-00-native-target.jsonl' };
+    expect(verifyBlindReviewRecoveryPort(input)).toEqual({ ok: true });
+  });
+
+  const corruptions: Array<[string, (input: ReturnType<typeof recovery>) => void]> = [
+    ['expired lease', x => { x.binding.resumeLeaseExpiresAt = '2026-11-06T13:59:59Z'; }],
+    ['unleased source', x => { x.binding.status = 'ready'; }],
+    ['live predecessor', x => { x.source.ended_at = null; }],
+    ['reserved predecessor', x => { x.source.resume_claim_key = 'other-writer'; }],
+    ['changed source native', x => { x.source.session_id = 'other-source'; }],
+    ['different owner', x => { x.target.coord_owner_id = 'su-other'; }],
+    ['ended target', x => { x.target.ended_at = '2026-11-06T13:59:59Z'; }],
+    ['unapproved backend', x => { x.target.agent = 'omp'; }],
+    ['lost recruiter profile', x => { x.target.launch_spec = { account: 'auto', headless: true }; }],
+    ['changed account', x => { x.target.launch_spec = { account: 'default', headless: true, launchedBy: BLIND_GAP_REVIEW_ACTOR }; }],
+    ['wrong prepared model', x => { x.port.targetModel = 'different'; }],
+    ['different workspace', x => { x.port.workspaceId = 'ws-other'; }],
+    ['wrong source port', x => { x.port.sourceAdvSessionId = 41; }],
+    ['wrong target port', x => { x.port.targetAdvSessionId = 44; }],
+    ['pending port', x => { x.port.status = 'pending'; }],
+    ['pending target', x => { x.target.port_status = 'pending'; }],
+    ['different port id', x => { x.target.port_id = 'other-port'; }],
+    ['missing bootstrap commit', x => { delete x.port.metadata.bootstrapReceiptCommitted; }],
+    ['missing bootstrap request', x => { delete x.port.metadata.bootstrapRequestHash; }],
+    ['wrong bootstrap target', x => { x.port.metadata.bootstrapReceiptTargetAdvSessionId = 44; }],
+    ['contradictory native receipt', x => { x.port.metadata.targetNativeSessionId = 'different'; }],
+    ['missing portable summary', x => { delete x.port.metadata.summary; }],
+    ['unpersisted transcript', x => { x.port.metadata.persistenceProof = { persisted: false }; }],
+    ['different persisted transcript', x => { x.port.metadata.persistenceProof = {
+      persisted: true, renderedHash: x.port.renderedHash, nativeRef: '/sessions/other.jsonl' }; }],
+    ['different persisted bytes', x => { x.port.renderedHash = 'f'.repeat(64); }],
+  ];
+  it.each(corruptions)('rejects %s before authority transfer', (_name, corrupt) => {
+    const input = recovery(); corrupt(input);
+    expect(verifyBlindReviewRecoveryPort(input)).toMatchObject({ ok: false, code: 'recovery_port_invalid' });
+  });
+});
 
 function configureSql() {
   sqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {

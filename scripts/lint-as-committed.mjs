@@ -406,7 +406,7 @@ while IFS= read -r source; do
   [ ! -L "$source" ] || { echo "dependency root must be physical: $source" >&2; exit 1; }
   copy_started=$SECONDS
   printf 'COMMITTED_DEPENDENCY_COPY state=started mode=%s path=%q\\n' "$4" "$rel" >&2
-  dependency_generation_materialize_tree "$source" "$3/$rel"
+  dependency_generation_materialize_tree "$source" "$3/$rel" verifier
   printf 'COMMITTED_DEPENDENCY_COPY state=complete mode=%s path=%q elapsedSec=%s\\n' "$4" "$rel" "$((SECONDS - copy_started))" >&2
   printf '%s\\n' "$rel"
 done <<< "$sources"
@@ -427,7 +427,8 @@ done <<< "$sources"
     const visit = directory => {
       // Published generations are read-only; copied directories/files have
       // independent inodes and may safely become writable in this clone.
-      chmodSync(directory, statSync(directory).mode | 0o700);
+      const directoryMode = statSync(directory).mode;
+      if ((directoryMode & 0o700) !== 0o700) chmodSync(directory, directoryMode | 0o700);
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);
         if (entry.isSymbolicLink()) {
@@ -448,7 +449,10 @@ done <<< "$sources"
           symlinkSync(relative(dirname(path), join(workRoot, rel)), path);
           links.push(path);
         } else if (entry.isDirectory()) visit(path);
-        else if (entry.isFile()) chmodSync(path, statSync(path).mode | 0o600);
+        else if (entry.isFile()) {
+          const mode = statSync(path).mode;
+          if ((mode & 0o600) !== 0o600) chmodSync(path, mode | 0o600);
+        }
       }
     };
     phase('repair-links', () => {
@@ -1551,7 +1555,11 @@ async function main() {
       console.error(`lint-as-committed: failed to clone ${repoRoot}:\n${clone.stderr || clone.stdout}`);
       await bail(2);
     }
-    const checkout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', sha], {
+    // Git owns the index and path-collision checks while its workers extract
+    // independent files. Bound the worker count: a serial checkout of this
+    // source measured 54s versus 8s with eight workers, before dependencies.
+    // Older Git versions ignore this configuration and retain serial checkout.
+    const checkout = spawnSync('git', ['-c', 'advice.detachedHead=false', '-c', 'checkout.workers=8', 'checkout', '--detach', '--quiet', sha], {
       cwd: workRoot,
       encoding: 'utf8',
     });
@@ -1639,7 +1647,7 @@ async function main() {
           console.error(`lint-as-committed: failed to clone submodule ${sub.path} from its local checkout:\n${subClone.stderr || subClone.stdout}`);
           await bail(2);
         }
-        const subCheckout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', pin], {
+        const subCheckout = spawnSync('git', ['-c', 'advice.detachedHead=false', '-c', 'checkout.workers=8', 'checkout', '--detach', '--quiet', pin], {
           cwd: subWork,
           encoding: 'utf8',
         });

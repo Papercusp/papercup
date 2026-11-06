@@ -1185,6 +1185,57 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it.each(['admission-starved', 'admission-deferred'] as const)(
+    'retains durable receipt identities across %s and resumes only unfinished units', async reason => {
+      await seed();
+      const owner = { attemptId: `attempt-${reason}`, candidate: 'candidate-refusal', runnerId: 'runner-one',
+        runId: 'run-one', pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+      expect((await beginStoredQualification(target, owner)).status).toBe('updated');
+      expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+      const units = [
+        { id: 'banked', kind: 'test' as const, path: 'banked.test.ts' },
+        { id: 'pending', kind: 'test' as const, path: 'pending.test.ts' },
+        { id: 'post', kind: 'post-suite' as const, path: 'post.mjs' },
+      ];
+      const receipt = (unit: typeof units[number]) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
+        observedAtMs: 250, state: 'pass' as const, firstAttemptVerdict: 'pass' as const,
+        worktreeDirty: false, observedCount: 1, proof: { recordedSha: owner.candidate,
+          runContext: 'ci', runnerIdentity: 'proof-v3 node', executedModules: [unit.path],
+          readPaths: [], inputsCaptured: true, opaqueReasons: [] } });
+      const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo',
+        taskKey: 'qualification', runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], nowMs: 300,
+        manifest: { schemaVersion: 1, units }, updates: [{ receipt: receipt(units[0]!) }] };
+      // The scheduler's production refusal boundary is exercised separately in
+      // affected-tests-budgeted-scheduler.test.ts. Here its refusal crosses the
+      // actual durable continuation boundary, without inventing a failed receipt.
+      const refusal = reason === 'admission-deferred'
+        ? Object.assign(new Error('Admission deferred for fs-mutex "qualification"'), { code: 'EADMISSIONDEFERRED' })
+        : new Error('Timed out after 60ms waiting for fs-mutex "qualification" (/tmp/private-test-lock)');
+      const start = vi.fn(async () => { throw refusal; });
+      await expect(continueStoredQualificationWork(target, input, start)).rejects.toBe(refusal);
+      expect(start).toHaveBeenCalledOnce();
+      const refused = await readStoredQualification(target);
+      if (refused.status !== 'present') throw new Error('missing refused qualification');
+      const banked = structuredClone(refused.transaction.continuation!.receipts);
+      expect(banked).toEqual([receipt(units[0]!)]);
+      expect(refused.transaction).toMatchObject({ phase: 'running', outcome: { kind: 'pending' } });
+      expect(evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
+        continuation: refused.transaction.continuation }, { ...input, sourceCommit: input.candidate }))
+        .toMatchObject({ verdict: 'incomplete', reused: ['banked'], run: ['pending', 'post'],
+          counts: { selected: 3, passed: 1, pending: 2 } });
+      expect(await composeStoredQualificationWork(target, { ...input, updates: [] }))
+        .toMatchObject({ status: 'conflict', refusalReason: 'continuation-verdict-not-green' });
+      const resumed = await continueStoredQualificationWork(target, { ...input, updates: [] }, async unit => receipt(unit));
+      expect(resumed).toMatchObject({ status: 'settled', executed: ['pending', 'post'],
+        evaluation: { verdict: 'green', reused: ['banked', 'pending', 'post'],
+          counts: { selected: 3, passed: 3, pending: 0 } } });
+      const complete = await readStoredQualification(target);
+      if (complete.status !== 'present') throw new Error('missing resumed qualification');
+      expect(complete.transaction.continuation!.manifest).toEqual(input.manifest);
+      expect(complete.transaction.continuation!.receipts.filter(row => row.unitId === 'banked')).toEqual(banked);
+      expect(complete.transaction.continuation!.receipts).toHaveLength(3);
+    });
+
   it('resumes command and post-suite phases without executing or hiding outstanding test work', async () => {
     await seed();
     await beginStoredQualification(target, { attemptId: 'attempt-phases', candidate: 'candidate-phases', nowMs: 100 });

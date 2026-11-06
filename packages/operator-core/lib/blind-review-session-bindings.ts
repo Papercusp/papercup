@@ -3,6 +3,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { readDeclaredSessionConfinement, readSessionConfinement } from './capability-envelope/session-confinement-store';
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
 import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
+import type { SessionPortRow } from './session-port/store';
 
 export const BLIND_GAP_REVIEW_ACTOR = 'system:blind-gap-review';
 export const INTERNAL_BLIND_REVIEW_RESUME = Symbol('internal-blind-review-resume');
@@ -143,6 +144,55 @@ function sameImmutable(a: BlindReviewSessionBinding, b: BlindReviewSessionBindin
     a.nativeSessionId === b.nativeSessionId && a.launchParentOwner === b.launchParentOwner &&
     a.accountRoute === b.accountRoute && a.modelSpec === b.modelSpec &&
     stable(a.confinementSnapshot) === stable(b.confinementSnapshot);
+}
+
+/** A delivered port proves transcript continuity, never product/model pickup.
+ * Recovery must still hold the recruiter lease and atomically retire the source
+ * before granting its target authority. This validator performs no writes. */
+export function verifyBlindReviewRecoveryPort(input: {
+  binding: BlindReviewSessionBinding;
+  source: AdvRow & { ended_at: unknown; resume_claim_key: string | null };
+  target: AdvRow & { ended_at: unknown; port_id: string | null;
+    port_source_adv_session_id: number | string | null; port_status: string | null };
+  port: SessionPortRow;
+  now?: number;
+}): { ok: true } | { ok: false; code: 'recovery_port_invalid'; message: string } {
+  const { binding: b, source, target, port } = input;
+  const invalid = () => ({ ok: false as const, code: 'recovery_port_invalid' as const,
+    message: 'The exact leased reviewer continuation is not proved by a delivered session port.' });
+  if (b.status !== 'resuming' || !b.resumeLeaseId || !b.resumeLeaseExpiresAt ||
+      !(Date.parse(b.resumeLeaseExpiresAt) > (input.now ?? Date.now())) ||
+      Number(source.id) !== b.advSessionId || source.workspace_id !== b.workspaceId ||
+      source.coord_owner_id !== b.reviewerOwnerId || source.session_id !== b.nativeSessionId ||
+      source.ended_at == null || source.resume_claim_key !== null ||
+      !isBlindReviewerBackendAgent(source.agent) || !isBlindReviewerBackendAgent(target.agent) ||
+      target.agent === source.agent || Number(target.id) === b.advSessionId ||
+      !target.session_id || target.session_id === b.nativeSessionId || target.ended_at !== null ||
+      port.workspaceId !== b.workspaceId || port.status !== 'delivered' ||
+      target.port_status !== 'delivered' || target.port_id !== port.id ||
+      Number(target.port_source_adv_session_id) !== b.advSessionId ||
+      port.sourceAdvSessionId !== b.advSessionId || port.targetAdvSessionId !== Number(target.id) ||
+      port.sourceBackend !== source.agent || port.targetBackend !== target.agent) return invalid();
+  const sourceProfile = inspectAdv(source, b);
+  const targetProfile = inspectAdv(target, { ...b, advSessionId: Number(target.id), nativeSessionId: target.session_id });
+  if (!sourceProfile.ok || !targetProfile.ok || sourceProfile.accountRoute !== b.accountRoute ||
+      sourceProfile.modelSpec !== b.modelSpec || targetProfile.accountRoute !== b.accountRoute ||
+      targetProfile.modelSpec !== port.targetModel) return invalid();
+  const summary = object(port.metadata.summary);
+  const from = object(summary?.source), to = object(summary?.target), hashes = object(summary?.hashes);
+  const proof = object(port.metadata.persistenceProof);
+  if (port.metadata.sourceCoordOwnerId !== b.reviewerOwnerId ||
+      port.metadata.targetCoordOwnerId !== b.reviewerOwnerId ||
+      port.metadata.bootstrapReceiptCommitted !== true ||
+      port.metadata.bootstrapReceiptTargetAdvSessionId !== Number(target.id) ||
+      typeof port.metadata.bootstrapRequestHash !== 'string' || !port.metadata.bootstrapRequestHash ||
+      (port.metadata.targetNativeSessionId != null && port.metadata.targetNativeSessionId !== target.session_id) ||
+      from?.workspaceId !== b.workspaceId || from.advSessionId !== b.advSessionId ||
+      from.nativeSessionId !== b.nativeSessionId || from.backend !== source.agent ||
+      to?.backend !== target.agent || hashes?.rendered !== port.renderedHash ||
+      proof?.persisted !== true || proof.renderedHash !== port.renderedHash ||
+      typeof proof.nativeRef !== 'string' || !proof.nativeRef.endsWith(`${target.session_id}.jsonl`)) return invalid();
+  return { ok: true };
 }
 
 export async function findBlindReviewSessionBinding(input: {

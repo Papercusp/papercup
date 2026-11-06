@@ -244,8 +244,8 @@ try {
     async () => { await new Promise<void>(resolve => pageServer.close(() => resolve())); },
     async () => { await getOrgPg().sql.end({ timeout: 2 }); },
   ] });
-  console.log('MANAGED_API_CLEANUP=' + JSON.stringify({ workspace, rows: rows.length,
+  console.log('MANAGED_API_CLEANUP ' + JSON.stringify({ workspace, rows: rows.length,
     ownedIdentity: verifiedOwners.get(owner), processes: 'gone', browserRoots: 'gone', terminalRecorded: true }));
 }
-if (proof) console.log('MANAGED_API_PROOF=' + JSON.stringify(proof));
+if (proof) console.log('MANAGED_API_PROOF ' + JSON.stringify(proof));
 process.exit(0);

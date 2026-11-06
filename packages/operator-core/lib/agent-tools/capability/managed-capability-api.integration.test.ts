@@ -3,7 +3,7 @@ import { fork } from 'node:child_process';
 import { resolve } from 'node:path';
 import { rm, symlink, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerReceipt, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 describe('managed capability acceptance over the production HTTP route', () => {
@@ -40,14 +40,14 @@ describe('managed capability acceptance over the production HTTP route', () => {
           isolatedTestFileWorkerOptions(childEnv, 1, {}, 'runtime')); }
         finally { await rm(resolve(evidenceDir, 'node_modules')); }
         expect(result.code, result.output).toBe(0);
-        const cleanup = result.output.split('\n').find(row => row.startsWith('MANAGED_API_CLEANUP='));
+        const cleanup = isolatedWorkerReceipt(result.output, 'MANAGED_API_CLEANUP');
         expect(cleanup, result.output).toBeDefined();
-        expect(JSON.parse(cleanup!.slice('MANAGED_API_CLEANUP='.length))).toMatchObject({
+        expect(JSON.parse(cleanup!)).toMatchObject({
           rows: 1, processes: 'gone', browserRoots: 'gone', terminalRecorded: true,
         });
-        const line = result.output.split('\n').find(row => row.startsWith('MANAGED_API_PROOF='));
+        const line = isolatedWorkerReceipt(result.output, 'MANAGED_API_PROOF');
         expect(line, result.output).toBeDefined();
-        const proof = JSON.parse(line!.slice('MANAGED_API_PROOF='.length));
+        const proof = JSON.parse(line!);
         expect(proof).toMatchObject({ transport: 'http', kernel: 'retained-across-clients', browser: 'retained-across-clients',
           image: 'original-raster', patch: 'canonical-peer-lock-and-all-hunks',
           pty: 'refused-without-private-session-bus', foreignHandles: 'refused' });

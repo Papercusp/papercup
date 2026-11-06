@@ -3300,9 +3300,10 @@ export function describeResumeClaimRefusal(outcome: {
  * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
  * rejects — a respawn must never wait on it. Exported with injectables for tests.
  */
-export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
+export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, env, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
     coordOwnerId?: null | undefined;
     childLaunchSessionId?: null | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;

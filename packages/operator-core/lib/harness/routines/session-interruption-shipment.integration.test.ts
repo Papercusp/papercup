@@ -35,7 +35,7 @@ type Runtime = { host: string; processId: string; buildSha: string;
     manifestSha256: string; evidenceRef: string } };
 type Proof = { acceptedRevision: string; files: File[]; runtime: Runtime; runtimeAfter: Runtime;
   containment: Array<{ path: string; acceptedSource: AcceptedSourceContainment | null;
-    runtime: Runtime; runtimeIds: string[] }>;
+    runtime: Runtime; runtimeIds: string[] | null }>;
   promotion: { id: string; sourceSha: string; at: string } | null;
   deployment: { id: string; sourceSha: string; at: string } | null };
 function requireProof(value: unknown, reason: string): asserts value {
@@ -84,7 +84,8 @@ function verify(proof: Proof) {
     const source = row?.acceptedSource;
     requireProof(isDeepStrictEqual(row?.runtime, runtime) && source?.expectedSha256 === file.sha256 &&
       source.observedSha256 === file.sha256 && source.matches === true && source.deployedContains === true &&
-      row!.runtimeIds.length > 0 && row!.runtimeIds.includes('release-operator') &&
+      Array.isArray(row!.runtimeIds) && (!baseline.includes(file.path) || row!.runtimeIds.length > 0) &&
+      isDeepStrictEqual([...row!.runtimeIds].sort(), Object.keys(source.runtimeContainment).sort()) &&
       row!.runtimeIds.every(id => source.runtimeContainment[id] === true) &&
       Object.values(source.runtimeContainment).every(value => value === true),
     'accepted source absent, unknown or mismatched: ' + file.path);
@@ -140,19 +141,21 @@ async function collect(fixture: Fixture): Promise<Proof> {
       const result = index === 0 ? first : read(file);
       return { path: file.path, acceptedSource: result.acceptedSource ?? null,
         runtime: runtimeIdentity(result.observingRuntime),
-        runtimeIds: (result.servingRuntimes ?? []).map((row: Json) => row.runtime as string) };
+        runtimeIds: Array.isArray(result.servingRuntimes)
+          ? result.servingRuntimes.map((row: Json) => row.runtime as string) : null };
     });
     const source = runtime?.artifact?.sourceSha;
     requireProof(revisionPattern.test(source ?? ''), 'missing deployed artifact revision');
-    const [promotion] = await sql`SELECT id::text, created_at::text AS at FROM harness_shared.pipeline_events
+    const [deployment] = await sql`SELECT id::text, created_at::text AS at FROM harness_shared.pipeline_events
+      WHERE workspace_id IN (${workspace}, '*') AND install_slug='papercusp' AND kind='deploy' AND status='ok'
+        AND detail->>'fullTargetSha'=${source} ORDER BY id DESC LIMIT 1`;
+    const [promotion] = deployment ? await sql`SELECT id::text, created_at::text AS at FROM harness_shared.pipeline_events
       WHERE workspace_id IN (${workspace}, '*') AND install_slug='papercusp' AND kind='green_checkpoint'
         AND status IN ('advanced','advanced-prefix','up-to-date')
         AND length(COALESCE(detail->>'advancedTo',detail->>'candidate')) >= 12
         AND ${source} LIKE COALESCE(detail->>'advancedTo',detail->>'candidate') || '%'
-      ORDER BY id DESC LIMIT 1`;
-    const [deployment] = await sql`SELECT id::text, created_at::text AS at FROM harness_shared.pipeline_events
-      WHERE workspace_id IN (${workspace}, '*') AND install_slug='papercusp' AND kind='deploy' AND status='ok'
-        AND detail->>'fullTargetSha'=${source} ORDER BY id DESC LIMIT 1`;
+        AND created_at <= ${deployment.at}::timestamptz
+      ORDER BY id DESC LIMIT 1` : [];
     const proof: Proof = { acceptedRevision: fixture.acceptedRevision, files, runtime, containment,
       runtimeAfter: runtimeIdentity(read(files[0]!).observingRuntime),
       promotion: promotion ? { id: promotion.id, sourceSha: source, at: promotion.at } : null,
@@ -184,7 +187,7 @@ describe('session recovery exact green shipment', () => {
     const proof = control();
     if (fault === 'missing-file') proof.containment.pop();
     if (fault === 'unknown-runtime') proof.containment[0]!.acceptedSource!.runtimeContainment['release-operator'] = null;
-    if (fault === 'extra-unknown-runtime') proof.containment[0]!.runtimeIds.push('psu-pty-host');
+    if (fault === 'extra-unknown-runtime') proof.containment[0]!.runtimeIds!.push('psu-pty-host');
     if (fault === 'wrong-bytes') proof.containment[0]!.acceptedSource!.observedSha256 = 'd'.repeat(64);
     if (fault === 'missing-green') proof.promotion = null;
     if (fault === 'deployment-before-green') proof.deployment!.at = '2026-11-05T00:00:00Z';

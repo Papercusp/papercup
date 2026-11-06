@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Shared chat P010 retained Papercup Tauri journeys on pinned 222b",
+  "framework": "playwright",
+  "command": [
+    "bash", "-c",
+    "cd \"$OPERATOR_SOURCE_ROOT/apps/operator\" && npx playwright test --config \"$OPERATOR_SOURCE_ROOT/apps/operator/playwright.config.mts\" e2e/reports-work-fullscreen.native.spec.mts --workers=1"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T11:45:29.255Z",
+  "finishedAt": "2026-11-06T12:09:13.995Z",
+  "summary": "Recovery of already-executed native evidence, with no new test execution. Both actual Playwright cases passed in the isolated Tauri harness; prepare, boot and assert phases passed without phase reuse. The original central test ledger contained no matching row because the run used an isolated database. This artifact records the retained proof and its original source, timestamps and case identities.",
+  "assertions": [
+    {
+      "id": "P010 native converse parity",
+      "passed": true,
+      "evidence": "Original runner output: chromium e2e/reports-work-fullscreen.native.spec.mts:15:1 passed in 9.3s. Retained native DOM attachment SHA256 e8782f65fef9e3cafaac9c64df0dae7eb5acfaca79619361f7f2914749e73929. Harness assert phase passed; exact source receipt passed its pre-assertion verification."
+    },
+    {
+      "id": "Reports reader and individual Work panes fullscreen and restore their layout",
+      "passed": true,
+      "evidence": "Original runner output: chromium e2e/reports-work-fullscreen.native.spec.mts:144:1 passed in 12.1s. Retained native DOM attachment SHA256 7ca4858dd734be7495fb2a03c4720b5fe2f76aebc8585e875deebd7954237b8f. Final runner summary: 2 passed. Harness verdict pass with prepare, boot and assert passed; no phase reused."
+    }
+  ],
+  "evidencePlane": "live",
+  "scope": ["papercup"],
+  "plan": "shared-chat-scout-papercup-2026-10-22",
+  "workItem": "WI-6554700010021539",
+  "originalTaskId": "0mw4wpe70uezk8e1xhx",
+  "originalHarness": {
+    "name": "verify-tauri-headless",
+    "runId": "20261106T114528Z-1978695",
+    "resultFile": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261106T114528Z-1978695/result.json",
+    "resultSha256": "6b4a63f123239c55f5b64efa346580b7dd6486e56d899bd5fb765a4ea5e3ae6d",
+    "logFile": ".papercusp/scratch/bash-e627270d-7ec.log",
+    "logSha256": "a94f4d19b590bb4debd318148812636ac749b319a2e8d26b98e1df387f4879e1",
+    "verdict": "pass",
+    "phases": [
+      { "phase": "prepare", "status": "passed", "startedAt": "2026-11-06T11:45:29.312Z", "endedAt": "2026-11-06T12:03:51.260Z" },
+      { "phase": "boot", "status": "passed", "startedAt": "2026-11-06T12:03:51.292Z", "endedAt": "2026-11-06T12:06:09.376Z" },
+      { "phase": "assert", "status": "passed", "startedAt": "2026-11-06T12:06:09.408Z", "endedAt": "2026-11-06T12:09:13.640Z" }
+    ]
+  },
+  "source": {
+    "commit": "222b71287c6a0a2b5d6caf2541ce662a2ff1b33b",
+    "receiptFile": "/tmp/f700-shared-chat-222b-source-20261106.json",
+    "retainedReceiptFile": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261106T114528Z-1978695/phases/prepare/verifier-source-receipt.json",
+    "receiptSha256": "e6ec32e5238a09e47f517b9ac858f821c19ab56f01b8041170403fdcd8aa077d",
+    "testedInputCount": 73,
+    "dependencyGeneration": "v1-992ffafaff4ddb976a902f3eda29154dcfbaf5cf130ed47d6cc9fbf7248de9d4"
+  },
+  "limits": [
+    "The operational recorder does not assign a test layer; this preserves the original Playwright and native evidence without inventing a runtime layer stamp.",
+    "This proves the two named Papercup native journeys on the pinned source, not the full R8 scenario matrix, every host, independent acceptance or deployed behavior.",
+    "R9 exact shipped artifacts, ordered upgrade, quiesced rollback, unsafe rollback refusal and forward recovery remain open for both products."
+  ]
+}
