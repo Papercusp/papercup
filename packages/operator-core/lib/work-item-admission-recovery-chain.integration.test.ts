@@ -652,6 +652,12 @@ describe('original authority context fidelity', () => {
       '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}'
       WHERE id = 'original-promoter'`;
     const ordinary = await tick();
+    const snapshot = await readWorkItemAdmissionSnapshot({ ...scope, sql: db.sql });
+    expect(snapshot.runs.find((entry) => entry.id === ordinary.runId)?.detail).toMatchObject({
+      componentScreening: { itemIds: [original.id], receipts: [
+        { itemId: original.id, stage: 'recheck', reason: 'selected' },
+      ] },
+    });
     expect(ordinary).toMatchObject({ promoted: 1, merged: 0 });
     expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
     expect((await row(original.id)).payload._admissionRecovery).toEqual(heldRecovery);
@@ -808,7 +814,14 @@ async function setNeedsHumanBlockers(id: string, includeRuntime = false) {
 
 async function setWatchdogPark(id: string) {
   const actor = 'su-22222222-2222-4222-8222-222222222222';
-  const at = new Date().toISOString();
+  const [times] = await db.sql<{ created_at_ms: string; held_at_ms: string }[]>`
+    SELECT floor(extract(epoch FROM clock_timestamp() - interval '10 seconds') * 1000)::bigint::text
+             AS created_at_ms,
+           floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint::text AS held_at_ms`;
+  if (!times) throw new Error('database clock unavailable for watchdog park fixture');
+  const createdAtMs = Number(times.created_at_ms);
+  const heldAtMs = Number(times.held_at_ms);
+  const at = new Date(heldAtMs).toISOString();
   const reason = 'watchdog duplicate remains parked until its canonical test issue is resolved';
   const releaseContract = { owner: actor, trigger: 'work-item:done:WI-canonical',
     condition: 'WI-canonical reaches done, then reconcile this duplicate.',
@@ -816,11 +829,12 @@ async function setWatchdogPark(id: string) {
   const payload = { _claimHold: true,
     _ei: { source: 'su', created_by: 'system:improvement-watchdog', found_during: 'improvement-watchdog' },
     claim_hold_by: actor, claim_hold_reason: reason, claim_hold_at: at, claim_hold_release: releaseContract };
-  await db.sql`UPDATE harness_shared.work_items SET kind = 'bug', status = 'open', admission = 'admitted',
+  await db.sql`UPDATE harness_shared.work_items SET created_ts = ${createdAtMs},
+    kind = 'bug', status = 'open', admission = 'admitted',
     taken_by = NULL, payload = payload || ${db.sql.typed(JSON.stringify(payload), 25)}::jsonb
     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
   await db.sql`INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
-    VALUES (${id + '-watchdog-park'}, ${Date.parse(at)}, ${scope.workspaceId}, ${actor},
+    VALUES (${id + '-watchdog-park'}, ${heldAtMs}, ${scope.workspaceId}, ${actor},
       'work_items:claim_hold:set', ${id},
       ${db.sql.typed(JSON.stringify({ mode: 'claim_hold', by: actor, reason, releaseContract }), 25)}::jsonb)`;
 }
@@ -1011,7 +1025,7 @@ describe('authenticated admission-only review composition (EI-270226)', () => {
     h.model.mockResolvedValueOnce(distinctPair(a, b));
     const retried = await runAdmissionReviews(
       { ...scope, runId: 'guarded-review-dependency-changed' }, db.sql, h.model);
-    expect(retried.result?.reviewedItemId).toBe(original.id);
+    expect(retried.reviewedItemId).toBe(original.id);
     expect(h.model).toHaveBeenCalledTimes(2);
     expect((await row(original.id)).payload._admissionReviewReceipt).toMatchObject({
       requestId: queued.requestId,

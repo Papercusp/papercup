@@ -2,7 +2,8 @@
  * No registry/store: the packaging owner supplies the exact approved runtime.
  */
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
-import { invokeApprovedHandler, type PreparedHandlerRuntime } from '@papercusp/plugin-loader/daemon';
+import { invokeApprovedHandler, prepareInstalledHandlerRuntime,
+  type HandlerRuntimeFile, type PreparedHandlerRuntime } from '@papercusp/plugin-loader/daemon';
 import type { PluginHandlerExecutor } from './plugin-invocation-policy';
 
 export function createConfinedPluginInvoker(options: {
@@ -34,4 +35,27 @@ export function createConfinedPluginInvoker(options: {
     if (result.content.some(block => !['text', 'image', 'resource'].includes(block.type))) throw new Error('unsupported handler result content');
     return result as Awaited<ReturnType<PluginHandlerExecutor>>;
   };
+}
+
+/** Trusted installer/boot binding. Admission rebuilds the authenticated source
+ * closure and verifies installed receipts; the supervisor rechecks protected
+ * current trust at each spawn. Neither paths nor approvals come from a tool
+ * request. The caller still supplies the installation's untrusted guest bundle.
+ */
+export async function createInstalledConfinedPluginInvoker(options:
+  Omit<Parameters<typeof createConfinedPluginInvoker>[0], 'runtime'> & {
+    runtimeDirectory: string;
+    handlerFiles: readonly HandlerRuntimeFile[];
+  }): Promise<PluginHandlerExecutor> {
+  // Pin BEFORE the lazy compiler import or signature IO: a caller mutation
+  // during admission must not bind an approved runtime to another installation.
+  const { runtimeDirectory, pluginName, effects } = options;
+  const installation = { ...options.installation };
+  const tools = [...options.tools];
+  const handlerFiles = options.handlerFiles.map(file => {
+    if (!(file.contents instanceof Uint8Array)) throw new Error('invalid handler file contents');
+    return { path: file.path, sha256: file.sha256, executable: file.executable, contents: Buffer.from(file.contents) };
+  });
+  const runtime = await prepareInstalledHandlerRuntime(runtimeDirectory, handlerFiles);
+  return createConfinedPluginInvoker({ runtime, pluginName, installation, tools, effects });
 }

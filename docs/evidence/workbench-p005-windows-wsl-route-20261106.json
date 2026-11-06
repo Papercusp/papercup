@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 native Windows terminal handoff and exact resume regressions",
+  "framework": "cargo",
+  "command": ["pui-wsl-route-tests.exe native_resume_tests --nocapture"],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T22:07:34.120Z",
+  "finishedAt": "2026-11-06T22:07:41.255Z",
+  "summary": "Six maintained Rust tests passed on the native Windows VM (zero failed/ignored). Seven corresponding Linux tests passed, including execution of the constant runtime script with literal shell-looking Unicode input and child status propagation. Native Windows production PUI compiled successfully. This proves command construction and exact-session guards, not a functioning WSL terminal, installed-app acceptance, or shipment.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "nativeRunDirectory": "C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9",
+  "targets": [
+    {
+      "name": "workbench::native_resume_tests (native Windows)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "workbench::native_resume_tests (Linux)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "artifactSha256": {
+    "pui-wsl-route-tests.exe": "9038cf904504bfccae4ab49917a4dd256a454296b18bbc755eb55abc9404d70e",
+    "pui.exe": "c82519c31e841628c8e4b4e90095d37d65c0b93fcb8c8a50fb7ad4b47318ef32"
+  },
+  "sourceSha256": {
+    "apps/tui/src/main.rs": "bd69053ed7343930c1ee225245d61c2c6514281e217041ca82d97e8f0ae037ed",
+    "apps/tui/src/workbench.rs": "b76fe19cca291d1aea2545849c00eb8e1bacaf82205dfa0be0a9e38172698881"
+  },
+  "prerequisites": {
+    "target": "x86_64-pc-windows-msvc",
+    "linkage": "static CRT",
+    "custody": "Native Get-FileHash matched local test executable SHA256 before executing maintained tests.",
+    "runtime": "Reuses desktop papercup-runtime WSL distro, installed PUI and psu. Native pui.exe remains the WPF read helper."
+  },
+  "logs": {
+    "native": "/tmp/wb-p005-windows-wsl-native-tests-20261106-v1.log",
+    "linux": "/tmp/wb-p005-windows-wsl-route-cargo-20261106-v1.log",
+    "compile": "/tmp/wb-p005-windows-wsl-native-compile-20261106-v1.log",
+    "build": "/tmp/wb-p005-pui-windows-wsl-build-20261106-v1.log"
+  },
+  "logSha256": {
+    "native": "0342a775849278cabfa63ef5d29b893f83df0bcc680d44072c70e9f786b001a3",
+    "linux": "253819bff726c54f4f71e01e769bc0b5305de45c739dfef65f4fbdd16ffcacc0"
+  },
+  "linuxLedger": {
+    "runGroup": "workbench-p005-windows-wsl-route-20261106-v1",
+    "reporter": "parsed 7; inserted 8/8 including aggregate",
+    "readback": "not yet confirmed; server-side capability environment resolved localhost:5432 and failed before query"
+  },
+  "cases": [
+    "workbench::native_resume_tests::native_resume_arguments_fail_closed_before_starting_a_terminal_session",
+    "workbench::native_resume_tests::windows_workbench_without_selection_opens_the_same_installed_workspace",
+    "workbench::native_resume_tests::native_resume_refuses_replaced_ambiguous_running_and_denied_records",
+    "workbench::native_resume_tests::windows_workbench_preserves_selection_and_operator_without_shell_interpolation",
+    "workbench::native_resume_tests::native_resume_accepts_positive_ended_presence_with_exact_identity",
+    "workbench::native_resume_tests::native_resume_reuses_local_and_saved_connection_routes"
+  ],
+  "assertions": [
+    {
+      "id": "same-selected-environment",
+      "passed": true,
+      "evidence": "Both normalized operator environment seams forwarded through WSLENV; conflicting path-conversion flags removed; scoped token stays out of argv."
+    },
+    {
+      "id": "literal-selection",
+      "passed": true,
+      "evidence": "Exact ID/host/owner remain positional, including Unicode and shell-looking owner input. Linux execution negative control observes no injected marker file and preserves exit23."
+    },
+    {
+      "id": "exact-session-guards",
+      "passed": true,
+      "evidence": "Native six-test run preserves changed/ambiguous/running/denied row rejection and local versus saved-connection route distinctions."
+    }
+  ],
+  "limits": [
+    "WSL execution prerequisite remains broken: even /bin/true returns Wsl/Service/0x80072747. Root cause unresolved, owned EI-28077674637451429.",
+    "No actual Windows foreground/resume, real vendor response, complete native surface, three-OS installed artifact or shipment claim."
+  ]
+}

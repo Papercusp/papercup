@@ -1948,6 +1948,21 @@ fn chat_workbench_transcript_path(session: &str) -> Result<std::path::PathBuf> {
     Ok(dir.join(format!("{session}.exit.txt")))
 }
 
+#[cfg(windows)]
+async fn run_workbench(selection: Option<workbench::ResumeSelection>) -> Result<()> {
+    require_interactive_terminal("workbench")?;
+    let (_, backend) = selected_backend_identity().await?;
+    let mut command = workbench::windows_terminal_command(
+        selection.as_ref(),
+        &backend.endpoint,
+        &std::env::var("WSLENV").unwrap_or_default(),
+    );
+    // The Linux PUI revalidates the selected row against this same operator and
+    // owns its Zellij, psu, paths and cleanup. Never feed Windows paths to Zellij.
+    Err(fresh_exec::replace(&mut command).into())
+}
+
+#[cfg(not(windows))]
 async fn run_workbench(selection: Option<workbench::ResumeSelection>) -> Result<()> {
     require_interactive_terminal("workbench")?;
     let session = layout::session_name("wb");

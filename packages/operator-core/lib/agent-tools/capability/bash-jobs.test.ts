@@ -1971,8 +1971,11 @@ describe('background job deadlines (WI-6677)', () => {
     }
   });
 
-  it('RTK budget identity: budgets the original test while executing and recording the rewritten command', async () => {
-    const originalCommand = 'npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
+  it.each([
+    'npm run test:e2e:isolated -- e2e/content-reading.spec.ts',
+    'npm run lint:as-committed -- --ref=4a29767df6 --any test:report-sharing:native',
+    'node scripts/lint-as-committed.mjs --ref=4a29767df6 --any test:report-sharing:native',
+  ])('RTK budget identity: budgets the original verifier %s while recording the rewritten command', async (originalCommand) => {
     const command = 'printf rewritten-command-executed';
     const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
     const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
@@ -2118,6 +2121,14 @@ describe('background job deadlines (WI-6677)', () => {
   });
 
   it.each([
+    ['immutable native npm wrapper', 'env VERIFY_TAURI_SOURCE_REF=4a29767df6 npm run lint:as-committed -- --ref=$VERIFY_TAURI_SOURCE_REF --any test:report-sharing:native', true],
+    ['immutable direct node wrapper', 'node scripts/lint-as-committed.mjs --ref=4a29767df6 --any test:file -- example.test.ts', true],
+    ['immutable wrapper with npm prefix', 'npm --prefix /workspace run lint:as-committed -- lint:tsc', true],
+    ['immutable wrapper under timeout', 'timeout 2h node /workspace/scripts/lint-as-committed.mjs --any test:report-sharing:native', true],
+    ['immutable wrapper mentioned by diagnostic', 'printf "npm run lint:as-committed -- test:report-sharing:native"', false],
+    ['immutable script mentioned by diagnostic', 'rg -n "node scripts/lint-as-committed.mjs" .', false],
+    ['nearby npm script', 'npm run lint:as-committed-other -- test:report-sharing:native', false],
+    ['nearby node script', 'node scripts/lint-as-committed.mjs-other -- test:report-sharing:native', false],
     ['env-wrapped isolated e2e', 'env REF=committed npm run test:e2e:isolated -- e2e/chat-streaming.spec.ts', true],
     ['npm --prefix isolated e2e', 'npm --prefix apps/operator run test:e2e:isolated -- apps/operator/e2e/reports-work-fullscreen.native.spec.mts', true],
     ['npm equals-prefix isolated e2e', 'npm --prefix=apps/operator run test:e2e:isolated -- apps/operator/e2e/reports-work-fullscreen.native.spec.mts', true],

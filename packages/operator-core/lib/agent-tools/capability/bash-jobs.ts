@@ -168,16 +168,18 @@ const DIRECT_TEST_RUNNER_RE = new RegExp(
 );
 const TEST_SHELL_WORD = String.raw`(?:[^\s"';&|]+|"[^"]*"|'[^']*')`;
 const PACKAGE_TEST_SCRIPT_RE = new RegExp(
-  `${TEST_SEGMENT_PREFIX}${RTK_TEST_WRAPPER_PREFIX}(?:npm\\s+(?:--prefix(?:=|\\s+)${TEST_SHELL_WORD}\\s+)?|(?:pnpm|yarn|bun)\\s+)(?:run\\s+)?test(?::[A-Za-z0-9_.-]+)*(?:\\s|$)`,
+  `${TEST_SEGMENT_PREFIX}${RTK_TEST_WRAPPER_PREFIX}(?:npm\\s+(?:--prefix(?:=|\\s+)${TEST_SHELL_WORD}\\s+)?|(?:pnpm|yarn|bun)\\s+)(?:run\\s+)?(?:test(?::[A-Za-z0-9_.-]+)*|lint:as-committed)(?:\\s|$)`,
   'i',
 );
 // Maintained verification scripts are test launchers too. Confinement alone
 // supplies a deadline; these entrypoints also need the finite copy-memory budget.
+// The immutable caller copies dependencies before its selected test or lint runs,
+// so it needs the same bound even when the outer script is named lint:as-committed.
 const MAINTAINED_VERIFIER_RE = new RegExp(
   TEST_SEGMENT_PREFIX + RTK_TEST_WRAPPER_PREFIX +
     // A directory atom cannot consume its own separator: otherwise a near
     // miss retries every partition of a long absolute path.
-    String.raw`(?:bash\s+(?:--\s+)?)?(?:\./|(?:\.\./)+|/+(?:[^/\s"';&|]+/+)*)?scripts/(?:run-operator-e2e-isolated|verify-tauri-headless)\.sh(?:\s|$)`,
+    String.raw`(?:(?:bash\s+(?:--\s+)?)?(?:\./|(?:\.\./)+|/+(?:[^/\s"';&|]+/+)*)?scripts/(?:run-operator-e2e-isolated|verify-tauri-headless)\.sh|node\s+(?:--\s+)?(?:\./|(?:\.\./)+|/+(?:[^/\s"';&|]+/+)*)?scripts/lint-as-committed\.mjs)(?:\s|$)`,
   'i',
 );
 

@@ -18,6 +18,8 @@ export interface TaskAnchorContext {
   }>;
   docs: string[] | null; specs: string[] | null;
   locks: Array<{ path: string; owner: string; goalRef?: string }> | null;
+  /** Unknown context must identify the unread leg rather than look like an empty census. */
+  unavailable?: string[];
 }
 export interface TaskAnchorDeps {
   writeArtifact?: (body: string) => Promise<string>;
@@ -47,9 +49,9 @@ export async function readTaskAnchorContext(input: {
   const context = { workspace: input.workspace, harness: input.harness, root: input.root, owner: input.owner };
   const links = withBoundedTimeout(() => deps.links ? deps.links(context, paths)
     : import('./push-channel').then(m => m.readPushSourceLinks({ ...context, calls: [] }, paths)),
-  { timeoutMs: Math.min(500, budget()), fallback: null, warn: false, label: 'task-anchor-links' });
+  { timeoutMs: budget(), fallback: null, warn: false, label: 'task-anchor-links' });
   const locks = withBoundedTimeout(() => (deps.locks ?? liveLockHoldingsStrict)(),
-    { timeoutMs: Math.min(500, budget()), fallback: null, warn: false, label: 'task-anchor-locks' });
+    { timeoutMs: budget(), fallback: null, warn: false, label: 'task-anchor-locks' });
   const subjects = await Promise.all(input.anchors.map(async anchor => {
     const symbol = typeof anchor.symbolName === 'string' ? anchor.symbolName
       : typeof anchor.requested === 'string' ? anchor.requested : 'invalid anchor';
@@ -104,8 +106,11 @@ export async function readTaskAnchorContext(input: {
   const [sourceLinks, holdings] = await Promise.all([links, locks]);
   const byPath = sourceLinks.value?.byPath;
   const consumers = new Set(subjects.flatMap(subject => subject.impact));
+  const unavailable = [sourceLinks.degraded ? `source-links:${sourceLinks.reason}` : null,
+    holdings.degraded ? `consumer-locks:${holdings.reason}` : null].filter((value): value is string => value !== null);
   return { subjects, docs: sourceLinks.value ? unique(paths.flatMap(path => [...(byPath?.[path]?.docs ?? sourceLinks.value?.docs ?? [])])) : null,
     specs: sourceLinks.value ? unique(paths.flatMap(path => [...(byPath?.[path]?.specs ?? sourceLinks.value?.specs ?? [])])) : null,
     locks: holdings.value?.filter(lock => lock.owner !== input.owner && lock.coordinationDomain === input.root && consumers.has(lock.path))
-      .map(({ path, owner, goalRef }) => ({ path, owner, ...(goalRef ? { goalRef } : {}) })) ?? null };
+      .map(({ path, owner, goalRef }) => ({ path, owner, ...(goalRef ? { goalRef } : {}) })) ?? null,
+    ...(unavailable.length ? { unavailable } : {}) };
 }

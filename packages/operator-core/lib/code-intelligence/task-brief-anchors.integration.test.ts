@@ -8,6 +8,8 @@ import { firstPartyCallers } from './first-party-callers';
 import { declarationContentHash, type PlanItemAnchor } from '../plan-items/anchors';
 import { ensureBootstrap, getTxPool, tryAcquire, tryRelease, _resetForTests as resetLockStore } from '../agent-tools/locks/su-lock-store';
 import { toolsetFromNames } from './push-toolset';
+import { readPushSourceLinks } from './push-channel';
+import { liveLockHoldingsStrict } from '../agent-tools/locks/live-lock-paths';
 
 describe('plan anchors P008 persisted claim context', () => {
   let state: Awaited<ReturnType<typeof setupEngineeringEvidenceFixture>>;
@@ -51,6 +53,32 @@ describe('plan anchors P008 persisted claim context', () => {
       owner: 'su-p008-peer', ownerLabel: 'P008 fixture peer', paths: ['consumer.ts'], intent: 'fixture consumer edit',
       goalRef: 'WI-p008-consumer', ttlSec: 120 }))).toMatchObject({ ok: true });
     lockAcquired = true;
+    // Fail at the real reader seam before the bounded brief can hide a fixture
+    // route error as unknown context. Keep phase/row evidence for slow failures.
+    const timings: Record<string, number> = {};
+    async function preflight<T>(name: string, read: () => Promise<T>): Promise<T> {
+      const startedAt = performance.now();
+      try { return await read(); }
+      finally {
+        timings[name] = Math.round(performance.now() - startedAt);
+        console.info('P008_CONTEXT_PREFLIGHT', JSON.stringify({ phase: name, elapsedMs: timings[name] }));
+      }
+    }
+    const [sourceLinks, holdings] = await Promise.all([
+      preflight('source-links', () => readPushSourceLinks({ workspace: scope.workspaceId,
+        harness, root, owner: 'su-p008-claim', calls: [] }, [path])),
+      preflight('consumer-locks', () => liveLockHoldingsStrict()),
+    ]);
+    expect(sourceLinks.byPath?.[path], JSON.stringify({ sourceLinks, timings })).toEqual({
+      docs: ['anchored-feature-guide'], specs: [`${plan}#EE-1@1`],
+    });
+    expect(holdings, JSON.stringify({ holdings, timings })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ coordinationDomain: root, path: 'consumer.ts',
+        owner: 'su-p008-peer', goalRef: 'WI-p008-consumer' }),
+    ]));
+    console.info('P008_CONTEXT_PREFLIGHT', JSON.stringify({ phase: 'rows-verified', timings,
+      docs: sourceLinks.byPath?.[path]?.docs, specs: sourceLinks.byPath?.[path]?.specs,
+      locks: holdings.filter(holding => holding.coordinationDomain === root) }));
     const contentHash = await declarationContentHash(source, { id: 'evidenceFeature', name: 'evidenceFeature', path,
       line: 1, column: 17, sha256: '', signature: '', aliases: [], callers: [] });
     const anchor: PlanItemAnchor = { anchorKind: 'symbol', requested: 'evidenceFeature', symbolId: 'evidenceFeature',

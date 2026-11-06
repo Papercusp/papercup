@@ -330,7 +330,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
   deadline = Date.now() + TASK_BRIEF_BUDGET_MS): Promise<TaskBrief> {
   const wi = ref.workItem;
   const harness = wi?.harness ?? ref.harness ?? null;
-  const payload = wi?.payload as { paths?: unknown } | null;
+  const payload = wi?.payload as { paths?: unknown; anchors?: unknown } | null;
   const anchors = taskAnchors(payload);
   const stored = anchors ? anchors.flatMap(anchor => typeof anchor.path === 'string' ? [anchor.path] : [])
     : Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [...(ref.paths ?? [])];
@@ -350,6 +350,8 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     files: [], excerpts: [], graph: { status: 'unknown', consumers: [], relationships: [] }, exclusions: [],
     recover,
   };
+  if (anchors && Array.isArray(payload?.anchors) && payload.anchors.length > anchors.length)
+    brief.exclusions.push('Additional linked declarations omitted by the bounded selection; use the recovery reader.');
   const finish = () => {
     const bounded = compactTaskBrief(brief);
     // Long repository paths can consume the budget even without excerpts. Keep

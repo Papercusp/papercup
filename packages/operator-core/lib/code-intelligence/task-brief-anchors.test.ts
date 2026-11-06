@@ -137,6 +137,38 @@ describe('plan anchors P008 claim brief', () => {
     expect(deps.anchors!.links).toHaveBeenCalledWith(expect.objectContaining({ harness: 'fixture', workspace: 'fixture-workspace' }), ['target.ts']);
   });
 
+  it('spends the shared deadline on required context that resolves after 600ms', async () => {
+    const { root, deps, linked } = await linkedFixture();
+    let announce!: () => void;
+    const started = new Promise<void>(resolve => { announce = resolve; });
+    deps.anchors!.links = () => { announce(); return new Promise(resolve => setTimeout(() => resolve({
+      docs: ['delayed-guide'], specs: ['plan#DELAYED@1'],
+    }), 600)); };
+    deps.anchors!.locks = () => new Promise(resolve => setTimeout(() => resolve([
+      { path: 'consumer.ts', owner: 'su-delayed', intent: 'consumer edit', coordinationDomain: root },
+    ]), 600));
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const pending = getClaimTimeTaskBrief(linked, deps);
+    await started;
+    await vi.advanceTimersByTimeAsync(600);
+    const brief = (await pending)!.taskBrief;
+    expect(brief.anchors).toMatchObject({ docs: ['delayed-guide'], specs: ['plan#DELAYED@1'],
+      locks: [{ path: 'consumer.ts', owner: 'su-delayed' }] });
+  });
+
+  it('reports failed context reads explicitly and discloses links omitted by the bounded selection', async () => {
+    const { deps, linked } = await linkedFixture();
+    deps.anchors!.links = async () => { throw new Error('fixture links unavailable'); };
+    deps.anchors!.locks = async () => { throw new Error('fixture locks unavailable'); };
+    const brief = await buildTaskBrief(linked, deps);
+    expect(brief.anchors).toMatchObject({ docs: null, specs: null, locks: null,
+      unavailable: ['source-links:error', 'consumer-locks:error'] });
+    const many = await buildTaskBrief({ ...linked, workItem: { ...linked.workItem, payload: {
+      anchors: Array.from({ length: 9 }, (_, index) => ({ ...linked.workItem.payload.anchors[0], symbolName: `missing${index}` })),
+    } } }, deps);
+    expect(many.exclusions).toContain('Additional linked declarations omitted by the bounded selection; use the recovery reader.');
+  });
+
   it('reports a renamed or deleted declaration as missing without choosing the other function', async () => {
     const { deps, linked, anchor } = await linkedFixture();
     anchor.symbolName = 'deleted';
@@ -156,7 +188,7 @@ describe('plan anchors P008 claim brief', () => {
 
   it('SPEC-P-008-RECORD: records distinct delivered claims and the explicit no-scope skip', async () => {
     const { deps, ref } = fixture();
-    const recordClaim = vi.fn(async () => true);
+    const recordClaim = vi.fn<NonNullable<TaskBriefDeps['recordClaim']>>(async () => true);
     const claimDeps = { ...deps, recordClaim, reuse: { providers: [] } };
     const reuse = { owner: 'su-claim', invocation: 'claim-one' };
     const first = (await getClaimTimeTaskBrief({ ...ref, reuse }, claimDeps))!.taskBrief;
