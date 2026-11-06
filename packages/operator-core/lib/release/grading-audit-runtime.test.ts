@@ -352,6 +352,59 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(built.git('status', '--porcelain', '--untracked-files=no')).toBe('');
   });
 
+  it('recovers JSONB-reordered external provenance and then reuses the recovered task (EI-28073575906742648)', async () => {
+    const built = await rebuiltFixture(true);
+    const f = fixture(built.evaluatorBuild);
+    const first = await ensureGradingAuditRuntime({ ...f.input, preparedSource: built }, f.deps);
+    const locator = f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator;
+    const artifact = locator.externalArtifact!;
+    const reordered = JSON.parse(JSON.stringify({ sourceSha: artifact.sourceSha, bundlePath: artifact.bundlePath,
+      artifactRoot: artifact.artifactRoot, manifestSha256: artifact.manifestSha256 }));
+    const pin = readGradingAuditSourcePin(built.sourceRoot, locator.ownerRef, 1000)!;
+    expect(reordered).toEqual(pin.externalArtifact);
+    expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(pin.externalArtifact));
+    locator.externalArtifact = reordered;
+    f.rows[0].state = 'exited';
+    const recovered = await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b', allowSeed: false }, f.deps);
+    expect(recovered.taskId).not.toBe(first.taskId);
+    expect(recovered.baseUrl).toBe(first.baseUrl);
+    (f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).externalArtifact = reordered;
+    expect((await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-c', allowSeed: false }, f.deps)).taskId)
+      .toBe(recovered.taskId);
+    expect(f.deps.spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['bundlePath', 'artifactRoot', 'sourceSha', 'manifestSha256'] as const)(
+    'refuses changed external %s before spawning (EI-28073575906742648)', async field => {
+      const built = await rebuiltFixture(true);
+      const f = fixture(built.evaluatorBuild);
+      await ensureGradingAuditRuntime({ ...f.input, preparedSource: built }, f.deps);
+      const locator = structuredClone(f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator);
+      locator.externalArtifact![field] += '-changed';
+      f.deps.list = async () => [];
+      f.deps.recoverSource = () => locator;
+      vi.mocked(f.deps.spawn!).mockClear();
+      await expect(ensureGradingAuditRuntime({ ...f.input, allowSeed: false }, f.deps))
+        .rejects.toThrow('recovery pin does not match its task locator');
+      expect(f.deps.spawn).not.toHaveBeenCalled();
+    });
+
+  it.each([false, true])('refuses external provenance presence mismatch (external pin: %s)', async external => {
+    const built = external ? await rebuiltFixture(true) : null;
+    const f = built ? fixture(built.evaluatorBuild) : fixture();
+    await ensureGradingAuditRuntime({ ...f.input, ...(built ? { preparedSource: built } : {}) }, f.deps);
+    const locator = structuredClone(f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator);
+    if (external) delete locator.externalArtifact;
+    else locator.externalArtifact = { bundlePath: locator.bundlePath, artifactRoot: dirname(locator.bundlePath),
+      sourceSha: 'a'.repeat(40), manifestSha256: 'b'.repeat(64) };
+    f.deps.list = async () => [];
+    f.deps.recoverSource = () => locator;
+    vi.mocked(f.deps.spawn!).mockClear();
+    await expect(ensureGradingAuditRuntime({ ...f.input, allowSeed: false }, f.deps))
+      .rejects.toThrow('recovery pin does not match its task locator');
+    expect(f.deps.spawn).not.toHaveBeenCalled();
+  });
+
   it('prepares external ESM dependency resolution from retained source before spawning', async () => {
     const built = await rebuiltFixture(true);
     const dependency = join(built.sourceRoot, 'node_modules/runtime-fixture-dep');

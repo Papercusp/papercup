@@ -176,6 +176,15 @@ function sameBuild(a: BuildInfo, b: BuildInfo): boolean {
   return Boolean(a.sha && a.sha !== 'unknown' && a.version && a.sha === b.sha && a.version === b.version);
 }
 
+function sameExternalArtifact(
+  a: GradingAuditSourcePin['externalArtifact'], b: GradingAuditSourcePin['externalArtifact'],
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  // Task locators pass through JSONB, whose key order is not provenance.
+  return a.bundlePath === b.bundlePath && a.artifactRoot === b.artifactRoot &&
+    a.sourceSha === b.sourceSha && a.manifestSha256 === b.manifestSha256;
+}
+
 function labelFor(build: BuildInfo, workspaceId: string): string {
   if (!build.sha || build.sha === 'unknown' || !build.version) throw new Error('Exact audit evaluator identity is unknown');
   return LABEL + createHash('sha256').update(JSON.stringify([workspaceId, build.sha, build.version])).digest('hex');
@@ -534,7 +543,7 @@ export async function ensureGradingAuditRuntime(input: {
     const pin = readGradingAuditSourcePin(locator.sourceRoot, label, now);
     if (recovered && (!pin || pin.bundleSha256 !== locator.bundleSha256 ||
         !sameBuild(pin.evaluatorBuild, input.evaluatorBuild) || pin.expiresAtSec !== locator.expiresAtSec ||
-        JSON.stringify(pin.externalArtifact) !== JSON.stringify(locator.externalArtifact))) {
+        !sameExternalArtifact(pin.externalArtifact, locator.externalArtifact))) {
       throw new Error('Audit runtime recovery pin does not match its task locator');
     }
     if (digest(locator.bundlePath) !== locator.bundleSha256) throw new Error('Retained audit bundle digest changed');
