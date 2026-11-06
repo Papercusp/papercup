@@ -2222,6 +2222,26 @@ describe('dispatchPendingGradingAudits', () => {
     }
   });
 
+  it('preserves the primary dispatch phase and reports uncertain reservation cleanup', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-cleanup-failure')]);
+    d.route.mockRejectedValue(new Error('primary routing failure'));
+    d.release.mockRejectedValue(new Error('cleanup CONNECTION_CLOSED'));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await dispatchPendingGradingAudits({ targetIds: ['EI-cleanup-failure'], ctx }, d);
+      expect(result.receipts[0]).toMatchObject({
+        state: 'failed', phase: 'source-audit-route', reason: 'primary routing failure',
+        reservationRelease: { state: 'unknown', reason: 'cleanup CONNECTION_CLOSED',
+          key: 'grading-audit:EI-cleanup-failure', reservedAt: '2026-09-08T00:00:00.000Z' },
+      });
+      expect(d.route).toHaveBeenCalledTimes(1);
+      expect(d.launch).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('serializes concurrent routed dispatches through the existing card reservation', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-race')]);

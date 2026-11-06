@@ -249,6 +249,16 @@ afterEach(async () => {
 });
 
 describe('P-002 partial unique index — the singleton, under real concurrency', () => {
+  it('reuses an existing disk cleanup item for concurrent alarm passes without minting another incident', async () => {
+    const key = 'alarm:disk-space';
+    const existing = await handFiledOwner(key, 'Existing disk cleanup');
+    const results = await Promise.all(Array.from({ length: 4 }, () =>
+      bridge.acquireConditionOwner(key, spec('Disk below headroom target'))));
+    expect(results.map((result) => result.workItem)).toEqual(Array(4).fill(existing));
+    expect(results.every((result) => !result.created)).toBe(true);
+    expect(await holdersOf(key)).toEqual([existing]);
+  });
+
   it('the index EXISTS with the shipped predicate (condition_key IS NOT NULL, not closed_ts)', async () => {
     // Read the predicate back from the catalog rather than trusting the file we
     // just applied: this is the one assertion that would have caught the

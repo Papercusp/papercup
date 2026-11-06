@@ -362,6 +362,65 @@ it('retires cancelled missions from real private ledgers and preserves a pending
   expect(launch).not.toHaveBeenCalled();
 });
 
+it('commits Discovery admission before slow spec-quality routing can idle out its transaction', async () => {
+  await seed(issueId, { state: 'pending', stampedAt: prior.reservedAt });
+  await db.sql`UPDATE harness_shared.work_items
+    SET payload = jsonb_set(payload, '{observation,rubricRef}', '"spec-quality"'::jsonb)
+    WHERE workspace_id = ${workspaceId} AND feature_id = ${issueId}`;
+  const guard = postgres(db.url, { max: 1, onnotice: () => {} });
+  let backendPid = 0;
+  let reservationWasProtected = false;
+  let routingState: string | undefined;
+  type DiscoveryGate = NonNullable<DispatchPendingGradingAuditsDeps['withCurrentDiscovery']>;
+  // Exercise the real transaction lifetime at the injected Discovery boundary;
+  // the existing refusal test independently guards Discovery's admission policy.
+  const withCurrentDiscovery: DiscoveryGate = async (_input, accept) => guard.begin(async tx => {
+    await tx`SET LOCAL idle_in_transaction_session_timeout = '500ms'`;
+    const [backend] = await tx`SELECT pg_backend_pid() AS pid`;
+    backendPid = backend.pid;
+    return { ok: true as const, result: await accept(tx as never, {} as never) };
+  });
+  const card: ScorecardRow = {
+    issueId, createdAt: now.toISOString(), createdBy: 'fixture-evaluator', rubricRef: 'spec-quality',
+    subject: { kind: 'plan', ref: 'spec-set:registered-subject' },
+    ratings: {}, nKeys: 0, missingKeys: [], extraKeys: [], rubricResolved: true,
+    synthesized: false, score10: null, linkedItems: [], evidenceFingerprint: 'fixture-evidence',
+    gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: prior.reservedAt },
+  };
+  const launch: LaunchHandler = vi.fn(async () => { throw new Error('routed audit must not launch twice'); });
+  try {
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId],
+      ctx: { workspaceId, harnessSlug: 'papercusp' } as DispatchPendingGradingAuditsInput['ctx'] }, {
+      listScorecards: async () => [card], getRubric: async () => standardRubric(),
+      getEvaluatorBuild: () => ({ sha: 'fixture-evaluator', version: '1.0.0' }),
+      resolveSpecQualityPlanSubject: async () => ({ planSlug: 'review-plan', harnessSlug: 'papercusp' }),
+      withCurrentDiscovery,
+      reserve: async (...args) => {
+        const [backend] = await db.sql`SELECT state FROM pg_stat_activity WHERE pid = ${backendPid}`;
+        reservationWasProtected = backend?.state === 'idle in transaction';
+        return reservePendingGradingAudit(...args);
+      },
+      route: async () => {
+        const [backend] = await db.sql`SELECT state FROM pg_stat_activity WHERE pid = ${backendPid}`;
+        routingState = backend?.state;
+        // Longer than the unchanged transaction idle budget. The old dispatcher
+        // loses this exact backend here, then throws when Discovery commits.
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+        return { state: 'routed', conversationId: 'private-independent-audit' };
+      },
+      listTasks: async () => [], launch,
+      listWorkspaceWideLoopStanddownOwners: async () => new Set(),
+    });
+    expect(reservationWasProtected).toBe(true);
+    expect(routingState).toBe('idle');
+    expect(result.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'private-independent-audit' });
+    expect((await readAudit()).dispatchReservation).toMatchObject({ key: reservation.key });
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    await guard.end({ timeout: 1 });
+  }
+});
+
 it('persists retained grading-auditor work-item custody and suppresses a duplicate launch', async () => {
   const ownerId = 'su-retained-auditor';
   await seed(issueId, { state: 'pending', stampedAt: prior.reservedAt });
