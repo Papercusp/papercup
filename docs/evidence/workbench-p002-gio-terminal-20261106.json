@@ -1,0 +1,44 @@
+{
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "parentWorkItem": "WI-6554700010044395",
+  "recordedAt": "2026-11-06T15:34:09Z",
+  "plane": "Linux current-build private GNOME Shell, production GIO and real GNOME Terminal PTY; fixture executable",
+  "command": "PAPERCUSP_NATIVE_EVIDENCE_DIR=/tmp/wb-native-resume-gio-20261106-v2 node bin/run-node-test-suite.mjs --test-global-setup=test/monorepo-host-preflight.mjs --test-name-pattern='private GNOME Shell' test/native-workbench-gnome-live.test.mjs",
+  "workingDirectory": "papercusp-desktop",
+  "result": {"exitCode": 0, "passedTests": 1, "failedTests": 0, "nativeAssertions": 44},
+  "rootCause": "A successful Resume hid the panel while preserving the temporary Checking session detail. Reopening rendered that detail instead of the results and Resume control.",
+  "durableFix": "Clear state.detail after production terminal launch succeeds, before hiding the panel. Failed launches retain their visible error.",
+  "distinguishingEvidence": {
+    "before": "/tmp/wb-native-resume-gio-20261106-v1/gnome-native-process.json",
+    "beforeObservation": "39 earlier assertions passed; reopened quick-access had detail.text Checking session and lacked the Resume result control.",
+    "after": "/tmp/wb-native-resume-gio-20261106-v2/gnome-native-process.json",
+    "afterObservation": "All 44 assertions passed, including clear-before-reopen, real native Resume button click, production GIO launch, exact ID/host/owner arguments through an executable path containing spaces and an apostrophe, and real PTY stdin/stdout/stderr."
+  },
+  "sourceSha256": {
+    "papercusp-desktop/native/gnome/extension.js": "03de3c642299a6ce2bd0712683984033ca311833dcc4237e6a92a2969694b502",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "5d341295229667772606cc338d27eb57a303836f301cf0924b8ff5e3f959fc2b"
+  },
+  "evidenceSha256": {
+    "/tmp/wb-native-resume-gio-20261106-v2.log": "c4111efe8af2e81d99c49f952add44278dc62de565f2c4cba906a4da78e324f7",
+    "/tmp/wb-native-resume-gio-20261106-v2/gnome-native-process.json": "239f49ec32bfc5c6e93752ebcef487aca24624e97a4c7c9821151515fbb54cf8"
+  },
+  "additionalActualPuiObservations": {
+    "binary": "/mnt/data/cargo-target/debug/pui",
+    "binarySha256": "e88893380ba6333f3676a6867d56c22b2814d3034e21f6893d5c842edca85fa1",
+    "buildLog": "/tmp/wb-native-resume-pui-build-20261106.log",
+    "buildExitCode": 0,
+    "selectedOperator": "http://127.0.0.1:3170",
+    "rosterRead": "Actual native-read advRoster.list returned the canonical row envelope with empty stderr and exit 0.",
+    "missingSelection": "Actual PTY workbench resume 9007199254740991 main-server-Precision-7865-Tower exited 1 with selected session unavailable or ambiguous before Zellij.",
+    "missingSelectionLog": "/tmp/wb-native-resume-canonical-missing-20261106.log",
+    "authorizationControl": "An invalid bearer returned the same roster on localhost. The route writer packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.ts declares auth: loopback. This is not ACL-refusal proof."
+  },
+  "limits": [
+    "GIO test executes a fixture command, not the actual PUI or vendor CLI.",
+    "Actual successful PUI-to-Zellij-to-vendor resume remains unverified.",
+    "Canonical ACL refusal and full native panel/action acceptance remain open.",
+    "Exact installed-artifact fresh-install, upgrade, login and independent acceptance on Ubuntu, macOS and Windows remain required.",
+    "No shipment or release claim."
+  ]
+}
