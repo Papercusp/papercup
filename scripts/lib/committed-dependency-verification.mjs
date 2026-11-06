@@ -122,7 +122,8 @@ async function selectGeneration(helper, donor, destination, deadline) {
   return { root, tree, lease, identity, token };
 }
 
-async function census(helper, donor, destination, scratch, deadline, generation) {
+async function census(helper, donor, destination, scratch, deadline, generation, progress) {
+  if (progress) Object.assign(progress, { phase: 'tree-census', scannedTrees: 0, totalTrees: 0 });
   const sourceInputCommands = generation ? [
     // The generation contains dependency trees, not package/lock files. Reuse
     // the publisher's exact-input selector and revalidate its immutable token.
@@ -135,17 +136,20 @@ async function census(helper, donor, destination, scratch, deadline, generation)
     ...sourceInputCommands,
     'dependency_generation_input_fingerprint "$3"',
     'printf "%s\\n" "$DEPENDENCY_GENERATION_RACY_WINDOW_SEC"',
+    'dependency_generation_walk_jobs',
     'dependency_generation_configure_workspace_dirs "$2"',
     'dependency_generation_enumerate_node_modules "$2"',
     'printf "%s\\n" "---destination---"',
     'dependency_generation_configure_workspace_dirs "$3"',
     'dependency_generation_enumerate_node_modules "$3"',
   ].join('\n'), deadline);
-  const [sourceInputs, destinationInputs, racySeconds, ...lines] = text.trimEnd().split('\n');
+  const [sourceInputs, destinationInputs, racySeconds, walkJobs, ...lines] = text.trimEnd().split('\n');
   if (!/^[a-f0-9]{64}$/.test(sourceInputs) || sourceInputs !== destinationInputs)
     fail('dependency inputs differ');
   const racyWindowMs = Number(racySeconds) * 1000;
   if (!Number.isFinite(racyWindowMs) || racyWindowMs < 0) fail('invalid racy window');
+  const jobs = Number(walkJobs);
+  if (!Number.isSafeInteger(jobs) || jobs < 1) fail('invalid census worker count');
   const split = lines.indexOf('---destination---');
   if (split < 0) fail('incomplete tree census');
   const sourcePaths = lines.slice(0, split).map(path => safeRelative(relative(donor, path)))
@@ -154,18 +158,32 @@ async function census(helper, donor, destination, scratch, deadline, generation)
   sourcePaths.sort();
   destinationPaths.sort();
   if (JSON.stringify(sourcePaths) !== JSON.stringify(destinationPaths)) fail('dependency tree census differs');
-  const trees = [];
-  for (const [index, path] of sourcePaths.entries()) {
-    const source = join(donor, path), target = join(destination, path);
-    const sourceIdentity = directoryIdentity(source), destinationIdentity = directoryIdentity(target);
-    const sourceRecords = join(scratch, String(index) + '.source');
-    const destinationRecords = join(scratch, String(index) + '.destination');
-    await command(helper, [source, sourceRecords, target, destinationRecords], [
-      'dependency_generation_source_records "$2" "$3"',
-      'dependency_generation_source_records "$4" "$5"',
-    ].join('\n'), deadline);
-    trees.push({ path, sourceIdentity, destinationIdentity, sourceRecords, destinationRecords });
-  }
+  if (progress) Object.assign(progress, { phase: 'record-census', totalTrees: sourcePaths.length });
+  // Reuse the generation helper's bounded walk policy. Stable slots preserve
+  // journal ordering even when small trees finish before the root install.
+  const trees = new Array(sourcePaths.length);
+  let next = 0, scanned = 0, failure;
+  const worker = async () => {
+    while (!failure && next < sourcePaths.length) {
+      const index = next++, path = sourcePaths[index];
+      if (progress) progress.currentTree = path;
+      try {
+        const source = join(donor, path), target = join(destination, path);
+        const sourceIdentity = directoryIdentity(source), destinationIdentity = directoryIdentity(target);
+        const sourceRecords = join(scratch, String(index) + '.source');
+        const destinationRecords = join(scratch, String(index) + '.destination');
+        await command(helper, [source, sourceRecords, target, destinationRecords], [
+          'dependency_generation_source_records "$2" "$3"',
+          'dependency_generation_source_records "$4" "$5"',
+        ].join('\n'), deadline);
+        trees[index] = { path, sourceIdentity, destinationIdentity, sourceRecords, destinationRecords };
+        if (progress) progress.scannedTrees = ++scanned;
+      } catch (error) { failure ??= error; }
+    }
+  };
+  // Drain every started scanner before removing scratch or releasing a lease.
+  await Promise.all(Array.from({ length: Math.min(jobs, trees.length) }, worker));
+  if (failure) throw failure;
   return { sourceInputs, racyWindowMs, trees };
 }
 
@@ -328,7 +346,8 @@ export async function verifyRetainedDependencies(donor, destination, options, co
       const scratch = mkdtempSync(join(checkpoint, '.scan-'));
       try {
         context.verifySource();
-        const scan = await census(context.materializer, donor, destination, scratch, deadline, generation);
+        const scan = await census(context.materializer, donor, destination, scratch, deadline, generation, progress);
+        progress.phase = 'inspect-census';
         const population = await inspect(scan, donor, destination, deadline);
         progress.totalEntries = population.entries;
         const rootIdentities = { donorRoot: directoryIdentity(donor), destinationRoot: directoryIdentity(destination) };
@@ -342,6 +361,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
         const manifest = readJournal(manifestPath);
         if (manifest && manifest.binding !== binding) fail('journal binding changed: source, inputs or census drift');
         if (!manifest) writeJournal(manifestPath, { schemaVersion, binding });
+        progress.phase = 'hash-batches';
         let batch = [], index = 0, newBatches = 0;
         const finishBatch = async () => {
           const metadata = digest(JSON.stringify(batch.map(pair =>
@@ -380,6 +400,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
         if (batch.length) await finishBatch();
         const finalDirectory = join(scratch, 'final');
         mkdirSync(finalDirectory, { mode: 0o700 });
+        progress.phase = 'final-census';
         const finalScan = await census(context.materializer, donor, destination, finalDirectory, deadline, generation);
         const finalPopulation = await inspect(finalScan, donor, destination, deadline);
         if (JSON.stringify(rootIdentities) !== JSON.stringify({ donorRoot: directoryIdentity(donor),
@@ -391,6 +412,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
             JSON.stringify(finalPopulation) !== JSON.stringify(population))
           fail('dependency census changed during verification');
         context.verifySource();
+        progress.phase = 'complete';
         return { status: 'complete', sourceRoot: donor, paths: scan.trees.map(tree => tree.path), progress };
       } catch (error) {
         if (error instanceof Incomplete) return incomplete();

@@ -1750,6 +1750,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         { ...f.options(1), prepareWorkspace: build });
       expect(paused.status).toBe('incomplete');
       expect(paused.progress.hashedFiles).toBeGreaterThan(0);
+      expect(paused.progress).toMatchObject({ phase: 'hash-batches', scannedTrees: 1, totalTrees: 1 });
       expect(build).not.toHaveBeenCalled();
       expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
       const prepared = await mod.materializeIndependentDependencies(f.root, f.workRoot,
@@ -1768,6 +1769,36 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     } finally { f.cleanup(); }
   }, 60_000);
 
+  it('reuses verified batches across serial and parallel census scheduling', async () => {
+    const f = retainedFixture();
+    const priorJobs = process.env.DEPENDENCY_GENERATION_WALK_JOBS;
+    try {
+      for (const root of [f.root, f.workRoot]) {
+        const leaf = join(root, 'libs/runtime/node_modules/leaf');
+        mkdirSync(leaf, { recursive: true });
+        writeFileSync(join(leaf, 'package.json'), '{"name":"leaf","version":"1.0.0"}');
+        writeFileSync(join(leaf, 'index.cjs'), 'module.exports = "independent-leaf";');
+      }
+      process.env.DEPENDENCY_GENERATION_WALK_JOBS = '1';
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, f.options(1));
+      expect(paused.status).toBe('incomplete');
+      expect(paused.progress).toMatchObject({ phase: 'hash-batches', scannedTrees: 2, totalTrees: 2 });
+      process.env.DEPENDENCY_GENERATION_WALK_JOBS = '4';
+      const complete = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: (copied: { workspacePaths: Set<string> }) =>
+          mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths),
+      });
+      expect(complete.status).toBe('complete');
+      expect(complete.paths).toEqual(['libs/runtime/node_modules', 'node_modules']);
+      expect(complete.verification.reusedBatches).toBeGreaterThan(0);
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8')).dependencyMode).toBe('independent-copy-v1');
+    } finally {
+      if (priorJobs === undefined) delete process.env.DEPENDENCY_GENERATION_WALK_JOBS;
+      else process.env.DEPENDENCY_GENERATION_WALK_JOBS = priorJobs;
+      f.cleanup();
+    }
+  }, 60_000);
+
   it.each(['valid', 'corrupt-selector', 'different-bytes'] as const)
     ('resumes against a leased exact-input generation without source lockfiles (%s)', async variant => {
       const f = retainedFixture();
@@ -1780,6 +1811,28 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         for (const name of readdirSync(path)) makeWritable(join(path, name));
       };
       try {
+        // The real publisher requires every installed entry to realize a lock.
+        // Put the generic byte fixtures inside a genuine installed package.
+        for (const root of [f.root, f.workRoot]) {
+          const payload = join(root, 'node_modules/payload');
+          mkdirSync(payload);
+          writeFileSync(join(payload, 'package.json'), '{"name":"payload","version":"1.0.0"}');
+          for (const name of ['alpha', 'beta', 'gamma']) {
+            const path = join(root, 'node_modules', name + '.txt');
+            writeFileSync(join(payload, name + '.txt'), readFileSync(path));
+            rmSync(path);
+          }
+        }
+        const head = snapshot(f.root, { 'package-lock.json': JSON.stringify({
+          lockfileVersion: 3, packages: {
+            'node_modules/payload': { version: '1.0.0' },
+            'node_modules/@fixture/runtime': { resolved: 'libs/runtime', link: true },
+          },
+        }) }, f.head);
+        gitFixture(f.workRoot, ['fetch', '--quiet', f.root, head]);
+        gitFixture(f.workRoot, ['checkout', '--detach', '--quiet', head]);
+        f.marker.sha = head;
+        writeFileSync(f.markerPath, JSON.stringify(f.marker));
         const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store], {
           env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30_000,
         });
@@ -1791,7 +1844,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = store;
         // No mutable install may supply the comparison after publication.
         rmSync(join(f.root, 'node_modules'), { recursive: true });
-        const retained = join(f.workRoot, 'node_modules/alpha.txt');
+        const retained = join(f.workRoot, 'node_modules/payload/alpha.txt');
         const inode = statSync(retained).ino;
         const options = (maxBatches = 64) => ({ resumeVerification: {
           ...f.options(maxBatches).resumeVerification, generation: true,
