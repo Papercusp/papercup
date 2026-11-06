@@ -192,8 +192,9 @@ def cleanup_sidecars(base_path):
             pass
 
 
-def mark_release_success(mode='posttooluse'):
-    value = {'ts': now_iso(), 'owner': owner, 'mode': mode}
+def mark_release_success(mode='posttooluse', native_release_confirmed=False):
+    value = {'ts': now_iso(), 'owner': owner, 'mode': mode,
+             'nativeReleaseConfirmed': native_release_confirmed}
     write_marker('last-success.json', value)
     write_marker(owner_marker_name('success'), value)
 
@@ -615,7 +616,7 @@ if os.path.exists(operation_path):
         )
         if settle_lock_operation(operation_path, record, call_tool, proof):
             cleanup_sidecars(operation_path[:-len('.operation.json')])
-            mark_release_success('operation-finish')
+            mark_release_success('operation-finish', native_release_confirmed=proof is not None)
         else:
             mark_release_error('operation-finish', 'terminal operation not confirmed; sidecar retained')
             emit_release_warning(record['paths'])
@@ -778,13 +779,13 @@ if compatibility_error and coordination_domain:
     del compatibility_args['coordination_domain']
     released, release_error = call_tool('locks:release', compatibility_args)
     if release_error is None and release_confirmed(released, release_paths or []):
-        mark_release_success('posttooluse-compatibility-fallback')
+        mark_release_success('posttooluse-compatibility-fallback', native_release_confirmed=proof is not None)
         cleanup_sidecars(cache_path[:-len('.lock')])
     else:
         mark_release_error('release', release_error or released or 'release not confirmed')
         emit_release_warning(release_paths or [])
 elif release_error is None and release_confirmed(released, release_paths or []):
-    mark_release_success()
+    mark_release_success(native_release_confirmed=proof is not None)
     cleanup_sidecars(cache_path[:-len('.lock')])
 else:
     mark_release_error('release', release_error or released or 'release not confirmed')
