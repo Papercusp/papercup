@@ -2824,9 +2824,19 @@ dependency_generation_copy_with_progress() (
     # bits subject to umask; clear it locally so executable dependencies survive.
     # --preserve=links preserves aliases INSIDE the copy, never links to src.
     umask 000
-    "${DEPENDENCY_GENERATION_NODE:-node}" \
-      "${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}" \
-      copy-tree "$src" "$dest" "$reflink" &
+    # Most workspace installs have just a handful of entries. Starting Node and
+    # walking their hardlink census costs more than their direct native copy.
+    # Keep batching for large trees; this subshell owns the glob options.
+    local -a verifier_entries
+    shopt -s nullglob dotglob
+    verifier_entries=("$src"/*)
+    if [ "${#verifier_entries[@]}" -ge 64 ]; then
+      "${DEPENDENCY_GENERATION_NODE:-node}" \
+        "${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}" \
+        copy-tree "$src" "$dest" "$reflink" &
+    else
+      cp -R -P --preserve=links "$reflink" "$src" "$dest" 2>/dev/null &
+    fi
   elif [ -n "$reflink" ]; then
     cp -a "$reflink" "$src" "$dest" 2>/dev/null &
   else
