@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 native Windows resident host and service-station guard",
+  "framework": "shell",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File test/fixtures/native-workbench-windows-host.ps1 -SourceDirectory native/windows -Phase all -Interactive",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File test/fixtures/native-workbench-windows-host.ps1 -SourceDirectory native/windows -Phase preflight"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T19:43:37.303Z",
+  "finishedAt": "2026-11-06T19:47:12.122Z",
+  "summary": "Maintained registered PowerShell fixture compiled actual WPF/Win32 production sources on native Windows. All 23 model/shortcut/HWND cases passed in signed-in desktop Session 1; the separate preflight regression passed in SSH/service Session 0 and refused startup before allocating a window or shortcut. Native Node wrapper was not run on this VM because Node is absent; Linux wrapper loaded with two selected Windows tests skipped. This is native fixture evidence, not installed-app or shipment acceptance.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "sourcePrefix": "papercusp-desktop/",
+  "sourceSha256": {
+    "native/windows/PuiReadBridge.cs": "334ef3d73c12d31149a7f616f95ca2bb7f1a32fe7e2332499fea3a8e99ccc2b2",
+    "native/windows/WorkbenchModel.cs": "b22ec86dddc9180c7e9e559269f60f3bd0e9db65ba464cf7fdb2a63f3c7fce02",
+    "native/windows/WorkbenchHost.cs": "bf3ba0ea81a8ecc2fcfc247398ecd103c215ce4ec164e40a15519596c2056166",
+    "native/windows/workbench.ps1": "cdd917d7571fa90d4f6ec7592ead86ff01e26594614d4c8e88d7115a001947da",
+    "test/fixtures/native-workbench-windows-host.ps1": "01889693a649ce51b3ed02aacd6e0778f9ac9081540a6a416ff88191fabf5d27"
+  },
+  "custody": "Native Get-FileHash matched canonical SHA256 before and after the full run; canonical bytes remained unchanged.",
+  "runs": [
+    {
+      "taskId": "0mw5dxvye3olr2sqqe3",
+      "log": ".papercusp/scratch/bash-13dfc408-e97.log",
+      "exitCode": 0,
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "all",
+        "cases": [
+          "plan identity includes canonical harness and slug",
+          "canonical version retained",
+          "all search terms match canonical text",
+          "unmatched query returns no results",
+          "ended roster preserves launch owner and host identity",
+          "stale refresh cannot replace a newer request",
+          "missing canonical identity fails closed",
+          "unavailable empty and partial are distinct",
+          "result paging retains undisplayed canonical rows",
+          "show more exposes the remaining results",
+          "pinned outside focus retains draft and selection",
+          "Escape closes detail before panel",
+          "detail routes exact harness and literal identity",
+          "native shortcut collision preserves live owner",
+          "duplicate shortcut edit preserves both prior bindings",
+          "reserved F12 is rejected before replacing live shortcuts",
+          "failed multi-shortcut edit releases newly acquired keys and retains prior owner",
+          "real HWND is chrome-free tool window without taskbar identity",
+          "failed PUI reads remain visible as unavailable",
+          "shortcut toggle retains resident window and query",
+          "independent pin permits both surfaces",
+          "atomic shortcut swap reuses native registrations",
+          "disable releases shortcuts for another native owner"
+        ],
+        "count": 23,
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-model-and-WPF-HWND-fixture"
+      }
+    },
+    {
+      "taskId": "0mw5du59810p9wg11m5",
+      "log": ".papercusp/scratch/bash-0a9ec6d7-7d5.log",
+      "exitCode": 0,
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "preflight",
+        "cases": [
+          "service station is refused before creating windows or acquiring shortcuts"
+        ],
+        "count": 1,
+        "processSessionId": 0,
+        "interactiveDesktop": false,
+        "scope": "native-preflight-fixture"
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": "plan identity includes canonical harness and slug",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "canonical version retained",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "all search terms match canonical text",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "unmatched query returns no results",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "ended roster preserves launch owner and host identity",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "stale refresh cannot replace a newer request",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "missing canonical identity fails closed",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "unavailable empty and partial are distinct",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "result paging retains undisplayed canonical rows",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "show more exposes the remaining results",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "pinned outside focus retains draft and selection",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "Escape closes detail before panel",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "detail routes exact harness and literal identity",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "native shortcut collision preserves live owner",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "duplicate shortcut edit preserves both prior bindings",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "reserved F12 is rejected before replacing live shortcuts",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "failed multi-shortcut edit releases newly acquired keys and retains prior owner",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "real HWND is chrome-free tool window without taskbar identity",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "failed PUI reads remain visible as unavailable",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "shortcut toggle retains resident window and query",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "independent pin permits both surfaces",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "atomic shortcut swap reuses native registrations",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "disable releases shortcuts for another native owner",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5dxvye3olr2sqqe3 terminal exit0."
+    },
+    {
+      "id": "service station is refused before creating windows or acquiring shortcuts",
+      "passed": true,
+      "evidence": "Maintained native Windows fixture actual cases[]; task 0mw5du59810p9wg11m5 terminal exit0."
+    }
+  ],
+  "rootCauseVerification": {
+    "hypothesis": "The SSH-launched fixture used a noninteractive service window station, which cannot register global hotkeys.",
+    "alternativeHypothesis": "The host registration implementation cannot register these valid shortcuts even on the interactive user desktop.",
+    "distinguishingTest": "Use native WSF_VISIBLE to identify the station; invoke the same compiled production host through an owned InteractiveToken scheduled task, and verify service-station constructor refusal separately.",
+    "predictedObservations": {
+      "hypothesis": "Interactive station registers F10/F11 and completes ownership/rollback/window checks; service station refuses before allocating shortcuts.",
+      "alternativeHypothesis": "Valid shortcut registration still fails in a visible signed-in station."
+    },
+    "actualObservation": "Native interactiveDesktop=true / processSessionId=1 passed 23 checks; interactiveDesktop=false / processSessionId=0 passed the early-refusal regression. Earlier first registration of F11 failed with Win32Exception: This operation requires an interactive window station.",
+    "testResult": "pass",
+    "testProcedure": "Registered native-workbench-windows.test.mjs delegates to the maintained host fixture; this VM directly executed its exact PowerShell fixture using SSH only as control transport.",
+    "evidenceRefs": [
+      "work-item-thread:WI-6554700010044411#1216536",
+      "work-item-thread:WI-6554700010044411#1216539",
+      ".papercusp/scratch/bash-fa3fcf08-841.log",
+      ".papercusp/scratch/bash-13dfc408-e97.log",
+      ".papercusp/scratch/bash-0a9ec6d7-7d5.log"
+    ]
+  },
+  "scopeLimits": [
+    "Quick Access and Goals host fixture only; other four native panels remain required",
+    "Real operator integration, exact terminal focus/resume and canonical GUI content parity remain required",
+    "Per-user login/configuration/disable/upgrade packaging remains required",
+    "Full independent exact installed-artifact Ubuntu/macOS/Windows acceptance and shipment remain required"
+  ]
+}

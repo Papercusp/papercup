@@ -2,18 +2,40 @@
  * keys/authors are test-owned and do not establish production build provenance.
  */
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { once } from 'node:events';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization, type TauriUpdateCandidate,
   type TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
 import { handlerRuntimeConfigurationDigest, handlerRuntimeDigest, handlerTrustedRuntimeDigest,
-  createHandlerRuntimeCandidate, openHandlerRuntime, prepareApprovedHandlerRuntime, withHandlerRuntimeAuthorization,
+  createCurrentHandlerRuntimeApproval, createHandlerRuntimeCandidate, openHandlerRuntime, prepareApprovedHandlerRuntime, withHandlerRuntimeAuthorization,
   type HandlerRuntimeFile, type HandlerRuntimeApproval } from './handler-runtime';
 import { startDaemonPlugin } from './supervisor';
+
+// Relocate ONLY the fixed root and owner metadata for this unprivileged fixture.
+// Production exposes no path/uid override. openat, flock, bytes and all modes
+// remain real kernel operations, shared with an independent flock process.
+const protectedFixture = vi.hoisted(() => ({ root: '', badOwner: false }));
+vi.mock('node:fs', async importOriginal => {
+  const real = await importOriginal<typeof import('node:fs')>();
+  return { ...real,
+    openSync: (...args: Parameters<typeof real.openSync>) => real.openSync(
+      args[0] === '/' && protectedFixture.root ? protectedFixture.root : args[0], args[1], args[2]),
+    fstatSync(fd: number, options?: { bigint?: boolean }) {
+      const stat = options?.bigint ? real.fstatSync(fd, { bigint: true }) : real.fstatSync(fd);
+      if (protectedFixture.root && real.readlinkSync(`/proc/self/fd/${fd}`).startsWith(protectedFixture.root)) {
+        Object.defineProperty(stat, 'uid', { value: typeof stat.uid === 'bigint'
+          ? BigInt(protectedFixture.badOwner ? 1 : 0) : protectedFixture.badOwner ? 1 : 0 });
+      }
+      return stat;
+    },
+  };
+});
 
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 function fixture() {
@@ -56,6 +78,100 @@ function fixture() {
   return { files, inventory, expected, trust, metadata, signer, reviewer, envelope, approval,
     held: () => held, time: (time: number) => { now = time; } };
 }
+
+describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch))('protected native runtime trust adapter', () => {
+  let f: ReturnType<typeof fixture>;
+  let directory: string;
+  let policy: string;
+  const writePolicy = () => {
+    writeFileSync(policy, JSON.stringify({ version: 1, update_channel: 'stable', updateAuthorization: f.trust }), { mode: 0o644 });
+    chmodSync(policy, 0o644);
+  };
+  const exclusive = () => spawnSync('/usr/bin/flock', ['-xn', directory, '/bin/true']).status;
+  const runtime = () => prepareApprovedHandlerRuntime(f.inventory, createCurrentHandlerRuntimeApproval(f.envelope(), f.expected));
+  beforeEach(() => {
+    protectedFixture.root = mkdtempSync(join(tmpdir(), 'handler-current-trust-'));
+    directory = join(protectedFixture.root, 'etc/papercusp');
+    mkdirSync(directory, { recursive: true, mode: 0o755 });
+    policy = join(directory, 'managed-policy.json');
+    f = fixture(); writePolicy();
+    vi.spyOn(Date, 'now').mockReturnValue(2000);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks(); protectedFixture.badOwner = false;
+    rmSync(protectedFixture.root, { recursive: true, force: true }); protectedFixture.root = '';
+  });
+
+  it('holds the actual shared native lock through async readiness, permits other readers and releases after success', async () => {
+    const prepared = runtime();
+    let ready!: () => void;
+    const barrier = new Promise<void>(resolve => { ready = resolve; });
+    let entered!: () => void;
+    const admission = new Promise<void>(resolve => { entered = resolve; });
+    const pending = withHandlerRuntimeAuthorization(prepared, async () => {
+      entered(); await barrier;
+      expect(exclusive()).toBe(1);
+      return 'READY';
+    });
+    try {
+      // A refusal must fail this test immediately, never strand the readiness
+      // waiter on an effect that was correctly never entered.
+      await Promise.race([admission, pending]);
+      expect(exclusive()).toBe(1);
+      expect(spawnSync('/usr/bin/flock', ['-sn', directory, '/bin/true']).status).toBe(0);
+    } finally { ready(); }
+    expect(await pending).toBe('READY');
+    expect(exclusive()).toBe(0);
+    expect(() => openHandlerRuntime(prepared)).toThrow(/current protected trust lease/);
+  }, 10_000);
+
+  it('refuses admission while an independent native activator holds the exclusive directory lock', async () => {
+    const holder = spawn('/usr/bin/flock', ['-xn', directory, '/bin/sh', '-c', 'printf READY; cat >/dev/null'],
+      { stdio: ['pipe', 'pipe', 'pipe'] });
+    const closed = once(holder, 'close');
+    try {
+      expect((await once(holder.stdout, 'data'))[0].toString()).toBe('READY');
+      const effect = vi.fn(async () => 'UNSAFE');
+      await expect(withHandlerRuntimeAuthorization(runtime(), effect)).rejects.toThrow(/busy or unavailable/);
+      expect(effect).not.toHaveBeenCalled();
+    } finally { holder.stdin.end(); await closed; }
+    expect(exclusive()).toBe(0);
+  });
+
+  it.each([false, true])('releases the actual lock after an admission failure (async=%s)', async deferred => {
+    await expect(withHandlerRuntimeAuthorization(runtime(), async () => {
+      if (deferred) await Promise.resolve();
+      expect(exclusive()).toBe(1); throw new Error('readiness failed');
+    })).rejects.toThrow('readiness failed');
+    expect(exclusive()).toBe(0);
+  });
+
+  it('reloads CURRENT protected revocation on the next admission without rebuilding the runtime', async () => {
+    const prepared = runtime();
+    await expect(withHandlerRuntimeAuthorization(prepared, async () => 'READY')).resolves.toBe('READY');
+    f.reviewer.revoked = true; writePolicy();
+    const effect = vi.fn(async () => 'UNSAFE');
+    await expect(withHandlerRuntimeAuthorization(prepared, effect)).rejects.toThrow(/revoked/);
+    expect(effect).not.toHaveBeenCalled(); expect(exclusive()).toBe(0);
+  });
+
+  it.each(['missing', 'malformed', 'writable', 'symlink', 'ancestor', 'owner', 'oversize'] as const)(
+    'refuses %s protected policy before the admission effect and releases descriptors', async defect => {
+      if (defect === 'missing') rmSync(policy);
+      if (defect === 'malformed') writeFileSync(policy, '{');
+      if (defect === 'writable') chmodSync(policy, 0o666);
+      if (defect === 'symlink') {
+        const donor = join(protectedFixture.root, 'donor'); writeFileSync(donor, readFileSync(policy));
+        rmSync(policy); symlinkSync(donor, policy);
+      }
+      if (defect === 'ancestor') chmodSync(join(protectedFixture.root, 'etc'), 0o777);
+      if (defect === 'owner') protectedFixture.badOwner = true;
+      if (defect === 'oversize') writeFileSync(policy, 'x'.repeat(16_385));
+      const effect = vi.fn(async () => 'UNSAFE');
+      await expect(withHandlerRuntimeAuthorization(runtime(), effect)).rejects.toThrow();
+      expect(effect).not.toHaveBeenCalled(); expect(exclusive()).toBe(0);
+    });
+});
 
 describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch))('approved handler runtime admission', () => {
   it('derives reviewed runtime inputs from bytes and snapshots every source author independently of the envelope', async () => {
@@ -206,26 +322,42 @@ describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process
     f.inventory.bootstrapSha256 = files.get('/runtime/bootstrap.cjs')!.sha256;
     Object.assign(f.expected, { artifactSha256: handlerTrustedRuntimeDigest(f.inventory.files), policySha256: f.inventory.bootstrapSha256 });
     Object.assign(f.metadata, f.expected); f.approval.envelope = f.envelope();
-    const runtime = prepareApprovedHandlerRuntime(f.inventory, f.approval);
+    // Exercise the real native adapter through supervisor readiness/restart,
+    // with only the protected filesystem root/uid relocated for this fixture.
+    const policyRoot = mkdtempSync(join(tmpdir(), 'handler-ready-trust-'));
+    protectedFixture.root = policyRoot;
+    const policyDirectory = join(policyRoot, 'etc/papercusp');
+    mkdirSync(policyDirectory, { recursive: true, mode: 0o755 });
+    const writeCurrent = () => writeFileSync(join(policyDirectory, 'managed-policy.json'),
+      JSON.stringify({ version: 1, update_channel: 'stable', updateAuthorization: f.trust }), { mode: 0o644 });
+    writeCurrent();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(2000);
+    const held = () => spawnSync('/usr/bin/flock', ['-xn', policyDirectory, '/bin/true']).status === 1;
     const startupLeases: boolean[] = [];
     let refused!: (line: string) => void;
     const refusal = new Promise<string>(resolve => { refused = resolve; });
-    const handle = await startDaemonPlugin({ pluginName: 'approved-real-fixture', sandbox: 'handler', handlerRuntime: runtime,
-      cmd: [], cwd: '/', healthIntervalMs: 0, restart: { policy: 'on-failure', maxRestarts: 1, backoffMs: 1 },
-      onLog(line) {
-        if (line === 'APPROVED_HANDLER_STARTED') startupLeases.push(f.held());
-        if (line.includes('respawn refused:')) refused(line);
-      } });
+    let handle: Awaited<ReturnType<typeof startDaemonPlugin>> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      const runtime = prepareApprovedHandlerRuntime(f.inventory, createCurrentHandlerRuntimeApproval(f.envelope(), f.expected));
+      handle = await startDaemonPlugin({ pluginName: 'approved-real-fixture', sandbox: 'handler', handlerRuntime: runtime,
+        cmd: [], cwd: '/', healthIntervalMs: 0, restart: { policy: 'on-failure', maxRestarts: 1, backoffMs: 1 },
+        onLog(line) {
+          if (line === 'APPROVED_HANDLER_STARTED') startupLeases.push(held());
+          if (line.includes('respawn refused:')) refused(line);
+        } });
       expect(await handle.request('fixture.echo', 'READY')).toBe('READY');
-      expect(startupLeases).toEqual([true]); expect(f.held()).toBe(false);
-      f.reviewer.revoked = true;
+      expect(startupLeases).toEqual([true]); expect(held()).toBe(false);
+      f.reviewer.revoked = true; writeCurrent();
       expect(await handle.request('fixture.exit')).toBe(true);
       const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('revoked restart was not refused')), 5000); });
       expect(await Promise.race([refusal, deadline])).toMatch(/admission refused.*revoked/);
       expect(startupLeases).toEqual([true]);
       await expect(handle.request('fixture.echo', 'UNSAFE')).rejects.toThrow(/not running/);
-    } finally { if (timer) clearTimeout(timer); await handle.shutdown(); }
+    } finally {
+      if (timer) clearTimeout(timer);
+      await handle?.shutdown(); clock.mockRestore();
+      rmSync(policyRoot, { recursive: true, force: true }); protectedFixture.root = '';
+    }
   }, 30_000);
 });
