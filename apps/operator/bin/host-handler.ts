@@ -162,12 +162,16 @@ if (process.env.PAPERCUSP_SERVE_UI !== '0') {
  */
 export async function captureOperatorHttpSecurityPopulation(): Promise<import('@papercusp/operator-core/lib/observability/runtime').RuntimeSecurityPopulation & { closureAccepted: false }> {
   const [{ enumerateMountedHonoSurfaces, honoRoutesProvider }, { enumerateMountedPluginHttpSurfaces },
-    { enumerateProjectedHandlerSurfaces }, { REPO_ROOT }, { inspectPluginHostSecurityPopulation }] = await Promise.all([
+    { enumerateProjectedHandlerSurfaces }, { REPO_ROOT }, { inspectPluginHostSecurityPopulation },
+    { dbosSecurityObserver }, { dbosStarted }, { listReactionRules }] = await Promise.all([
     import('@papercusp/operator-core/lib/coverage-census/providers/hono-routes'),
     import('@papercusp/operator-core/lib/plugin-api-mount'),
     import('@papercusp/operator-core/lib/coverage-census/providers/mcp-tools'),
     import('@papercusp/operator-core/lib/agent-tools/docs/_repo-paths'),
     import('@papercusp/operator-core/lib/plugin-host-runtime'),
+    import('@papercusp/operator-core/lib/coverage-census/providers/dbos-workflows'),
+    import('@papercusp/operator-core/lib/dbos/bootstrap'),
+    import('@papercusp/operator-core/lib/events/registry'),
   ]);
   const outer = enumerateMountedHonoSurfaces(host, 'operator-host');
   const inner = enumerateMountedHonoSurfaces(app, 'operator-api');
@@ -175,10 +179,16 @@ export async function captureOperatorHttpSecurityPopulation(): Promise<import('@
   const loader = inspectPluginHostSecurityPopulation();
   const handlers = await enumerateProjectedHandlerSurfaces({ repoRoot: REPO_ROOT,
     workspaceId: '', harnessSlug: '', config: {} });
+  const dbos = dbosSecurityObserver.capture(dbosStarted());
+  const reactions = listReactionRules().map(rule => ({ kind: 'registered-event-reaction',
+    surfaceId: rule.id, sourceFile: null, fidelity: 'observed' as const,
+    attrs: { on: rule.on, fire: rule.fire, source: rule.source ?? null } }));
   return {
-    surfaces: [...outer.surfaces, ...inner.surfaces, ...plugins.surfaces, ...handlers, ...loader.surfaces],
+    surfaces: [...outer.surfaces, ...inner.surfaces, ...plugins.surfaces, ...handlers, ...loader.surfaces,
+      ...dbos.surfaces, ...reactions],
     declaredSurfaces: [...honoRoutesProvider.enumerate(), ...loader.declaredSurfaces],
-    unresolved: [...outer.unresolved, ...inner.unresolved, ...plugins.unresolved, ...loader.unresolved],
+    unresolved: [...outer.unresolved, ...inner.unresolved, ...plugins.unresolved, ...loader.unresolved,
+      ...dbos.unresolved, 'reaction-registration-source-and-adapter-reconciliation-unverified'],
     closureAccepted: false as const,
   };
 }

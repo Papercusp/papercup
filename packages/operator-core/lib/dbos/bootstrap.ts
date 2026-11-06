@@ -364,6 +364,8 @@ async function startDbosOnce(): Promise<void> {
   }
 
   const { DBOS } = await import('@dbos-inc/dbos-sdk');
+  const { dbosSecurityObserver } = await import('../coverage-census/providers/dbos-workflows');
+  dbosSecurityObserver.install(DBOS);
   DBOS.setConfig({
     name: 'papercusp-operator',
     // Reuse the host's standard provider; DBOS preserves context across durable steps.

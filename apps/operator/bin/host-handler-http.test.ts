@@ -5,6 +5,7 @@ import { createAdaptorServer, serve } from '@hono/node-server';
 import { captureOperatorHttpSecurityPopulation, handler } from './host-handler';
 import { captureRuntimeSecurityCensus, readRuntimeSecurityCensus } from '@papercusp/operator-core/lib/observability/runtime';
 import { _injectPluginHostForTests, _resetPluginHostForTests } from '@papercusp/operator-core/lib/plugin-host-runtime';
+import { registerReactionRule, unregisterReactionRule } from '@papercusp/operator-core/lib/events/registry';
 import { enterGuardHttpRequest, installGuardHttpDiagnostics, markGuardHttpStage } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
 
 const servers: Array<ReturnType<typeof serve>> = [];
@@ -198,6 +199,23 @@ function getHealth(port: number): Promise<{ statusCode: number; body: string }> 
 }
 
 describe('host handler HTTP composition', () => {
+  it('captures newly registered reaction edges without executing conditions or copying private arguments', async () => {
+    const id = 'vault-census-omission-control';
+    const when = vi.fn(() => { throw Error('discovery executed a condition'); });
+    registerReactionRule({ id, on: ['vault:probe', 'vault:other'], fire: 'vault:effect', when,
+      args: { payload: 'private-census-canary' } });
+    try {
+      const captured = await captureOperatorHttpSecurityPopulation();
+      expect(captured.surfaces.find(row => row.kind === 'registered-event-reaction' && row.surfaceId === id))
+        .toMatchObject({ attrs: { on: ['vault:probe', 'vault:other'], fire: 'vault:effect' } });
+      expect(JSON.stringify(captured)).not.toContain('private-census-canary');
+      expect(when).not.toHaveBeenCalled();
+      expect(captured.unresolved).toContain('reaction-registration-source-and-adapter-reconciliation-unverified');
+      expect(captured.closureAccepted).toBe(false);
+    } finally { unregisterReactionRule(id); }
+    const after = await captureOperatorHttpSecurityPopulation();
+    expect(after.surfaces.some(row => row.kind === 'registered-event-reaction' && row.surfaceId === id)).toBe(false);
+  });
   it('includes unloaded plugin declarations in the declared census without promoting them to serving handlers', async () => {
     _injectPluginHostForTests([], { roots: [], unavailable: [], candidates: [{
       path: '/excluded', source: 'project', status: 'excluded', reason: 'not installed',
