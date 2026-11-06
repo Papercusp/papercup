@@ -18,7 +18,7 @@ function temp(): string {
   mkdirSync(dir, { recursive: true });
   return dir;
 }
-function marker(dir: string, kind: 'decision' | 'success' | 'error', value: object) {
+function marker(dir: string, kind: 'decision' | 'success' | 'error' | 'attest', value: object) {
   writeFileSync(join(dir, codexLockOwnerMarkerName(owner, kind)), JSON.stringify(value));
 }
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
@@ -42,7 +42,7 @@ describe('readCodexLockRuntimeVerdict', () => {
   it('selects automatic only for a fresh owner-scoped decision and success', () => {
     const dir = temp();
     marker(dir, 'decision', { ts: '2026-07-13T20:00:00Z', owner, decision: 'granted' });
-    marker(dir, 'success', { ts: '2026-07-13T20:00:01Z', owner });
+    marker(dir, 'success', { ts: '2026-07-13T20:00:01Z', owner, nativeReleaseConfirmed: true });
     expect(
       readCodexLockRuntimeVerdict({
         ownerId: owner,
@@ -78,6 +78,90 @@ describe('readCodexLockRuntimeVerdict', () => {
       hookHealth: 'configured-unverified',
     });
   });
+
+  it.each([
+    { mode: undefined },
+    { mode: 'parent-recovery' },
+    { mode: 'operation-finish', nativeReleaseConfirmed: false },
+  ])('does not clear a native release error with cleanup or acquisition success: %j', (success) => {
+    const dir = temp();
+    marker(dir, 'decision', { ts: '2026-07-13T20:00:00Z', owner, decision: 'already-held' });
+    marker(dir, 'error', { ts: '2026-07-13T20:00:02Z', owner, handler: 'posttooluse', phase: 'release' });
+    marker(dir, 'success', { ts: '2026-07-13T20:00:03Z', owner, ...success });
+    expect(readCodexLockRuntimeVerdict({
+      ownerId: owner, hooksConfigured: true, cacheDir: dir, nowMs: Date.parse('2026-07-13T20:01:00Z'),
+    })).toMatchObject({ lockMode: 'manual', hookHealth: 'unhealthy', runtimeProbed: false });
+  });
+
+  it('keeps a first acquisition unverified until native release has been confirmed', () => {
+    const dir = temp();
+    marker(dir, 'decision', { ts: '2026-07-13T20:00:00Z', owner, decision: 'granted' });
+    marker(dir, 'success', { ts: '2026-07-13T20:00:01Z', owner });
+    expect(readCodexLockRuntimeVerdict({
+      ownerId: owner, hooksConfigured: true, cacheDir: dir, nowMs: Date.parse('2026-07-13T20:01:00Z'),
+    })).toMatchObject({ lockMode: 'manual', hookHealth: 'configured-unverified', runtimeProbed: false });
+  });
+
+  it('restores automatic mode only with a newer native release confirmed for this owner', async () => {
+    const dir = temp();
+    marker(dir, 'decision', { ts: '2026-07-13T20:00:00Z', owner, decision: 'granted' });
+    marker(dir, 'error', { ts: '2026-07-13T20:00:02Z', owner, handler: 'posttooluse', phase: 'release' });
+    const input = { ownerId: owner, hooksConfigured: true, cacheDir: dir, nowMs: Date.parse('2026-07-13T20:01:00Z') };
+    marker(dir, 'success', { ts: '2026-07-13T20:00:03Z', owner: 'su-peer', nativeReleaseConfirmed: true });
+    expect(readCodexLockRuntimeVerdict(input)).toMatchObject({ lockMode: 'manual', hookHealth: 'unhealthy' });
+    marker(dir, 'success', { ts: '2026-07-13T20:00:03Z', owner, nativeReleaseConfirmed: true });
+    expect(readCodexLockRuntimeVerdict(input)).toMatchObject({ lockMode: 'automatic', hookHealth: 'verified' });
+    expect(await readCodexLockRuntimeVerdictAsync(input)).toEqual(readCodexLockRuntimeVerdict(input));
+  });
+
+  it('recovers from manual mode when the native callback confirms an intentionally retained edit', async () => {
+    const dir = temp();
+    marker(dir, 'decision', { ts: '2026-07-13T20:00:03Z', owner, decision: 'already-held' });
+    marker(dir, 'error', { ts: '2026-07-13T20:00:02Z', owner, handler: 'posttooluse', phase: 'release' });
+    marker(dir, 'success', { ts: '2026-07-13T20:00:03Z', owner });
+    marker(dir, 'attest', { ts: '2026-07-13T20:00:04Z', owner, paths: ['src/edit.ts'], attributed: true });
+    const input = { ownerId: owner, hooksConfigured: true, cacheDir: dir, nowMs: Date.parse('2026-07-13T20:01:00Z') };
+    expect(readCodexLockRuntimeVerdict(input)).toMatchObject({
+      lockMode: 'automatic', hookHealth: 'verified', runtimeProbed: true, lastNativeSuccessAt: '2026-07-13T20:00:04Z',
+    });
+    expect(await readCodexLockRuntimeVerdictAsync(input)).toEqual(readCodexLockRuntimeVerdict(input));
+  });
+
+  it.each([
+    { owner, paths: ['src/edit.ts'], attributed: false },
+    { owner: 'su-peer', paths: ['src/edit.ts'], attributed: true },
+    { owner, paths: [], attributed: true },
+  ])('rejects an unconfirmed or foreign retained callback: %j', (attest) => {
+    const dir = temp();
+    marker(dir, 'decision', { ts: '2026-07-13T20:00:03Z', owner, decision: 'already-held' });
+    marker(dir, 'error', { ts: '2026-07-13T20:00:02Z', owner, handler: 'posttooluse', phase: 'release' });
+    marker(dir, 'success', { ts: '2026-07-13T20:00:03Z', owner });
+    marker(dir, 'attest', { ts: '2026-07-13T20:00:04Z', ...attest });
+    expect(readCodexLockRuntimeVerdict({
+      ownerId: owner, hooksConfigured: true, cacheDir: dir, nowMs: Date.parse('2026-07-13T20:01:00Z'),
+    })).toMatchObject({ lockMode: 'manual', hookHealth: 'unhealthy', runtimeProbed: false, lastNativeSuccessAt: null });
+  });
+
+  it('cannot refresh stale native callback proof with a fresh acquisition', () => {
+    const dir = temp();
+    marker(dir, 'decision', { ts: '2026-07-15T20:00:03Z', owner, decision: 'already-held' });
+    marker(dir, 'success', { ts: '2026-07-15T20:00:03Z', owner });
+    marker(dir, 'attest', { ts: '2026-07-13T20:00:04Z', owner, paths: ['src/edit.ts'], attributed: true });
+    expect(readCodexLockRuntimeVerdict({
+      ownerId: owner, hooksConfigured: true, cacheDir: dir, nowMs: Date.parse('2026-07-15T20:01:00Z'),
+    })).toMatchObject({ lockMode: 'manual', hookHealth: 'stale', runtimeProbed: true });
+  });
+
+  it.each(['success', 'attest'] as const)('does not infer recovery order from tied %s and error timestamps', (kind) => {
+    const dir = temp();
+    marker(dir, 'decision', { ts: '2026-07-13T20:00:03Z', owner, decision: 'granted' });
+    marker(dir, 'error', { ts: '2026-07-13T20:00:02Z', owner, handler: 'posttooluse', phase: 'release' });
+    marker(dir, kind, { ts: '2026-07-13T20:00:02Z', owner, nativeReleaseConfirmed: true,
+      paths: ['src/edit.ts'], attributed: true });
+    expect(readCodexLockRuntimeVerdict({
+      ownerId: owner, hooksConfigured: true, cacheDir: dir, nowMs: Date.parse('2026-07-13T20:01:00Z'),
+    })).toMatchObject({ lockMode: 'manual', hookHealth: 'unhealthy', runtimeProbed: false });
+  });
 });
 
 describe('readCodexLockRuntimeVerdictAsync — the request-path reader (WI-10004754)', () => {
@@ -86,7 +170,7 @@ describe('readCodexLockRuntimeVerdictAsync — the request-path reader (WI-10004
       () => {},
       (dir) => {
         marker(dir, 'decision', { ts: '2026-07-13T20:00:00Z', owner, decision: 'granted' });
-        marker(dir, 'success', { ts: '2026-07-13T20:00:01Z', owner });
+        marker(dir, 'success', { ts: '2026-07-13T20:00:01Z', owner, nativeReleaseConfirmed: true });
       },
       (dir) => {
         marker(dir, 'decision', { ts: '2026-07-13T20:00:00Z', owner, decision: 'granted' });

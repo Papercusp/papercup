@@ -15,6 +15,7 @@ export interface CodexLockRuntimeVerdict {
   hooksConfigured: boolean;
   lastDecisionAt: string | null;
   lastSuccessAt: string | null;
+  lastNativeSuccessAt: string | null;
   lastErrorAt: string | null;
   generation: number;
   reason: string;
@@ -24,7 +25,7 @@ export interface CodexLockRuntimeVerdict {
 type Marker = Record<string, unknown>;
 const DEFAULT_FRESH_MS = 24 * 60 * 60 * 1_000;
 
-export function codexLockOwnerMarkerName(ownerId: string, kind: 'decision' | 'success' | 'error'): string {
+export function codexLockOwnerMarkerName(ownerId: string, kind: 'decision' | 'success' | 'error' | 'attest'): string {
   const safe = ownerId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 160) || 'unknown';
   return `owner-${safe}-last-${kind}.json`;
 }
@@ -72,16 +73,18 @@ interface CodexLockMarkers {
   decision: Marker | null;
   success: Marker | null;
   error: Marker | null;
+  attest: Marker | null;
   cacheDirExists: boolean;
 }
 
-function markerPaths(input: CodexLockRuntimeInput): { cacheDir: string; decision: string; success: string; error: string } {
+function markerPaths(input: CodexLockRuntimeInput): { cacheDir: string; decision: string; success: string; error: string; attest: string } {
   const cacheDir = input.cacheDir ?? process.env.PAPERCUSP_LOCKS_CACHE_DIR ?? papercuspPath('locks-cache');
   return {
     cacheDir,
     decision: join(cacheDir, codexLockOwnerMarkerName(input.ownerId, 'decision')),
     success: join(cacheDir, codexLockOwnerMarkerName(input.ownerId, 'success')),
     error: join(cacheDir, codexLockOwnerMarkerName(input.ownerId, 'error')),
+    attest: join(cacheDir, codexLockOwnerMarkerName(input.ownerId, 'attest')),
   };
 }
 
@@ -96,6 +99,7 @@ export function readCodexLockRuntimeVerdict(input: CodexLockRuntimeInput): Codex
     decision: readMarker(paths.decision),
     success: readMarker(paths.success),
     error: readMarker(paths.error),
+    attest: readMarker(paths.attest),
     cacheDirExists: existsSync(paths.cacheDir),
   });
 }
@@ -112,36 +116,47 @@ export function readCodexLockRuntimeVerdict(input: CodexLockRuntimeInput): Codex
  */
 export async function readCodexLockRuntimeVerdictAsync(input: CodexLockRuntimeInput): Promise<CodexLockRuntimeVerdict> {
   const paths = markerPaths(input);
-  const [decision, success, error, cacheDirExists] = await Promise.all([
+  const [decision, success, error, attest, cacheDirExists] = await Promise.all([
     readMarkerAsync(paths.decision),
     readMarkerAsync(paths.success),
     readMarkerAsync(paths.error),
+    readMarkerAsync(paths.attest),
     fsp.access(paths.cacheDir).then(() => true, () => false),
   ]);
-  return computeCodexLockRuntimeVerdict(input, { decision, success, error, cacheDirExists });
+  return computeCodexLockRuntimeVerdict(input, { decision, success, error, attest, cacheDirExists });
 }
 
 /**
  * Fail closed: hooks merely existing on disk is not runtime proof. Automatic mode
- * requires an owner-scoped successful decision from the hook, newer than any
- * owner-scoped error, and still fresh. Until then the session uses explicit locks.
+ * requires a fresh owner-scoped decision and confirmed native callback newer
+ * than any error. An intentional retained hold can prove the callback through
+ * its existing attribution receipt; acquisition or orphan cleanup alone cannot.
  */
 function computeCodexLockRuntimeVerdict(input: CodexLockRuntimeInput, markers: CodexLockMarkers): CodexLockRuntimeVerdict {
-  const { decision, success, error } = markers;
+  const { decision, success, error, attest } = markers;
   const decisionTs = markerTs(decision);
   const successTs = markerTs(success);
   const errorTs = markerTs(error);
+  const attestTs = markerTs(attest);
   const nowMs = input.nowMs ?? Date.now();
   const freshMs = input.freshMs ?? DEFAULT_FRESH_MS;
   const decisionOwner = typeof decision?.owner === 'string' ? decision.owner : null;
   const decisionMatches = decisionOwner === input.ownerId && decisionTs.ms > 0;
-  const successAfterError = successTs.ms > 0 && successTs.ms >= errorTs.ms;
-  const fresh = decisionTs.ms > 0 && nowMs - decisionTs.ms <= freshMs;
+  const releaseConfirmed = success?.owner === input.ownerId && success?.nativeReleaseConfirmed === true;
+  const retainedEditConfirmed = attest?.owner === input.ownerId && attest?.attributed === true
+    && Array.isArray(attest?.paths) && attest.paths.length > 0
+    && attest.paths.every((path) => typeof path === 'string' && path.length > 0);
+  const nativeSuccessTs = retainedEditConfirmed && attestTs.ms > (releaseConfirmed ? successTs.ms : 0)
+    ? attestTs : releaseConfirmed ? successTs : { iso: null, ms: 0 };
+  // Hook markers can share a timestamp. A tie cannot establish recovery order.
+  const successAfterError = nativeSuccessTs.ms > 0 && nativeSuccessTs.ms > errorTs.ms;
+  const fresh = decisionTs.ms > 0 && nowMs - decisionTs.ms <= freshMs
+    && nowMs - nativeSuccessTs.ms <= freshMs;
   const runtimeProbed = decisionMatches && successAfterError;
 
   let hookHealth: CodexLockHookHealth;
   if (!input.hooksConfigured) hookHealth = 'missing';
-  else if (errorTs.ms > successTs.ms) hookHealth = 'unhealthy';
+  else if (errorTs.ms > 0 && errorTs.ms >= nativeSuccessTs.ms) hookHealth = 'unhealthy';
   else if (!runtimeProbed) hookHealth = 'configured-unverified';
   else if (!fresh) hookHealth = 'stale';
   else hookHealth = 'verified';
@@ -149,19 +164,19 @@ function computeCodexLockRuntimeVerdict(input: CodexLockRuntimeInput, markers: C
   const lockMode: CodexLockMode = hookHealth === 'verified' ? 'automatic' : 'manual';
   const reason =
     hookHealth === 'verified'
-      ? 'This exact Codex owner has a fresh successful automatic lock decision newer than its last hook error.'
+      ? 'This exact Codex owner has a fresh lock decision and confirmed native edit callback newer than its last hook error.'
       : hookHealth === 'missing'
         ? 'This Codex home has no managed lock-hook configuration.'
         : hookHealth === 'unhealthy'
-          ? 'This owner’s latest lock-hook error is newer than its latest success.'
+          ? 'This owner’s latest lock-hook error is newer than its latest confirmed native edit callback.'
           : hookHealth === 'stale'
             ? 'This owner’s last successful automatic lock decision is stale.'
-            : 'Hooks are configured, but this exact Codex owner has not produced a successful runtime decision yet.';
+            : 'Hooks are configured, but this exact Codex owner has not confirmed a successful native edit callback yet.';
   const effectiveInstruction =
     lockMode === 'automatic'
       ? 'Do not acquire per-edit file locks manually; the verified PreToolUse hook acquires/releases them. Use locks:acquire only for a deliberate multi-file hold.'
       : 'Before every file edit, explicitly call locks:acquire and release the returned lock after the atomic edit; do not assume a hook covered it.';
-  const generation = Math.max(decisionTs.ms, successTs.ms, errorTs.ms, markers.cacheDirExists ? 1 : 0);
+  const generation = Math.max(decisionTs.ms, successTs.ms, errorTs.ms, attestTs.ms, markers.cacheDirExists ? 1 : 0);
 
   return {
     lockMode,
@@ -171,6 +186,7 @@ function computeCodexLockRuntimeVerdict(input: CodexLockRuntimeInput, markers: C
     hooksConfigured: input.hooksConfigured,
     lastDecisionAt: decisionTs.iso,
     lastSuccessAt: successTs.iso,
+    lastNativeSuccessAt: nativeSuccessTs.iso,
     lastErrorAt: errorTs.iso,
     generation,
     reason,
