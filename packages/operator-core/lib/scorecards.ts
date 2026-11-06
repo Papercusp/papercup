@@ -146,6 +146,7 @@ import {
   type ScorecardVetting,
   type ScorecardReleaseGateBinding,
   type SpecTestAdequacyRerunRecipe,
+  type ScorecardRerunRecipe,
 } from './harness/improvements/observation-types';
 import {
   getIssue,
@@ -1063,7 +1064,11 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
-function rerunRecipeEvidenceIdentity(recipe: SpecTestAdequacyRerunRecipe): Record<string, unknown> {
+function rerunRecipeEvidenceIdentity(recipe: ScorecardRerunRecipe): Record<string, unknown> {
+  if (recipe.evaluator === 'plans:evaluate-spec-quality') return {
+    schemaVersion: recipe.schemaVersion, evaluator: recipe.evaluator,
+    specSetHashVersion: recipe.specSetHashVersion, args: recipe.args,
+  };
   // `args` is the executable replay projection. `asStructuredObservation` rebuilds
   // it from persisted selection/current metadata when cards are read, so hashing it
   // makes an unchanged card acquire a different identity after that read. The
@@ -1084,7 +1089,7 @@ export function scorecardEvidenceFingerprint(input: {
   ratings: ObservationRatings;
   instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
   acceptance?: ScorecardAcceptance;
-  rerunRecipe?: SpecTestAdequacyRerunRecipe;
+  rerunRecipe?: ScorecardRerunRecipe;
   testedSha?: string;
 }): string {
   // Keep the pre-D-001 byte shape unchanged when no acceptance verdict exists,
@@ -1534,7 +1539,7 @@ export interface ScorecardRow {
    */
   subject?: ObservationSubject;
   /** Exact replay selector/currentness attestation for spec-test-adequacy cards. */
-  rerunRecipe?: SpecTestAdequacyRerunRecipe;
+  rerunRecipe?: ScorecardRerunRecipe;
   /** The rubric graded against (a `rubrics.rubric_id`). */
   rubricRef: string;
   /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
@@ -1696,7 +1701,7 @@ function sameRecipeCurrentFingerprint(a: RecipeCurrentFingerprint, b: RecipeCurr
  * carry that same set, and every environment fingerprint is explicitly null.
  * Missing or mismatched recipe data stays generation-bound/unknown by default.
  */
-function hasCompleteTreeOnlyRerunRecipe(recipe: SpecTestAdequacyRerunRecipe | undefined): boolean {
+function hasCompleteTreeOnlyRerunRecipe(recipe: ScorecardRerunRecipe | undefined): boolean {
   if (
     !recipe ||
     recipe.schemaVersion !== 1 ||
@@ -1760,7 +1765,7 @@ function hasCompleteTreeOnlyRerunRecipe(recipe: SpecTestAdequacyRerunRecipe | un
  */
 export function classifyScorecardGenerationFreshness(
   gradedHostStartedAt: string | null | undefined,
-  rerunRecipe: SpecTestAdequacyRerunRecipe | undefined,
+  rerunRecipe: ScorecardRerunRecipe | undefined,
   liveHostStartedAtMs: number | null,
 ): ScorecardGenerationFreshness {
   if (hasCompleteTreeOnlyRerunRecipe(rerunRecipe)) {
@@ -1806,7 +1811,7 @@ export interface ScorecardEvidenceRow {
   sourceHive?: string;
   subject?: ObservationSubject;
   /** Validated evaluator input for independently replaying exact adequacy evidence. */
-  rerunRecipe?: SpecTestAdequacyRerunRecipe;
+  rerunRecipe?: ScorecardRerunRecipe;
   criteria: ScorecardEvidenceCriterion[];
   rollup?: ScorecardRollup;
   nKeys: number;

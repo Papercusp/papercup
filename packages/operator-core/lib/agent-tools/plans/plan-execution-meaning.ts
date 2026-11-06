@@ -1,4 +1,10 @@
-import { joinPartsIntoPlan, NOTE_SUFFIX_RE, parsePlan, splitPlanIntoParts } from './parser';
+import {
+  joinPartsIntoPlan,
+  NOTE_SUFFIX_RE,
+  parsePlan,
+  splitPlanIntoParts,
+  stripOperationalProgressNoteSuffix,
+} from './parser';
 
 /** Receipt emitted by coordination/tools/promote.ts, never author scope.
  * Reuse the fence-aware plan splitter so quoted examples cannot hide changes.
@@ -24,6 +30,7 @@ export function planExecutionMeaning(content: string): string {
     let line = item.rawLine.replace(/`[a-z-]+`/, item.storedStatus === 'dropped' ? '`dropped`' : '`live`');
     // Claim and completion writers reflect these exact progress receipts through
     // flipStatusInBody. Keep author notes and any extra receipt suffix material.
+    line = stripOperationalProgressNoteSuffix(line);
     const note = NOTE_SUFFIX_RE.exec(line)?.[0];
     if (note && /^\s*—\s*note: (?:→ (?:WI|EI|F)-[A-Z0-9-]+|← (?:WI|EI|F)-[A-Z0-9-]+ completed \(done\))$/.test(note)) {
       line = line.slice(0, line.length - note.length);

@@ -53,6 +53,7 @@ import {
   previewCurrentActivationAudit,
   recordPlanAudit,
   recordCurrentDiscoveryAudit,
+  withCurrentDiscovery,
   repoCitationContextForHarness,
   resolveCitation,
   resolvePlanItemHomeHarness,
@@ -550,6 +551,10 @@ export default defineTool({
 
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
+      const discoveryInput = { workspaceId, harnessSlug: harnessSlug ?? '', planSlug: args.slug,
+        createdBy: resolveAgentIdentity(sctx).ownerId };
+      const discovery = await withCurrentDiscovery(discoveryInput, async () => null);
+      if (!discovery.ok) return { data: { ...discovery, slug: args.slug, phase: 'activation' as const } };
       const classResolution = await resolveActivationClassRef({
         planSlug: args.slug, harnessSlug: harnessSlug ?? '', suppliedClassRef: args.classRef,
       });
@@ -593,14 +598,15 @@ export default defineTool({
         submittedActivation.unresolvedBlockers.length > 0 ||
         submittedActivation.mappings.some((mapping) => mapping.disposition === 'open')
       ) {
-        const repairFiling = dryRun
-          ? null
-          : await ensureActivationAuditRepairFiling({
+        const repair = dryRun ? { ok: true as const, result: null }
+          : await withCurrentDiscovery(discoveryInput, async () => ensureActivationAuditRepairFiling({
               workspaceId,
               harnessSlug: harnessSlug ?? '',
               planSlug: args.slug,
               activation: submittedActivation,
-            });
+            }));
+        if (!repair.ok) return { data: { ...repair, slug: args.slug, phase: 'activation' as const } };
+        const repairFiling = repair.result;
         return { data: {
           ok: false as const,
           slug: args.slug,

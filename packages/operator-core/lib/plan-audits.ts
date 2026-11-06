@@ -282,7 +282,7 @@ export function discoverySubjectSnapshot(content: string): Record<string, string
     if (body) targets[`section:${section.heading}`] = digest(body);
   }
   const requirements = parseRequirementBars(content);
-  if (requirements.ok) for (const bar of requirements.bars) targets[bar.barKey] = discoveryDigest(bar.criterion);
+  if (requirements.ok) for (const bar of requirements.bars) targets[bar.barKey] = discoveryDigest(bar.criterion ?? bar);
   return Object.fromEntries(Object.entries(targets).sort(([a], [b]) => a.localeCompare(b)));
 }
 
@@ -298,10 +298,15 @@ export function assessDiscovery(content: string, context: DiscoveryAuditContext,
     targets: context.targets, evidence: new Map(context.evidence.map(row => [row.ref, row])),
   });
   const declaration = previewDiscoveryDeclaration(content).data;
+  const normalizedFindings = declaration?.findings.map(finding => ({ ...finding,
+    questions: [...finding.questions].sort(), evidenceRefs: [...finding.evidenceRefs].sort(),
+    dispositions: [...finding.dispositions].sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b))),
+  })).sort((a, b) => a.id.localeCompare(b.id)) ?? [];
+  const normalizedQuestions = [...(declaration?.questions ?? [])].sort((a, b) => a.id.localeCompare(b.id));
   const findings: NonNullable<DiscoveryAuditPayload['findings']> = {};
   const reopenedQuestions = new Set<string>();
-  for (const finding of declaration?.findings ?? []) {
-    const judgmentHash = discoveryDigest({ finding, questions: declaration!.questions.filter(q => finding.questions.includes(q.id)) });
+  for (const finding of normalizedFindings) {
+    const judgmentHash = discoveryDigest({ finding, questions: normalizedQuestions.filter(q => finding.questions.includes(q.id)) });
     const observed = { judgmentHash,
       targets: Object.fromEntries(finding.dispositions.map(d => [d.target, targets[d.target] ?? null])),
       evidence: Object.fromEntries(finding.evidenceRefs.map(ref => [ref, context.evidence.find(e => e.ref === ref)?.fingerprint ?? null])) };
@@ -321,7 +326,7 @@ export function assessDiscovery(content: string, context: DiscoveryAuditContext,
   }
   const evidence = [...context.evidence].sort((a, b) => a.ref.localeCompare(b.ref));
   const removedTargets = context.targets.filter(t => t.change === 'removed').map(t => t.ref).sort();
-  const declarationHash = discoveryDigest(declaration);
+  const declarationHash = discoveryDigest(declaration ? { ...declaration, questions: normalizedQuestions, findings: normalizedFindings } : null);
   const requestKey = discoveryDigest({ subjectHash, declarationHash, evidence, findings, removedTargets });
   const fresh = blockers.length === 0;
   return { schemaVersion: 1, requestKey, subjectHash, declarationHash, targets, findings, removedTargets, evidence,
@@ -2597,10 +2602,14 @@ export type RecordCurrentActivationAuditResult =
         | 'plan_busy'
         | 'plan_not_found'
         | 'activation_blocked'
+        | 'discovery_not_ready'
+        | 'discovery_subject_moved'
         | 'plan_targets_invalid'
         | 'plan_revision_unavailable'
         | AcceptanceBarSeedCode;
       message: string;
+      discovery?: DiscoveryAuditPayload;
+      nextAction?: string;
       problems?: Array<ActivationAuditPlanTargetProblem | AcceptanceBarSeedProblem>;
       repairWorkItem?: string | null;
       repairFiling?: ActivationAuditRepairFiling;
@@ -2892,13 +2901,13 @@ export async function recordCurrentDiscoveryAudit(input: CurrentDiscoveryInput, 
  * Cosmetic/unrelated edits can reuse the original discovery provenance. */
 export async function withCurrentDiscovery<T>(input: CurrentDiscoveryInput,
   accept: (tx: AuditSql, subject: { content: string; version: number; contentHash: string;
-    discovery: DiscoveryAuditPayload; auditId: number }) => Promise<T>, effects?: DiscoveryEffects) {
+    discovery: DiscoveryAuditPayload; auditId: number }) => Promise<T>, effects?: DiscoveryEffects,
+  transaction?: AuditSql) {
   const { sql } = getOrgPg();
-  return sql.begin(async tx => {
-    const executor = tx as unknown as AuditSql;
+  const run = async (executor: AuditSql) => {
     const prepared = await currentDiscoveryInTransaction(input, executor, effects);
     if (!prepared.ok) return prepared;
-    const { discovery, priorDiscovery, lastAudit, plan } = prepared;
+    const { discovery, plan } = prepared;
     // A temporary unknown/stale observation does not erase an earlier valid
     // finalization. Reverting to that exact scoped basis needs no fresh prose.
     const [finalizedAudit] = await executor<PlanAuditRow[]>`SELECT * FROM harness_shared.plan_audits
@@ -2910,7 +2919,8 @@ export async function withCurrentDiscovery<T>(input: CurrentDiscoveryInput,
       nextAction: discovery.readiness.ready ? 'Finalize the current findings with plans:audit { phase:"discovery", slug }.' : discovery.readiness.nextAction };
     return { ok: true as const, result: await accept(executor, { content: plan.content, version: plan.version,
       contentHash: plan.content_hash, discovery, auditId: finalizedAudit!.audit_seq }) };
-  });
+  };
+  return transaction ? run(transaction) : sql.begin(tx => run(tx as unknown as AuditSql));
 }
 
 /**
@@ -2924,22 +2934,26 @@ export async function withCurrentDiscovery<T>(input: CurrentDiscoveryInput,
  */
 export async function recordCurrentActivationAudit(
   input: RecordCurrentActivationAuditInput,
+  effects?: DiscoveryEffects,
 ): Promise<RecordCurrentActivationAuditResult> {
-  return executeCurrentActivationAudit(input, false) as Promise<RecordCurrentActivationAuditResult>;
+  return executeCurrentActivationAudit(input, false, effects) as Promise<RecordCurrentActivationAuditResult>;
 }
 
 /** Preview the same locked snapshot, successor selection and seed as the writer.
  * No audit, repair, rubric, pin, clause or event is persisted. */
 export async function previewCurrentActivationAudit(
   input: RecordCurrentActivationAuditInput,
+  effects?: DiscoveryEffects,
 ): Promise<PreviewCurrentActivationAuditResult> {
-  return executeCurrentActivationAudit(input, true) as Promise<PreviewCurrentActivationAuditResult>;
+  return executeCurrentActivationAudit(input, true, effects) as Promise<PreviewCurrentActivationAuditResult>;
 }
 
 async function executeCurrentActivationAudit(
   input: RecordCurrentActivationAuditInput,
   dryRun: boolean,
+  effects?: DiscoveryEffects,
 ): Promise<RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult> {
+  const checkBlockers = async () => {
   if (
     input.activation.unresolvedBlockers.length > 0 ||
     input.activation.mappings.some((mapping) => mapping.disposition === 'open')
@@ -2951,14 +2965,16 @@ async function executeCurrentActivationAudit(
       activation: input.activation,
     });
     return {
-      ok: false,
-      error: 'activation_blocked',
+      ok: false as const,
+      error: 'activation_blocked' as const,
       message:
         'Activation audit has unresolved blockers or open requirement mappings. Repair/map them before activation; no audit was recorded.',
       repairWorkItem: repairFiling?.id,
       repairFiling,
     };
   }
+  return null;
+  };
 
   const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
   const { sql } = getOrgPg();
@@ -2977,6 +2993,13 @@ async function executeCurrentActivationAudit(
         message: `Plan '${input.planSlug}' is being edited. Retry the activation audit after that write commits.`,
       };
     }
+
+    // Share the writer's transaction/subject lock. Direct callers and previews
+    // owe the same discovery prerequisite as the MCP handler, before repair,
+    // BAR projection, or audit writes.
+    const admitted = await withCurrentDiscovery(input, async () => {
+    const blocked = await checkBlockers();
+    if (blocked) return blocked;
 
     const plans = await executor<Array<{
       content: string;
@@ -3282,6 +3305,9 @@ async function executeCurrentActivationAudit(
       ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
       ...(barSeedPendingRepair ? { barSeedPendingRepair } : {}),
     };
+    }, effects, executor);
+    return admitted.ok ? admitted.result : { ...admitted,
+      message: 'nextAction' in admitted ? admitted.nextAction ?? admitted.error : admitted.error };
     })) as RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult;
   } catch (error) {
     if (error instanceof AcceptanceBarSeedAbort) return error.result;

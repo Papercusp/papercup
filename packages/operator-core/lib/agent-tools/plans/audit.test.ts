@@ -47,6 +47,7 @@ vi.mock('../../plan-audits', async (orig) => {
     repoCitationContextForHarness: vi.fn(),
     recordPlanAudit: vi.fn(),
     recordCurrentDiscoveryAudit: vi.fn(),
+    withCurrentDiscovery: vi.fn(),
     recordCurrentActivationAudit: vi.fn(),
     previewCurrentActivationAudit: vi.fn(),
     // P-003: the real loader reads report_library / work_items / … through getOrgPg.
@@ -120,6 +121,7 @@ import {
   loadGenericCitationLookupForWorkspace,
   recordCurrentActivationAudit,
   recordCurrentDiscoveryAudit,
+  withCurrentDiscovery,
   previewCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
@@ -173,6 +175,15 @@ const ctx = {
 } as never;
 
 describe('non-activating discovery finalization', () => {
+  it('refuses activation before repair, audit, clause, or event effects when discovery is stale', async () => {
+    vi.mocked(withCurrentDiscovery).mockResolvedValueOnce({ ok: false, error: 'discovery_not_ready',
+      nextAction: 'Reconcile the changed finding.' } as never);
+    const result = await tool.handler({ slug: 'draft', harness: 'papercusp', phase: 'activation',
+      unresolvedBlockers: ['must not file a repair'] } as never, ctx);
+    expect('data' in result && result.data).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    for (const effect of [mockRepairFiling, mockRecordActivation, mockRecord, mockSetSpecClause, mockEmitPlanEvent])
+      expect(effect).not.toHaveBeenCalled();
+  });
   it('requires only slug and phase; derives readiness without activation or completion side effects', async () => {
     vi.clearAllMocks();
     mockRecordDiscovery.mockResolvedValue({ ok: true, preview: true, dryRun: true,
@@ -197,6 +208,8 @@ const body = async (items: Array<Record<string, unknown>>, over: Record<string, 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(withCurrentDiscovery).mockImplementation(async (_input, accept) =>
+    ({ ok: true, result: await accept({} as never, {} as never) }));
   mockReuseResolvers.mockReturnValue({});
   mockAcceptanceRubrics.mockResolvedValue([]);
   mockListScorecards.mockResolvedValue([]);

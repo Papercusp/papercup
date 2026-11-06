@@ -4,13 +4,19 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getLatestActivationAudit, getLatestPlanAudit, recordCurrentDiscoveryAudit,
+import { getLatestActivationAudit, getLatestPlanAudit, recordCurrentDiscoveryAudit, recordCurrentActivationAudit,
   discoverySubjectSnapshot, withCurrentDiscovery, type DiscoveryAuditContext } from './plan-audits';
 import { resolveDiscoveryAuditContext } from './agent-tools/plans/plan-declaration-resolvers';
 import { persistResearchBatch } from './code-intelligence/research-trail';
-import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
+import { resolveSpecQualityPlanSubject, specQualitySubjectRef } from './agent-tools/plans/spec-quality';
+import { deriveIndexFromContent } from './agent-tools/plans/derive-index';
+import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
+import { readPlanLineNodes, writePlanLineNodes } from './agent-tools/plans/plan-line-graph';
+import { parseRequirementBars, parseBarMappings } from './acceptance-bar-seed';
+import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 
-const harness = 'zzz-discovery-audit';
+let harness = 'zzz-discovery-audit';
+let fixtureCase = 0;
 const slug = 'discovery-audit-fixture';
 let fx: PlanPgFixture;
 const declaration = {
@@ -27,12 +33,19 @@ const input = () => ({ workspaceId: fx.workspaceId, harnessSlug: harness, planSl
 async function revision(content = draft) {
   const hash = createHash('sha256').update(content).digest('hex');
   await seedPlan(fx.admin, fx.workspaceId, harness, slug, content);
-  await fx.admin`UPDATE harness_shared.harness_plans SET content_hash=${hash}, version=version+1
+  await fx.admin.begin(async tx => {
+  const scope = { workspaceId: fx.workspaceId, harnessSlug: harness, planSlug: slug };
+  const index = deriveIndexFromContent(content);
+  const previous = await readPlanLineNodes(tx as never, { ...scope, slug });
+  await writePlanIndexRows(tx as never, scope, index);
+  await writePlanLineNodes(tx as never, { ...scope, slug }, previous, index.items);
+  await tx`UPDATE harness_shared.harness_plans SET content_hash=${hash}, version=version+1
     WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
-  await fx.admin`INSERT INTO harness_shared.plan_revisions
+  await tx`INSERT INTO harness_shared.plan_revisions
     (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,rationale,author_kind,author_id,session_id,session_kind,created_at)
     SELECT ${fx.workspaceId},${harness},${slug},COALESCE(MAX(seq),0)+1,${hash},${content},'discovery fixture','agent','su-test','test','codex',${Date.now()}
     FROM harness_shared.plan_revisions WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+  });
 }
 beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
@@ -42,12 +55,67 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => { await fx?.dispose(); });
 beforeEach(async () => {
-  await fx.admin`DELETE FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness}`;
-  await cleanupPlans(fx.admin, fx.workspaceId, harness);
+  // Activation creates immutable clause history. Keep each case's namespace
+  // separate; the isolated database's owned teardown removes the whole fixture.
+  harness = `zzz-discovery-audit-${++fixtureCase}`;
   await revision();
 });
 
 describe('discovery uses existing revision and audit authorities', () => {
+  const activation = () => ({ ...input(), classRef: 'plan-class-feature-ship' as const, activation: {
+    sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [],
+  } });
+  it('resolves the existing spec-quality subject to its registered plan, independently of reviewer home', async () => {
+    const ref = specQualitySubjectRef(slug, 'plan-class-feature-ship', 'a'.repeat(64));
+    expect(await resolveSpecQualityPlanSubject(fx.workspaceId, ref)).toEqual({ planSlug: slug, harnessSlug: harness });
+    expect(await resolveSpecQualityPlanSubject(fx.workspaceId, ref.replace(/.$/, 'x'))).toBeNull();
+    expect(await resolveSpecQualityPlanSubject('different-workspace', ref)).toBeNull();
+  });
+  it('refuses direct activation before finalization, with no audit or repair writes', async () => {
+    const [{ count: before }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.work_items WHERE workspace_id=${fx.workspaceId}`;
+    expect(await recordCurrentActivationAudit({ ...activation(), activation: { ...activation().activation,
+      unresolvedBlockers: ['must not file a repair before discovery'] } }, { context }))
+      .toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    const [{ count: after }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.work_items WHERE workspace_id=${fx.workspaceId}`;
+    expect(after).toBe(before);
+    expect(await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId })).toBeNull();
+  });
+  it('admits finalized current discovery to the real activation writer and refuses a changed target', async () => {
+    // The positive control must satisfy the existing BAR seed contract too.
+    const requirement = {
+      intent: { request: 'Keep the existing helper behavior.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: { condition: 'The admitted audit retains the helper contract.',
+        falsifier: 'A changed helper contract is admitted without reconciliation.', evidencePlane: 'tree',
+        requiredScope: ['P-001'], requiredTestLayers: ['integration'] },
+      verification: { method: 'Exercise the canonical discovery and activation writers.',
+        check: { kind: 'tests', files: ['packages/operator-core/lib/plan-discovery.integration.test.ts'] } },
+    };
+    const reviewPlan = draft + '\n## Requirements\n\n**R-1 — Helper contract.**\n```requirement\n' +
+      JSON.stringify(requirement) + '\n```\n\n## Design\n\n### Bar-to-work map for this plan\n\n' +
+      '| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n';
+    await revision(reviewPlan);
+    expect(parseRequirementBars(reviewPlan)).toMatchObject({ ok: true });
+    expect(parseBarMappings(reviewPlan, new Set(['R-1']))).toMatchObject({ ok: true });
+    const [prerequisites] = await fx.admin`SELECT
+      EXISTS (SELECT 1 FROM harness_shared.plan_items WHERE workspace_id=${fx.workspaceId}
+        AND harness_slug=${harness} AND plan_slug=${slug} AND item_id='P-001') AS item,
+      EXISTS (SELECT 1 FROM harness_shared.plan_revisions WHERE workspace_id=${fx.workspaceId}
+        AND harness_slug=${harness} AND plan_slug=${slug} AND content_snapshot=${reviewPlan}) AS revision`;
+    expect(prerequisites).toEqual({ item: true, revision: true });
+    expect(await recordCurrentDiscoveryAudit(input(), { context })).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    const accepted = await recordCurrentActivationAudit(activation(), { context });
+    expect(accepted, JSON.stringify(accepted)).toMatchObject({ ok: true, audit: { auditKind: 'activation' } });
+    const before = await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId });
+    await revision(reviewPlan.replace('Wire the existing helper', 'Replace the helper with a different service'));
+    expect(await recordCurrentActivationAudit(activation(), { context })).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    expect((await getLatestActivationAudit(slug, { workspaceId: fx.workspaceId }))?.auditSeq).toBe(before?.auditSeq);
+  });
+  it('keeps canonical identities for legacy prose requirements as well as structured BARs', () => {
+    const plan = draft + '\n## Requirements\n\n**R-1 — Existing behavior.** Preserve the helper behavior.\n';
+    expect(discoverySubjectSnapshot(plan)['R-1']).toMatch(/^[a-f0-9]{64}$/);
+    expect(discoverySubjectSnapshot(plan.replace('Preserve the helper behavior.', 'Replace the helper behavior.'))['R-1'])
+      .not.toBe(discoverySubjectSnapshot(plan)['R-1']);
+  });
   it('persists one typed assessment, round-trips questions, and never substitutes for activation/completion', async () => {
     const result = await recordCurrentDiscoveryAudit(input(), { context });
     expect(result).toMatchObject({ ok: true, reused: false, discovery: { readiness: { ready: true } }, audit: { auditKind: 'discovery', items: [], activation: null } });
@@ -133,6 +201,10 @@ describe('discovery uses existing revision and audit authorities', () => {
       { ref: 'source:other.ts', state: 'current', usable: true, fingerprint: 'other' },
     ] });
     const first = await recordCurrentDiscoveryAudit(input(), { context: scopedContext });
+    const reordered = { ...scoped, questions: [...scoped.questions].reverse(), findings: [...scoped.findings]
+      .reverse().map(finding => ({ ...finding, questions: [...finding.questions].reverse() })) };
+    await revision(draft.replace(JSON.stringify(declaration), JSON.stringify(reordered)) + '\n- **P-002** `todo` Wire the second helper\n');
+    expect(await recordCurrentDiscoveryAudit(input(), { context: scopedContext })).toMatchObject({ ok: true, reused: true });
     changed = true;
     const stale = await recordCurrentDiscoveryAudit(input(), { context: scopedContext });
     expect(stale).toMatchObject({ ok: true, discovery: { readiness: { ready: false, reopenedQuestions: ['Q-1', 'Q-2'] } } });

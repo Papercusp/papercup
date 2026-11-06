@@ -73,6 +73,7 @@ describe('registered consult contract and persisted recovery', () => {
       // attribution so the minimal consult fixture never queries product work.
       const original = { ...request(`acquisition-${failure}`), originTaskRef: null };
       const accepted = await acceptFeedbackRequestCore(original, deps);
+      if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
       let acquisition: QueryEmbedderAcquisition | undefined;
       const profile = EMBEDDER_DIM_SPECS.gemma;
       const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 5,
@@ -102,7 +103,9 @@ describe('registered consult contract and persisted recovery', () => {
         ? { stage: 'inference', cause: 'ETIMEDOUT' }
         : { stage: 'acquisition', cause: failure === 'timeout' ? 'acquisition-budget-exhausted' : 'ECONNREFUSED' });
       expect(JSON.stringify(stored.routing)).not.toContain('private');
-      expect((await acceptFeedbackRequestCore(original, deps)).conversation_id).toBe(accepted.conversation_id);
+      const retried = await acceptFeedbackRequestCore(original, deps);
+      if ('error' in retried) throw new Error(`unexpected acceptance refusal: ${retried.error}`);
+      expect(retried.conversation_id).toBe(accepted.conversation_id);
       const [count] = await db.sql`SELECT count(*)::int AS n FROM harness_shared.consult_state
         WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
       expect(count.n).toBe(1);
