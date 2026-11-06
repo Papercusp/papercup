@@ -34,7 +34,7 @@ import { createServer as createHttpServer } from 'node:http';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -1258,14 +1258,35 @@ type CallResult = Omit<McpCallResult, 'content'> & {
 async function listTools(extra: unknown): Promise<ToolsListResult> {
   return (await h.handlers.get('tools/list')!({}, extra)) as ToolsListResult;
 }
+let fixtureServingGeneration: string;
+
+beforeAll(async () => {
+  // Establish a real stateless-client baseline before per-call identity mocks
+  // and observations. Limit discovery to one stable probe: listing every tool
+  // here would cache schemas before tests configure their positional columns.
+  const catalog = await listTools(superuserExtra('&workspace=ws-test&tools=gatingtest:scoped'));
+  const generation = catalog.tools.find(tool =>
+    typeof tool._meta?.['papercusp/servingGeneration'] === 'string',
+  )?._meta?.['papercusp/servingGeneration'];
+  if (typeof generation !== 'string') throw new Error('Test tools/list returned no serving generation');
+  fixtureServingGeneration = generation;
+});
+
 async function callTool(
   name: string,
   args: Record<string, unknown>,
   extra: unknown,
   meta?: Record<string, unknown>,
 ): Promise<CallResult> {
+  let callMeta = meta;
+  if (name === 'tools:invoke' && !Object.hasOwn(meta ?? {}, 'papercusp/servingGeneration')) {
+    // Ordinary dynamic callers echo the contract returned by fixture discovery.
+    // Missing/stale-generation refusals are exercised through the raw wrapper in
+    // transport-mcp-notifications.test.ts, without this client handshake.
+    callMeta = { ...meta, 'papercusp/servingGeneration': fixtureServingGeneration };
+  }
   return (await h.handlers.get('tools/call')!(
-    { params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } },
+    { params: { name, arguments: args, ...(callMeta ? { _meta: callMeta } : {}) } },
     extra,
   )) as CallResult;
 }
@@ -2301,7 +2322,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
               args: { fleet: 'rocket' },
               payloadTier: 'standard',
             },
-            _meta: { format: 'json' },
+            _meta: { format: 'json', 'papercusp/servingGeneration': fixtureServingGeneration },
           }) as CallResult;
           assertTier(nestedStandard, 'standard');
 

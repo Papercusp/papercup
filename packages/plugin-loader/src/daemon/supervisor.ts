@@ -250,7 +250,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     } catch { /* never throw from audit */ }
   };
 
-  const spawnOnce = async (): Promise<void> => {
+  const spawnPreparedOnce = async (): Promise<void> => {
     if (stopped) return;
     handlerReady = false;
     const providerMode = sandbox === 'provider';
@@ -408,6 +408,19 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     // Daemon's first message must be a notification: { method: 'ready', params: { pluginInfo } }.
     // We don't enforce a handshake schema in v1 — caller's first action call effectively
     // verifies the bridge is live.
+  };
+
+  const spawnOnce = async (): Promise<void> => {
+    if (!handlerMode) return spawnPreparedOnce();
+    try {
+      const { withHandlerRuntimeAuthorization } = await import('./handler-runtime');
+      await withHandlerRuntimeAuthorization(handlerRuntime!, spawnPreparedOnce);
+    } catch (error) {
+      handlerReady = false;
+      bridge?.shutdown(new Error('handler runtime admission refused'));
+      child?.kill('SIGKILL');
+      throw new DaemonSandboxUnavailableError(`handler runtime admission refused: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
   await spawnOnce();
