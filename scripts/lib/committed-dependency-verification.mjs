@@ -240,11 +240,15 @@ async function fileDigest(root, pair, record, device, deadline) {
   try {
     if (!sameMetadata(await handle.stat({ bigint: true }), record, device)) fail('dependency metadata changed: ' + pair.path);
     const hash = createHash('sha256');
-    const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
-    const stream = handle.createReadStream({ autoClose: false, signal });
-    try { for await (const chunk of stream) hash.update(chunk); }
-    catch (error) { if (signal.aborted) throw new Incomplete(); throw error; }
-    finally { stream.destroy(); }
+    // Own the descriptor until both metadata checks finish. Destroying a
+    // FileHandle stream closes its descriptor even with autoClose:false.
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    while (true) {
+      if (Date.now() >= deadline) throw new Incomplete();
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
     if (!sameMetadata(await handle.stat({ bigint: true }), record, device)) fail('dependency changed while hashing: ' + pair.path);
     return hash.digest('hex');
   } finally { await handle.close(); }
