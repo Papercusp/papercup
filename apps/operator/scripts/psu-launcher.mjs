@@ -2882,6 +2882,12 @@ function readVerifiedLoopFireIdentity(text, sid, dir, nowMs) {
   return null;
 }
 
+function launcherTurnProvenanceDir(env = process.env) {
+  const scopedHome = typeof env?.PAPERCUSP_HOME === "string" ? env.PAPERCUSP_HOME.trim() : "";
+  return env.PAPERCUSP_TURN_PROVENANCE_DIR ||
+    (scopedHome ? join(scopedHome, "turn-provenance") : papercuspPath("turn-provenance"));
+}
+
 export function tagKickoffProvenance(
   text,
   sid,
@@ -2897,13 +2903,7 @@ export function tagKickoffProvenance(
     const sha256 = createHash("sha256")
       .update(String(text).replace(/\r\n?/g, "\n").trim(), "utf8")
       .digest("hex");
-    const scopedHome =
-      typeof env?.PAPERCUSP_HOME === "string"
-        ? env.PAPERCUSP_HOME.trim()
-        : "";
-    const dir =
-      env.PAPERCUSP_TURN_PROVENANCE_DIR ||
-      (scopedHome ? join(scopedHome, "turn-provenance") : papercuspPath("turn-provenance"));
+    const dir = launcherTurnProvenanceDir(env);
     // Only a typed private hint or a live, hash-matched prior enrollment can
     // qualify the successor. A bare "loop-fire" hint must not discard the
     // identity already attached to its incoming wake prompt.
@@ -12076,6 +12076,7 @@ export async function reportSessionRespawned(
     // WI-6554700010030031: set ONLY by an in-place context reset — the launch id
     // of the same child, which its env-pinned MCP header keeps presenting.
     childLaunchSessionId = null,
+    env = process.env,
     fetchImpl = fetch,
     operatorUrl = launcherOperatorTarget().url,
     token = null,
@@ -12126,6 +12127,7 @@ export async function reportSessionRespawned(
           ...(coordOwnerId ? { coordOwnerId: String(coordOwnerId) } : {}),
           ...(childLaunchSessionId ? { childLaunchSessionId: String(childLaunchSessionId) } : {}),
           sessionId: String(sessionId),
+          turnProvenanceDir: launcherTurnProvenanceDir(env),
         }),
       },
     );

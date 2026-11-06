@@ -16017,6 +16017,17 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-respawn/recycle — best-effort, never rejects)", () => {
   const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
 
+  it("reports the host's actual provenance namespace when enrolling a legacy launch", async () => {
+    const fetchImpl = vi.fn(async (_url: string, _opts: { body: string }) => ({ ok: true }));
+    await reportSessionRespawned("42", freshId, {
+      env: { PAPERCUSP_TURN_PROVENANCE_DIR: "/runtime/host/turn-provenance", PAPERCUSP_HOME: "/different/home" },
+      fetchImpl, operatorUrl: "http://op:1", token: "t",
+    });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
+      advSessionId: 42, sessionId: freshId, turnProvenanceDir: "/runtime/host/turn-provenance",
+    });
+  });
+
   it("POSTs { advSessionId, sessionId } to bootstrap-su/session-respawned with the bearer", async () => {
     const calls: Array<{
       url: string;
@@ -16039,9 +16050,10 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
     expect(calls[0].opts.headers["x-papercusp-mcp-attempt-id"]).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
-    expect(JSON.parse(calls[0].opts.body)).toEqual({
+    expect(JSON.parse(calls[0].opts.body)).toMatchObject({
       advSessionId: 42,
       sessionId: freshId,
+      turnProvenanceDir: expect.any(String),
     });
   });
 
@@ -16083,7 +16095,7 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
       token: "t",
     });
     expect(calls).toHaveLength(1);
-    expect(JSON.parse(calls[0].opts.body)).toEqual({
+    expect(JSON.parse(calls[0].opts.body)).toMatchObject({
       coordOwnerId: "su-57b6247d-ecdb-4fe1-9734-f91c3b6d0f89",
       sessionId: freshId,
     });
@@ -16102,7 +16114,7 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
       token: "t",
     });
     expect(calls).toHaveLength(1);
-    expect(JSON.parse(calls[0].opts.body)).toEqual({
+    expect(JSON.parse(calls[0].opts.body)).toMatchObject({
       advSessionId: 42,
       coordOwnerId: "su-abc",
       sessionId: freshId,
