@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OrchestrationCallRecord, ProjectedTool } from '@papercusp/tooldef';
-import { fingerprintShellOperation, normalizeExecutionTrace, readableOperationEvidence, type OperationAdapterEvidence } from './orchestration-trace';
+import { fingerprintShellOperation, normalizeExecutionTrace, readableOperationEvidence, type NormalizeExecutionTraceInput, type OperationAdapterEvidence } from './orchestration-trace';
 import { fingerprintSqlIntent, type SqlIntentScope } from './bash-substitution/sql-intent-fingerprint';
 
 function tool(name: string, capabilities: string[], effect: 'read' | 'write' = 'read'): ProjectedTool {
@@ -244,6 +244,55 @@ describe('normalizeExecutionTrace (P-013)', () => {
       await expect(normalizeExecutionTrace({ script, tools: TOOLS, backend,
         callRecords: [success, record(0, 'rejected')] })).rejects.toThrow('conflicting_orchestration_call_copies');
     }
+  });
+
+  it.each(['server', 'client-compat'] as const)('P005 retains actual dispatch identities and dispositions once on %s', async backend => {
+    const callRecords: OrchestrationCallRecord[] = ['settled', 'rejected', 'semantic_rejected', 'in_flight', 'uncertain'].map(
+      (disposition, ordinal) => ({ ordinal, tool: 'work_items:get', effect: 'read',
+        disposition: disposition as OrchestrationCallRecord['disposition'], outputReferences: [] }));
+    const calls = callRecords.map(call => ({ ...call, callId: `call:${call.ordinal}` }));
+    const trace = await normalizeExecutionTrace({ script: 'return 1;', tools: TOOLS, backend,
+      callRecords: [...callRecords, { ...callRecords[0]! }], dispatchTimings: { calls: [...calls, { ...calls[0]! }] } });
+    expect(trace.toolGraph.runtimeCalls.map(call => [call.ordinal, call.disposition, call.dispatchCallId])).toEqual(
+      callRecords.map(call => [call.ordinal, call.disposition, `call:${call.ordinal}`]));
+    const other = await normalizeExecutionTrace({ script: 'return 1;', tools: TOOLS, backend, callRecords,
+      dispatchTimings: { calls: calls.map(call => ({ ...call, callId: `another:${call.ordinal}` })) } });
+    expect(other.structuralFingerprint).toBe(trace.structuralFingerprint);
+    expect(callRecords[0]).not.toHaveProperty('dispatchCallId');
+  });
+
+  it('P005 leaves omitted IDs unmeasured and never turns timing-only or wrapper source into execution', async () => {
+    const callRecords: OrchestrationCallRecord[] = Array.from({ length: 30 }, (_, ordinal) =>
+      ({ ordinal, tool: 'work_items:get', effect: 'read', disposition: 'settled', outputReferences: [] }));
+    const dispatchTimings = { calls: callRecords.slice(6).map(call => ({ ...call, callId: `actual:${call.ordinal}` })) };
+    const input = { script: 'return tools.work_items.get({id:"WI-1"});', tools: TOOLS, dispatchTimings };
+    const trace = await normalizeExecutionTrace({ ...input, callRecords });
+    expect(trace.toolGraph.runtimeCalls).toHaveLength(30);
+    expect(trace.toolGraph.runtimeCalls.slice(0, 6).every(call => !Object.hasOwn(call, 'dispatchCallId'))).toBe(true);
+    expect(trace.toolGraph.runtimeCalls.slice(6).map(call => call.dispatchCallId)).toEqual(dispatchTimings.calls.map(call => call.callId));
+    expect((await normalizeExecutionTrace(input)).toolGraph.runtimeCalls).toEqual([]);
+    expect((await normalizeExecutionTrace({ ...input, callRecords, dispatchTimings: undefined })).toolGraph.runtimeCalls
+      .every(call => !Object.hasOwn(call, 'dispatchCallId'))).toBe(true);
+  });
+
+  it.each([
+    ['wrong-tool', { tool: 'assets:render' }, 'conflicting_orchestration_dispatch_receipt'],
+    ['wrong-effect', { effect: 'write' }, 'conflicting_orchestration_dispatch_receipt'],
+    ['wrong-outcome', { disposition: 'rejected' }, 'conflicting_orchestration_dispatch_receipt'],
+    ['invalid-id', { callId: 'Authorization: bearer secret' }, 'invalid_orchestration_dispatch_call_id'],
+  ])('P005 rejects a %s receipt instead of assigning it to a call', async (_label, change, error) => {
+    const call: OrchestrationCallRecord = { ordinal: 0, tool: 'work_items:get', effect: 'read', disposition: 'settled', outputReferences: [] };
+    const dispatchTimings = { calls: [{ ...call, callId: 'call:0', ...change }] } as NormalizeExecutionTraceInput['dispatchTimings'];
+    await expect(normalizeExecutionTrace({ script: 'return 1;', tools: TOOLS, callRecords: [call], dispatchTimings })).rejects.toThrow(error);
+  });
+
+  it('P005 rejects conflicting copies and reused dispatch IDs across distinct actual attempts', async () => {
+    const call: OrchestrationCallRecord = { ordinal: 0, tool: 'work_items:get', effect: 'read', disposition: 'settled', outputReferences: [] };
+    const input = { script: 'return 1;', tools: TOOLS, callRecords: [call, { ...call, ordinal: 1 }] };
+    for (const calls of [
+      [{ ...call, callId: 'call:0' }, { ...call, callId: 'different:0' }],
+      [{ ...call, callId: 'call:0' }, { ...call, ordinal: 1, callId: 'call:0' }],
+    ]) await expect(normalizeExecutionTrace({ ...input, dispatchTimings: { calls } })).rejects.toThrow('conflicting_orchestration_dispatch_call_id');
   });
 
   it('preserves validated output-reference identity but excludes it and runtime outcomes from the fingerprint', async () => {

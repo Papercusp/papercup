@@ -626,6 +626,7 @@ export default defineTool({
           tools: all,
           allowed,
           callRecords: result.callRecords,
+          dispatchTimings: result.dispatchTimings,
         }),
       null,
     );

@@ -213,6 +213,8 @@ export interface OrchestrationRuntimeCall {
   tool: string;
   effect: 'read' | 'write' | 'unknown';
   disposition: OrchestrationCallRecord['disposition'];
+  /** Actual host dispatch identity; absent when the bounded receipt window omitted it. */
+  dispatchCallId?: string;
   capabilities: string[];
   outputReferences: OrchestrationOutputReference[];
 }
@@ -251,6 +253,10 @@ export interface NormalizeExecutionTraceInput {
   tools: readonly ProjectedTool[];
   allowed?: ReadonlySet<string>;
   callRecords?: readonly OrchestrationCallRecord[];
+  /** Host-produced receipts only; these cannot create execution records on their own. */
+  dispatchTimings?: {
+    calls: readonly (Pick<OrchestrationCallRecord, 'ordinal' | 'tool' | 'effect' | 'disposition'> & { callId?: string })[];
+  };
   operations?: readonly OperationAdapterEvidence[];
   dependencies?: readonly OperationDependency[];
 }
@@ -480,6 +486,23 @@ export async function normalizeExecutionTrace(
     const previous = runtimeByOrdinal.get(call.ordinal);
     if (previous && JSON.stringify(previous) !== JSON.stringify(normalized)) throw new Error('conflicting_orchestration_call_copies');
     runtimeByOrdinal.set(call.ordinal, normalized);
+  }
+  const ordinalByDispatchId = new Map<string, number>();
+  for (const receipt of input.dispatchTimings?.calls ?? []) {
+    const call = runtimeByOrdinal.get(receipt.ordinal);
+    if (!call) continue;
+    if (call.tool !== receipt.tool || call.effect !== receipt.effect || call.disposition !== receipt.disposition) {
+      throw new Error('conflicting_orchestration_dispatch_receipt');
+    }
+    if (receipt.callId === undefined) continue;
+    if (!opaqueRef(receipt.callId)) throw new Error('invalid_orchestration_dispatch_call_id');
+    const previousOrdinal = ordinalByDispatchId.get(receipt.callId);
+    if ((call.dispatchCallId !== undefined && call.dispatchCallId !== receipt.callId)
+      || (previousOrdinal !== undefined && previousOrdinal !== call.ordinal)) {
+      throw new Error('conflicting_orchestration_dispatch_call_id');
+    }
+    call.dispatchCallId = receipt.callId;
+    ordinalByDispatchId.set(receipt.callId, call.ordinal);
   }
   const runtimeCalls: OrchestrationRuntimeCall[] = [...runtimeByOrdinal.values()]
     .sort((a, b) => a.ordinal - b.ordinal);

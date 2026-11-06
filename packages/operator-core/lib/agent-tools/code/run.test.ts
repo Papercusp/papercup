@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import * as agentMcp from '@papercusp/agent-mcp';
 import { encode } from '@papercusp/result-encoding';
 import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
@@ -34,7 +35,7 @@ const {
   return {
     captureRecipeMock: vi.fn<typeof import('./capture-recipe').captureRecipe>(async () => null),
     recordRecipeRunMock: vi.fn(async () => {}),
-    normalizeExecutionTraceMock: vi.fn(async () => trace),
+    normalizeExecutionTraceMock: vi.fn<typeof import('../../orchestration-trace').normalizeExecutionTrace>(async () => trace),
     resolveLiveBoundRefsMock: vi.fn(async () => ({
       workspaces: [],
       fleets: [],
@@ -537,6 +538,28 @@ describe('code:run → recipe capture (P-003)', () => {
       resources: ['resource-live'],
     });
     expect(payload.callRecords).toBeUndefined();
+  });
+
+  it('P005 carries host dispatch receipts through the handler into the captured trace', async () => {
+    const callRecords = [{ ordinal: 0, tool: 'code:tools', effect: 'read' as const, disposition: 'settled' as const, outputReferences: [] }];
+    const dispatchTimings = { calls: [{ ...callRecords[0]!, callId: 'host-call:actual-1', elapsedMs: 7 }],
+      totalCount: 1, omittedCount: 0, maxCalls: 24 };
+    const run = vi.spyOn(agentMcp, 'runToolOrchestration').mockResolvedValueOnce({
+      ok: true, logs: [], dryRun: false, plannedMutations: [], dispatchCount: 1, callRecords, dispatchTimings,
+      runtimeObservations: { authorizationObservationCount: 1, authorityWideningDetected: false,
+        midTurnPromptInjectionObservability: 'not-observable' },
+    });
+    try {
+      const actual = await vi.importActual<typeof import('../../orchestration-trace')>('../../orchestration-trace');
+      normalizeExecutionTraceMock.mockImplementationOnce(actual.normalizeExecutionTrace);
+      await codeRun().fn({ script: 'return 1;' }, mkCtx());
+      expect(normalizeExecutionTraceMock).toHaveBeenCalledWith(expect.objectContaining({ callRecords, dispatchTimings }));
+      expect(captureRecipeMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        executionTrace: expect.objectContaining({ toolGraph: expect.objectContaining({ runtimeCalls: [
+          expect.objectContaining({ ordinal: 0, tool: 'code:tools', disposition: 'settled', dispatchCallId: 'host-call:actual-1' }),
+        ] }) }),
+      }));
+    } finally { run.mockRestore(); }
   });
 
   it('does NOT capture on a dry-run preview, but records one trace-only execution', async () => {
