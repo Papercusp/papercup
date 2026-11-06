@@ -248,7 +248,9 @@ function normalizedInputs(values) {
 }
 
 function isOperatorHost(inputs) {
-  return inputs.outfile === resolve(inputs.source.repoRoot, "apps/operator/dist-host/hono-host.mjs");
+  return inputs.outfile === resolve(inputs.source.repoRoot, "apps/operator/dist-host/hono-host.mjs") ||
+    (inputs.entry === resolve(inputs.source.repoRoot, "apps/operator/bin/hono-host.ts") &&
+      basename(inputs.outfile) === "hono-host.mjs");
 }
 
 async function stamp(values) {
@@ -258,6 +260,8 @@ async function stamp(values) {
   // freshness stamp alone cannot identify the bytes loaded by that process.
   const artifact = isOperatorHost(inputs) ? await writeOperatorArtifactManifest({
     root: inputs.source.repoRoot, entry: inputs.outfile, sourceSha: inputs.source.headSha,
+    ...(inputs.outfile === resolve(inputs.source.repoRoot, "apps/operator/dist-host/hono-host.mjs")
+      ? {} : { artifactRoot: dirname(inputs.outfile) }),
   }) : null;
   const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
   const outputTree = outputTreeIdentity(inputs.outfile, inputs.manifest);

@@ -76,6 +76,31 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
+it('publishes measured provenance for a maintained host built outside frozen source', () => {
+  const entry = join(repo, 'apps/operator/bin/hono-host.ts');
+  mkdirSync(join(repo, 'apps/operator/bin'), { recursive: true });
+  writeFileSync(entry, 'export const host = true;\n');
+  execFileSync('git', ['-C', repo, 'add', 'apps/operator/bin/hono-host.ts']);
+  execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'host']);
+  const privateOutput = mkdtempSync(join(tmpdir(), 'external-host-output-'));
+  try {
+    outdir = privateOutput;
+    const output = join(outdir, 'hono-host.mjs');
+    writeFileSync(output, 'export const host = true;\n');
+    writeFileSync(output + '.meta.json', JSON.stringify({ inputs: { 'apps/operator/bin/hono-host.ts': {} } }));
+    const stamped = run('stamp', entry);
+    expect(stamped.stderr).toBe('');
+    expect(stamped.status).toBe(0);
+    const proof = JSON.parse(readFileSync(join(outdir, '.bundle-fresh.json'), 'utf8')).artifact;
+    expect(proof).toMatchObject({ sourceSha: stamped.stdout.trim(), bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    const manifest = JSON.parse(readFileSync(output + '.artifact-' + proof.bundleSha256 + '.json', 'utf8'));
+    expect(manifest).toMatchObject({ entry: 'hono-host.mjs', sourceBlobs: { 'apps/operator/bin/hono-host.ts': expect.any(String) } });
+    expect(run('check', entry).status).toBe(0);
+    writeFileSync(output, 'replaced output');
+    expect(run('check', entry).status).not.toBe(0);
+  } finally { rmSync(privateOutput, { recursive: true, force: true }); }
+});
+
 it('BG-TEARDOWN-RECONCILE preserves source compiler and boot evidence during cleanup', async () => {
   expect(run('stamp').status).toBe(0);
   const privateRoot = mkdtempSync(join(tmpdir(), 'bg-cleanup-evidence-'));

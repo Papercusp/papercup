@@ -961,7 +961,8 @@ fi
 # missing compiler provenance, or an incoherent output tree. Failure preserves
 # the availability build while leaving its artifact identity unqualified.
 if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ||
-      "$OUTFILE" == "$REPO_ROOT/apps/operator/dist-host/hono-host.mjs" ]]; then
+      "$OUTFILE" == "$REPO_ROOT/apps/operator/dist-host/hono-host.mjs" ||
+      ( "$ENTRY" == "$REPO_ROOT/apps/operator/bin/hono-host.ts" && "$(basename "$OUTFILE")" == "hono-host.mjs" ) ]]; then
   if fresh_head="$("${COMMITTED_NODE[@]}" "$FRESHNESS_HELPER" stamp \
       --repo-root "$REPO_ROOT" \
       --entry "$ENTRY" \
