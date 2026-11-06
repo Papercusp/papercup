@@ -1261,15 +1261,22 @@ async function listTools(extra: unknown): Promise<ToolsListResult> {
 let fixtureServingGeneration: string;
 
 beforeAll(async () => {
+  // Discovery runs before beforeEach, so install the same unit-only enum
+  // loaders here too. Production loaders must never reach PG from this fixture.
+  setEntityEnum('pot', async () => []);
+  setEntityEnum('harness', async () => []);
+  process.stderr.write('MCP_MATRIX_BASELINE discovery-start\n');
   // Establish a real stateless-client baseline before per-call identity mocks
   // and observations. Limit discovery to one stable probe: listing every tool
   // here would cache schemas before tests configure their positional columns.
-  const catalog = await listTools(superuserExtra('&workspace=ws-test&tools=gatingtest:scoped'));
+  // SU discovery is still role-filtered; this probe belongs to the scoper role.
+  const catalog = await listTools(extraFor(signedUrl({ tools: 'gatingtest:scoped' })));
   const generation = catalog.tools.find(tool =>
     typeof tool._meta?.['papercusp/servingGeneration'] === 'string',
   )?._meta?.['papercusp/servingGeneration'];
   if (typeof generation !== 'string') throw new Error('Test tools/list returned no serving generation');
   fixtureServingGeneration = generation;
+  process.stderr.write('MCP_MATRIX_BASELINE discovery-ready\n');
 });
 
 async function callTool(
