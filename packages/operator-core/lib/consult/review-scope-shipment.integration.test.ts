@@ -7,11 +7,15 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 import type { ConsultReviewState } from './review-findings';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { findCanonicalNativeLiveJsonl, readCanonicalNativeArchive, readStableLiveJsonl } from '../session-port/source';
+import { pgSessionArchiveStore } from '../session-archive';
 
 const plan = 'review-findings-and-initial-code-scope-2026-10-31';
 const parent = 'WI-6554700010043425';
@@ -197,7 +201,7 @@ function sourceBytes(root: string, sha: string, path: string): Buffer {
   }
   return execFileSync('git', ['-C', root, 'show', sha + ':' + path], { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
 }
-type CensusCandidate = { path: string; ref: string; blobSha?: string; externalEvidence?: string };
+type CensusCandidate = { path: string; ref: string; sourceRefs?: string[]; blobSha?: string; externalEvidence?: string };
 function censusRow(candidate: CensusCandidate, bytes: Buffer): Source {
   const excluded = /(?:^|\/)(?:test|tests|docs)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|\.(?:md|mdx)$/.test(candidate.path);
   const auditedBlob = createHash(candidate.blobSha?.length === 64 ? 'sha256' : 'sha1')
@@ -207,7 +211,7 @@ function censusRow(candidate: CensusCandidate, bytes: Buffer): Source {
   if (candidate.blobSha && !excluded) requireProof(auditedBlob === candidate.blobSha,
     'recorded accepted blob differs from the completion audit: ' + candidate.path);
   return { path: candidate.path, sha256: digest(bytes),
-    refs: [candidate.ref, 'audit-blob:' + auditedBlob,
+    refs: [candidate.ref, ...(candidate.sourceRefs ?? []), 'audit-blob:' + auditedBlob,
       ...(candidate.blobSha ? ['recorded-blob:' + candidate.blobSha] : [])],
     classification: excluded ? 'excluded' : 'production',
     ...(excluded ? { reason: 'Maintained test or documentation; not an executing production binding. '
@@ -225,7 +229,49 @@ function linkedCensusSql(workspace: string, harness: string, planSlug: string) {
       AND (wi.source_plan_slug=${literal(planSlug)} OR wi.feature_id IN (SELECT src_ref FROM refs)
         OR wi.harness_slug||'#'||wi.feature_id IN (SELECT src_ref FROM refs))`;
 }
-function collectCensus(fixture: Fixture, started: string): Census {
+type NativePatch = { command: string; refs: string[] };
+function nativePatches(bytes: Buffer, sourceSha: string): NativePatch[] {
+  const patches: NativePatch[] = [];
+  for (const line of bytes.toString('utf8').trimEnd().split('\n')) {
+    const record = JSON.parse(line) as Json;
+    const call = record.type === 'response_item' ? record.payload : null;
+    if (!call || !['function_call', 'custom_tool_call'].includes(call.type) || typeof call.call_id !== 'string') continue;
+    const input = call.input ?? call.arguments;
+    if (typeof input !== 'string') continue;
+    const ref = 'native-source:' + sourceSha + ':' + call.call_id;
+    if (call.name === 'apply_patch') { patches.push({ command: input, refs: [ref] }); continue; }
+    if (call.name !== 'exec') continue;
+    // Decode static arguments only. Never execute a transcript or interpolate a
+    // template expression to reconstruct an edit.
+    const syntax = ts.createSourceFile('native-exec.js', input, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'tools' &&
+          node.expression.name.text === 'apply_patch' && node.arguments.length === 1) {
+        const value = node.arguments[0]!;
+        if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) patches.push({ command: value.text, refs: [ref] });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(syntax);
+  }
+  return patches;
+}
+function resolveNativePatch(preview: string, patches: NativePatch[], identity?: { activityId: string; sessionId: string }): NativePatch {
+  const prefix = preview.endsWith('…') ? preview.slice(0, -1) : preview;
+  const matches = patches.filter(patch => patch.command.startsWith(prefix) &&
+    patch.command.startsWith('*** Begin Patch\n') && patch.command.trimEnd().endsWith('\n*** End Patch'));
+  // Retrying the identical patch does not create a second possible source body.
+  // Preserve every call citation while refusing distinct bodies sharing a preview.
+  const commands = new Set(matches.map(patch => patch.command));
+  requireProof(commands.size === 1, 'native patch source is missing or ambiguous: ' + JSON.stringify({
+    ...identity, previewSha256: digest(preview), previewChars: preview.length,
+    candidateCount: patches.length, matchingRefs: matches.slice(0, 8).flatMap(patch => patch.refs), matchCount: matches.length,
+    distinctCommands: commands.size,
+  }));
+  return { command: matches[0]!.command, refs: [...new Set(matches.flatMap(patch => patch.refs))].sort() };
+}
+async function collectCensus(fixture: Fixture, started: string): Promise<Census> {
   const proposed = tool('plans:audit', { slug: plan, harness: 'papercusp', phase: 'completion', dryRun: true, proposeCitations: true });
   requireProof(proposed.truncatedByLimit === false && proposed.unresolved?.length === 0, 'canonical citation producer is incomplete');
   const audit = query<Json>(`SELECT row_to_json(a) FROM harness_shared.plan_audits a
@@ -237,7 +283,7 @@ function collectCensus(fixture: Fixture, started: string): Census {
   const parentItem = parentRead.results?.[0]?.workItem;
   requireProof(linked.some(row => row.id === parent) && parentItem?.assignee && parentItem.createdAt,
     'parent must have a real plan link and identifiable native-edit owner');
-  const native = query<Json[]>(`SELECT COALESCE(json_agg(x),'[]') FROM (SELECT id::text,detail FROM harness_shared.agent_activity
+  const native = query<Json[]>(`SELECT COALESCE(json_agg(x),'[]') FROM (SELECT id::text,agent,session_id,detail FROM harness_shared.agent_activity
     WHERE workspace_id='papercusp-workspace' AND owner_id=${literal(parentItem.assignee)}
       AND (harness_slug IS NULL OR harness_slug='papercusp') AND phase='post' AND (status IS NULL OR status IN ('ok','success'))
       AND created_at >= ${literal(parentItem.createdAt)}::timestamptz
@@ -256,18 +302,48 @@ function collectCensus(fixture: Fixture, started: string): Census {
     candidates.push({ path: relative(fixture.root, resolve(root, path)), blobSha: entry?.headBlobSha,
       ref: 'completion:' + item.id });
   }
+  const nativeSources = new Map<string, NativePatch[]>();
+  const homes = query<Array<{ id: number }>>(`SELECT COALESCE(json_agg(x),'[]') FROM (
+    SELECT id FROM harness_shared.adv_sessions WHERE workspace_id='papercusp-workspace'
+      AND coord_owner_id=${literal(parentItem.assignee)} AND agent='codex') x`);
   for (const row of native) {
-    const paths = [...String(row.detail?.command ?? '').matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1]!);
+    let command = String(row.detail?.command ?? '');
+    let sourceRefs: string[] = [];
+    if (command.startsWith('*** Begin Patch')) {
+      requireProof(row.agent === 'codex' && typeof row.session_id === 'string', 'native patch session identity is missing');
+      if (!nativeSources.has(row.session_id)) {
+        const sources = [];
+        for (const home of homes) {
+          let file: string;
+          try { file = await findCanonicalNativeLiveJsonl(join(codexHomeForSessionKey(home.id), 'sessions'), 'codex', row.session_id); }
+          catch (error) {
+            if (error instanceof Error && error.message === 'canonical live codex JSONL is missing') continue;
+            throw error;
+          }
+          sources.push(await readStableLiveJsonl(file));
+        }
+        requireProof(sources.length <= 1, 'native patch source is ambiguous');
+        const source = sources[0] ?? await readCanonicalNativeArchive({ backend: 'codex', sessionId: row.session_id }, pgSessionArchiveStore());
+        requireProof(source.completeBytes === source.highWaterBytes, 'native patch source is incomplete');
+        nativeSources.set(row.session_id, nativePatches(source.bytes, source.sha256));
+      }
+      const patch = resolveNativePatch(command, nativeSources.get(row.session_id)!, { activityId: row.id, sessionId: row.session_id });
+      command = patch.command;
+      sourceRefs = patch.refs;
+      row.sourceRefs = sourceRefs;
+    }
+    const paths = [...command.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1]!);
     if (typeof row.detail?.file === 'string') paths.push(row.detail.file);
     for (const path of paths) {
+      requireProof(!path.includes('…'), 'native edit path is a truncated preview');
       const local = isAbsolute(path) ? relative(fixture.root, path) : path;
-      candidates.push({ path: normalized(local) ? local : path, ref: 'native:' + row.id + ':' + parent,
+      candidates.push({ path: normalized(local) ? local : path, ref: 'native:' + row.id + ':' + parent, sourceRefs,
         ...(!normalized(local) ? { externalEvidence: JSON.stringify(row) } : {}) });
     }
   }
   const rows = candidates.map(candidate => {
     if (candidate.externalEvidence) return { path: candidate.path, sha256: digest(candidate.externalEvidence),
-      refs: [candidate.ref], classification: 'excluded' as const,
+      refs: [candidate.ref, ...(candidate.sourceRefs ?? [])], classification: 'excluded' as const,
       reason: 'Native edit outside the harness repository (for example an isolated mutation fixture). The digest identifies its retained edit evidence, not an accepted production file.' };
     requireProof(normalized(candidate.path), 'native edit is outside the audited repository: ' + candidate.path);
     const bytes = sourceBytes(fixture.root, audit.audited_sha, candidate.path);
@@ -327,9 +403,9 @@ async function materialBrief(input: Fixture['materialBrief'], conversationId: st
     await delay(2000);
   } while (true);
 }
-function collectSource(fixture: Fixture, started: string): SourceProof {
+async function collectSource(fixture: Fixture, started: string): Promise<SourceProof> {
   const runtime = measuredRuntime(baseline[0]!);
-  const census = collectCensus(fixture, started);
+  const census = await collectCensus(fixture, started);
   const frozen = population(census);
   const containment = frozen.map(row => {
     const result = tool('dev:pipeline_position', { path: row.path, expectedSourceSha256: row.sha256 });
@@ -374,7 +450,7 @@ async function collectRelease(fixture: Fixture): Promise<Proof> {
     fixture.scopePlanSlug.includes(fixture.nonce) && fixture.rewrite.old_string.includes(fixture.nonce) &&
     fixture.rewrite.new_string.includes(fixture.nonce), 'private fixture and opening invocation identities are required');
   const started = new Date().toISOString();
-  const source = collectSource(fixture, started);
+  const source = await collectSource(fixture, started);
   // This shared verifier must pass before any public fixture mutation.
   return afterSourcePreflight(source, async () => {
   const runtime = source.runtime;
@@ -484,6 +560,33 @@ function rejects(change: (proof: Proof) => void, reason: RegExp) {
   expect(() => verify(bad)).toThrow(reason);
 }
 describe('EGM exact released artifact acceptance', () => {
+  it('resolves every changed path from the full static native patch instead of its clipped activity preview', () => {
+    const command = '*** Begin Patch\n*** Update File: first.ts\n@@\n' + '+long body\n'.repeat(60) +
+      '*** Update File: second.ts\n@@\n+second\n*** End Patch';
+    const input = 'text(await tools.apply_patch(' + JSON.stringify(command) + '));';
+    const bytes = Buffer.from(JSON.stringify({ type: 'response_item', payload: {
+      type: 'custom_tool_call', name: 'exec', call_id: 'native-call', input } }) + '\n');
+    const patches = nativePatches(bytes, 'a'.repeat(64));
+    const resolved = resolveNativePatch(command.slice(0, 500) + '…', patches);
+    expect([...resolved.command.matchAll(/^\*\*\* Update File: (.+)$/gm)].map(match => match[1])).toEqual(['first.ts', 'second.ts']);
+    expect(resolved.refs).toEqual(['native-source:' + 'a'.repeat(64) + ':native-call']);
+    const retry = { command, refs: ['native-source:' + 'a'.repeat(64) + ':retry-call'] };
+    expect(resolveNativePatch(command.slice(0, 500) + '…', [...patches, retry]))
+      .toEqual({ command, refs: [...resolved.refs, ...retry.refs] });
+    expect(censusRow({ path: 'first.ts', ref: 'activity-1', sourceRefs: [...resolved.refs, ...retry.refs] }, Buffer.from('source')).refs)
+      .toEqual(expect.arrayContaining([...resolved.refs, ...retry.refs]));
+    expect(() => resolveNativePatch(command.slice(0, 500) + '…', [], { activityId: 'activity-1', sessionId: 'session-1' }))
+      .toThrow(/"activityId":"activity-1","sessionId":"session-1".*"candidateCount":0.*"matchCount":0/);
+    expect(() => resolveNativePatch(command.slice(0, 500) + '…', [...patches,
+      { command: command.replace('second.ts', 'divergent.ts'), refs: ['divergent'] }])).toThrow(/missing or ambiguous/);
+  });
+  it('refuses computed native patch arguments and incomplete retained source', () => {
+    const bytes = Buffer.from(JSON.stringify({ type: 'response_item', payload: {
+      type: 'custom_tool_call', name: 'exec', call_id: 'computed', input: 'tools.apply_patch(prefix + suffix)' } }) + '\n');
+    expect(nativePatches(bytes, 'a'.repeat(64))).toEqual([]);
+    expect(() => resolveNativePatch('*** Begin Patch\n', [{ command: '*** Begin Patch\n*** Update File: clipped…', refs: ['incomplete'] }]))
+      .toThrow(/missing or ambiguous/);
+  });
   it('retains the exact linked completion population while scanning plan links once', async () => {
     const { createFreshPgDb } = await import('../../test/_pg-helpers');
     const db = await createFreshPgDb('egm-linked-census');
