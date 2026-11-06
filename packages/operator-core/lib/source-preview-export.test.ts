@@ -1908,8 +1908,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
-  it('checks the committed runtime asset pin before allocating verifier source', async () => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-asset-preflight'));
+  it.each(['same-root', 'frozen-source'] as const)('checks the committed runtime asset pin before allocating verifier source (%s)', async layout => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-asset-preflight-' + layout));
     const setup = 'apps/operator/scripts/setup-porcupine-runtime.sh';
     const model = 'apps/operator/public/porcupine/porcupine_params.pv';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
@@ -1928,19 +1928,26 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     git(fixture.repo, ['add', setup, helper]);
     git(fixture.repo, ['commit', '-qm', 'pinned runtime asset admission fixture']);
     const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const source = layout === 'frozen-source' ? join(tmp, 'runtime-asset-frozen-source') : fixture.repo;
+    if (source !== fixture.repo)
+      git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, source]);
     // A mutable donor helper must not replace the selected commit's checksum pin.
     write(fixture.repo, setup, '#!/bin/bash\nexit 0\n');
-    const receiptPath = join(tmp, 'runtime-asset-preflight.json');
-    const options = { repo: fixture.repo, ref, receiptPath, inputs: [helper],
+    const receiptPath = join(tmp, 'runtime-asset-preflight-' + layout + '.json');
+    const options = { repo: source, runtimeAssetDonor: fixture.repo, ref, receiptPath, inputs: [helper],
       // Give this synthetic verifier task its own budget; the test worker's
       // short outer deadline is below the verifier's 120s cleanup reserve.
       env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: join(tmp, 'runtime-asset-store'),
         PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 300_000) },
       command: [process.execPath, '-e', 'throw Error("provider must not start")'] };
-    await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');
+    // Exercise the CLI handoff as well as the exported command entry point.
+    await expect(runCli(['verifier-run', '--repo', source, '--runtime-asset-donor', fixture.repo,
+      '--ref', ref, '--receipt', receiptPath, '--inputs', helper, '--', ...options.command]))
+      .rejects.toThrow('pinned runtime model missing or invalid');
     write(fixture.repo, model, 'wrong-model');
     await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');
     write(fixture.repo, model, validModel);
+    if (source !== fixture.repo) expect(existsSync(join(source, model))).toBe(false);
     await expect(runVerifierCommand(options)).rejects.toThrow('runtime cache accepted; generation guard reached');
     expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
     expect(JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8')).cleanup).toBe('completed');
@@ -1980,13 +1987,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(candidate, '.papercusp/scratch'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'census-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention', 'tracked-operator-runtime', 'tracked-shell-runtime', 'tracked-shell-installer', 'tracked-runtime-tamper'] as const)
+  it.each(['donor-change', 'runtime-asset-donor', 'child-failure', 'child-output-overflow', 'output-io-failure', 'frozen-tamper', 'dependency-tamper', 'dependency-preflight-failure', 'census-failure', 'phase-io-failure', 'deadline-refusal', 'history-refusal', 'private-pg-release', 'evidence-retention', 'tracked-operator-runtime', 'tracked-shell-runtime', 'tracked-shell-installer', 'tracked-runtime-tamper'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
       const preflight = 'scripts/source-preview.mjs';
       const provider = 'scripts/provider-fixture.mjs';
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      const runtimeAssetDonor = join(tmp, 'full-command-runtime-asset-donor');
+      if (mode === 'runtime-asset-donor') {
+        const setup = 'apps/operator/scripts/setup-porcupine-runtime.sh';
+        const model = 'apps/operator/public/porcupine/porcupine_params.pv';
+        const checksum = createHash('sha256').update('pinned-model-fixture').digest('hex');
+        write(runtimeAssetDonor, model, 'pinned-model-fixture');
+        write(fixture.repo, setup, [
+          '#!/bin/bash', 'set -eu', 'source="$2"',
+          'if test "$1" = --source; then',
+          '  dest="$(dirname "$0")/../public/porcupine/porcupine_params.pv"',
+          '  mkdir -p "$(dirname "$dest")"; cp "$source" "$dest"; source="$dest"',
+          'else test "$1" = --check-source; fi',
+          'test "$(sha256sum "$source" | cut -d\' \' -f1)" = ' + checksum, '',
+        ].join('\n'));
+        git(fixture.repo, ['add', setup]);
+      }
       const runtimeOutput = mode === 'tracked-shell-runtime'
         ? 'papercusp-desktop/src-tauri/resources/workbench@papercusp.ai.shell-extension.zip'
         : mode === 'tracked-shell-installer' ? 'papercusp-desktop/src-tauri/resources/workbench-install.js'
@@ -2003,6 +2026,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "import { join, dirname } from 'node:path';",
         "import value from '@native-proof/runtime';",
         "const donor = process.argv[2], mode = process.argv[3];",
+        "if (mode === 'runtime-asset-donor') { const model = 'apps/operator/public/porcupine/porcupine_params.pv'; writeFileSync(join(process.env.VERIFIER_ASSET_DONOR, model), 'changed cache'); if (readFileSync(model, 'utf8') !== 'pinned-model-fixture') throw Error('runtime asset was not privately copied'); }",
         "writeFileSync(join(donor, 'scripts/provider-fixture.mjs'), 'peer edit after allocation');",
         "rmSync(join(donor, 'node_modules'), { recursive: true, force: true });",
         "const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT, 'utf8'));",
@@ -2043,7 +2067,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(dependencies.sourceCommit).toBe(ref);
         expect(existsSync(join(sourceRoot, 'node_modules'))).toBe(true);
         expect(existsSync(proofPath)).toBe(false);
-        return { VERIFIER_CHILD_ENV_PREPARED: 'dependency-generation-ready' };
+        return { VERIFIER_CHILD_ENV_PREPARED: 'dependency-generation-ready', VERIFIER_ASSET_DONOR: runtimeAssetDonor };
       });
       const taskId = mode === 'evidence-retention' || mode === 'census-failure' ? 'delayed-consumer-fixture' : null;
       const checkpointLogDir = join(tmp, 'verifier-task-evidence-checkpoint-logs');
@@ -2069,6 +2093,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         ? runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--inputs', provider,
           '--receipt', receiptPath, '--', ...command])
         : runVerifierCommand({ repo: fixture.repo, ref, inputs: [provider], receiptPath, command,
+          ...(mode === 'runtime-asset-donor' ? { runtimeAssetDonor } : {}),
           ...(mode === 'history-refusal' ? { budgetFrom } : {}),
           childEstimateMs: mode === 'deadline-refusal' ? 600_000 : 0,
           env,
@@ -2188,6 +2213,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0)).toBe(true);
       expect(phases.filter(row => row.event === 'started').map(row => row.phase)).toEqual([
         'source.admission', 'source.freeze', 'receipt.write', 'deps.source.before',
+        ...(mode === 'runtime-asset-donor' ? ['deps.runtime-assets'] : []),
         'deps.source.after-runtime-assets', 'deps.snapshot',
         'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
         'deps.census', 'deps.receipt.write', 'child.admission', 'child.preflight', 'child.environment', 'child.run',
@@ -2785,6 +2811,55 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: join(tmp, `refused-runtime-checkout-${suffix}`), inputs: [input], gitCheckout: true }))
       .rejects.toThrow('committed verifier runtime output requires archive export');
   });
+
+  it.skipIf(process.platform !== 'linux')('rebuilds ignored Workbench resources in an independent Git snapshot without changing source', async () => {
+    const fixtureRoot = join(tmp, 'verifier-workbench-git-fixture');
+    const fixture = makeSuperproject(fixtureRoot);
+    const desktopSource = join(fixtureRoot, 'desktop-source');
+    mkdirSync(desktopSource);
+    for (const path of ['.gitignore', 'bin/package-native-workbench.mjs', 'native/gnome', 'native/linux']) {
+      mkdirSync(dirname(join(desktopSource, path)), { recursive: true });
+      cpSync(join(SOURCE_ROOT, 'papercusp-desktop', path), join(desktopSource, path), { recursive: true });
+    }
+    const stage = (desktop: string) => {
+      const result = spawnSync(process.execPath, [join(desktop, 'bin/package-native-workbench.mjs'),
+        '--stage-bundle', desktop], { encoding: 'utf8', env: childEnv(), timeout: 40_000 });
+      expect(result.status, result.stderr || String(result.error)).toBe(0);
+      return JSON.parse(result.stdout) as { archive: string; sha256: string };
+    };
+    // Generate before staging the fixture, just as git-sync sees a built tree.
+    // The production ignore policy must keep these bytes out of its commit.
+    stage(desktopSource);
+    git(desktopSource, ['init', '-q', '-b', 'main']);
+    git(desktopSource, ['add', '-A']);
+    git(desktopSource, ['commit', '-qm', 'Workbench source and production ignore policy']);
+    git(fixture.repo, ['rm', '-rf', 'papercusp-desktop']);
+    git(fixture.repo, ['submodule', 'add', '-q', desktopSource, 'papercusp-desktop']);
+    git(fixture.repo, ['commit', '-qam', 'Pin independent desktop source']);
+    const inputs = ['papercusp-desktop/native/gnome/extension.js',
+      'papercusp-desktop/native/linux/install-workbench.js',
+      'papercusp-desktop/bin/package-native-workbench.mjs', 'papercusp-desktop/.gitignore'];
+    const dest = join(tmp, 'verifier-workbench-git-export');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs, gitCheckout: true });
+    expect(receipt.gitCheckout).toBeDefined();
+    for (const path of inputs) expect(receipt.files.some(file => file.path === path)).toBe(true);
+    const outputs = ['src-tauri/resources/workbench@papercusp.ai.shell-extension.zip',
+      'src-tauri/resources/workbench-install.js'];
+    for (const path of outputs) {
+      expect(receipt.files.some(file => file.path === 'papercusp-desktop/' + path)).toBe(false);
+      expect(existsSync(join(dest, 'papercusp-desktop', path))).toBe(false);
+    }
+    const desktop = join(dest, 'papercusp-desktop');
+    const bundle = stage(desktop);
+    expect(readFileSync(bundle.archive).length).toBeGreaterThan(0);
+    expect(readFileSync(join(desktop, outputs[1]!))).toEqual(readFileSync(join(desktop, 'native/linux/install-workbench.js')));
+    expect(git(desktop, ['ls-files', '--', ...outputs])).toBe('');
+    expect(git(desktop, ['check-ignore', '--', ...outputs]).split('\n').sort()).toEqual([...outputs].sort());
+    expect(git(dest, ['status', '--porcelain'])).toBe('');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, inputs[0]!), 'tampered original extension source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(/changed|tampered|dirty/);
+  }, 60_000);
 
   it('rejects a symlink posing as an independent runtime directory', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-runtime-link-fixture'));

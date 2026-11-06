@@ -4,10 +4,10 @@ import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFi
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildWorkspace as buildWorkspaceWithPhaseLogs, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
+import { buildInputs, checkSource, buildWorkspace as buildWorkspaceWithPhaseLogs, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
 import { nativeVerifierEnv } from '../../../../scripts/lib/verify-tauri-native-env.mjs';
 import { bindFrozenDependencyGeneration } from '../../../../packages/operator-core/lib/dependency-generation-proof';
-import { runVerifierCommand, selectVerifierDependencySnapshot } from '../../../../scripts/source-preview.mjs';
+import { prepareVerifierSource, runVerifierCommand, selectVerifierDependencySnapshot } from '../../../../scripts/source-preview.mjs';
 
 // Imported builds intentionally report progress on stderr. Capture only this
 // operation and validate its diagnostics, leaving unexpected console errors fatal.
@@ -61,6 +61,8 @@ function fixture(workspace = 'packages/cli') {
   // including when the shell fixture runs before any npm installation.
   const cliEntry = 'packages/operator-core/lib/util/cli-entry.ts';
   write(tooling, cliEntry, readFileSync(join(repo, cliEntry), 'utf8'));
+  const sourceVerifier = 'libs/test-config/src/verifier-source.ts';
+  write(tooling, sourceVerifier, readFileSync(join(repo, sourceVerifier), 'utf8'));
   write(tooling, 'papercusp-desktop/bin/lib/pinned-deps.sh', readFileSync(helper, 'utf8'));
   execFileSync('git', ['init', '-q'], { cwd: tooling });
   execFileSync('git', ['add', '.'], { cwd: tooling });
@@ -91,6 +93,7 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
     'node_modules/@tauri-apps/cli': { version: '2.0.0' },
   } }));
   cpSync(join(tooling, 'apps'), join(donor, 'apps'), { recursive: true });
+  write(donor, sourceVerifier, readFileSync(join(tooling, sourceVerifier), 'utf8'));
   write(donor, cliEntry, readFileSync(join(tooling, cliEntry), 'utf8'));
   write(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh', readFileSync(snapshotHelper, 'utf8'));
   execFileSync('git', ['init', '-q'], { cwd: donor });
@@ -184,6 +187,77 @@ describe('bounded independent verifier copy', () => {
 });
 
 describe('D012 native generation closure', () => {
+  it('rebuilds and reuses native closure from an independently pinned archive with tracked runtime output removed', async () => {
+    const workspace = 'packages/omp-plugin';
+    const f = fixture(workspace);
+    const runtime = 'papercusp-desktop/src-tauri/resources/workbench-install.js';
+    write(f.donor, runtime, 'historical generated runtime');
+    execFileSync('git', ['add', runtime], { cwd: f.donor });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'historical tracked runtime'], { cwd: f.donor });
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    buildWorkspace(f.donor, workspace, [process.execPath, 'build.cjs']);
+    const previous = f.publish();
+    const previousClosure = readFileSync(join(previous, '.verifier-closure.json'), 'utf8');
+    const archive = join(f.root, 'archive'), receiptPath = join(f.root, 'archive.json');
+    const receipt = await prepareVerifierSource({ repo: f.donor, ref, dest: archive,
+      inputs: [workspace + '/src/cli.cjs'] });
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const pins = { VERIFY_TAURI_SOURCE_RECEIPT: receiptPath, VERIFY_TAURI_SOURCE_REF: ref };
+    expect(existsSync(join(archive, '.git'))).toBe(false);
+    expect(existsSync(join(archive, runtime))).toBe(false);
+    const stale = f.shell(f.snapshotHelper, ['preflight-generation', f.donor, archive], pins);
+    expect(stale.status).toBe(74);
+    const args = ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', archive, '--retain-as', 'native-archive-test'];
+    const rebuilt = f.shell(f.generationScript, args, pins);
+    expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    expect(rebuilt.stdout).toContain('reused=false');
+    const generation = rebuilt.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    expect(generation).not.toBe(previous);
+    const closure = JSON.parse(readFileSync(join(generation, '.verifier-closure.json'), 'utf8'));
+    expect(closure.complete).toBe(true);
+    expect(closure.workspaces[0].inputs.some((input: { path: string }) => input.path === runtime)).toBe(false);
+    expect(readFileSync(join(previous, '.verifier-closure.json'), 'utf8')).toBe(previousClosure);
+    expect(existsSync(join(archive, 'node_modules'))).toBe(false);
+    expect(existsSync(join(archive, workspace, 'dist'))).toBe(false);
+    const reused = f.shell(f.generationScript, args, pins);
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(reused.stdout).toContain('reused=true');
+    expect(reused.stdout).toContain('path=' + generation);
+    const copied = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, archive], pins);
+    expect(copied.status, copied.stderr).toBe(0);
+    expect(spawnSync(process.execPath, [join(archive, 'node_modules/.bin/probe')], { encoding: 'utf8' }).stdout)
+      .toBe('frozen-workspace\n');
+    expect(readdirSync(join(f.store, '.papercusp/dependency-exact-ref'))).toEqual([]);
+    expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+  }, 120_000);
+
+  it.each(['missing-pin', 'internal-pin', 'wrong-ref', 'receipt', 'source', 'extra'])
+    ('refuses %s archive custody before measuring native build inputs', async defect => {
+      const f = fixture('packages/omp-plugin');
+      const archive = join(f.root, 'archive'), receiptPath = join(f.root, 'archive.json');
+      const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+      const receipt = await prepareVerifierSource({ repo: f.donor, ref, dest: archive,
+        inputs: ['packages/omp-plugin/src/cli.cjs'] });
+      writeFileSync(receiptPath, JSON.stringify(receipt));
+      vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receiptPath);
+      vi.stubEnv('VERIFY_TAURI_SOURCE_REF', ref);
+      try {
+        checkSource(archive, ref);
+        expect(buildInputs(archive).map((input: { path: string }) => input.path))
+          .toContain('packages/omp-plugin/src/cli.cjs');
+        if (defect === 'missing-pin') vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', '');
+        if (defect === 'internal-pin') vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', join(archive, '.verifier-source.json'));
+        if (defect === 'wrong-ref') vi.stubEnv('VERIFY_TAURI_SOURCE_REF', '0'.repeat(40));
+        if (defect === 'receipt') writeFileSync(join(archive, '.verifier-source.json'), JSON.stringify({ ...receipt, sourceCommit: '0'.repeat(40) }));
+        if (defect === 'source') write(archive, 'packages/omp-plugin/src/cli.cjs', 'tampered');
+        if (defect === 'extra') write(archive, 'unrecorded.cjs', 'unrecorded');
+        expect(() => checkSource(archive, ref)).toThrow();
+        expect(() => buildInputs(archive)).toThrow();
+      } finally { vi.unstubAllEnvs(); }
+    });
+
   it.each(['source-stale', 'incomplete'])('rebuilds a %s exact-ref native closure with unchanged locks, then reuses it', async defect => {
     const f = fixture();
     if (defect === 'incomplete') rmSync(join(f.donor, 'packages/cli/dist/.papercusp-workspace-build.json'));

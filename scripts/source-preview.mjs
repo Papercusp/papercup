@@ -2292,11 +2292,11 @@ export function verifyBgVerifierOutputRecord(output, record, invocation) {
  * An explicit allowance is shared across phases and requires a finite caller
  * deadline. Neither progress nor a forecast grants more time. Keep the default
  * dependency ceiling when omitted, and reserve the parent's cleanup window.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
+ * @param {{ donor: string, runtimeAssetDonor?: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal,
  *   env?: NodeJS.ProcessEnv, maxMs?: number, cutoffEpochMs?: number | null, now?: () => number,
  *   resourceInventory?: ReturnType<typeof verifierResourceInventory> }} options
  */
-export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal,
+export async function prepareVerifierDependencies({ donor, runtimeAssetDonor = donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal,
   env = process.env, maxMs, cutoffEpochMs, now = Date.now, resourceInventory }) {
   const admission = admitVerifierCommandBudget(null, { env, nowMs: now() });
   if (maxMs !== undefined && (!Number.isSafeInteger(maxMs) || maxMs <= 0 || admission.deadlineEpochMs === null))
@@ -2315,7 +2315,7 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
     { runtimeArtifacts: true, dependencyStaging: true }));
   const runtimeSetup = join(dest, 'apps/operator/scripts/setup-porcupine-runtime.sh');
   if (existsSync(runtimeSetup)) {
-    const modelDonor = join(donor, 'apps/operator/public/porcupine/porcupine_params.pv');
+    const modelDonor = join(runtimeAssetDonor, 'apps/operator/public/porcupine/porcupine_params.pv');
     // The model is gitignored. Copy it through the selected source's own
     // checksum-pinned helper; never link the mutable work-root cache into the
     // immutable verifier snapshot.
@@ -2636,11 +2636,11 @@ function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
+export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
   releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease, signal,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (signal?.aborted) throw new PreviewError('verifier command canceled before launch', 143);
@@ -2659,13 +2659,17 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   const sourceCommit = resolveCommit(sourceRepo, ref);
   const explicitGeneration = Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
   const donor = explicitGeneration ? sourceRepo : committedWorkRootDependencyDonor(sourceRepo);
+  // A frozen Git source may consume an immutable dependency generation while
+  // ignored model bytes live in a separate cache. Only the selected source's
+  // checksum-pinned helper can admit and copy those bytes.
+  const runtimeDonor = realpathSync(runtimeAssetDonor ?? donor);
   const runtimeSetupPath = 'apps/operator/scripts/setup-porcupine-runtime.sh';
   if (git(sourceRepo, ['ls-tree', sourceCommit, '--', runtimeSetupPath]).trim()) {
     // Ignored runtime assets are not covered by node/workspace generation custody.
     // Use the selected commit's checksum pin before allocating the source tree;
     // the eventual snapshot still copies and rechecks the donor bytes.
     const runtimeSetup = git(sourceRepo, ['show', sourceCommit + ':' + runtimeSetupPath]);
-    const modelDonor = join(donor, 'apps/operator/public/porcupine/porcupine_params.pv');
+    const modelDonor = join(runtimeDonor, 'apps/operator/public/porcupine/porcupine_params.pv');
     const check = spawnSync('bash', ['-c', runtimeSetup, join(sourceRepo, runtimeSetupPath),
       '--check-source', modelDonor], { cwd: sourceRepo, env: verifierDependencyEnv(env),
       encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
@@ -2849,7 +2853,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
             (check.error?.message || check.stderr || check.status), 2);
       });
     }
-    const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase,
+    const dependencies = await prepareVerifierDependencies({ donor, runtimeAssetDonor: runtimeDonor, dest: root, receipt, runPhase,
       signal: cancellation.signal, env, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now, resourceInventory });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
@@ -4346,7 +4350,7 @@ function parseArgs(argv) {
     else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--preparation-max-ms', '--operator-api-root', '--operator-api-source-receipt',
+    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--preparation-max-ms', '--runtime-asset-donor', '--operator-api-root', '--operator-api-source-receipt',
       '--operator-api-source-sha', '--operator-api-inputs', '--operator-api-inputs-sha'].includes(a)) {
       const path = rest[++i];
       if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
@@ -4429,6 +4433,7 @@ async function main(argv) {
     if (!opts.repo || !opts.ref || !opts.receipt || !(opts.inputs || opts['inputs-file']) || !opts.command?.length)
       throw new PreviewError('verifier-run requires --repo, --ref, --receipt, --inputs or --inputs-file and -- <command>', 2);
     return runVerifierCommand({ repo: opts.repo, ref: opts.ref, receiptPath: opts.receipt,
+      runtimeAssetDonor: opts['runtime-asset-donor'],
       inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
       tauriInputs: opts.tauriInputs === true, command: opts.command,
       budgetFrom: opts['budget-from'], childEstimateMs: opts['child-estimate-ms'] === undefined ? 0 : Number(opts['child-estimate-ms']),
