@@ -139,6 +139,8 @@ interface Overrides {
   canRotate?: ClaudeAdapterOptions['canRotate'];
   classifyResponse?: ClaudeAdapterOptions['classifyResponse'];
   retryBudgetExhausted?: ClaudeAdapterOptions['retryBudgetExhausted'];
+  selectRotation?: ClaudeAdapterOptions['selectRotation'];
+  transientRecovery?: ClaudeAdapterOptions['transientRecovery'];
   policy?: Partial<GatewayKernelPolicy>;
 }
 
@@ -181,6 +183,8 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
     canRotate: overrides.canRotate,
     classifyResponse: overrides.classifyResponse,
     retryBudgetExhausted: overrides.retryBudgetExhausted,
+    selectRotation: overrides.selectRotation,
+    transientRecovery: overrides.transientRecovery,
     peekBytes: 4096,
     peekTimeoutMs: 1_000,
   });
@@ -255,6 +259,63 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
     observedErrors,
   };
 }
+
+describe('Claude health-aware failure recovery', () => {
+  it('prefers a runnable untried sibling over an unavailable pool fallback', async () => {
+    const A = acct('A'), B = acct('walled-B'), C = acct('serving-C');
+    const { pool, calls } = makePool([B]);
+    const routed: string[] = [];
+    const recovery = vi.fn(() => ({ account: A, recoverAt: Date.now() + 100 }));
+    const { options } = harness(async (_url, init) => {
+      routed.push(init.diagnosticAccountId);
+      if (init.diagnosticAccountId === A.accountId) throw new Error('connect timeout');
+      return res(200);
+    }, { accounts: [A, B, C], pool, selectRotation: () => C, transientRecovery: recovery });
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result.status).toBe(200);
+    expect(routed).toEqual(['A', 'serving-C']);
+    expect(calls).toHaveLength(1);
+    expect(recovery).not.toHaveBeenCalled();
+  });
+
+  it('can revisit a recovered account without cycling through a quota-walled sibling', async () => {
+    const A = acct('A'), B = acct('walled-B');
+    const { pool, calls } = makePool([B]);
+    let requests = 0;
+    const { options, routeDelays } = harness(async () => {
+      if (++requests === 1) throw new Error('connect timeout');
+      return res(200);
+    }, { accounts: [A, B], pool, selectRotation: () => null,
+      transientRecovery: () => ({ account: A, recoverAt: Date.now() + 20 }) });
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 200, attempts: 2 });
+    expect(requests).toBe(2);
+    expect(calls).toHaveLength(1);
+    expect(routeDelays[1]).toBeGreaterThanOrEqual(20);
+  });
+
+  it('never uses health rotation or recovery to escape a hard pin', async () => {
+    const A = acct('A'), B = acct('B');
+    const { pool, calls } = makePool([B]);
+    const selectRotation = vi.fn(() => B);
+    const recovery = vi.fn(() => ({ account: B, recoverAt: Date.now() }));
+    const { options } = harness(async () => { throw new Error('connect timeout'); }, {
+      accounts: [A, B], pool, pin: { accountId: 'A', mode: 'hard' },
+      selectRotation, transientRecovery: recovery,
+    });
+
+    const error = await executeGatewayRequestKernel(options).catch(error => error);
+
+    expect(error).toMatchObject({ code: 'upstream-error', status: 502 });
+    expect(selectRotation).not.toHaveBeenCalled();
+    expect(recovery).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+});
 
 describe('claude kernel adapter', () => {
   it('replays the caller-resolved account and never calls pool.active() (D-010)', async () => {

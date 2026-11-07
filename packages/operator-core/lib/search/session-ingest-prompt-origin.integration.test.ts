@@ -21,6 +21,10 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
     import { activeWorkspaceId } from './packages/operator-core/lib/workspace-registry.ts';
     import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine, backfillTurnProvenanceOnce, recorrelatePromptOriginStampsOnce, ingestFileNow } from './packages/operator-core/lib/search/session-ingest.ts';
     import { mkdir, writeFile, appendFile } from 'node:fs/promises';
+    import { copyFileSync, chmodSync } from 'node:fs';
+    import { spawn } from 'node:child_process';
+    import { createServer } from 'node:http';
+    import { homedir } from 'node:os';
     import { join } from 'node:path';
     import { MACHINE_SURFACE_CATALOGUE_VERSION } from './packages/operator-core/lib/turn-provenance/machine-surface-catalogue.ts';
     const workspace = activeWorkspaceId();
@@ -194,6 +198,90 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
         WHERE workspace_id='default' AND source_kind='codex' AND session_id=\${nativeId} ORDER BY turn_idx\`;
       assert.deepEqual(tail.map(t => [t.turn_idx, t.text, t.turn_origin_verdict]),
         [[0, 'original request é', 'unenrolled-origin'], [1, 'B', 'unenrolled-origin'], [2, 'no', 'unenrolled-origin']]);
+
+      // EI-28073503465008167: run the actual registered first-party hook,
+      // its hook-only stamp handler, and real ingest against disposable PG.
+      // A later working producer must never authenticate an older lost turn.
+      assert.equal(homedir(), process.env.HOME);
+      process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(homedir(), '.papercusp', 'turn-provenance');
+      await mkdir(join(homedir(), '.codex'), { recursive: true });
+      await writeFile(join(homedir(), '.codex', 'models_cache.json'), JSON.stringify({
+        models: [{ slug: 'gpt-5.5', multi_agent_version: 'v2' }],
+      }));
+      const hooksDir = join(homedir(), '.papercusp', 'hooks', 'cc');
+      await mkdir(hooksDir, { recursive: true });
+      for (const file of ['userpromptsubmit-provenance.sh', 'pc_nested_cli.py', 'mcp_response.py']) {
+        copyFileSync(join('apps/operator/scripts/hooks/cc', file), join(hooksDir, file));
+        chmodSync(join(hooksDir, file), 0o700);
+      }
+      for (const file of ['pretooluse-locks-acquire.sh', 'posttooluse-locks-release.sh', 'lifecycle-report.sh', 'stop-turn-journal.sh']) {
+        await writeFile(join(hooksDir, file), '#!/bin/sh\n');
+      }
+      await writeFile(join(homedir(), '.papercusp', 'superuser-token'), 'isolated-hook-token');
+      const { writeSuCodexHome } = await import('./packages/operator-core/lib/role-codex-home.ts');
+      const stampTool = (await import('./packages/operator-core/lib/agent-tools/sessions/record-prompt-origin.ts')).default;
+      const hookOwner = 'su-origin-hook-fixture';
+      const hookNative = 'origin-hook-native';
+      const hookCalls = [];
+      const hookErrors = [];
+      const server = createServer(async (req, res) => {
+        try {
+          assert.equal(req.headers.authorization, 'Bearer isolated-hook-token');
+          const url = new URL(req.url, 'http://127.0.0.1');
+          assert.equal(url.searchParams.get('origin'), 'hook');
+          assert.equal(url.searchParams.get('client'), hookOwner);
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          const rpc = JSON.parse(body);
+          const args = rpc.params.arguments;
+          hookCalls.push(rpc.params.name);
+          const reply = rpc.params.name === 'sessions:record-prompt-origin'
+            ? (await stampTool.handler(args, { uiClientId: hookOwner, isSuperuser: true,
+                workspaceId: workspace, requestOrigin: { query: { origin: 'hook' } } })).data
+            : { ok: true, id: 1 };
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id,
+            result: { content: [{ type: 'text', text: JSON.stringify(reply) }] } }));
+        } catch (error) { hookErrors.push(String(error)); res.statusCode = 500; res.end(); }
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const operator = 'http://127.0.0.1:' + server.address().port;
+        const home = writeSuCodexHome({ sessionKey: 'real-origin-hook', sid: hookOwner,
+          mcpUrl: operator + '/api/mcp?superuser=1&client=' + hookOwner,
+          promptText: '# Isolated hook fixture', model: 'gpt-5.5' });
+        const hooks = JSON.parse(readFileSync(join(home.codexHome, 'hooks.json'), 'utf8'));
+        const command = hooks.hooks.UserPromptSubmit.flatMap(group => group.hooks)
+          .find(hook => hook.command.includes('userpromptsubmit-provenance.sh')).command;
+        const prior = candidate('hook-prior', 'codex', { text: 'lost historical fixture choice', at: new Date() });
+        const current = candidate('hook-current', 'codex', { text: 'accept the isolated fixture review\r\nplease', at: new Date() });
+        prior.session_id = current.session_id = hookNative;
+        prior.turn_idx = 0; current.turn_idx = 1;
+        await insertTurns(sql, [prior, current]);
+        const runHook = prompt => new Promise((resolve, reject) => {
+          const child = spawn('bash', ['-c', command], { timeout: 15000, env: {
+            PATH: process.env.PATH, HOME: process.env.HOME, PAPERCUSP_OPERATOR_URL: operator,
+          } });
+          let output = '', errors = '';
+          child.stdout.on('data', chunk => output += chunk);
+          child.stderr.on('data', chunk => errors += chunk);
+          child.on('error', reject);
+          child.on('close', code => code === 0 ? resolve(output) : reject(new Error(errors)));
+          child.stdin.end(JSON.stringify({ prompt, session_id: hookNative, turn_id: 'fixture-native-turn' }));
+        });
+        const output = await runHook(current.text);
+        assert.match(output, /OWNER \(interactive\)/);
+        assert.deepEqual(hookErrors, []);
+        assert.ok(hookCalls.includes('sessions:record-prompt-origin'));
+        assert.equal((await recorrelatePromptOriginStampsOnce(sql, 100)).promoted, 1);
+        const correlated = await sql.unsafe('SELECT turn_idx, turn_origin, turn_origin_verdict FROM harness_shared.session_turns WHERE workspace_id=$1 AND session_id=$2 ORDER BY turn_idx', [workspace, hookNative]);
+        assert.deepEqual(correlated.map(row => [row.turn_idx, row.turn_origin, row.turn_origin_verdict]),
+          [[0, null, 'unenrolled-origin'], [1, 'hook-authenticated-prompt', 'owner-typed']]);
+        const stampCalls = hookCalls.filter(name => name === 'sessions:record-prompt-origin').length;
+        await runHook('[SYSTEM NOTIFICATION: NOT USER INPUT]\nfixture machine wake');
+        assert.equal(hookCalls.filter(name => name === 'sessions:record-prompt-origin').length, stampCalls);
+        console.log('PROMPT_ORIGIN_REAL_HOOK ' + JSON.stringify({ current: 'owner-typed', historical: 'unenrolled-origin', machineStamped: false }));
+      } finally { await new Promise(resolve => server.close(resolve)); }
       assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
     } finally { await sql.end(); }
   `.replaceAll('\\`', '`').replaceAll('\\${', '${');
@@ -210,4 +298,5 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
   expect(existsSync(JSON.parse(environment!).home)).toBe(false);
   expect(result.status, result.stdout.slice(-5000) + '\n' + result.stderr.slice(-5000)).toBe(0);
   expect(result.stdout).toContain('PROMPT_ORIGIN_RESULT');
+  expect(result.stdout).toContain('PROMPT_ORIGIN_REAL_HOOK');
 }, 200000);

@@ -25,6 +25,31 @@ function deps(
 }
 
 describe('checkDraftItemStartGate (WI-10008137)', () => {
+  it('DISCOVERY-R5 direct item start cannot bypass discovery', async () => {
+    for (const status of ['draft', 'ready', 'active']) for (const toStatus of ['wip', 'done']) {
+      const d = deps(plan(status, { 'P-001': 'todo' }), audited, true);
+      expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus, ...d,
+        evaluateDiscovery: async () => ({ ok: false, error: 'discovery_not_ready' }) }))
+        .toMatchObject({ error: 'discovery_not_ready' });
+      expect(d.evaluateGate).not.toHaveBeenCalled();
+      expect(d.hasCoveringWorkItem).not.toHaveBeenCalled();
+    }
+  });
+
+  it('DISCOVERY-R6 draft discovery proceeds without implementation activation', async () => {
+    const d = deps(plan('draft', { 'P-001': 'todo' }), unaudited);
+    const evaluateDiscovery = vi.fn(async () => ({ ok: false as const, error: 'discovery_not_ready' }));
+    for (const toStatus of ['todo', 'blocked']) {
+      expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus, ...d, evaluateDiscovery })).toBeNull();
+    }
+    expect(evaluateDiscovery).not.toHaveBeenCalled();
+    expect(d.evaluateGate).not.toHaveBeenCalled();
+    expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'wip', ...d, evaluateDiscovery }))
+      .toMatchObject({ error: 'discovery_not_ready' });
+    expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'wip', ...d,
+      evaluateDiscovery: async () => ({ ok: true }) })).toMatchObject({ error: 'activation_audit_required' });
+  });
+
   it.each(['draft', 'ready', 'active'])('refuses a new implementation start on %s before activation or open-cover bypass', async status => {
     const d = deps(plan(status, { 'P-001': 'todo' }), audited, true);
     const evaluateDiscovery = vi.fn(async () => ({ ok: false as const, error: 'discovery_not_ready', nextAction: 'Resolve Q-1.' }));

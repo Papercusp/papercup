@@ -713,6 +713,24 @@ describe('gateway request kernel spent retry budget (D-014 ttfbCapMs)', () => {
 
     expect(result).toMatchObject({ status: 200, outcome: 'ok', attempts: 2 });
   });
+
+  it('preserves a transport failure when the retry budget expires before the replacement attempt', async () => {
+    let capCalls = 0;
+    const failure = new GatewayRequestKernelError('connection timed out before any provider response', {
+      code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true,
+    });
+    const executeAttempt = vi.fn(async () => { throw failure; });
+    const f = fixture(laneRegistry.anthropicMessages, {
+      policy: { ttfbCapMs: () => (++capCalls === 1 ? 1000 : 0), maxAttempts: 3 }, executeAttempt,
+    });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'upstream-error', outcome: 'upstream-error', status: 502 });
+    expect(error.message).toContain('connection timed out');
+    expect(executeAttempt).toHaveBeenCalledTimes(1);
+    expect(f.counts()).toMatchObject({ failoverCalls: 1, releaseCount: 1, unregisterCount: 1 });
+  });
 });
 
 describe.each(laneCases.filter(({ lane }) => lane.capabilities.accountPinning !== 'none'))(

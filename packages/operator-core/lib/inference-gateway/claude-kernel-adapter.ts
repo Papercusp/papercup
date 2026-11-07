@@ -213,6 +213,10 @@ export interface ClaudeAdapterOptions {
   initialAccount: ActiveAccount;
   /** Rotation pool. Absent ⇒ single-account mode; rotation declines. */
   pool?: AccountPool;
+  /** Rank runnable untried accounts; the pool's terminal fallback may be unavailable. */
+  selectRotation?(exclude: ReadonlySet<string>): ActiveAccount | null;
+  /** Bounded recovery after runnable siblings are exhausted; may revisit a recovered account. */
+  transientRecovery?(): { account: ActiveAccount; recoverAt: number } | null;
   upstreamUrl: string;
   method: string;
   /** Headers minus auth; the credential header and the OAuth beta are layered on per attempt
@@ -520,10 +524,18 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       // one parked account per retry — a failure that surfaces only as accounts
       // mysteriously going cold under load.
       const next = opts.pool.onExhausted(current, resolveResetAt(context));
-      if (!next || next.accountId === current) return null;
-      if (triedAccounts.has(next.accountId)) return null;
-      triedAccounts.add(next.accountId);
-      return routeFor(next, 'rotate', rotateDelayFor(kind, context.lastResponse?.status ?? null));
+      const selected = opts.selectRotation ? opts.selectRotation(triedAccounts) : next;
+      const rotateDelay = rotateDelayFor(kind, context.lastResponse?.status ?? null);
+      if (selected && !triedAccounts.has(selected.accountId)) {
+        triedAccounts.add(selected.accountId);
+        return routeFor(selected, 'rotate', rotateDelay);
+      }
+      // A concrete terminal fallback is not proof that it can serve. Recover an
+      // eligible account behind the kernel's abortable delay, or retain the failure.
+      const recovery = opts.transientRecovery?.();
+      if (!recovery) return null;
+      triedAccounts.add(recovery.account.accountId);
+      return routeFor(recovery.account, 'rotate', Math.max(rotateDelay, recovery.recoverAt - now() + 50));
     },
 
     async prepareAttempt(context: GatewayKernelAttemptContext<ClaudeRouteValue>): Promise<ClaudePreparedAttempt> {

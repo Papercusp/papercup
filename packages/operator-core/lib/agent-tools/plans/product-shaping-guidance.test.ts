@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
+import { discoveryWorkflow, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
 import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
 import { composeSuStackSource } from '@papercusp/orchestrator/blueprint';
 
@@ -58,6 +58,20 @@ describe('su plan guidance puts shaping first and leads approval with the walkth
 });
 
 describe('discovery phase guidance reaches launch rendering', () => {
+  it('DISCOVERY-R7 walkthrough explains stage and scoped next action', () => {
+    const observed = { ready: true, evidenceRefs: ['source:cache.ts'],
+      nextAction: 'Finalize the current scoped discovery before implementation review.' };
+    expect(discoveryWorkflow(observed, false)).toEqual({ stage: 'discovery',
+      label: 'Provisional discovery brief', evidenceRefs: observed.evidenceRefs, nextAction: observed.nextAction });
+    const finalized = discoveryWorkflow(observed, true);
+    expect(finalized.stage).toBe('implementation-review');
+    expect(finalized.evidenceRefs).toEqual(observed.evidenceRefs);
+    expect(finalized.nextAction).toContain('original intent and its full BARs');
+    expect(finalized.nextAction).toContain('does not grant implementation authority');
+    expect(discoveryWorkflow({ ...observed, ready: false }, true).stage).toBe('discovery');
+    expect(PRODUCT_SHAPING_GUIDANCE).toContain('Brief → scoped discovery → findings incorporated → implementation review → execution.');
+  });
+
   it.each(['claude', 'codex', 'omp'] as const)('%s renders both supported su profiles from canonical sources', async agent => {
     for (const profile of ['engineer', 'power'] as const) {
       const rendered = await renderSuPlaybook({ agent, profile, tier: 'full',

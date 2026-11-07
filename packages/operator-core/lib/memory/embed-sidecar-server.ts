@@ -501,7 +501,7 @@ const defaultBuilders: EmbedderBuilders = {
 
 /** Reranker equivalent of EmbedderBuilders — tests inject fakes so no unit test
  *  loads a real cross-encoder. */
-export type RerankFn = (query: string, texts: string[]) => Promise<number[]>;
+export type RerankFn = (query: string, texts: string[], signal?: AbortSignal) => Promise<number[]>;
 export type RerankerBuilders = {
   [M in RerankSidecarModel]: () => Promise<RerankFn>;
 };
@@ -515,7 +515,7 @@ const buildSidecarReranker = (model: string) => async (): Promise<RerankFn> => {
   // a 500 (and flip the slot to 'failed') rather than quietly serve neutral
   // scores. The lib's fail-safe passthrough belongs on the CLIENT side, where
   // there is a retrieval order to degrade to.
-  return (query, texts) => scoreCrossEncoder(query, texts, { model, observeFallback });
+  return (query, texts, signal) => scoreCrossEncoder(query, texts, { model, observeFallback, signal });
 };
 
 const defaultRerankBuilders: RerankerBuilders = {
@@ -1257,9 +1257,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
             memoryBytes: Buffer.byteLength(query, 'utf8') + Buffer.byteLength(text, 'utf8'),
           },
           signal: taskSignal,
-          run: async () => {
+          run: async (runSignal) => {
             const rerankFn = await getReranker(model);
-            const scores = await rerankFn(query, [text]);
+            runSignal?.throwIfAborted();
+            const scores = await rerankFn(query, [text], runSignal);
             if (scores.length !== 1 || typeof scores[0] !== 'number' || !Number.isFinite(scores[0])) {
               throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
             }

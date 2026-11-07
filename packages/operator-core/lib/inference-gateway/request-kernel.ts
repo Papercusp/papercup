@@ -1023,6 +1023,9 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
          *  `retry-budget-exhausted` shed carries it, so a lane can answer with what the
          *  upstream actually said (e.g. an overload) instead of a generic throttle. */
         let lastRetriedStatus: number | null = null;
+        // A failed transport/auth/admission attempt has no HTTP response to carry.
+        // Keep its typed error so spending the retry budget cannot invent a 429.
+        let lastRetriedError: GatewayRequestKernelError | null = null;
         for (let attempt = 1; attempt <= opts.policy.maxAttempts; attempt++) {
           attempts = attempt;
           // D-018: the route's own pre-attempt pace, BEFORE the attempt context is
@@ -1070,6 +1073,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               });
               if (next) {
                 lastRetriedStatus = null;
+                lastRetriedError = preparationFailure;
                 route = currentRoute = adoptRoute(next);
                 continue;
               }
@@ -1088,6 +1092,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           // TTFB used to upload the prompt, abort it at once and surface the lane's own
           // deadline as an "upstream stall" 502.
           if (typeof cap === 'number' && Number.isFinite(cap) && Math.floor(cap) < 1) {
+            if (lastRetriedError) throw lastRetriedError;
             throw new GatewayRequestKernelError(
               `gateway retry budget exhausted before attempt ${attempt} could start`,
               {
@@ -1131,6 +1136,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
                 });
                 if (next) {
                   lastRetriedStatus = null;
+                  lastRetriedError = admissionFailure;
                   route = currentRoute = adoptRoute(next);
                   continue;
                 }
@@ -1229,6 +1235,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               });
               if (next) {
                 lastRetriedStatus = null;
+                lastRetriedError = attemptFailure;
                 route = currentRoute = adoptRoute(next);
                 continue;
               }
@@ -1274,6 +1281,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             if (next) {
               await response.discard?.();
               lastRetriedStatus = response.status;
+              lastRetriedError = null;
               route = currentRoute = adoptRoute(next);
               continue;
             }

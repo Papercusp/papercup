@@ -73,6 +73,23 @@ describe('Discovery before implementation review', () => {
   });
   const evaluate = (value: DiscoveryDeclaration = declaration(), ctx = context()) => evaluateDiscoveryReadiness(section(value), ctx);
 
+  it('DISCOVERY-R1 scoped records retain evidence and uncertainty', () => {
+    const value = declaration();
+    value.questions[2] = { ...value.questions[2]!, outcome: 'experiment',
+      rationale: 'Either tuning result preserves the measured helper contract.',
+      bounds: 'Measure one caller for ten minutes; stop if the contract differs.' };
+    const saved = previewDiscoveryDeclaration(section(value));
+    expect(saved.data).toEqual(value);
+    expect(saved.data?.findings[0]?.evidenceRefs).toEqual(['proof:current-source']);
+    expect(saved.data?.questions[2]).toMatchObject({ outcome: 'experiment',
+      bounds: value.questions[2]!.bounds, rationale: value.questions[2]!.rationale });
+    expect(evaluate(saved.data!).ready).toBe(true);
+    value.questions[2] = { ...value.questions[2]!, outcome: 'unresolved' };
+    expect(evaluate(value)).toMatchObject({ ready: false,
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'discovery_unresolved' })]) });
+    expect(previewDiscoveryDeclaration(section(value)).data?.questions[2]?.outcome).toBe('unresolved');
+  });
+
   it('requires a single bounded declaration and never treats scaffold seeds as answers', () => {
     expect(evaluateDiscoveryReadiness('## Design\nReady', context()).ready).toBe(false);
     expect(previewDiscoveryDeclaration(section(declaration()) + '\n' + section(declaration())).status).toBe('invalid');

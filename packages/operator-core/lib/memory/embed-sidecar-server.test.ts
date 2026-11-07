@@ -1661,6 +1661,37 @@ describe('rerank sidecar HTTP surface (fake rerankers, ephemeral port)', () => {
     scored.length = 0;
   });
 
+  it('forwards request cancellation to admitted reranker work', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let runSignal: AbortSignal | undefined;
+    let entered = false;
+    await bootRerank({
+      ...fakeRerankBuilders,
+      rerank: async () => async (_query, texts, signal) => {
+        entered = true;
+        runSignal = signal;
+        await pending;
+        return texts.map(text => text.length);
+      },
+    });
+    const controller = new AbortController();
+    const request = fetch(`${baseUrl}/rerank`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'q', texts: ['abandoned'] }), signal: controller.signal,
+    }).catch(error => error);
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true));
+      expect(runSignal).toBeInstanceOf(AbortSignal);
+      controller.abort();
+      await vi.waitFor(() => expect(runSignal?.aborted).toBe(true));
+    } finally {
+      controller.abort();
+      release();
+      await request;
+    }
+  });
+
   it('returns scores INDEX-ALIGNED with the request texts, never reordered', async () => {
     await bootRerank();
     // Deliberately not in score order: the server must NOT sort. Ordering is

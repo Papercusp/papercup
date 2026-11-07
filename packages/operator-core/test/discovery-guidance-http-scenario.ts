@@ -1,10 +1,78 @@
 /** Retained same-session discovery guidance through the real private HTTP host. */
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { loadHarnessRegistry } from '../lib/harness-registry';
 import type { DiscoveryDeclaration } from '../lib/agent-tools/plans/plan-declarations';
+import { SERVING_RUNTIMES } from '../lib/serving-runtimes';
+import { probeServiceStart, readProcStartMs } from '../lib/agent-tools/dev/systemd-service-probe';
+import { isLiveNodeEntrySourceCurrent, measureLiveNodeEntrySource, type LiveNodeEntrySource } from '../lib/runtime-vintage';
+import { measureBootOperatorArtifact, type OperatorArtifactIdentity } from '../lib/release/operator-artifact';
+
+/** Selection is the existing registered release service, never a caller's
+ * arbitrary bundle path. A fresh private/source bundle cannot acquire this pin. */
+export interface DiscoveryShippedTarget {
+  runtime: 'release-operator';
+  source: LiveNodeEntrySource;
+  processStartedAtMs: number;
+  artifact: Extract<OperatorArtifactIdentity, { status: 'measured' }>;
+  health: { sha: string; service: string };
+}
+
+async function releaseHealth() {
+  const runtime = SERVING_RUNTIMES['release-operator'];
+  const response = await fetch(`http://127.0.0.1:${runtime.healthPort}/api/health`,
+    { signal: AbortSignal.timeout(5_000) });
+  assert.equal(response.status, 200, 'selected release health must be reachable');
+  const health = await response.json() as any;
+  assert.equal(health.service, 'papercusp-operator');
+  assert.match(health.sha, /^[a-f0-9]{7,64}$/);
+  assert.equal(health.bundleStale, undefined, 'a stale fallback is not a shipped artifact');
+  return { sha: health.sha as string, service: health.service as string };
+}
+
+export async function pinDiscoveryShippedTarget(): Promise<DiscoveryShippedTarget> {
+  const runtime = SERVING_RUNTIMES['release-operator'];
+  assert.ok(runtime.unit && runtime.codeSource === 'release-checkout');
+  const service = await probeServiceStart(runtime.unit);
+  assert.ok(service.ok && service.mainPid, 'registered release service needs a live process');
+  const source = measureLiveNodeEntrySource(service.mainPid);
+  assert.ok(source, 'release entry must be measured from the already running process');
+  const processStartedAtMs = await readProcStartMs(service.mainPid);
+  assert.ok(processStartedAtMs);
+  const health = await releaseHealth();
+  const artifact = measureBootOperatorArtifact(source.entry, health.sha, processStartedAtMs);
+  assert.equal(artifact.status, 'measured', 'release needs its immutable boot artifact manifest');
+  if (artifact.status !== 'measured') throw new Error('release artifact is unknown');
+  assert.equal(artifact.bundleSha256, source.sha256);
+  assert.ok(isLiveNodeEntrySourceCurrent(source), 'release changed during selection');
+  return { runtime: 'release-operator', source, processStartedAtMs, artifact, health };
+}
+
+/** Re-resolve the service and immutable boot bytes before and after execution.
+ * A replaced process, changed bundle, staging target or rewritten pin refuses. */
+export async function recheckDiscoveryShippedTarget(target: DiscoveryShippedTarget) {
+  assert.equal(target.runtime, 'release-operator');
+  const current = await pinDiscoveryShippedTarget();
+  assert.deepEqual(current, target, 'the exact shipped target changed during the journey');
+  return current;
+}
+
+export async function readDiscoveryShippedTarget(argv: readonly string[]) {
+  const paths = argv.filter(arg => arg.startsWith('--discovery-shipped-target='));
+  const hashes = argv.filter(arg => arg.startsWith('--discovery-shipped-target-sha='));
+  if (!paths.length && !hashes.length) return null;
+  assert.equal(paths.length, 1); assert.equal(hashes.length, 1);
+  const path = paths[0]!.slice('--discovery-shipped-target='.length);
+  const sha256 = hashes[0]!.slice('--discovery-shipped-target-sha='.length);
+  assert.ok(isAbsolute(path)); assert.match(sha256, /^[a-f0-9]{64}$/);
+  const bytes = await readFile(path);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), sha256, 'shipped target receipt changed');
+  const target = JSON.parse(String(bytes)) as DiscoveryShippedTarget;
+  await recheckDiscoveryShippedTarget(target);
+  return target;
+}
 
 type Options = { workspace: string; base: string; headers: Record<string, string>;
   evidenceDir: string; expectedSha: string };

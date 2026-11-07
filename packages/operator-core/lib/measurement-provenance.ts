@@ -20,6 +20,7 @@ export function retainMeasurementProvenance(input: {
 }): RecordedMeasurementProvenance {
   let redacted = false;
   let procedureTruncated = false;
+  let procedureInputOversized = false;
   let diagnosticsTruncated = false;
   const scrub = (text: string): string => {
     // Command output can put a sensitive assignment after a harmless header.
@@ -43,6 +44,14 @@ export function retainMeasurementProvenance(input: {
   const sanitize = (value: unknown, depth: number): unknown => {
     if (++procedureNodes > 256 || depth > 6) { procedureTruncated = true; return null; }
     if (typeof value === 'string') {
+      // The stored procedure string is capped at 8 KiB. Bound redaction work to
+      // that same input size instead of scanning an arbitrarily large value
+      // before slicing it for retention.
+      if (value.length > MAX_MEASUREMENT_PROCEDURE_BYTES) {
+        procedureTruncated = true;
+        procedureInputOversized = true;
+        return null;
+      }
       const safe = scrub(value);
       if (safe.length > 8192) procedureTruncated = true;
       return safe.slice(0, 8192);
@@ -77,7 +86,7 @@ export function retainMeasurementProvenance(input: {
     return safe;
   };
   let snapshot = canonicalJson(sanitize(input.procedure, 0));
-  if (Buffer.byteLength(snapshot, 'utf8') > MAX_MEASUREMENT_PROCEDURE_BYTES) {
+  if (procedureInputOversized || Buffer.byteLength(snapshot, 'utf8') > MAX_MEASUREMENT_PROCEDURE_BYTES) {
     snapshot = '{}'; procedureTruncated = true;
   }
   const diagnostics: RecordedMeasurementProvenance['diagnostics'] = [];
@@ -100,6 +109,15 @@ export function retainMeasurementProvenance(input: {
       diagnostics.push({ path, value }); return;
     }
     if (typeof value === 'string') {
+      // Diagnostics retain at most 256 characters (or bounded stdout chunks),
+      // so a larger source string can be omitted without redacting the entire
+      // unbounded input first. Large one-line instrument details previously
+      // overflowed in String.replace inside scrub before this retention cap.
+      if (value.length > MAX_MEASUREMENT_PROVENANCE_BYTES) {
+        diagnosticsTruncated = true;
+        diagnostics.push({ path, value: '[omitted: oversized diagnostic]' });
+        return;
+      }
       const safe = scrub(value);
       // Command replay needs the complete parser input. Keep long stdout in
       // bounded leaves after scrubbing the WHOLE text, so chunk boundaries

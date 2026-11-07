@@ -1,0 +1,620 @@
+{
+  "schemaVersion": "deferred-spend-p011-reviewed-contract-v1",
+  "workItem": "WI-6554700010029076",
+  "planSlug": "workspace-host-deferred-spend-reconciliation-2026-09-07",
+  "planItem": "P-011",
+  "scope": "Acceptance contract governance only; no product, live or shipment verdict.",
+  "state": "independently-audited-manual-contract-evidence",
+  "spec": {
+    "id": "DS-P011-REVIEWED-CONTRACT",
+    "revision": 1,
+    "fingerprint": "e1edd748900ef0a40826e7646c49506b597b3f5599428afa01cfac30996605a9",
+    "behaviorClass": "non-automated",
+    "requiredEvidence": [
+      "manual"
+    ]
+  },
+  "subjectRubric": {
+    "rubricId": "acceptance-workspace-host-deferred-spend-reconciliation-2026-09-07",
+    "revision": 8,
+    "workspaceId": "papercusp-workspace",
+    "kind": "acceptance",
+    "subjectPlan": "workspace-host-deferred-spend-reconciliation-2026-09-07",
+    "subjectHarnessSlug": "papercusp",
+    "classRef": "plan-class-bugfix",
+    "barSetHash": "5bec473ac94eff7ae9242b6473dfd3b6162de25118652e94899f8c802a2c81f9",
+    "barContract": {
+      "schemaVersion": 1,
+      "adoptionEpoch": 1,
+      "cohort": "post-epoch",
+      "subjectPlanRevision": 51,
+      "seededAt": "2026-09-07T20:41:34.736Z",
+      "seededBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2",
+      "meaningRevision": 8
+    },
+    "characteristic": "plan-acceptance",
+    "title": "Acceptance BAR — Workspace-host deferred spend reconciliation",
+    "description": "Predeclared acceptance BARs for workspace-host-deferred-spend-reconciliation-2026-09-07.",
+    "criteria": [
+      {
+        "key": "r-001",
+        "title": "Use only the supported provider cost surface",
+        "model": "Use only the supported provider cost surface. GCP production reads use Cloud Billing export through the public BigQuery API, never the private Console `BillingData` GraphQL endpoint.",
+        "bar": "Use only the supported provider cost surface. GCP production reads use Cloud Billing export through the public BigQuery API, never the private Console `BillingData` GraphQL endpoint.",
+        "barKey": "R-001",
+        "barHash": "dde88f14301aa807b4fad46d19428c797729e26d886f4291f869ed44a9f06f03",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Run npm run test:file -- packages/operator-core/lib/workspace-host/gcp-api-client.test.ts. Inspect GoogleBigQueryBillingExportReader.read and billingQuery in gcp-api-client.ts: requests must target bigquery.googleapis.com/bigquery/v2/projects/*/queries with NAMED run/window parameters, maxResults and maximumBytesBilled. Inspect the production spend caller in hosted-lifecycle-store.ts. Healthy requires the supported-export tests green and no Console BillingData caller on this settlement path.\n\nAs-built detector supplement: execute the bound files with exact check.cases, including nonzero billing/auth/query/routine/schema positive control, this BAR's named injected counterexamples and incomplete-source controls. Analyzer: packages/operator-core/lib/workspace-host/deferred-spend-source-census.ts. Immutable inspection: capability:git-evidence {op:'readFileAtCommit',rootHarnessSlug:'papercusp',commitSha:'93aa78e047b084121aa97d31e2de170fa32140ad',path:'packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts',byte_offset:0,byte_limit:4096}; page to EOF, same full commit and full repository-relative paths for analyzer and original bound tests. Calibration is not a current production census. A healthy production source-negative claim additionally requires the complete attributable manifest using independently frozen D018 base/candidate/config/project-reference/migration-registry/changed-path selectors, exact symbol/effect edges and partition. Missing selectors or census evidence stays UNKNOWN; never choose population from detector output or infer production absence from green fixtures.",
+        "driftMarkers": "A settlement-path request calls the private Console BillingData/GraphQL endpoint, interpolates a run label as SQL, or omits the query byte ceiling; supported-export assertions fail.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+            "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts"
+          ],
+          "cases": [
+            {
+              "file": "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+              "testName": "uses bounded public BigQuery REST and preserves exact gross, credit, net, and conservative cents"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+              "testName": "validates interpolated identifiers and enforces the absolute query-cost ceiling before fetching"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "P009 source census positive controls > R001 R002 R005: witnesses billing/auth/query/routine/schema controls with concrete typed edges"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects private transport with exact path/symbol/line/reason"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > follows imported aliases for file sinks and private transport"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-INCOMPLETE-SOURCE > does not let one resolved call on a line hide a second unresolved effect"
+            }
+          ]
+        }
+      },
+      {
+        "key": "r-002",
+        "title": "Reuse the existing connection and credential seams",
+        "model": "For each billing-export request, the existing workspace-host connection supplies a typed, non-secret export descriptor plus its already-associated cloud credential through the established Google authentication transport, without an additional credential store.",
+        "bar": "For each billing-export request, the existing workspace-host connection supplies a typed, non-secret export descriptor plus its already-associated cloud credential through the established Google authentication transport, without an additional credential store.",
+        "barKey": "R-002",
+        "barHash": "936c0165ca7992ab5a8b82698b631f9c3846aebf62f795bc84034d23973f0e36",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Run npm run test:file -- packages/operator-core/lib/workspace-host/gcp-api-client.test.ts. Read GcpBillingExportDescriptor/parseGcpBillingExportDescriptor in gcp-api-client.ts and selectedConnection.connection.provider?.billingExport in hosted-lifecycle-store.ts. The descriptor must contain only validated public table/job identifiers and bounds. The reader defaults to existing acquireGcpAdcAuth and fetchGcpApiJson; persistence uses the existing workspace_host_connections provider_config/credential_ref seam. Healthy requires validation tests pass and no additional credential store.\n\nAs-built detector supplement: execute the bound files with exact check.cases, including nonzero billing/auth/query/routine/schema positive control, this BAR's named injected counterexamples and incomplete-source controls. Analyzer: packages/operator-core/lib/workspace-host/deferred-spend-source-census.ts. Immutable inspection: capability:git-evidence {op:'readFileAtCommit',rootHarnessSlug:'papercusp',commitSha:'93aa78e047b084121aa97d31e2de170fa32140ad',path:'packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts',byte_offset:0,byte_limit:4096}; page to EOF, same full commit and full repository-relative paths for analyzer and original bound tests. Calibration is not a current production census. A healthy production source-negative claim additionally requires the complete attributable manifest using independently frozen D018 base/candidate/config/project-reference/migration-registry/changed-path selectors, exact symbol/effect edges and partition. Missing selectors or census evidence stays UNKNOWN; never choose population from detector output or infer production absence from green fixtures.",
+        "driftMarkers": "The export descriptor persists a token/key, table identity bypasses validation, auth bypasses the existing Google seam, or this work introduces a parallel credential store.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+            "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts"
+          ],
+          "cases": [
+            {
+              "file": "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+              "testName": "validates interpolated identifiers and enforces the absolute query-cost ceiling before fetching"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+              "testName": "validates an ADC connection and maps bounded project catalogs without returning credential material"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+              "testName": "wires the explicit ADC production composition without changing injected-client fail-closed construction"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "P009 source census positive controls > R001 R002 R005: witnesses billing/auth/query/routine/schema controls with concrete typed edges"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects file sink with exact path/symbol/line/reason"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects keychain sink with exact path/symbol/line/reason"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects descriptor secret with exact path/symbol/line/reason"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects forbidden effects in unimported changed files and innocently named migrations"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-INCOMPLETE-SOURCE > does not let one resolved call on a line hide a second unresolved effect"
+            }
+          ]
+        }
+      },
+      {
+        "key": "r-003",
+        "title": "Preserve exact accounting and conservative safety gates",
+        "model": "Preserve exact accounting and conservative safety gates. Preserve exact gross, credits, net micros and currency. Keep existing integer-cents budget gates conservative; never round spend down or equate net-zero-after-credit with zero gross usage.",
+        "bar": "Preserve exact accounting and conservative safety gates. Preserve exact gross, credits, net micros and currency. Keep existing integer-cents budget gates conservative; never round spend down or equate net-zero-after-credit with zero gross usage.",
+        "barKey": "R-003",
+        "barHash": "e15bab859c193e7d40569191cb6c33c203f9cd399fa8f1a57b91fdc2ac047875",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Run npm run test:file -- libs/generic/deployment-driver/src/workspace-host-test-harness.test.ts packages/operator-core/lib/workspace-host/gcp-api-client.test.ts. Inspect createWorkspaceHostSpendObservation: grossMicros+creditMicros equals netMicros, currency is retained, and budgetCents is ceil(grossMicros/10000) using BigInt. Healthy requires credited-net-zero and nonintegral-cent positive controls plus malformed/noncanonical cases pass.",
+        "driftMarkers": "Any accepted observation loses micros/currency, conflates zero net with zero gross, permits inconsistent net, or rounds gross budget exposure downward.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/generic/deployment-driver/src/workspace-host-test-harness.test.ts",
+            "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-004",
+        "title": "Reconcile the retained ledger atomically and idempotently",
+        "model": "Reconcile the retained ledger atomically and idempotently. Reconcile the surviving host row by atomic, idempotent read-modify-write of the whole `cost_signals` array. Preserve every prior signal and the original deferral history.",
+        "bar": "Reconcile the retained ledger atomically and idempotently. Reconcile the surviving host row by atomic, idempotent read-modify-write of the whole `cost_signals` array. Preserve every prior signal and the original deferral history.",
+        "barKey": "R-004",
+        "barHash": "450134f2758ed58bbf7d70eee8361053f3e97f6148279f8de8cd2ba5fe24ddaa",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Run npm run test:file -- packages/operator-core/lib/workspace-host/hosted-lifecycle-store.integration.test.ts. The real-PG/RLS concurrent-first-read test must preserve both unrelated array entries and the original spendSettlement, append a provider observation once, and converge only after the second stable due pass. Inspect applySpendSignalPatch for host row lock, whole-array RMW and version recheck; provider reads must stay outside transactions.",
+        "driftMarkers": "Concurrent ticks append duplicate evidence, lose an unrelated signal or original deferral, write outside workspace RLS, or settle after a single read. The real-PG integration assertion fails.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/workspace-host/hosted-lifecycle-store.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-005",
+        "title": "Extend the existing durable routine",
+        "model": "Deferred spend extends the existing durable hosted-lifecycle-reconcile routine without introducing a second scheduler or spend-obligation table.",
+        "bar": "Deferred spend extends the existing durable hosted-lifecycle-reconcile routine without introducing a second scheduler or spend-obligation table.",
+        "barKey": "R-005",
+        "barHash": "8e9861a6921057195e48b4e373ceaf3a740ff665339661541337281cb8516027",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Run npm run test:file -- packages/operator-core/lib/harness/routines/hosted-lifecycle-reconcile-action.test.ts. Inspect makeHostedLifecycleReconcileAction and reconcileHostedLifecycleJobs: the existing hosted-lifecycle-reconcile action calls the existing sweep which invokes reconcileDeferredSpend and reports due/attempted/observed/settled/retryable/errors. Check the existing seed-hosted-lifecycle-reconcile-routine.ts action identity. Healthy requires caller/summary tests pass and no second scheduler or spend-obligation table in this change.\n\nAs-built detector supplement: execute the bound files with exact check.cases, including nonzero billing/auth/query/routine/schema positive control, this BAR's named injected counterexamples and incomplete-source controls. Analyzer: packages/operator-core/lib/workspace-host/deferred-spend-source-census.ts. Immutable inspection: capability:git-evidence {op:'readFileAtCommit',rootHarnessSlug:'papercusp',commitSha:'93aa78e047b084121aa97d31e2de170fa32140ad',path:'packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts',byte_offset:0,byte_limit:4096}; page to EOF, same full commit and full repository-relative paths for analyzer and original bound tests. Calibration is not a current production census. A healthy production source-negative claim additionally requires the complete attributable manifest using independently frozen D018 base/candidate/config/project-reference/migration-registry/changed-path selectors, exact symbol/effect edges and partition. Missing selectors or census evidence stays UNKNOWN; never choose population from detector output or infer production absence from green fixtures.",
+        "driftMarkers": "The durable action never reaches deferred spend, hides spend errors, or the implementation creates a parallel routine or spend-obligation table.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/harness/routines/hosted-lifecycle-reconcile-action.test.ts",
+            "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts"
+          ],
+          "cases": [
+            {
+              "file": "packages/operator-core/lib/harness/routines/hosted-lifecycle-reconcile-action.test.ts",
+              "testName": "logs bounded spend counts and retry reasons even when no lifecycle operation changed"
+            },
+            {
+              "file": "packages/operator-core/lib/harness/routines/hosted-lifecycle-reconcile-action.test.ts",
+              "testName": "the action module registers under the expected name"
+            },
+            {
+              "file": "packages/operator-core/lib/harness/routines/hosted-lifecycle-reconcile-action.test.ts",
+              "testName": "NEGATIVE CONTROL: the import pin would fail for a module that is not wired"
+            },
+            {
+              "file": "packages/operator-core/lib/harness/routines/hosted-lifecycle-reconcile-action.test.ts",
+              "testName": "the seeder targets the role the action registers"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "P009 source census positive controls > R001 R002 R005: witnesses billing/auth/query/routine/schema controls with concrete typed edges"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects second timer with exact path/symbol/line/reason"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects hidden registration with exact path/symbol/line/reason"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > detects forbidden effects in unimported changed files and innocently named migrations"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > inspects SQL call strings and tagged SQL without treating comment DDL as tables"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-FORBIDDEN-EFFECT maintained in-memory counterexamples > quoted comment markers cannot hide executable DDL: SELECT '--'; CREATE TABLE actual_write (id text);"
+            },
+            {
+              "file": "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+              "testName": "DS-P009-INCOMPLETE-SOURCE > does not let one resolved call on a line hide a second unresolved effect"
+            }
+          ]
+        }
+      },
+      {
+        "key": "r-006",
+        "title": "Keep unavailable or unstable settlement explicit and retryable",
+        "model": "Keep unavailable or unstable settlement explicit and retryable. Missing config, permission, data, or finality stays explicit and retryable. Empty rows are not zero, and one observation is not automatically final.",
+        "bar": "Keep unavailable or unstable settlement explicit and retryable. Missing config, permission, data, or finality stays explicit and retryable. Empty rows are not zero, and one observation is not automatically final.",
+        "barKey": "R-006",
+        "barHash": "be1c289215db3679bac3eb41915ddf9b4fdbb41dbe1e8e0494d0be4c84ebcce6",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Run npm run test:file -- packages/operator-core/lib/workspace-host/gcp-api-client.test.ts libs/generic/deployment-driver/src/workspace-host-test-harness.test.ts packages/operator-core/lib/workspace-host/hosted-lifecycle-store.test.ts. Require missing descriptor, denied permission, no data, malformed result, empty history, one observation, changed observations and open stability window to remain typed retryable/pending outcomes. Inspect retryPatch to preserve deferral and schedule retry. Healthy requires all absence/finality assertions pass.",
+        "driftMarkers": "Missing config/permission/rows or one unstable/recent snapshot becomes zero or settled; retry reason/backoff or original deferral is erased.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+            "libs/generic/deployment-driver/src/workspace-host-test-harness.test.ts",
+            "packages/operator-core/lib/workspace-host/hosted-lifecycle-store.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-007",
+        "title": "Do not manufacture live R4/R5 settlement",
+        "model": "Do not manufacture live R4/R5 settlement. The live billing account currently exposes no BigQuery dataset. R4/R5 remain unsettled until a supported producer is configured and returns authoritative data.",
+        "bar": "Do not manufacture live R4/R5 settlement. The live billing account currently exposes no BigQuery dataset. R4/R5 remain unsettled until a supported producer is configured and returns authoritative data.",
+        "barKey": "R-007",
+        "barHash": "13a0b13053dd60c20c27baac8c21ea09bd9563c4b5e2b95981a9a63dde041563",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "evidenceRuntime": "staging-operator",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Use current read-only workspace-scoped operational evidence for retained R4/R5 hosts and their existing connection provider_config, including a nonzero workspace-host population positive control. Read all canary cost signals for the two named runs: report spendSettlement, spendReconciliation, spendObservations and billingExport presence. Compare with WI-10000614's dated pre-acceptance boundary. Healthy means no manufactured settled record: absent supported configuration or authoritative stable BigQuery observations keeps the original dated deferral and explicit retryable/unsettled state. Existing legitimate later settlement must cite the supported job observations and finality predicate; absence of rows is unknown, never healthy.\n\nExecute workspace-host.deferred-spend.r007 through existing scorecards evaluate/emit for this exact plan/harness and completed observation interval. Preserve requiredScope:live, evidencePlane:live and evidenceRuntime:staging-operator. Require an independently identified read-only retained snapshot and durable content-addressed manifest with full workspace/harness/plan/rubric/subject/window/runtime/source-selector/config identity, positive controls and complete coverage. Immutable implementation/control inspection: capability:git-evidence readFileAtCommit, rootHarnessSlug papercusp, commitSha 93aa78e047b084121aa97d31e2de170fa32140ad, paths packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.ts, packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.test.ts, packages/operator-core/lib/rubric-instrument-registry.ts, packages/operator-core/lib/scorecards.ts and packages/operator-core/lib/agent-tools/scorecards/emit-evaluate.test.ts; page exact blobs to EOF. Preserve original source/live identities. As-built default has no trusted live read adapter or source-to-live join: missing required inputs stays explicit UNKNOWN, and synthetic/source fixtures cannot satisfy this live BAR. An attributable violation independently fails. Operational proof is the actual staging observation, never a unit receipt or checkout SHA. No provider/credential/lifecycle/native/R3/runtime/gate/shipment action is authorized.\n\nrequiredTestLayers:integration is recorded integration proof of the detector/resolver contract (maintained packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.integration.test.ts); the separate live evidence requirement and staging-operator runtime remain mandatory. Integration proof alone never supplies live acceptance.",
+        "driftMarkers": "R4/R5 is marked settled without supported BigQuery job observations spanning the stability window, missing data is called zero, original deferral disappears, or no positive-control population/target rows can be read.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "workspace-host.deferred-spend.r007"
+        }
+      },
+      {
+        "key": "r-008",
+        "title": "Preserve the independent BYOC authority walls",
+        "model": "Preserve the independent BYOC authority walls. This work never mints credentials, replays lifecycle operations, tears down R7, or opens the G6/r31 gate.",
+        "bar": "Preserve the independent BYOC authority walls. This work never mints credentials, replays lifecycle operations, tears down R7, or opens the G6/r31 gate.",
+        "barKey": "R-008",
+        "barHash": "c7598943fbc110a930a4c7040aac8ade86ed61a6ceddc2a189a6866a9c172a51",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "evidenceRuntime": "staging-operator",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-07T20:41:34.736Z",
+          "declaredBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2"
+        },
+        "method": "Use current read-only host/operation/event-ledger evidence scoped to the settlement implementation and this acceptance continuation. Compare the retained R7 and G6/r31 authority boundary against WI-10000614 and governing Decisions. Check the settlement path's code and recorded actions: this work must not mint credentials, replay lifecycle operations, tear down R7, or open G6/r31. Healthy requires attributable ledger/source evidence; independently authorized later work on those objects must be identified separately and cannot be attributed to this plan or counted as its success. Do not invoke a cloud mutation to test this criterion.\n\nExecute workspace-host.deferred-spend.r008 through existing scorecards evaluate/emit for this exact plan/harness and completed observation interval. Preserve requiredScope:live, evidencePlane:live and evidenceRuntime:staging-operator. Require an independently identified read-only retained snapshot and durable content-addressed manifest with full workspace/harness/plan/rubric/subject/window/runtime/source-selector/config identity, positive controls and complete coverage. Immutable implementation/control inspection: capability:git-evidence readFileAtCommit, rootHarnessSlug papercusp, commitSha 93aa78e047b084121aa97d31e2de170fa32140ad, paths packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.ts, packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.test.ts, packages/operator-core/lib/rubric-instrument-registry.ts, packages/operator-core/lib/scorecards.ts and packages/operator-core/lib/agent-tools/scorecards/emit-evaluate.test.ts; page exact blobs to EOF. Preserve original source/live identities. As-built default has no trusted live read adapter or source-to-live join: missing required inputs stays explicit UNKNOWN, and synthetic/source fixtures cannot satisfy this live BAR. An attributable violation independently fails. Operational proof is the actual staging observation, never a unit receipt or checkout SHA. No provider/credential/lifecycle/native/R3/runtime/gate/shipment action is authorized.\n\nrequiredTestLayers:integration is recorded integration proof of the detector/resolver contract (maintained packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.integration.test.ts); the separate live evidence requirement and staging-operator runtime remain mandatory. Integration proof alone never supplies live acceptance.",
+        "driftMarkers": "An attributable action from this settlement work creates credentials, replays lifecycle operations, destroys R7, or opens G6/r31; an unreadable action/object boundary is unknown rather than a pass.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "workspace-host.deferred-spend.r008"
+        }
+      }
+    ],
+    "ratingScale": [
+      "healthy",
+      "degraded",
+      "broken",
+      "unknown"
+    ],
+    "criteriaHash": "303206459c0f4a5bb030e71c9e67d73853f5f267860a4d33d9b027ff0def1f21",
+    "methodRef": null,
+    "gradingAuthority": "independent",
+    "status": "active",
+    "createdBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2",
+    "proposedBy": "su-f48fd476-39f2-4e33-b9d0-23c18c9c00e2",
+    "ratifiedBy": null,
+    "createdAt": "2026-09-07",
+    "updatedAt": "2026-10-26T18:48:23.899Z"
+  },
+  "metaRubric": {
+    "id": "meta-acceptance-rubric",
+    "revision": 5,
+    "criteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+    "ratingScale": [
+      "pass",
+      "weak",
+      "fail",
+      "not-applicable"
+    ]
+  },
+  "amendment": {
+    "patch": "thread-post:1206889",
+    "preview": "thread-post:1206887",
+    "independentApproval": "thread-post:1206918",
+    "decision": "D-023",
+    "applicationKey": "byoc-deferred-p011-asbuilt-apply-20261026-v3",
+    "status": "previously-applied-preserved"
+  },
+  "review": {
+    "workItem": "WI-6554700010029584",
+    "critique": "thread-post:1218436",
+    "critic": "su-2c989d41-f2a7-44bf-b25b-76a3eb999b5f",
+    "eligibility": "independent-grader on exact staging rubric8/hash; not product BAR readiness",
+    "conclusion": "five conceptual meta passes; prefer-structured-check weak"
+  },
+  "attestation": {
+    "issueId": "EI-28145618955175805",
+    "author": "su-e9c71ba8-ea62-4586-a076-a1a5be80e1e7",
+    "createdAt": "2026-11-07T16:02:33.715Z",
+    "evidenceFingerprint": "a7a17ecfba0a5041135afbad01639d35597f509d8c953ac22f43e157834b3783",
+    "audit": {
+      "state": "passed",
+      "rubricRef": "grading-integrity",
+      "revision": 14,
+      "criteriaHash": "795ad5a5aa77061bf0aeb54bd7c412307036cf576777ac42932b8afa8d6b4da9",
+      "issueId": "EI-28147292275777813",
+      "auditor": "su-ac13d8a1-7bbc-4c3c-9214-a81cdcd172de",
+      "auditedAt": "2026-11-07T16:29:09.866Z",
+      "evidenceFingerprint": "8d933048825b5fa9b57108364eb3af5992a2dc52fc68f4a02146c7790e847658",
+      "currentness": "current",
+      "completeEvidenceRead": true,
+      "criterionRatings": {
+        "base-rate-check": "pass",
+        "instrument-split": "pass",
+        "terminal-re-rate": "pass",
+        "platform-telemetry-excluded": "pass",
+        "re-runnable-evidence": "pass",
+        "degenerate-distribution": "pass"
+      }
+    },
+    "authorIsInImplementationLineage": true,
+    "ratings": {
+      "outcomes-not-diff-restatements": {
+        "rating": "pass",
+        "evidence": "thread-post:1218447 probes A+B; original full replay thread-post:1206950 probe1. Exact subject rubric8/hash303206459c0f4a5bb030e71c9e67d73853f5f267860a4d33d9b027ff0def1f21 read completely. r001..8 constrain observable public transport, descriptor/auth reuse, exact accounting, retained-array atomicity, routine reuse, retry/finality, legitimate live settlement and attributable authority; those can fail despite a diff existing. File/commit selectors occur in methods. This is contract design, not an assertion the product currently satisfies it."
+      },
+      "traces-to-goal-or-decision": {
+        "rating": "pass",
+        "evidence": "thread-post:1218447 A+B and thread-post:1206950 probe2. Reconstructed all5 captured-plan51 parts, offsets0/24000/48000/72000/96000, exactly106854 chars, observedHash9afafc25e9ba675c36c3a2707681664e61a2ad0f140ce8560c393a2ac4114bb9. All8 rubric outcomes map to Requirements R001..R008. D016 assigns credentials to R002 and routine/table to R005; D018 frozen population, D019 source mutation, D020 source/live identity and D023 applied amendment are retained. Current plan59/c0ba129333fcb75487131fed6971b24ad9d9cb205770873b9184d4247bdce7d0 is a separate authority read; D024/D027 add replay/identity duties, not dropped outcomes."
+      },
+      "falsifiable-with-evidence": {
+        "rating": "pass",
+        "evidence": "thread-post:1218447 A+C, original dossier probes1/3. Exact rubric8 drift markers provide concrete failures: private/unbounded provider query; descriptor secret/new sink/auth bypass; inconsistent micros/down-rounded cents; raced signal loss/duplicate; parallel scheduler/table; missing data treated final zero; fabricated settlement; attributable prohibited operation. Pinned93aa78e047b084121aa97d31e2de170fa32140ad census fixture supplies nonzero typed-edge controls and injected counterexamples. These falsify supplied inputs; incomplete production/live coverage remains UNKNOWN and is not a product pass."
+      },
+      "failure-mode-coverage": {
+        "rating": "pass",
+        "evidence": "thread-post:1218447 A+B+C and dossier1206950 probes1/3. Rubric8 methods/markers explicitly include query/identifier bounds, credits/precision, RLS/concurrency/idempotence/prior-array retention, config/permission/data/finality errors, hidden/unimported/alias/schema/routine effects, incomplete independently selected populations, stale/foreign source-live identity and attribution. D018/D020 preserve census completeness and unjoined live UNKNOWN. Existing full-file methods remain; source fixtures and saved integration22133585 establish detector contract only. No test suite was rerun or live population observed here."
+      },
+      "non-overlapping": {
+        "rating": "pass",
+        "evidence": "thread-post:1218447 A+B; dossier1206950 non-overlapping probe and D016. Distinguishing counterexamples: public transport with a new credential store failsR002 withoutR001; a second timer with original auth failsR005 withoutR002; wrong cents on complete data differs from exact data prematurely final(R003/R006); one routine losing a raced entry differs from two atomic routines(R004/R005); lost unrelated signal despite correct finality differs from bad unavailable-to-zero classification(R004/R006); forged settlement without wall action differs from credential mint while honestly unsettled(R007/R008). R006 tree and R007 live observations remain separate, not one duplicated evidence string."
+      },
+      "prefer-structured-check": {
+        "rating": "weak",
+        "evidence": "thread-post:1218447 A+C+D and original dossier1206950 structured-check probe. Rubric8 has exact tests/cases forR001/R002/R005 and existingR003/R004/R006 checks; distinctR007/R008 instruments retain mandatory live/staging runtime and integration proof. Own exact93aa78e census-test inspection shows fixture src/entry.ts/src/billing.ts and syntheticworkspace-a/base/candidate: production effects outside supplied fixture can leave it green. Pinned instrument source returns UNKNOWN without dependencies.read or matching source-live join. Thus fixture calibration does not contradict every literal production-negative falsifier. Historical22241415/22241417 are currently unavailable, not presumed pass; no current production census or trusted live provenance established.",
+        "remediation": "Separately scope a complete independently frozen D018 production snapshot through the existing analyzer with manifest/edges/partition, plus trusted read-only live provenance. Until verified, retain UNKNOWN and all eight outcomes."
+      }
+    }
+  },
+  "replay": {
+    "originalDossier": "thread-post:1206950",
+    "prospectiveAddendum": "thread-post:1218447",
+    "addendumFullReadbackEqual": true,
+    "addendumChars": 6891,
+    "capturedPlan": {
+      "posts": [
+        "thread-post:1206939",
+        "thread-post:1206940",
+        "thread-post:1206941",
+        "thread-post:1206942",
+        "thread-post:1206943"
+      ],
+      "offsets": [
+        0,
+        24000,
+        48000,
+        72000,
+        96000
+      ],
+      "totalChars": 106854,
+      "observedVersion": 51,
+      "observedContentHash": "9afafc25e9ba675c36c3a2707681664e61a2ad0f140ce8560c393a2ac4114bb9",
+      "proseChars": 63093,
+      "reconstructionVerified": true,
+      "authority": "agent-captured historical observation"
+    },
+    "currentPlan": {
+      "version": 59,
+      "contentHash": "c0ba129333fcb75487131fed6971b24ad9d9cb205770873b9184d4247bdce7d0",
+      "role": "separate current authority read"
+    },
+    "sourceCommit": "93aa78e047b084121aa97d31e2de170fa32140ad",
+    "sourcePaths": [
+      "packages/operator-core/lib/workspace-host/deferred-spend-source-census.ts",
+      "packages/operator-core/lib/workspace-host/deferred-spend-source-census.test.ts",
+      "packages/operator-core/lib/workspace-host/gcp-api-client.ts",
+      "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts",
+      "packages/operator-core/lib/harness/routines/hosted-lifecycle-reconcile-action.test.ts",
+      "packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.ts",
+      "packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.test.ts",
+      "packages/operator-core/lib/workspace-host/deferred-spend-acceptance-instruments.integration.test.ts",
+      "packages/operator-core/lib/rubric-instrument-registry.ts",
+      "packages/operator-core/lib/scorecards.ts",
+      "packages/operator-core/lib/agent-tools/scorecards/emit-evaluate.test.ts"
+    ]
+  },
+  "history": {
+    "failedCards": [
+      "EI-26974079810379726",
+      "EI-26975145224123366"
+    ],
+    "failedAudits": [
+      "EI-26974600361196611",
+      "EI-26975739236077240"
+    ],
+    "preservation": "unchanged; no retroactive pass",
+    "currentlyReadableHistoricalRuns": [
+      22092263,
+      22133577,
+      22133585,
+      22233310,
+      22242188
+    ],
+    "caughtMutantRun": 22242188,
+    "currentlyUnavailableHistoricalRuns": [
+      22241415,
+      22241417
+    ],
+    "newTestRuns": []
+  },
+  "remaining": {
+    "productionCensus": "UNKNOWN; fixture calibration does not establish the independently frozen production population",
+    "trustedLiveAdapter": "UNKNOWN/unavailable in pinned default composition",
+    "sourceToLiveJoin": "UNKNOWN; original source identity must not be relabeled",
+    "p012": "dependent; no current live evidence or product review is established by P011",
+    "ownedAvailabilityIncident": "EI-28142185668918002"
+  },
+  "boundaries": [
+    "No provider or credential mutation",
+    "No lifecycle replay or R7 teardown",
+    "No G6/r31 opening",
+    "No native or R3 boundary crossing",
+    "No LIVE_GATE_OPS",
+    "No product acceptance or shipment claim",
+    "All eight BAR outcomes and R007/R008 live/staging runtime obligations preserved"
+  ],
+  "validation": {
+    "kind": "non-automated manual proof",
+    "checks": [
+      "Exact full rubric8 and meta5 read",
+      "Current independent critique read completely",
+      "Five-part historical plan reconstruction asserted",
+      "Addendum complete equality readback",
+      "Saved author card fingerprint and exact subject currentness verified on staging",
+      "Independent integrity audit EI-28147292275777813 read completely; all six audit criteria pass",
+      "Author card audit passed/current against grading-integrity revision14 and exact criteria hash"
+    ],
+    "notPerformed": [
+      "Product tests rerun",
+      "Actual production census",
+      "Current retained-host/live authority observation",
+      "P011 certification or qualified close"
+    ],
+    "snapshotBoundary": "Manual proof assembled after the independent integrity audit. Subsequent spec binding, certification and closure are recorded in the canonical plan/work-item ledger."
+  }
+}
