@@ -209,7 +209,7 @@ function censusRow(candidate: CensusCandidate, bytes: Buffer): Source {
   // Historical tests remain in the census with both identities. Only production
   // files enter the accepted population and must retain their accepted blob.
   if (candidate.blobSha && !excluded) requireProof(auditedBlob === candidate.blobSha,
-    'recorded accepted blob differs from the completion audit: ' + candidate.path);
+    'recorded accepted blob differs from the completion audit: ' + candidate.path + ' (' + candidate.ref + ')');
   return { path: candidate.path, sha256: digest(bytes),
     refs: [candidate.ref, ...(candidate.sourceRefs ?? []), 'audit-blob:' + auditedBlob,
       ...(candidate.blobSha ? ['recorded-blob:' + candidate.blobSha] : [])],
@@ -230,10 +230,28 @@ function linkedCensusSql(workspace: string, harness: string, planSlug: string) {
         OR wi.harness_slug||'#'||wi.feature_id IN (SELECT src_ref FROM refs))`;
 }
 type NativePatch = { command: string; refs: string[] };
-function nativePatches(bytes: Buffer, sourceSha: string): NativePatch[] {
+function nativePatches(bytes: Buffer, sourceSha: string, sourceWarnings: Json[] = []): NativePatch[] {
   const patches: NativePatch[] = [];
-  for (const line of bytes.toString('utf8').trimEnd().split('\n')) {
-    const record = JSON.parse(line) as Json;
+  for (const [index, line] of bytes.toString('utf8').trimEnd().split('\n').entries()) {
+    let record: Json;
+    try { record = JSON.parse(line) as Json; }
+    catch {
+      // Usage telemetry cannot carry a native tool call. Accept only the exact
+      // flat envelope emitted by Codex, retaining the damaged record's identity.
+      // An unreadable response item or an ambiguous header still stops the census.
+      const boundary = line.indexOf(',"payload":');
+      const prefix = boundary < 0 ? '' : line.slice(0, boundary) + '}';
+      let header: Json | null = null;
+      try { header = JSON.parse(prefix) as Json; } catch { /* Refuse below. */ }
+      const knownTelemetry = header?.type === 'token_usage_record' &&
+        typeof header.timestamp === 'string' && Number.isFinite(Date.parse(header.timestamp)) &&
+        Number.isSafeInteger(header.ordinal) && header.ordinal >= 0 &&
+        prefix === JSON.stringify({ timestamp: header.timestamp, ordinal: header.ordinal, type: 'token_usage_record' });
+      requireProof(knownTelemetry, 'unreadable native source record: ' + JSON.stringify({ sourceSha, line: index + 1 }));
+      sourceWarnings.push({ sourceSha, line: index + 1, lineSha256: digest(line), type: 'token_usage_record',
+        reason: 'Malformed non-conversational usage payload; exact native tool-call records remain required.' });
+      continue;
+    }
     const call = record.type === 'response_item' ? record.payload : null;
     if (!call || !['function_call', 'custom_tool_call'].includes(call.type) || typeof call.call_id !== 'string') continue;
     const input = call.input ?? call.arguments;
@@ -302,7 +320,13 @@ async function collectCensus(fixture: Fixture, started: string): Promise<Census>
     candidates.push({ path: relative(fixture.root, resolve(root, path)), blobSha: entry?.headBlobSha,
       ref: 'completion:' + item.id });
   }
-  const nativeSources = new Map<string, NativePatch[]>();
+  // Reject stale recorded source before the potentially expensive native scan.
+  const recordedCount = candidates.length;
+  const recordedRows = candidates.map(candidate => {
+    requireProof(normalized(candidate.path), 'recorded source is outside the audited repository: ' + candidate.path);
+    return censusRow(candidate, sourceBytes(fixture.root, audit.audited_sha, candidate.path));
+  });
+  const nativeSources = new Map<string, { patches: NativePatch[]; warnings: Json[] }>();
   const homes = query<Array<{ id: number }>>(`SELECT COALESCE(json_agg(x),'[]') FROM (
     SELECT id FROM harness_shared.adv_sessions WHERE workspace_id='papercusp-workspace'
       AND coord_owner_id=${literal(parentItem.assignee)} AND agent='codex') x`);
@@ -325,9 +349,12 @@ async function collectCensus(fixture: Fixture, started: string): Promise<Census>
         requireProof(sources.length <= 1, 'native patch source is ambiguous');
         const source = sources[0] ?? await readCanonicalNativeArchive({ backend: 'codex', sessionId: row.session_id }, pgSessionArchiveStore());
         requireProof(source.completeBytes === source.highWaterBytes, 'native patch source is incomplete');
-        nativeSources.set(row.session_id, nativePatches(source.bytes, source.sha256));
+        const warnings: Json[] = [];
+        nativeSources.set(row.session_id, { patches: nativePatches(source.bytes, source.sha256, warnings), warnings });
       }
-      const patch = resolveNativePatch(command, nativeSources.get(row.session_id)!, { activityId: row.id, sessionId: row.session_id });
+      const nativeSource = nativeSources.get(row.session_id)!;
+      if (nativeSource.warnings.length) row.sourceWarnings = nativeSource.warnings;
+      const patch = resolveNativePatch(command, nativeSource.patches, { activityId: row.id, sessionId: row.session_id });
       command = patch.command;
       sourceRefs = patch.refs;
       row.sourceRefs = sourceRefs;
@@ -341,14 +368,14 @@ async function collectCensus(fixture: Fixture, started: string): Promise<Census>
         ...(!normalized(local) ? { externalEvidence: JSON.stringify(row) } : {}) });
     }
   }
-  const rows = candidates.map(candidate => {
+  const rows = [...recordedRows, ...candidates.slice(recordedCount).map(candidate => {
     if (candidate.externalEvidence) return { path: candidate.path, sha256: digest(candidate.externalEvidence),
       refs: [candidate.ref, ...(candidate.sourceRefs ?? [])], classification: 'excluded' as const,
       reason: 'Native edit outside the harness repository (for example an isolated mutation fixture). The digest identifies its retained edit evidence, not an accepted production file.' };
     requireProof(normalized(candidate.path), 'native edit is outside the audited repository: ' + candidate.path);
     const bytes = sourceBytes(fixture.root, audit.audited_sha, candidate.path);
     return censusRow(candidate, bytes);
-  });
+  })];
   const producerRefs = query<string[]>(`SELECT COALESCE(json_agg('tool-invocation:'||id::text ORDER BY id),'[]')
     FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace'
       AND coord_owner_id=${literal(process.env.PAPERCUSP_SID ?? '')} AND invoked_at >= ${literal(started)}::timestamptz
@@ -586,6 +613,33 @@ describe('EGM exact released artifact acceptance', () => {
     expect(nativePatches(bytes, 'a'.repeat(64))).toEqual([]);
     expect(() => resolveNativePatch('*** Begin Patch\n', [{ command: '*** Begin Patch\n*** Update File: clipped…', refs: ['incomplete'] }]))
       .toThrow(/missing or ambiguous/);
+  });
+  it('retains complete native patch provenance after malformed native usage telemetry', () => {
+    const sourceSha = 'a'.repeat(64);
+    const command = '*** Begin Patch\n*** Update File: retained.ts\n@@\n+retained\n*** End Patch';
+    const patch = JSON.stringify({ type: 'response_item', payload: {
+      type: 'custom_tool_call', name: 'apply_patch', call_id: 'retained-call', input: command } });
+    const damaged = '{"timestamp":"2026-11-06T18:58:03.289Z","ordinal":402,"type":"token_usage_record","payload":{"turn_token_usage":{"';
+    const warnings: Json[] = [];
+    const patches = nativePatches(Buffer.from(damaged + '\n' + patch + '\n'), sourceSha, warnings);
+    expect(resolveNativePatch(command, patches)).toEqual({ command, refs: ['native-source:' + sourceSha + ':retained-call'] });
+    expect(warnings).toEqual([{ sourceSha, line: 1, lineSha256: digest(damaged), type: 'token_usage_record',
+      reason: 'Malformed non-conversational usage payload; exact native tool-call records remain required.' }]);
+  });
+  it('refuses malformed native patch records with source and line identity', () => {
+    const sourceSha = 'b'.repeat(64);
+    const damaged = '{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"';
+    expect(() => nativePatches(Buffer.from('{}\n' + damaged + '\n'), sourceSha))
+      .toThrow('unreadable native source record: ' + JSON.stringify({ sourceSha, line: 2 }));
+  });
+  it('refuses malformed native records with ambiguous or embedded telemetry headers', () => {
+    const header = '"timestamp":"2026-11-06T18:58:03.289Z","ordinal":402,"type":"token_usage_record"';
+    for (const line of [
+      '{"type":"response_item",' + header + ',"payload":{',
+      '{"wrapper":{' + header + ',"payload":{',
+      '{' + header + ',"extra":"response_item","payload":{',
+      '{"timestamp":"invalid","ordinal":402,"type":"token_usage_record","payload":{',
+    ]) expect(() => nativePatches(Buffer.from(line + '\n'), 'c'.repeat(64))).toThrow(/unreadable native source record/);
   });
   it('retains the exact linked completion population while scanning plan links once', async () => {
     const { createFreshPgDb } = await import('../../test/_pg-helpers');
