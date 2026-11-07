@@ -728,6 +728,31 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         continuation: stored.transaction.continuation }, { ...resumed, sourceCommit: candidate });
       expect(grade()).toMatchObject({ reused: [bankedFile], run: specifications.filter(spec => spec.testFile !== bankedFile)
         .map(spec => spec.testFile).concat(['guard:qualification-fixture :: guard', 'post:after']).sort(), verdict: 'incomplete' });
+      // Judge a real changed-input tree against the actual native completion.
+      // commit-tree preserves the fixture HEAD used by the positive successor.
+      const bankedPath = join(root, bankedFile);
+      const bankedSource = readFileSync(bankedPath);
+      try {
+        writeFileSync(bankedPath, Buffer.concat([bankedSource, Buffer.from('\n// changed native input\n')]));
+        git('add', '--', bankedFile);
+        const changedSource = git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid',
+          'commit-tree', git('write-tree'), '-p', candidate, '-m', 'changed native input');
+        const changedBetween = (before: string, after: string) =>
+          git('diff', '--name-only', before, after).split('\n').filter(Boolean);
+        expect(changedBetween(candidate, changedSource)).toEqual([bankedFile]);
+        const changed = evaluatePartialTaskContinuation({ root, taskKey: input.taskKey,
+          continuation: stored.transaction.continuation }, { ...resumed, sourceCommit: changedSource }, { changedBetween });
+        expect(changed.reused).not.toContain(bankedFile);
+        expect(changed.run).toContain(bankedFile);
+        expect(changed.invalidated).toContainEqual({ id: bankedFile, reason: 'pass-proof-invalid-or-unmeasured' });
+        expect(await readStoredQualification(target)).toEqual(stored);
+      } finally {
+        writeFileSync(bankedPath, bankedSource);
+        git('restore', '--staged', '--', bankedFile);
+      }
+      expect(git('rev-parse', 'HEAD')).toBe(candidate);
+      expect(git('status', '--porcelain')).toBe('');
+      expect(grade().reused).toEqual([bankedFile]);
       expect(await composeStoredQualificationWork(target, resumed, { classifyReadPaths: classifier }))
         .toMatchObject({ status: 'conflict', refusalReason: 'native-successor-terminal-unmeasured' });
       const remaining = specifications.filter(spec => spec.testFile !== bankedFile);

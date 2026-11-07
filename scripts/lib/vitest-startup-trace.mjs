@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
 import { captureConfigurationSnapshot } from '../../libs/test-config/src/configuration-snapshot.ts';
-import { readProcessIdentity } from '../../packages/operator-core/lib/process-identity.ts';
+import { readProcessIdentity } from './process-identity.mjs';
 import { nativeSourceRetentionLimits, validateSourcePins, observeEngineScriptExecution }
   from '../../libs/test-config/src/executed-config-load-capture.ts';
 
