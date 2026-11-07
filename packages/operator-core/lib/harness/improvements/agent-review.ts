@@ -737,7 +737,7 @@ async function orphanAdoptionProof(
   authority: RevisionAuthority,
   caller: string,
   deps: AgentReviewDeps,
-): Promise<{ ok: true; sessionState: SessionState } | { ok: false; reason: OrphanAdoptionRefusal }> {
+): Promise<{ ok: true; sessionState: SessionState } | { ok: false; reason: OrphanAdoptionRefusal; sessionState?: SessionState }> {
   // A synthetic submitter whose real reporter cannot be recovered has no liveness to
   // measure: its authority is UNKNOWN, never presumed dead.
   if (authority.legacySubmitter === null && current.submittedBy.startsWith('system:') && authority.signedSubmitter === null) {
@@ -753,13 +753,13 @@ async function orphanAdoptionProof(
   // indistinguishable from a live-submitter refusal.
   if (!verdict) return { ok: false, reason: 'not-submitter:liveness-unknown' };
   if ((REBIND_BLOCKING_SESSION_STATES as readonly SessionState[]).includes(verdict.sessionState)) {
-    return { ok: false, reason: 'not-submitter' };
+    return { ok: false, reason: 'not-submitter', sessionState: verdict.sessionState };
   }
   // The submitter is gone, but the ROW may still be someone else's: adopting it out from
   // under a third agent would trade this bug for a claim-steal. Unheld, held by the gone
   // submitter, or held by the caller are all adoptable; anything else is not ours to take.
   if (workItem.assignee != null && !authority.submitterHolds && workItem.assignee !== caller) {
-    return { ok: false, reason: 'orphan-revision-held-by-other' };
+    return { ok: false, reason: 'orphan-revision-held-by-other', sessionState: verdict.sessionState };
   }
   return { ok: true, sessionState: verdict.sessionState };
 }
@@ -793,6 +793,23 @@ export interface AdoptAgentReviewResult {
   brief?: RevisionAdoptionBrief;
 }
 
+export type RevisionAdoptionPreflight =
+  | {
+      eligible: true;
+      workItem: WorkItem;
+      state: AgentReviewState;
+      authority: RevisionAuthority;
+      alreadySubmitter: boolean;
+      sessionState: SessionState | null;
+    }
+  | {
+      eligible: false;
+      reason: AdoptAgentReviewReason;
+      state?: AgentReviewState;
+      authority?: RevisionAuthority;
+      sessionState?: SessionState;
+    };
+
 function revisionAdoptionBrief(id: string, round: number, previousSubmitter: string): RevisionAdoptionBrief {
   return {
     lane: 'revision-adoption',
@@ -808,51 +825,63 @@ function revisionAdoptionBrief(id: string, round: number, previousSubmitter: str
 }
 
 /**
- * REVISION ADOPTION (bug-queue-legitimacy D-008). A content revision whose submitter is
- * provably gone is otherwise unclaimable forever: the intake-stage floor keeps
- * revision-requested rows off every ordinary claim door, and only resubmit could move
- * one. This claims ONE such row for `adopter` under exactly resubmit's orphan proof,
- * then rebinds the revision to the adopter, who revises and resubmits as its submitter.
- *
- * Order matters: the CAS claim lands first (a concurrent adopter loses there), the review
- * snapshot is re-verified after it (release + 'state-changed' on drift), and only then is
- * the payload rebound — so a refused caller never leaves a rebound row behind.
+ * Read-only D-008 authority proof, shared by investigation and the adoption writer.
+ * No claim, rebind, refusal stamp or review transition occurs here. Eligibility is an
+ * advisory snapshot: other claim floors and concurrent changes can still refuse the
+ * writer, which always repeats this proof and retains its CAS + post-claim reread.
  */
-export async function adoptAgentReviewRevision(
+export async function preflightAgentReviewRevisionAdoption(
   input: { id: string; adopter: string; harnessSlug: string },
   deps: AgentReviewDeps = defaultDeps,
-): Promise<AdoptAgentReviewResult> {
+): Promise<RevisionAdoptionPreflight> {
   const workItem = await deps.getWorkItem(input.id, input.harnessSlug);
   if (!workItem || workItem.harness !== input.harnessSlug) {
-    return { adopted: false, workItem: null, reason: 'not-found' };
+    return { eligible: false, reason: 'not-found' };
   }
-  if (workItem.state !== 'open') return { adopted: false, workItem: null, reason: 'not-open' };
+  if (workItem.state !== 'open') return { eligible: false, reason: 'not-open' };
   const current = readAgentReviewState(workItem.payload);
-  if (!current) return { adopted: false, workItem: null, reason: 'not-agent-review' };
+  if (!current) return { eligible: false, reason: 'not-agent-review' };
   // Recovery does not authorize lifting a durable park. The claim writer also
   // checks this atomically in case a hold races discovery.
   if (isClaimHoldParked(workItem.payload)) {
-    return { adopted: false, workItem: null, state: current, reason: 'claim-refused' };
+    return { eligible: false, state: current, reason: 'claim-refused' };
   }
   if (current.status !== 'revision-requested') {
-    return { adopted: false, workItem: null, state: current, reason: `not-revision-requested:${current.status}` };
+    return { eligible: false, state: current, reason: `not-revision-requested:${current.status}` };
   }
   // Reproduction-only revisions are validation work the ordinary claim doors already
   // admit (D-006); legacy-seeded revisions are released to normal implementation.
   if (current.revisionKind === 'reproduction') {
-    return { adopted: false, workItem: null, state: current, reason: 'reproduction-validation-route' };
+    return { eligible: false, state: current, reason: 'reproduction-validation-route' };
   }
   if (current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) {
-    return { adopted: false, workItem: null, state: current, reason: 'legacy-revision-claimable' };
+    return { eligible: false, state: current, reason: 'legacy-revision-claimable' };
   }
   const authority = await resolveRevisionAuthority(workItem, current, deps);
   const alreadySubmitter = authority.effectiveSubmitter === input.adopter;
   let sessionState: SessionState | null = null;
   if (!alreadySubmitter) {
     const proof = await orphanAdoptionProof(workItem, current, authority, input.adopter, deps);
-    if (!proof.ok) return { adopted: false, workItem: null, state: current, reason: proof.reason };
+    if (!proof.ok) return { eligible: false, state: current, authority, reason: proof.reason, sessionState: proof.sessionState };
     sessionState = proof.sessionState;
   }
+  return { eligible: true, workItem, state: current, authority, alreadySubmitter, sessionState };
+}
+
+/**
+ * REVISION ADOPTION (bug-queue-legitimacy D-008). Claim one content revision under
+ * the shared orphan proof, then rebind it for report revision and independent review.
+ * The CAS claim precedes the rebind; a post-claim snapshot check refuses drift.
+ */
+export async function adoptAgentReviewRevision(
+  input: { id: string; adopter: string; harnessSlug: string },
+  deps: AgentReviewDeps = defaultDeps,
+): Promise<AdoptAgentReviewResult> {
+  const preflight = await preflightAgentReviewRevisionAdoption(input, deps);
+  if (!preflight.eligible) {
+    return { adopted: false, workItem: null, state: preflight.state, reason: preflight.reason };
+  }
+  const { workItem, state: current, authority, alreadySubmitter, sessionState } = preflight;
   if (workItem.assignee !== input.adopter) {
     // Replace a holder only when the proof above established it is the gone submitter;
     // an unheld row needs no expected holder. Anything else fails the CAS.

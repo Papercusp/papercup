@@ -26,6 +26,7 @@ import {
   claimAgentReview,
   enterAgentReview,
   preflightAgentReviewGrade,
+  preflightAgentReviewRevisionAdoption,
   reconcileAgentReviewGrade,
   resubmitAgentReview,
   type AgentReviewDeps,
@@ -2290,6 +2291,56 @@ describe('adoptAgentReviewRevision — discover and adopt a content revision und
     expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
     expect(h.state.issue.payload).not.toHaveProperty('agentReviewAdoption');
   }
+
+  it.each([
+    ['ended', true, undefined],
+    ['live', false, 'not-submitter'],
+    [null, false, 'not-submitter:liveness-unknown'],
+  ] as const)('preflights %s without any claim, review, provenance or delivery writes', async (sessionState, eligible, reason) => {
+    const h = harness(contentRevision());
+    h.state.submitterLiveness = sessionState ? { sessionState } : null;
+    const before = structuredClone(h.state.issue);
+
+    const result = await preflightAgentReviewRevisionAdoption({ id: 'WI-7', adopter: 'su-adopter', harnessSlug: 'papercusp' }, h.deps);
+
+    expect(result).toMatchObject({ eligible, ...(reason ? { reason } : {}), authority: { effectiveSubmitter: 'su-gone' } });
+    if (sessionState) expect(result).toHaveProperty('sessionState', sessionState);
+    expect(h.state.issue).toEqual(before);
+    for (const writer of [h.claimWorkItem, h.releaseWorkItem, h.deps.mergeWorkItemPayload, h.commentWorkItem,
+      h.recordRoutedIdea, h.clearLedgerGrade, h.deliverRevision, h.healOwnNodeOrigin]) {
+      expect(writer).not.toHaveBeenCalled();
+    }
+  });
+
+  it('uses recovered synthetic provenance and verified aliases in the same read-only proof', async () => {
+    const h = harness(contentRevision({ createdBy: 'su-reporter' }, { submittedBy: STRANDED_SWEEP_OWNER }));
+    h.state.issue.payload = {
+      ...h.state.issue.payload,
+      _ei: { created_by: 'su-reporter' },
+      strandedToolFailureSweep: { owner: STRANDED_SWEEP_OWNER, at: '2026-10-01T10:00:00.000Z', outcome: 'review' },
+    };
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(preflightAgentReviewRevisionAdoption({ id: 'WI-7', adopter: 'su-adopter', harnessSlug: 'papercusp' }, h.deps))
+      .resolves.toMatchObject({ eligible: true, authority: { effectiveSubmitter: 'su-reporter', legacySubmitter: 'su-reporter' } });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-reporter', { claimsHeld: false });
+    h.state.issue = contentRevision({}, { submittedBy: 'system:judge/su-gone' });
+    vi.mocked(h.deps.resolveVerifiedSubmitterAlias!).mockResolvedValue('su-signed');
+    await expect(preflightAgentReviewRevisionAdoption({ id: 'WI-7', adopter: 'su-adopter', harnessSlug: 'papercusp' }, h.deps))
+      .resolves.toMatchObject({ eligible: true, authority: { effectiveSubmitter: 'su-signed', signedSubmitter: 'su-signed' } });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-signed', { claimsHeld: false });
+    expectUntouched(h);
+  });
+
+  it('does not authorize a later adoption from an earlier eligible preview', async () => {
+    const h = harness(contentRevision());
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(preflightAgentReviewRevisionAdoption({ id: 'WI-7', adopter: 'su-adopter', harnessSlug: 'papercusp' }, h.deps))
+      .resolves.toMatchObject({ eligible: true });
+    h.state.submitterLiveness = { sessionState: 'live' };
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'not-submitter' });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledTimes(2);
+    expectUntouched(h);
+  });
 
   it('adopts a proven orphan: claims it, rebinds the revision, records the proof, and briefs the adopter', async () => {
     const h = harness(contentRevision());
