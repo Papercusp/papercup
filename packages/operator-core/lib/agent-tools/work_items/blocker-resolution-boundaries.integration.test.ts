@@ -83,7 +83,8 @@ let db: FreshPgDb;
 let announcementId: number;
 async function declareCondition() {
   const declaration = await registerAnnouncement({ subscriberId: OWNER, eventKey: EVENT,
-    scopeKind: 'harness', scopeRef: HARNESS, note: 'Isolated dependency producer' });
+    scopeKind: 'harness', scopeRef: HARNESS, note: 'Isolated dependency producer',
+    expectedCondition: { kind: 'predicate', predicate: { ready: { eq: true } } } });
   announcementId = declaration.id;
   expect(await readEventConditionReachability(EVENT, { requireSpecificCondition: true }))
     .toMatchObject({ verdict: 'reachable', authoritative: true, basis: 'live-resolver' });
@@ -92,7 +93,7 @@ async function repairCondition() {
   // Simulate the external producer's completed generation without running the
   // automatic consumer reconciler: each public boundary must measure it itself.
   const rows = await db.sql`UPDATE harness_shared.event_awaits
-    SET fired_at=now(), fired_reason='event', fired_by='fixture-producer'
+    SET fired_at=now(), fired_reason='event', fired_by='fixture-producer', fired_payload='{"ready":true}'::jsonb
     WHERE id=${announcementId} AND event_key=${EVENT} AND superseded_at IS NULL RETURNING id`;
   expect(rows).toHaveLength(1);
   expect(await readEventConditionReachability(EVENT, { requireSpecificCondition: true }))
@@ -265,6 +266,23 @@ describe('public blocker resolution boundaries', () => {
     expect(await call(setBlocker, { id, harness: HARNESS, ref: EVENT, clear: true,
       blockerDecision: { ...resolution('measured-resume'), priorRevision: 1 } })).toMatchObject({ ok: true });
     expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ state: 'open', assignee: OWNER });
+  });
+
+  it('preserves custody when a fired event does not match its declared condition', async () => {
+    const id = await seed();
+    const before = await snapshot(id);
+    await db.sql`UPDATE harness_shared.event_awaits
+      SET fired_at=now(), fired_reason='event', fired_by='fixture-producer', fired_payload='{"ready":false}'::jsonb
+      WHERE id=${announcementId} AND event_key=${EVENT} AND superseded_at IS NULL`;
+    expect(await readEventConditionReachability(EVENT, { requireSpecificCondition: true }))
+      .toMatchObject({ verdict: 'unknown', authoritative: false, uncertifiedReason: 'expected-condition-unproven' });
+    const args = { id, harness: HARNESS, ref: EVENT, clear: true, blockerDecision: resolution('matched-fire-only') };
+    expect(await call(setBlocker, args)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(await snapshot(id)).toEqual(before);
+    await repairCondition();
+    expect(await call(setBlocker, args)).toMatchObject({ ok: true });
+    expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ assignee: OWNER,
+      payload: { externalBlockers: [{ status: 'cleared' }] } });
   });
 
   it('honors peer human and external custody', async () => {
