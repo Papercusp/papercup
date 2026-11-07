@@ -3,7 +3,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
 import { launchManagedTestProcess } from '../../lib/agent-tools/testing/run';
+import { getTask } from '../../lib/task-manager/store';
+import { isTerminalState } from '../../lib/task-manager/types';
 
 // Invoked by with-test-pg-provenance.integration.test.ts. This process owns
 // the launcher's platform clients and exits only after checking the real task.
@@ -15,6 +18,11 @@ async function verifyConfinedCleanup(): Promise<void> {
     admissionShellSha256: createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'),
     fixtureSha256: createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex'),
   };
+  // TaskManager writes through this actual resolver. Refuse before allocating
+  // a nested PG if its private ledger endpoint cannot answer.
+  const [ledgerEndpoint] = await getOrgPg().sql.unsafe('SELECT inet_server_port() AS port');
+  assert.equal(ledgerEndpoint.port, Number(process.env.PAPERCUSP_PG_PORT));
+  const runGroup = 'private-pg-confined-cleanup-regression';
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-pg-confined-cleanup-'));
   const registry = join(evidenceDir, 'owned-databases');
   const outputPath = join(evidenceDir, 'wrapper.log');
@@ -47,10 +55,11 @@ async function verifyConfinedCleanup(): Promise<void> {
       '--import', 'tsx', '--input-type=module', '-e', childSource],
     cwd: root,
     env: { ...process.env, PAPERCUSP_TEST_OWNED_DB_DIR: registry,
+      PAPERCUSP_TEST_RUN_GROUP: runGroup,
       PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT: join(evidenceDir, 'admission'),
       PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(deadline) },
     timeoutMs: 180_000, cooperativeTermination: true,
-    runGroup: 'private-pg-confined-cleanup-regression',
+    runGroup,
     workspaceId: process.env.PAPERCUSP_WORKSPACE_ID!, outputPath,
     onSpawn: child => {
       child.once('error', rejectClosed);
@@ -58,6 +67,7 @@ async function verifyConfinedCleanup(): Promise<void> {
     },
   });
   let verified = false;
+  let taskReceipt: { taskId: string; scopeUnit: string; state: string; endedAt: string } | undefined;
   try {
     assert.equal(launched.confined, true, 'real task confinement is required');
     assert.match(launched.scopeUnit ?? '', /^pc-.+\.scope$/);
@@ -76,6 +86,11 @@ async function verifyConfinedCleanup(): Promise<void> {
     })]).finally(() => clearTimeout(timer));
     assert.ok(result.code === 143 || result.signal === 'SIGTERM');
     assert.equal((await launched.waitForCompletion()).status, 'recorded');
+    const task = await getTask(launched.taskId);
+    assert.ok(task && isTerminalState(task.state), 'actual task ledger must be terminal');
+    assert.equal(task.scopeUnit, launched.scopeUnit);
+    assert.ok(task.endedAt);
+    taskReceipt = { taskId: task.taskId, scopeUnit: task.scopeUnit!, state: task.state, endedAt: task.endedAt };
     output = readFileSync(outputPath, 'utf8');
     const line = output.split('\n').find(value => value.startsWith('CONFINED_DB_READY='));
     const ownedScope = JSON.parse(line!.slice('CONFINED_DB_READY='.length));
@@ -95,12 +110,19 @@ async function verifyConfinedCleanup(): Promise<void> {
     verified = true;
   } finally {
     launched.terminate();
+    // Failed assertions must also await the owner; exiting this fixture while
+    // the wrapper is still cleaning up would erase the last observer.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([closed, new Promise<never>((_, fail) => {
+      timer = setTimeout(() => fail(new Error('Failed fixture cleanup did not close: ' + outputPath)), 30_000);
+    })]).finally(() => clearTimeout(timer));
     // Failed evidence remains available for diagnosis.
     if (verified) rmSync(evidenceDir, { recursive: true, force: true });
   }
   assert.equal(createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'),
     sourceProof.admissionShellSha256, 'admission shell changed during the proof');
-  console.log('CONFINED_PG_CLEANUP_VERIFIED ' + JSON.stringify(sourceProof));
+  console.log('CONFINED_PG_CLEANUP_VERIFIED ' + JSON.stringify({ ...sourceProof, task: taskReceipt,
+    ownedDatabaseDropped: true, pgDataRemoved: true }));
 }
 
 // Platform notification clients are deliberately scoped to this fixture

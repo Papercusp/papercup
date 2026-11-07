@@ -98,6 +98,23 @@ describe('judgeConsultReceiptMatrix (R-6 receipt oracle)', () => {
     expect(assertions[1]!.evidence).toContain('substantive_answer_posted');
   });
 
+  it.each(['expired', 'awaiting_responder'])('fails a %s consult whose dispatched session only declined at length', state => {
+    const r = rows();
+    r.consults[2] = { ...r.consults[2]!, state };
+    // The observed relevance decline was 406 chars: above the answer floor,
+    // from the dispatched session, after a genuinely delivered native port.
+    r.posts = r.posts.map(post => post.author_id === 'su-ans-c' ? { ...post, len: 406 } : post);
+    const assertions = judgeConsultReceiptMatrix({ artifact: artifact(), definition: DEFINITION, rows: r });
+    expect(failedIds(assertions)).toEqual(['cell:codex-live-to-codex-session-port', 'matrix:all-defined-cells-checked']);
+    expect(assertions[2]!.evidence).toContain('consult_has_answer');
+  });
+
+  it('accepts substantive feedback while the answered consult remains active', () => {
+    const r = rows();
+    r.consults[1] = { ...r.consults[1]!, state: 'active' };
+    expect(failedIds(judgeConsultReceiptMatrix({ artifact: artifact(), definition: DEFINITION, rows: r }))).toEqual([]);
+  });
+
   it('judges the dispatched session\'s answer when earlier cascade attempts posted first', () => {
     const r = rows();
     const conv = CELLS[1]!.conv;

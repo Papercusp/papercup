@@ -131,6 +131,81 @@ export function latencyDataFixtures() {
     workItems, coverageEdges, coverageReference, conditionEnvelopes, conditionReference };
 }
 
+/** T06 source inputs and independent normalized inbox references. The future
+ * runtime capture supplies build generations, reasons and monotonic durations;
+ * none of those observations are manufactured by this preparation fixture. */
+export function latencyAttentionFixtures() {
+  const workspace = 'latency-acceptance-fixture';
+  const otherWorkspace = 'latency-acceptance-other';
+  const anchorMs = Date.parse('2026-11-06T00:00:00.000Z');
+  const message = (id: string, ordinal: number, to = ['human']) => ({
+    msg_id: `latency-attention-${id}`, from: 'fixture:latency-author-su', to,
+    kind: 'message', summary: id, body: `${id} body`, expects: 'none',
+    ts: new Date(anchorMs + ordinal).toISOString(),
+  });
+  const seed = [message('selected', 0), message('neighbor', 1)];
+  const unrelated = Array.from({ length: 100 }, (_, i) =>
+    message(`unrelated-${String(i).padStart(3, '0')}`, i + 2, ['fixture:unrelated-agent']));
+  const relevant = message('relevant', 102);
+  const ids = ['coord-message:latency-attention-neighbor', 'coord-message:latency-attention-selected'];
+  return { seed: 'LATENCY-M1-attention-v1', workspace, otherWorkspace, harness: 'papercusp',
+    keys: [`${workspace}/papercusp/unchanged`, `${workspace}/papercusp/relevant`,
+      `${otherWorkspace}/papercusp/isolation`],
+    seedMessages: seed, unrelatedMessages: unrelated, relevantMessage: relevant,
+    acknowledgment: { acker: 'admin', msgId: seed[0]!.msg_id, atMs: anchorMs + 103 },
+    reference: {
+      before: ids, afterUnrelated: ids,
+      afterRelevant: [...ids, 'coord-message:latency-attention-relevant'].sort(),
+      afterAcknowledgment: ['coord-message:latency-attention-neighbor', 'coord-message:latency-attention-relevant'],
+      otherWorkspace: [] as string[], maxBuildsPerKeyGeneration: 1,
+    },
+    observationRequired: ['normalizedContents', 'sourceBuildsByKeyGeneration',
+      'invalidationReasons', 'handlerMonotonicDurations', 'effectiveCacheConfiguration'],
+    measured: false,
+  };
+}
+
+/** T10 deterministic dependency schedules, expressed relative to monotonic
+ * task entry. These are injected test inputs, never measured latency samples.
+ * The caller must separately pin the actual unchanged runtime budget. */
+export function latencyRetrievalFixtures(budgetMs: number) {
+  if (!Number.isSafeInteger(budgetMs) || budgetMs < 4) {
+    throw new Error('LATENCY-M1 retrieval fixture requires an explicit integer budget >=4ms');
+  }
+  const common = { callEntryMs: 0, embedderEntryMs: 0, budgetMs, deadlineMs: budgetMs,
+    lexicalFallbackId: 'latency-lexical-001' };
+  const half = Math.floor(budgetMs / 2);
+  return { seed: 'LATENCY-M1-retrieval-v1', budgetMs, measured: false,
+    budgetProvenance: 'caller-supplied; actual loaded runtime configuration must be pinned separately',
+    cases: [
+      { id: 'on-time', ...common, synchronousReturnMs: 0, queuedAtMs: 0, networkAtMs: 1,
+        resultAtMs: budgetMs - 1, timerCallbackMs: null,
+        expected: { embeddingAccepted: true, fallback: null, cancellation: null } },
+      { id: 'synchronous-entry-block', ...common, synchronousReturnMs: budgetMs + 1,
+        queuedAtMs: null, networkAtMs: null, resultAtMs: budgetMs + 1, timerCallbackMs: budgetMs + 2,
+        expected: { embeddingAccepted: false, fallback: 'latency-lexical-001', cancellation: 'non-preemptible-entry-explicit' } },
+      { id: 'queue-delay', ...common, synchronousReturnMs: 0, queuedAtMs: 0, networkAtMs: null,
+        resultAtMs: null, timerCallbackMs: budgetMs,
+        expected: { embeddingAccepted: false, fallback: 'latency-lexical-001', cancellation: 'queued' } },
+      { id: 'late-timer', ...common, synchronousReturnMs: 0, queuedAtMs: 0, networkAtMs: 1,
+        resultAtMs: budgetMs + 1, timerCallbackMs: budgetMs + 2,
+        expected: { embeddingAccepted: false, fallback: 'latency-lexical-001', cancellation: 'network' } },
+      { id: 'late-success', ...common, synchronousReturnMs: 0, queuedAtMs: 0, networkAtMs: 1,
+        resultAtMs: budgetMs + 2, timerCallbackMs: budgetMs,
+        expected: { embeddingAccepted: false, fallback: 'latency-lexical-001', cancellation: 'network' } },
+      { id: 'abort-network', ...common, synchronousReturnMs: 0, queuedAtMs: 0, networkAtMs: 1,
+        abortAtMs: half, resultAtMs: null, timerCallbackMs: null,
+        expected: { embeddingAccepted: false, fallback: null, cancellation: 'network', callerAborted: true } },
+      { id: 'abort-queued', ...common, synchronousReturnMs: 0, queuedAtMs: 0, networkAtMs: null,
+        abortAtMs: half, resultAtMs: null, timerCallbackMs: null,
+        expected: { embeddingAccepted: false, fallback: null, cancellation: 'queued', callerAborted: true } },
+      { id: 'lexical-fallback', ...common, synchronousReturnMs: 0, queuedAtMs: null, networkAtMs: null,
+        resultAtMs: 0, timerCallbackMs: null,
+        expected: { embeddingAccepted: false, fallback: 'latency-lexical-001', cancellation: null } },
+    ],
+  };
+}
+
 export interface LatencyCardReference {
   issueId: string;
   rubricRef: string;

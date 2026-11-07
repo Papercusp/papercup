@@ -38,7 +38,12 @@ describe('ordinary PostgreSQL endpoint isolation', () => {
     });
     const receipt = stdout.split('\n').find(line => line.startsWith('CONFINED_PG_CLEANUP_VERIFIED '));
     expect(receipt, stdout.slice(-6000)).toBeDefined();
-    expect(JSON.parse(receipt!.slice('CONFINED_PG_CLEANUP_VERIFIED '.length))).toEqual(proof);
+    expect(JSON.parse(receipt!.slice('CONFINED_PG_CLEANUP_VERIFIED '.length))).toMatchObject({
+      ...proof, task: { taskId: expect.any(String), scopeUnit: expect.stringMatching(/^pc-.+\.scope$/),
+        state: expect.any(String), endedAt: expect.any(String) },
+      ownedDatabaseDropped: true, pgDataRemoved: true,
+    });
+    console.log(receipt);
     expect(createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'))
       .toBe(proof.admissionShellSha256);
   }, 200_000);

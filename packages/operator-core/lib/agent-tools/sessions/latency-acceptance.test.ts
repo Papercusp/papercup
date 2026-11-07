@@ -3,7 +3,8 @@ import {
   assessLatencyCohort, assessLatencyExperiment, assertLatencyPhaseOrder, calibrateLatencyOracle, frozenOutputOracle,
   latencyAttemptId, latencyAttemptSchedule, latencyDistribution, latencyFixtureDigest,
   latencyRecipeCriterionCompatibility, pinLatencyCardFixture, latencyDataFixtures,
-  latencyIntervalReference, pinLatencySiblingFixture, type LatencyReferenceInterval,
+  latencyIntervalReference, pinLatencySiblingFixture, latencyAttentionFixtures, latencyRetrievalFixtures,
+  type LatencyReferenceInterval,
   type LatencyAttempt, type LatencyCardReference, type LatencyCardSnapshot,
 } from '../../../test/_latency-acceptance';
 
@@ -21,6 +22,39 @@ function calibrationSamples(): LatencyAttempt[] {
 }
 
 describe('LATENCY-M1 frozen experiment preparation', () => {
+  it('calibrates an independent attention reference against lost acknowledgment, missing content and authorization controls', () => {
+    const fixture = latencyAttentionFixtures();
+    expect(latencyFixtureDigest(fixture)).toBe(latencyFixtureDigest(latencyAttentionFixtures()));
+    expect(fixture.unrelatedMessages).toHaveLength(100);
+    expect(fixture.unrelatedMessages.every(row => !row.to.includes('human'))).toBe(true);
+    expect(fixture.reference.afterUnrelated).toEqual(fixture.reference.before);
+    expect(fixture.reference.afterRelevant).toContain('coord-message:latency-attention-selected');
+    expect(fixture.reference.afterAcknowledgment).not.toContain('coord-message:latency-attention-selected');
+    expect(fixture.reference.otherWorkspace).toEqual([]);
+    const reference = fixture.reference;
+    const check = (observed: unknown, authorized: boolean) => frozenOutputOracle(reference, observed, authorized);
+    expect(calibrateLatencyOracle(check, { positive: reference,
+      incorrect: { ...reference, afterAcknowledgment: reference.afterRelevant },
+      incomplete: { ...reference, afterRelevant: [] } }))
+      .toEqual({ positive: true, incorrect: false, incomplete: false, unauthorized: false });
+  });
+
+  it('pins all eight retrieval schedules to the unchanged entry budget and rejects late success or missing cancellation references', () => {
+    const fixture = latencyRetrievalFixtures(4000);
+    expect(fixture.cases.map(row => row.id)).toEqual(['on-time', 'synchronous-entry-block', 'queue-delay',
+      'late-timer', 'late-success', 'abort-network', 'abort-queued', 'lexical-fallback']);
+    expect(fixture.cases.every(row => row.deadlineMs === row.callEntryMs + row.budgetMs)).toBe(true);
+    expect(fixture.cases.filter(row => row.expected.embeddingAccepted).map(row => row.id)).toEqual(['on-time']);
+    expect(fixture.measured).toBe(false);
+    const late = fixture.cases.find(row => row.id === 'late-timer')!;
+    const check = (observed: unknown, authorized: boolean) => frozenOutputOracle(late, observed, authorized);
+    expect(calibrateLatencyOracle(check, { positive: late,
+      incorrect: { ...late, expected: { ...late.expected, embeddingAccepted: true } },
+      incomplete: { ...late, expected: { embeddingAccepted: false } } }))
+      .toEqual({ positive: true, incorrect: false, incomplete: false, unauthorized: false });
+    for (const budget of [0, -1, 3, NaN, Infinity, 4.5]) expect(() => latencyRetrievalFixtures(budget)).toThrow(/LATENCY-M1/);
+  });
+
   it('clips intervals before partitioning overlap and never adds nested stages twice', () => {
     const input: LatencyReferenceInterval[] = [
       { id: 'model', sourceRef: 'gateway:original', kind: 'model', startMs: -10, endMs: 30 },
