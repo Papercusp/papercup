@@ -442,6 +442,39 @@ it('keeps completed router provenance outside execution and bounds finalization 
   });
 });
 
+it('keeps later groups on the execution clock after a scoped group completes', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(40);
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"files-complete","scope":"group"}\n');
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(31);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+    await vi.advanceTimersByTimeAsync(29);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  });
+});
+
+it('does not renew execution for repeated group completion or later start markers', async () => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(40);
+    for (let group = 0; group < 2; group++) {
+      child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"files-complete","scope":"group"}\n');
+      child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'execute' });
+  });
+});
+
 it('gives runtime shutdown its own bounded allowance after provenance finalization', async () => {
   await withCapturedRouter(routerPhaseOptions, async (child, result) => {
     child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
