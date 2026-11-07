@@ -355,8 +355,10 @@ export function committedWorkRootDependencyDonor(workRoot) {
  * copy. generation:true uses the existing exact-input selector and a PID lease
  * as its immutable byte donor. Incomplete returns contain only progress;
  * callers must resume before preparation, provenance or prepared receipts.
+ * materializeMissing:true fills absent roots through the normal copier before
+ * verifying the entire snapshot; existing roots are never replaced or trusted.
  * @param {{ prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
- * resumeVerification?: { checkpointDir: string, generation?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
+ * resumeVerification?: { checkpointDir: string, generation?: boolean, materializeMissing?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export async function materializeIndependentDependencies(repoRoot, workRoot, options = {}) {

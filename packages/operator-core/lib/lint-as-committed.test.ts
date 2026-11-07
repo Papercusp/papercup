@@ -1769,6 +1769,63 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     } finally { f.cleanup(); }
   }, 60_000);
 
+  it('finishes an interrupted two-root copy without replacing the completed root or publishing early', async () => {
+    const f = retainedFixture();
+    const retained = join(f.workRoot, 'node_modules/alpha.txt');
+    const before = statSync(retained).ino;
+    const missing = 'libs/runtime/node_modules/leaf/index.cjs';
+    mkdirSync(dirname(join(f.root, missing)), { recursive: true });
+    writeFileSync(join(f.root, missing), 'module.exports = "recovered-leaf";');
+    const build = vi.fn((copied: { workspacePaths: Set<string> }) =>
+      mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths));
+    const options = (maxBatches = 64) => ({ ...f.options(maxBatches), prepareWorkspace: build,
+      resumeVerification: { ...f.options(maxBatches).resumeVerification, materializeMissing: true } });
+    try {
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toThrow('dependency tree census differs');
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, options(1));
+      expect(paused.status).toBe('incomplete');
+      expect(paused.progress.materializedTrees).toBe(1);
+      expect(build).not.toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      const leafInode = statSync(join(f.workRoot, missing)).ino;
+      const complete = await mod.materializeIndependentDependencies(f.root, f.workRoot, options());
+      expect(complete.status).toBe('complete');
+      expect(complete.verification.materializedTrees).toBe(0);
+      expect(complete.verification.reusedBatches).toBeGreaterThan(0);
+      expect(complete.paths).toEqual(['libs/runtime/node_modules', 'node_modules']);
+      expect(build).toHaveBeenCalledOnce();
+      expect(statSync(retained).ino).toBe(before);
+      expect(readFileSync(retained, 'utf8')).toBe('payload-v1');
+      expect(statSync(join(f.workRoot, missing)).ino).toBe(leafInode);
+      expect(leafInode).not.toBe(statSync(join(f.root, missing)).ino);
+      expect(readFileSync(join(f.workRoot, missing))).toEqual(readFileSync(join(f.root, missing)));
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8')).dependencyMode).toBe('independent-copy-v1');
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['tampered-root', 'input-drift', 'extra-root'] as const)
+    ('keeps partial-root recovery fail-closed for %s', async defect => {
+      const f = retainedFixture();
+      const missing = 'libs/runtime/node_modules/leaf/index.cjs';
+      mkdirSync(dirname(join(f.root, missing)), { recursive: true });
+      writeFileSync(join(f.root, missing), 'module.exports = "recovered-leaf";');
+      if (defect === 'tampered-root') writeFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'payload-v2');
+      if (defect === 'input-drift') writeFileSync(join(f.root, 'package-lock.json'), '{"lockfileVersion":3}');
+      if (defect === 'extra-root') mkdirSync(join(f.workRoot, 'libs/node_modules'), { recursive: true });
+      const build = vi.fn();
+      try {
+        await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+          ...f.options(), prepareWorkspace: build,
+          resumeVerification: { ...f.options().resumeVerification, materializeMissing: true },
+        })).rejects.toThrow(defect === 'tampered-root' ? 'dependency bytes differ' :
+          defect === 'input-drift' ? 'dependency inputs differ' : 'dependency tree census differs');
+        expect(build).not.toHaveBeenCalled();
+        expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+        if (defect !== 'tampered-root') expect(existsSync(join(f.workRoot, missing))).toBe(false);
+      } finally { f.cleanup(); }
+    }, 60_000);
+
   it('reuses verified batches across serial and parallel census scheduling', async () => {
     const f = retainedFixture();
     const priorJobs = process.env.DEPENDENCY_GENERATION_WALK_JOBS;

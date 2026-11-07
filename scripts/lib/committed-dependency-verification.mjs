@@ -122,8 +122,16 @@ async function selectGeneration(helper, donor, destination, deadline) {
   return { root, tree, lease, identity, token };
 }
 
-async function census(helper, donor, destination, scratch, deadline, generation, progress) {
+async function census(helper, donor, destination, scratch, deadline, generation, progress, materializeMissing = false) {
   if (progress) Object.assign(progress, { phase: 'tree-census', scannedTrees: 0, totalTrees: 0 });
+  const readCensus = async (stage, args, script) => {
+    if (progress) progress.censusStage = stage;
+    const started = Date.now();
+    try { return await command(helper, args, script, deadline); }
+    finally {
+      if (progress) (progress.censusDurationsMs ??= {})[stage] = Date.now() - started;
+    }
+  };
   const sourceInputCommands = generation ? [
     // The generation contains dependency trees, not package/lock files. Reuse
     // the publisher's exact-input selector and revalidate its immutable token.
@@ -131,32 +139,40 @@ async function census(helper, donor, destination, scratch, deadline, generation,
     '[ "$DEPENDENCY_GENERATION_ID" = "$5" ] && [ "$DEPENDENCY_GENERATION_TOKEN" = "$6" ] && [ "$DEPENDENCY_GENERATION_TREE" = "$2" ]',
     'printf "%s\\n" "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT"',
   ] : ['dependency_generation_input_fingerprint "$2"'];
-  const text = await command(helper, [donor, destination,
+  const text = await readCensus('inputs', [donor, destination,
     ...(generation ? [generation.root, generation.identity, generation.token] : [])], [
     ...sourceInputCommands,
     'dependency_generation_input_fingerprint "$3"',
     'printf "%s\\n" "$DEPENDENCY_GENERATION_RACY_WINDOW_SEC"',
     'dependency_generation_walk_jobs',
-    'dependency_generation_configure_workspace_dirs "$2"',
-    'dependency_generation_enumerate_node_modules "$2"',
-    'printf "%s\\n" "---destination---"',
-    'dependency_generation_configure_workspace_dirs "$3"',
-    'dependency_generation_enumerate_node_modules "$3"',
-  ].join('\n'), deadline);
-  const [sourceInputs, destinationInputs, racySeconds, walkJobs, ...lines] = text.trimEnd().split('\n');
+  ].join('\n'));
+  const [sourceInputs, destinationInputs, racySeconds, walkJobs] = text.trimEnd().split('\n');
   if (!/^[a-f0-9]{64}$/.test(sourceInputs) || sourceInputs !== destinationInputs)
     fail('dependency inputs differ');
   const racyWindowMs = Number(racySeconds) * 1000;
   if (!Number.isFinite(racyWindowMs) || racyWindowMs < 0) fail('invalid racy window');
   const jobs = Number(walkJobs);
   if (!Number.isSafeInteger(jobs) || jobs < 1) fail('invalid census worker count');
-  const split = lines.indexOf('---destination---');
-  if (split < 0) fail('incomplete tree census');
-  const sourcePaths = lines.slice(0, split).map(path => safeRelative(relative(donor, path)))
+  const enumerate = async (root, stage) => (await readCensus(stage, [root],
+    'dependency_generation_configure_workspace_dirs "$2"\ndependency_generation_enumerate_node_modules "$2"'))
+    .trimEnd().split('\n').filter(Boolean).map(path => safeRelative(relative(root, path))).sort();
+  const sourcePaths = (await enumerate(donor, 'source-roots'))
     .filter(path => lstatSync(dirname(join(destination, path)), { throwIfNoEntry: false })?.isDirectory());
-  const destinationPaths = lines.slice(split + 1).map(path => safeRelative(relative(destination, path)));
-  sourcePaths.sort();
-  destinationPaths.sort();
+  let destinationPaths = await enumerate(destination, 'destination-roots');
+  const sources = new Set(sourcePaths), targets = new Set(destinationPaths);
+  // Filling an interrupted copy never authorizes its existing bytes. Every
+  // retained and newly copied root still passes the same complete census,
+  // independent-inode checks, byte hashes and final census below.
+  if (materializeMissing && !destinationPaths.some(path => !sources.has(path))) {
+    for (const path of sourcePaths.filter(path => !targets.has(path))) {
+      directoryIdentity(join(donor, path));
+      if (progress) Object.assign(progress, { phase: 'materialize-missing', currentTree: path });
+      await readCensus('copy:' + path, [join(donor, path), join(destination, path)],
+        'DEPENDENCY_GENERATION_ALLOW_HARDLINK=0\ndependency_generation_materialize_tree "$2" "$3" verifier');
+      if (progress) progress.materializedTrees++;
+    }
+    destinationPaths = await enumerate(destination, 'destination-roots-after-copy');
+  }
   if (JSON.stringify(sourcePaths) !== JSON.stringify(destinationPaths)) fail('dependency tree census differs');
   if (progress) Object.assign(progress, { phase: 'record-census', totalTrees: sourcePaths.length });
   // Reuse the generation helper's bounded walk policy. Stable slots preserve
@@ -322,6 +338,7 @@ async function verifyBatch(batch, donor, destination, deadline) {
 export async function verifyRetainedDependencies(donor, destination, options, context) {
   const { checkpointDir, maxBatches = 64, maxDurationMs = 30_000, batchSize = 256 } = options;
   if (options.generation !== undefined && typeof options.generation !== 'boolean') fail('invalid generation option');
+  if (options.materializeMissing !== undefined && typeof options.materializeMissing !== 'boolean') fail('invalid materializeMissing option');
   for (const [name, value, maximum] of [['maxBatches', maxBatches, 1_000_000],
     ['maxDurationMs', maxDurationMs, 3600_000], ['batchSize', batchSize, 4096]])
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum) fail('invalid ' + name);
@@ -330,7 +347,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
   if (within(donor, destination) || within(destination, donor)) fail('dependency roots overlap');
   const checkpoint = privateDirectory(checkpointDir, [donor, destination]);
   const deadline = Date.now() + maxDurationMs;
-  const progress = { verifiedEntries: 0, verifiedBatches: 0, reusedBatches: 0, hashedFiles: 0, totalEntries: 0 };
+  const progress = { verifiedEntries: 0, verifiedBatches: 0, reusedBatches: 0, hashedFiles: 0, totalEntries: 0, materializedTrees: 0 };
   const incomplete = () => ({ status: 'incomplete', progress: { ...progress } });
   const mutexOptions = { timeoutMs: maxDurationMs };
   let generation;
@@ -346,7 +363,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
       const scratch = mkdtempSync(join(checkpoint, '.scan-'));
       try {
         context.verifySource();
-        const scan = await census(context.materializer, donor, destination, scratch, deadline, generation, progress);
+        const scan = await census(context.materializer, donor, destination, scratch, deadline, generation, progress, options.materializeMissing);
         progress.phase = 'inspect-census';
         const population = await inspect(scan, donor, destination, deadline);
         progress.totalEntries = population.entries;
