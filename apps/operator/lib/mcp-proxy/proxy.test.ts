@@ -2921,9 +2921,16 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       client.end(body);
       await upstreamReached;
       client.destroy();
-      const timings = () => fs.readFileSync(logFile, "utf8").trim().split("\n")
-        .map(line => JSON.parse(line)).filter(row => row.kind === "tool_guard_timing");
+      const records = () => fs.existsSync(logFile)
+        ? fs.readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean)
+          .map(line => JSON.parse(line))
+        : [];
+      const timings = () => records().filter(row => row.kind === "tool_guard_timing");
       await waitFor(() => timings().length === 2);
+      // The disconnected client's upstream response can finish after its timing
+      // rows. Keep this process-global sink override until the late failure record
+      // lands, or it can be redirected into the next test's sink.
+      await waitFor(() => records().some(row => row.kind === "client_gone"));
       const [complete, disconnected] = timings();
       expect(complete).toMatchObject({ guardRequestId: guardId, outcome: "response_finished", httpStatus: 200 });
       expect(complete.bodyReadyMs).toBeGreaterThanOrEqual(0);

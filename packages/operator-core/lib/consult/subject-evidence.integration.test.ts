@@ -446,6 +446,10 @@ describe('registered subject evidence with the real local scorer', () => {
       reverse: naturalPairs.filter(pair => pair.contracts[0] ===
         subjectEvidenceQuery(NATURAL_QUESTION_SUBJECT_CASES[2].subject)),
     })).toEqual(['native-binding-reviewer']);
+    expect(natural.cases[3].selected, JSON.stringify({ runtime, ownedScorer: !!privateHome,
+      measured: natural.cases[3], reverse: naturalPairs.filter(pair =>
+        pair.passage === NATURAL_QUESTION_SUBJECT_CASES[3].passages[0].text),
+    })).toEqual(['binding-review-plan']);
     expect(natural.summary.falseExpertSelections).toBe(0);
     const positives = measured.filter(r => r.relevant.length);
     const negatives = measured.filter(r => !r.relevant.length);

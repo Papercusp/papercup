@@ -84,7 +84,7 @@ describe('complete knowledge context', () => {
       score: .02,rankers: ['lexical'],
     }));
     const result = selectCorpusLines({ hits: [report,...broadPlans],
-      queryText: 'warmquartz diagnostic',harnessSlugs: ['papercusp'] });
+      queryText: 'warmquartz diagnostic',harnessSlugs: ['papercusp'], budgetChars: 700 });
     expect(result.lines[0].handle.ref).toBe('report:warm-report');
     expect(result.lines.some(line => line.line.includes('Retain the snapshot'))).toBe(true);
     expect(result.dropped.some(drop => drop.reason === 'budget-exhausted')).toBe(true);
