@@ -238,6 +238,7 @@ describe('isUnitVitestTaskScript / LANE_SCRIPTS', () => {
     const task = { workspaceRoot, scriptText: 'vitest run' };
     const identity = defaultRunnerIdentity(root, process.env, 'proof-v3', task);
     expect(identity).toMatch(/^proof-v3 runtime-v1 [a-f0-9]{64}$/);
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', { ...task, scriptText: 'vitest' })).toBe(identity);
     expect(defaultRunnerIdentity(root, process.env, 'proof-v3', { ...task, scriptText: 'vitest run && bun other.ts' })).toBeNull();
     expect(defaultRunnerIdentity(root, process.env, 'proof-v3', { ...task, preScript: 'bun setup.ts' })).toBeNull();
     writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env bun\n');
@@ -749,6 +750,45 @@ describe('armTargetedTaskReuse', () => {
   });
 
   describe('fails open: no skip list, every file runs, recording stays armed', () => {
+    it('retains connection-call timing and selected configuration without loading proofs or retrying', async () => {
+      fixture();
+      const diagnostics: Array<Record<string, unknown>> = [];
+      for (const password of ['first-synthetic-password', 'second-synthetic-password']) {
+        let clock = NOW;
+        let connects = 0;
+        let proofReads = 0;
+        const decisions: unknown[] = [];
+        const armed = await armTargetedTaskReuse({
+          root, workspace: WS, script: SCRIPT, expectedSha: HEAD,
+          env: baseEnv({ PAPERCUSP_TEST_RUNS_DB_URL: `postgresql://fixture:${password}@localhost:5432/reuse` }),
+          deps: deps({
+            now: () => clock,
+            connect: async () => { connects += 1; clock += 1_250; throw new Error('connection timeout'); },
+            loadProofFiles: async () => { proofReads += 1; throw new Error('unexpected proof lookup'); },
+            loadProofs: async () => { proofReads += 1; throw new Error('unexpected proof lookup'); },
+            recordReuse: async (_task: string, decision: unknown) => { decisions.push(decision); },
+          }),
+        });
+        expect(connects).toBe(1);
+        expect(proofReads).toBe(0);
+        expect(armed.reused).toBe(0);
+        expect(armed.args).toEqual([]);
+        expect(armed.env.PC_TEST_REUSE_SKIP_LIST).toBeUndefined();
+        expect(armed.env.PC_EXECUTED_SOURCE_MAP_WORKSPACE).toBe(WS);
+        expect(decisions).toEqual([{ offReason: 'pg-unavailable(connection_timeout)' }]);
+        expect(armed.lines).toHaveLength(1);
+        expect(armed.lines[0]).not.toContain(password);
+        expect(armed.lines[0]).not.toContain('postgresql://');
+        const diagnostic = JSON.parse(armed.lines[0]!.split(' connection=')[1]!);
+        expect(diagnostic).toEqual({ phase: 'client-setup-and-connect', elapsedMs: 1_250,
+          urlSource: 'PAPERCUSP_TEST_RUNS_DB_URL', targetFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+        diagnostics.push(diagnostic);
+        armed.finish();
+      }
+      // Credentials are not part of the selected-target identity.
+      expect(diagnostics[0]?.targetFingerprint).toBe(diagnostics[1]?.targetFingerprint);
+    });
+
     const cases: Array<[string, () => void, Record<string, unknown>, Record<string, string>, RegExp]> = [
       ['the checkout is not the expected sha', fixture, {}, {}, /reason=head-mismatch\(aaaaaaaaaaaa!=cccccccccccc\)/],
       ['the checkout is dirty', fixture, { git: (_r: string, a: string[]) => (a[0] === 'rev-parse' ? HEAD : ' M x.ts\n') }, {}, /reason=dirty-checkout\(1\)/],

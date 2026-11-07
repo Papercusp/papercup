@@ -33,6 +33,7 @@
 // numbers must not be folded into it.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -52,6 +53,7 @@ import {
   loadReuseProofFiles,
   loadReuseProofs,
   readExecutedMapResults,
+  resolveExecutedMapPgUrl,
 } from "./executed-source-map.mjs";
 import {
   REUSE_PROOF_FORMAT,
@@ -397,6 +399,22 @@ function withTimeout(promise, ms, what) {
 
 const token = (err) => String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 160);
 
+/** Identify the selected configuration without putting credentials in the run log.
+ * This fingerprints the selected URL target, not a resolved server or a successful
+ * connection. The timed call includes client import/setup as well as connect().
+ */
+function reuseConnectionDiagnostic(env, elapsedMs) {
+  const selected = resolveExecutedMapPgUrl(env);
+  let targetFingerprint = null;
+  try {
+    const target = new URL(selected.url);
+    targetFingerprint = createHash("sha256")
+      .update(JSON.stringify([target.host, target.pathname, target.search])).digest("hex");
+  } catch { /* Invalid configuration still needs a bounded failure diagnostic. */ }
+  return { phase: "client-setup-and-connect", elapsedMs: Math.max(0, elapsedMs),
+    urlSource: selected.source, targetFingerprint };
+}
+
 /**
  * Arm pass reuse and proof recording for ONE unit vitest task about to run at `expectedSha` in the
  * clean checkout `root`. Returns a NEW env (the input is not mutated) plus the log lines that say
@@ -488,8 +506,9 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   const record = async (decision) => {
     try { await d.recordReuse(label, decision, { runContext, runGroupId }); } catch { /* telemetry must not affect task execution */ }
   };
-  const off = async (reason) => {
-    lines.push(`${TARGETED_REUSE_LINE_PREFIX}TEST_PASS_REUSE ws=${label} scope=${scope} applied=false reason=${reason}`);
+  const off = async (reason, connection = null) => {
+    lines.push(`${TARGETED_REUSE_LINE_PREFIX}TEST_PASS_REUSE ws=${label} scope=${scope} applied=false reason=${reason}`
+      + (connection ? ` connection=${JSON.stringify(connection)}` : ""));
     await record({ offReason: reason });
     return result(0);
   };
@@ -534,10 +553,11 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   });
   if (!runnerIdentity) return off("no-runner-identity");
   let client;
+  const connectionStarted = d.now();
   try {
     client = await d.connect(out);
   } catch (err) {
-    return off(`pg-unavailable(${token(err)})`);
+    return off(`pg-unavailable(${token(err)})`, reuseConnectionDiagnostic(out, d.now() - connectionStarted));
   }
   let loaded;
   const prefix = pkg.dirRel === "" ? "" : `${pkg.dirRel}/`;
