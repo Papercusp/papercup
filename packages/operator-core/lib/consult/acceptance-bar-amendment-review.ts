@@ -591,8 +591,8 @@ export async function inspectFreshAmendmentReviewer(
     : null;
   const stranded = liveness?.sessionState === 'parked' && liveness.selfWake === 'none';
   const reason = failure?.reason ?? (stranded ? 'parked-without-self-wake' : terminal ? 'task-ended' : undefined);
-  if (!reason) return { state: 'no-failure-observed', taskId, taskState, ...(nativeRef ? { nativeRef } : {}) };
 
+  // A durable answer can precede task exit; it also outranks a stale running ledger row.
   let laterPost: boolean;
   try {
     laterPost = await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
@@ -605,6 +605,7 @@ export async function inspectFreshAmendmentReviewer(
     return { state: 'unknown', taskId, taskState, reason: 'preview-thread history could not be read' };
   }
   if (laterPost) return { state: 'later-post', taskId, taskState, reason: 'a post exists after the preview' };
+  if (!reason) return { state: 'no-failure-observed', taskId, taskState, ...(nativeRef ? { nativeRef } : {}) };
   return {
     state: 'reclaimable',
     taskId,

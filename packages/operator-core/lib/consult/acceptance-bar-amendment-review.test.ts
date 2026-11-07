@@ -1626,10 +1626,38 @@ describe('inspectFreshAmendmentReviewer', () => {
     const result = await inspectFreshAmendmentReviewer(input, {
       readTaskState: vi.fn(async () => 'running' as const),
       resolveSessionStates: resolveSessionStates as never,
+      hasLaterPost: vi.fn(async () => false),
     });
 
     expect(result).toMatchObject({ state: 'no-failure-observed', taskId: 'reviewer-1', taskState: 'running' });
     expect(resolveSessionStates).toHaveBeenCalledWith([{ ownerId: 'reviewer-owner' }], { hydratePerId: true, selfWake: true });
+  });
+
+  it('reports a running live reviewer’s answer after the current evidence boundary', async () => {
+    const hasLaterPost = vi.fn(async () => true);
+    const result = await inspectFreshAmendmentReviewer({ ...input, reviewEvidencePost: 'thread-post:50' }, {
+      readTaskState: vi.fn(async () => 'running' as const),
+      resolveSessionStates: vi.fn(async () => new Map([['reviewer-owner', {
+        sessionState: 'live', selfWake: 'loop',
+      }]])) as never,
+      hasLaterPost,
+    });
+
+    expect(result).toMatchObject({ state: 'later-post', taskId: 'reviewer-1', taskState: 'running' });
+    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: input.workspaceId,
+      previewPostRef: input.previewPostRef, authorId: 'reviewer-owner', afterPostRef: 'thread-post:50' });
+  });
+
+  it('keeps a running reviewer’s disposition unknown when its thread cannot be read', async () => {
+    const result = await inspectFreshAmendmentReviewer(input, {
+      readTaskState: vi.fn(async () => 'running' as const),
+      resolveSessionStates: vi.fn(async () => new Map([['reviewer-owner', {
+        sessionState: 'live', selfWake: 'loop',
+      }]])) as never,
+      hasLaterPost: vi.fn(async () => { throw new Error('thread unavailable'); }),
+    });
+
+    expect(result).toMatchObject({ state: 'unknown', reason: 'preview-thread history could not be read' });
   });
 
   it('refuses replacement when a later post appeared after the original preview', async () => {

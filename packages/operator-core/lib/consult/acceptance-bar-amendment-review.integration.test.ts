@@ -192,7 +192,8 @@ updated: 2026-11-06
     expect(await previewThreadHasLaterPost({ ...preview, authorId: 'other-workspace', afterPostRef: refs.evidence! }, db.adminSql)).toBe(false);
   });
 
-  it('reclaims an ended re-review despite the old objection and requester evidence, then preserves a fresh answer', async () => {
+  it.each(['running', 'ended_unobserved'] as const)(
+    'uses the current reviewer’s answer despite a %s task and older unrelated posts', async (taskState) => {
     const records: string[] = [];
     for (const [author, body] of [['applier', 'Retained preview'], ['judge-old', 'Old objection'],
       ['applier', 'New verification evidence'], ['another-agent', 'Unrelated later note']]) {
@@ -203,9 +204,14 @@ updated: 2026-11-06
     }
     const request = { workspaceId, previewPostRef: records[0]!, reviewEvidencePost: records[2]!,
       reviewer: { state: 'launched', taskId: 'ended-reviewer', ownerId: 'judge-old' } };
-    const deps = { readTaskState: async () => 'ended_unobserved' as const,
+    const deps = { readTaskState: async () => taskState,
+      resolveSessionStates: vi.fn(async () => new Map([['judge-old', {
+        sessionState: 'live', selfWake: 'loop',
+      }]])) as never,
       hasLaterPost: (args: Parameters<typeof previewThreadHasLaterPost>[0]) => previewThreadHasLaterPost(args, db.adminSql) };
-    expect(await inspectFreshAmendmentReviewer(request, deps)).toMatchObject({ state: 'reclaimable' });
+    expect(await inspectFreshAmendmentReviewer(request, deps)).toMatchObject({
+      state: taskState === 'running' ? 'no-failure-observed' : 'reclaimable',
+    });
 
     await db.adminSql`
       INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
