@@ -1819,8 +1819,11 @@ resolve_staging_restart_control_url() {
     # Health alone can belong to a legacy operator whose MCP catalog cannot
     # dispatch this tool. Use the SAME identity for a bounded read-only preview;
     # no restart has been dispatched while another candidate is considered.
+    # ptool already bounds connection, catalog discovery and the tool call.
+    # A separate 30s timeout cuts its longer discovery/recovery budget short,
+    # discarding a current controller before falling through to legacy ones.
     if curl --fail --silent --connect-timeout 2 --max-time 3 --output /dev/null "$candidate/api/health" &&
-       control_reply="$(timeout 30 env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="$candidate" --json - <<'JSON'
+       control_reply="$(env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="$candidate" --json - <<'JSON'
 {"target":"staging","confirm":false}
 JSON
 )" && node -e '

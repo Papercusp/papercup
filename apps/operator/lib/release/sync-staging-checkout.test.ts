@@ -98,6 +98,7 @@ function requiresRestart(paths: string[]): boolean {
 function restartControlEndpoint(
   healthyOrigin: string | string[], configuredOrigin = '',
   compatibleOrigin = typeof healthyOrigin === 'string' ? healthyOrigin : healthyOrigin[0],
+  interruptedOrigin = '', interruptedPhase: 'catalog' | 'preview' = 'catalog',
 ) {
   const binDir = mkdtempSync(join(tmpdir(), 'staging-control-endpoint-'));
   const probeLog = join(binDir, 'probes');
@@ -121,6 +122,19 @@ function restartControlEndpoint(
     "  printf '%s\\n' '{\"ok\":false,\"error\":\"unsupported-or-unauthorized\"}'",
     'fi',
   ].join('\n'), { mode: 0o700 });
+  // Model the outer deadline expiring during the CLI's bounded discovery or
+  // admitted read-only preview, without adding a 30-second sleep to the test.
+  writeFileSync(join(binDir, 'timeout'), [
+    '#!/usr/bin/env bash',
+    'shift',
+    'for arg in "$@"; do case "$arg" in --url=*) origin="${arg#--url=}" ;; esac; done',
+    'if [[ "$origin" == "$TEST_CONTROL_INTERRUPTED_ORIGIN" ]]; then',
+    '  if [[ "$TEST_CONTROL_INTERRUPTED_PHASE" == preview ]]; then "$@" >/dev/null; fi',
+    '  echo "outer timeout interrupted current $TEST_CONTROL_INTERRUPTED_PHASE before ptool settled" >&2',
+    '  exit 124',
+    'fi',
+    'exec "$@"',
+  ].join('\n'), { mode: 0o700 });
   try {
     const result = runFn(['resolve_staging_restart_control_url'], 'resolve_staging_restart_control_url', {
       env: {
@@ -131,6 +145,8 @@ function restartControlEndpoint(
         PTOOL_CLIENT_SID: 'test-client',
         TEST_HEALTHY_CONTROL_ORIGINS: '|' + [healthyOrigin].flat().join('|') + '|',
         TEST_COMPATIBLE_CONTROL_ORIGIN: compatibleOrigin ?? '',
+        TEST_CONTROL_INTERRUPTED_ORIGIN: interruptedOrigin,
+        TEST_CONTROL_INTERRUPTED_PHASE: interruptedPhase,
         TEST_CONTROL_PROBE_LOG: probeLog,
         TEST_CONTROL_PREFLIGHT_LOG: preflightLog,
       },
@@ -144,6 +160,17 @@ function restartControlEndpoint(
 }
 
 describe('staging restart control endpoint recovery', () => {
+  it.each(['catalog', 'preview'] as const)('lets bounded current-controller %s finish instead of abandoning it for a legacy operator', (phase) => {
+    const current = 'http://127.0.0.1:3170';
+    const result = restartControlEndpoint([current, 'http://127.0.0.1:3070'], '', current, current, phase);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(current);
+    expect(result.probes).toEqual([`${current}/api/health`]);
+    expect(result.preflights).toEqual([
+      `${current}|test-client|{"target":"staging","confirm":false}`,
+    ]);
+  });
+
   it('uses healthy staging without probing another operator', () => {
     const result = restartControlEndpoint('http://127.0.0.1:3170', 'http://localhost:3271');
     expect(result.status).toBe(0);
