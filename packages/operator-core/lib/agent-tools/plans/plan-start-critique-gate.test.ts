@@ -283,6 +283,7 @@ describe('loadBarCritiqueEvidence (P-007 reader)', () => {
     responder_id: string | null;
     author_id: string | null;
     answered_at: string | null;
+    outcome?: unknown;
   };
 
   function fakeSql(rows: Row[]) {
@@ -295,6 +296,50 @@ describe('loadBarCritiqueEvidence (P-007 reader)', () => {
   }
 
   const S1 = clause('S-1');
+
+  function archivedFixture(options: { missingOrigin?: boolean; verified?: boolean } = {}) {
+    const origin: Row = { conversation_id: 'organic', author_id: 'real-critic', responder_id: 'source-expert',
+      answered_at: '2026-10-02T00:00:00.000Z', closed_at: '2026-10-03T00:00:00.000Z', outcome: { answer: 'Reviewed S-1' } };
+    const wrapper = (id: string): Row => ({ conversation_id: id, author_id: null, responder_id: id,
+      answered_at: null, closed_at: '2026-10-05T00:00:00.000Z',
+      outcome: { source: 'archive', source_conversation_id: origin.conversation_id } });
+    const { sql } = fakeSql([...(options.missingOrigin ? [] : [origin]), wrapper('copy-a'), wrapper('copy-b')]);
+    const readArchivedCritique = vi.fn().mockResolvedValue(options.verified === false
+      ? { exists: true, state: 'closed_answered', critiquePosts: 0, declinePosts: 0, critics: [] }
+      : { exists: true, state: 'closed_answered', critiquePosts: 1, declinePosts: 0, critics: ['real-critic'],
+        originConsultId: 'organic', relevance: { matched: true, matchedRefs: [PLAN], via: ['question'] } });
+    const listClauses = vi.fn(async (opts: { asOf?: string }) => opts.asOf === '2026-10-05T00:00:00.000Z'
+      ? [S1, clause('S-2')] : [S1]) as unknown as typeof listSpecClauses;
+    return { sql, listClauses, readArchivedCritique, partyKeys: async (ids: readonly string[]) => new Map(ids.map(id => [id, id])) };
+  }
+
+  it('reuses only the verified origin snapshot and counts copied receipts as one independent party', async () => {
+    const deps = archivedFixture();
+    const evidence = await loadBarCritiqueEvidence({ workspaceId: 'ws', harnessSlug: 'h', planSlug: PLAN, authorIds: [] }, deps);
+    expect(evidence.critiques.map(c => [c.consultId, c.criticId, c.record.closedAt])).toEqual([
+      ['organic', 'real-critic', '2026-10-03T00:00:00.000Z'],
+    ]);
+    expect(deps.readArchivedCritique).toHaveBeenCalledWith(deps.sql, 'ws', 'copy-a', '', [PLAN]);
+    const verdict = evaluateBarCritiqueGate({ planSlug: PLAN, currentClauses: [S1, clause('S-2')],
+      ...evidence, threshold: 2 });
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.clauseShortfalls).toEqual([
+      expect.objectContaining({ specId: 'S-1', coveredBy: 1 }),
+      expect.objectContaining({ specId: 'S-2', coveredBy: 0 }),
+    ]);
+  });
+
+  it('refuses archive evidence when the verified origin is absent from the current scoped closed critiques', async () => {
+    const evidence = await loadBarCritiqueEvidence({ workspaceId: 'ws', harnessSlug: 'h', planSlug: PLAN, authorIds: [] },
+      archivedFixture({ missingOrigin: true }));
+    expect(evidence.critiques).toEqual([]);
+  });
+
+  it('never substitutes the wrapper responder when immutable source verification fails', async () => {
+    const deps = archivedFixture({ missingOrigin: true, verified: false });
+    const evidence = await loadBarCritiqueEvidence({ workspaceId: 'ws', harnessSlug: 'h', planSlug: PLAN, authorIds: [] }, deps);
+    expect(evidence.critiques).toEqual([]);
+  });
 
   it('bounds independent snapshot reads and preserves close-order pins when reads finish out of order', async () => {
     const rows: Row[] = Array.from({ length: 6 }, (_, index) => ({

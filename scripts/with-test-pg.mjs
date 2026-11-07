@@ -140,6 +140,11 @@ try {
   const executable = await resolveExecutable(candidates);
   if (!executable) throw new Error('child executable is missing or not executable from repository root: ' + cmd[0]);
   cmd[0] = executable;
+  // The original-lifetime protocol must reach a direct Node child. Reject an
+  // incompatible executable before allocating or migrating its private PG.
+  if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && cmd[0] !== process.execPath) {
+    throw new Error('original lifetime proof requires the maintained Node worker route');
+  }
 } catch (error) {
   console.error('[with-test-pg] child preflight failed: ' + error.message);
   process.exit(1);
@@ -1027,9 +1032,6 @@ const invokesTestFilesRouter = cmd.slice(1).some(argument => {
 const privatePgReleaseToken = !isolatedRuntime && !process.connected && cmd[0] === process.execPath &&
   invokesTestFilesRouter ? randomUUID() : null;
 const startToken = observedRuntime ? randomUUID() : null;
-if (observedRuntime && resolve(cmd[0]) !== process.execPath) {
-  throw new Error('original lifetime proof requires the maintained Node worker route');
-}
 const childArgs = observedRuntime
   ? ['--import', join(ROOT, 'scripts/lib/isolated-runtime-start.mjs'), ...cmd.slice(1)] : cmd.slice(1);
 // Integration setup has its own admin resolver. Pin it to this supervisor's

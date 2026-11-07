@@ -6,7 +6,7 @@
  * testable against the real parser without a ctx, PG, or coord log.
  */
 
-import { resolveEffectiveStatus, type ParsedPlan } from '@papercusp/plan-parser';
+import { resolveEffectiveStatusForItems, type ParsedPlan, type PlanItem } from '@papercusp/plan-parser';
 import { parseReportBlock } from '@papercusp/chat-protocol';
 import { operatorReportToAttention, planItemToAttention } from './adapters';
 import { planItemRef } from '../issue-blocks-merge';
@@ -28,7 +28,7 @@ export function toIsoOrNull(v: string | number | Date | null | undefined): strin
 }
 
 /**
- * Map the non-terminal items of already-parsed plans to AttentionItems —
+ * Map the non-terminal items of parsed or indexed plans to AttentionItems —
  * the plan-item source of plans:attention. Skips legacy plans and any
  * item that is `done`/`dropped` by stored OR effective status (a
  * blocker dropped upstream un-gates its dependents, which then surface).
@@ -43,14 +43,19 @@ export function toIsoOrNull(v: string | number | Date | null | undefined): strin
  * bare `{ parsed }` — degrades to the pre-fix behavior instead of throwing.
  */
 export function planItemsToAttention(
-  plans: readonly { parsed: ParsedPlan; row?: { planSlug: string } }[],
+  plans: readonly (
+    | { parsed: ParsedPlan; row?: { planSlug: string } }
+    | { slug: string; isLegacy: boolean; items: PlanItem[] }
+  )[],
   harnessSlug: string | null,
 ): AttentionItem[] {
   const out: AttentionItem[] = [];
-  for (const { parsed, row } of plans) {
-    if (parsed.isLegacy) continue;
-    const slug = row?.planSlug ?? parsed.frontmatter.slug ?? parsed.slug;
-    const resolved = resolveEffectiveStatus(parsed);
+  for (const plan of plans) {
+    if ('parsed' in plan ? plan.parsed.isLegacy : plan.isLegacy) continue;
+    const slug = 'parsed' in plan
+      ? plan.row?.planSlug ?? plan.parsed.frontmatter.slug ?? plan.parsed.slug
+      : plan.slug;
+    const resolved = resolveEffectiveStatusForItems('parsed' in plan ? plan.parsed.items : plan.items);
     for (const it of resolved.items) {
       if (it.storedStatus === 'done' || it.storedStatus === 'dropped') continue;
       if (it.effectiveStatus === 'done' || it.effectiveStatus === 'dropped') continue;

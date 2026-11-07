@@ -1,0 +1,33 @@
+{
+  "group": "0e97f3fb-548b-406e-b885-4f1d7d547423",
+  "files": [
+    "packages/operator-core/lib/consult/park.integration.test.ts",
+    "packages/operator-core/lib/events/await/wake-executor.test.ts"
+  ],
+  "titles": [
+    "requires matching verdict pickup proof",
+    "persisted owner-authority survives park creation and expiry",
+    "adopt-alternative: an objection with an alternative wakes the parker",
+    "silent-proceed: with no objection",
+    "books host-attested when the host confirmed a native turn start",
+    "books host-attested when the host finds a durable exact-ID",
+    "does not attest a turn on a host that was never asked",
+    "does not attest a turn on a duplicate-delivery-id reply"
+  ],
+  "sourceWorkspace": "@papercusp/operator-core",
+  "cmd": [
+    "/home/marsh-office/.local/node25/bin/node",
+    "--import",
+    "/home/marsh-office/papercupai-workspace/papercusp/scripts/lib/committed-source-loader.mjs",
+    "/home/marsh-office/papercupai-workspace/papercusp/scripts/test-files.mjs",
+    "packages/operator-core/lib/consult/park.integration.test.ts",
+    "packages/operator-core/lib/events/await/wake-executor.test.ts",
+    "--",
+    "-t",
+    "requires matching verdict pickup proof|persisted owner-authority survives park creation and expiry|adopt-alternative: an objection with an alternative wakes the parker|silent-proceed: with no objection|books host-attested when the host confirmed a native turn start|books host-attested when the host finds a durable exact-ID|does not attest a turn on a host that was never asked|does not attest a turn on a duplicate-delivery-id reply",
+    "--reporter=default",
+    "--reporter=hanging-process"
+  ],
+  "scope": "ordinary maintained isolated component tests; no original-lifetime, native or deployed acceptance",
+  "parentAttempt": "74dd7802-b540-4e67-955f-bb68221fcd19"
+}

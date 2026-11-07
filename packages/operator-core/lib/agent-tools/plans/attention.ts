@@ -33,7 +33,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { readAllPlans } from './source';
+import { listPlanIndexRows, planItemsForRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import {
@@ -361,8 +361,17 @@ export default defineTool({
         // independent sources must not queue behind the full plan population.
         const plansReady = (async () => {
           try {
-            const plans = await traceNamedQueryStage('attention-plans', () => readAllPlans({ includeArchived, ...opts }));
-            const planItems = planItemsToAttention(plans, harnessFilter);
+            // Attention needs canonical items, not every plan's Markdown body.
+            // Keep instances and every plan status: shipped plans can still
+            // contain needs-human decisions, and snapshots have their own slug.
+            const plans = await traceNamedQueryStage('attention-plans', () => listPlanIndexRows({
+              ...opts, includeArchived, includeInstances: true, includeItems: true,
+            }));
+            const planItems = planItemsToAttention(plans.map((row) => ({
+              slug: row.planSlug,
+              isLegacy: row.isLegacy,
+              items: planItemsForRow({ ...row, content: '' }),
+            })), harnessFilter);
             for (const it of planItems) {
               if (it.planSlug && it.harnessSlug) planHarness.set(it.planSlug, it.harnessSlug);
             }

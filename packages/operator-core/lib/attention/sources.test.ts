@@ -106,6 +106,38 @@ describe('planItemsToAttention (plan-item source of plans:attention)', () => {
     expect(planItemsToAttention([{ parsed: legacy }], null)).toEqual([]);
   });
 
+  it('preserves decision, dependency, importance and instance identity from canonical items', () => {
+    const parsed = parsePlan(MIXED.replace('status: active', 'status: shipped'));
+    const slug = 't-2026-05-31@run-999';
+    expect(planItemsToAttention([{ slug, isLegacy: false, items: parsed.items }], 'papercup'))
+      .toEqual(planItemsToAttention([{ parsed, row: { planSlug: slug } }], 'papercup'));
+  });
+
+  it('resolves missing dependencies, cycles and dropped blockers identically from the item index', () => {
+    const parsed = parsePlan(wrap([
+      '- **P-001** `todo` missing blocked-by: P-099',
+      '- **P-002** `todo` cycle a blocked-by: P-003',
+      '- **P-003** `todo` cycle b blocked-by: P-002',
+      '- **P-004** `dropped` dropped blocker',
+      '- **P-005** `todo` released blocked-by: P-004',
+    ].join('\n')));
+    const indexed = planItemsToAttention([{
+      slug: parsed.frontmatter.slug ?? parsed.slug, isLegacy: false, items: parsed.items,
+    }], null);
+    expect(indexed).toEqual(planItemsToAttention([{ parsed }], null));
+    expect(indexed.find((item) => item.itemRef === 'P-005')?.status).toBe('todo');
+    expect(indexed.filter((item) => ['P-001', 'P-002', 'P-003'].includes(item.itemRef!))
+      .every((item) => item.status === 'blocked')).toBe(true);
+  });
+
+  it('keeps an explicit empty canonical index empty and skips legacy indexed plans', () => {
+    const parsed = parsePlan(MIXED);
+    expect(planItemsToAttention([
+      { slug: 'empty', isLegacy: false, items: [] },
+      { slug: 'legacy', isLegacy: true, items: parsed.items },
+    ], null)).toEqual([]);
+  });
+
   // WI-7259 (sibling of WI-7246): a scheduled-run snapshot's markdown is a
   // byte-identical copy of its parent's, frontmatter included, so
   // `parsed.frontmatter.slug` reads the PARENT's slug. When the caller has the

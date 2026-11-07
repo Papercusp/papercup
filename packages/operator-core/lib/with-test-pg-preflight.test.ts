@@ -90,12 +90,17 @@ describe('private Docker endpoint admission', () => {
 
 describe('private proof IPC admission', () => {
   it.each([
-    { isolated: true, proof: true, ipc: false, admitted: false },
-    { isolated: false, proof: true, ipc: true, admitted: false },
-    { isolated: true, proof: true, ipc: true, admitted: true },
-    { isolated: true, proof: false, ipc: false, admitted: true },
-  ])('checks the actual parent channel before allocation: %j', async ({ isolated, proof, ipc, admitted }) => {
+    { isolated: true, proof: true, ipc: false, command: 'node', admitted: false },
+    { isolated: false, proof: true, ipc: true, command: 'node', admitted: false },
+    { isolated: true, proof: true, ipc: true, command: 'node', admitted: true },
+    { isolated: true, proof: false, ipc: false, command: 'node', admitted: true },
+    { isolated: true, proof: true, ipc: true, command: 'other', admitted: false },
+    { isolated: true, proof: false, ipc: false, command: 'other', admitted: true },
+  ])('checks the parent channel and executable before allocation: %j', async ({ isolated, proof, ipc, command, admitted }) => {
     const entry = join(root, 'scripts/with-test-pg.mjs');
+    const directory = mkdtempSync(join(tmpdir(), 'private-proof-command-'));
+    const executable = command === 'node' ? process.execPath : join(directory, 'worker');
+    if (command !== 'node') writeFileSync(executable, '#!/bin/sh\nexit 91\n', { mode: 0o755 });
     // Stop at the real allocation dependency boundary; admission must not create
     // a database, runtime root, migration copy or test child in any of these cases.
     const hook = `export async function resolve(specifier, context, next) {
@@ -105,7 +110,7 @@ describe('private proof IPC admission', () => {
     const script = `import { register } from 'node:module';
       register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
       process.argv = [process.execPath, ${JSON.stringify(entry)}, ${isolated ? "'--isolated-runtime'," : ''}
-        '--', process.execPath, '-e', 'process.exit(91)'];
+        '--', ${JSON.stringify(executable)}, '-e', 'process.exit(91)'];
       await import(${JSON.stringify(pathToFileURL(entry).href)});`;
     const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: proof ? '1' : undefined,
       PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' };
@@ -122,13 +127,16 @@ describe('private proof IPC admission', () => {
       const diagnostic = JSON.stringify({ status, signal, stdout, stderr });
       expect(status, diagnostic).toBe(1);
       expect(signal, diagnostic).toBeNull();
-      expect(stderr, diagnostic).toContain(admitted ? 'PROOF_ADMISSION_REACHED' : 'proof preflight failed');
+      const refusal = command === 'other' ? 'original lifetime proof requires the maintained Node worker route' :
+        'proof preflight failed';
+      expect(stderr, diagnostic).toContain(admitted ? 'PROOF_ADMISSION_REACHED' : refusal);
       expect(stderr, diagnostic).not.toContain(admitted ? 'proof preflight failed' : 'PROOF_ADMISSION_REACHED');
       expect(stdout).not.toContain('booting throwaway PG');
     } finally {
       clearTimeout(timer);
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await closed;
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

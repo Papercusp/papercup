@@ -2419,8 +2419,10 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(r.unmeasured_candidates).toEqual([]);
     expect(reached).toHaveLength(0);
     const row = await stateRow(r.conversation_id);
-    expect(row.routing.degraded).toBeUndefined();
-    expect(row.routing.subjectValidation).toMatchObject({ evaluated: 8, unmeasured: 2, budgetLimited: 2 });
+    expect(row.routing).toMatchObject({
+      degraded: undefined,
+      subjectValidation: { evaluated: 8, unmeasured: 2, budgetLimited: 2 },
+    });
   });
 
   it.each([false, true])('does not rearm healthy bounded uncertainty on same-key retries (legacy label: %s)', async (legacy) => {
@@ -3984,6 +3986,67 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
       WHERE workspace_id = ${WSV} AND conversation_id = ${wrapper}`;
     return { source, wrapper, answer, question, outcome };
   }
+
+  async function seedGateReuse(prefix: string) {
+    const seeded = await seedReuse(prefix);
+    const planSlug = `acceptance-rubric-alpha-${prefix}`;
+    const second = `${prefix}-second`;
+    await seedConsult(second, 'closed_answered', [], seeded.question);
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json({ source: 'archive',
+      source_conversation_id: seeded.wrapper, answer: seeded.outcome })}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${second}`;
+    await rootSql`UPDATE harness_shared.consult_state SET origin_task_ref = ${planSlug},
+      question = ${seeded.question.replace('acceptance-rubric-alpha', planSlug)},
+      routing = ${rootSql.json({ policy: 'bar-critique' })},
+      closed_at = CASE WHEN conversation_id = ${seeded.source} THEN '2026-10-03T00:00:00Z'::timestamptz
+        ELSE '2026-10-05T00:00:00Z'::timestamptz END
+      WHERE workspace_id = ${WSV} AND conversation_id IN (${seeded.source}, ${seeded.wrapper}, ${second})`;
+    await rootSql`UPDATE harness_shared.consult_post_meta SET created_at = '2026-10-02T00:00:00Z'::timestamptz
+      WHERE workspace_id = ${WSV} AND conversation_id = ${seeded.source}`;
+    const { loadBarCritiqueEvidence, evaluateBarCritiqueGate } = await import('../agent-tools/plans/plan-start-critique-gate');
+    const originalClause = { specId: 'S-1', revision: 1, behavior: 'Original outcome', behaviorClass: 'happy-path' as const,
+      requiredEvidence: ['tree' as const], requiredTestLayers: ['unit' as const], mutationRequired: false,
+      exemption: null, falsifier: { observation: 'Original outcome missing' }, lifecycleStatus: 'active' as const,
+      createdAt: '2026-10-01T00:00:00Z', sourceBar: null };
+    const addedClause = { ...originalClause, specId: 'S-2', behavior: 'Later unreviewed outcome' };
+    const listClauses = (async (options: { asOf?: string }) => options.asOf === '2026-10-03T00:00:00.000Z'
+      ? [originalClause] : [originalClause, addedClause]) as unknown as
+      typeof import('../agent-tools/plans/spec-clauses-store').listSpecClauses;
+    const read = () => loadBarCritiqueEvidence({ workspaceId: WSV, harnessSlug: 'papercusp',
+      planSlug, authorIds: [] }, { sql: rootSql, listClauses,
+      partyKeys: async ids => new Map(ids.map(id => [id, id])) });
+    return { ...seeded, planSlug, second, read, evaluateBarCritiqueGate, currentClauses: [originalClause, addedClause] };
+  }
+
+  it('plan-start reused receipts retain the organic snapshot and cannot satisfy another independent party', async () => {
+    const f = await seedGateReuse('gate-reuse');
+    const evidence = await f.read();
+    expect(evidence.critiques.map(c => [c.consultId, c.criticId, c.record.closedAt])).toEqual([
+      [f.source, 'su-origin-reviewer', '2026-10-03T00:00:00.000Z'],
+    ]);
+    const verdict = f.evaluateBarCritiqueGate({ planSlug: f.planSlug,
+      currentClauses: f.currentClauses, ...evidence, threshold: 2 });
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.clauseShortfalls).toEqual([
+      expect.objectContaining({ specId: 'S-1', coveredBy: 1 }),
+      expect.objectContaining({ specId: 'S-2', coveredBy: 0 }),
+    ]);
+  });
+
+  it.each(['closed_cant_help', 'declined', 'expired'])('plan-start refuses reused evidence after origin disposition %s', async state => {
+    const f = await seedGateReuse(`gate-disposition-${state}`);
+    await rootSql`UPDATE harness_shared.consult_state SET state = ${state}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${f.source}`;
+    expect((await f.read()).critiques).toEqual([]);
+  });
+
+  it('plan-start refuses cyclic reuse instead of pinning copied evidence to the current contract', async () => {
+    const f = await seedGateReuse('gate-cycle');
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json({ source: 'archive',
+      source_conversation_id: f.second, answer: f.outcome })}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${f.source}`;
+    expect((await f.read()).critiques).toEqual([]);
+  });
 
   it('verifies reused sources and counts the original author instead of a copied responder identity', async () => {
     const { wrapper, source } = await seedReuse('verified-reuse');

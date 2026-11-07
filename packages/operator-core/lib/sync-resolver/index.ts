@@ -4363,8 +4363,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
   'plans.attention': {
     resolve: async (args) => {
-      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('attention', (args ?? {}) as Record<string, unknown>)) as {
+      const { callPlansRead } = await traceNamedQueryStage('attention-import', () =>
+        import('../agent-tools/plans/read-dispatch'));
+      const r = (await traceNamedQueryStage('attention-read', () =>
+        callPlansRead('attention', (args ?? {}) as Record<string, unknown>))) as {
         groups?: unknown[];
       };
       return Array.isArray(r?.groups) ? r.groups : [];

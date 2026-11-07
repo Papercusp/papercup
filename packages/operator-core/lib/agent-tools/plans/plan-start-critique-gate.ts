@@ -27,6 +27,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { lineagePartyKeys } from '../../acceptance-author-identity';
 import { BAR_CRITIQUE_POLICY } from '../../consult/selection-policies';
+import type { readVettingConsultCritique } from '../../consult/get-feedback-core';
 import { listSpecClauses, type SpecClauseRevision, type SpecLifecycleStatus } from './spec-clauses-store';
 
 export { BAR_CRITIQUE_POLICY };
@@ -328,6 +329,7 @@ export interface LoadBarCritiqueEvidenceDeps {
   sql: Sql;
   listClauses?: typeof listSpecClauses;
   partyKeys?: (ownerIds: readonly string[]) => Promise<Map<string, string>>;
+  readArchivedCritique?: typeof readVettingConsultCritique;
 }
 
 /**
@@ -343,7 +345,8 @@ export async function loadBarCritiqueEvidence(
   deps: LoadBarCritiqueEvidenceDeps,
 ): Promise<{ critiques: BarCritiqueEvidence[]; authorPartyKeys: Set<string> }> {
   const rows = (await deps.sql`
-    SELECT cs.conversation_id, cs.closed_at, cs.responder_id, ans.author_id, ans.created_at AS answered_at
+    SELECT cs.conversation_id, cs.closed_at, cs.responder_id, cs.outcome,
+           ans.author_id, ans.created_at AS answered_at
       FROM harness_shared.consult_state cs
       LEFT JOIN LATERAL (
         SELECT m.author_id, m.created_at FROM harness_shared.consult_post_meta m
@@ -362,14 +365,44 @@ export async function loadBarCritiqueEvidence(
     responder_id: string | null;
     author_id: string | null;
     answered_at: Date | string | null;
+    outcome?: unknown;
   }>;
+  // An archive wrapper did not review the contract at its own close time. Resolve
+  // its complete retained source with the existing provenance reader, then use
+  // only the organic answer's author and close-time snapshot. Otherwise a copied
+  // answer can silently certify clauses added after the original review.
+  const isArchived = (row: (typeof rows)[number]) => row.outcome !== null &&
+    typeof row.outcome === 'object' && (row.outcome as { source?: unknown }).source === 'archive';
+  const byId = new Map(rows.map(row => [row.conversation_id, row]));
+  const eligibleRows: typeof rows = [];
+  const seenOrigins = new Set<string>();
+  const originBatchSize = 4;
+  for (let offset = 0; offset < rows.length; offset += originBatchSize) {
+    const resolved = await Promise.all(rows.slice(offset, offset + originBatchSize).map(async row => {
+      if (!isArchived(row)) return row;
+      const read = deps.readArchivedCritique ?? (await import('../../consult/get-feedback-core')).readVettingConsultCritique;
+      const verified = await read(deps.sql, input.workspaceId, row.conversation_id, '', [input.planSlug]);
+      const origin = verified.originConsultId ? byId.get(verified.originConsultId) : undefined;
+      // The origin must itself still be a closed bar critique of this plan, with
+      // an attributable answer. Missing scope, disposition or source is ineligible.
+      if (!verified.exists || !verified.critiquePosts || !verified.relevance?.matched || !origin ||
+          isArchived(origin) || !origin.author_id?.trim() || !origin.answered_at ||
+          !verified.critics.includes(origin.author_id.trim())) return null;
+      return origin;
+    }));
+    for (const row of resolved) {
+      if (!row || seenOrigins.has(row.conversation_id)) continue;
+      seenOrigins.add(row.conversation_id);
+      eligibleRows.push(row);
+    }
+  }
   const partyKeys = deps.partyKeys ?? ((ids) => lineagePartyKeys(ids, { sql: deps.sql, workspaceId: input.workspaceId }));
   const authorIds = input.authorIds.map((id) => id.trim()).filter(Boolean);
   const criticOf = (row: (typeof rows)[number]) => row.author_id?.trim() || row.responder_id?.trim() || null;
   // Authors first, so a critic in the author's lineage resolves to the AUTHOR's key.
-  const keys = await partyKeys([...authorIds, ...rows.map(criticOf).filter((id): id is string => !!id)]);
+  const keys = await partyKeys([...authorIds, ...eligibleRows.map(criticOf).filter((id): id is string => !!id)]);
   const authorPartyKeys = new Set(authorIds.map((id) => keys.get(id) ?? id));
-  if (rows.length === 0) return { critiques: [], authorPartyKeys };
+  if (eligibleRows.length === 0) return { critiques: [], authorPartyKeys };
   const listClauses = deps.listClauses ?? listSpecClauses;
   const scope = { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug };
   const history = await listClauses({ ...scope, includeHistory: true });
@@ -378,7 +411,7 @@ export async function loadBarCritiqueEvidence(
   // These immutable close-time snapshots are independent. Bound concurrency so
   // readiness does not serialize one database round trip per historical consult
   // or admit unbounded reads for a plan with a long critique history.
-  const attributableRows = rows.filter((row) => criticOf(row) !== null);
+  const attributableRows = eligibleRows.filter((row) => criticOf(row) !== null);
   const snapshotBatchSize = 4;
   for (let offset = 0; offset < attributableRows.length; offset += snapshotBatchSize) {
     const batch = await Promise.all(attributableRows.slice(offset, offset + snapshotBatchSize).map(async (row) => {

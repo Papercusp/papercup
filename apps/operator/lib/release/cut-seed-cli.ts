@@ -1565,15 +1565,24 @@ export async function waitForOperatorDrain(inp: {
   // Deadline on STALL, not on total elapsed time. A force-backfill legitimately enqueues
   // the whole projection — measured ~8k rows draining at ~55 rows/s ≈ 145s on this box —
   // so any fixed total budget either fails a perfectly healthy cut or is so large it stops
-  // catching a genuinely wedged operator. Progress is the real health signal: as long as
-  // the backlog keeps shrinking we wait, however long it takes.
-  let lastUndrained = Number.POSITIVE_INFINITY;
+  // catching a genuinely wedged operator. Track a fixed cohort of pending rows: arrivals
+  // cannot demonstrate delivery, and a healthy drainer can make progress even when new
+  // writes keep the total backlog constant or growing. Once a cohort drains, start the
+  // next one; only the total reaching zero authorizes the snapshot.
+  let cohortThrough: string | null = null;
+  let lastCohortRemaining = Number.POSITIVE_INFINITY;
   let lastProgressAt = now();
   let lastWarnAt = 0;
 
   for (;;) {
-    const [state] = await inp.pg<({ undrained: number } & SeedOutboxQuarantine)[]>`
+    const [state] = await inp.pg<({
+      undrained: number;
+      cohort_remaining: number;
+      newest_undrained_id: string | null;
+    } & SeedOutboxQuarantine)[]>`
       SELECT count(*)::int AS undrained,
+             count(*) FILTER (WHERE id <= ${cohortThrough}::bigint)::int AS cohort_remaining,
+             max(id)::text AS newest_undrained_id,
              count(*) FILTER (WHERE (to_jsonb(o.*) ->> 'quarantined_at') IS NOT NULL)::int AS quarantined,
              min(id) FILTER (WHERE (to_jsonb(o.*) ->> 'quarantined_at') IS NOT NULL)::text AS first_quarantined_id
         FROM harness_shared.substrate_outbox o
@@ -1587,12 +1596,13 @@ export async function waitForOperatorDrain(inp: {
     const { undrained } = state;
     if (undrained === 0) return { undrained: 0, waitedMs: now() - started };
 
-    // A refill from another writer is just as meaningful as a decrease: the prior
-    // low-water mark no longer describes the work still draining, so it must reset
-    // the stall clock instead of letting an external refill look permanently stuck.
-    if (undrained !== lastUndrained) {
+    if (cohortThrough === null || state.cohort_remaining === 0) {
+      cohortThrough = state.newest_undrained_id;
+      lastCohortRemaining = undrained;
       lastProgressAt = now();
-      lastUndrained = undrained;
+    } else if (state.cohort_remaining < lastCohortRemaining) {
+      lastCohortRemaining = state.cohort_remaining;
+      lastProgressAt = now();
     }
     const stalledFor = now() - lastProgressAt;
     if (stalledFor >= stallMs) {

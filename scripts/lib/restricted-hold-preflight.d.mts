@@ -1,4 +1,5 @@
 import type { spawnSync } from 'node:child_process';
+import type { CommittedTreeDiagnostics } from '../../packages/operator-core/lib/agent-tools/plans/committed-tree-diagnostics';
 
 export declare const RESTRICTED_HOLD_PREFLIGHT_MARKER: 'RESTRICTED_HOLD_PREFLIGHT';
 export declare const RESTRICTED_HOLD_PREFLIGHT_EXIT: Readonly<{ admit: 0; misuse: 2; refuse: 3 }>;
@@ -9,7 +10,8 @@ export declare const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST: 'admitted-by-
 export declare const RESTRICTED_HOLD_PREFLIGHT_CLI: string;
 
 export type BundleHoldProgress = { step: string; event: 'start' | 'progress' | 'end'; status?: number; error?: string;
-  completedFiles?: number; totalFiles?: number; bytesRead?: number; nextPath?: string };
+  completedFiles?: number; totalFiles?: number; bytesRead?: number; nextPath?: string;
+  gitDiagnostics?: CommittedTreeDiagnostics };
 export declare function recordBundleHoldProgress(progress: BundleHoldProgress, env?: NodeJS.ProcessEnv): void;
 
 export type RestrictedHoldPreflightRefusal = { verdict: 'refuse'; error: string; hint: string };

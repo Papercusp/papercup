@@ -15,7 +15,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
-  readAllPlans: vi.fn(async () => [] as unknown[]),
+  listPlanIndexRows: vi.fn(async () => [] as unknown[]),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
   // WI-3348: the request-ALS workspace observed INSIDE each open-questions read.
   seenConversationsWs: [] as Array<string | undefined>,
@@ -36,7 +36,10 @@ vi.mock("../../attention/group", async (orig) => {
   };
 });
 
-vi.mock("./source", () => ({ readAllPlans: M.readAllPlans }));
+vi.mock("./source", () => ({
+  listPlanIndexRows: M.listPlanIndexRows,
+  planItemsForRow: (row: { items: unknown[] }) => row.items,
+}));
 vi.mock("./_ctx-opts", () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
 vi.mock("../_harness-scope", async (orig) => {
   const actual = await orig<typeof import("../_harness-scope")>();
@@ -153,7 +156,7 @@ beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
-  M.readAllPlans.mockClear();
+  M.listPlanIndexRows.mockClear();
   M.groupsOverride = null;
   M.openEscalations.length = 0;
   M.openQuestions.length = 0;
@@ -396,7 +399,7 @@ describe("plans:attention — cache wiring", () => {
   it("a repeat call HITS (the aggregation runs once)", async () => {
     await run({});
     await run({});
-    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
   });
 
   it("concurrent feed/count/ref reads share a build and project the complete deduped set before pagination", async () => {
@@ -414,7 +417,7 @@ describe("plans:attention — cache wiring", () => {
       run({ limit: 1 }), run({ output: 'counts', limit: 1, offset: 1 }), run({ output: 'refs', limit: 1 }),
       ...Array.from({ length: 5 }, (_, i) => run({ output: i % 2 ? 'counts' : 'refs' })),
     ]);
-    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
     expect(counts).toEqual({ counts: { decisionItems: 120, decisionPlans: 1, alerts: 30, total: 150 }, degraded: false });
     const complete = await run({ limit: null });
     expect(refs).toEqual({
@@ -429,14 +432,14 @@ describe("plans:attention — cache wiring", () => {
     expect(await run({ output: 'counts', ownerAgentId: 'su-b' })).toEqual({
       counts: { decisionItems: 20, decisionPlans: 1, alerts: 30, total: 50 }, degraded: false,
     });
-    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
 
     // A write invalidates derived views together with their source groups.
     M.groupsOverride = [];
     expect(await run({ output: 'counts' })).toEqual(counts);
     getOperatorCache().invalidateByTags('ws-attn', ['harness_plans']);
     expect(await run({ output: 'refs' })).toEqual({ refs: [], degraded: false });
-    expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   it('compact views retain the same priority winner for conflicting duplicate ids as the full feed', async () => {
@@ -478,7 +481,7 @@ describe("plans:attention — cache wiring", () => {
         bytes[output] = Buffer.byteLength(serialized);
       }
     }
-    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
     expect(bytes.feed).toBeGreaterThan(2_000_000);
     expect(bytes.counts).toBeLessThan(150);
     expect(bytes.refs).toBeLessThan(bytes.feed / 20);
@@ -509,7 +512,7 @@ describe("plans:attention — cache wiring", () => {
     }
     expect(samples.filter((ms) => ms > 250)).toHaveLength(6);
     expect(() => assertWarmCountBudget(samples)).toThrow();
-    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
     console.info('ATTENTION_P95_COUNTEREXAMPLE', JSON.stringify({
       completed: samples.length, injectedSlowReads: 6, ceilingMs: 250,
       rejected: true, p95Ms: [...samples].sort((a, b) => a - b)[94],
@@ -519,10 +522,10 @@ describe("plans:attention — cache wiring", () => {
   it('marks compact output degraded when the shared source build exceeds its own deadline', async () => {
     vi.useFakeTimers();
     let finishRead!: (plans: unknown[]) => void;
-    M.readAllPlans.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    M.listPlanIndexRows.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
     try {
       const result = run({ output: 'counts' });
-      await vi.waitFor(() => expect(M.readAllPlans).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1));
       await vi.advanceTimersByTimeAsync(45_001);
       expect(await result).toEqual({
         counts: { decisionItems: 0, decisionPlans: 0, alerts: 0, total: 0 }, degraded: true,
@@ -538,28 +541,28 @@ describe("plans:attention — cache wiring", () => {
     await run({});
     getOperatorCache().invalidateByTags("ws-attn", ["harness_plans"]);
     await run({});
-    expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   it("harnessFilter is in the key (no cross-arg leak)", async () => {
     await run({ harnessSlug: "h1" });
     await run({ harnessSlug: "h2" });
-    expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
     await run({ harnessSlug: "h1" }); // cached
-    expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   it("includeArchived is in the key", async () => {
     await run({});
     await run({ includeArchived: true });
-    expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   it("NO cross-principal leak: differing role/principal SHARE one entry + identical data", async () => {
     const a = await run({}, ctx("ws-attn", "operator", "agent-a"));
     const b = await run({}, ctx("ws-attn", "papercup", "agent-b"));
     // The feed is principal-agnostic → the second caller HITS the same entry…
-    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
     // …and gets byte-identical data (nothing caller-specific was cached / leaked).
     expect(b).toEqual(a);
   });
@@ -569,7 +572,7 @@ describe("plans:attention — cache wiring", () => {
     await _refreshCacheLayerForTests();
     await run({});
     await run({});
-    expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   // WI-3348: coord:ask rows land under the asker's identity workspace (WI-1571),

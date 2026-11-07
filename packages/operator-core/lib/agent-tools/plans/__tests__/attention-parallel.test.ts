@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // ── Mock the source-helpers + every data source. The two under test
 //    (escalations, conversations) return identifiable items; the rest are empty.
 const M = vi.hoisted(() => ({
-  readAllPlans: vi.fn(async () => [] as unknown[]),
+  listPlanIndexRows: vi.fn(async () => [] as unknown[]),
   ctxToPlanSourceOpts: vi.fn(async () => ({})),
   planItemsToAttention: vi.fn(() => [] as unknown[]),
   ownerAttentionSourcesFor: vi.fn(() => [
@@ -35,7 +35,10 @@ const M = vi.hoisted(() => ({
 
 // NOTE: vi.mock paths resolve relative to THIS test file (one level deeper, in
 // __tests__/), so they carry an extra `../` vs attention.ts's own import paths.
-vi.mock('../source', () => ({ readAllPlans: M.readAllPlans }));
+vi.mock('../source', () => ({
+  listPlanIndexRows: M.listPlanIndexRows,
+  planItemsForRow: (row: { items: unknown[] }) => row.items,
+}));
 vi.mock('../_ctx-opts', () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
 vi.mock('../../_harness-scope', async (orig) => {
   const actual = await orig<typeof import('../../_harness-scope')>();
@@ -129,7 +132,7 @@ const allItems = (p: Awaited<ReturnType<typeof run>>) => p.groups.flatMap((g) =>
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  M.readAllPlans.mockResolvedValue([]);
+  M.listPlanIndexRows.mockResolvedValue([]);
   M.ctxToPlanSourceOpts.mockResolvedValue({});
   M.planItemsToAttention.mockReturnValue([]);
   M.ownerAttentionSourcesFor.mockReturnValue([
@@ -186,9 +189,36 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     expect(M.listPendingGates).toHaveBeenCalledTimes(1);
   });
 
+  it('reads the complete canonical item population including shipped plans and instances', async () => {
+    const { planItemsToAttention } = await vi.importActual<typeof import('../../../attention/sources')>(
+      '../../../attention/sources',
+    );
+    const item = {
+      id: 'P-001', text: 'Answer this', storedStatus: 'needs-human', importance: 'high',
+      blockedBy: [], decisionRefs: [], phase: null, lineNumber: 0, rawLine: '',
+    };
+    M.listPlanIndexRows.mockResolvedValueOnce([
+      { planSlug: 'shipped', status: 'shipped', isLegacy: false, items: [item] },
+      { planSlug: 'parent@run-1', isLegacy: false, items: [item] },
+      { planSlug: 'legacy', isLegacy: true, items: [item] },
+      { planSlug: 'empty', isLegacy: false, items: [] },
+    ]);
+    M.planItemsToAttention.mockImplementationOnce(planItemsToAttention);
+    const feed = await run();
+    expect(M.listPlanIndexRows).toHaveBeenCalledWith(expect.objectContaining({
+      includeArchived: false, includeInstances: true, includeItems: true,
+    }));
+    const rows = feed.groups.flatMap((group: { items: unknown[] }) => group.items);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ planSlug: 'shipped', needsHuman: true, tier: 'decision' }),
+      expect.objectContaining({ planSlug: 'parent@run-1', needsHuman: true, tier: 'decision' }),
+    ]));
+    expect(rows).toHaveLength(2);
+  });
+
   it('starts independent sources while the plan read is still pending', async () => {
     let release!: () => void;
-    M.readAllPlans.mockImplementationOnce(() => new Promise(resolve => {
+    M.listPlanIndexRows.mockImplementationOnce(() => new Promise(resolve => {
       release = () => resolve([]);
     }));
     await withNamedQueryDiagnosticContext('plans.attention', async () => {
@@ -216,7 +246,7 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
 
   it('waits for plan-derived harness attribution after escalation and message reads finish', async () => {
     let release!: () => void;
-    M.readAllPlans.mockImplementationOnce(() => new Promise(resolve => {
+    M.listPlanIndexRows.mockImplementationOnce(() => new Promise(resolve => {
       release = () => resolve([]);
     }));
     M.planItemsToAttention.mockReturnValue([{
@@ -250,7 +280,7 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
   });
 
   it('retains independent source items when the overlapping plan read rejects', async () => {
-    M.readAllPlans.mockRejectedValueOnce(new Error('plan source unavailable'));
+    M.listPlanIndexRows.mockRejectedValueOnce(new Error('plan source unavailable'));
     M.listConversations.mockResolvedValue([{
       id: 'conv-plan-failure', title: 'Question', body: null, asker_id: null,
       harness_slug: null, accepted_answer: null,

@@ -1148,7 +1148,10 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
   /** Minimal postgres.Sql stand-in: each call returns the next queued undrained count. */
   const pgReturning = (counts: number[]) => {
     const calls = { n: 0 };
-    const sql = (async () => [{ undrained: counts[Math.min(calls.n++, counts.length - 1)] }]) as never;
+    const sql = (async () => {
+      const undrained = counts[Math.min(calls.n++, counts.length - 1)];
+      return [{ undrained, cohort_remaining: undrained, newest_undrained_id: '1' }];
+    }) as never;
     return { sql, calls };
   };
 
@@ -1185,15 +1188,37 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
-  it('resets the stall clock when an external refill raises the backlog', async () => {
-    // A second writer can refill rows after the first cut has reached a low-water mark.
-    // The refill is new progress to wait on; the old low-water-only detector would throw
-    // on the third poll even though the operator is about to drain the refill.
-    const { sql } = pgReturning([5, 9, 9, 0]);
+  it.each([
+    [5, 9, 13, 0],
+    [5, 9, 5, 0],
+  ])('refuses writer-only backlog changes without delivery: %j', async (...counts) => {
+    let calls = 0;
+    const pg = (async () => [{
+      undrained: counts[Math.min(calls++, counts.length - 1)],
+      cohort_remaining: 5,
+      newest_undrained_id: '99',
+    }]) as never;
+    let t = 0;
+    await expect(waitForOperatorDrain({
+      ...base, pg, stallMs: 1_000, now: () => t,
+      sleep: async () => { t += 600; }, warn: () => {},
+    })).rejects.toThrow(/NO progress/);
+    expect(calls).toBe(3);
+  });
+
+  it('recognizes delivery despite refills that keep the total backlog growing', async () => {
+    const states = [
+      { undrained: 5, cohort_remaining: 0, newest_undrained_id: '5' },
+      { undrained: 9, cohort_remaining: 3, newest_undrained_id: '11' },
+      { undrained: 13, cohort_remaining: 1, newest_undrained_id: '17' },
+      { undrained: 0, cohort_remaining: 0, newest_undrained_id: null },
+    ];
+    let calls = 0;
+    const pg = (async () => [states[calls++]]) as never;
     let t = 0;
     const res = await waitForOperatorDrain({
       ...base,
-      pg: sql,
+      pg,
       stallMs: 1_000,
       now: () => t,
       sleep: async () => {
@@ -1202,6 +1227,29 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
       warn: () => {},
     });
     expect(res.undrained).toBe(0);
+    expect(calls).toBe(4);
+  });
+
+  it('starts another pending cohort without treating the completed cohort as a zero backlog', async () => {
+    const states = [
+      { undrained: 5, cohort_remaining: 0, newest_undrained_id: '9007199254740993' },
+      { undrained: 9, cohort_remaining: 0, newest_undrained_id: '9007199254741002' },
+      { undrained: 9, cohort_remaining: 9, newest_undrained_id: '9007199254741002' },
+      { undrained: 9, cohort_remaining: 9, newest_undrained_id: '9007199254741002' },
+      { undrained: 0, cohort_remaining: 0, newest_undrained_id: null },
+    ];
+    let calls = 0;
+    const pg = vi.fn(async (strings: TemplateStringsArray, through: string | null) => {
+      expect(strings.join('?')).toContain('id <= ?::bigint');
+      expect(through).toBe([null, '9007199254740993', '9007199254741002', '9007199254741002'][calls]);
+      return [states[calls++]];
+    }) as never;
+    let t = 0;
+    await expect(waitForOperatorDrain({
+      ...base, pg, stallMs: 1_000, now: () => t,
+      sleep: async () => { t += 600; }, warn: () => {},
+    })).rejects.toThrow(/NO progress draining 9/);
+    expect(calls).toBe(4);
   });
 
   it('keeps waiting while the backlog SHRINKS, however long it takes (a real backfill is ~8k rows)', async () => {

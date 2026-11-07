@@ -68,6 +68,29 @@ describe('plans.* resolvers — verb dispatch + envelope unwrap', () => {
     expect(await resolveNamedQueryV2('plans.attention', { harnessSlug: 'x' })).toEqual([{ key: 'g1' }]);
   });
 
+  it('distinguishes a completed attention import from a pending read without dropping feed rows', async () => {
+    const groups = Array.from({ length: 250 }, (_, i) => ({ key: `attention-${i}` }));
+    let pending: ReturnType<typeof namedQueryStageTimings>;
+    callPlansRead.mockImplementation(async () => {
+      pending = namedQueryStageTimings();
+      return { groups };
+    });
+    const result = await withNamedQueryDiagnosticContext('plans.attention', async () => {
+      const rows = await resolveNamedQueryV2('plans.attention', {});
+      return { rows, timings: namedQueryStageTimings() };
+    });
+    expect(pending!).toMatchObject({ stages: [
+      { stage: 'attention-import', outcome: 'fulfilled' },
+      { stage: 'attention-read', outcome: 'pending' },
+    ] });
+    expect(result.rows).toEqual(groups);
+    expect(result.timings).toMatchObject({ stages: [
+      { stage: 'attention-import', outcome: 'fulfilled' },
+      { stage: 'attention-read', outcome: 'fulfilled' },
+    ] });
+    expect(namedQueryStageTimings()).toBeNull();
+  });
+
   it('forwards the Inbox first-page request and preserves the exact report reference', async () => {
     const report = { plans: [], goalReport: { schemaVersion: 1, goalId: 'goal-fixture',
       reportId: 'rpt_fixture', bodySha256: 'a'.repeat(64) } };
