@@ -7,6 +7,9 @@ import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plan
 import { BLIND_GAP_REVIEW_ACTOR, inspectBlindReviewAdvProfile, verifyBlindReviewRecoveryPort,
   type BlindReviewSessionBinding as Binding, type BlindReviewResumePermit } from './blind-review-session-bindings';
 import { isBlindReviewerBackendAgent } from './blind-reviewer-backends';
+import { runtimeLifecycleLockKey, RUNTIME_RESOURCE_KINDS,
+  type RuntimeLease, type RuntimeResourceIntent } from './blind-review-runtime-custody';
+import type { RuntimeNamespaceBackend } from './blind-review-runtime-lifecycle';
 import type { SessionPortRow } from './session-port/store';
 import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import { nativeSessionIdFromHost } from './agent-launch-core';
@@ -15,6 +18,16 @@ import { taskIdFromScopeUnit } from './task-manager/types';
 import { readProcessIdentity } from './process-identity';
 import type { RequestOriginMetadata } from '@papercusp/agent-mcp';
 import { z } from 'zod';
+import { retainRequestPrincipal, type HostRequestPrincipalResolver } from './auth/require-principal';
+import { coveringDelegations } from './governance-policy/authority';
+import { lockPolicyChainForWorkspace } from './governance-policy/store';
+import { chainRevision } from './governance-policy/control';
+import { acceptanceLineageClosure, areAcceptanceLineageRelated, isAcceptanceAuthorIdentity,
+  resolvePlanImplementerIdentities } from './acceptance-author-identity';
+import { decideSensitiveAction, getSensitiveAction, SensitiveActionError, sensitivePayloadHash,
+  executeSensitiveActionInTransaction, LEGACY_ADOPTION_ACTION,
+  type SensitiveActionRequest } from './governance-policy/sensitive-action';
+export { LEGACY_ADOPTION_ACTION } from './governance-policy/sensitive-action';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 type Native = Parameters<typeof verifyBlindReviewRecoveryPort>[0]['target'] & { resume_claim_key: string | null };
@@ -43,6 +56,577 @@ function requestHash(request: Record<string, unknown>): string {
       .filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => [key, canonical(value)])) : v;
   return createHash('sha256').update(JSON.stringify(canonical(request))).digest('hex');
+}
+
+/** D011: these are immutable approval pins, never a launch/admission capability.
+ * Only the authenticated HTTP adapter may prepare their measured server snapshot. */
+const legacyText = z.string().min(1).max(200);
+const legacyHash = z.string().regex(/^[a-f0-9]{64}$/);
+const legacyEndpoint = z.object({ advSessionId: z.number().int().positive(), nativeSessionId: legacyText }).strict();
+const legacyAuth = z.object({ kind: z.literal('user'), slug: legacyText, workspaceId: legacyText,
+  trust: z.literal('verified'), authMethod: z.literal('cookie-session') }).strict();
+const legacyApproval = z.object({ schema: z.literal('blind-review-legacy-adoption-approval/v1'),
+  humanReason: z.string().trim().min(1).max(4000), requestPayloadHash: legacyHash, auth: legacyAuth }).strict();
+const retainedLegacyHumans = new WeakSet<HostRequestPrincipalResolver>();
+export const legacyAdoptionPayloadSchema = z.object({
+  schema: z.literal('blind-review-legacy-adoption/v1'), attemptKey: z.string().uuid(),
+  bootstrapKey: z.string().uuid(), operationDigest: legacyHash, workspaceId: legacyText,
+  harnessSlug: legacyText, planSlug: legacyText, planRevision: z.number().int().positive(), planHash: legacyHash,
+  activationAuditSeq: z.number().int().positive(), bindingId: z.number().int().positive(), reviewerOwnerId: legacyText,
+  original: legacyEndpoint,
+  observed: legacyEndpoint.extend({ startedAt: z.string().datetime(), endedAt: z.string().datetime(),
+    lifetimeEvidenceHash: legacyHash }).strict(),
+  target: legacyEndpoint, bindingHistoryHash: legacyHash, outstandingEffectsHash: legacyHash,
+  independenceEvidenceHash: legacyHash, confinementHash: legacyHash, profileHash: legacyHash,
+  launchParentOwner: z.literal(BLIND_GAP_REVIEW_ACTOR), accountRoute: z.literal('auto'),
+  backend: z.enum(['claude', 'codex', 'omp']), modelSpec: legacyText.nullable(),
+  activation: z.object({ specificationRevision: legacyText, stateRevision: legacyText }).strict(),
+  qualification: z.object({ apiManifestHash: legacyHash, launcherManifestHash: legacyHash,
+    plannedHostManifestHash: legacyHash, executedInputsHash: legacyHash, dependencyManifestHash: legacyHash }).strict(),
+  policy: z.object({ targetLayerId: legacyText, authorityLayerId: legacyText,
+    baseVersion: z.number().int().positive(), chainRevision: z.string().min(1).max(4000) }).strict(),
+  preparedPrincipal: legacyText, authorizedExecutor: z.string().regex(/^user:\S+$/),
+  bootstrapPiSessionId: legacyText, bootstrapExpiresAt: z.string().datetime(),
+  revocation: z.literal('permanent-root-cutoff-no-reopen'),
+}).strict();
+export type LegacyAdoptionPayload = z.infer<typeof legacyAdoptionPayloadSchema>;
+
+/** Validate the stored discriminator AND its envelope; generic policy apply must
+ * never reinterpret a different action or a caller-supplied payload as adoption. */
+export function validateLegacyAdoptionRequest(request: SensitiveActionRequest): LegacyAdoptionPayload {
+  const parsed = legacyAdoptionPayloadSchema.safeParse(request.payload);
+  if (request.actionKind !== LEGACY_ADOPTION_ACTION || !parsed.success)
+    throw new SensitiveActionError('invalid', 'not an exact legacy adoption request');
+  const p = parsed.data;
+  if (request.workspaceId !== p.workspaceId || request.preparedBy !== p.preparedPrincipal ||
+      request.targetLayerId !== p.policy.targetLayerId || request.authorityLayerId !== p.policy.authorityLayerId ||
+      request.targetLayerId !== request.authorityLayerId || request.baseVersion !== p.policy.baseVersion ||
+      request.chainRevision !== p.policy.chainRevision || request.payloadHash !== sensitivePayloadHash(p) ||
+      p.preparedPrincipal === p.authorizedExecutor || p.original.advSessionId !== p.observed.advSessionId ||
+      p.original.advSessionId !== p.target.advSessionId || p.target.nativeSessionId === p.original.nativeSessionId ||
+      p.target.nativeSessionId === p.observed.nativeSessionId ||
+      Date.parse(p.observed.startedAt) > Date.parse(p.observed.endedAt))
+    throw new SensitiveActionError('payload-mismatch', 'legacy adoption envelope or immutable tuple mismatch');
+  return p;
+}
+
+/** Retain ACTUAL request credentials. This function accepts Headers, never a
+ * serialized Principal, actor label, approval envelope or role assertion. */
+export async function retainLegacyAdoptionHuman(headers: Headers, workspaceId: string): Promise<HostRequestPrincipalResolver> {
+  if (!(headers instanceof Headers)) throw new SensitiveActionError('forbidden', 'authenticated request headers required');
+  const retained = await retainRequestPrincipal(headers, workspaceId);
+  const principal = retained && await retained();
+  if (!principal || principal.kind !== 'user' || principal.workspaceId !== workspaceId ||
+      principal.trust !== 'verified' || principal.authMethod !== 'cookie-session')
+    throw new SensitiveActionError('forbidden', 'legacy adoption requires a verified workspace cookie session');
+  retainedLegacyHumans.add(retained!);
+  return retained!;
+}
+
+/** Existing HTTP decide dispatch calls this only after reading stored actionKind.
+ * The caller supplies the human reason/decision; provenance comes from transport. */
+export async function decideLegacyAdoption(input: {
+  workspaceId: string; requestId: string; decision: 'approve' | 'deny'; reason: string;
+}, headers: Headers, deps: { sql?: Sql } = {}) {
+  input = z.object({ workspaceId: legacyText, requestId: legacyText, decision: z.enum(['approve', 'deny']),
+    reason: z.string().trim().min(1).max(4000) }).strict().parse(input);
+  const resolve = await retainLegacyAdoptionHuman(headers, input.workspaceId);
+  const sql = deps.sql ?? getOrgPg().sql;
+  const request = await getSensitiveAction(input.requestId, sql);
+  if (!request || request.workspaceId !== input.workspaceId)
+    throw new SensitiveActionError('not-found', 'legacy adoption request not found in this workspace');
+  validateLegacyAdoptionRequest(request);
+  const principal = await resolve();
+  if (!principal) throw new SensitiveActionError('forbidden', 'decision session no longer valid');
+  return decideSensitiveAction({ requestId: request.requestId, approver: 'user:' + principal.slug,
+    decision: input.decision, reason: input.reason }, sql, resolve);
+}
+
+/** The policy/provenance part of reserve/admit/settle, INSIDE the existing
+ * custody transaction after request/approval locks and before custody/native locks.
+ * This does not prove independence, measured pins, source qualification or host
+ * admission; those remain mandatory at the caller's effect boundary. */
+export async function lockLegacyAdoptionAuthorization(tx: Sql, request: SensitiveActionRequest,
+  resolve: HostRequestPrincipalResolver, recovery = false): Promise<LegacyAdoptionPayload> {
+  if (typeof (tx as unknown as { savepoint?: unknown }).savepoint !== 'function')
+    throw new SensitiveActionError('invalid', 'legacy adoption authorization requires an existing transaction');
+  const p = validateLegacyAdoptionRequest(request);
+  if (typeof resolve !== 'function' || !retainedLegacyHumans.has(resolve))
+    throw new SensitiveActionError('forbidden', 'retained request capability required');
+  const principal = await resolve();
+  if (!principal || principal.kind !== 'user' || principal.trust !== 'verified' ||
+      principal.authMethod !== 'cookie-session' || principal.workspaceId !== p.workspaceId ||
+      'user:' + principal.slug !== p.authorizedExecutor)
+    throw new SensitiveActionError('forbidden', 'executing cookie session is no longer the approved human');
+  const approvers = new Set<string>();
+  for (const approval of request.approvals) {
+    let evidence: z.infer<typeof legacyApproval>;
+    try { evidence = legacyApproval.parse(JSON.parse(approval.reason)); }
+    catch { throw new SensitiveActionError('forbidden', 'approval lacks authenticated adoption provenance'); }
+    if (approval.decision !== 'approve' || approval.approver !== 'user:' + evidence.auth.slug ||
+        evidence.auth.workspaceId !== p.workspaceId || evidence.requestPayloadHash !== request.payloadHash ||
+        approval.approver === request.preparedBy || approvers.has(approval.approver))
+      throw new SensitiveActionError('forbidden', 'approval provenance does not match this request');
+    approvers.add(approval.approver);
+  }
+  if (!(request.status === 'approved' || recovery && request.status === 'executed') ||
+      approvers.size < request.requiredApprovals || request.requiredApprovals < 1)
+    throw new SensitiveActionError('not-approved', 'distinct authenticated approvals required');
+  const load = await lockPolicyChainForWorkspace(p.workspaceId, tx);
+  if (load.status !== 'ok') throw new SensitiveActionError('stale', 'workspace policy chain unavailable');
+  const leaf = load.chain.at(-1)!;
+  if (leaf.layerId !== p.policy.targetLayerId || leaf.scopeRef !== p.workspaceId ||
+      leaf.version !== p.policy.baseVersion || chainRevision(load.chain) !== p.policy.chainRevision)
+    throw new SensitiveActionError('stale', 'workspace policy chain changed after preparation');
+  const grants = await coveringDelegations([p.preparedPrincipal, p.authorizedExecutor, ...approvers],
+    p.policy.authorityLayerId, { sql: tx, lock: 'share' });
+  const allows = (id: string, capability: 'prepare' | 'approve') => grants.some(g =>
+    g.principal === id && g.capabilities.includes(capability));
+  if (!allows(p.preparedPrincipal, 'prepare') || !allows(p.authorizedExecutor, 'prepare') ||
+      [...approvers].some(id => !allows(id, 'approve')))
+    throw new SensitiveActionError('forbidden', 'live preparation, execution and approval delegations required');
+  // Re-resolve after ALL policy/delegation waits; a revoked cookie cannot ride a
+  // once-valid pre-lock principal through to the custody effect.
+  const current = await resolve();
+  if (!current || current.slug !== principal.slug || current.workspaceId !== principal.workspaceId ||
+      current.kind !== principal.kind || current.trust !== principal.trust || current.authMethod !== principal.authMethod)
+    throw new SensitiveActionError('forbidden', 'executing cookie session changed during authorization');
+  return p;
+}
+
+/** Host-local producer, never a body/simulation supplied by the caller. Missing
+ * canonical identity, effect-census or qualification producers refuse by default.
+ * Private fixtures may supply a producer; that is not source qualification. */
+export type LegacyAdoptionEvidence = { bindingHistory: unknown; outstandingEffects: unknown;
+  independence: unknown; qualification: LegacyAdoptionPayload['qualification'] };
+
+/** Canonical ledger census, not physical absence or source qualification. Read
+ * under the caller's custody transaction. Keep original NULL request metadata
+ * and old elections verbatim; an empty owner/task filter is not an effect oracle.
+ * JSONB projections retain timestamp values in the approval hash (Date objects
+ * would otherwise have no enumerable fields in sensitivePayloadHash).
+ */
+export async function readLegacyAdoptionHistoryAndEffects(tx: Sql, payload: LegacyAdoptionPayload) {
+  if (typeof (tx as unknown as { savepoint?: unknown }).savepoint !== 'function')
+    throw new SensitiveActionError('invalid', 'history/effects evidence requires the custody transaction');
+  const p = legacyAdoptionPayloadSchema.parse(payload);
+  type Row = Record<string, unknown>;
+  const bounded = (name: string, rows: Array<{ row: Row }>) => {
+    if (rows.length > 128 || Buffer.byteLength(JSON.stringify(rows)) > 2 * 1024 * 1024)
+      throw new SensitiveActionError('forbidden', name + ' census incomplete');
+    return rows.map(r => r.row);
+  };
+  const bindings = bounded('binding history', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(b) AS row FROM harness_shared.plan_blind_review_sessions b
+    WHERE b.workspace_id = ${p.workspaceId} AND
+      ((b.harness_slug = ${p.harnessSlug} AND b.plan_slug = ${p.planSlug}) OR b.replacement_of IN
+        (SELECT id FROM harness_shared.plan_blind_review_sessions WHERE workspace_id = ${p.workspaceId}
+          AND harness_slug = ${p.harnessSlug} AND plan_slug = ${p.planSlug})) ORDER BY b.id LIMIT 129`);
+  const original = bindings.find(b => Number(b.id) === p.bindingId);
+  if (!original || original.harness_slug !== p.harnessSlug || original.plan_slug !== p.planSlug ||
+      Number(original.activation_audit_seq) !== p.activationAuditSeq || original.replacement_of !== null ||
+      original.attempt_seq !== 0 || original.reviewer_owner_id !== p.reviewerOwnerId ||
+      Number(original.adv_session_id) !== p.original.advSessionId || original.native_session_id !== p.original.nativeSessionId)
+    throw new SensitiveActionError('stale', 'original binding/election changed');
+  if (bindings.some(b => b.harness_slug !== p.harnessSlug || b.plan_slug !== p.planSlug))
+    throw new SensitiveActionError('forbidden', 'foreign replacement history');
+  const audits = bounded('activation history', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(a) AS row FROM harness_shared.plan_audits a WHERE workspace_id = ${p.workspaceId}
+      AND harness_slug = ${p.harnessSlug} AND plan_slug = ${p.planSlug} AND audit_kind = 'activation'
+    ORDER BY audit_seq LIMIT 129`);
+  const activation = audits.find(a => Number(a.audit_seq) === p.activationAuditSeq);
+  if (!activation || Number(activation.audited_plan_revision_seq) !== p.planRevision ||
+      activation.audited_plan_content_hash !== p.planHash || audits.at(-1) !== activation)
+    throw new SensitiveActionError('stale', 'canonical activation election changed');
+  const reviews = bounded('review history', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(r) AS row FROM harness_shared.plan_blind_reviews r WHERE workspace_id = ${p.workspaceId}
+      AND plan_slug = ${p.planSlug} ORDER BY id LIMIT 129`);
+  const bindingIds = bindings.map(b => Number(b.id));
+  const owners = [...new Set(bindings.flatMap(b => typeof b.reviewer_owner_id === 'string' ? [b.reviewer_owner_id] : []))];
+  const advIds = [...new Set(bindings.flatMap(b => b.adv_session_id === null ? [] : [Number(b.adv_session_id)]))];
+  const natives = [...new Set([p.observed.nativeSessionId, ...bindings.flatMap(b =>
+    typeof b.native_session_id === 'string' ? [b.native_session_id] : [])])];
+  const custody = bounded('continuation effects', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(c) AS row FROM harness_shared.blind_review_continuation_custody c
+    WHERE workspace_id = ${p.workspaceId} AND binding_id = ANY(${tx.array(bindingIds)}::bigint[]) ORDER BY id LIMIT 129`);
+  const leases = bounded('runtime leases', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(l) AS row FROM harness_shared.blind_review_runtime_leases l
+    WHERE workspace_id = ${p.workspaceId} AND binding_id = ANY(${tx.array(bindingIds)}::bigint[]) ORDER BY id LIMIT 129`);
+  const leaseIds = leases.map(l => String(l.id));
+  const admissions = bounded('runtime admissions', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(a) AS row FROM harness_shared.blind_review_runtime_admissions a
+    WHERE workspace_id = ${p.workspaceId} AND lease_id::text = ANY(${tx.array(leaseIds)}) ORDER BY id LIMIT 129`);
+  const resources = bounded('runtime resources', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(r) AS row FROM harness_shared.blind_review_runtime_resources r
+    WHERE workspace_id = ${p.workspaceId} AND lease_id::text = ANY(${tx.array(leaseIds)}) ORDER BY id LIMIT 129`);
+  const nativeRows = bounded('native lifetimes', await tx<Array<{ row: Row }>>`
+    SELECT jsonb_build_object('id', id, 'owner', coord_owner_id, 'native', session_id, 'backend', agent,
+      'startedAt', started_at, 'endedAt', ended_at, 'resumeClaim', resume_claim_key,
+      'portId', port_id, 'portStatus', port_status) AS row FROM harness_shared.adv_sessions
+    WHERE workspace_id = ${p.workspaceId} AND (id = ANY(${tx.array(advIds)}::bigint[]) OR
+      coord_owner_id = ANY(${tx.array(owners)}) OR session_id = ANY(${tx.array(natives)})) ORDER BY id LIMIT 129`);
+  const allAdvIds = nativeRows.map(n => Number(n.id));
+  const ports = bounded('port effects', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(s) AS row FROM harness_shared.session_ports s WHERE workspace_id = ${p.workspaceId}
+      AND (source_adv_session_id = ANY(${tx.array(allAdvIds)}::bigint[]) OR target_adv_session_id = ANY(${tx.array(allAdvIds)}::bigint[]))
+    ORDER BY id LIMIT 129`);
+  const launchKeys = bindings.flatMap(b => typeof b.launch_key === 'string' ? [b.launch_key] : []);
+  launchKeys.push('bootstrap-su:' + p.bootstrapKey);
+  // Include historical owner occurrences in every maintained launch-summary
+  // shape, plus unassigned recruiter attempts overlapping the observed lifetime.
+  const launches = bounded('launch effects', await tx<Array<{ row: Row }>>`
+    SELECT to_jsonb(l) AS row FROM harness_shared.agent_launch_idempotency l WHERE workspace_id = ${p.workspaceId}
+      AND (idempotency_key = ANY(${tx.array(launchKeys)}) OR launched_by = ANY(${tx.array(owners)}) OR
+        EXISTS (SELECT 1 FROM unnest(${tx.array(owners)}::text[]) AS o(owner)
+          WHERE jsonb_path_exists(l.summary, '$.**.ownerId ? (@ == $owner)', jsonb_build_object('owner', o.owner))
+            OR l.summary->'ownerIds' ? o.owner) OR
+        (launched_by = ${BLIND_GAP_REVIEW_ACTOR} AND launched_at BETWEEN
+          extract(epoch FROM ${p.observed.startedAt}::timestamptz) * 1000 AND
+          extract(epoch FROM ${p.observed.endedAt}::timestamptz) * 1000)) ORDER BY idempotency_key LIMIT 129`);
+  const taskIds = new Set<string>(), pids = new Set<number>();
+  let visited = 0;
+  const handles = (value: unknown, depth = 0): void => {
+    if (++visited > 16384 || depth > 64) throw new SensitiveActionError('forbidden', 'launch handle census incomplete');
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'taskId' && typeof child === 'string') taskIds.add(child);
+      if (['pid', 'terminalPid'].includes(key) && Number.isSafeInteger(child) && Number(child) > 0) pids.add(Number(child));
+      handles(child, depth + 1);
+    }
+  };
+  for (const launch of launches) handles(launch.summary);
+  for (const resource of resources) handles(resource.identity);
+  const tasks = bounded('task effects', await tx<Array<{ row: Row }>>`
+    WITH RECURSIVE candidates AS (
+      SELECT t.* FROM harness_shared.task_ledger t WHERE workspace_id = ${p.workspaceId} AND
+        (task_id = ANY(${tx.array([...taskIds])}) OR pid = ANY(${tx.array([...pids])}::integer[]) OR
+          launched_by = ANY(${tx.array(owners)}) OR session_id = ANY(${tx.array([...natives, ...owners])}) OR
+          detail->>'coordOwnerId' = ANY(${tx.array(owners)}) OR detail->>'advSessionId' = ANY(${tx.array(allAdvIds.map(String))}) OR
+          plan_slug = ${p.planSlug} OR (started_at <= ${p.observed.endedAt}::timestamptz AND
+            (ended_at IS NULL OR ended_at >= ${p.observed.startedAt}::timestamptz) AND
+            (class IN ('agent-session', 'pty') OR launched_by IN (${BLIND_GAP_REVIEW_ACTOR}, 'system:blind-review-runtime-broker'))))
+      UNION
+      SELECT child.* FROM harness_shared.task_ledger child JOIN candidates parent ON
+        child.parent_task_id = parent.task_id OR child.root_task_id = parent.task_id
+      WHERE child.workspace_id = ${p.workspaceId}
+    ) SELECT to_jsonb(c) AS row FROM candidates c ORDER BY task_id LIMIT 129`);
+  const unresolved: string[] = [];
+  if (original.review_id !== null || reviews.some(r => Number(r.activation_audit_seq) === p.activationAuditSeq)) unresolved.push('current-review');
+  if (bindings.some(b => Number(b.id) !== p.bindingId && Number(b.activation_audit_seq) === p.activationAuditSeq && b.status !== 'failed'))
+    unresolved.push('competing-election');
+  if (custody.length) unresolved.push('prior-continuation-effects');
+  if (nativeRows.some(n => n.endedAt === null || n.resumeClaim !== null)) unresolved.push('native-lifetime-or-resume');
+  if (ports.some(s => !['failed', 'expired', 'cancelled'].includes(String(s.status)))) unresolved.push('port-effects');
+  if (leases.some(l => l.state !== 'released')) unresolved.push('runtime-effects');
+  if (launches.some(l => (l.summary as Row | null)?.launchState !== 'completed')) unresolved.push('launch-outcome');
+  if (tasks.some(t => !['exited', 'killed', 'timed_out', 'ended_unobserved'].includes(String(t.state)) || t.ended_at === null))
+    unresolved.push('task-outcome');
+  return {
+    bindingHistory: { schema: 'blind-review-legacy-history/v1' as const, workspaceId: p.workspaceId,
+      harnessSlug: p.harnessSlug, planSlug: p.planSlug, bindings, audits, reviews },
+    outstandingEffects: { schema: 'blind-review-legacy-effects/v1' as const,
+      custody, leases, admissions, resources, natives: nativeRows, ports, launches, tasks, unresolved,
+      // A released row or empty candidate population cannot attest physical
+      // absence. Aggregate admission still needs independent kernel/creator
+      // census and measured source/dependency qualification at each boundary.
+      physicalQualification: 'required' as const },
+  };
+}
+
+/** Physical absence of recorded runtime leases only, not unrecorded processes
+ * or executed source. The caller owns the custody transaction: no new pool
+ * connection or nested begin. These nonblocking xact locks conflict with the
+ * maintained creator's session locks and last until outer commit/rollback.
+ */
+export async function readLegacyAdoptionRuntimeAbsence(tx: Sql, payload: LegacyAdoptionPayload,
+  deps: { backend?: Pick<RuntimeNamespaceBackend, 'inspect'> } = {}) {
+  if (typeof (tx as unknown as { savepoint?: unknown }).savepoint !== 'function')
+    throw new SensitiveActionError('invalid', 'runtime absence requires the custody transaction');
+  const p = legacyAdoptionPayloadSchema.parse(payload);
+  const leases = await tx<RuntimeLease[]>`SELECT l.* FROM harness_shared.blind_review_runtime_leases l
+    JOIN harness_shared.plan_blind_review_sessions b ON b.workspace_id = l.workspace_id AND b.id = l.binding_id
+    WHERE b.workspace_id = ${p.workspaceId} AND b.harness_slug = ${p.harnessSlug} AND b.plan_slug = ${p.planSlug}
+    ORDER BY l.id LIMIT 129`;
+  if (leases.length > 128 || Buffer.byteLength(JSON.stringify(leases)) > 2 * 1024 * 1024)
+    throw new SensitiveActionError('forbidden', 'runtime lease census incomplete');
+  // Fence EVERY creator before inspecting. Waiting here could deadlock with a
+  // creator needing the custody/policy locks already held by this transaction.
+  for (const lease of leases) {
+    const [lock] = await tx<Array<{ held: boolean }>>`SELECT pg_try_advisory_xact_lock(
+      hashtextextended(${runtimeLifecycleLockKey(p.workspaceId, lease.id)}, 0)) AS held`;
+    if (lock?.held !== true) throw new SensitiveActionError('forbidden', 'runtime creator is not fenced');
+  }
+  const backend = deps.backend ?? (await import('./blind-review-runtime-backend')).createLinuxRuntimeNamespaceBackend();
+  const observations = [];
+  const signal = AbortSignal.timeout(5_000);
+  let resourceBytes = 0;
+  for (const lease of leases) {
+    signal.throwIfAborted();
+    // A released row alone is not physical evidence. Reconcile unfinished
+    // cutoffs separately; this reader must never repair or reopen a lease.
+    if (lease.state !== 'released' || !lease.revoked_at)
+      throw new SensitiveActionError('forbidden', 'runtime cutoff is not settled');
+    const resources = await tx<RuntimeResourceIntent[]>`SELECT * FROM harness_shared.blind_review_runtime_resources
+      WHERE workspace_id = ${p.workspaceId} AND lease_id = ${lease.id} ORDER BY id LIMIT 65`;
+    resourceBytes += Buffer.byteLength(JSON.stringify(resources));
+    if (resources.length > 64 || resourceBytes > 2 * 1024 * 1024)
+      throw new SensitiveActionError('forbidden', 'runtime resource census incomplete');
+    let onAbort!: () => void;
+    const timeout = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new SensitiveActionError('forbidden', 'runtime absence observation timed out'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    });
+    let proof: Awaited<ReturnType<RuntimeNamespaceBackend['inspect']>>;
+    try { proof = await Promise.race([backend.inspect(lease, resources, signal), timeout]); }
+    finally { signal.removeEventListener('abort', onAbort); }
+    signal.throwIfAborted();
+    const absent = new Set(proof.absentIntentIds), kinds = new Set(proof.checkedKinds);
+    if (proof.scopeAbsent !== true || proof.creatorStopped !== true || absent.size !== resources.length ||
+        !resources.every(resource => absent.has(resource.id)) || kinds.size !== RUNTIME_RESOURCE_KINDS.length ||
+        !RUNTIME_RESOURCE_KINDS.every(kind => kinds.has(kind)))
+      throw new SensitiveActionError('forbidden', 'runtime physical absence is not verified');
+    observations.push({ leaseId: lease.id, leaseEpoch: String(lease.lease_epoch),
+      resourceIds: resources.map(resource => resource.id), proof });
+  }
+  return { schema: 'blind-review-legacy-runtime-absence/v1' as const,
+    scope: 'recorded-plan-runtime-leases' as const, observations,
+    processQualification: 'required' as const, sourceQualification: 'required' as const };
+}
+
+/** Canonical identity evidence only; this is neither source qualification nor an
+ * execution capability. The caller already holds the plan/binding transaction.
+ * Approval identities are checked at consumption, but are kept outside the
+ * preparation hash: adding a decision must not itself invalidate that hash. */
+export async function readLegacyAdoptionIndependence(tx: Sql, payload: LegacyAdoptionPayload,
+  approvingHumans: readonly string[] = []) {
+  if (typeof (tx as unknown as { savepoint?: unknown }).savepoint !== 'function')
+    throw new SensitiveActionError('invalid', 'independence evidence requires the custody transaction');
+  const p = legacyAdoptionPayloadSchema.parse(payload), opts = { sql: tx, workspaceId: p.workspaceId };
+  const unavailable = (message: string): never => { throw new SensitiveActionError('forbidden', message); };
+  const [plan] = await tx<Array<{ owner: string | null; content_hash: string | null }>>`
+    SELECT owner, content_hash FROM harness_shared.harness_plans WHERE workspace_id = ${p.workspaceId}
+      AND harness_slug = ${p.harnessSlug} AND plan_slug = ${p.planSlug}`;
+  if (!plan?.owner?.trim() || plan.content_hash !== p.planHash)
+    unavailable('canonical current author or exact plan hash unavailable');
+  const revisions = await tx<Array<{ author_id: string | null }>>`
+    SELECT author_id FROM harness_shared.plan_revisions WHERE workspace_id = ${p.workspaceId}
+      AND harness_slug = ${p.harnessSlug} AND plan_slug = ${p.planSlug} ORDER BY seq LIMIT 129`;
+  if (!revisions.length || revisions.length > 128 || revisions.some(r => !r.author_id?.trim()))
+    unavailable('canonical plan author census incomplete');
+  const implementers = await resolvePlanImplementerIdentities(p.planSlug, { ...opts, maxRows: 128 });
+  const authors = [...new Set([plan!.owner!, ...revisions.map(r => r.author_id!)])].sort();
+  const excluded = [...new Set([...authors, ...implementers, p.preparedPrincipal])].sort();
+  if (excluded.length > 128 || approvingHumans.length > 128 ||
+      approvingHumans.some(id => !/^user:\S+$/.test(id)))
+    unavailable('canonical independence population unavailable or oversized');
+
+  type Party = { identity: string; mapping: { kind: 'user'; userId: string; authSessions: string[] }
+    | { kind: 'agent'; advIds: number[] }; aliases: string[]; lineage: Record<string, string[]> };
+  const cache = new Map<string, Party>();
+  const party = async (identity: string): Promise<Party> => {
+    const cached = cache.get(identity); if (cached) return cached;
+    // These are issuer-owned user/session records, never labels, UI identity
+    // fallbacks, caller assertions, gossip or a shared system:superuser key.
+    // Revoked historical sessions remain aliases for independence purposes.
+    const users = await tx<Array<{ id: string }>>`
+      SELECT u.id::text AS id FROM harness_shared.users u
+       WHERE (u.id::text = ${identity} OR 'user:' || u.id::text = ${identity}
+         OR EXISTS (SELECT 1 FROM harness_shared.power_user_sessions s
+           WHERE s.workspace_id = ${p.workspaceId} AND s.user_id = u.id::text
+             AND s.auth_session_id = ${identity}))
+         AND (EXISTS (SELECT 1 FROM harness_shared.user_sessions s
+           WHERE s.workspace_id = ${p.workspaceId} AND s.user_id = u.id)
+           OR EXISTS (SELECT 1 FROM harness_shared.power_user_sessions s
+             WHERE s.workspace_id = ${p.workspaceId} AND s.user_id = u.id::text))
+       ORDER BY u.id LIMIT 2`;
+    if (users.length > 1) unavailable('ambiguous authenticated identity mapping');
+    let mapping: Party['mapping'], aliases: string[];
+    if (users.length === 1) {
+      const userId = users[0]!.id;
+      const sessions = await tx<Array<{ auth_session_id: string }>>`
+        SELECT auth_session_id FROM harness_shared.power_user_sessions
+         WHERE workspace_id = ${p.workspaceId} AND user_id = ${userId}
+         ORDER BY auth_session_id LIMIT 129`;
+      if (sessions.length > 128 || sessions.some(s => !s.auth_session_id?.trim()))
+        unavailable('authenticated alias census incomplete');
+      mapping = { kind: 'user', userId, authSessions: sessions.map(s => s.auth_session_id) };
+      aliases = [...new Set([identity, userId, 'user:' + userId, ...mapping.authSessions])].sort();
+    } else {
+      const native = await tx<Array<{ id: string | number; launch_parent_owner: string | null }>>`
+        SELECT id, launch_parent_owner FROM harness_shared.adv_sessions
+         WHERE workspace_id = ${p.workspaceId} AND coord_owner_id = ${identity} ORDER BY id LIMIT 129`;
+      if (!native.length || native.length > 128 || native.some(n => !n.launch_parent_owner?.trim()))
+        unavailable('canonical identity mapping or launch provenance unavailable');
+      mapping = { kind: 'agent', advIds: native.map(n => Number(n.id)) }; aliases = [identity];
+    }
+    const lineage: Record<string, string[]> = {};
+    for (const alias of aliases) {
+      const nodes = await acceptanceLineageClosure(alias, { ...opts, requireComplete: true });
+      if (mapping.kind === 'agent' && nodes.size < 2)
+        unavailable('agent lineage census has no canonical provenance');
+      lineage[alias] = [...nodes].sort();
+    }
+    const result: Party = { identity, mapping, aliases, lineage }; cache.set(identity, result); return result;
+  };
+  const independent = async (candidate: Party, forbidden: Party) => {
+    for (const a of candidate.aliases) for (const b of forbidden.aliases) {
+      if (candidate.lineage[a]!.includes(b) || forbidden.lineage[b]!.includes(a))
+        unavailable('adoption identities share an author, implementer or reviewer lineage');
+    }
+    if (await isAcceptanceAuthorIdentity(forbidden.identity, candidate.identity, opts) ||
+        await areAcceptanceLineageRelated(forbidden.identity, candidate.identity, opts))
+      unavailable('adoption identities are not independent');
+  };
+  const exclusions: Party[] = [];
+  for (const identity of excluded) exclusions.push(await party(identity));
+  const reviewer = await party(p.reviewerOwnerId), executor = await party(p.authorizedExecutor);
+  if (executor.mapping.kind !== 'user') unavailable('executor has no authenticated human mapping');
+  for (const forbidden of exclusions) await independent(reviewer, forbidden);
+  for (const forbidden of [...exclusions, reviewer]) await independent(executor, forbidden);
+  const independence = { schema: 'blind-review-legacy-independence/v1' as const,
+    workspaceId: p.workspaceId, harnessSlug: p.harnessSlug, planSlug: p.planSlug, planHash: p.planHash,
+    authors, implementers, preparer: p.preparedPrincipal, reviewer: p.reviewerOwnerId,
+    executor: p.authorizedExecutor, parties: [...cache.values()].sort((a, b) => a.identity.localeCompare(b.identity)) };
+  const approvalEvidence: Party[] = [];
+  for (const identity of [...new Set(approvingHumans)].sort()) {
+    const human = await party(identity);
+    if (human.mapping.kind !== 'user') unavailable('approver has no authenticated human mapping');
+    for (const forbidden of [...exclusions, reviewer]) await independent(human, forbidden);
+    approvalEvidence.push(human);
+  }
+  return { independence, approvalEvidence };
+}
+
+type LegacyAdoptionDeps = { sql?: Sql; readEvidence?:
+  (tx: Sql, payload: LegacyAdoptionPayload) => Promise<LegacyAdoptionEvidence> };
+const legacyFenceResult = z.object({ rootId: z.number().int().positive(),
+  attemptKey: z.string().uuid(), bindingId: z.number().int().positive(), bootstrapKey: z.string().uuid(),
+  operationDigest: legacyHash, bootstrapPiSessionId: legacyText,
+  expiresAt: z.string().datetime(), state: z.literal('fenced') }).strict();
+export type LegacyAdoptionFence = z.infer<typeof legacyFenceResult>;
+const legacyClock = async (tx: Sql) => (await tx<Array<{ now: Date }>>`
+  SELECT clock_timestamp() AS now`)[0]!.now;
+
+/** Reserve only: no credential issuance, host, native publication or posting.
+ * Scope -> request/approvals -> policy/delegations -> custody -> native -> replay.
+ * The shared executor commits its consumed mark with every fence effect. */
+export async function reserveLegacyAdoption(input: {
+  workspaceId: string; bindingId: number; requestId: string; expectedPayloadHash: string;
+}, requestPrincipal: HostRequestPrincipalResolver, deps: LegacyAdoptionDeps = {}): Promise<LegacyAdoptionFence> {
+  input = z.object({ workspaceId: legacyText, bindingId: z.number().int().positive(),
+    requestId: legacyText, expectedPayloadHash: legacyHash }).strict().parse(input);
+  if (typeof requestPrincipal !== 'function' || !retainedLegacyHumans.has(requestPrincipal))
+    throw new SensitiveActionError('forbidden', 'retained adoption cookie request required');
+  const sql = deps.sql ?? getOrgPg().sql;
+  const outcome = await sql.begin(async raw => {
+    const tx = raw as unknown as Sql;
+    const { binding: b, planHash } = await lockBlindReviewContinuationScope(tx, input.workspaceId, input.bindingId);
+    await tx`SELECT request_id FROM harness_shared.sensitive_action_requests
+      WHERE request_id = ${input.requestId} FOR UPDATE`;
+    const request = await getSensitiveAction(input.requestId, tx);
+    if (!request || request.workspaceId !== input.workspaceId)
+      throw new SensitiveActionError('not-found', 'adoption request not found in this workspace');
+    const p = validateLegacyAdoptionRequest(request);
+    if (p.bindingId !== b.id || request.payloadHash !== input.expectedPayloadHash)
+      throw new SensitiveActionError('payload-mismatch', 'adoption scope or approved hash differs');
+    if (request.status === 'executed') {
+      await tx`SELECT approver FROM harness_shared.sensitive_action_approvals
+        WHERE request_id = ${request.requestId} ORDER BY approver FOR SHARE`;
+      await lockLegacyAdoptionAuthorization(tx, request, requestPrincipal, true);
+      const result = legacyFenceResult.parse(request.result);
+      const rows = await tx`SELECT * FROM harness_shared.blind_review_continuation_custody
+        WHERE workspace_id = ${b.workspaceId} AND binding_id = ${b.id} ORDER BY id LIMIT 65 FOR SHARE`;
+      const root = rows.find(row => Number(row.id) === result.rootId);
+      const [receipt] = await tx`SELECT summary FROM harness_shared.agent_launch_idempotency
+        WHERE workspace_id = ${b.workspaceId} AND idempotency_key = ${'bootstrap-su:' + p.bootstrapKey} FOR SHARE`;
+      if (rows.length !== 1 || !root || root.event_kind !== 'legacy-fenced' || root.reservation_id !== null ||
+          root.attempt_key !== p.attemptKey || Number(root.source_adv_session_id) !== p.original.advSessionId ||
+          Number(root.target_adv_session_id) !== p.target.advSessionId || root.port_id !== null ||
+          root.snapshot.payloadHash !== request.payloadHash || root.snapshot.requestId !== request.requestId ||
+          !equal(root.snapshot.payload, p) || !equal(root.evidence.result, result) ||
+          !equal(receipt?.summary, { legacyAdoption: result, requestId: request.requestId, payloadHash: request.payloadHash }) ||
+          result.bindingId !== b.id || result.attemptKey !== p.attemptKey || result.bootstrapKey !== p.bootstrapKey ||
+          result.operationDigest !== p.operationDigest || result.bootstrapPiSessionId !== p.bootstrapPiSessionId ||
+          b.resumeLeaseId !== root.resume_lease_id || b.status !== 'resuming' ||
+          !(Date.parse(result.expiresAt) > (await legacyClock(tx)).getTime()))
+        throw new SensitiveActionError('replayed', 'committed adoption root/result/receipt is unavailable or changed');
+      // Read-only lost-response recovery: no renewal, repair, issuance or launch.
+      return { ok: true as const, result };
+    }
+    return executeSensitiveActionInTransaction(raw, { requestId: request.requestId,
+      executor: p.authorizedExecutor, expectedPayloadHash: input.expectedPayloadHash, requestPrincipal },
+    async (sp, approved) => {
+      await lockLegacyAdoptionAuthorization(sp, approved, requestPrincipal);
+      if (p.harnessSlug !== b.harnessSlug || p.planSlug !== b.planSlug || p.planHash !== planHash ||
+          p.activationAuditSeq !== Number(b.activationAuditSeq) || p.reviewerOwnerId !== b.reviewerOwnerId ||
+          p.original.advSessionId !== b.advSessionId || p.original.nativeSessionId !== b.nativeSessionId ||
+          p.modelSpec !== b.modelSpec || sensitivePayloadHash(b.confinementSnapshot) !== p.confinementHash ||
+          b.reviewId !== null || !['ready', 'resuming'].includes(b.status))
+        throw new SensitiveActionError('stale', 'binding, activation, confinement or plan pins changed');
+      const [revision] = await sp`SELECT seq, content_hash FROM harness_shared.plan_revisions
+        WHERE workspace_id = ${b.workspaceId} AND harness_slug = ${b.harnessSlug} AND plan_slug = ${b.planSlug}
+        ORDER BY seq DESC LIMIT 1 FOR SHARE`;
+      if (Number(revision?.seq) !== p.planRevision || revision?.content_hash !== p.planHash)
+        throw new SensitiveActionError('stale', 'exact plan revision changed');
+      if (!deps.readEvidence) throw new SensitiveActionError('forbidden', 'canonical adoption evidence reader unavailable');
+      const measured = await deps.readEvidence(sp, p);
+      if (sensitivePayloadHash(measured.bindingHistory) !== p.bindingHistoryHash ||
+          sensitivePayloadHash(measured.outstandingEffects) !== p.outstandingEffectsHash ||
+          sensitivePayloadHash(measured.independence) !== p.independenceEvidenceHash ||
+          !equal(measured.qualification, p.qualification))
+        throw new SensitiveActionError('stale', 'measured history, effects, independence or source pins changed');
+      const prior = await sp`SELECT id FROM harness_shared.blind_review_continuation_custody
+        WHERE workspace_id = ${b.workspaceId} AND binding_id = ${b.id} ORDER BY id LIMIT 65 FOR SHARE`;
+      if (prior.length) throw new SensitiveActionError('stale', 'prior custody effects require disposition');
+      const runtimes = await sp`SELECT id, state FROM harness_shared.blind_review_runtime_leases
+        WHERE workspace_id = ${b.workspaceId} AND binding_id = ${b.id} ORDER BY id FOR UPDATE`;
+      const n = await native(sp, b.workspaceId, b.advSessionId);
+      const [lifetime] = await sp<Array<{ started: Date; ended: Date | null }>>`
+        SELECT started_at AS started, ended_at AS ended FROM harness_shared.adv_sessions
+        WHERE workspace_id = ${b.workspaceId} AND id = ${b.advSessionId}`;
+      if (!n || !n.ended_at || !lifetime?.ended || n.coord_owner_id !== b.reviewerOwnerId ||
+          n.session_id !== p.observed.nativeSessionId || n.agent !== p.backend || n.resume_claim_key !== null ||
+          !profile(n, b.reviewerOwnerId, { nativeSessionId: p.observed.nativeSessionId, modelSpec: p.modelSpec }) ||
+          sensitivePayloadHash({ backend: n.agent, spec: n.launch_spec, argv: n.launch_argv }) !== p.profileHash ||
+          lifetime.started.toISOString() !== p.observed.startedAt || lifetime.ended.toISOString() !== p.observed.endedAt ||
+          sensitivePayloadHash({ advSessionId: Number(n.id), nativeSessionId: n.session_id,
+            startedAt: lifetime.started.toISOString(), endedAt: lifetime.ended.toISOString() }) !== p.observed.lifetimeEvidenceHash)
+        throw new SensitiveActionError('stale', 'observed ended native lifetime or profile changed');
+      const now = await legacyClock(sp);
+      const expiresAt = new Date(Math.min(Date.parse(p.bootstrapExpiresAt), Date.parse(approved.executeBy!),
+        now.getTime() + 60_000)).toISOString();
+      if (!(Date.parse(expiresAt) > now.getTime())) throw new SensitiveActionError('stale', 'bootstrap window closed');
+      if (b.resumeLeaseId && b.resumeLeaseExpiresAt && Date.parse(b.resumeLeaseExpiresAt) > now.getTime())
+        throw new SensitiveActionError('stale', 'another recruiter lease is live');
+      const leaseId = randomUUID();
+      const [allocated] = await sp`SELECT nextval('harness_shared.blind_review_continuation_custody_id_seq') AS id`;
+      const result: LegacyAdoptionFence = { rootId: Number(allocated!.id), attemptKey: p.attemptKey, bindingId: b.id,
+        bootstrapKey: p.bootstrapKey, operationDigest: p.operationDigest, bootstrapPiSessionId: p.bootstrapPiSessionId,
+        expiresAt, state: 'fenced' };
+      await sp`INSERT INTO harness_shared.blind_review_continuation_custody
+        (id, workspace_id, binding_id, event_kind, attempt_key, resume_lease_id, source_adv_session_id,
+         target_adv_session_id, port_id, snapshot, evidence)
+        VALUES (${result.rootId}, ${b.workspaceId}, ${b.id}, 'legacy-fenced', ${p.attemptKey}, ${leaseId}, ${b.advSessionId},
+          ${b.advSessionId}, NULL, ${JSON.stringify({ requestId: approved.requestId,
+            payloadHash: approved.payloadHash, payload: p, measured })}::jsonb, ${JSON.stringify({ result })}::jsonb)`;
+      await sp`UPDATE harness_shared.plan_blind_review_sessions SET status = 'resuming', resume_lease_id = ${leaseId},
+        resume_lease_expires_at = ${expiresAt} WHERE workspace_id = ${b.workspaceId} AND id = ${b.id}`;
+      for (const runtime of runtimes) if (['allocating', 'ready', 'releasing'].includes(runtime.state))
+        await sp`UPDATE harness_shared.blind_review_runtime_leases SET state = 'releasing',
+          revoked_at = COALESCE(revoked_at, clock_timestamp()),
+          release_reason = COALESCE(release_reason, 'legacy-adoption-fenced'), updated_at = clock_timestamp()
+          WHERE workspace_id = ${b.workspaceId} AND id = ${runtime.id}`;
+      await sp`INSERT INTO harness_shared.agent_launch_idempotency
+        (workspace_id, idempotency_key, launched_at, launched_by, summary)
+        VALUES (${b.workspaceId}, ${'bootstrap-su:' + p.bootstrapKey}, ${(await legacyClock(sp)).getTime()},
+          ${BLIND_GAP_REVIEW_ACTOR}, ${JSON.stringify({ legacyAdoption: result,
+            requestId: approved.requestId, payloadHash: approved.payloadHash })}::jsonb)`;
+      return result;
+    }, legacyClock);
+  });
+  if (!outcome.ok) throw outcome.error;
+  return outcome.result;
 }
 
 const managedSuccessionSchema = z.object({

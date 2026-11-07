@@ -13,7 +13,8 @@
  * The evaluator (./inherited-policy.ts) is pure; this file only reads and writes rows.
  */
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import { isDeepStrictEqual } from 'node:util';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { workScopeExceptionExpirySchema } from '../work-scope-policy';
 import { CUSTOMER_DATA_CLASSES, DATA_CLASS_USE_PREFIX, dataClassUseLabel, isCustomerDataClass } from '../auth/hosted/customer-data-map';
@@ -129,6 +130,28 @@ export async function loadChainForWorkspace(workspaceId: string, sql?: Sql): Pro
   const bad = chain.find((l): boolean => !isWellFormedLayer(l));
   if (bad) return { status: 'malformed', reason: `layer ${bad.layerId} v${bad.version} has malformed rules or exceptions`, chain };
   return { status: 'ok', chain };
+}
+
+/** D011 custody composition: discover without locks, lock the exact chain ROOT FIRST,
+ * then reload after every wait. A changed chain refuses rather than acquiring new ancestors
+ * out of order. The caller holds plan/binding/confinement/request locks first and acquires
+ * supporting delegation locks only after this returns ok. No transaction is opened here. */
+export async function lockPolicyChainForWorkspace(workspaceId: string, tx: Sql): Promise<ChainLoad> {
+  if (typeof (tx as unknown as Partial<TransactionSql>).savepoint !== 'function') {
+    throw new TypeError('policy chain locking requires an existing transaction');
+  }
+  const discovered = await loadChainForWorkspace(workspaceId, tx);
+  if (discovered.status !== 'ok') return discovered;
+  for (const layer of discovered.chain) {
+    await tx`SELECT layer_id FROM harness_shared.governance_policy_layers
+      WHERE layer_id = ${layer.layerId} FOR SHARE`;
+  }
+  const current = await loadChainForWorkspace(workspaceId, tx);
+  if (current.status !== 'ok') return current;
+  if (!isDeepStrictEqual(current.chain, discovered.chain)) {
+    return { status: 'malformed', reason: 'policy chain changed while acquiring root-first locks', chain: current.chain };
+  }
+  return current;
 }
 
 export async function loadLayer(layerId: string, sql?: Sql): Promise<StoredPolicyLayer | null> {

@@ -13,9 +13,22 @@
  * one-time mark commit together or not at all.
  */
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { authorize, principalKindOf } from './authority';
+import { isRetainedRequestPrincipal, type HostRequestPrincipalResolver } from '../auth/require-principal';
+
+export const LEGACY_ADOPTION_ACTION = 'blind-review-legacy-adoption';
+
+async function adoptionHuman(resolve: HostRequestPrincipalResolver | undefined, workspaceId: string, actor: string) {
+  if (!isRetainedRequestPrincipal(resolve))
+    throw new SensitiveActionError('forbidden', 'legacy adoption requires retained authenticated request capability');
+  const p = await resolve();
+  if (!p || p.kind !== 'user' || p.trust !== 'verified' || p.authMethod !== 'cookie-session' ||
+      p.workspaceId !== workspaceId || 'user:' + p.slug !== actor)
+    throw new SensitiveActionError('forbidden', 'legacy adoption requires the exact current verified cookie human');
+  return { kind: p.kind, slug: p.slug, workspaceId: p.workspaceId, trust: p.trust, authMethod: p.authMethod };
+}
 
 /** How long a prepared request may wait for its approvals. */
 export const SENSITIVE_ACTION_REQUEST_TTL_MS = 24 * 60 * 60_000;
@@ -273,14 +286,18 @@ export interface DecideSensitiveActionInput {
  * and hold `approve` over the request's authority layer. A deny ends the request; the approval that
  * reaches `requiredApprovals` opens a SENSITIVE_ACTION_EXECUTION_WINDOW_MS execution window.
  */
-export async function decideSensitiveAction(input: DecideSensitiveActionInput, sql?: Sql): Promise<SensitiveActionRequest> {
-  const now = input.now ?? new Date();
+export async function decideSensitiveAction(input: DecideSensitiveActionInput, sql?: Sql,
+  requestPrincipal?: HostRequestPrincipalResolver): Promise<SensitiveActionRequest> {
+  const capturedNow = input.now ?? new Date();
   if (input.decision !== 'approve' && input.decision !== 'deny') throw new SensitiveActionError('invalid', 'decision must be approve or deny');
   if (typeof input.reason !== 'string' || !input.reason.trim()) throw new SensitiveActionError('invalid', 'reason is required');
   const db = sqlOf(sql);
   const outcome = await db.begin(async (txRaw) => {
     const tx = txRaw as unknown as Sql;
     const req = await lockRequest(tx, input.requestId);
+    const auth = req.action_kind === LEGACY_ADOPTION_ACTION
+      ? await adoptionHuman(requestPrincipal, req.workspace_id, input.approver) : null;
+    const now = auth ? (await tx<Array<{ now: Date }>>`SELECT clock_timestamp() AS now`)[0]!.now : capturedNow;
     if (req.status !== 'pending') return { error: new SensitiveActionError('not-pending', `request ${input.requestId} is ${req.status}`) };
     if (now.getTime() >= new Date(req.expires_at).getTime()) {
       await tx`UPDATE harness_shared.sensitive_action_requests SET status = 'expired' WHERE request_id = ${input.requestId}`;
@@ -302,9 +319,16 @@ export async function decideSensitiveAction(input: DecideSensitiveActionInput, s
     if (Number(prior[0]?.n ?? 0) > 0) {
       return { error: new SensitiveActionError('already-decided', `${input.approver} already decided request ${input.requestId}`) };
     }
+    // This discriminator is checked inside the common request lock: generic
+    // internal/policy callers cannot supply an actor string plus a forged JSON
+    // reason to create authenticated adoption provenance.
+    if (auth && JSON.stringify(await adoptionHuman(requestPrincipal, req.workspace_id, input.approver)) !== JSON.stringify(auth))
+      throw new SensitiveActionError('forbidden', 'decision principal changed while waiting');
+    const reason = auth ? JSON.stringify({ schema: 'blind-review-legacy-adoption-approval/v1',
+      humanReason: input.reason.trim(), requestPayloadHash: req.payload_hash, auth }) : input.reason.trim();
     await tx`
       INSERT INTO harness_shared.sensitive_action_approvals (request_id, approver, decision, reason, decided_at)
-      VALUES (${input.requestId}, ${input.approver}, ${input.decision}, ${input.reason.trim()}, ${now})
+      VALUES (${input.requestId}, ${input.approver}, ${input.decision}, ${reason}, ${now})
     `;
     if (input.decision === 'deny') {
       await tx`UPDATE harness_shared.sensitive_action_requests SET status = 'denied' WHERE request_id = ${input.requestId}`;
@@ -335,12 +359,106 @@ export interface ExecuteSensitiveActionInput {
   /** When given, execution is refused unless it equals the prepared payload's hash. */
   expectedPayloadHash?: string;
   now?: Date;
+  /** Host-local only. Adoption cannot be executed by a generic actor-string caller. */
+  requestPrincipal?: HostRequestPrincipalResolver;
+}
+
+export type SensitiveActionExecutionOutcome<T> =
+  | { ok: true; request: SensitiveActionRequest; result: T }
+  | { ok: false; error: SensitiveActionError };
+
+/**
+ * Internal composition seam for callers that must acquire their scope locks before the request.
+ * The caller owns the transaction and must commit a refused outcome before throwing its error.
+ * Effects and the execution mark share one savepoint: a window closing during the effect rolls
+ * both back before recording expiry. `clock` is read after the request lock and at the mark;
+ * custody callers supply database wall time, while the public wrapper preserves its captured time.
+ */
+export async function executeSensitiveActionInTransaction<T>(
+  txRaw: TransactionSql,
+  input: ExecuteSensitiveActionInput,
+  run: (tx: Sql, request: SensitiveActionRequest) => Promise<T>,
+  clock: (tx: Sql) => Promise<Date>,
+): Promise<SensitiveActionExecutionOutcome<T>> {
+  if (typeof txRaw.savepoint !== 'function') {
+    throw new SensitiveActionError('invalid', 'sensitive action execution requires an existing transaction');
+  }
+  const tx = txRaw as unknown as Sql;
+  const row = await lockRequest(tx, input.requestId);
+  const auth = row.action_kind === LEGACY_ADOPTION_ACTION
+    ? await adoptionHuman(input.requestPrincipal, row.workspace_id, input.executor) : null;
+  const now = await clock(tx);
+  if (row.status === 'executed') {
+    return { ok: false, error: new SensitiveActionError('replayed', `request ${input.requestId} was already executed at ${iso(row.executed_at)}`) };
+  }
+  if (row.status !== 'approved') {
+    return { ok: false, error: new SensitiveActionError('not-approved', `request ${input.requestId} is ${row.status}, not approved`) };
+  }
+  const executionWindowClosed = (at: Date) => !row.execute_by || at.getTime() > new Date(row.execute_by).getTime();
+  const expiryError = () => new SensitiveActionError('expired', `request ${input.requestId}'s execution window closed at ${iso(row.execute_by)}`);
+  if (executionWindowClosed(now)) {
+    await tx`UPDATE harness_shared.sensitive_action_requests SET status = 'expired' WHERE request_id = ${input.requestId}`;
+    return { ok: false, error: expiryError() };
+  }
+  if (input.expectedPayloadHash !== undefined && input.expectedPayloadHash !== row.payload_hash) {
+    return { ok: false, error: new SensitiveActionError('payload-mismatch', `request ${input.requestId} was approved for different content`) };
+  }
+  const mayExecute =
+    input.executor === row.prepared_by || (await authorize(input.executor, row.authority_layer_id, 'prepare', { now, sql: tx }));
+  if (!mayExecute) {
+    return { ok: false, error: new SensitiveActionError('forbidden', `${input.executor} may not execute request ${input.requestId}`) };
+  }
+  // Lock append-only decisions in stable order before an action acquires policy/custody locks.
+  await tx`SELECT approver FROM harness_shared.sensitive_action_approvals
+    WHERE request_id = ${input.requestId} ORDER BY approver FOR SHARE`;
+  const request = requestOf(row, await approvalsOf(tx, input.requestId));
+  let windowError: SensitiveActionError | undefined;
+  try {
+    const completed = await txRaw.savepoint(async (spRaw) => {
+      const sp = spRaw as unknown as Sql;
+      const result = await run(sp, request);
+      if (auth && JSON.stringify(await adoptionHuman(input.requestPrincipal, row.workspace_id, input.executor)) !== JSON.stringify(auth))
+        throw new SensitiveActionError('forbidden', 'executor principal changed before execution mark');
+      const executedAt = await clock(sp);
+      if (executionWindowClosed(executedAt)) {
+        windowError = expiryError();
+        throw windowError;
+      }
+      await sp`
+        UPDATE harness_shared.sensitive_action_requests
+           SET status = 'executed', executed_at = ${executedAt}, executed_by = ${input.executor},
+               result = ${JSON.stringify(result ?? null)}::text::jsonb
+         WHERE request_id = ${input.requestId}
+      `;
+      return { result, executedAt };
+    });
+    return {
+      ok: true,
+      result: completed.result,
+      request: requestOf({ ...row, status: 'executed', executed_at: completed.executedAt,
+        executed_by: input.executor, result: completed.result ?? null }, request.approvals),
+    };
+  } catch (err) {
+    if (windowError && err === windowError) {
+      await tx`UPDATE harness_shared.sensitive_action_requests SET status = 'expired' WHERE request_id = ${input.requestId}`;
+      return { ok: false, error: windowError };
+    }
+    if (err instanceof SensitiveActionError && err.code === 'stale') {
+      await tx`
+        UPDATE harness_shared.sensitive_action_requests
+           SET status = 'cancelled', result = ${JSON.stringify({ cancelled: 'stale', detail: err.message })}::text::jsonb
+         WHERE request_id = ${input.requestId}
+      `;
+      return { ok: false, error: err };
+    }
+    throw err;
+  }
 }
 
 /**
- * Execute an approved request exactly once. `run` performs the effect inside a savepoint of the
- * transaction that marks the request executed. A `run` that throws SensitiveActionError('stale')
- * cancels the request (it can never become valid again); any other failure leaves it approved.
+ * Execute an approved request exactly once. Stale effects commit cancellation; other failures
+ * leave it approved. The public API retains its transaction ownership, captured clock and replay
+ * refusal. Custody composition uses the internal entry instead of nesting this transaction.
  */
 export async function executeSensitiveAction<T>(
   input: ExecuteSensitiveActionInput,
@@ -349,50 +467,7 @@ export async function executeSensitiveAction<T>(
 ): Promise<{ request: SensitiveActionRequest; result: T }> {
   const now = input.now ?? new Date();
   const db = sqlOf(sql);
-  const outcome = await db.begin(async (txRaw) => {
-    const tx = txRaw as unknown as Sql;
-    const row = await lockRequest(tx, input.requestId);
-    if (row.status === 'executed') {
-      return { error: new SensitiveActionError('replayed', `request ${input.requestId} was already executed at ${iso(row.executed_at)}`) };
-    }
-    if (row.status !== 'approved') {
-      return { error: new SensitiveActionError('not-approved', `request ${input.requestId} is ${row.status}, not approved`) };
-    }
-    if (!row.execute_by || now.getTime() > new Date(row.execute_by).getTime()) {
-      await tx`UPDATE harness_shared.sensitive_action_requests SET status = 'expired' WHERE request_id = ${input.requestId}`;
-      return { error: new SensitiveActionError('expired', `request ${input.requestId}'s execution window closed at ${iso(row.execute_by)}`) };
-    }
-    if (input.expectedPayloadHash !== undefined && input.expectedPayloadHash !== row.payload_hash) {
-      return { error: new SensitiveActionError('payload-mismatch', `request ${input.requestId} was approved for different content`) };
-    }
-    const mayExecute =
-      input.executor === row.prepared_by || (await authorize(input.executor, row.authority_layer_id, 'prepare', { now, sql: tx }));
-    if (!mayExecute) {
-      return { error: new SensitiveActionError('forbidden', `${input.executor} may not execute request ${input.requestId}`) };
-    }
-    const request = requestOf(row, await approvalsOf(tx, input.requestId));
-    let result: T;
-    try {
-      result = (await txRaw.savepoint((sp) => run(sp as unknown as Sql, request))) as T;
-    } catch (err) {
-      if (err instanceof SensitiveActionError && err.code === 'stale') {
-        await tx`
-          UPDATE harness_shared.sensitive_action_requests
-             SET status = 'cancelled', result = ${JSON.stringify({ cancelled: 'stale', detail: err.message })}::text::jsonb
-           WHERE request_id = ${input.requestId}
-        `;
-        return { error: err };
-      }
-      throw err;
-    }
-    await tx`
-      UPDATE harness_shared.sensitive_action_requests
-         SET status = 'executed', executed_at = ${now}, executed_by = ${input.executor},
-             result = ${JSON.stringify(result ?? null)}::text::jsonb
-       WHERE request_id = ${input.requestId}
-    `;
-    return { error: null, result };
-  });
-  if (outcome.error) throw outcome.error;
-  return { request: (await getSensitiveAction(input.requestId, db)) as SensitiveActionRequest, result: outcome.result as T };
+  const outcome = await db.begin((tx) => executeSensitiveActionInTransaction(tx, input, run, async () => now));
+  if (!outcome.ok) throw outcome.error;
+  return { request: (await getSensitiveAction(input.requestId, db)) as SensitiveActionRequest, result: outcome.result };
 }

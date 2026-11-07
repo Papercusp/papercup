@@ -16,7 +16,7 @@
  * `service:*`) is a SERVICE identity and may hold only `prepare`, so an agent can never approve or
  * delegate. The database enforces the same rule (governance_delegations_service_prepare_only_ck).
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { MAX_CHAIN_DEPTH, upsertLayerInTx, type StoredPolicyLayer, type UpsertLayerInput } from './store';
 
@@ -131,30 +131,42 @@ export async function layerAncestry(layerId: string, sql?: Sql): Promise<string[
 }
 
 /**
- * Live (unrevoked, unexpired) delegations `principal` holds on `layerId` or any ancestor, with each
- * capability list cut to what the principal's kind may hold (a belt to the database's braces).
+ * Live covering delegations, cut to each principal's capability ceiling. A mixed custody
+ * operation passes its complete principal population and `lock: 'share'` AFTER locking the
+ * policy chain. One stable delegation-id order prevents per-principal lock inversions.
+ * Locked reads require the caller's transaction and use DB wall time AFTER the lock wait;
+ * caller time cannot keep an expired delegation alive. Locks last until the outer commit.
  */
 export async function coveringDelegations(
-  principal: string,
+  principal: string | readonly string[],
   layerId: string,
-  opts: { now?: Date; sql?: Sql } = {},
+  opts: { now?: Date; sql?: Sql; lock?: 'share' } = {},
 ): Promise<GovernanceDelegation[]> {
-  const now = opts.now ?? new Date();
-  const ancestry = await layerAncestry(layerId, opts.sql);
-  if (ancestry.length === 0) return [];
   const db = sqlOf(opts.sql);
+  if (opts.lock && (typeof (db as unknown as Partial<TransactionSql>).savepoint !== 'function' || opts.now !== undefined)) {
+    throw new GovernanceAuthorityError('invalid', 'locked authority requires an existing transaction and database time');
+  }
+  const principals = [...new Set(typeof principal === 'string' ? [principal] : principal)].sort();
+  if (!principals.length) return [];
+  const now = opts.now ?? new Date();
+  const ancestry = await layerAncestry(layerId, db);
+  if (ancestry.length === 0) return [];
   const rows = await db<RawDelegationRow[]>`
     SELECT ${db.unsafe(DELEGATION_COLUMNS)} FROM harness_shared.governance_delegations
-     WHERE principal = ${principal}
+     WHERE principal = ANY(${principals}::text[])
        AND layer_id = ANY(${ancestry}::text[])
        AND revoked_at IS NULL
-       AND expires_at > ${now}
-     ORDER BY expires_at DESC
+       AND (${opts.lock === 'share'} OR expires_at > ${now})
+     ORDER BY ${db.unsafe(opts.lock ? 'delegation_id' : 'expires_at DESC')}
+     ${db.unsafe(opts.lock ? 'FOR SHARE' : '')}
   `;
-  const allowed = capabilitiesAllowedFor(principalKindOf(principal));
+  const at = opts.lock
+    ? (await db<Array<{ at: Date }>>`SELECT clock_timestamp() AS at`)[0].at
+    : now;
   return rows
     .map(delegationOf)
-    .map((d) => ({ ...d, capabilities: d.capabilities.filter((c) => allowed.includes(c)) }))
+    .filter(d => d.revokedAt === null && Date.parse(d.expiresAt) > at.getTime())
+    .map((d) => ({ ...d, capabilities: d.capabilities.filter((c) => capabilitiesAllowedFor(principalKindOf(d.principal)).includes(c)) }))
     .filter((d) => d.capabilities.length > 0);
 }
 
