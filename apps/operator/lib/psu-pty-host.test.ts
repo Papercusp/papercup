@@ -87,6 +87,18 @@ describe('Codex configured composer readiness (EI-26141756824840354)', () => {
     expect(realHost.codexSessionFrameObserved(output, { dims })).toBe(true);
   });
 
+  it.each(['~', '~ · ← for agents'])('recognizes the native 0.167 home footer %s', directory => {
+    // The real container startup reached this configured frame, including its
+    // warning badge, but the directory recognizer accepted only ~/ or / paths.
+    const output = '\x1b[6n' + frame('› Ask Codex to do anything', `gpt-6-luna default · ${directory}`) +
+      '\x1b[17;95H⚠ 2 warnings · f2 to view';
+    expect(realHost.codexFooterStateFromOutput(output, dims)).toBe('ready');
+    expect(realHost.startupOutputReady('codex', output, dims)).toBe(true);
+    expect(realHost.codexSessionFrameObserved(output, { dims })).toBe(true);
+    expect(realHost.codexSessionFrameObserved('\x1b[6n' +
+      frame('›', 'gpt-6-luna default · ~/work'), { dims })).toBe(true);
+  });
+
   it('requires a post-probe paint, retaining the bounded-buffer probe contract', () => {
     expect(realHost.codexSessionFrameObserved(frame(), { dims })).toBe(false);
     expect(realHost.codexSessionFrameObserved(frame(), { dims, probeAlreadySeen: true })).toBe(true);
@@ -99,6 +111,7 @@ describe('Codex configured composer readiness (EI-26141756824840354)', () => {
     ['loading model', frame('›', 'loading default · /tmp/work')],
     ['incomplete footer', frame('›', 'gpt-6-luna default ·')],
     ['missing effort', frame('›', 'gpt-6-luna · /tmp/work')],
+    ['home-like prose', frame('›', 'gpt-6-luna default · ~unknown')],
     ['nonempty composer', frame('› /hooks')],
     ['menu choice', frame('› 1. Use this model')],
     ['missing composer', frame('')],

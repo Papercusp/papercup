@@ -2549,6 +2549,31 @@ impl OperatorClient {
         Ok(serde_json::json!({"rows":[result["override"]],"environment":current}))
     }
 
+    pub async fn native_goal_action(&self, request: &crate::native_panel::GoalRequest) -> Result<serde_json::Value> {
+        use crate::native_panel::{ReadModel, ReadRequest};
+        let current = self.backend_identity().await?;
+        anyhow::ensure!(request.environment.same_rendezvous(&current),
+            "selected environment changed; refresh Goals before applying a control");
+        let read = ReadRequest { name: ReadModel::Goal,
+            args: serde_json::from_value(serde_json::json!({"workspaceId":current.workspace_id,"goalId":request.goal_id}))?,
+            environment: Some(current.clone()) };
+        let prior = self.native_panel_read(&read).await?;
+        let rows = prior["rows"].as_array().context("goal detail is unavailable")?;
+        anyhow::ensure!(prior["partial"] != true && rows.len() == 1, "goal detail is unavailable or incomplete");
+        let (path, body, target) = request.write(&rows[0])?;
+        anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?),
+            "selected environment changed before goal write");
+        let result = self.post_json(path, body).await?;
+        anyhow::ensure!(result["ok"] != false && result.get("error").is_none_or(serde_json::Value::is_null),
+            "goal control failed; refresh to verify server state: {result}");
+        let confirmed = self.native_panel_read(&read).await?;
+        let rows = confirmed["rows"].as_array().context("goal write returned; confirmed detail is unavailable, refresh Goals")?;
+        anyhow::ensure!(confirmed["partial"] != true && rows.len() == 1 && rows[0]["goal"]["id"] == request.goal_id
+            && rows[0]["goal"]["status"] == target, "goal write returned; refresh to verify the resulting goal state");
+        Ok(serde_json::json!({"rows":rows,"environment":current,"degraded":result["degraded"],
+            "degradedReasons":result["degradedReasons"]}))
+    }
+
     /// Read the one server-normalized context projection consumed by both pui
     /// and the operator GUI. An empty row set is a supported capability-tier
     /// absence, not an error and not permission to synthesize local frames.
@@ -3883,6 +3908,83 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn native_goal_controls_revalidate_environment_and_read_back_server_outcomes() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for scenario in ["pause", "start", "changed-goal", "changed-environment", "write-denied", "readback-mismatch"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let identity = json!({"schemaVersion":1,"workspaceId":"isolated","store":{"id":"fixture","target":"test","source":"test"},
+                "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:isolated","route":"test"},"capabilities":{}});
+            let mut environment = identity.clone();
+            environment["endpoint"] = json!(base); environment["selectionSource"] = json!("test"); environment["transport"] = json!("http");
+            let start = scenario == "start";
+            let prior = json!({"rows":[{"goal":{"id":"literal +/=& λ","status":if scenario == "changed-goal" {"paused"} else {"active"}},
+                "effectiveStatus":if start {"dormant"} else {"active"},"holderLiveness":if start {"lost"} else {"held"},"evidence":["retained"]}]});
+            let mut confirmed = prior.clone();
+            confirmed["rows"][0]["goal"]["status"] = json!(if start || scenario == "readback-mismatch" {"active"} else {"paused"});
+            let path = if start {"/api/admin/goals/start-existing"} else {"/api/admin/goals/update"};
+            let post = if start {json!({"id":"literal +/=& λ"})} else {json!({"id":"literal +/=& λ","status":"paused"})};
+            let mut steps = vec![("GET", "/api/tui/identity", identity.clone()),
+                ("GET", "/api/tui/identity", identity.clone()), ("GET", "/api/zero-harness/rest-query", prior)];
+            if scenario != "changed-goal" {
+                let mut before_write = identity.clone();
+                if scenario == "changed-environment" { before_write["store"]["id"] = json!("replaced"); }
+                steps.push(("GET", "/api/tui/identity", before_write));
+                if scenario != "changed-environment" {
+                    steps.push(("POST", path, if scenario == "write-denied" {json!({"ok":false,"error":"canonical refusal"})}
+                        else {json!({"data":{"status":"paused"},"degraded":true,"degradedReasons":["unattributed activity remains"]})}));
+                    if scenario != "write-denied" {
+                        steps.push(("GET", "/api/tui/identity", identity));
+                        steps.push(("GET", "/api/zero-harness/rest-query", confirmed));
+                    }
+                }
+            }
+            let server = tokio::spawn(async move {
+                for (method, path, payload) in steps {
+                    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+                    let mut bytes = Vec::new();
+                    let (head, body_offset) = loop {
+                        let mut chunk = [0; 2048]; let count = socket.read(&mut chunk).await.unwrap();
+                        assert!(count > 0); bytes.extend_from_slice(&chunk[..count]);
+                        if let Some(offset) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8(bytes[..offset].to_vec()).unwrap();
+                            let length = head.lines().find_map(|line| line.to_lowercase().strip_prefix("content-length: ")
+                                .and_then(|n| n.parse::<usize>().ok())).unwrap_or(0);
+                            if bytes.len() >= offset + 4 + length { break (head, offset + 4); }
+                        }
+                    };
+                    assert!(head.to_lowercase().contains("authorization: bearer native-goal-fixture"));
+                    let mut parts = head.lines().next().unwrap().split_whitespace(); assert_eq!(parts.next(), Some(method));
+                    let url = reqwest::Url::parse(&format!("http://fixture{}", parts.next().unwrap())).unwrap(); assert_eq!(url.path(), path);
+                    if method == "POST" { assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[body_offset..]).unwrap(), post); }
+                    if path.ends_with("rest-query") {
+                        let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+                        assert_eq!(params.get("name").unwrap(), "goals.detail");
+                        assert_eq!(serde_json::from_str::<serde_json::Value>(params.get("args").unwrap()).unwrap(),
+                            json!({"goalId":"literal +/=& λ","workspaceId":"isolated"}));
+                    }
+                    let body = payload.to_string();
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+            });
+            let client = OperatorClient { transport:Transport::Http(HttpClient::new(base.clone(),Some("native-goal-fixture".into()))),
+                endpoint:base, selection_source:"test".into() };
+            let request = serde_json::from_value(json!({"environment":environment,"goalId":"literal +/=& λ","action":if start {"start"} else {"pause"},
+                "expectedStatus":"active","expectedEffectiveStatus":if start {"dormant"} else {"active"},
+                "expectedHolderLiveness":if start {"lost"} else {"held"},"confirmed":true})).unwrap();
+            let result = client.native_goal_action(&request).await;
+            if scenario == "pause" || start {
+                let result = result.unwrap(); assert_eq!(result["degradedReasons"][0], "unattributed activity remains");
+                assert_eq!(result["rows"][0]["evidence"][0], "retained");
+                assert_eq!(result["rows"][0]["goal"]["status"], if start {"active"} else {"paused"});
+            } else { assert!(result.is_err(), "accepted {scenario}"); }
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn native_panel_read_preserves_identity_auth_errors_and_empty_vs_unavailable() {
         use super::*;

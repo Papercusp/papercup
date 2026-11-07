@@ -526,7 +526,7 @@ describe('startBenchEgress', () => {
       (e: Error) => e,
     );
     expect((err as Error).message).toMatch(/sidecar start failed/);
-    expect((err as Error).message).not.toMatch(/cleanup/);
+    expect((err as Error).message).not.toMatch(/\(cleanup:/);
     expect(calls.map((a) => a[0])).toEqual(['network', 'run', 'inspect', 'rm', 'network']);
   });
 

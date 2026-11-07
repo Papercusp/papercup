@@ -51,6 +51,30 @@ function fixture() {
 }
 
 describe('projected plugin host resource approval', () => {
+  it('passes a host guard which rechecks current policy and expires on settlement', async () => {
+    const f = fixture(); let retained: (() => void) | undefined;
+    const aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,
+      readManifest: async () => ['tasks:write'], readGrants: async () => ['tasks:write'],
+      executeHandler: async (_request, assertActive) => {
+        expect(assertActive).toBeTypeOf('function'); retained = assertActive;
+        assertActive!(); f.revoke();
+        expect(() => assertActive!()).toThrow(/lease/);
+        return { content: [] };
+      } });
+    await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx, { aroundInvoke });
+    expect(() => retained!()).toThrow(/lease/);
+    expect(existsSync(f.marker)).toBe(false);
+  });
+
+  it('expires a retained host guard after successful settlement', async () => {
+    const f = fixture(); let retained: (() => void) | undefined;
+    const aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,
+      readManifest: async () => ['tasks:write'], readGrants: async () => ['tasks:write'],
+      executeHandler: async (_request, assertActive) => { retained = assertActive; assertActive!(); return { content: [] }; } });
+    expect((await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx, { aroundInvoke })).ok).toBe(true);
+    expect(() => retained!()).toThrow(/lease/);
+  });
+
   it('refuses missing confined execution even after a valid host approval', async () => {
     const f = fixture();
     const aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,

@@ -1,11 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invokeApprovedHandler, prepareInstalledHandlerRuntime, snapshotInstalledHandlerFiles } from '@papercusp/plugin-loader/daemon';
-import { createConfinedPluginInvoker, createInstalledConfinedPluginInvoker } from './plugin-handler-execution';
+import { createConfinedPluginInvoker, createInstalledConfinedPluginInvoker, executeInstalledPluginHandler as executeWithLease } from './plugin-handler-execution';
+import { locatePluginEntry, createInvocationCapabilityContext, runWithInvocationCapabilities } from '@papercusp/plugin-loader';
+import { getPluginHost } from './plugin-host-runtime';
+import { makeSecretResolver } from './plugin-spawn-impl';
+import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 import type { PluginHandlerExecutor } from './plugin-invocation-policy';
 
 vi.mock('@papercusp/plugin-loader/daemon', async original => ({
   ...await original<typeof import('@papercusp/plugin-loader/daemon')>(),
   invokeApprovedHandler: vi.fn(), prepareInstalledHandlerRuntime: vi.fn(), snapshotInstalledHandlerFiles: vi.fn(),
+}));
+vi.mock('@papercusp/plugin-loader', async original => ({
+  ...await original<typeof import('@papercusp/plugin-loader')>(), locatePluginEntry: vi.fn(),
+}));
+vi.mock('./plugin-host-runtime', async original => ({
+  ...await original<typeof import('./plugin-host-runtime')>(), getPluginHost: vi.fn(),
+}));
+vi.mock('./plugin-spawn-impl', async original => ({
+  ...await original<typeof import('./plugin-spawn-impl')>(), makeSecretResolver: vi.fn(),
+}));
+vi.mock('./operator-app-root', async original => ({
+  ...await original<typeof import('./operator-app-root')>(), resolveOperatorAppRootFromModuleDir: vi.fn(),
 }));
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 
@@ -20,6 +36,115 @@ function fixture() {
   const invoke = createConfinedPluginInvoker(options);
   return { request, invoke, effect, options };
 }
+
+describe('production installed executor', () => {
+  const executeInstalledPluginHandler = (request: Parameters<PluginHandlerExecutor>[0]) => executeWithLease(request, () => {});
+  function productionFixture() {
+    const f = fixture();
+    f.request.toolName = 'fixture.read';
+    f.request.tool.capabilities = ['secrets:read:ALLOWED'];
+    f.request.ctx.harnessSlug = 'harness';
+    const loaded = { plugin: { name: 'fixture', version: '1.0.0', capabilities: ['secrets:read:ALLOWED'] },
+      ...f.options.installation, runtime: { kind: 'js' }, toolDefinitions: [{ name: 'read' }] };
+    vi.mocked(getPluginHost).mockResolvedValue({ loaded: [loaded] } as never);
+    vi.mocked(locatePluginEntry).mockResolvedValue('/installed/fixture/dist/index.cjs');
+    vi.mocked(resolveOperatorAppRootFromModuleDir).mockReturnValue('/installed/apps/operator');
+    vi.mocked(snapshotInstalledHandlerFiles).mockReturnValue([{ path: '/handler/entry.cjs',
+      contents: Buffer.from('guest'), sha256: 'b'.repeat(64), executable: false }]);
+    vi.mocked(prepareInstalledHandlerRuntime).mockResolvedValue({ sha256: 'c'.repeat(64) });
+    const secret = vi.fn(async () => 'checked-secret');
+    vi.mocked(makeSecretResolver).mockReturnValue(secret);
+    vi.mocked(invokeApprovedHandler).mockResolvedValue({ content: [] });
+    return { ...f, loaded, secret };
+  }
+
+  it('requires a host lease before reading any installed state', async () => {
+    const f = productionFixture();
+    await expect(executeWithLease(f.request)).rejects.toThrow(/host invocation lease/);
+    expect(getPluginHost).not.toHaveBeenCalled();
+    expect(prepareInstalledHandlerRuntime).not.toHaveBeenCalled();
+  });
+
+  it('checks the lease again after asynchronous runtime admission', async () => {
+    const f = productionFixture(); let active = true;
+    vi.mocked(prepareInstalledHandlerRuntime).mockImplementationOnce(async () => {
+      active = false; return { sha256: 'c'.repeat(64) };
+    });
+    await expect(executeWithLease(f.request, () => { if (!active) throw new Error('revoked lease'); }))
+      .rejects.toThrow(/revoked lease/);
+    expect(invokeApprovedHandler).not.toHaveBeenCalled();
+  });
+
+  it('uses host package/entry/tool bindings despite forged routing arguments', async () => {
+    const f = productionFixture();
+    f.request.input = { runtimeDirectory: '/forged', entryPoint: 'evil.cjs', toolName: 'admin' };
+    await executeInstalledPluginHandler(f.request);
+    expect(locatePluginEntry).toHaveBeenCalledWith('/installed/fixture');
+    expect(snapshotInstalledHandlerFiles).toHaveBeenCalledWith('/installed/fixture', 'dist/index.cjs', { name: 'fixture', version: '1.0.0' });
+    expect(prepareInstalledHandlerRuntime).toHaveBeenCalledWith('/installed/handler-runtime', expect.any(Array));
+    expect(invokeApprovedHandler).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'read', input: f.request.input }));
+    expect(makeSecretResolver).toHaveBeenCalledWith({ harnessSlug: 'harness', pluginName: 'fixture' });
+  });
+
+  it.each(['missing', 'ambiguous', 'version', 'path', 'source', 'runtime', 'tool', 'entry'] as const)(
+    'refuses %s installation binding without runtime admission or guest execution', async axis => {
+      const f = productionFixture();
+      if (axis === 'missing') vi.mocked(getPluginHost).mockResolvedValue({ loaded: [] } as never);
+      else if (axis === 'ambiguous') vi.mocked(getPluginHost).mockResolvedValue({ loaded: [f.loaded, f.loaded] } as never);
+      else if (axis === 'version') f.loaded.plugin.version = '2.0.0';
+      else if (axis === 'path') f.loaded.path = '/other';
+      else if (axis === 'source') Object.assign(f.loaded, { source: 'project' });
+      else if (axis === 'runtime') f.loaded.runtime.kind = 'daemon';
+      else if (axis === 'tool') f.loaded.toolDefinitions[0]!.name = 'other';
+      else vi.mocked(locatePluginEntry).mockResolvedValue(null);
+      await expect(executeInstalledPluginHandler(f.request)).rejects.toThrow(/installed/);
+      expect(prepareInstalledHandlerRuntime).not.toHaveBeenCalled();
+      expect(invokeApprovedHandler).not.toHaveBeenCalled();
+    });
+
+  it('translates an explicit wire name and refuses duplicate manifest mappings', async () => {
+    const f = productionFixture();
+    Object.assign(f.loaded.toolDefinitions[0]!, { expose: { mcp: { name: 'fixture.read' } } });
+    f.loaded.toolDefinitions[0]!.name = 'local';
+    await executeInstalledPluginHandler(f.request);
+    expect(invokeApprovedHandler).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'local' }));
+    vi.mocked(invokeApprovedHandler).mockClear();
+    f.loaded.toolDefinitions.push({ ...f.loaded.toolDefinitions[0]! });
+    await expect(executeInstalledPluginHandler(f.request)).rejects.toThrow(/tool mapping/);
+    expect(invokeApprovedHandler).not.toHaveBeenCalled();
+  });
+
+  it('re-admits each invocation and never executes after receipt rejection', async () => {
+    const f = productionFixture();
+    await executeInstalledPluginHandler(f.request);
+    vi.mocked(invokeApprovedHandler).mockClear();
+    vi.mocked(prepareInstalledHandlerRuntime).mockRejectedValue(new Error('revoked receipt'));
+    await expect(executeInstalledPluginHandler(f.request)).rejects.toThrow(/revoked/);
+    expect(prepareInstalledHandlerRuntime).toHaveBeenCalledTimes(2);
+    expect(invokeApprovedHandler).not.toHaveBeenCalled();
+  });
+
+  it('checks the live invocation before and after scoped secret IO and exposes no spawn', async () => {
+    const f = productionFixture();
+    let current = true;
+    const capability = 'secrets:read:ALLOWED';
+    const scope = createInvocationCapabilityContext({ pluginName: 'fixture', capabilities: [capability],
+      granted: [capability], principal: { kind: 'system', authMethod: 'bearer-token', trust: 'verified', slug: 'agent',
+        workspaceId: 'workspace', capabilities: new Set([capability]), allowedTools: new Set(['fixture.read']) },
+      invocationId: 'call', declaration: { name: 'fixture.read', capabilities: [capability] },
+      approvals: [capability], expiresAt: Date.now() + 60_000, isActive: () => current });
+    vi.mocked(invokeApprovedHandler).mockImplementation(async options => {
+      expect(await options.effect!('sdk.secret', { name: 'ALLOWED' }, options.signal)).toBe('checked-secret');
+      await expect(Promise.resolve().then(() => options.effect!('sdk.secret', { name: 'OTHER' }, options.signal))).rejects.toThrow(/capability/);
+      await expect(Promise.resolve().then(() => options.effect!('sdk.spawn', {}, options.signal))).rejects.toThrow(/not exposed/);
+      f.secret.mockImplementationOnce(async () => { current = false; return 'must-not-return'; });
+      await expect(Promise.resolve().then(() => options.effect!('sdk.secret', { name: 'ALLOWED' }, options.signal))).rejects.toThrow(/capability/);
+      return { content: [] };
+    });
+    await runWithInvocationCapabilities(scope, () => executeInstalledPluginHandler(f.request));
+    expect(f.secret).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('confined plugin installation binding', () => {
   it('passes only invocation data and explicit checked services to the supervisor', async () => {
@@ -80,6 +205,45 @@ describe('confined plugin installation binding', () => {
 });
 
 describe('installed confined plugin binding', () => {
+  it.each(['sdk.context', 'sdk.progress', 'sdk.emit', 'sdk.log'])(
+    'checks the live host lease before the %s callback', async operation => {
+      const f = fixture(); let active = true;
+      const callback = vi.fn();
+      Object.assign(f.request.ctx, { progress: callback, emit: callback, log: callback });
+      const invoke = createConfinedPluginInvoker({ ...f.options, assertActive: () => {
+        if (!active) throw new Error('revoked lease');
+      } });
+      vi.mocked(invokeApprovedHandler).mockImplementation(async options => {
+        active = false;
+        await expect(Promise.resolve().then(() => options.effect!(operation, {}, options.signal))).rejects.toThrow(/revoked lease/);
+        return { content: [] };
+      });
+      await expect(invoke(f.request)).rejects.toThrow(/revoked lease/);
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+  it('checks the host lease after asynchronous effect completion', async () => {
+    const f = fixture(); let active = true;
+    const invoke = createConfinedPluginInvoker({ ...f.options,
+      assertActive: () => { if (!active) throw new Error('revoked lease'); },
+      effects: () => ({ 'checked.read': async () => { active = false; return 'must-not-return'; } }) });
+    vi.mocked(invokeApprovedHandler).mockImplementation(async options => {
+      await expect(Promise.resolve().then(() => options.effect!('checked.read', {}, options.signal))).rejects.toThrow(/revoked lease/);
+      return { content: [] };
+    });
+    await expect(invoke(f.request)).rejects.toThrow(/revoked lease/);
+  });
+
+  it('rejects guest output settled after revocation without any callback', async () => {
+    const f = fixture(); let active = true;
+    const invoke = createConfinedPluginInvoker({ ...f.options,
+      assertActive: () => { if (!active) throw new Error('revoked lease'); } });
+    vi.mocked(invokeApprovedHandler).mockImplementation(async () => {
+      active = false; return { content: [{ type: 'text', text: 'must-not-return' }] };
+    });
+    await expect(invoke(f.request)).rejects.toThrow(/revoked lease/);
+  });
+
   const handler = () => ({ path: '/handler/entry.cjs', contents: Buffer.from('untrusted guest'),
     sha256: 'b'.repeat(64), executable: false });
 

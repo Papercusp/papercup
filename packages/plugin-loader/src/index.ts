@@ -251,7 +251,8 @@ async function readManifest(dir: string): Promise<ManifestShape | { __error: str
   }
 }
 
-async function locateEntry(dir: string): Promise<string | null> {
+/** Host entry selection shared by discovery and confined installed dispatch. */
+export async function locatePluginEntry(dir: string): Promise<string | null> {
   // Prefer compiled .js over source .ts. Reason: bundled runtimes (Next.js
   // Turbopack, webpack standalone) can dynamic-import .js but not .ts at
   // runtime. When both exist, .js is the runtime-canonical artifact and
@@ -625,7 +626,7 @@ async function runtimeDispatch(
     (manifest as { kind?: string }).kind !== 'pack' &&
     !(manifest.tools && manifest.tools.length > 0) &&
     !(manifest.ui ?? []).some((u) => u.type === 'react') &&
-    !(await locateEntry(path))
+    !(await locatePluginEntry(path))
   ) {
     return { plugin: makeManifestOnlyPluginShim(manifest), manifest, path, source };
   }
@@ -678,7 +679,7 @@ function createCorePluginLoader(metadataOnly = false) {
     routines: manifest.routines ?? [], reactions: manifest.reactions ?? [],
   })) as Record<string, unknown>,
   admitManifest: cupboardDistributionExclusion,
-  locateEntry,
+  locateEntry: locatePluginEntry,
   importEntry: importPluginEntry,
   runtimeDispatch: async (manifest, path, source) => {
     if (!metadataOnly || (manifest.runtime && manifest.runtime.kind !== 'js')) {

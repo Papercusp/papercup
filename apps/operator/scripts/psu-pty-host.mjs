@@ -9168,7 +9168,7 @@ export function renderTerminalScreen(output, { rows = 24, cols = 80 } = {}) {
 function codexConfiguredComposerObserved(raw, screen) {
   if (!/(?:\x1b\[2J|\x1b\[(?:1;1)?H\x1b\[0?J)/.test(raw)) return false;
   const footerAt = screen.findLastIndex(line => line.trim());
-  if (footerAt < 0 || !/^\s{2,}(?!loading\b)[a-z0-9][a-z0-9._:/-]*\s+(?:default|none|minimal|low|medium|high|xhigh|max)\s+·\s+(?:\/|~\/|[a-z]:[\\/])/i.test(screen[footerAt])) return false;
+  if (footerAt < 0 || !/^\s{2,}(?!loading\b)[a-z0-9][a-z0-9._:/-]*\s+(?:default|none|minimal|low|medium|high|xhigh|max)\s+·\s+(?:\/|~(?:\/|(?=\s|$))|[a-z]:[\\/])/i.test(screen[footerAt])) return false;
   const composer = screen.slice(0, footerAt).findLast(line => line.trim());
   return /^\s*›(?:\s+Ask Codex to do anything)?\s*$/.test(composer ?? '');
 }

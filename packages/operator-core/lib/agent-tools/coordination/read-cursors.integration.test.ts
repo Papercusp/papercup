@@ -37,6 +37,7 @@ import { randomUUID } from 'node:crypto';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { createOrgTestDb } from '../../../test/_org-test-db';
 import { getOrgPg } from '@papercusp/db-org';
+import { factCellKey, readFactBodyCursor, stageFactBodyDelivery, type FactBodyCell } from '../../agent-facts/cells';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache getOrgPg() memoizes (not re-exported from the index) — same pattern as hive-git-mode-gc-arming.integration.test.ts
 import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/src/connection';
 import {
@@ -188,6 +189,31 @@ describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real
       const surface = 'turn-start-orientation';
       await stage(owner, surface, { gen: 1 }, { deliveryToken: 'tok-1' });
       expect(await ackAndRead(owner, surface)).toEqual({ committed: { gen: 1 }, baseline: false });
+    });
+  });
+
+  it('persists exact fact-body floors across a fresh store and rejects unconfirmed replacement', async () => {
+    const owner = `su-${randomUUID().slice(0, 8)}`;
+    const f = (key: string, cellVersion: string): FactBodyCell => ({
+      scope: 'workspace', scopeRef: null, key, body: `body:${key}`, cellVersion,
+    });
+    const row = (cell: FactBodyCell) => ({ scope: cell.scope, ref: cell.scopeRef, body: cell.body });
+    const baseline = f('baseline', 'hlc-1');
+    await stageFactBodyDelivery(owner, [baseline], [row(baseline)], 'baseline');
+    await readFactBodyCursor(owner, 'baseline');
+    const a = f('a', 'hlc-9'), tied = f('tied', 'hlc-9'), older = f('older', 'hlc-5');
+    await stageFactBodyDelivery(owner, [a, tied, older], [row(a)], 'subset');
+    resetReadCursorStore(); // fresh store instance: only PostgreSQL carries the offer
+    const proven = await readFactBodyCursor(owner, 'subset');
+    expect(proven?.versions).toEqual({ [factCellKey(baseline)]: 'hlc-1', [factCellKey(a)]: 'hlc-9' });
+    await stageFactBodyDelivery(owner, [tied], [row(tied)], 'replaced');
+    await stageFactBodyDelivery(owner, [older], [row(older)], 'new');
+    resetReadCursorStore();
+    expect(await readFactBodyCursor(owner, 'replaced')).toEqual(proven);
+    await stageFactBodyDelivery(owner, [older], [row(older)], 'retry');
+    resetReadCursorStore();
+    expect((await readFactBodyCursor(owner, 'retry'))?.versions).toEqual({
+      ...proven!.versions, [factCellKey(older)]: 'hlc-5',
     });
   });
 

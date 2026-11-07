@@ -1,5 +1,5 @@
 /**
- * cells.ts — facts as a WATERMARK SURFACE (P-008 (c), D-012, D-077). PURE.
+ * cells.ts — facts as a WATERMARK SURFACE (P-008 (c), D-012, D-077).
  *
  * D-012 rules that cells are a watermark surface, not a new subscription
  * mechanism: the default tier is a fold into `coord:orient`, which already runs
@@ -38,6 +38,80 @@ import type { AgentFact } from './store';
  */
 export const FACTS_CELL_SURFACE = 'facts';
 
+/** Body receipts extend the existing read-cursor store, never the legacy maximum
+ * watermark. A subset can prove one scoped cell without proving its siblings. */
+export type FactBodyCursor = { schemaVersion: 1; versions: Record<string, string> };
+export type FactBodyCell = Pick<AgentFact, 'scope' | 'scopeRef' | 'key' | 'body' | 'cellVersion'>;
+export type DeliveredFactBody = { scope: string; ref: string | null; body: string };
+
+export function factCellKey(f: Pick<FactBodyCell, 'scope' | 'scopeRef' | 'key'>): string {
+  return JSON.stringify([f.scope, f.scopeRef ?? '', f.key]);
+}
+
+function factBodyCursor(value: unknown): FactBodyCursor | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Partial<FactBodyCursor>;
+  if (row.schemaVersion !== 1 || !row.versions || typeof row.versions !== 'object' || Array.isArray(row.versions)) return null;
+  if (!Object.values(row.versions).every(v => typeof v === 'string' && v.length > 0)) return null;
+  return { schemaVersion: 1, versions: { ...row.versions } };
+}
+
+/** Trusted host seam, not a model/tool argument. Omission is explicitly NO
+ * proof; the generic store's legacy ACK-on-arrival must never consume facts. */
+export async function readFactBodyCursor(ownerId: string, confirmedToken: string | null = null): Promise<FactBodyCursor | null> {
+  const { ackAndRead } = await import('../agent-tools/coordination/read-cursors');
+  const ack = await ackAndRead(ownerId, FACTS_CELL_SURFACE, { confirmedToken });
+  return factBodyCursor(ack.committed);
+}
+
+/** Stage only complete bodies present in the host's FINAL emitted view. Call
+ * this from a host that can later prove emission with the same token. Building
+ * an orient result, returning it over MCP, and rendering fact KEYS cannot call
+ * this seam as if they proved body delivery. Unsupported hosts keep replaying.
+ *
+ * Match a multiset of exact scoped bodies: shortened/key-only rows match none.
+ * If identical bodies hide distinct keys, consume that group only when every
+ * member is present; guessing which omitted key arrived would invent proof. */
+export async function stageFactBodyDelivery(
+  ownerId: string,
+  offered: readonly FactBodyCell[],
+  delivered: readonly DeliveredFactBody[],
+  deliveryToken: string,
+): Promise<number> {
+  if (!deliveryToken.trim()) throw new Error('Fact body delivery requires a host emission token');
+  const { stage } = await import('../agent-tools/coordination/read-cursors');
+  // Discard an older unconfirmed offer, retaining ONLY committed per-cell floors.
+  const committed = await readFactBodyCursor(ownerId);
+  const versions = { ...(committed?.versions ?? {}) };
+  const bodyKey = (scope: string, ref: string | null, body: string) => JSON.stringify([scope, ref ?? '', body]);
+  const counts = new Map<string, number>();
+  for (const row of delivered) {
+    if (!row || typeof row.body !== 'string' || typeof row.scope !== 'string') continue;
+    const key = bodyKey(row.scope, row.ref, row.body);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const groups = new Map<string, FactBodyCell[]>();
+  for (const cell of offered) {
+    const key = bodyKey(cell.scope, cell.scopeRef, cell.body);
+    const group = groups.get(key) ?? [];
+    group.push(cell);
+    groups.set(key, group);
+  }
+  let matched = 0;
+  for (const [key, cells] of groups) {
+    if ((counts.get(key) ?? 0) < cells.length) continue;
+    for (const cell of cells) {
+      if (!cell.cellVersion) continue;
+      const identity = factCellKey(cell);
+      versions[identity] = versions[identity] && versions[identity] > cell.cellVersion
+        ? versions[identity] : cell.cellVersion;
+      matched++;
+    }
+  }
+  if (matched > 0) await stage(ownerId, FACTS_CELL_SURFACE, { schemaVersion: 1, versions }, { deliveryToken });
+  return matched;
+}
+
 export interface FactsCellDelta {
   /**
    * Facts whose cell version is strictly newer than the reader's cursor —
@@ -69,9 +143,10 @@ export interface FactsCellDelta {
  * compare, and inventing one would be the version-counter D-012 forbids. Such rows
  * self-heal the first time they are written.
  */
-export function factsCellDelta(facts: readonly AgentFact[], cursor: string | undefined | null): FactsCellDelta {
-  const from = (cursor ?? '').trim();
-  const bootstrap = from === '';
+export function factsCellDelta(facts: readonly AgentFact[], cursor: string | FactBodyCursor | undefined | null): FactsCellDelta {
+  const proven = typeof cursor === 'object' && cursor !== null ? cursor : null;
+  const from = typeof cursor === 'string' ? cursor.trim() : '';
+  const bootstrap = proven ? Object.keys(proven.versions).length === 0 : from === '';
 
   let max = from;
   const changed: AgentFact[] = [];
@@ -79,7 +154,7 @@ export function factsCellDelta(facts: readonly AgentFact[], cursor: string | und
     const v = f.cellVersion;
     if (typeof v !== 'string' || v === '') continue; // unversioned → not comparable
     if (v > max) max = v;
-    if (!bootstrap && v > from) changed.push(f);
+    if (!bootstrap && v > (proven ? (proven.versions[factCellKey(f)] ?? '') : from)) changed.push(f);
   }
 
   return { changed, nextCursor: max, bootstrap };

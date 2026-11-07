@@ -3,9 +3,10 @@
  *
  * Run: npm run test:file -- packages/operator-core/lib/agent-facts/cells.test.ts
  */
-import { describe, expect, it } from 'vitest';
-import { FACTS_CELL_SURFACE, factsCellDelta } from './cells';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { FACTS_CELL_SURFACE, factsCellDelta, factCellKey, readFactBodyCursor, stageFactBodyDelivery } from './cells';
 import type { AgentFact } from './store';
+import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 
 /** A minimal fact carrying just the fields this pure delta reads. */
 function fact(key: string, cellVersion: string | null): AgentFact {
@@ -112,5 +113,78 @@ describe('factsCellDelta — ordering', () => {
     const tie2 = '001785153420000:00001:2764ac50e15ec6af';
     expect(factsCellDelta([fact('later', tie2)], tie1).changed.map((f) => f.key)).toEqual(['later']);
     expect(factsCellDelta([fact('earlier', tie1)], tie2).changed).toEqual([]);
+  });
+});
+
+describe('fact body delivery proof', () => {
+  const owner = 'fact-reader';
+  const body = (f: AgentFact) => ({ scope: f.scope, ref: f.scopeRef, body: f.body });
+  beforeEach(() => configureReadCursorStore(new InMemoryReadCursorStore()));
+  afterEach(() => resetReadCursorStore());
+
+  async function baseline() {
+    const f = fact('baseline', V1);
+    expect(await stageFactBodyDelivery(owner, [f], [body(f)], 'baseline')).toBe(1);
+    return (await readFactBodyCursor(owner, 'baseline'))!;
+  }
+
+  it('keeps bootstrap silent until the first body receipt is confirmed', async () => {
+    const f = fact('a', V1);
+    await stageFactBodyDelivery(owner, [f], [body(f)], 'offer');
+    expect(await readFactBodyCursor(owner)).toBeNull();
+    expect(factsCellDelta([f], null).changed).toEqual([]);
+    await stageFactBodyDelivery(owner, [f], [body(f)], 'retry');
+    expect((await readFactBodyCursor(owner, 'retry'))?.versions[factCellKey(f)]).toBe(V1);
+  });
+
+  it.each([null, 'wrong', 'baseline'])('retains the committed floor for missing/wrong/old proof %s', async token => {
+    const previous = await baseline();
+    const f = fact('a', V3);
+    await stageFactBodyDelivery(owner, [f], [body(f)], 'new');
+    expect(await readFactBodyCursor(owner, token)).toEqual(previous);
+    expect(factsCellDelta([f], previous).changed).toEqual([f]);
+  });
+
+  it('confirms only the exact subset, retaining same-HLC and older omitted siblings', async () => {
+    await baseline();
+    const delivered = fact('delivered', V3), tied = fact('tied', V3), older = fact('older', V2);
+    const all = [delivered, tied, older];
+    expect(await stageFactBodyDelivery(owner, all, [body(delivered)], 'subset')).toBe(1);
+    const cursor = await readFactBodyCursor(owner, 'subset');
+    expect(factsCellDelta(all, cursor).changed).toEqual([tied, older]);
+  });
+
+  it.each(['dropped', 'shortened', 'key-only', 'budget-omitted'])(
+    'does not stage a body from %s output', async mode => {
+      const previous = await baseline();
+      const f = fact('a', V3);
+      const rows = mode === 'shortened' ? [{ ...body(f), body: 'body' }]
+        : mode === 'key-only' ? [{ scope: f.scope, ref: f.scopeRef, key: f.key }]
+          : [];
+      expect(await stageFactBodyDelivery(owner, [f], rows as ReturnType<typeof body>[], 'absent')).toBe(0);
+      expect(await readFactBodyCursor(owner, 'absent')).toEqual(previous);
+    },
+  );
+
+  it('replacing pending retains committed cells and rejects the old offer token', async () => {
+    const initial = await baseline();
+    const a = fact('a', V2), b = fact('b', V3);
+    await stageFactBodyDelivery(owner, [a], [body(a)], 'old');
+    await stageFactBodyDelivery(owner, [b], [body(b)], 'new');
+    expect(await readFactBodyCursor(owner, 'old')).toEqual(initial);
+    await stageFactBodyDelivery(owner, [b], [body(b)], 'retry');
+    const cursor = await readFactBodyCursor(owner, 'retry');
+    expect(cursor?.versions).toEqual({ ...initial.versions, [factCellKey(b)]: V3 });
+    expect(factsCellDelta([a, b], cursor).changed).toEqual([a]);
+  });
+
+  it('does not confuse equal keys across scopes or infer a key from an ambiguous body', async () => {
+    await baseline();
+    const a = fact('same', V3), scoped = { ...a, scope: 'owner' as const, scopeRef: owner };
+    await stageFactBodyDelivery(owner, [a, scoped], [body(a)], 'scoped');
+    expect(factsCellDelta([a, scoped], await readFactBodyCursor(owner, 'scoped')).changed).toEqual([scoped]);
+    const twin = { ...a, key: 'different' };
+    expect(await stageFactBodyDelivery(owner, [a, twin], [body(a)], 'ambiguous')).toBe(0);
+    expect(await stageFactBodyDelivery(owner, [a, twin], [body(a), body(twin)], 'both')).toBe(2);
   });
 });

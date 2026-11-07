@@ -90,6 +90,54 @@ pub struct AccountRequest {
     pub account_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalAction { Pause, Resume, Start, Reopen, Achieve, Kill }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GoalRequest {
+    pub environment: crate::client::BackendIdentity,
+    pub goal_id: String,
+    pub action: GoalAction,
+    pub expected_status: String,
+    pub expected_effective_status: String,
+    pub expected_holder_liveness: String,
+    pub confirmed: bool,
+}
+
+impl GoalRequest {
+    /// Revalidate the displayed selection against the canonical detail before
+    /// choosing the same status/activation route used by GoalStatusControl.
+    pub fn write(&self, detail: &Value) -> Result<(&'static str, Value, &'static str)> {
+        let goal = &detail["goal"];
+        anyhow::ensure!(self.confirmed, "confirm the goal action first");
+        anyhow::ensure!(!self.goal_id.trim().is_empty() && goal["id"].as_str() == Some(self.goal_id.as_str()),
+            "selected goal is unavailable or changed");
+        let status = goal["status"].as_str().context("goal status is unavailable")?;
+        let effective = detail["effectiveStatus"].as_str().context("goal effective status is unavailable")?;
+        let liveness = detail["holderLiveness"].as_str().context("goal holder liveness is unavailable")?;
+        anyhow::ensure!(status == self.expected_status && effective == self.expected_effective_status
+            && liveness == self.expected_holder_liveness, "selected goal changed; refresh before applying a control");
+        anyhow::ensure!(matches!(liveness, "held" | "unheld" | "lost"), "goal holder liveness is unknown");
+        let holderless = effective == "dormant" || matches!(liveness, "unheld" | "lost");
+        let (start, target, allowed) = match self.action {
+            GoalAction::Pause => (false, "paused", status == "active" && !holderless),
+            GoalAction::Resume => (false, "active", status == "paused"),
+            GoalAction::Start => (true, "active", status == "active" && holderless),
+            GoalAction::Reopen => (true, "active", matches!(status, "achieved" | "killed")),
+            GoalAction::Achieve => (false, "achieved", matches!(status, "active" | "paused")),
+            GoalAction::Kill => (false, "killed", matches!(status, "active" | "paused")),
+        };
+        anyhow::ensure!(allowed, "goal action is unavailable in the current state");
+        Ok(if start {
+            ("/api/admin/goals/start-existing", json!({"id":self.goal_id}), target)
+        } else {
+            ("/api/admin/goals/update", json!({"id":self.goal_id,"status":target}), target)
+        })
+    }
+}
+
 impl AccountRequest {
     // Patch only the selected axis. The existing server owns validation,
     // persistence and Auto's preservation of the independent default.
@@ -149,9 +197,62 @@ pub async fn run_account() -> Result<()> {
     }
 }
 
+pub async fn run_goal() -> Result<()> {
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let request: GoalRequest = bounded_request(std::io::stdin().lock())?;
+        let client = crate::client::OperatorClient::from_discovery().await?;
+        client.native_goal_action(&request).await
+    }).await.context("native goal action timed out; refresh to verify server state")?;
+    match result {
+        Ok(payload) => { println!("{}", payload); Ok(()) }
+        Err(error) => { println!("{}", json!({"ok":false,"error":format!("{error:#}")})); Err(error) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_goal_controls_validate_fresh_selection_confirmation_and_route() {
+        let environment = json!({"schemaVersion":1,"endpoint":"http://selected:3170","selectionSource":"test","transport":"http",
+            "workspaceId":"selected","store":{"id":"store","target":"test","source":"test"},
+            "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:selected","route":"test"},"capabilities":{}});
+        for (action, status, effective, holder, route, target) in [
+            ("pause", "active", "active", "held", "update", "paused"),
+            ("resume", "paused", "paused", "unheld", "update", "active"),
+            ("start", "active", "dormant", "lost", "start-existing", "active"),
+            ("reopen", "achieved", "achieved", "unheld", "start-existing", "active"),
+            ("reopen", "killed", "killed", "unheld", "start-existing", "active"),
+            ("achieve", "paused", "paused", "unheld", "update", "achieved"),
+            ("kill", "active", "active", "held", "update", "killed"),
+        ] {
+            let value = json!({"environment":environment,"goalId":"literal +/=& λ","action":action,
+                "expectedStatus":status,"expectedEffectiveStatus":effective,"expectedHolderLiveness":holder,"confirmed":true});
+            let request: GoalRequest = serde_json::from_value(value.clone()).unwrap();
+            let detail = json!({"goal":{"id":"literal +/=& λ","status":status},"effectiveStatus":effective,"holderLiveness":holder});
+            let (path, body, next) = request.write(&detail).unwrap();
+            assert_eq!(path, format!("/api/admin/goals/{route}"));
+            assert_eq!(body["id"], "literal +/=& λ"); assert_eq!(next, target);
+            assert_eq!(body, if route == "update" { json!({"id":"literal +/=& λ","status":target}) }
+                else { json!({"id":"literal +/=& λ"}) });
+            for field in ["goal", "effectiveStatus", "holderLiveness"] {
+                let mut changed = detail.clone(); changed[field] = Value::Null;
+                assert!(request.write(&changed).is_err(), "accepted changed {field}");
+            }
+            let mut unconfirmed = value; unconfirmed["confirmed"] = json!(false);
+            assert!(serde_json::from_value::<GoalRequest>(unconfirmed).unwrap().write(&detail).is_err());
+        }
+        for (action, status, effective, holder) in [
+            ("pause","active","dormant","lost"), ("resume","active","active","held"),
+            ("start","active","active","held"), ("reopen","paused","paused","unheld"),
+            ("kill","killed","killed","unheld"), ("pause","active","active","unknown"),
+        ] {
+            let request: GoalRequest = serde_json::from_value(json!({"environment":environment,"goalId":"same","action":action,
+                "expectedStatus":status,"expectedEffectiveStatus":effective,"expectedHolderLiveness":holder,"confirmed":true})).unwrap();
+            assert!(request.write(&json!({"goal":{"id":"same","status":status},"effectiveStatus":effective,"holderLiveness":holder})).is_err());
+        }
+    }
 
     #[test]
     fn native_account_controls_patch_only_one_axis_and_preserve_exact_identity() {

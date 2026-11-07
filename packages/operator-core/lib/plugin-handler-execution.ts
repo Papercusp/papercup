@@ -2,9 +2,65 @@
  * No registry/store: the packaging owner supplies the exact approved runtime.
  */
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { locatePluginEntry, requireCapability } from '@papercusp/plugin-loader';
 import { invokeApprovedHandler, prepareInstalledHandlerRuntime, snapshotInstalledHandlerFiles,
   type HandlerRuntimeFile, type PreparedHandlerRuntime } from '@papercusp/plugin-loader/daemon';
 import type { PluginHandlerExecutor } from './plugin-invocation-policy';
+import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
+
+/** Default production route, called INSIDE the host invocation policy lease.
+ * Reuse discovery's exact installation and entry selection, and the existing
+ * package layout. Request arguments cannot choose runtime paths or approvals.
+ * Admission and current protected trust run again on each invocation.
+ */
+export const executeInstalledPluginHandler: PluginHandlerExecutor = async (request, assertActive) => {
+  if (typeof assertActive !== 'function') throw new Error('host invocation lease required');
+  assertActive();
+  const installation = request.tool.pluginInstallation && { ...request.tool.pluginInstallation };
+  const pluginName = request.tool.pluginName, toolName = request.toolName;
+  const harnessSlug = request.ctx.harnessSlug;
+  if (!installation || !harnessSlug || request.ctx.signal.aborted) throw new Error('confined installation required');
+  const { getPluginHost } = await import('./plugin-host-runtime');
+  const matches = (await getPluginHost()).loaded.filter(lp => lp.plugin.name === pluginName
+    && lp.plugin.version === installation.version && lp.path === installation.path && lp.source === installation.source);
+  if (matches.length !== 1 || (matches[0]!.runtime?.kind ?? 'js') !== 'js') {
+    throw new Error('exact installed JavaScript handler required');
+  }
+  const loaded = matches[0]!;
+  const shortName = pluginName.replace(/^@[^/]+\//, '');
+  const definitions = (loaded.toolDefinitions ?? []).filter(def =>
+    (def.expose?.mcp?.name ?? `${shortName}.${def.name}`) === toolName);
+  if (definitions.length !== 1) throw new Error('exact installed tool mapping required');
+  const localName = definitions[0]!.name;
+  const capabilities = [...loaded.plugin.capabilities];
+  const entry = await locatePluginEntry(installation.path);
+  if (!entry || request.ctx.signal.aborted) throw new Error('installed handler entry unavailable');
+  const entryPoint = relative(installation.path, entry);
+  const runtimeDirectory = resolve(resolveOperatorAppRootFromModuleDir(dirname(fileURLToPath(import.meta.url))),
+    '..', '..', 'handler-runtime');
+  const { makeSecretResolver } = await import('./plugin-spawn-impl');
+  const secret = makeSecretResolver({ harnessSlug, pluginName });
+  const execute = await createInstalledConfinedPluginInvoker({ runtimeDirectory, pluginName, installation,
+    entryPoint, assertActive, tools: { [toolName]: localName }, effects: () => ({
+      'sdk.secret': async input => {
+        const value = input as { name?: unknown } | null;
+        if (!value || typeof value.name !== 'string' || !value.name.length || value.name.includes('*')) {
+          throw new Error('invalid SDK secret name');
+        }
+        const capability = `secrets:read:${value.name}`;
+        // This check inherits the live invocation's manifest, declaration, installation,
+        // caller, approval and parent attenuation. No host env resolver alone.
+        requireCapability({ pluginName, capabilities }, capability);
+        const result = await secret(value.name);
+        // Async storage reads must not return a secret after revocation.
+        requireCapability({ pluginName, capabilities }, capability);
+        return result;
+      },
+    }) });
+  return execute(request);
+};
 
 export function createConfinedPluginInvoker(options: {
   runtime: PreparedHandlerRuntime;
@@ -12,11 +68,13 @@ export function createConfinedPluginInvoker(options: {
   installation: NonNullable<Parameters<PluginHandlerExecutor>[0]['tool']['pluginInstallation']>;
   /** Wire-name -> manifest-local SDK handler. Arrays retain the raw guest API. */
   tools: readonly string[] | Readonly<Record<string, string>>;
+  /** Host policy closure, never a serialized guest/caller claim. */
+  assertActive?: () => void;
   /** Narrow capability-checked service closures built from the HOST request. */
   effects?: (request: Parameters<PluginHandlerExecutor>[0]) => Readonly<Record<string,
     (input: unknown, signal: AbortSignal) => unknown | Promise<unknown>>>;
 }): PluginHandlerExecutor {
-  const { runtime, pluginName, effects } = options;
+  const { runtime, pluginName, effects, assertActive } = options;
   const installation = Object.freeze({ ...options.installation });
   const tools = new Map(Array.isArray(options.tools) ? options.tools.map(name => [name, name] as const)
     : Object.entries(options.tools));
@@ -24,6 +82,7 @@ export function createConfinedPluginInvoker(options: {
     throw new Error('invalid confined tool mapping');
   }
   return async request => {
+    assertActive?.();
     const selected = request.tool.pluginInstallation;
     if (request.tool.pluginName !== pluginName || !selected || selected.version !== installation.version
       || selected.path !== installation.path || selected.source !== installation.source || !tools.has(request.toolName)) {
@@ -57,10 +116,15 @@ export function createConfinedPluginInvoker(options: {
       },
     });
     const result = CallToolResultSchema.parse(await invokeApprovedHandler({ runtime, toolName: tools.get(request.toolName)!, input: request.input,
-      signal: request.ctx.signal, effect: (operation, input, signal) => {
+      signal: request.ctx.signal, effect: async (operation, input, signal) => {
+        assertActive?.();
         if (!Object.hasOwn(services, operation) || typeof services[operation] !== 'function') throw new Error('handler service is not exposed');
-        return services[operation]!(input, signal);
+        const result = await services[operation]!(input, signal);
+        assertActive?.();
+        return result;
       } }));
+    // Do not release guest output under an ended invocation lease.
+    assertActive?.();
     // The tooldef wire supports this MCP content subset. Reject other kinds
     // rather than asserting that an arbitrary guest reply is a tool result.
     if (result.content.some(block => !['text', 'image', 'resource'].includes(block.type))) throw new Error('unsupported handler result content');
@@ -80,7 +144,8 @@ export async function createInstalledConfinedPluginInvoker(options:
     | { entryPoint: string; handlerFiles?: never })): Promise<PluginHandlerExecutor> {
   // Pin BEFORE the lazy compiler import or signature IO: a caller mutation
   // during admission must not bind an approved runtime to another installation.
-  const { runtimeDirectory, pluginName, effects } = options;
+  const { runtimeDirectory, pluginName, effects, assertActive } = options;
+  assertActive?.();
   const installation = { ...options.installation };
   const tools = Array.isArray(options.tools) ? [...options.tools] : { ...options.tools };
   const supplied = options.handlerFiles ?? snapshotInstalledHandlerFiles(installation.path, options.entryPoint!,
@@ -99,5 +164,6 @@ export async function createInstalledConfinedPluginInvoker(options:
     return { path: file.path, sha256: file.sha256, executable: file.executable, contents: Buffer.from(file.contents) };
   });
   const runtime = await prepareInstalledHandlerRuntime(runtimeDirectory, handlerFiles);
-  return createConfinedPluginInvoker({ runtime, pluginName, installation, tools, effects });
+  assertActive?.();
+  return createConfinedPluginInvoker({ runtime, pluginName, installation, tools, effects, assertActive });
 }

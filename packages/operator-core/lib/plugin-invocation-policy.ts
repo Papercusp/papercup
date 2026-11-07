@@ -13,7 +13,8 @@ import type { getGrantsForPluginInHarness } from './plugin-grants';
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
 type Installation = NonNullable<Request['tool']['pluginInstallation']>;
 /** Trusted host route only. The in-process fallback is deliberately absent. */
-export type PluginHandlerExecutor = (request: Omit<Request, 'invoke'>) => ReturnType<Request['invoke']>;
+export type PluginHandlerExecutor = (request: Omit<Request, 'invoke'>,
+  assertActive?: () => void) => ReturnType<Request['invoke']>;
 
 export interface HostPluginInvocationPolicy extends PolicyDecisionPoint {
   /** Fail closed unless this EXACT decision, installation, grant revision and
@@ -64,6 +65,7 @@ export function createPluginInvocationChokepoint(deps: {
 
     let context: ReturnType<typeof createInvocationCapabilityContext>;
     let active = true;
+    let invocationIsActive = () => false;
     try {
       // Snapshot before awaiting host IO. The PDP sees the exact registered
       // operation and installation; caller-controlled fields remain query data.
@@ -109,13 +111,15 @@ export function createPluginInvocationChokepoint(deps: {
         || approval.expiresAt <= Date.now()) {
         return refuse('A current host approval bound to this exact invocation is required');
       }
-      const isActive = () => active && !request.ctx.signal.aborted && resolvePolicy() === policy && dispatchIdentity() === originalIdentity
+      const expiresAt = approval.expiresAt;
+      const isActive = () => active && Date.now() < expiresAt && !request.ctx.signal.aborted && resolvePolicy() === policy && dispatchIdentity() === originalIdentity
         && policy.isCurrent(structuredClone(query), structuredClone(decision)) === true;
       context = createInvocationCapabilityContext({ pluginName, capabilities: manifest,
         granted: granted as Capability[], principal: boundPrincipal, invocationId: request.callId,
         declaration: declaration as Parameters<typeof createInvocationCapabilityContext>[0]['declaration'],
         approvals: approval.capabilities as Capability[], expiresAt: approval.expiresAt, isActive });
       if (!isActive()) return refuse('The host approval or installation grants are no longer current');
+      invocationIsActive = isActive;
     } catch {
       return refuse('The authoritative installation, grants or resource policy could not be verified');
     }
@@ -123,7 +127,9 @@ export function createPluginInvocationChokepoint(deps: {
     // including across the host's metering/capture hooks and awaits.
     if (!deps.executeHandler) return refuse('An approved confined handler execution route is required');
     const { invoke: _inProcessFallback, ...invocation } = request;
-    try { return await runWithInvocationCapabilities(context, () => deps.executeHandler!(invocation)); }
+    try { return await runWithInvocationCapabilities(context, () => deps.executeHandler!(invocation, () => {
+      if (!invocationIsActive()) throw new Error('plugin invocation lease is no longer current');
+    })); }
     finally { active = false; }
   };
 }

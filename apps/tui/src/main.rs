@@ -107,6 +107,7 @@ Subcommands:
   doctor                     Verify local artifacts, stale panes, and selected operator identity
   native-read                Read a native desktop model (JSON request on stdin)
   native-account             Apply a scoped native account control (JSON on stdin)
+  native-goal                Apply a confirmed native goal control (JSON on stdin)
   self <COMMAND>             Install, update, roll back or uninstall this PUI (`pui self --help`)
   hud                      Open the HUD pane
   chat                       Open the operator chat dock
@@ -465,6 +466,7 @@ async fn main() -> Result<()> {
         Some("doctor") => return run_doctor().await,
         Some("native-read") => return native_panel::run().await,
         Some("native-account") => return native_panel::run_account().await,
+        Some("native-goal") => return native_panel::run_goal().await,
         // The chat-only DOCK (operator chat | brain) — the desktop-docked native
         // terminal surface (native-terminal-desktop P-013 / D-011). Materialises
         // its own 2-pane layout and hands off to zellij.

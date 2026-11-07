@@ -279,6 +279,8 @@ export interface RoutingSnapshot {
     threshold: number;
     evaluated: number;
     unmeasured: number;
+    /** Eligible owners outside the bounded scoring menu, not scorer failures. */
+    budgetLimited?: number;
     limit: number;
     /** Actual execution budget; accepted workers are bounded by their lease. */
     budgetMs?: number;
@@ -1664,12 +1666,14 @@ async function routeConsultCore(
     }
     const coverage = [...subjectCoverageByOwner.values()];
     const unmeasured = coverage.filter(row => row.status === 'unmeasured').length;
+    const budgetLimited = eligible.length - boundedOwners.length;
     base.subjectValidation = {
       ...(subjectRefs.length === 1 ? { subject: subjectRefs[0] } : {}),
       subjects: subjectRefs,
       threshold: SUBJECT_EVIDENCE_MIN_SCORE,
       evaluated: coverage.length - unmeasured,
       unmeasured,
+      budgetLimited,
       limit: SUBJECT_EVIDENCE_OWNER_LIMIT,
       budgetMs: evidenceBudgetMs,
       unresolved: unresolvedSubjectRefs,
@@ -1681,7 +1685,7 @@ async function routeConsultCore(
           ? Math.max(0, Date.now() - (phaseStarts.get(phase.phase) ?? started)) : phase.durationMs })),
       })) } : {}),
     };
-    if (unmeasured) base.degraded = 'evidence-unavailable';
+    if (unmeasured > budgetLimited || failureCounts.size) base.degraded = 'evidence-unavailable';
   }
 
   // 5) Liveness annotation (never a gate here — D-008 §5).
@@ -1761,7 +1765,9 @@ async function routeConsultCore(
   });
 
   return {
-    verdict: qualified.length > 0 ? 'routed' : base.degraded === 'evidence-unavailable' ? 'relevance_unmeasured' : 'no_qualified_responder',
+    verdict: qualified.length > 0 ? 'routed'
+      : base.degraded === 'evidence-unavailable' || (base.subjectValidation?.unmeasured ?? 0) > 0
+        ? 'relevance_unmeasured' : 'no_qualified_responder',
     qualified,
     snapshot: { ...base, candidates: snapshotCandidates },
     queryVec: vec,

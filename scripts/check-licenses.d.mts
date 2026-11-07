@@ -165,7 +165,7 @@ export function collectThirdPartyNotices(root: any, { ecosystems }?: {
     undetermined: string[];
     rowsByEco: {};
 };
-export function main(argv?: string[], root?: string): 0 | 1 | 2;
+export function main(argv?: string[], root?: string): 1 | 0 | 2;
 export const ROOT: string;
 export const EXCEPTIONS_PATH: string;
 export const TIER: Readonly<{
