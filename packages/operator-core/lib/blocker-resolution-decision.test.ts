@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { updateExternalBlockerHistory } from './external-blockers';
 import {
   hasUnresolvedBlockerObligation,
   prepareBlockerDecision,
@@ -211,6 +212,23 @@ describe('blocker resolution decisions', () => {
     expect(hasUnresolvedBlockerObligation({ externalBlockers: [{ status: 'active' }] }, 'open')).toBe(true);
     expect(hasUnresolvedBlockerObligation({}, 'blocked')).toBe(true);
     expect(hasUnresolvedBlockerObligation({}, 'open')).toBe(false);
+  });
+
+  it('retains source provenance on system decisions', () => {
+    const system = 'system:plan-item-lane-sync';
+    const input = { kind: 'event' as const, ref: 'plan-lane:fixture#P-001',
+      summary: 'Canonical prerequisite is blocked', evidence: 'plan:fixture#P-001' };
+    const observed = updateExternalBlockerHistory({}, input, system, '2026-11-07T02:00:00Z');
+    const payload = { externalBlockers: observed.blockers };
+    expect(payload.externalBlockers).toMatchObject([{ createdBy: system, evidence: input.evidence, status: 'active' }]);
+    expect(readBlockerResolution(payload)).toMatchObject({ status: 'unproven' });
+    expect(hasUnresolvedBlockerObligation(payload, 'open')).toBe(true);
+    const cleared = updateExternalBlockerHistory(payload, { ...input, clear: true },
+      'system:dependency-clear', '2026-11-07T02:01:00Z');
+    expect(cleared.blockers).toMatchObject([{ createdBy: system, clearedBy: 'system:dependency-clear',
+      evidence: input.evidence, status: 'cleared' }]);
+    expect(readBlockerResolution({ externalBlockers: cleared.blockers })).toMatchObject({ status: 'unproven' });
+    expect(hasUnresolvedBlockerObligation({ externalBlockers: cleared.blockers }, 'open')).toBe(false);
   });
 
   it('keeps legacy blockers unproven and refuses to erase unreadable history', () => {
