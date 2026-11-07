@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +12,7 @@ import { promisify } from 'node:util';
 import { build } from 'esbuild';
 import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionClass } from './retention-policy';
 import { createRetentionHolderScanner, DISK_RECLAIM_CRONTAB, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
-import { createWorkspaceHostCutRetentionDelegate } from './disk-reclaim';
+import { createWorkspaceHostCutRetentionDelegate, runDiskReclaimOnce } from './disk-reclaim';
 import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
@@ -32,6 +35,69 @@ const policy: RetentionClass[] = [
 ];
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
+
+describe('scoped retention recovery on real files', () => {
+  let fixture: string | undefined;
+  afterEach(async () => {
+    if (fixture) await rm(fixture, { recursive: true, force: true });
+    fixture = undefined;
+    vi.unstubAllEnvs();
+  });
+  async function setup() {
+    fixture = await mkdtemp(join(tmpdir(), 'disk-retention-scope-'));
+    vi.stubEnv('PAPERCUSP_HOME', fixture);
+    const root = join(fixture, 'scratch'); await mkdir(root);
+    const policy: RetentionClass[] = [{ id: 'fixture', title: 'fixture', origin: 'agent', roots: [root],
+      keep: { kind: 'max-age', maxAgeHours: 24 }, enforcers: [{ kind: 'standing-reclaim' }] }];
+    const options = { policy, roots: [{ path: root, classId: 'fixture' }], nowMs: Date.now() + 48 * HOUR,
+      registeredWorkspaces: () => [], expectedDevices: [], sample: async () => [],
+      scanHolders: async () => ({ complete: true, byPath: new Map<string, string[]>() }) };
+    return { root, options };
+  }
+  it('scopes recovery to an enrolled root while retaining pins and unrelated roots', async () => {
+    const { root, options } = await setup();
+    const selected = join(root, 'selected'), unrelated = join(root, 'unrelated');
+    const pinned = join(selected, 'pinned'), expired = join(selected, 'expired');
+    await mkdir(selected); await mkdir(unrelated);
+    await writeFile(pinned, 'open acceptance evidence'); await writeFile(expired, 'disposable');
+    await writeFile(join(unrelated, 'keep'), 'outside this recovery scope');
+    const delegate = vi.fn(async () => ({ ok: true, detail: null }));
+    const receipt = await runDiskReclaimOnce({ ...options, roots: undefined,
+      policy: [{ ...options.policy[0]!, roots: [selected, unrelated] },
+        { id: 'unrelated-owner', title: 'delegated fixture', origin: 'agent', roots: [join(root, 'delegated')],
+          keep: { kind: 'lease', record: 'owning program', graceHours: 1 },
+          enforcers: [{ kind: 'standing-reclaim', via: 'owning-program' }] }], onlyRoots: [selected],
+      readProtection: async () => ({ paths: [pinned] }),
+      delegates: [{ classId: 'unrelated-owner', run: delegate }],
+    });
+    expect(receipt.complete).toBe(true);
+    expect(receipt.roots?.map(value => value.path)).toEqual([selected]);
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: expired, status: 'removed' }));
+    await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(pinned, 'utf8')).toBe('open acceptance evidence');
+    expect(await readFile(join(unrelated, 'keep'), 'utf8')).toBe('outside this recovery scope');
+    expect(delegate).not.toHaveBeenCalled();
+  });
+
+  it.each(['empty', 'unenrolled', 'relative'])('refuses a %s recovery scope before any effects', async kind => {
+    const { root, options } = await setup();
+    const retained = join(root, 'retained'); await writeFile(retained, 'must survive');
+    const delegate = vi.fn(async () => ({ ok: true, detail: null }));
+    const scanHolders = vi.fn(options.scanHolders);
+    const onlyRoots = kind === 'empty' ? [] : kind === 'relative' ? ['scratch'] : [join(fixture!, 'unknown')];
+    const receipt = await runDiskReclaimOnce({ ...options, onlyRoots, scanHolders,
+      delegates: [{ classId: 'unrelated-owner', run: delegate }],
+    });
+    expect(receipt.complete).toBe(false);
+    expect(receipt.errors.join('; ')).toContain('retention scope');
+    expect(receipt.entries).toEqual([]);
+    expect(delegate).not.toHaveBeenCalled();
+    expect(scanHolders).not.toHaveBeenCalled();
+    expect(await readFile(retained, 'utf8')).toBe('must survive');
+  });
+
+});
+
 
 describe('hourly standing reclaim registration', () => {
   it('keeps the shared hourly cadence wired to the DBOS workflow', () => {

@@ -764,9 +764,22 @@ export async function resolveCutRoot(
     return { ok: false, reason: 'root_seed_mode_conflict — reuseSeed and seedless are mutually exclusive' };
   }
   if (selector === undefined) {
-    const implicitDesktopRoot = desktopRoot();
-    const implicitWorktreeRoot = path.dirname(implicitDesktopRoot);
-    if (isAutoManagedCutWorktree(implicitWorktreeRoot)) {
+    const implicitRoot = await measureCutRootPhase(
+      options.onPhase,
+      'implicit-root-resolution',
+      () => {
+        const desktopRootPath = desktopRoot();
+        const worktreeRoot = path.dirname(desktopRootPath);
+        return {
+          desktopRoot: desktopRootPath,
+          worktreeRoot,
+          autoManaged: isAutoManagedCutWorktree(worktreeRoot),
+        };
+      },
+      (result) => ({ autoManagedRoot: Number(result.autoManaged) }),
+    );
+    const { desktopRoot: implicitDesktopRoot, worktreeRoot: implicitWorktreeRoot } = implicitRoot;
+    if (implicitRoot.autoManaged) {
       return {
         ok: false,
         reason:

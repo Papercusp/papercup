@@ -29,6 +29,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, access: vi.fn(actual.access), readFile: vi.fn(actual.readFile), readdir: vi.fn(actual.readdir), rename: vi.fn(actual.rename), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat), writeFile: vi.fn(actual.writeFile) };
 });
+vi.mock('./storage/retention-pins', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./storage/retention-pins')>();
+  return { ...actual, withUnpinnedPath: vi.fn(actual.withUnpinnedPath) };
+});
 import {
   constants as fsConstants,
   mkdtempSync,
@@ -79,7 +83,7 @@ import type { OpenWriterScan } from './native-bg-task-ledger';
 import { parseScratchReference, writeScratchReference } from './scratch-reference';
 import { applyResultDoorAsync, RESULT_DOOR_TOKENS } from './result-door';
 import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
-import { createRetentionPin } from './storage/retention-pins';
+import { createRetentionPin, withUnpinnedPath } from './storage/retention-pins';
 import { spawn } from 'node:child_process';
 import { createTextCollector } from './child-output.js';
 
@@ -312,6 +316,44 @@ describe('scratch retention pins', () => {
     });
     expect((await sweep!).retentionEvictions).toBe(0);
     expect(existsSync(run)).toBe(true);
+  });
+
+  it.each([false, true])('defers busy pin admission without blocking result writes and retries safely (pin=%s)', async (pinBeforeRelease) => {
+    const workspaceId = 'ws-pin-admission';
+    const staleRun = makeRunDir(workspaceId, 'tool', UUID(40), 32, RETENTION_MS + 1000);
+    const writerRun = makeRunDir(workspaceId, 'result-door', UUID(41), 0);
+    await refreshScratchUsage(workspaceId);
+    const writerPath = join(writerRun, 'spill');
+    vi.mocked(withUnpinnedPath).mockClear();
+    vi.mocked(rmAsync).mockClear();
+    let sweep: ReturnType<typeof runScratchGc> | undefined;
+    let writer: Promise<void> | undefined;
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        sweep = runScratchGc({ workspaceRegistry: [workspaceId] });
+        // Observe the actual final pin check, not candidate sizing. Recursive rm
+        // has not begun, so only pin admission can hold up the writer here.
+        await vi.waitFor(() => expect(vi.mocked(withUnpinnedPath).mock.calls.some(([path]) => path === staleRun)).toBe(true));
+        expect(vi.mocked(rmAsync).mock.calls.some(([path]) => String(path) === staleRun)).toBe(false);
+        writer = writeWithScratchQuota({ workspaceId, filePath: writerPath, bytes: 1, mutexTimeoutMs: 500 },
+          () => writeFile(writerPath, Buffer.from('x')));
+        await writer;
+        expect(readFileSync(writerPath, 'utf8')).toBe('x');
+        const deferred = await sweep;
+        expect(deferred.retentionEvictions).toBe(0);
+        expect(deferred.pinAdmissionDeferred).toContainEqual({ workspaceId, path: staleRun, reason: 'retention-mutex-busy' });
+        expect(existsSync(staleRun)).toBe(true);
+        if (pinBeforeRelease) pin(staleRun);
+      });
+    } finally {
+      await Promise.allSettled([...(sweep ? [sweep] : []), ...(writer ? [writer] : [])]);
+    }
+    const retried = await runScratchGc({ workspaceRegistry: [workspaceId] });
+    expect(retried.retentionEvictions).toBe(pinBeforeRelease ? 0 : 1);
+    expect(existsSync(staleRun)).toBe(pinBeforeRelease);
+    expect(readFileSync(writerPath, 'utf8')).toBe('x');
+    await refreshScratchUsage(workspaceId);
+    expect(scratchUsageBytes(workspaceId)).toBe((pinBeforeRelease ? 32 : 0) + markerBytes(workspaceId) + 1);
   });
 });
 

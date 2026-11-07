@@ -42,6 +42,7 @@ import {
   getResourceCatalog,
   dispatch,
   resolveBearer,
+  hasLegacyBootstrapAuthorization,
   getPrompt,
   listResources,
   readResource,
@@ -76,6 +77,7 @@ import { withMcpBuildFence } from '../../../serving-build';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { applyScopedSuperuserTransportBoundary } from './scoped-superuser-transport-boundary';
+import { applySuperuserProjectPolicy } from './superuser-project-policy';
 import {
   dynamicSlashListings,
   resolveSlashToolForPrompt,
@@ -1158,6 +1160,12 @@ async function applyScopedSuperuserTransportClamp(
   if (!boundary.ok) return { ok: false, result: boundary.result };
   const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
 
+  const projectPolicy = await applySuperuserProjectPolicy(toolName, spawnCtx, args, scopedSuperuserClamp);
+  if (projectPolicy) {
+    if (!projectPolicy.ok) return projectPolicy;
+    return { ...projectPolicy, effectiveHarnessSlug: projectPolicy.effectiveHarnessSlug ?? spawnCtx.harnessSlug, scopedSuperuserClamp };
+  }
+
   if (scopedSuperuserClamp) {
     const requestedHarness = typeof args.harness === 'string' ? args.harness.trim() : '';
     if (requestedHarness === 'all' || requestedHarness === '*') {
@@ -1660,6 +1668,11 @@ export async function tryBuildSpawnContext(
   extra: unknown,
   options: { allowStalePlanRecovery?: boolean } = {},
 ): Promise<TrySpawnContextResult> {
+  // Before pinned connection identity, signed spawns, cookies or privileged
+  // transport synthesis. A root bootstrap credential cannot borrow any of them.
+  if (hasLegacyBootstrapAuthorization(headersFromExtra(extra).get('authorization'))) {
+    return { kind: 'failed', reason: 'legacy_bootstrap_purpose_denied' };
+  }
   const result = await tryBuildUnboundSpawnContext(extra, options);
   const bindings = urlFromExtra(extra)?.searchParams.getAll('chat_binding') ?? [];
   if (bindings.length === 0 || result.kind !== 'ok') return result;
@@ -4499,6 +4512,14 @@ export function registerMcpHost(server: McpServer): void {
         ));
         if (!boundary.ok) return boundary.result;
         const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
+        const projectPolicy = await applySuperuserProjectPolicy(
+          toolName, spawnRes.ctx, (args ?? {}) as Record<string, unknown>, scopedSuperuserClamp,
+        );
+        if (projectPolicy) {
+          if (!projectPolicy.ok) return projectPolicy.result;
+          args = projectPolicy.args;
+          effectiveHarnessSlug = projectPolicy.effectiveHarnessSlug ?? spawnRes.ctx.harnessSlug;
+        }
         // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
         // may NOT use the harness:'all'/'*' GLOBAL escape — resolvePlanScope maps it
         // to PAPERCUSP_WORKSPACE_ID/papercup, a cross-scope read. Re-resolve only
@@ -4506,7 +4527,7 @@ export function registerMcpHost(server: McpServer): void {
         // plans:list reads this workspace's plans, and loop:arm resolves this
         // workspace's formal home pot before materializing its concrete routine.
         // Every other tool still rejects the global escape.
-        if (scopedSuperuserClamp) {
+        if (scopedSuperuserClamp && !projectPolicy) {
           const ah =
             args && typeof args === 'object' && typeof (args as Record<string, unknown>).harness === 'string'
               ? ((args as Record<string, unknown>).harness as string).trim()
@@ -4557,7 +4578,7 @@ export function registerMcpHost(server: McpServer): void {
         // hive tier is a FINER same-workspace/different-hive check that composes on top.
         // Fail-OPEN on an infra error / unresolvable-or-ambiguous slug (P-006); fail-CLOSED
         // only on a CONFIRMED foreign resolution.
-        if (scopedSuperuserClamp) {
+        if (scopedSuperuserClamp && !projectPolicy) {
           const ah =
             args && typeof args === 'object' && typeof (args as Record<string, unknown>).harness === 'string'
               ? ((args as Record<string, unknown>).harness as string).trim()
@@ -4601,7 +4622,7 @@ export function registerMcpHost(server: McpServer): void {
         // scopeHive (the hive home AND each member resolve to the home; D-006).
         // The harder half — confining the workspace-global coord/fleet/search/
         // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
-        if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*' &&
+        if (scopedSuperuserClamp && !projectPolicy && spawnRes.ctx.harnessSlug !== '*' &&
             (Object.keys(args ?? {}).length > 0 || toolName.startsWith('cross_harness:'))) {
           const { potHomeSlugForHarness } = await transportScopePhases.track(
             'hiveFederationModule', () => import('../../../hive-federation'),

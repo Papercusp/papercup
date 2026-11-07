@@ -2176,15 +2176,25 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
   it('relocates an unsafe TMPDIR before materialising a committed command', () => {
     const f = fixture('node build.cjs');
     try {
-      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+      const childEnv = commandEnvironment({ TMPDIR: f.root });
+      const safeFallback = dirname(childEnv.PAPERCUSP_FS_MUTEX_LOCK_DIR!);
+      // Exercise the real relocation policy without scanning shared host roots.
+      const preload = 'data:text/javascript,' + encodeURIComponent(
+        `import { PAPERCUSP_TMPDIR_CANDIDATES } from ${JSON.stringify(pathToFileURL(resolve(repoRoot, 'libs/test-config/src/tmpdir-guard.ts')).href)};` +
+        `PAPERCUSP_TMPDIR_CANDIDATES.splice(0, PAPERCUSP_TMPDIR_CANDIDATES.length, ${JSON.stringify(safeFallback)});`,
+      );
+      const result = spawnSync(process.execPath, ['--import', preload, scriptPath, 'lint:probe'], {
         cwd: f.root, encoding: 'utf8', timeout: 30_000,
-        env: currentRunnerEnvironment({ TMPDIR: f.root }),
+        env: childEnv,
       });
       const diagnostic = JSON.stringify({ error: result.error?.message, status: result.status,
         signal: result.signal }) + '\n' + result.stderr?.slice(-1000) + '\n' + result.stdout?.slice(-1000);
       expect(result.status, diagnostic).toBe(0);
       expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
-      expect(result.stdout).not.toContain(`extracted ${f.root}/`);
+      const materialized = result.stdout.match(/materialised committed tree in [^\n]* -> (.+)/)?.[1];
+      expect(materialized).toBeDefined();
+      expect(materialized!.startsWith(safeFallback + sep)).toBe(true);
+      expect(materialized!.startsWith(f.root + sep)).toBe(false);
       expect(gitFixture(f.root, ['status', '--porcelain'])).not.toContain('papercusp-lint-as-committed-');
     } finally {
       rmSync(f.root, { recursive: true, force: true });
@@ -2313,7 +2323,7 @@ const { execFileSync } = require('node:child_process');
       writeFileSync(join(f.root, 'apps/sidecar/probe.cjs'), 'throw new Error("dirty workspace must not run");\n');
       const invoke = (operand: string) => spawnSync(process.execPath,
         [scriptPath, 'lint:probe', '--workspace=apps/sidecar', '--', operand],
-        { cwd: f.root, encoding: 'utf8', timeout: 30_000 });
+        { cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000 });
       const pass = invoke('probe.cjs');
       expect(pass.status, pass.stdout + pass.stderr).toBe(0);
       expect(pass.stdout).toContain('PINNED_WORKSPACE_OK');

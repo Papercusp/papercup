@@ -32,6 +32,18 @@ afterEach(() => {
 });
 
 describe('MCP HTTP lazy startup evidence (EI-27741955198794793)', () => {
+  it.each(['Bearer pcpi.legacy.42.secret', 'bearer pcpi.legacy.deleted', 'Bearer pcpi.legacy.'])
+  ('denies bootstrap purpose before local auth fallback or host load: %s', async authorization => {
+    const { mcpHandler } = await import('./_mcp-handler');
+    const response = await mcpHandler(new Request('http://127.0.0.1/api/mcp?superuser=1', {
+      method: 'POST', headers: { authorization, cookie: 'papercusp_session=valid' }, body: 'invalid',
+    }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'legacy_bootstrap_purpose_denied' });
+    expect(h.load).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
+  });
+
   it('identifies a pending catalogue load and shares startup without exposing request data', async () => {
     const { mcpHandler } = await import('./_mcp-handler');
     expect(h.load).not.toHaveBeenCalled();

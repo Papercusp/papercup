@@ -127,6 +127,9 @@ export interface DiskReclaimReceipt {
 }
 export interface DiskReclaimOptions {
   dryRun?: boolean; home?: string; policy?: readonly RetentionClass[];
+  /** Restrict recovery to exact, freshly enrolled policy roots. Scoped passes
+   * never invoke delegates, whose effects can extend beyond these roots. */
+  onlyRoots?: readonly string[];
   /** Reuse the last durable local receipt to give roots after a blocked census
    * the first turn next time. Selection and all safety evidence remain fresh. */
   previousReceipt?: DiskReclaimReceipt | null;
@@ -1101,10 +1104,21 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       // Pins and native cleanup share this writer lock. Yield only between
       // operations; an admitted holder check/removal must finish before release.
       await refreshProtection();
+      let scopedRoots: Array<{ path: string; classId: string }> | undefined;
+      if (options.onlyRoots !== undefined) {
+        const requested = options.onlyRoots;
+        if (!requested.length || requested.some(path => !path || path !== resolve(path))) {
+          throw new Error('retention scope requires non-empty exact absolute root paths');
+        }
+        const enrolled = options.roots ?? await policyRoots(policy, home, receipt.errors);
+        const unknown = requested.filter(path => !enrolled.some(root => root.path === path));
+        if (unknown.length) throw new Error(`retention scope contains unenrolled roots: ${unknown.join(', ')}`);
+        scopedRoots = enrolled.filter(root => requested.includes(root.path));
+      }
       // Independent owners must not wait behind a whole-root census: a large
       // root can spend the entire pass deadline before reaching this lane.
       // Keep their existing protection, mutex and deadline contracts intact.
-      const delegates = options.delegates ?? [];
+      const delegates = options.onlyRoots === undefined ? options.delegates ?? [] : [];
       for (const [index, delegate] of delegates.entries()) {
         if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
         yield* yieldToWaiter();
@@ -1143,7 +1157,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       }
       const censusPolicy = { ...policy, pins: [] };
       const roots = await measure('rootPreparationMs', async () =>
-        physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors));
+        physicalRetentionRoots(scopedRoots ?? options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors));
       const previous = options.previousReceipt;
       if (previous && !previous.complete && !previous.dryRun && previous.host === receipt.host) {
         const blocked = previous.scan?.stoppedAtRoot;
@@ -1578,7 +1592,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         }
       }
       for (const cls of policy.classes.values()) {
-        if (cls.enforcers.some((e) => e.kind === 'standing-reclaim' && (e.via || cls.keep.kind === 'lease')) &&
+        if (options.onlyRoots === undefined &&
+            cls.enforcers.some((e) => e.kind === 'standing-reclaim' && (e.via || cls.keep.kind === 'lease')) &&
             !receipt.delegates.some((e) => e.classId === cls.id)) receipt.errors.push(`missing delegate:${cls.id}`);
       }
     };
@@ -1961,7 +1976,7 @@ export function createWorkspaceHostCutRetentionDelegate(input: {
 }
 
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
-export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs'> = {}): Promise<DiskReclaimReceipt> {
+export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs' | 'onlyRoots'> = {}): Promise<DiskReclaimReceipt> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? moduleRepoRoot(import.meta.url);
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');

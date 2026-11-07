@@ -60,6 +60,7 @@ async function removeUnpinnedScratchPath(
   dryRun = false,
   onRmAsync?: (elapsedMs: number) => void,
   onUnreclaimable?: (code: string) => void,
+  onPinWaiting?: (info: { owner: string; elapsedMs: number }) => void,
 ): Promise<boolean> {
   return withUnpinnedPath(path, async () => {
     if (!dryRun) {
@@ -79,7 +80,7 @@ async function removeUnpinnedScratchPath(
       }
     }
     return true;
-  });
+  }, { onWaiting: onPinWaiting });
 }
 
 /** Retention window for run-dirs since last mtime. 24h default. */
@@ -689,6 +690,7 @@ export type DeadWorkspaceDeferral =
   | 'open-writer'
   | 'process-scan-incomplete'
   | 'retention-pin'
+  | 'retention-mutex-busy'
   | 'unreclaimable';
 
 /** Default open-writer scan: descendants + cwd, fail-closed, deadline-bounded (as fleet-logs-gc). */
@@ -755,6 +757,8 @@ export interface ScratchGcSummary {
   unprovenEntries: number;
   /** Provably-dead workspace roots this sweep kept, and why. */
   deadWorkspacesDeferred: Array<{ workspaceId: string; reason: DeadWorkspaceDeferral }>;
+  /** A busy global pin writer deferred this sweep; retained bytes stay charged until a later sweep. */
+  pinAdmissionDeferred?: Array<{ workspaceId: string; path: string; reason: 'retention-mutex-busy' }>;
   /** Protected filesystem paths retained after permission-denied removal attempts. */
   unreclaimablePaths: Array<{
     workspaceId: string;
@@ -816,6 +820,22 @@ export async function runScratchGc(opts: {
     ? undefined
     : { deadlineMs: Date.now() + Math.max(0, opts.maxDurationMs), truncated: false };
 
+  // Keep data -> quota -> pin ordering shared with quota recovery. Waiting for the
+  // global pin writer while holding the workspace leases blocks unrelated result
+  // spills. Reuse the pin mutex's contention callback to release our leases instead;
+  // the standing GC retries, and a fresh pin snapshot still covers the entire rm.
+  const pinBusy = new Error('retention-mutex-busy');
+  const removeForGc = async (workspaceId: string, path: string, preview: boolean,
+    onUnreclaimable?: (code: string) => void): Promise<boolean> => {
+    try {
+      return await removeUnpinnedScratchPath(path, preview, undefined, onUnreclaimable, () => { throw pinBusy; });
+    } catch (error) {
+      if (error !== pinBusy) throw error;
+      (summary.pinAdmissionDeferred ??= []).push({ workspaceId, path, reason: 'retention-mutex-busy' });
+      return false;
+    }
+  };
+
   // Retention comes first: marker backfill or an abandoned tree walk can exhaust a
   // foreground caller's budget before any registered workspace reclaims expired runs.
   for (const workspaceId of opts.workspaceRegistry) {
@@ -833,7 +853,10 @@ export async function runScratchGc(opts: {
       const bytes = await sizeOfDirAsync(candidate.dir, undefined, undefined, 0, undefined, undefined, budget);
       if (scratchGcBudgetExpired(budget)) break;
       if (dryRun) {
-        if (!(await removeUnpinnedScratchPath(candidate.dir, true))) continue;
+        if (!(await removeForGc(workspaceId, candidate.dir, true))) {
+          if (summary.pinAdmissionDeferred?.length) return summary;
+          continue;
+        }
         summary.retentionEvictions += 1;
         summary.retentionEvictedBytes += bytes;
         continue;
@@ -848,7 +871,7 @@ export async function runScratchGc(opts: {
           return false;
         }
         if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
-        return removeUnpinnedScratchPath(candidate.dir, false, undefined, (errorCode) => {
+        return removeForGc(workspaceId, candidate.dir, false, (errorCode) => {
           summary.unreclaimablePaths.push({
             workspaceId,
             path: candidate.dir,
@@ -857,7 +880,10 @@ export async function runScratchGc(opts: {
           });
         });
       }));
-      if (!evicted) continue;
+      if (!evicted) {
+        if (summary.pinAdmissionDeferred?.length) break;
+        continue;
+      }
       removed = true;
       summary.retentionEvictions += 1;
       summary.retentionEvictedBytes += bytes;
@@ -869,6 +895,7 @@ export async function runScratchGc(opts: {
           invalidateLocalScratchUsage(workspaceId);
         }));
     }
+    if (summary.pinAdmissionDeferred?.length) return summary;
   }
 
   if (!dryRun) {
@@ -939,7 +966,8 @@ export async function runScratchGc(opts: {
         continue;
       }
       if (dryRun) {
-        if (!(await removeUnpinnedScratchPath(c.dir, true))) {
+        if (!(await removeForGc(c.workspaceId, c.dir, true))) {
+          if (summary.pinAdmissionDeferred?.length) return summary;
           summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'retention-pin' });
           continue;
         }
@@ -958,7 +986,7 @@ export async function runScratchGc(opts: {
           return;
         }
         const unreclaimableCount = summary.unreclaimablePaths.length;
-        if (!(await removeUnpinnedScratchPath(c.dir, false, undefined, (errorCode) => {
+        if (!(await removeForGc(c.workspaceId, c.dir, false, (errorCode) => {
           summary.unreclaimablePaths.push({
             workspaceId: c.workspaceId,
             path: c.dir,
@@ -970,7 +998,7 @@ export async function runScratchGc(opts: {
             workspaceId: c.workspaceId,
             reason: summary.unreclaimablePaths.length > unreclaimableCount
               ? 'unreclaimable'
-              : 'retention-pin',
+              : summary.pinAdmissionDeferred?.length ? 'retention-mutex-busy' : 'retention-pin',
           });
           return;
         }
@@ -979,6 +1007,7 @@ export async function runScratchGc(opts: {
         summary.deadWorkspaces += 1;
         summary.deadWorkspaceBytes += currentTree.bytes;
       }));
+      if (summary.pinAdmissionDeferred?.length) return summary;
     }
   }
 

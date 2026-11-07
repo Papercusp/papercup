@@ -1,5 +1,6 @@
 /** HTTP admission and stream lifecycle for the shared authenticated MCP host. */
 import { createMcpHandler } from 'mcp-handler';
+import { hasLegacyBootstrapAuthorization } from '@papercusp/agent-mcp/auth';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
@@ -213,6 +214,9 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
 // rationale live in ./mcp-admission (kept out of this heavy side-effect module so it's
 // unit-testable). Fail-open when no lag monitor is running (loopPressure() → 'ok').
 const mcpHandler = async (req: Request): Promise<Response> => {
+  if (hasLegacyBootstrapAuthorization(req.headers.get('authorization'))) {
+    return Response.json({ error: 'legacy_bootstrap_purpose_denied' }, { status: 403 });
+  }
   // The proxy replaces this header with its request UUID before forwarding. Keep
   // only that bounded identifier for phase tracing; never log the request URL,
   // headers, credentials, or body.

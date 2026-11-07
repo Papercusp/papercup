@@ -947,7 +947,11 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
   const args = { op: 'prepare-tag', version: '0.0.18', channel: 'alpha', sourceSha };
 
   it('is a dry-run by default and discloses the only remote write', async () => {
-    const b = body(await tool.handler(args as never, { role: 'cup' } as never));
+    const logs: string[] = [];
+    const b = body(await tool.handler(args as never, {
+      role: 'cup',
+      log: (line: string) => logs.push(line),
+    } as never));
 
     expect(b).toMatchObject({
       ok: true,
@@ -960,6 +964,9 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
     });
     expect(b.wouldRun).toContain(`PAPERCUSP_RELEASE_PREPARE_TAG_SHA='${sourceSha}'`);
     expect(b.wouldRun).toContain("PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM='1'");
+    expect(logs.join('\n')).toContain('"phase":"implicit-root-resolution","stage":"start"');
+    expect(logs.join('\n')).toContain('"phase":"implicit-root-resolution","stage":"finish"');
+    expect(logs.join('\n')).not.toContain('/tmp/release-cut-fixture/papercusp-desktop');
     expect(execFileM).not.toHaveBeenCalled();
   });
 

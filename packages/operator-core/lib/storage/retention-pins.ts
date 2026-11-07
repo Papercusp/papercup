@@ -19,8 +19,9 @@ export { readRetentionPins, readRetentionPinsAsync, withRetentionPinProtection,
 export type { RetentionPin } from '../../../../scripts/lib/retention-pins.mjs';
 
 /** The final protection read and deletion share storage:pin's cross-process mutex. */
-export async function withUnpinnedPath(path: string, remove: () => boolean | Promise<boolean>): Promise<boolean> {
-  return withRetentionPinProtection((isPinned) => isPinned(path) ? false : remove());
+export async function withUnpinnedPath(path: string, remove: () => boolean | Promise<boolean>,
+  options: Parameters<typeof withRetentionPinProtection>[1] = {}): Promise<boolean> {
+  return withRetentionPinProtection((isPinned) => isPinned(path) ? false : remove(), options);
 }
 
 const TAG_PREFIX = 'agent-pin-';

@@ -16,6 +16,7 @@ import {
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { runWithoutAmbientArgPeeling } from '../ambient-args-scope';
 import { applyScopedSuperuserTransportBoundary } from '../../endpoint-route/routes/transport/scoped-superuser-transport-boundary';
+import { applySuperuserProjectPolicy, hasWorkspaceProjectAuthority } from '../../endpoint-route/routes/transport/superuser-project-policy';
 import {
   dispatchNeedsTx,
   effectiveDispatchWorkspace,
@@ -150,13 +151,23 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
   const boundary = await applyScopedSuperuserTransportBoundary(
     { name: _toolName, crossWorkspace: tool.crossWorkspace, profile: tool.profile },
     { workspaceId: spawnCtxLike.workspaceId, isSuperuser: spawnCtxLike.isSuperuser, profile: ctx.profile },
+    { readForAllTools: hasWorkspaceProjectAuthority({ ...ctx, workspaceId: spawnCtxLike.workspaceId }) && Object.keys(record(args) ?? {}).length > 0 },
   );
   if (!boundary.ok) return boundary.result;
+
+  const projectPolicy = await applySuperuserProjectPolicy(
+    _toolName, { ...ctx, workspaceId: spawnCtxLike.workspaceId }, record(args) ?? {}, boundary.scopedSuperuserClamp,
+  );
+  if (projectPolicy && !projectPolicy.ok) return projectPolicy.result;
+  if (projectPolicy?.ok) args = projectPolicy.args;
+  const originalNext = next;
+  next = callCtx => originalNext(callCtx, args);
 
   const effectiveWs = effectiveDispatchWorkspace(spawnCtxLike, args);
 
   const baseCtx: UnifiedToolContext = {
     ...ctx,
+    ...(projectPolicy?.ok ? { harnessSlug: projectPolicy.effectiveHarnessSlug } : {}),
     // Projection metadata describes the parent's result, not this child read.
     // Inheriting it can narrow source queries before the script sees the data.
     // projectedNext installs this child's own explicit projection afterward.
@@ -283,9 +294,9 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, ar
 
   let complete = false;
 
-  const projectedNext = async (callCtx: UnifiedToolContext): Promise<unknown> => {
-    const materializedCtx = nestedProjectionContext(callCtx, dispatchArgs, prepared.spec);
-    const result = await next(materializedCtx, dispatchArgs);
+  const projectedNext = async (callCtx: UnifiedToolContext, reboundArgs: unknown = dispatchArgs): Promise<unknown> => {
+    const materializedCtx = nestedProjectionContext(callCtx, reboundArgs, prepared.spec);
+    const result = await next(materializedCtx, reboundArgs);
     // Inspect the full receipt BEFORE a caller projection can hide the refusal.
     if (acceptance?.evaluation && !acceptance.historicalAudit && steps) {
       const body = record(result)?.content ? unwrapToolResult(result as ToolResult) : result;
