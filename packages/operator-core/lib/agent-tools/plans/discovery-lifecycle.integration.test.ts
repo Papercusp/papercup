@@ -29,6 +29,7 @@ import { getRubric } from '../../rubrics';
 import { readAcceptanceBarContractSnapshot } from '../../acceptance-bar-contract-snapshot';
 import { evaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
+import complete from '../work_items/complete';
 import { evaluateSpecTestAdequacy } from './spec-test-adequacy';
 import type { ScorecardRow } from '../../scorecards';
 import { reconcilePlanAuthoredDependenciesNow } from '../../plan-items/reconcile-linked-work-items';
@@ -38,6 +39,8 @@ import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
 import { assertDiscoveryShippedIdentity, type DiscoveryShippedTarget } from '../../../test/discovery-guidance-http-scenario';
 import { listRuntimeVintage, reportRuntimeVintage } from '../../runtime-vintage';
 import { measureRuntimeEnvironment } from '../../remote-runtime-identity';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { mutateWorkItemDependenciesInTransaction, withWorkItemDependencyAdmissionTransaction } from '../../dbos/work-item-deps-store';
 
 // Select the private repository, as the production registry selects a checkout.
 // The completion, evidence, dependency and acceptance gates remain unmocked.
@@ -47,6 +50,35 @@ vi.mock('../../harness-registry', async original => ({
   loadHarnessRegistry: async () => ({ projects: [] }),
   resolveHarnessContentPath: () => deliveryRoot.path,
 }));
+vi.mock('../coordination/identity', async original => ({
+  ...await original<typeof import('../coordination/identity')>(),
+  resolveAgentIdentity: () => ({ ownerId: 'su-discovery-lifecycle-fixture', ownerLabel: 'private discovery fixture', source: 'test' }),
+  deriveFleetMembership: () => ({ fleetSlug: null, fleetRole: null }),
+}));
+// Keep external dispatch outside this private database; the complete handler,
+// its contract gates and the terminal/plan reflection writers remain real.
+vi.mock('../../events', async original => ({
+  ...await original<typeof import('../../events')>(), fireReactionInProcess: async () => ({ ok: true }),
+}));
+vi.mock('../../grading-integrity', async original => ({
+  ...await original<typeof import('../../grading-integrity')>(),
+  dispatchPendingGradingAudits: async () => ({ requestedTargetIds: [], receipts: [] }),
+}));
+vi.mock('../../harness/improvements/completion-verification-store', async original => ({
+  ...await original<typeof import('../../harness/improvements/completion-verification-store')>(),
+  spawnCompletionVerificationForClose: async () => ({ outcome: 'no-dependents' }),
+  applyCompletionVerdictForClose: async () => null, acceptCompletionOnSettlementForSubject: async () => null,
+}));
+vi.mock('../../scorecards', async original => {
+  const actual = await original<typeof import('../../scorecards')>();
+  return { ...actual, listScorecards: async (filter: Parameters<typeof actual.listScorecards>[0]) => {
+    const rows = await fx.admin`SELECT payload->'fixtureCard' AS card FROM harness_shared.work_items
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND payload ? 'fixtureCard'`;
+    return rows.map(row => row.card as ScorecardRow).filter(card =>
+      (!filter?.subjectRef || card.subject?.ref === filter.subjectRef) &&
+      (!filter?.rubricRef || card.rubricRef === filter.rubricRef));
+  } };
+});
 
 // Exact quoted owner text, including indentation and line breaks. The later
 // plan revision is a different fixture and cannot stand in for this source.
@@ -90,12 +122,15 @@ async function revision(next: string) {
   content = next;
   await seedPlan(fx.admin, fx.workspaceId, harness, slug, next);
   const hash = createHash('sha256').update(next).digest('hex');
-  await fx.admin.begin(async tx => {
+  await withWorkItemDependencyAdmissionTransaction(fx.admin, async tx => {
     const scope = { workspaceId: fx.workspaceId, harnessSlug: harness, planSlug: slug };
     const index = deriveIndexFromContent(next);
     const previous = await readPlanLineNodes(tx as never, { ...scope, slug });
     await writePlanIndexRows(tx as never, scope, index);
-    await writePlanLineNodes(tx as never, { ...scope, slug }, previous, index.items);
+    const mutations = await writePlanLineNodes(tx as never, { ...scope, slug }, previous, index.items);
+    if (mutations.length) await mutateWorkItemDependenciesInTransaction(tx, {
+      workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: fx.workspaceId, mutations,
+    });
     await tx`UPDATE harness_shared.harness_plans SET content_hash=${hash},version=version+1
       WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     await tx`INSERT INTO harness_shared.plan_revisions
@@ -157,8 +192,6 @@ beforeEach(async () => {
 async function deliveryFixture() {
   const testPath = 'delivery.integration.test.ts';
   const title = 'same caller receives discovery guidance';
-  const prerequisite = `WI-710${sequence}7`;
-  const finalItem = `WI-710${sequence}8`;
   const ordinary = 'DISCOVERY-CURRENT-BUILD';
   const finalSpec = 'AUTO-BAR-R-11-P-008';
   const requirement = {
@@ -178,6 +211,10 @@ async function deliveryFixture() {
     '- **P-008** `todo` Independent exact release acceptance (blocked-by: P-007)\n');
   await fx.admin`UPDATE harness_shared.harness_plans SET status='active'
     WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+  const nodes = await readPlanLineNodes(fx.admin, { workspaceId: fx.workspaceId, harnessSlug: harness, slug });
+  const prerequisite = nodes.find(node => node.id === 'P-007')!.featureId;
+  const finalItem = nodes.find(node => node.id === 'P-008')!.featureId;
+  expect(nodes.find(node => node.id === 'P-008')?.blockedBy).toEqual(['P-007']);
   const seeded = await fx.admin.begin(tx => seedAcceptanceBarsInTransaction({ executor: tx as unknown as SpecClauseSql,
     workspaceId: fx.workspaceId, harnessSlug: harness, planSlug: slug, planContent: content,
     planTitle: 'Discovery delivery fixture', planStatus: 'active', planVersion: 2,
@@ -195,10 +232,9 @@ async function deliveryFixture() {
     planItemId: 'P-007', behavior: 'The same served caller receives current-build discovery guidance.',
     behaviorClass: 'happy-path', requiredEvidence: ['live'], requiredTestLayers: ['integration'],
     mutationRequired: false, lifecycleStatus: 'active', actorId: OWNER });
-  await fx.admin`INSERT INTO harness_shared.work_items
-    (workspace_id,harness_slug,feature_id,kind,title,status,taken_by,source_plan_slug,source_plan_item_ids)
-    VALUES (${fx.workspaceId},${harness},${prerequisite},'feature','current-build contribution','open',${OWNER},${slug},ARRAY['P-007']::text[]),
-           (${fx.workspaceId},${harness},${finalItem},'feature','exact release acceptance','open',${OWNER},${slug},ARRAY['P-008']::text[])`;
+  await fx.admin`UPDATE harness_shared.work_items SET taken_by=${OWNER},taken_at=now(),admission='admitted',
+      kind='feature',payload=payload-'_claimHold'-'claim_hold_by'-'claim_hold_at'-'claim_hold_reason'
+    WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=ANY(${[prerequisite, finalItem]})`;
   await writeFile(join(root, testPath), 'expect(discoveryGuidance).toBe(true);\n');
   const runtimeUnits = [`discovery-private-fixture-${sequence}`];
   await reportRuntimeVintage({ workspaceId: fx.workspaceId, unit: runtimeUnits[0]!,
@@ -270,22 +306,28 @@ async function deliveryFixture() {
     const workItem = await getWorkItem(id, harness);
     if (!workItem) throw new Error('missing fixture work item');
     return specTestAdequacyCompletionGate({ workItem, workspaceId: fx.workspaceId,
-      attestation: { classRef: 'plan-class-feature-ship' } }, { listCards: async () => {
-        const [stored] = await fx.admin`SELECT payload->'fixtureCard' AS card FROM harness_shared.work_items
-          WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${prerequisite}`;
-        return [stored!.card as ScorecardRow];
-      } });
+      attestation: { classRef: 'plan-class-feature-ship' } });
   }
   async function closeCurrent() {
     const gate = await completionGate(prerequisite);
     expect(gate, JSON.stringify(gate)).toMatchObject({ ok: true, applicable: true });
-    const receipt = await setWorkItemState(prerequisite, 'done', { harness, by: OWNER, family: 'feature',
-      completionAuthority: 'committed', completionRef: `test-run:current-${sequence}`,
-      completionEvidence: { summary: 'private current-build calibration', testsRun: testPath,
-        testResult: 'passed', verifiedHow: 'isolated production gate', filesChanged: [] } });
-    expect(receipt).toMatchObject({ state: 'done', terminalCompletionRef: `test-run:current-${sequence}` });
-    await revision(content.replace('**P-007** `todo`', '**P-007** `done`'));
+    const result = await close(prerequisite);
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    const receipt = await getWorkItem(prerequisite, harness);
+    if (!receipt) throw new Error('canonical close lost the prerequisite');
+    expect(receipt).toMatchObject({ state: 'done' });
+    expect(receipt.terminalCompletionRef).toBeTruthy();
     return receipt;
+  }
+  async function close(id: string) {
+    const result = await complete.handler(complete.args.parse({ id, harness, state: 'done', assumptions: 'none',
+      changeKinds: ['no-code-change'], changeKindReason: 'Private database contract calibration without repository deliverables.',
+      specAdequacy: { classRef: 'plan-class-feature-ship' },
+      completion: { summary: 'Private discovery delivery contract calibration', testsRun: testPath,
+        testResult: 'Recorded private fixture execution passed', verifiedHow: 'integration', filesChanged: [],
+        ...(id === finalItem ? { discharges: ['R-11'] } : {}) },
+    }), { uiClientId: OWNER, isSuperuser: true, workspaceId: fx.workspaceId } as never);
+    return (result as { data: { results: Array<Record<string, unknown>> } }).data.results[0]!;
   }
   const receiptRecipe = { schemaVersion: 1 as const, kind: 'work-items' as const,
     workItemIds: [prerequisite], successfulCompletionReceipts: true as const, runtimeUnits };
@@ -300,6 +342,15 @@ async function deliveryFixture() {
     const pin = await measureWorkItemsEvidenceForScope(fx.workspaceId, harness, receiptRecipe);
     await bind(finalItem, finalSpec, 'test', { measurement: receiptRecipe, ...pin });
     await bind(finalItem, finalSpec, 'counterexample');
+    const [clause] = await listSpecClauses({ harnessSlug: harness, planSlug: slug, specIds: [finalSpec] });
+    const evidence = await listSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
+      planSlugs: [slug], workItemIds: [finalItem] });
+    const evaluation = evaluateSpecTestAdequacy({ clause: clause!, evidence, classRef: 'plan-class-feature-ship' });
+    expect(evaluation.verdict, JSON.stringify(evaluation)).toBe('pass');
+    const card = { ...ordinaryCard, issueId: `SC-FINAL-${sequence}`, subject: evaluation.scorecardDraft.subject,
+      ratings: evaluation.ratings, rerunRecipe: evaluation.scorecardDraft.rerunRecipe };
+    await fx.admin`UPDATE harness_shared.work_items SET payload=payload||${JSON.stringify({ fixtureCard: card })}::jsonb
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${finalItem}`;
   }
   async function acceptance(healthy: boolean) {
     const rubric = await getRubric(`acceptance-${slug}`);
@@ -326,7 +377,7 @@ async function deliveryFixture() {
     }, { harnessSlug: harness });
     return { snapshot, verdict: evaluateAcceptanceBarLifecycle(snapshot, 'ship') };
   }
-  return { prerequisite, finalItem, finalSpec, closeCurrent, completionGate, bindFinal, receiptRecipe,
+  return { prerequisite, finalItem, finalSpec, closeCurrent, close, completionGate, bindFinal, receiptRecipe,
     acceptance, target };
 }
 
@@ -366,11 +417,9 @@ describe('original proof-warming discovery before review and implementation', ()
       expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: true, applicable: true });
       const final = await delivery.acceptance(true);
       expect(final.verdict, JSON.stringify(final.snapshot)).toMatchObject({ satisfied: true });
-      const closed = await setWorkItemState(delivery.finalItem, 'done', { harness, by: OWNER, family: 'feature',
-        completionAuthority: 'committed', completionRef: 'test-run:synthetic-exact-release',
-        completionEvidence: { summary: 'Private gate calibration only', testsRun: 'delivery fixture',
-          testResult: 'passed', verifiedHow: 'real canonical gates', filesChanged: [] } });
-      expect(closed).toMatchObject({ state: 'done' });
+      const closed = await delivery.close(delivery.finalItem);
+      expect(closed, JSON.stringify(closed)).toMatchObject({ ok: true });
+      expect(await getWorkItem(delivery.finalItem, harness)).toMatchObject({ state: 'done' });
       expect((await getWorkItem(delivery.prerequisite, harness))?.terminalCompletionRef)
         .toBe(receipt.terminalCompletionRef);
     });
@@ -395,9 +444,7 @@ describe('original proof-warming discovery before review and implementation', ()
       expect((await delivery.acceptance(true)).verdict.satisfied).toBe(false);
       expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
       // Ordinary terminal scheduling is preserved, without buying final proof.
-      await fx.admin`UPDATE harness_shared.work_items SET status='dropped'
-        WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${delivery.prerequisite}`;
-      await revision(content.replace('**P-007** `done`', '**P-007** `dropped`'));
+      await setWorkItemState(delivery.prerequisite, 'dropped', { harness, by: OWNER, family: 'feature' });
       expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
         .toMatchObject({ resolved: [] });
       await expect(measureWorkItemsEvidenceForScope(fx.workspaceId, harness, delivery.receiptRecipe))
