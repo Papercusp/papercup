@@ -26,7 +26,7 @@
 
 import type { CoordKind } from '@papercusp/coordination/core';
 import { LIFECYCLE_CATEGORIES, type LifecycleCategory } from './coord-lifecycle/records';
-import { renderAuthoredFieldsSuffix } from './agent-tools/coordination/message-fields';
+import { renderAuthoredFieldsSuffix, senderContextMarker } from './agent-tools/coordination/message-fields';
 import { renderStaleBasisSuffix, STALE_BASIS_FIELD } from './agent-tools/coordination/stale-basis';
 import { renderMessageAgeSuffix } from './agent-tools/coordination/message-age';
 import {
@@ -505,6 +505,8 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // and seen by nobody — and D-070 leaves judging them by their VALUES as the
     // only check on the message layer. Pure read; '' when the sender authored
     // none, so an ordinary message is unchanged.
+    const senderContext = senderContextMarker(rec);
+    const senderContextSuffix = senderContext ? ` ⟨${senderContext}⟩` : '';
     const authoredSuffix = renderAuthoredFieldsSuffix(e as unknown as Record<string, unknown>);
     const staleBasisSuffix = renderStaleBasisSuffix(
       (e as unknown as Record<string, unknown>)[STALE_BASIS_FIELD],
@@ -541,7 +543,7 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // byte-identical to before.
     const ageSuffix = renderMessageAgeSuffix(e.ts, nowMs);
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${relayHoistFlag}${selfReportedFlag}${text}${ageSuffix}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${terminalSubjectSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${relayHoistFlag}${selfReportedFlag}${text}${ageSuffix}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${senderContextSuffix}${bodyRefsSuffix}${terminalSubjectSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
     );
   }
   return lines.join('\n');

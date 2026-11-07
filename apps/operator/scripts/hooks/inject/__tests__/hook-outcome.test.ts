@@ -182,6 +182,24 @@ describe('unavailable mutation authority reports its transport branch', () => {
     expect(out).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
   });
 
+  it('uses the proxy fallback when the default direct origin stalls', async () => {
+    vi.useFakeTimers();
+    const origins: string[] = [];
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      const url = new URL(String(input));
+      origins.push(url.origin);
+      if (url.port === '3070') return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('direct attempt expired')), { once: true });
+      });
+      return { ok: true, status: 200, json: async () => ({ text: 'proxy-verdict' }) } as Response;
+    }) as typeof fetch;
+    const pending = run(fetchImpl);
+    await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
+    const out = await pending;
+    expect(out).toContain('proxy-verdict');
+    expect(origins).toEqual(['http://localhost:3070', 'http://127.0.0.1:9071']);
+  });
+
   it('uses the direct operator when pinned proxy headers exhaust their bounded share', async () => {
     vi.useFakeTimers();
     const origins: string[] = [];

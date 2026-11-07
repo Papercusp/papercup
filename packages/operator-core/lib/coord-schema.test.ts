@@ -66,6 +66,21 @@ describe('shortHandle', () => {
 });
 
 describe('renderInjection — positional [coord+N] block', () => {
+  it('labels a recovery coordinator goal and provider wait as sender context on a relay', () => {
+    const entry = {
+      ...e({ from: 'su-coordinator', summary: 'Resume your existing work', expects: 'action' }),
+      why: { goalRef: 'WI-6554700010045405' },
+      awaiting: [{ kind: 'work-item-blocker', ref: 'work-item:WI-6554700010045405', blocker: 'runtime:claude-pool' }],
+      sections: [{ text: 'Keep your original work and holds.', forYouBecause: { relation: 'other', note: 'Original recipient' } }],
+    };
+    const before = structuredClone(entry);
+    const out = renderInjection([entry], { nowMs: FIXTURE_NOW });
+    expect(out).toContain('Sender context (su-coordinator): goal WI-6554700010045405; 1 registered sender wait(s).');
+    expect(out).toContain('Recipient work follows explicit instructions and current claims.');
+    expect(out).toContain('∵ other');
+    expect(entry).toEqual(before);
+  });
+
   it('empty delta → empty string', () => {
     expect(renderInjection([])).toBe('');
   });

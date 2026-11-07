@@ -825,7 +825,7 @@ const clarifyArg = z
 // why / evidence — ENVELOPE-scoped
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** D-011: a goal REF, never prose — so the receiver can query the goal's LIVE state. */
+/** D-011: the sender's goal REF, never prose; this is context, not an assignment. */
 export interface MessageWhy {
   goalRef: string;
   note?: string;
@@ -841,7 +841,8 @@ const whyArg = z
     'ENVELOPE (one per message — one message serves one goal). WHY you are sending this, as a ' +
       'goal REF not prose (D-011), so the receiver can query the goal\'s LIVE state instead of ' +
       'trusting your snapshot of it. Shape: { goalRef: "<goal ref>", note?: "<optional prose>" }. ' +
-      '`note` carries any prose.',
+      '`note` carries any prose. This is the sender\'s coordination context; recipient work ' +
+      'is determined by explicit instructions and current claims.',
   );
 
 /**
@@ -1185,6 +1186,35 @@ export function assertEnvelopeSectionSplit(sections: unknown[]): void {
  * `couldNotDetermine`, which is the one that changes what the receiver does
  * (it marks a question OPEN rather than answered).
  */
+/**
+ * Sender-held waits and the sender's coordination goal can accompany a relay
+ * about unrelated recipient work. Label that subject on both reader paths,
+ * including old envelopes, without turning derived context into authored intent.
+ * Keep this separate from `authored` so adoption counts retain their meaning.
+ */
+export function senderContextMarker(env: Record<string, unknown>): string | undefined {
+  if (env.kind !== 'message' || typeof env.from !== 'string' || !env.from.trim()) return undefined;
+  const sections = Array.isArray(env.sections) ? env.sections : Array.isArray(env.body) ? env.body : [];
+  const isRelay = sections.some((section) => {
+    if (!section || typeof section !== 'object') return false;
+    const relation = (section as Record<string, unknown>).forYouBecause;
+    return relation && typeof relation === 'object' && (relation as Record<string, unknown>).relation === 'other';
+  });
+  const waits = Array.isArray(env.awaiting)
+    ? env.awaiting.filter((entry) => entry && typeof entry === 'object' &&
+        ['event-await', 'work-item-blocker'].includes((entry as Record<string, unknown>).kind as string))
+    : [];
+  const why = env.why && typeof env.why === 'object' ? env.why as Record<string, unknown> : undefined;
+  const goal = typeof why?.goalRef === 'string' ? why.goalRef.trim() : '';
+  if (!waits.length && !(isRelay && goal)) return undefined;
+  const oneLine = (value: string, limit: number) => value.replace(/\s+/g, ' ').slice(0, limit);
+  const context = [
+    ...(goal ? [`goal ${oneLine(goal, 80)}`] : []),
+    ...(waits.length ? [`${waits.length} registered sender wait(s)`] : []),
+  ];
+  return `Sender context (${oneLine(env.from, 60)}): ${context.join('; ')}. Recipient work follows explicit instructions and current claims.`;
+}
+
 export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string {
   const parts = authoredFieldParts(env);
   return parts.length ? ` ⟨${parts.join(' · ')}⟩` : '';

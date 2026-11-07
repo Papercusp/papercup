@@ -15,6 +15,16 @@ export class AcceptanceBarCandidateError extends Error {
   }
 }
 
+/** Omit only the server-generated time; lifecycle and author remain reviewed. */
+export function acceptanceBarCriterionWithoutDeclarationTime(criterion: unknown): unknown {
+  if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return criterion;
+  const record = criterion as Record<string, unknown>;
+  const provenance = record.barProvenance;
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return criterion;
+  const { declaredAt: _serverTime, ...reviewedProvenance } = provenance as Record<string, unknown>;
+  return { ...record, barProvenance: reviewedProvenance };
+}
+
 export function acceptanceBarCandidateHash(candidate: unknown): string {
   // Newly added BARs receive a server declaration timestamp on every preview
   // and again at apply. It is not reviewed meaning; retaining it makes an
@@ -28,13 +38,7 @@ export function acceptanceBarCandidateHash(candidate: unknown): string {
       const data = template as Record<string, unknown>;
       if (Array.isArray(data.criteria)) reviewedCandidate = {
         ...record,
-        templateData: { ...data, criteria: data.criteria.map(criterion => {
-          if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return criterion;
-          const provenance = criterion.barProvenance;
-          if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return criterion;
-          const { declaredAt: _serverTime, ...reviewedProvenance } = provenance;
-          return { ...criterion, barProvenance: reviewedProvenance };
-        }) },
+        templateData: { ...data, criteria: data.criteria.map(acceptanceBarCriterionWithoutDeclarationTime) },
       };
     }
   }
