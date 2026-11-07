@@ -30,7 +30,7 @@ it('reconciles a measured compiled producer with actual canonical writes and ref
   const artifact = await writeOperatorArtifactManifest({ root, entry, sourceSha, artifactRoot: temporary });
   expect(artifact.status).toBe('measured');
   await symlink(join(root, 'node_modules'), join(temporary, 'node_modules'), 'dir');
-  const child = await promisify(execFile)(process.execPath, [entry], { cwd: root, timeout: 120_000, maxBuffer: 2_000_000,
+  const child = await promisify(execFile)(process.execPath, ['--test', '--test-reporter=tap', entry], { cwd: root, timeout: 120_000, maxBuffer: 2_000_000,
     env: { ...process.env, NODE_OPTIONS: '', HARNESS_ADMIN_DATABASE_URL: db.adminDsn,
       HARNESS_DATABASE_URL: db.appDsn, DATABASE_URL: db.adminDsn, PC_SQL_COVERAGE_RESULT: resultPath,
       PAPERCUSP_CANONICAL_TREE: root,
