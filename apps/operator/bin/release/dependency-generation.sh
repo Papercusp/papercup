@@ -93,6 +93,13 @@ dependency_generation_resolve_root() {
     printf '%s\n' "$recorded"
     return 0
   fi
+  # --keep committed readers are still disposable (idle-cap and age sweeps).
+  # A ref pin inside that reader cannot protect its enclosing directory, so
+  # never silently publish retained generations into its fallback store.
+  if [ -f "$integration_root/.git/lint-as-committed-owner.json" ]; then
+    dependency_generation_log 'ERROR: a disposable committed reader requires an explicit persistent generation store; set PAPERCUSP_DEPENDENCY_GENERATION_ROOT outside the reader or select its recorded shared store'
+    return 74
+  fi
   printf '%s\n' "$integration_root/.papercusp/dependency-generations"
 }
 
