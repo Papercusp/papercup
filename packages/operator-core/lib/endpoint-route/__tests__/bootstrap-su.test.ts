@@ -3412,6 +3412,13 @@ describe('EI-21365235532676472: failed-resume binding reclaim', () => {
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(900, null, 'reconciler');
     const json = await res.json();
     expect(json.error ?? '').not.toContain('already bound');
+    // D007 legacy-adoption feasibility: ordinary fresh bootstrap preserves
+    // the requested owner, but allocates another ADV. It cannot stand in for
+    // a same-ADV native continuation of the ended reviewer.
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: 'su-dead01' }));
+    expect(json.envelopeEnv.PAPERCUSP_SID).toBe('su-dead01');
+    expect(json.sessionId).toBe(42);
+    expect(String(json.sessionId)).not.toBe('900');
   });
 
   it('also reclaims a suspect stranded binding (claims-held terminal verdict)', async () => {
