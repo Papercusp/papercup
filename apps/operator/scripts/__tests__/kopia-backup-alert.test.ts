@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 const SCRIPT = resolve(__dirname, '..', 'systemd', 'kopia-backup-alert.sh');
 
 describe('kopia-backup-alert notification payload', () => {
-  it('JSON-encodes quotes, backslashes, and newlines in the reason and paths', () => {
+  it('JSON-encodes reason and paths while staying compatible with the deployed coord:send schema', () => {
     const root = mkdtempSync(join(tmpdir(), 'kopia-backup-alert-json-'));
     const repo = join(root, 'repo');
     const script = join(repo, 'apps', 'operator', 'scripts', 'systemd', 'kopia-backup-alert.sh');
@@ -81,7 +81,6 @@ describe('kopia-backup-alert notification payload', () => {
       expect(JSON.parse(argv[1] ?? '')).toEqual({
         to: ['*'],
         expects: 'none',
-        conditionKey: 'papercusp-db-backup-failing',
         summary: 'BACKUP FAILING: ' + reason,
         body: [{
           text: 'papercusp-db-backup is not producing usable dumps. See ' + marker +

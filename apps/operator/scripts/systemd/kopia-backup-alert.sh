@@ -89,7 +89,6 @@ if [ -n "$REPO" ] && [ -f "$REPO/scripts/mcp-call.mjs" ]; then
     process.stdout.write(JSON.stringify({
       to: ["*"],
       expects: "none",
-      conditionKey: "papercusp-db-backup-failing",
       summary: "BACKUP FAILING: " + reason,
       body: [{
         text: "papercusp-db-backup is not producing usable dumps. See " + marker +
