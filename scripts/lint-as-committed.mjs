@@ -496,7 +496,8 @@ done <<< "$sources"
     };
     verifySource();
     verification = await phase('resume-verification', () => verifyRetainedDependencies(
-      donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource }));
+      donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource,
+        retainSource: artifact => retainCommittedWorkRoot(workRoot, owner.sha, artifact) }));
     if (verification.status === 'incomplete') return verification;
     snapshot = repairSnapshot(verification.sourceRoot, verification.paths, true);
   } else {

@@ -1703,10 +1703,10 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     }
   }, 30000);
 
-  function retainedFixture() {
+  function retainedFixture(rootName = 'snapshot') {
     const f = fixture('node build.cjs');
     const parent = mkdtempSync(join(realpathSync(tmpdir()), 'lac-resume-'));
-    const workRoot = join(parent, 'snapshot');
+    const workRoot = join(parent, rootName);
     const manifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
     f.head = snapshot(f.root, {
       'libs/runtime/package.json': JSON.stringify({ ...manifest, bin: { 'runtime-bin': 'dist/index.cjs' } }),
@@ -1747,6 +1747,12 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
     return { ...f, parent, workRoot, markerPath, marker, checkpointDir, options, cleanup, diagnostics };
   }
 
+  function expectUnpreparedRetainedMarker(f: ReturnType<typeof retainedFixture>) {
+    const marker = JSON.parse(readFileSync(f.markerPath, 'utf8'));
+    expect(marker).toMatchObject(f.marker);
+    expect(marker).not.toHaveProperty('dependencyMode');
+  }
+
   it('resumes verified batches without recopying and releases its reader before workspace preparation', async () => {
     const f = retainedFixture();
     const files = ['alpha', 'beta', 'gamma'].map(name => join(f.workRoot, 'node_modules', name + '.txt'));
@@ -1772,7 +1778,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       expect(paused.progress.hashedFiles).toBeGreaterThan(0);
       expect(paused.progress).toMatchObject({ phase: 'hash-batches', scannedTrees: 1, totalTrees: 1 });
       expect(build).not.toHaveBeenCalled();
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
       const prepared = await mod.materializeIndependentDependencies(f.root, f.workRoot,
         { ...f.options(), prepareWorkspace: build });
       expect(prepared.status).toBe('complete');
@@ -1786,6 +1792,36 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         expect(statSync(path).ino).toBe(before[index].inode);
         expect(readFileSync(path)).toEqual(before[index].bytes);
       }
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('retains resumed dependency work across idle sweeps until its journal is removed', async () => {
+    const f = retainedFixture(mod.WORK_ROOT_PREFIX + 'active-resume');
+    Object.assign(f.marker, { pid: 0, keep: true, createdAtMs: Date.now() });
+    writeFileSync(f.markerPath, JSON.stringify(f.marker));
+    const sweep = () => mod.sweepStaleWorkRoots({
+      root: f.parent, cwds: [f.root], isAlive: () => false, maxIdleKept: 0,
+    });
+    try {
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, f.options(1));
+      expect(paused.status).toBe('incomplete');
+      const first = await sweep();
+      expect(first.removed).toEqual([]);
+      expect(existsSync(f.workRoot)).toBe(true);
+      const prepared = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(),
+        prepareWorkspace: (s: { workspacePaths: Set<string> }) =>
+          mod.prepareWorkspaceExports(f.workRoot, s.workspacePaths),
+      });
+      expect(prepared.status).toBe('complete');
+      expect(prepared.verification.reusedBatches).toBeGreaterThan(0);
+      expect((await sweep()).removed).toEqual([]);
+      expect(await mod.cleanupCommittedWorkRoot(f.workRoot)).toBe(false);
+      rmSync(f.checkpointDir, { recursive: true, force: true });
+      expect((await sweep()).removed).toContainEqual({
+        name: mod.WORK_ROOT_PREFIX + 'active-resume', reason: 'keep-over-cap',
+      });
+      expect(existsSync(f.workRoot)).toBe(false);
     } finally { f.cleanup(); }
   }, 60_000);
 
@@ -1807,7 +1843,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       expect(paused.status).toBe('incomplete');
       expect(paused.progress.materializedTrees).toBe(1);
       expect(build).not.toHaveBeenCalled();
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
       const leafInode = statSync(join(f.workRoot, missing)).ino;
       const complete = await mod.materializeIndependentDependencies(f.root, f.workRoot, options());
       expect(complete.status).toBe('complete');
@@ -1841,7 +1877,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         })).rejects.toThrow(defect === 'tampered-root' ? 'dependency bytes differ' :
           defect === 'input-drift' ? 'dependency inputs differ' : 'dependency tree census differs');
         expect(build).not.toHaveBeenCalled();
-        expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+        expectUnpreparedRetainedMarker(f);
         if (defect !== 'tampered-root') expect(existsSync(join(f.workRoot, missing))).toBe(false);
       } finally { f.cleanup(); }
     }, 60_000);
@@ -1941,7 +1977,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
           expect(paused.status).toBe('incomplete');
           expect(paused.progress.hashedFiles).toBeGreaterThan(0);
           expect(leases()).toEqual([]);
-          expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+          expectUnpreparedRetainedMarker(f);
           const complete = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
             ...options(), prepareWorkspace: (copied: { workspacePaths: Set<string> }) =>
               mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths),
@@ -1952,7 +1988,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
         }
         expect(leases()).toEqual([]);
         expect(statSync(retained).ino).toBe(inode);
-        if (variant !== 'valid') expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+        if (variant !== 'valid') expectUnpreparedRetainedMarker(f);
       } finally {
         if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
         else process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = priorStore;
@@ -1972,7 +2008,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       utimesSync(path, stat.atime, stat.mtime);
       await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
         .rejects.toThrow(/dependency bytes differ/);
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
     } finally { f.cleanup(); }
   }, 60_000);
 
@@ -2003,7 +2039,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       }
       await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
         .rejects.toThrow(/retained|recorded artifact/);
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
     } finally { f.cleanup(); }
   }, 60_000);
 
@@ -2018,7 +2054,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
       await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
         .rejects.toThrow(/journal integrity/);
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
     } finally { f.cleanup(); }
   }, 60_000);
 
@@ -2045,7 +2081,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
         ...f.options(), prepareWorkspace: () => { throw new Error('fixture workspace failure'); },
       })).rejects.toThrow(/fixture workspace failure/);
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
     } finally { f.cleanup(); }
   }, 60_000);
 
@@ -2063,7 +2099,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
       await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
         resumeVerification: { ...f.options().resumeVerification, checkpointDir },
       })).rejects.toThrow(/checkpoint|outside both/);
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
     } finally { f.cleanup(); }
   }, 60_000);
 
@@ -2108,7 +2144,7 @@ await withFsMutex(${JSON.stringify(lockName)}, () => {
           signal === 'SIGKILL' ? done() : reject(new Error(output)));
       });
       writeFileSync(join(f.checkpointDir, 'batch-unpublished.tmp'), '{"data":', { mode: 0o600 });
-      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toEqual(f.marker);
+      expectUnpreparedRetainedMarker(f);
       const done = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
         ...f.options(), prepareWorkspace: (copied: { workspacePaths: Set<string> }) => mod.prepareWorkspaceExports(f.workRoot, copied.workspacePaths),
       });

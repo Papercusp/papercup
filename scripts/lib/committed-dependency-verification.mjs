@@ -346,6 +346,9 @@ export async function verifyRetainedDependencies(donor, destination, options, co
   destination = realpathSync(destination);
   if (within(donor, destination) || within(destination, donor)) fail('dependency roots overlap');
   const checkpoint = privateDirectory(checkpointDir, [donor, destination]);
+  // The old creator can be gone while a resumed reader runs from the donor.
+  // Keep its source through idle sweeps for as long as the journal exists.
+  await context.retainSource?.(checkpoint);
   const deadline = Date.now() + maxDurationMs;
   const progress = { verifiedEntries: 0, verifiedBatches: 0, reusedBatches: 0, hashedFiles: 0, totalEntries: 0, materializedTrees: 0 };
   const incomplete = () => ({ status: 'incomplete', progress: { ...progress } });

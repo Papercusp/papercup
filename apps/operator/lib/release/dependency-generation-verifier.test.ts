@@ -375,7 +375,8 @@ describe('D012 native generation closure', () => {
     const stale = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
     expect(stale.status).toBe(74);
     expect(stale.stderr, stale.stdout + stale.stderr)
-      .toContain(defect === 'incomplete' ? 'incomplete-closure' : 'stale-build-input');
+      .toContain(defect === 'incomplete' ? 'incomplete-closure'
+        : 'selected-source-population-mismatch:packages/cli/dist');
 
     const args = ['--integration', f.donor, '--generation-root', f.store,
       '--ensure-ref', ref, '--verifier-source', f.dest, '--retain-as', 'native-exact-test'];
@@ -703,7 +704,8 @@ describe('D012 native generation closure', () => {
   it('never blesses old output with new source hashes, and rebuilds under a new identity', () => {
     const f = fixture(), before = f.publish();
     write(f.donor, 'packages/cli/src/cli.cjs', 'console.log("rebuilt");\n');
-    expect(captureClosure(f.donor)).toMatchObject({ complete: false, reason: expect.stringContaining('stale-build-input') });
+    expect(captureClosure(f.donor)).toMatchObject({ complete: false,
+      reason: expect.stringContaining('selected-source-population-mismatch:packages/cli/dist') });
     buildWorkspace(f.donor, 'packages/cli', [process.execPath, 'build.cjs']);
     expect(captureClosure(f.donor)).toMatchObject({ complete: true });
     expect(f.publish()).not.toBe(before);

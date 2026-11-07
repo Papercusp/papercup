@@ -3782,6 +3782,65 @@ describe('BG inherited manifest and original source boundaries', () => {
     return { ...fixture, binding, compilerReceipt, args, record };
   }
 
+  let compilerExecutionFixture: ReturnType<typeof partitionCompilation> | undefined;
+  it.each(['positive', 'api', 'binary', 'sealed-binary', 'output-inode', 'metafile-inode',
+    'execution-omitted', 'execution-node', 'execution-api', 'execution-native', 'execution-launches'])(
+    'original compiler execution custody: %s', async variant => {
+      // Packet-only controls share one real compilation. Cases rewriting its
+      // retained metafile each need their own independent compiler output.
+      const fixture = await (variant.startsWith('execution-')
+        ? partitionCompilation() : compilerExecutionFixture ??= partitionCompilation());
+      const output = await qualifyBgVerifierOutput(fixture.args);
+      if (variant === 'positive') {
+        expect(output.compilerReceipt!.consumption.compilerExecution.api).toEqual({
+          ...fixture.record.invocation.compiler,
+          path: relative(fixture.prepared.root, fixture.record.invocation.compiler.realpath).split(sep).join('/'),
+        });
+        expect(output.compilerReceipt!.consumption.compilerExecution.compilerBinary)
+          .toMatchObject({ kind: 'kernel-sealed-fd-v1', launches: 1 });
+        expect(verifyBgVerifierOutputRecord(output, fixture.record, fixture.args.invocation)).toBe(output);
+        return;
+      }
+      const changed = JSON.parse(JSON.stringify(output)) as typeof output;
+      const receipt = changed.compilerReceipt!;
+      if (variant === 'api') receipt.compilerApi.sha256 = 'a'.repeat(64);
+      else if (variant === 'binary') receipt.binary.sha256 = 'a'.repeat(64);
+      else if (variant === 'sealed-binary') receipt.compilerBinary.sha256 = 'a'.repeat(64);
+      else if (variant === 'output-inode') receipt.output.ino = '1';
+      else if (variant === 'metafile-inode') receipt.metafile!.ino = '1';
+      else {
+        // Alter the retained packet AND its current file to distinguish original
+        // toolchain checks from a mere comparison of two caller-shaped packets.
+        const packet = receipt.consumption as Partial<typeof receipt.consumption>;
+        if (variant === 'execution-omitted') delete packet.compilerExecution;
+        else if (variant === 'execution-node') packet.compilerExecution!.node.sha256 = 'a'.repeat(64);
+        else if (variant === 'execution-api') packet.compilerExecution!.api.sha256 = 'a'.repeat(64);
+        else if (variant === 'execution-native') packet.compilerExecution!.compilerBinary.kind = 'path-only';
+        else packet.compilerExecution!.compilerBinary.launches = 0;
+        receipt.compilerBinary = packet.compilerExecution?.compilerBinary ?? receipt.compilerBinary;
+        const metadata = JSON.parse(readFileSync(receipt.metafile!.path, 'utf8'));
+        metadata.papercuspCompilerConsumption = packet;
+        writeFileSync(receipt.metafile!.path, JSON.stringify(metadata));
+        const sha256 = createHash('sha256').update(readFileSync(receipt.metafile!.path)).digest('hex');
+        // Only the compiler metafile's digest is restamped here; the artifact
+        // manifest and original invocation stay immutable.
+        receipt.metafile!.sha256 = sha256;
+      }
+      const reasons: Record<string, string> = {
+        api: 'BG retained compiler API changed', binary: 'BG retained compiler binary changed',
+        'sealed-binary': 'BG retained sealed compiler binary changed',
+        'output-inode': 'BG compiler produced output identity changed',
+        'metafile-inode': 'BG compiler produced metafile identity changed',
+        'execution-omitted': 'BG original compiler execution is UNKNOWN',
+        'execution-node': 'BG original compiler Node mismatch',
+        'execution-api': 'BG original compiler API mismatch',
+        'execution-native': 'BG original sealed compiler binary is UNKNOWN',
+        'execution-launches': 'BG original sealed compiler binary is UNKNOWN',
+      };
+      expect(() => verifyBgVerifierOutputRecord(changed, fixture.record, fixture.args.invocation))
+        .toThrow(reasons[variant]);
+    });
+
   for (const { rowId, testName } of BG_R1_PARTITION_CASES.filter(row => row.file.endsWith('source-preview-export.test.ts'))) {
     it(testName, async () => {
       if (['bg-r1-partition-uncensused-source', 'bg-r1-partition-uncensused-dependency',

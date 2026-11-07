@@ -2199,16 +2199,21 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
         await fs.writeFile(file.path, file.contents, { flag: 'wx' });
       }
       assert.equal(result.outputFiles?.length, 1, 'BG compiler output is UNKNOWN');
+      // Retain the actually evaluated API buffer and the native descriptor
+      // alongside the input census. An argv naming a compiler is not evidence
+      // that its API or native binary produced these output bytes.
+      const compilerBinary = { kind: 'kernel-sealed-fd-v1', sha256: binary.sha256,
+        bytes: String(sealedInfo.size), dev: String(sealedInfo.dev), ino: String(sealedInfo.ino), launches: binaryLaunches };
+      const compilerExecution = { node: actualNode, api: compilerApi.identity, binary, compilerBinary };
       const consumption = freezeBgExpectation({ schemaVersion: 'bg-compiler-consumption-v1',
-        ...bgCompilerConsumptionIdentity(record), consumed });
+        ...bgCompilerConsumptionIdentity(record), consumed, compilerExecution });
       if (metafile) await fs.writeFile(metafile, JSON.stringify({ ...result.metafile,
         papercuspCompilerConsumption: consumption }), { flag: 'wx' });
       return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
         buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
         originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: activeCompiler.version,
         compilerApi: compilerApi.identity, binary,
-        compilerBinary: { kind: 'kernel-sealed-fd-v1', sha256: binary.sha256, bytes: String(sealedInfo.size),
-          dev: String(sealedInfo.dev), ino: String(sealedInfo.ino), launches: binaryLaunches },
+        compilerBinary,
         consumed, consumption, output: readBgIndependentOutputIdentity(options.outfile),
         ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
     });
@@ -2314,6 +2319,30 @@ function verifyBgOutputAuthority(output, record) {
   assert.equal(meta.sha256, receipt.metafile.sha256, 'BG sealed compiler consumption metafile changed');
   const sealed = JSON.parse(readFileSync(meta.path, 'utf8')).papercuspCompilerConsumption;
   assert.deepEqual(sealed, receipt.consumption, 'BG sealed compiler consumption receipt changed');
+  const execution = sealed.compilerExecution;
+  assert.ok(execution, 'BG original compiler execution is UNKNOWN');
+  assert.ok(execution.node?.realpath === record.invocation.node.realpath
+    && execution.node.sha256 === record.invocation.node.sha256, 'BG original compiler Node mismatch');
+  assert.ok(execution.api?.path === relative(record.prepared.root, record.invocation.compiler.realpath).split(sep).join('/')
+    && execution.api.realpath === record.invocation.compiler.realpath
+    && execution.api.sha256 === record.invocation.compiler.sha256, 'BG original compiler API mismatch');
+  assert.deepEqual(receipt.compilerApi, execution.api, 'BG retained compiler API changed');
+  assert.deepEqual(receipt.binary, execution.binary, 'BG retained compiler binary changed');
+  assert.deepEqual(receipt.compilerBinary, execution.compilerBinary, 'BG retained sealed compiler binary changed');
+  assert.equal(execution.binary.path, record.invocation.environment.ESBUILD_BINARY_PATH,
+    'BG original compiler binary path mismatch');
+  assert.deepEqual(readBgFileIdentity(execution.binary.path), execution.binary,
+    'BG original compiler binary changed');
+  const binaryStat = lstatSync(execution.binary.realpath, { bigint: true });
+  const native = execution.compilerBinary;
+  assert.ok(native.kind === 'kernel-sealed-fd-v1' && native.sha256 === execution.binary.sha256
+    && native.bytes === String(binaryStat.size) && /^[0-9]+$/.test(native.dev)
+    && /^[1-9][0-9]*$/.test(native.ino) && native.launches === 1,
+  'BG original sealed compiler binary is UNKNOWN');
+  assert.deepEqual(readBgIndependentOutputIdentity(output.entry.path), receipt.output,
+    'BG compiler produced output identity changed');
+  assert.deepEqual(readBgIndependentOutputIdentity(meta.path), receipt.metafile,
+    'BG compiler produced metafile identity changed');
   assert.deepEqual(receipt.consumed, sealed.consumed, 'BG sealed complete compiler consumption changed');
   assert.ok(Array.isArray(receipt.consumed) && receipt.consumed.length > 0,
     'BG complete compiler consumption is UNKNOWN');
@@ -2322,6 +2351,12 @@ function verifyBgOutputAuthority(output, record) {
     const path = `${tree.path}/${row.path}`;
     assert.ok(!files.has(path), 'BG compiler consumption census overlap');
     files.set(path, { ...row, path });
+  }
+  for (const identity of [execution.api, execution.binary]) {
+    const local = relative(record.prepared.root, identity.realpath).split(sep).join('/');
+    const original = files.get(local);
+    assert.ok(original?.kind === 'file' && original.sha256 === identity.sha256,
+      'BG original compiler execution is outside dependency census');
   }
   const sourceBlobs = {}, seen = new Set(), trees = new Map();
   for (const row of receipt.consumed) {
