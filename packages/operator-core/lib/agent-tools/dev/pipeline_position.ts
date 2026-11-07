@@ -857,6 +857,8 @@ export default defineTool({
   ],
   args: z.object({
     path: z.string().min(1).max(400).optional(),
+    runtimeConditionTool: z.string().min(1).max(200).optional()
+      .describe('With sourceRuntimeOnly, measure the loaded public argument-schema SHA256 for an explicit runtime blocker binding.'),
     sourceRuntimeOnly: z.boolean().optional()
       .describe('Return exact repository, accepted-source and runtime measurements for a bounded graph-source join.'),
     sha: z.string().min(4).max(64).optional(),
@@ -937,6 +939,8 @@ export default defineTool({
         sourceBlobs: args.path && bootArtifact.sourceBlobs[args.path]
           ? { [args.path]: bootArtifact.sourceBlobs[args.path] } : {} } : bootArtifact ?? null;
       const data = { ...routeHint, repoRoot: result.repoRoot, submodule: result.submodule,
+        ...(args.runtimeConditionTool ? { runtimeConditionToolSchema:
+          await (await import('../../runtime-blocker-condition')).readRuntimeToolSchemaIdentity(args.runtimeConditionTool) } : {}),
         acceptedSource: result.acceptedSource, servingRuntimes: result.servingRuntimes ?? [],
         observingRuntime: { ...getServingHostIdentity(), artifact } };
       ctx.metadata?.({ operationalOutput: { schemaVersion: 1, observedAt: new Date().toISOString(),

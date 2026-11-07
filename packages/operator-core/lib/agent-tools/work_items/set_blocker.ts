@@ -53,6 +53,8 @@ import type { RestrictionHold } from '../../restriction-holds';
 import { blockerDecisionInputSchema, prepareBlockerDecision, type BlockerDecisionInput,
   type BlockerDecisionRecord } from '../../blocker-resolution-decision';
 import { blockerBoundaryContext, preflightBlockerDecision } from '../../blocker-resolution-evidence';
+import { prepareRuntimeBlockerBinding, runtimeConditionBindingInputSchema,
+  type RuntimeConditionBindingInput } from '../../runtime-blocker-condition';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -76,6 +78,7 @@ const SET_BLOCKER_CALL_CONSTRAINT =
   "For a single-item call that sets a blocker, pass id, kind, and ref; ref is required even though it is optional in the structural schema. For items:[...], each entry that sets a blocker also requires kind and ref. A clear-only call may omit ref when one active blocker can be resolved; migrateWorkItemRefs:true takes only id. When setting a strict human owner-capability blocker (capability: credential, physical-device, external-service-action, or product-decision), provide a nonblank defaultIfUnanswered. For items:[...], this applies to each entry. A reassertion may omit it only when that work-item already has an active human blocker with the same ref and a nonblank defaultIfUnanswered. Clear-only calls and non-human blockers do not require it. The legacy kind shorthands credential, physical-device, external-service-action, and product-decision are treated as human capabilities." +
   " For a non-final item blocked on main/:3070/green-checkpoint, put in summary or evidence the literal phrase 'deployed-only', what staging/current-build cannot exercise, and a concrete reason introduced with because/due to/since; otherwise the guard refuses the blocker and source work continues on staging/current-build.";
 type BlockerInput = {
+  bindRuntimeCondition?: RuntimeConditionBindingInput;
   id: string;
   kind?: BlockerKindInput;
   capability?: BlockerCapabilityInput;
@@ -247,6 +250,8 @@ async function openDirectHumanCapabilityQuestion(
 }
 
 const fields = {
+  bindRuntimeCondition: runtimeConditionBindingInputSchema.optional()
+    .describe('Bind one existing runtime alias to exact loaded source/schema evidence. Metadata only: pass id/ref/harness and this field; no clear or lifecycle fields. Current custodian only; provenance is host-authored.'),
   blockerDecision: blockerDecisionInputSchema.optional(),
   kind: BLOCKER_KIND.optional(),
   capability: BLOCKER_CAPABILITY.optional(),
@@ -303,7 +308,16 @@ function validateMigrateOnly(
 const itemSpec = z
   .object({ id: z.string().min(1), ...fields })
   .strict()
-  .superRefine(validateCapabilityKindAlias);
+  .superRefine(validateCapabilityKindAlias)
+  .superRefine(validateRuntimeBindingOnly);
+
+function validateRuntimeBindingOnly(value: Record<string, unknown>, ctx: z.RefinementCtx) {
+  if (value.bindRuntimeCondition === undefined) return;
+  const allowed = new Set(['id', 'ref', 'harness', 'bindRuntimeCondition', 'items']);
+  for (const key of Object.keys(value)) if (!allowed.has(key) && value[key] !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: 'Runtime binding is metadata only; use a separate verification/clear call.' });
+  }
+}
 
 const TERMINAL = new Set(['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']);
 
@@ -545,6 +559,7 @@ export default defineTool({
       hold: fields.hold,
       ownerTurnRef: fields.ownerTurnRef,
       blockerDecision: fields.blockerDecision,
+      bindRuntimeCondition: fields.bindRuntimeCondition,
       items: z.array(itemSpec).min(1).max(100).optional(),
     })
     .strict()
@@ -562,6 +577,7 @@ export default defineTool({
       },
     )
     .superRefine((args, ctx) => {
+      validateRuntimeBindingOnly(args, ctx);
       validateCapabilityKindAlias(args, ctx);
       validateMigrateOnly(args, ctx);
       if (!args.items?.length) return;
@@ -582,6 +598,7 @@ export default defineTool({
         (args.items?.length ?? 0) > 0 ||
         Boolean(args.kind) ||
         args.clear === true ||
+        args.bindRuntimeCondition !== undefined ||
         args.migrateWorkItemRefs === true,
       {
         message: 'kind is required when setting a blocker; clear:true may infer kind from ref',
@@ -590,7 +607,7 @@ export default defineTool({
     .superRefine((args, ctx) => {
       if (!args.items?.length) return;
       for (const [index, item] of args.items.entries()) {
-        if (!item.kind && item.clear !== true && item.migrateWorkItemRefs !== true) {
+        if (!item.kind && item.clear !== true && item.migrateWorkItemRefs !== true && item.bindRuntimeCondition === undefined) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['items', index, 'kind'],
@@ -637,6 +654,7 @@ export default defineTool({
             hold: args.hold,
             ownerTurnRef: args.ownerTurnRef,
             blockerDecision: args.blockerDecision,
+            bindRuntimeCondition: args.bindRuntimeCondition,
           },
         ];
     const items: NormalizedBlockerInput[] = rawItems.map(normalizeBlockerInput);
@@ -648,6 +666,18 @@ export default defineTool({
           getWorkItem(input.id, input.harness),
         );
         if (!workItem) return { ok: false as const, id: input.id, error: `work_item '${input.id}' not found` };
+        if (input.bindRuntimeCondition !== undefined) {
+          const prepared = prepareRuntimeBlockerBinding(workItem, input.ref ?? '', input.bindRuntimeCondition, identity.ownerId);
+          if (!prepared.ok || !prepared.changed) return { ...prepared, id: input.id,
+            ...('changed' in prepared ? { workItem } : {}) };
+          const updated = await mergeWorkItemPayload(input.id, { externalBlockers: prepared.blockers }, {
+            harness: workItem.harness ?? undefined, expectedCustodianId: identity.ownerId, requireNonTerminal: true,
+            expectedExternalBlockers: (workItem.payload as Record<string, unknown> | null)?.externalBlockers,
+          });
+          return updated ? { ok: true as const, id: input.id, changed: true, workItem: updated }
+            : { ok: false as const, id: input.id, code: 'runtime_binding_conflict',
+              error: 'Custody or blocker history changed; no binding was written. Read the current item before retrying.' };
+        }
         // Bind caller intent, before generated timestamps/consult refs. Historical
         // retries must precede live modes, evidence, terminal and custody checks.
         const { blockerDecision: _decision, ...request } = input;

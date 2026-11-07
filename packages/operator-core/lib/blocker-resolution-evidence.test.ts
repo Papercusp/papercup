@@ -6,7 +6,8 @@ import type { UnresolvedDepBlocker } from './work-items';
 
 const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(), event: vi.fn(),
   doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
-  workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null) }));
+  workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null), runtime: vi.fn() }));
+vi.mock('./runtime-blocker-condition', () => ({ readRuntimeBlockerCondition: mocks.runtime }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: mocks.workspace }));
 vi.mock('./work-items', () => ({ getWorkItem: mocks.item, readUnresolvedDepBlockers: mocks.deps }));
 vi.mock('./work-item-blocking', () => ({ ALL_TERMINAL_STATUSES: new Set(['done', 'dropped']) }));
@@ -141,6 +142,33 @@ describe('canonical blocker boundary preflight', () => {
     mocks.deps.mockResolvedValueOnce(Array.from({ length: 25 }, () => ({ ref: 'WI-2', kind: 'feature' })));
     expect(await preflightBlockerDecision(item, undefined, context, { effect })).toMatchObject({ ok: false,
       missing: [expect.stringContaining('complete dependency census')] });
+  });
+
+  it('verifies a stored runtime binding separately, retaining every canonical obligation', async () => {
+    const runtime = { kind: 'runtime' as const, capability: 'live-dependency' as const,
+      capabilitySource: 'explicit' as const, ref: 'staging-operator', summary: 'Accepted source/schema',
+      status: 'active' as const, createdBy: 'su-a', createdAt: '2026-11-07T02:00:00Z',
+      updatedAt: '2026-11-07T02:00:00Z', runtimeConditionBinding: { schemaVersion: 1 } };
+    const observed = { ...item, state: 'blocked', payload: { externalBlockers: [runtime] } };
+    const runtimeRef = { kind: 'runtime' as const, ref: runtime.ref };
+    const input = { ...decision, evidenceRefs: [runtimeRef],
+      investigation: [{ action: 'Read bound runtime', outcome: 'Artifact and schema are measured', evidenceRefs: [runtimeRef] }],
+      verification: { outcome: 'Exact runtime condition satisfied', evidenceRefs: [runtimeRef] } };
+    mocks.deps.mockResolvedValue([]);
+    mocks.runtime.mockResolvedValue({ status: 'available', condition: 'satisfied', reachable: true });
+    expect(await preflightBlockerDecision(observed, input, context, { effect })).toMatchObject({ ok: true });
+    expect(mocks.runtime).toHaveBeenCalledWith(runtime);
+    for (const result of [{ status: 'unknown', detail: 'wrong host or unmeasured artifact' },
+      { status: 'available', condition: 'pending', reachable: true }]) {
+      mocks.runtime.mockResolvedValue(result);
+      expect(await preflightBlockerDecision(observed, input, context, { effect })).toMatchObject({ ok: false });
+    }
+    expect(await createBlockerEvidenceReader({ ...ctx, blockers: [] })(runtimeRef)).toMatchObject({ status: 'absent' });
+    mocks.runtime.mockResolvedValue({ status: 'available', condition: 'satisfied', reachable: true });
+    mocks.event.mockResolvedValue({ authoritative: false, verdict: 'unknown' });
+    expect(await preflightBlockerDecision({ ...observed, payload: { externalBlockers: [
+      { ...runtime, runtimeConditionBinding: undefined },
+    ] } }, input, context, { effect })).toMatchObject({ ok: false });
   });
 
   it('measures proposed conditions before their first write, retaining prior obligations', async () => {

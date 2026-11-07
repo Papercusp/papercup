@@ -86,6 +86,7 @@ export async function preflightBlockerDecision(
       }));
     for (const blocker of blockers) {
       if (blocker.kind === 'human' || blocker.kind === 'hold') obligationRefs.push({ kind: 'authority', ref: blocker.ref });
+      else if (blocker.kind === 'runtime' && blocker.runtimeConditionBinding !== undefined) obligationRefs.push({ kind: 'runtime', ref: blocker.ref });
       else if (blocker.kind === 'runtime' && blocker.ref.startsWith('state:')) obligationRefs.push({ kind: 'state', ref: blocker.ref });
       else obligationRefs.push({ kind: 'event', ref: blocker.ref });
     }
@@ -154,6 +155,12 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
     try {
       switch (ref.kind) {
         case 'work-item': return await workItem(ref.ref);
+        case 'runtime': {
+          const blockers = context.blockers.filter(entry => entry.kind === 'runtime' && entry.ref === ref.ref && entry.status === 'active');
+          if (blockers.length !== 1) return absent('exact canonical active runtime blocker is required');
+          const { readRuntimeBlockerCondition } = await import('./runtime-blocker-condition');
+          return await readRuntimeBlockerCondition(blockers[0]);
+        }
         case 'state': {
           const raw = ref.ref.replace(/^state:/, '');
           const hash = raw.indexOf('#');

@@ -4,6 +4,7 @@ import {
 } from './external-condition-reachability';
 import { assertHoldRegistered } from './hold-registry';
 import type { RestrictionHold } from './restriction-holds';
+import type { RuntimeConditionBinding } from './runtime-blocker-condition';
 
 /** `hold` is a restriction (one-work-graph-structured-holds-2026-10-26#D-014): it forbids
  * one action on one target until it is reviewed and lifted. It is never a wait that clears
@@ -174,6 +175,8 @@ export function isOwnerAskDefaultAction(value: unknown): value is OwnerAskDefaul
 }
 
 export interface ExternalBlockerRecord {
+  /** Explicit metadata binding for a legacy runtime alias; never itself clearance. */
+  runtimeConditionBinding?: RuntimeConditionBinding;
   kind: ExternalBlockerKind;
   capability: ExternalBlockerCapability;
   capabilitySource: ExternalBlockerCapabilitySource;

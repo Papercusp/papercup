@@ -6,7 +6,7 @@ import { z } from 'zod';
  * one transaction. It deliberately owns no table, queue, or background worker. */
 const text = (max: number) => z.string().trim().min(1).max(max);
 export const blockerEvidenceRefSchema = z.object({
-  kind: z.enum(['work-item', 'event', 'state', 'source', 'test', 'doc', 'session', 'authority']),
+  kind: z.enum(['work-item', 'event', 'state', 'runtime', 'source', 'test', 'doc', 'session', 'authority']),
   ref: text(2000),
 }).strict();
 const evidence = (max = 16) => z.array(blockerEvidenceRefSchema).min(1).max(max);

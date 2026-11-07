@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '@papercusp/hash-chain';
-import { prepareRuntimeBlockerBinding, readRuntimeBlockerCondition, runtimeToolSchemaIdentity } from './runtime-blocker-condition';
+import { prepareRuntimeBlockerBinding, readRuntimeBlockerCondition, readRuntimeToolSchemaIdentity } from './runtime-blocker-condition';
 
 const mocks = vi.hoisted(() => ({ identity: vi.fn(), health: vi.fn(), tools: vi.fn() }));
 vi.mock('./serving-host-identity', () => ({ getServingHostIdentity: mocks.identity }));
@@ -56,11 +56,11 @@ describe('audited runtime blocker binding preparation', () => {
 
 describe('exact loaded runtime blocker predicate', () => {
   it('requires both the expected boot source blobs and the actual projected tool schema', async () => {
-    expect(runtimeToolSchemaIdentity(binding.toolSchema.tool)).toEqual(binding.toolSchema);
+    expect(await readRuntimeToolSchemaIdentity(binding.toolSchema.tool)).toEqual(binding.toolSchema);
     expect(await readRuntimeBlockerCondition(bound)).toMatchObject({ status: 'available', condition: 'satisfied', reachable: true });
-    mocks.tools.mockReturnValue([{ name: binding.toolSchema.tool, inputSchema: { type: 'object' } }]);
+    mocks.tools.mockReturnValue([{ expose: { mcp: { name: binding.toolSchema.tool } }, inputSchema: { type: 'object' } }]);
     expect(await readRuntimeBlockerCondition(bound)).toMatchObject({ status: 'available', condition: 'pending' });
-    mocks.tools.mockReturnValue([{ name: binding.toolSchema.tool, inputSchema }]);
+    mocks.tools.mockReturnValue([{ expose: { mcp: { name: binding.toolSchema.tool } }, inputSchema }]);
     mocks.health.mockReturnValue({ artifact: { ...artifact, sourceBlobs: { ...binding.sourceBlobs,
       'packages/operator-core/lib/agent-tools/improvements/agent-review.ts': 'f'.repeat(40) } } });
     expect(await readRuntimeBlockerCondition(bound)).toMatchObject({ status: 'available', condition: 'pending' });
