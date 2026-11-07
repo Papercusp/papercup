@@ -7,6 +7,8 @@ import { EXAMPLE_LIFETIME_MS } from './agent-opportunities/privacy';
 import { redactSensitiveText, redactStructuredSensitiveValue } from './sensitive-text';
 import {
   recipeSourceOperationSchema,
+  validateRecipeCapabilities,
+  type CurrentCallerCapabilityCatalog,
   type JsonValue,
   type RecipeBindingSchemaV1,
   type RecipeSourceOperation,
@@ -169,9 +171,18 @@ export async function resolveRecipeSourceOperation(input: {
  * server-derived scope, never the author/proof's claimed scope. */
 export async function resolveStoredSourceOperation(recipe: {
   script: string; bindingSchema?: unknown; capabilityManifest?: unknown;
-}, context: { workspace?: string | null; harness?: string | null } = {}) {
+}, context: { workspace?: string | null; harness?: string | null; catalog?: CurrentCallerCapabilityCatalog } = {}) {
   const sourceOperation = object(recipe.capabilityManifest)?.sourceOperation;
   if (!sourceOperation || !context.workspace || !context.harness) return null;
+  // Source access and the reuser's current execution envelope are independent.
+  // Discovery passes the same freshly measured catalog used by replay; internal
+  // source hydration can still run after replay has already checked it.
+  if (context.catalog) {
+    const ref = recipeSourceOperationSchema.safeParse(sourceOperation);
+    if (!ref.success || !validateRecipeCapabilities({ manifest: recipe.capabilityManifest,
+      staticToolNames: [ref.data.family === 'sql' ? 'dev:pg_query' : 'capability:bash'],
+      catalog: context.catalog }).ok) return null;
+  }
   try {
     const { productionMiningScope } = await import('./agent-opportunities/privacy');
     const { productionOpportunityReaders } = await import('./agent-opportunities/source-readers');

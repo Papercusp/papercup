@@ -1433,6 +1433,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     const findWakeRecipe = deps.findWakeRecipe ?? defaultFindTopRecipeForWake;
     const hit = await findWakeRecipe(extractWakeRecipeQuery(checkpointBody, armTimeKickoff), {
       sql: input.sql,
+      target: { ownerId: input.targetOwnerId, workspaceId: input.workspaceId, harness: input.installSlug },
     }).catch(() => null);
     if (hit) recipeLine = renderWakeRecipeLine(hit);
   }

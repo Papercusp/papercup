@@ -15,7 +15,10 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => (
 // P-020 field-authority guard: no admissions by default; workspace pinned so the guard never reads the registry.
 vi.mock('../../work-admission/admit', () => ({ refuseExternalOwnedPatch: vi.fn(async () => null) }));
 vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../work-items', () => ({
+// Preserve transitive read-only consumers' exports as the production module grows;
+// this suite replaces the update handler's direct storage boundaries below.
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   updateWorkItem: vi.fn(),
   getWorkItem: vi.fn(),
   activeExternalBlockers: (payload: unknown) => {
@@ -57,6 +60,76 @@ beforeEach(() => {
 });
 
 describe('work_items:update handler (bulk keyed-array)', () => {
+  describe('declared acceptance criteria survive work definition updates', () => {
+    const criteria = ['Measure every requested criterion', 'Verify automatic fleet reporting'];
+    const definition = { acceptanceCriteria: criteria };
+
+    it.each([null, { scope: { inScope: ['report'], outOfScope: [] } }, { acceptanceCriteria: [criteria[1]] }])(
+      'refuses criterion removal by replacement or clear (%j) before any write',
+      async (replacement) => {
+        for (const kind of ['task', 'feature'] as const) {
+          getM.mockResolvedValue(workItemFixture({ id: 'WI-definition', kind, family: kind === 'feature' ? 'feature' : 'issue', payload: { workDefinition: definition } }));
+          const out = await body({ id: 'WI-definition', definition: replacement });
+          expect(out.results[0]).toMatchObject({ ok: false, error: 'definition_acceptance_criteria_removed' });
+          expect(out.results[0].removedCriteria).toContain(criteria[0]);
+        }
+        expect(mergeM).not.toHaveBeenCalled();
+        expect(updM).not.toHaveBeenCalled();
+      },
+    );
+
+    it('retains criteria while repairing a malformed optional field', async () => {
+      const corrupt = { ...definition, scope: { inScope: ['report'] } };
+      const item = workItemFixture({ id: 'WI-definition', payload: { workDefinition: corrupt } });
+      getM.mockResolvedValue(item);
+      mergeM.mockResolvedValue(item);
+      const out = await body({ id: item.id, definition });
+      expect(out.results[0].ok).toBe(true);
+      expect(mergeM).toHaveBeenCalledWith(item.id, { workDefinition: definition },
+        expect.objectContaining({ expectedWorkDefinition: corrupt }));
+    });
+
+    it('allows reordered and additional criteria, fencing the exact prior definition', async () => {
+      const item = workItemFixture({ id: 'WI-definition', payload: { workDefinition: definition } });
+      getM.mockResolvedValue(item);
+      mergeM.mockResolvedValue(item);
+      const replacement = { acceptanceCriteria: [criteria[1], criteria[0], 'Read back the report'] };
+      const out = await body({ id: item.id, definition: replacement });
+      expect(out.results[0].ok).toBe(true);
+      expect(mergeM).toHaveBeenCalledWith(item.id, { workDefinition: replacement },
+        expect.objectContaining({ expectedWorkDefinition: definition }));
+    });
+
+    it('does not launder criteria through a malformed persisted optional field', async () => {
+      getM.mockResolvedValue(workItemFixture({ id: 'WI-definition', payload: {
+        workDefinition: { ...definition, scope: { inScope: ['report'] } },
+      } }));
+      const out = await body({ id: 'WI-definition', definition: { firstUnit: 'Save report' } });
+      expect(out.results[0]).toMatchObject({ ok: false, error: 'definition_acceptance_criteria_removed', removedCriteria: criteria });
+      expect(mergeM).not.toHaveBeenCalled();
+    });
+
+    it('reports a concurrent definition change without retrying an unfenced write', async () => {
+      getM.mockResolvedValue(workItemFixture({ id: 'WI-definition', payload: { workDefinition: definition } }));
+      mergeM.mockResolvedValue(null);
+      const out = await body({ id: 'WI-definition', definition });
+      expect(out.results[0]).toMatchObject({ ok: false, error: 'definition_changed', retryable: true });
+      expect(mergeM).toHaveBeenCalledTimes(1);
+      expect(updM).not.toHaveBeenCalled();
+    });
+
+    it('preserves clearing a legacy definition without acceptance criteria', async () => {
+      const prior = { firstUnit: 'Read the source' };
+      const item = workItemFixture({ id: 'WI-definition', payload: { workDefinition: prior } });
+      getM.mockResolvedValue(item);
+      mergeM.mockResolvedValue(item);
+      const out = await body({ id: item.id, definition: null });
+      expect(out.results[0].ok).toBe(true);
+      expect(mergeM).toHaveBeenCalledWith(item.id, {},
+        expect.objectContaining({ unset: ['workDefinition'], expectedWorkDefinition: prior }));
+    });
+  });
+
   it('refuses forged reporter publication, answer and question payloads before writing', async () => {
     for (const key of ['reporterRelease', 'reporterAnswer', 'reporterQuestion']) {
       const out = await body({ id: 'EI-1', payload: { [key]: { forged: true } } });

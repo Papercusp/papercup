@@ -4379,6 +4379,7 @@ export async function mergeIssuePayload(
     harnessSlug?: string | null;
     expectedExternalBlockers?: unknown;
     expectedBlockerResolution?: unknown;
+    expectedWorkDefinition?: unknown;
     expectedCustodianId?: string | null;
     requireNonTerminal?: boolean;
   } = {},
@@ -4406,6 +4407,8 @@ export async function mergeIssuePayload(
   const expectedBlockers = JSON.stringify(opts.expectedExternalBlockers === undefined ? [] : opts.expectedExternalBlockers);
   const fenceDecision = Object.hasOwn(opts, 'expectedBlockerResolution');
   const expectedDecision = JSON.stringify(opts.expectedBlockerResolution ?? null);
+  const fenceDefinition = Object.hasOwn(opts, 'expectedWorkDefinition');
+  const expectedDefinition = JSON.stringify(opts.expectedWorkDefinition ?? null);
   const fenceCustodian = Object.hasOwn(opts, 'expectedCustodianId');
   // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
   // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
@@ -4449,6 +4452,7 @@ export async function mergeIssuePayload(
        AND item_kind = ANY (ARRAY[${db.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
        AND (${!fenceDecision} OR COALESCE(payload->'blockerResolution', 'null'::jsonb) = ${expectedDecision}::text::jsonb)
+       AND (${!fenceDefinition} OR COALESCE(payload->'workDefinition', 'null'::jsonb) = ${expectedDefinition}::text::jsonb)
        AND (${!fenceCustodian} OR taken_by IS NOT DISTINCT FROM ${opts.expectedCustodianId ?? null})
        AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
        -- The federation stamp treats ANY payload change as a local content

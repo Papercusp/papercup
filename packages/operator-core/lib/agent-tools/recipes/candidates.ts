@@ -14,6 +14,7 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { orchestrationCallerSurface } from '../orchestration/contract-preflight';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -80,6 +81,7 @@ export default defineTool({
     // leg: mean pairwise confidence of a recipe's tool-set, from dev:tool_cooccurrence.
     // (workspace-scoped telemetry — recipes are global, but this signal is per-workspace.)
     const toolCooccurrence = await buildRecipeCooccurrenceDep(workspaceId).catch(() => null);
+    const catalog = orchestrationCallerSurface(ctx).catalog;
     const { promoteCandidates, mergeClusters } = await recipeCandidates(
       getOrgPg().sql,
       {
@@ -88,7 +90,7 @@ export default defineTool({
       },
       { embedder, toolCooccurrence, log: (msg) => ctx.log(msg),
         authorizeSource: async recipe => Boolean(await resolveStoredSourceOperation(recipe,
-          { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx) })) },
+          { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx), catalog })) },
     );
     // Reuse the existing source-authorized worklist after the asynchronous recipe
     // scoring. Its own final read renews ACLs, retention and history identity.

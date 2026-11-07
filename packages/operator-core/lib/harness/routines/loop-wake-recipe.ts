@@ -16,9 +16,12 @@
  * the whole path is fail-soft and time-bounded (the fire path must not stall).
  */
 import type { Sql } from 'postgres';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { withIterativeScan, type PgHandle } from '@papercusp/search';
-import { deriveRecipeAuthority } from '../../recipe-authority';
+import { deriveRecipeAuthority, deriveStoredRecipeAuthority } from '../../recipe-authority';
+import { orchestrationCallerSurface } from '../../agent-tools/orchestration/contract-preflight';
+import type { getPresence } from '../../agent-tools/coordination/presence';
 import {
   proseProfilePredicateSql,
   resolveProseProfileSelection,
@@ -75,6 +78,9 @@ export function renderWakeRecipeLine(hit: WakeRecipeHit): string {
 
 export interface FindTopRecipeDeps {
   sql?: Sql;
+  /** Server-owned wake target; checkpoint prose never supplies authority. */
+  target?: { ownerId: string; workspaceId: string; harness: string };
+  readPresence?: typeof getPresence;
   /** Test seam; `null` = no compatible embedder, undefined = resolve the real one. */
   queryEmbedder?: {
     embed: (text: string) => Promise<number[]>;
@@ -90,8 +96,9 @@ const CANDIDATE_LIMIT = 5;
 
 /**
  * The single best active recipe for `query`, or null when nothing clears the
- * floor / no embedder / any failure / the time budget expires. ≤1-tool recipes
- * are excluded (the established low-value gate, recipes-reuse-activation P-004).
+ * floor / no embedder / any failure / the time budget expires. Ordinary ≤1-tool
+ * recipes are excluded; private source adapters renew current source and caller
+ * authority before they can be selected.
  *
  * WI-4946: a recipe embedding an opaque/unprovable call (raw SQL via
  * dev:pg_query, a shell via capability:bash/capability:script, a nested
@@ -135,12 +142,14 @@ export async function findTopRecipeForWake(
     const rows = (await withIterativeScan((deps.sql ?? getOrgPg().sql) as unknown as PgHandle, (handle) => {
       const sql = handle as unknown as Sql;
       return sql`
-      SELECT id, title, script, run_count, 1 - (embedding <=> ${qVec}::vector) AS sim
+      SELECT id, title, script, binding_schema, capability_manifest, run_count,
+             1 - (embedding <=> ${qVec}::vector) AS sim
         FROM harness_shared.code_recipes
        WHERE status = 'active'
          AND embedding IS NOT NULL
          AND ${proseProfilePredicateSql(sql, profile, 'embedding_profile', 'embedding_mode')}
-         AND COALESCE(array_length(tools_used, 1), 0) >= 2
+         AND (COALESCE(array_length(tools_used, 1), 0) >= 2
+           OR capability_manifest->'sourceOperation' IS NOT NULL)
     ORDER BY embedding <=> ${qVec}::vector
        LIMIT ${CANDIDATE_LIMIT}
     `;
@@ -148,6 +157,8 @@ export async function findTopRecipeForWake(
       id: string;
       title: string;
       script: string | null;
+      binding_schema?: unknown;
+      capability_manifest?: { sourceOperation?: unknown } | null;
       run_count: number | string;
       sim: number | string;
     }>;
@@ -159,14 +170,24 @@ export async function findTopRecipeForWake(
       if (!Number.isFinite(sim) || sim < LOOP_WAKE_RECIPE_SIM_FLOOR) break;
       let unsafeForWake = false;
       try {
-        const authority = await deriveRecipeAuthority(row.script ?? '');
-        // A loop wake carries checkpoint prose, not the authoritative live
-        // fleet/plan/item/resource context required to prove a bound recipe is
-        // reusable for THIS unit. Recommending it by raw cosine alone can point
-        // at a script that claims or completes a different work item. Fail
-        // closed and leave bound recommendations to recipes:search, which does
-        // receive and validate live entity context.
-        unsafeForWake = authority.unresolved || authority.bound;
+        if (row.capability_manifest?.sourceOperation) {
+          const target = deps.target;
+          if (!target) continue;
+          const readPresence = deps.readPresence ?? (await import('../../agent-tools/coordination/presence')).getPresence;
+          const current = await readPresence(target.ownerId, deps.sql);
+          if (!current || current.revoked || current.stale || !current.agentRole
+            || current.workspaceId !== target.workspaceId || current.potSlug !== target.harness) continue;
+          const catalog = orchestrationCallerSurface({ role: current.agentRole } as UnifiedToolContext).catalog;
+          const authority = await deriveStoredRecipeAuthority({ script: row.script ?? '',
+            bindingSchema: row.binding_schema, capabilityManifest: row.capability_manifest,
+            context: { workspace: target.workspaceId, harness: target.harness, catalog } });
+          if (!authority || authority.unresolved) continue;
+        } else {
+          const authority = await deriveRecipeAuthority(row.script ?? '');
+          // Checkpoint prose cannot authorize a generic entity-bound script.
+          // Those recommendations still require recipes:search's live refs.
+          unsafeForWake = authority.unresolved || authority.bound;
+        }
       } catch {
         unsafeForWake = true; // fail closed: an unparsable script isn't recommendable either
       }

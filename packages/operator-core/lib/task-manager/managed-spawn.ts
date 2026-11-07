@@ -803,11 +803,14 @@ function wireExit(
     const deadline = Date.now() + SCOPE_HANDOFF_GRACE_MS;
     const recheck = (): void => {
       if (closed) return;
-      if (payloadOutlivedClient()) {
+      const remaining = deadline - Date.now();
+      // A positive sample during teardown can still drain within this window.
+      // Delegate only after the full grace, preserving the client's exit evidence
+      // when the scope finishes draining before the deadline.
+      if (remaining <= 0 && payloadOutlivedClient()) {
         reportPayloadOutlivedClient(code, signal, true, intentionalTeardown);
         return;
       }
-      const remaining = deadline - Date.now();
       if (remaining <= 0) {
         stage?.('completion-handoff-complete');
         settle();

@@ -1,6 +1,42 @@
 /** Admission and terminal-evidence guards for the owning live Reports browser journey. */
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { writeFile } from 'node:fs/promises';
+
+const execute = promisify(execFile);
+
+/** Keep child diagnostics even when startup fails before Playwright writes its report. */
+export async function runReportBrowser(command: string, args: string[], options: {
+  cwd: string; env: NodeJS.ProcessEnv; directory: string; timeoutMs?: number;
+}) {
+  const startedAt = new Date().toISOString();
+  let stdout = '', stderr = '', failure: unknown;
+  try {
+    ({ stdout, stderr } = await execute(command, args, {
+      cwd: options.cwd, env: options.env, encoding: 'utf8',
+      timeout: options.timeoutMs ?? 180_000, maxBuffer: 8_000_000,
+    }));
+  } catch (error) {
+    failure = error;
+    const result = record(error);
+    stdout = typeof result.stdout === 'string' ? result.stdout : '';
+    stderr = typeof result.stderr === 'string' ? result.stderr : '';
+  }
+  const result = record(failure);
+  await Promise.all([
+    writeFile(join(options.directory, 'child.stdout.log'), stdout),
+    writeFile(join(options.directory, 'child.stderr.log'), stderr),
+    writeFile(join(options.directory, 'child.terminal.json'), JSON.stringify({
+      startedAt, finishedAt: new Date().toISOString(), command, args,
+      code: failure ? result.code ?? null : 0, signal: result.signal ?? null,
+      killed: result.killed === true, stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr),
+    }, null, 2)),
+  ]);
+  if (failure) throw failure;
+}
 
 export const REPORT_READER_SPEC = 'apps/operator/e2e/reports-reader.spec.ts';
 export const REPORT_READER_CASES = [

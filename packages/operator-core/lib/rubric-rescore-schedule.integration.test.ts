@@ -36,8 +36,10 @@ beforeAll(async () => { db = await createOrgTestDb(); h.sql = db.adminSql; });
 afterAll(async () => { await db?.cleanup(); });
 
 function body(result: unknown): any {
-  const value = result as { content: Array<{ text: string }> };
-  return JSON.parse(value.content[0]!.text);
+  const value = result as { data?: unknown; content?: Array<{ text: string }> };
+  if (value.data !== undefined) return value.data;
+  if (!value.content?.[0]?.text) throw new Error('Schedule fixture expected canonical data or MCP text content');
+  return JSON.parse(value.content[0].text);
 }
 
 async function policy(maxAgeMs: number) {

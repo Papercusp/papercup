@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, inject, it } from 'vitest';
-import { assertReportBrowserTerminal, assertStableReportRuntime, liveReportInput, record, REPORT_READER_CASES, type ReportRuntimeSnapshot } from './reports-reader-live';
+import { assertReportBrowserTerminal, assertStableReportRuntime, liveReportInput, record, REPORT_READER_CASES, runReportBrowser, type ReportRuntimeSnapshot } from './reports-reader-live';
 
 const execute = promisify(execFile), require = createRequire(import.meta.url);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -44,10 +44,10 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('live published Reports 
     assertStableReportRuntime(before, before, input);
     const sourceCommit = (await execute('git', ['rev-parse', 'HEAD'], { cwd: root, timeout: 10_000 })).stdout.trim();
     const cli = require.resolve('@playwright/test/cli');
-    await execute(process.execPath, [cli, 'test', 'e2e/reports-reader.spec.ts', '--config=playwright.config.mts',
+    await runReportBrowser(process.execPath, [cli, 'test', 'e2e/reports-reader.spec.ts', '--config=playwright.config.mts',
       '--grep', REPORT_READER_CASES.join('|'), '--workers=1', '--retries=0',
       '--reporter=list,json,./test/reporters/admin-test-runs-reporter-playwright.ts', '--output=' + join(directory, 'browser')],
-    { cwd: operator, timeout: 180_000, maxBuffer: 8_000_000, env: { ...process.env,
+    { cwd: operator, directory, env: { ...process.env,
       OPERATOR_E2E_REUSE_SERVER: '1', OPERATOR_E2E_BASE_URL: input.origin, PLAYWRIGHT_JSON_OUTPUT_FILE: reportPath,
       PAPERCUSP_TEST_RUN_GROUP: group, PAPERCUSP_TEST_RUN_RECEIPT_FILE: ledgerPath,
       PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '0' } });

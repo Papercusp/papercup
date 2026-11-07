@@ -10,16 +10,29 @@ import { recipeSourceOperationSchema } from '../../recipe-contract';
 import recipeGet from './get';
 import recipeSearch from './search';
 import recipeList from './list';
+import { orchestrationCallerSurface } from '../orchestration/contract-preflight';
+import { findTopRecipeForWake } from '../../harness/routines/loop-wake-recipe';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 
 // Keep storage, capture, source hydration, authority derivation and hybrid
 // search real. Only connection routing, the key and the current ACL decision
 // belong to the fixture; no saved recipe or recommendation is mocked.
 let fixture: Awaited<ReturnType<typeof sqlMiningFixture>>;
 let permitted = true;
+let callerPermitted = true;
+let toolPresent = true;
 const workspaceId = 'sql-mining-test', harnessSlug = 'mining-test';
 const originalScope = { workspaceId, sourceBoundary: 'authorized-tool-ledger',
   epoch: new Date().toISOString().slice(0, 7), key: new Uint8Array(32).fill(83) };
 let scope = originalScope;
+vi.mock('@papercusp/agent-mcp', async original => ({
+  ...await original<Record<string, unknown>>(),
+  listAllProjectedTools: () => toolPresent ? ['dev:pg_query', 'capability:bash'].map(name => ({
+    expose: { mcp: { name } }, effect: 'read',
+    agentRoles: callerPermitted ? ['operator', 'su'] : ['operator'],
+  })) : [],
+}));
 vi.mock('@papercusp/db-org', async original => ({
   ...await original<Record<string, unknown>>(), getOrgPg: () => ({ sql: fixture.db.adminSql }),
 }));
@@ -37,7 +50,9 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
 
 beforeAll(async () => { fixture = await sqlMiningFixture(); }, 120_000);
 afterAll(async () => { await fixture?.cleanup(); });
-beforeEach(async () => { await fixture.clear(); permitted = true; scope = originalScope; });
+beforeEach(async () => {
+  await fixture.clear(); permitted = true; callerPermitted = true; toolPresent = true; scope = originalScope;
+});
 const context = (over: Partial<UnifiedToolContext> = {}) => ({
   workspaceId, harnessSlug, role: 'su', isSuperuser: true,
   uiClientId: 'su-discovery-reuser', log: () => {}, ...over,
@@ -73,25 +88,39 @@ for (const family of ['sql', 'shell'] as const) {
     const saved = (await getRecipe(fixture.db.adminSql, captured!.row.id))!;
     expect(recipeSourceOperationSchema.safeParse(saved.capabilityManifest!.sourceOperation).success).toBe(true);
     expect(JSON.stringify(saved)).not.toContain('PRIVATE_');
+    const embedding = Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0);
+    const profile = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
+    await fixture.db.adminSql`UPDATE harness_shared.code_recipes SET embedding=${`[${embedding.join(',')}]`}::vector,
+      embedding_mode='gemma', embedding_profile=${profile.profileId} WHERE id=${saved.id}`;
     const visible = async (ctx = context()) => {
       const searched = data(await recipeSearch.handler({ query: saved.title, semantic: false, limit: 50 } as never, ctx));
       const fetched = data(await recipeGet.handler({ id: saved.id } as never, ctx));
       const listed = data(await recipeList.handler({ includeTrivial: true, limit: 100 } as never, ctx));
       const reviewed = await recipeCandidates(fixture.db.adminSql, { minRunCount: 1 }, {
         authorizeSource: async row => Boolean(await resolveStoredSourceOperation(row,
-          { workspace: ctx.workspaceId, harness: ctx.harnessSlug })),
+          { workspace: ctx.workspaceId, harness: ctx.harnessSlug, catalog: orchestrationCallerSurface(ctx).catalog })),
       });
-      for (const value of [searched, fetched, listed, reviewed]) expect(JSON.stringify(value)).not.toContain('PRIVATE_');
+      const brief = await findTopRecipeForWake(saved.title, { sql: fixture.db.adminSql,
+        queryEmbedder: { embed: async () => embedding, profile }, timeoutMs: 10_000,
+        target: { ownerId: 'su-discovery-reuser', workspaceId: ctx.workspaceId!, harness: ctx.harnessSlug! },
+        readPresence: async () => ({ ownerId: 'su-discovery-reuser', workspaceId: ctx.workspaceId,
+          potSlug: ctx.harnessSlug, agentRole: ctx.role, stale: false, revoked: false }) as never });
+      for (const value of [searched, fetched, listed, reviewed, brief]) expect(JSON.stringify(value)).not.toContain('PRIVATE_');
       return {
         search: searched.recipes.some((row: { id: string }) => row.id === saved.id),
         get: fetched.results.some((row: { id: string; ok: boolean }) => row.id === saved.id && row.ok),
         list: listed.recipes.some((row: { id: string }) => row.id === saved.id),
         review: reviewed.signals.some(row => row.id === saved.id),
+        brief: brief?.id === saved.id,
       };
     };
-    const allowed = { search: true, get: true, list: true, review: true };
-    const denied = { search: false, get: false, list: false, review: false };
+    const allowed = { search: true, get: true, list: true, review: true, brief: true };
+    const denied = { search: false, get: false, list: false, review: false, brief: false };
     expect(await visible()).toEqual(allowed);
+    callerPermitted = false; expect(await visible()).toEqual(denied);
+    callerPermitted = true; expect(await visible()).toEqual(allowed);
+    toolPresent = false; expect(await visible()).toEqual(denied);
+    toolPresent = true; expect(await visible()).toEqual(allowed);
     permitted = false; expect(await visible()).toEqual(denied);
     permitted = true; expect(await visible()).toEqual(allowed);
     expect(await visible(context({ workspaceId: 'foreign-workspace' }))).toEqual(denied);

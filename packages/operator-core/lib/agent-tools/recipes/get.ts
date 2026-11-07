@@ -15,6 +15,7 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { orchestrationCallerSurface } from '../orchestration/contract-preflight';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
@@ -67,6 +68,7 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const sql = getOrgPg().sql;
+    const catalog = orchestrationCallerSurface(ctx).catalog;
     const ids = mergeIds(args.id, args.ids);
     const env = await runBulk(
       ids,
@@ -76,7 +78,7 @@ export default defineTool({
           return { ok: false as const, id, error: 'not_found' };
         }
         const authority = await deriveStoredRecipeAuthority({ ...recipe,
-          context: { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx) } });
+          context: { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx), catalog } });
         if (!authority) return { ok: false as const, id, error: 'not_found' };
         const updatedAt = recipe.updatedAt ?? recipe.createdAt ?? '';
         const authorityDiagnostics = recipeRevisionDiagnostics({

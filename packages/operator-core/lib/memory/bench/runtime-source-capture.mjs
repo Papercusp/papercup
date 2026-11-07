@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import inspector from 'node:inspector';
 import { isMainThread } from 'node:worker_threads';
+import { isAbsolute, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bindRuntimeProcessTree } from './runtime-file-opens.mjs';
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -68,7 +70,7 @@ export function validateRuntimeSourceCapture(rows, expectedWorkerIds = [], proce
  * parsed-source evidence only: original loader inputs, executable/native bytes,
  * dependencies and creator exclusion need their separate maintained producers.
  */
-export function bindRuntimeSourcePopulation(trace, terminal, captures) {
+export function bindRuntimeSourcePopulation(trace, terminal, captures, fileInputs) {
   const processTree = bindRuntimeProcessTree(trace, terminal);
   const processes = processTree.tasks.filter(task => task.taskId === task.threadGroupId);
   if (!Array.isArray(captures) || !captures.length || captures.length !== processes.length)
@@ -100,8 +102,53 @@ export function bindRuntimeSourcePopulation(trace, terminal, captures) {
   return { schema: 'runtime-traced-source-population/v1', processId: processTree.processId,
     processes: receipts, tracedTaskPopulationComplete: true,
     parsedSourceProcessPopulationComplete: true, completeRuntimeClosureVerified: false,
+    ...(fileInputs === undefined ? {} : { fileInputs: bindParsedFiles(captures, fileInputs) }),
     sourceQualification: 'required', dependencyQualification: 'required', creatorFence: 'required',
     scope: 'V8 parsed sources and attached workers in every independently traced single-image process' };
+}
+
+/** Compare parsed file bytes with the existing source/dependency census format.
+ * This is a join, not a producer or an immutability attestation. The caller must
+ * retain the original census and its sealed/build custody separately. Transformed
+ * TS cannot be qualified by a matching URL or a loader's claimed source map.
+ * Keep every non-file script explicit for subsequent runtime/build qualification.
+ */
+function bindParsedFiles(captures, input) {
+  if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
+    || resolve(input.root) !== input.root || !Array.isArray(input.files)
+    || !input.files.length || input.files.length > 500_000)
+    throw new Error('runtime source file census invalid');
+  const files = new Map();
+  for (const file of input.files) {
+    if (!file || typeof file.path !== 'string' || !file.path || file.path.includes('\\')
+      || file.path.includes('\0') || file.path.split('/').some(part => !part || part === '.' || part === '..')
+      || !['file', 'symlink'].includes(file.kind) || !/^[a-f0-9]{64}$/.test(file.sha256)
+      || files.has(file.path)) throw new Error('runtime source file census ambiguous');
+    files.set(file.path, file);
+  }
+  const byUrl = new Map([...files].map(([path, file]) => [pathToFileURL(resolve(input.root, path)).href, file]));
+  const bindings = [], unboundSources = [];
+  for (const rows of captures) for (const row of rows.filter(row => row.kind === 'source')) {
+    const identity = { processId: rows[0].processId, target: row.target, scriptId: row.scriptId,
+      url: row.url, sha256: row.sha256 };
+    if (!row.url.startsWith('file:') && !isAbsolute(row.url)) { unboundSources.push(identity); continue; }
+    let url;
+    try {
+      url = isAbsolute(row.url) ? pathToFileURL(row.url).href : pathToFileURL(fileURLToPath(row.url)).href;
+    } catch { throw new Error('runtime source file URL unresolved'); }
+    // Queries, fragments, host aliases and noncanonical paths are not another
+    // way to name an original file. In particular, loader cache URLs cannot
+    // silently reuse the underlying source file's authority.
+    if (!isAbsolute(row.url) && url !== row.url || isAbsolute(row.url) && resolve(row.url) !== row.url)
+      throw new Error('runtime source file URL unresolved');
+    const file = byUrl.get(url);
+    if (!file || file.kind !== 'file' || file.sha256 !== row.sha256)
+      throw new Error('runtime parsed file differs from original file census');
+    bindings.push({ ...identity, path: file.path });
+  }
+  if (!bindings.length) throw new Error('runtime source has no file inputs to bind');
+  return { censusSha256: digest(JSON.stringify(input)), bindings, unboundSources,
+    originalSourceQualification: 'required', nativeDependencyQualification: 'required' };
 }
 
 export function startRuntimeSourceCapture(destination) {

@@ -528,6 +528,8 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(searchSimilarRecipesMock).toHaveBeenCalledTimes(1);
     const [, input] = searchSimilarRecipesMock.mock.calls[0] as unknown as [unknown, { recommendationContext: unknown }];
     expect(input.recommendationContext).toEqual({
+      catalog: expect.objectContaining({ allowedTools: roleScopedToolNames(listAllProjectedTools(), 'worker',
+        new Set(['code:run', 'orchestrate:run'])) }),
       workspace: 'ws-test',
       fleet: 'live-fleet',
       harness: 'alpha',
@@ -555,6 +557,8 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(searchSimilarRecipesMock).toHaveBeenCalledTimes(1);
     const [, input] = searchSimilarRecipesMock.mock.calls[0] as unknown as [unknown, { recommendationContext: unknown }];
     expect(input.recommendationContext).toEqual({
+      catalog: expect.objectContaining({ allowedTools: roleScopedToolNames(listAllProjectedTools(), 'worker',
+        new Set(['code:run', 'orchestrate:run'])) }),
       workspace: 'ws-test',
       fleet: 'live-fleet',
       harness: 'alpha',

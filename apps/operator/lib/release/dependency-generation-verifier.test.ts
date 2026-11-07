@@ -191,6 +191,9 @@ describe('D012 native generation closure', () => {
     const workspace = 'packages/omp-plugin';
     const f = fixture(workspace);
     const previous = f.publish();
+    const retained = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', 'HEAD', '--retain-as', 'immutable-donor-baseline-test']);
+    expect(retained.status, retained.stderr).toBe(0);
     const input = f.shell(f.generationScript, ['--integration', f.donor, '--fingerprint-ref', 'HEAD'])
       .stdout.match(/\binput=([a-f0-9]{64})/)![1]!;
     const selector = join(f.store, '.inputs', input);

@@ -11,6 +11,7 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { orchestrationCallerSurface } from '../orchestration/contract-preflight';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchSimilarRecipes } from '../../code-recipes-search';
@@ -133,6 +134,7 @@ export default defineTool({
         embedding: null,
         limit: args.limit ?? 5,
         recommendationContext: {
+          catalog: orchestrationCallerSurface(ctx).catalog,
           // EI-23083788269370466: caller-supplied plan/item/resource context is
           // not authority. Use only live claims/work-items/resource locks, and
           // server-derived workspace/fleet/harness scope.

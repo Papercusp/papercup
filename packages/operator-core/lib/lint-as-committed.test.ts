@@ -51,7 +51,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeWorkspaceRootFrom } from '@papercusp/test-config/admin-test-runs-reporter';
 import { createRetentionPin, removeRetentionPin } from './storage/retention-pins';
 
@@ -1449,9 +1449,29 @@ console.log('CLONE_PREREQUISITES_OK');
     return { root, main, head };
   }
 
+  const commandRuntimeRoots = new Set<string>();
+  afterEach(() => {
+    for (const root of commandRuntimeRoots) rmSync(root, { recursive: true, force: true });
+    commandRuntimeRoots.clear();
+  });
+
+  function commandEnvironment(overrides: NodeJS.ProcessEnv = {}) {
+    // These small black-box fixtures must sweep their own scratch and share
+    // their own admission locks, rather than wait on or reclaim host artifacts.
+    const runtime = mkdtempSync(join(realpathSync(tmpdir()), 'lac-command-runtime-'));
+    commandRuntimeRoots.add(runtime);
+    return currentRunnerEnvironment({
+      TMPDIR: runtime,
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: join(runtime, 'mutex'),
+      PAPERCUSP_RELEASE_RETENTION_ROOT: join(runtime, 'leases'),
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(runtime, 'copy.lock'),
+      ...overrides,
+    });
+  }
+
   function run(root: string, arbitrary = false) {
     return spawnSync(process.execPath, [scriptPath, 'lint:probe', ...(arbitrary ? ['--any'] : [])], {
-      cwd: root, env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+      cwd: root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
     });
   }
 
@@ -2156,6 +2176,7 @@ const { execFileSync } = require('node:child_process');
       expect(result.status, result.stdout + result.stderr).toBe(0);
       extracted = result.stdout.match(/DEPENDENT_SOURCE=(\S+)/)?.[1];
       expect(extracted).toBeDefined();
+      expect([...commandRuntimeRoots].some(root => extracted!.startsWith(root + sep))).toBe(true);
       expect(existsSync(extracted!)).toBe(!removed);
       if (!removed) {
         const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: extracted, encoding: 'utf8' }).trim();
@@ -2221,7 +2242,7 @@ const { execFileSync } = require('node:child_process');
       writeFileSync(npmShim, ['#!/bin/sh', 'kill -TERM $$', ''].join(String.fromCharCode(10)));
       chmodSync(npmShim, 0o755);
 
-      const childEnv = currentRunnerEnvironment({
+      const childEnv = commandEnvironment({
         PATH: `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
         PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
         PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'leases'),

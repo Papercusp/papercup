@@ -3,7 +3,7 @@
  * (dynamic-tool-surface-2026-07-01, D-011).
  *
  * A trimmed session sees only the ~20-tool core spine, so this map — injected into the MCP
- * `initialize.instructions` (mcpInstructionsForServer) — is what preserves DISCOVERABILITY:
+ * tools/list discovery entry (mcpInstructionsForServer) — preserves DISCOVERABILITY:
  * it tells the model WHAT capabilities exist (by category, with a few example tool names) so
  * it knows what to search for, at ~1–2k tokens instead of the ~165k of full descriptions the
  * old full-catalog load paid. The model then calls `tools:find("<intent>")` to surface +

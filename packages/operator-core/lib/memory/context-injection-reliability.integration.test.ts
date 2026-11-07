@@ -4,6 +4,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { mcpBootstrapInstructions, mcpToolsWithBootstrap } from '../endpoint-route/routes/transport/mcp-contract';
+import { lintInstructionText } from '../instruction-lint';
+import { capabilityMapText } from '../agent-tools/tools/capability-map';
 import * as codex from '../../../../apps/operator/scripts/hooks/inject/adapters/codex.mjs';
 import * as claude from '../../../../apps/operator/scripts/hooks/inject/adapters/claude.mjs';
 import * as omp from '../../../../apps/operator/scripts/hooks/inject/adapters/omp.mjs';
@@ -232,6 +235,75 @@ it('context reliability R-7: immutable-native-baseline', ({ task }) => {
   Object.assign(task.meta, { bootstrapBaseline: { artifactHash, wireHash,
     fixture: 'r7-native-pre-change.json', evidencePlane: 'immutable-native-metadata-baseline',
     tools: baseline.tools.length, artifactBytes: bytes.byteLength, wireBytes: Buffer.byteLength(wire, 'utf8') } });
+});
+
+/** Replay the immutable native descriptor population through the same batch
+ * decorator the HTTP/native host uses. This is a server-export replay, not a
+ * claim about installed clients, external reinsertion or billed tokens. */
+function bootstrapReplay() {
+  const baseline = JSON.parse(readFileSync(new URL('./fixtures/r7-native-pre-change.json', import.meta.url), 'utf8')) as {
+    tools: Array<{ name: string; description: string }>; toolOrder: string[];
+  };
+  let prefix = baseline.tools[0]!.description;
+  for (const tool of baseline.tools.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && prefix[i] === tool.description[i]) i++;
+    prefix = prefix.slice(0, i);
+  }
+  expect(prefix).toHaveLength(19367);
+  expect(prefix.endsWith('\n\n')).toBe(true);
+  const tools = baseline.tools.map(tool => ({ ...tool, description: tool.description.slice(prefix.length) }));
+  const guidance = mcpBootstrapInstructions(capabilityMapText());
+  return { baseline, prefix, tools, guidance, exported: mcpToolsWithBootstrap(tools, guidance) };
+}
+
+it('context reliability R-7: schema-preservation', () => {
+  const { baseline, tools, guidance, exported } = bootstrapReplay();
+  expect(exported.map(tool => tool.name)).toEqual(baseline.toolOrder);
+  for (const [index, tool] of exported.entries()) {
+    const own = tools[index]!.description;
+    expect(own).toContain('exec tool declaration:');
+    expect(tool.description.endsWith(own)).toBe(true);
+    expect(tool.description.slice(tool.description.indexOf('exec tool declaration:')))
+      .toBe(own.slice(own.indexOf('exec tool declaration:')));
+  }
+  expect(exported.filter(tool => tool.description.includes(guidance))).toHaveLength(1);
+  expect(exported.find(tool => tool.description.includes(guidance))!.name).toBe('mcp__papercusp_su__tools_find');
+  expect(mcpToolsWithBootstrap(exported, guidance)).toEqual(exported);
+  const schema = { type: 'object', properties: { row: { type: 'string' } }, required: ['row'] };
+  const restricted = [{ name: 'work_items:claim', description: 'claim', inputSchema: schema, _meta: { revision: 'fixture' } }];
+  const result = mcpToolsWithBootstrap(restricted, guidance);
+  expect(result[0]!.inputSchema).toBe(schema);
+  expect(result[0]!._meta).toBe(restricted[0]!._meta);
+  expect(restricted[0]!.description).toBe('claim');
+  expect(mcpToolsWithBootstrap([], guidance)).toEqual([]);
+  expect(mcpToolsWithBootstrap(restricted, undefined)).toEqual(restricted);
+});
+
+it('context reliability R-7: pinned-byte-baseline', ({ task }) => {
+  const { baseline, prefix, guidance, exported } = bootstrapReplay();
+  const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+  const before = bytes(JSON.stringify(baseline.tools)), after = bytes(JSON.stringify(exported));
+  const duplicatedBefore = (baseline.tools.length - 1) * bytes(prefix);
+  const duplicatedAfter = (exported.filter(tool => tool.description.includes(guidance)).length - 1) * bytes(guidance);
+  expect(before).toBe(1225418);
+  expect(duplicatedBefore).toBeGreaterThan(0);
+  expect(duplicatedAfter).toBe(0);
+  expect(after).toBeLessThan(before);
+  Object.assign(task.meta, { bootstrapReplay: { evidencePlane: 'current-tree-server-export-replay',
+    baselineArtifactHash: '986f440eeaf59cf02a400fcd1caf206edae88cc7b04ccd95a91ba29235560ed4',
+    tools: exported.length, before, after, duplicatedBefore, duplicatedAfter,
+    exportedHash: sha(exported), externalReinsertion: 'UNKNOWN', billedTokens: 'UNKNOWN' } });
+});
+
+it('context reliability R-7: contradiction-lint', () => {
+  const { guidance } = bootstrapReplay();
+  expect(lintInstructionText(guidance).clean).toBe(true);
+  expect(guidance).toContain('Catalog entries are discoverable capabilities, not permission grants');
+  expect(guidance).toContain('docs:author');
+  expect(guidance).toContain('Evidence-only judges use coord:orient {} without intent');
+  expect(guidance).not.toContain('WRITE a new/updated MDX');
+  expect(guidance).not.toContain('call ANY tool');
 });
 
 it('context reliability R-3: artifact-validator', () => {

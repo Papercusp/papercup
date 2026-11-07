@@ -227,7 +227,7 @@ function hasColumnEdit(it: {
 }
 
 const FIELDS = {
-  definition: WorkItemDefinitionSchema.nullable().optional().describe('Replace structured work fields, or null to clear. Use alone; available to both work-item families.'),
+  definition: WorkItemDefinitionSchema.nullable().optional().describe('Replace structured work fields, retaining every existing acceptance criterion. Null clears only definitions without acceptance criteria. Use alone; available to both work-item families. Dispose unfinished original work explicitly rather than deleting its close requirements.'),
   frozenTests: frozenTestsRegistrationSchema.optional().describe('Opted-in frozenTests: pilot only. Register an independently authored manual test-only evidence binding plus red calibration; use alone. Re-freeze requires a named Decision and expectedRevision.'),
   title: hardText(LIMITS.SHORT_TITLE).optional(),
   body: hardText(8000).optional(),
@@ -494,10 +494,34 @@ export default defineTool({
           }
           const parsed = it.definition === null ? null : WorkItemDefinitionSchema.safeParse(it.definition);
           if (parsed && !parsed.success) return { ok: false as const, id: it.id, error: 'invalid_definition' };
+          const current = await getWorkItem(it.id, it.harness);
+          if (!current) return { ok: false as const, id: it.id, error: 'not_found' };
+          const payload = current.payload && typeof current.payload === 'object' && !Array.isArray(current.payload)
+            ? current.payload as Record<string, unknown> : {};
+          const prior = payload.workDefinition;
+          const rawCriteria = prior && typeof prior === 'object' && !Array.isArray(prior)
+            ? (prior as Record<string, unknown>).acceptanceCriteria : undefined;
+          // Read criteria independently of optional fields: repairing a corrupt
+          // scope must not erase otherwise readable requested work. Clearing or
+          // replacing the definition used to disable the successful-close gate.
+          const priorCriteria = Array.isArray(rawCriteria)
+            ? [...new Set(rawCriteria.filter((value): value is string => typeof value === 'string')
+              .map((value) => value.trim()).filter(Boolean))] : [];
+          const nextCriteria = new Set(parsed?.success ? parsed.data.acceptanceCriteria ?? [] : []);
+          const removedCriteria = priorCriteria.filter((criterion) => !nextCriteria.has(criterion));
+          if (removedCriteria.length > 0) return {
+            ok: false as const, id: it.id, error: 'definition_acceptance_criteria_removed', removedCriteria,
+            message: 'Retain the declared acceptance criteria. Keep unfinished work open or explicitly dispose ' +
+              'the original work and register a bounded replacement; deleting criteria cannot establish fulfillment. No fields were written.',
+          };
           const item = await mergeWorkItemPayload(it.id,
             parsed?.success ? { workDefinition: parsed.data } : {},
-            { harness: it.harness, ...(it.definition === null ? { unset: ['workDefinition'] } : {}) });
-          return item ? { ok: true as const, id: it.id, item } : { ok: false as const, id: it.id, error: 'not_found' };
+            { harness: it.harness, expectedWorkDefinition: prior,
+              ...(it.definition === null ? { unset: ['workDefinition'] } : {}) });
+          return item ? { ok: true as const, id: it.id, item } : {
+            ok: false as const, id: it.id, error: 'definition_changed', retryable: true,
+            message: 'The work definition changed or the item became unavailable before the write. Re-read before retrying; no unfenced write was attempted.',
+          };
         }
         if (it.frozenTests !== undefined) {
           if (Object.entries(it).some(([key, value]) => !['id','harness','frozenTests'].includes(key) && value !== undefined)) {

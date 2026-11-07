@@ -323,6 +323,9 @@ describe('confined task exit recording (WI-37509)', () => {
 
     expect(L.closed).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS - SCOPE_HANDOFF_RECHECK_MS);
+    expect(L.closed).toEqual([]);
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toMatch(/Intentional teardown/);
   });
@@ -386,7 +389,12 @@ describe('confined task exit recording (WI-37509)', () => {
   it('waits for a delayed scope handoff instead of closing a live task row', async () => {
     vi.useFakeTimers();
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const { emitter, scope } = await spawnConfined([]);
+    const { emitter, result, scope } = await spawnConfined([]);
+    let completed = false;
+    const completion = result.waitForCompletion().then(outcome => {
+      completed = true;
+      return outcome;
+    });
 
     // systemd-run can report its client gone before the payload has joined the
     // named scope. The first read is therefore empty even though the scope is
@@ -400,8 +408,35 @@ describe('confined task exit recording (WI-37509)', () => {
     await Promise.resolve();
 
     expect(L.closed).toEqual([]);
+    expect(completed).toBe(false);
+    expect(info).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS - SCOPE_HANDOFF_RECHECK_MS);
+    await expect(completion).resolves.toMatchObject({ status: 'delegated' });
+    expect(L.closed).toEqual([]);
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
+  });
+
+  it.each([50, 125, 225])('retains direct exit evidence when a scope drains at %ims within the handoff grace', async drainAtMs => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitter, result, scope } = await spawnConfined([3204532]);
+    let completed = false;
+    const completion = result.waitForCompletion().then(outcome => {
+      completed = true;
+      return outcome;
+    });
+
+    emitter.emit('exit', null, 'SIGTERM');
+    await vi.advanceTimersByTimeAsync(drainAtMs);
+    expect(completed).toBe(false);
+    expect(L.closed).toEqual([]);
+    scope.procs = [];
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS - drainAtMs);
+
+    await expect(completion).resolves.toEqual({ status: 'recorded' });
+    expect(L.closed).toMatchObject([{ taskId: result.taskId, state: 'killed', exitReason: 'signal SIGTERM' }]);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('closes a scope that drains during the handoff window without warning', async () => {

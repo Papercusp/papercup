@@ -83,6 +83,16 @@ const queryEmbedder = (embed: (text: string) => Promise<number[]>) => ({
 });
 
 describe('findTopRecipeForWake', () => {
+  it('omits a private source candidate without a measured target and keeps an authorized generic fallback', async () => {
+    const hit = await findTopRecipeForWake('do the thing', {
+      sql: stubSql([
+        { id: 'private', title: 'Private operation', script: 'return 1;',
+          capability_manifest: { sourceOperation: {} }, run_count: 3, sim: 0.95 },
+        { id: 'generic', title: 'Generic', script: 'return 1;', run_count: 3, sim: 0.9 },
+      ]), queryEmbedder: queryEmbedder(okEmbedder),
+    });
+    expect(hit?.id).toBe('generic');
+  });
   it('includes the exact stored-profile predicate in the recipe cosine query', async () => {
     const identifiers: string[] = [];
     const sql = ((strings: TemplateStringsArray) => {

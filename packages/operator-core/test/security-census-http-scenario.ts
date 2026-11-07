@@ -72,7 +72,10 @@ export async function measureSecurityCensusScenario(o: {
     assert.equal(artifact.status, 'measured', JSON.stringify(artifact));
     assert.ok('sourceBlobs' in artifact);
     assert.equal(artifact.sourceBindingScope, 'boot-bundle-tracked-inputs-only');
-    assert.equal(artifact.sourceSha, o.expectedSha);
+    // Health exposes the bundler's abbreviated commit; the artifact preserves
+    // the full commit. Both must identify the same selected source.
+    assert.match(o.expectedSha, /^[a-f0-9]{7,64}$/);
+    assert.ok(artifact.sourceSha.startsWith(o.expectedSha), 'boot artifact differs from the serving build');
     const bundleSha256 = sha256(await readFile(o.bundle));
     assert.equal(artifact.bundleSha256, bundleSha256);
     const root = resolve(import.meta.dirname, '../../..');

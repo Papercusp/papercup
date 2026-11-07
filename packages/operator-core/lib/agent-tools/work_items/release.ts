@@ -671,7 +671,16 @@ export default defineTool({
             prior.wasClaimed = p.wasClaimed;
           },
         };
-        let workItem = await releaseWorkItem(it.id, releaseOpts);
+        let workItem: Awaited<ReturnType<typeof releaseWorkItem>>;
+        try {
+          workItem = await releaseWorkItem(it.id, releaseOpts);
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && typeof error.code === 'string'
+              && error.code.startsWith('blocker_decision_')) {
+            return { ...error, ok: false as const, id: it.id, error: error.message };
+          }
+          throw error;
+        }
         if (blockerReceipt?.replayed) return { ok: true as const, id: it.id, workItem,
           blockerDecision: blockerReceipt.record, replayed: true };
         // WI-10006515: a null release on an OWN-NODE issue row stranded at origin='remote' is

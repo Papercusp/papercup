@@ -1,5 +1,5 @@
-/** Public blocker contracts over real PostgreSQL. Only the external condition
- * producer and unrelated runtime discovery are replaced; validation, identities,
+/** Public blocker contracts over real PostgreSQL. The external condition
+ * producer writes the isolated event ledger; validation, identities,
  * dependencies, lifecycle, decision CAS, claims and checkpoints are production. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
@@ -11,8 +11,10 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL,
   applyClaimPathReadDeps } from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import type { BlockerDecisionInput } from '../../blocker-resolution-decision';
+import { activeExternalBlockers } from '../../external-blockers';
+import { createBlockerEvidenceReader, preflightBlockerDecision } from '../../blocker-resolution-evidence';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, cleared: false }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }),
 }));
@@ -31,12 +33,6 @@ vi.mock('../coordination/federation-scope', async original => ({
   ...(await original<typeof import('../coordination/federation-scope')>()),
   resolveWorkspaceHiveScope: async () => ({ kind: 'none' as const }),
 }));
-vi.mock('../../external-condition-reachability', async original => ({
-  ...(await original<typeof import('../../external-condition-reachability')>()),
-  readEventConditionReachability: async () => ({ verdict: 'reachable' as const,
-    basis: h.cleared ? 'fired' as const : 'live-resolver' as const, authoritative: true,
-    evidence: 'Isolated condition producer observation', checkedAt: new Date().toISOString() }),
-}));
 vi.mock('../coordination/presence', async original => ({
   ...(await original<typeof import('../coordination/presence')>()),
   getPresence: async (ownerId: string) => ownerId === 'agent-repair'
@@ -45,6 +41,8 @@ vi.mock('../coordination/presence', async original => ({
 
 const wi = await import('../../work-items');
 const checkpoints = await import('../../work-item-checkpoint');
+const { registerAnnouncement } = await import('../../events/await/store');
+const { readEventConditionReachability } = await import('../../external-condition-reachability');
 const { readBlockerResolution } = await import('../../blocker-resolution-decision');
 const { default: setBlocker } = await import('./set_blocker');
 const { default: setState } = await import('./set_state');
@@ -63,10 +61,13 @@ type Result = { ok?: boolean; code?: string; error?: string; nextAction?: string
 async function call(tool: { handler: (args: never, ctx: never) => Promise<unknown> }, args: Record<string, unknown>) {
   const result = await tool.handler(args as never, CTX) as { data?: Result; content?: { text?: string }[] };
   const data = result.data ?? JSON.parse(result.content?.find(entry => entry.text?.startsWith('{'))?.text ?? '{}') as Result;
-  return data.results?.[0] ?? data;
+  const row = data.results?.[0] ?? data;
+  if (!row.ok && args.blockerDecision) console.info('BOUNDARY_REFUSAL', JSON.stringify({ args, result: row }));
+  return row;
 }
-const checkpointRef = (id: string) => ({ id, harness: HARNESS, workspaceId: 'default' });
-const deferral = (key: string): BlockerDecisionInput => ({ schemaVersion: 1, idempotencyKey: key,
+const checkpointRef = (id: string) => ({ workItemId: id, harness: HARNESS, workspaceId: 'default' });
+type DeferralDecision = Extract<BlockerDecisionInput, { disposition: 'defer' }>;
+const deferral = (key: string): DeferralDecision => ({ schemaVersion: 1, idempotencyKey: key,
   disposition: 'defer', symptom: 'Dependency probe is pending', evidenceRefs: [ref],
   investigation: [{ action: 'Read the condition producer', outcome: 'Repair has not completed', evidenceRefs: [ref] }],
   attempts: [], deferral: { reason: 'external-dependency', responsibleParty: `event:${EVENT}`,
@@ -77,6 +78,24 @@ const resolution = (key: string): BlockerDecisionInput => ({ schemaVersion: 1, i
   attempts: [{ action: 'Repair the isolated dependency', outcome: 'Producer confirms recovery', evidenceRefs: [ref] }],
   verification: { outcome: 'The original dependency condition is satisfied', evidenceRefs: [ref] } });
 let db: FreshPgDb;
+let announcementId: number;
+async function declareCondition() {
+  const declaration = await registerAnnouncement({ subscriberId: OWNER, eventKey: EVENT,
+    scopeKind: 'harness', scopeRef: HARNESS, note: 'Isolated dependency producer' });
+  announcementId = declaration.id;
+  expect(await readEventConditionReachability(EVENT, { requireSpecificCondition: true }))
+    .toMatchObject({ verdict: 'reachable', authoritative: true, basis: 'live-resolver' });
+}
+async function repairCondition() {
+  // Simulate the external producer's completed generation without running the
+  // automatic consumer reconciler: each public boundary must measure it itself.
+  const rows = await db.sql`UPDATE harness_shared.event_awaits
+    SET fired_at=now(), fired_reason='event', fired_by='fixture-producer'
+    WHERE id=${announcementId} AND event_key=${EVENT} AND superseded_at IS NULL RETURNING id`;
+  expect(rows).toHaveLength(1);
+  expect(await readEventConditionReachability(EVENT, { requireSpecificCondition: true }))
+    .toMatchObject({ verdict: 'reachable', authoritative: true, basis: 'fired' });
+}
 beforeAll(async () => {
   db = await createFreshPgDb('blocker-boundaries');
   h.sql = db.sql;
@@ -91,6 +110,11 @@ beforeAll(async () => {
   }
   await applyClaimPathReadDeps(ddl => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL);
+  await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
+    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
+    writer_key text, msg_id text NOT NULL, body jsonb NOT NULL,
+    ts timestamptz NOT NULL DEFAULT now())`);
   await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
     workspace_id text NOT NULL, scope text NOT NULL, note text, journal jsonb NOT NULL DEFAULT '[]',
     updated_ts bigint NOT NULL, deps jsonb, body_ts bigint, attested_count integer NOT NULL DEFAULT 0,
@@ -98,19 +122,38 @@ beforeAll(async () => {
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
-  h.cleared = false;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps,
-    harness_shared.carry_notes, harness_shared.coord_event_log RESTART IDENTITY CASCADE`;
+    harness_shared.carry_notes, harness_shared.coord_event_log,
+    harness_shared.event_awaits, harness_shared.event_key_fires RESTART IDENTITY CASCADE`;
+  await declareCondition();
 });
 async function seed(kind: 'task' | 'feature' = 'feature', blocked = true) {
   const item = await wi.createWorkItem({ kind, title: 'Investigate dependency', harness: HARNESS, createdBy: OWNER });
   const blockers = blocked ? [{ kind: 'event', capability: 'live-dependency', ref: EVENT, status: 'active',
+    summary: 'Await isolated dependency recovery',
     createdBy: OWNER, createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z' }] : [];
   await db.sql`UPDATE harness_shared.work_items SET status='wip', taken_by=${OWNER}, taken_at=now(),
-    payload=payload || ${db.sql.json({ keep: 'original', externalBlockers: blockers,
+    payload=COALESCE(payload, '{}'::jsonb) || ${db.sql.json({ keep: 'original', externalBlockers: blockers,
       _claimHold: true, claim_hold_by: OWNER })} WHERE feature_id=${item.id}
     AND workspace_id='default' AND harness_slug=${HARNESS}`;
   await checkpoints.setWorkItemCheckpoint(checkpointRef(item.id), 'Original checkpoint');
+  const canonical = await wi.getWorkItem(item.id, HARNESS);
+  expect(canonical).toMatchObject({ id: item.id, harness: HARNESS, state: 'wip', assignee: OWNER,
+    payload: { keep: 'original', _claimHold: true, claim_hold_by: OWNER } });
+  expect(activeExternalBlockers(canonical?.payload), JSON.stringify(canonical)).toHaveLength(blocked ? 1 : 0);
+  // Validate the actual reader/fixture contract before interpreting a public
+  // refusal as a product failure. These reads never replace production logic.
+  await wi.readUnresolvedDepBlockers(item.id, HARNESS);
+  if (blocked && canonical) {
+    const context = { ownerId: OWNER, sessionId: OWNER, workspaceId: 'default',
+      harnessSlug: HARNESS, role: 'su', root: null };
+    const measured = await createBlockerEvidenceReader({ ...context, workItemId: item.id,
+      blockers: activeExternalBlockers(canonical.payload) })(ref);
+    expect(measured, JSON.stringify(measured)).toMatchObject({ status: 'available', reachable: true });
+    const checked = await preflightBlockerDecision(canonical, deferral('fixture-preflight'), context,
+      { effect: { fixture: true }, enteringDeferral: true });
+    expect(checked, JSON.stringify(checked)).toMatchObject({ ok: true });
+  }
   return item.id;
 }
 async function snapshot(id: string) {
@@ -142,7 +185,7 @@ describe('public blocker resolution boundaries', () => {
       ] as const;
       for (const [tool, args] of requests) {
         const result = await call(tool, { ...args, harness: HARNESS });
-        expect(result, JSON.stringify(args)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+        expect(result, JSON.stringify({ args, result })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
         expect(await snapshot(id), JSON.stringify(args)).toEqual(before);
       }
     }
@@ -159,7 +202,7 @@ describe('public blocker resolution boundaries', () => {
     const id = await seed();
     const args = { id, harness: HARNESS, kind: 'event', ref: EVENT, blockerDecision: deferral('persist') };
     const first = await call(setBlocker, args);
-    expect(first).toMatchObject({ ok: true });
+    expect(first, JSON.stringify(first)).toMatchObject({ ok: true });
     const recorded = readBlockerResolution((await wi.getWorkItem(id, HARNESS))?.payload);
     expect(recorded.status).toBe('recorded');
     const before = await snapshot(id);
@@ -176,14 +219,14 @@ describe('public blocker resolution boundaries', () => {
       const args = { id, harness: HARNESS, ref: EVENT, clear: true, blockerDecision: resolution('repair') };
       expect(await call(setBlocker, args)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
       expect(await snapshot(id)).toEqual(before);
-      h.cleared = true;
+      await repairCondition();
       expect(await call(setBlocker, args)).toMatchObject({ ok: true });
       const item = await wi.getWorkItem(id, HARNESS);
       expect(item?.assignee).toBe(OWNER);
       expect(item?.payload).toMatchObject({ externalBlockers: [{ status: 'cleared' }],
         blockerResolution: { history: [{ authorId: OWNER, sessionId: OWNER }] } });
       expect(await checkpoints.getWorkItemCheckpoint(checkpointRef(id))).toBe('Original checkpoint');
-      h.cleared = false;
+      await declareCondition();
     }
   });
   it('resumes only after measured dependency clearance', async () => {
@@ -193,10 +236,56 @@ describe('public blocker resolution boundaries', () => {
     expect(await call(setBlocker, { id, harness: HARNESS, ref: EVENT, clear: true,
       blockerDecision: resolution('premature-resume') })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
     expect(await snapshot(id)).toEqual(before);
-    h.cleared = true;
+    await repairCondition();
     expect(await call(setBlocker, { id, harness: HARNESS, ref: EVENT, clear: true,
       blockerDecision: { ...resolution('measured-resume'), priorRevision: 1 } })).toMatchObject({ ok: true });
-    expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ state: 'todo', assignee: OWNER });
+    expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ state: 'open', assignee: OWNER });
+  });
+
+  it('honors peer human and external custody', async () => {
+    const peer = await seed('task', false);
+    await db.sql`UPDATE harness_shared.work_items SET taken_by='agent-repair'
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${peer}`;
+    const id = await seed('feature', false);
+    const peerRef = { kind: 'work-item' as const, ref: `${HARNESS}#${peer}` };
+    await db.sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      VALUES ('default', 'feature', ${`${HARNESS}#${id}`}, 'issue', ${peer}, 'blocks')`;
+    const peerDecision: DeferralDecision = { ...deferral('peer'), evidenceRefs: [peerRef],
+      investigation: [{ action: 'Read canonical peer work', outcome: 'Live repair owner retains custody', evidenceRefs: [peerRef] }],
+      deferral: { reason: 'active-peer', responsibleParty: 'agent-repair', reasonEvidenceRefs: [peerRef],
+        nextAction: 'Resume when the owned dependency settles', recheckRef: peerRef } };
+    const before = await snapshot(id);
+    expect(await call(setState, { id, harness: HARNESS, state: 'needs-human', blockerDecision: {
+      ...peerDecision, deferral: { ...peerDecision.deferral, responsibleParty: 'absent-peer' },
+    } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(await snapshot(id)).toEqual(before);
+    expect(await call(setState, { id, harness: HARNESS, state: 'needs-human', blockerDecision: peerDecision })).toMatchObject({ ok: true });
+    expect(await wi.getWorkItem(peer, HARNESS)).toMatchObject({ state: 'wip', assignee: 'agent-repair' });
+    expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ assignee: OWNER });
+    expect((await snapshot(id)).edges).toEqual(before.edges);
+
+    const human = await seed();
+    const authority = { kind: 'authority' as const, ref: 'fixture:device-action' };
+    const humanBlocker = { kind: 'human', capability: 'physical-device', ref: authority.ref,
+      summary: 'Device holder must press the physical confirmation', status: 'active',
+      createdBy: OWNER, createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z' };
+    await db.sql`UPDATE harness_shared.work_items SET payload=jsonb_set(payload, '{externalBlockers}',
+      (payload->'externalBlockers') || ${db.sql.json([humanBlocker])})
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${human}`;
+    const humanDecision: DeferralDecision = { ...deferral('human'), evidenceRefs: [authority, ref],
+      investigation: [{ action: 'Inspect capability and event', outcome: 'Physical action requires the device holder', evidenceRefs: [authority, ref] }],
+      deferral: { reason: 'human-action', responsibleParty: 'device-holder', reasonEvidenceRefs: [authority],
+        nextAction: 'Device holder performs physical confirmation; await its declared event', recheckRef: ref } };
+    const humanBefore = await snapshot(human);
+    expect(await call(setState, { id: human, harness: HARNESS, state: 'needs-human', blockerDecision: humanDecision })).toMatchObject({ ok: true });
+    expect(await wi.getWorkItem(human, HARNESS)).toMatchObject({ assignee: OWNER });
+    expect(activeExternalBlockers((await wi.getWorkItem(human, HARNESS))?.payload)).toHaveLength(2);
+    expect((await snapshot(human)).checkpoint).toBe(humanBefore.checkpoint);
+
+    const external = await seed();
+    expect(await state(external, 'external-custody')).toMatchObject({ ok: true });
+    expect(await wi.getWorkItem(external, HARNESS)).toMatchObject({ state: 'blocked', assignee: OWNER });
   });
 
   for (const [family, kind] of [['issue', 'task'], ['feature', 'feature']] as const) {

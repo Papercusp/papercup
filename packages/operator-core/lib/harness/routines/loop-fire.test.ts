@@ -1575,7 +1575,10 @@ describe('the short-form recipe splice (P-005c — the moment-of-need reuse poin
     });
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
 
-    expect(findWakeRecipe).toHaveBeenCalledWith('batch-triage the open observations', { sql: undefined });
+    expect(findWakeRecipe).toHaveBeenCalledWith('batch-triage the open observations', {
+      sql: undefined,
+      target: { ownerId: baseInput.targetOwnerId, workspaceId: baseInput.workspaceId, harness: baseInput.installSlug },
+    });
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(opts.summary).toContain("recipes:run { id: 'r-triage' }");
     expect(opts.summary).toContain('run 3×');

@@ -5236,37 +5236,146 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
-    it.each([false, true])(
-      'refuses the truthful report with 25 unknown requested measurements even after artifact acceptance (validateOnly=%s)',
-      async (validateOnly) => {
-        const measurements = Array.from({ length: 26 }, (_, index) => `Measure requested fleet criterion ${index + 1}`);
+    // Immutable fleet-execution-health@57, criteriaHash 57b504287a278d9c790c85f82f9e02030755a249e5c03952f89f6e04cb113be4.
+    // Exact key order read from PG artifact evidence/c52-luna-r1-20261106/
+    // r7-canonical-map-binding-extension-20261107T0650Z.json. These are coverage
+    // identities, not a substitute for the retained full methods or owner-source authentication.
+    const lunaRequestedCriteria = [
+      'claim-flow-no-double-placement',
+      'member-report-integrity',
+      'blockers-escalated-not-parked',
+      'wave-outcome-vs-plan',
+      'handoff-durability',
+      'member-liveness-and-loop-health',
+      'capacity-and-resource-discipline',
+      'completed-work-ships',
+      'backlog-hygiene',
+      'dedicated-ownership-routing',
+      'comms-economy',
+      'leader-visibility-reporting',
+      'context-budget-discipline',
+      'leader-continuity-and-wake-source',
+      'leader-decision-recording',
+      'leader-dispatch-and-pickup-verification',
+      'leader-supervision-economy',
+      'fleet-charter-and-scope',
+      'membership-churn',
+      'member-claim-and-lock-discipline',
+      'member-responsiveness-and-stand-down',
+      'member-shared-lane-restraint',
+      'member-fix-quality',
+      'member-residue-and-filing-discipline',
+      'member-productivity',
+      'leader-outside-request-and-finding-uptake',
+    ];
+    const lunaMeasuredCriteria = ['comms-economy'];
+    const lunaUnknownCriteria = lunaRequestedCriteria.filter((key) => !lunaMeasuredCriteria.includes(key));
+    const lunaAcceptedArtifacts = ['published report read back in full', 'independent report integrity audit passed'];
+    const lunaAssessment = {
+      ...verificationItem,
+      title: 'Grade fleet execution against every requested criterion',
+      payload: { workDefinition: { acceptanceCriteria: lunaRequestedCriteria } },
+    };
+
+    it.each([false, true].flatMap((validateOnly) =>
+      ['omitted', 'notChecked', 'notApplicable'].map((bucket) => ({ validateOnly, bucket })),
+    ))(
+      'refuses the frozen Luna 26-requested/25-unknown report after artifact acceptance: $bucket (validateOnly=$validateOnly)',
+      async ({ validateOnly, bucket }) => {
+        expect(lunaRequestedCriteria).toHaveLength(26);
+        expect(lunaUnknownCriteria).toHaveLength(25);
         const fleetAssessment = {
-          ...verificationItem,
-          title: 'Grade fleet execution against every requested criterion',
-          payload: { workDefinition: { acceptanceCriteria: measurements } },
+          ...lunaAssessment,
         };
         getWorkItem.mockResolvedValue(fleetAssessment);
         setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...fleetAssessment, state: 'resolved' }));
-        const artifacts = ['published report read back in full', 'independent report integrity audit passed'];
-        const r = await one({
+        // Use the raw public schema: the common test helper must not add outcome,
+        // state, assumptions or any other completion contract to this incident.
+        const r = await oneRaw({
           id: 'WI-verify',
           state: 'resolved',
+          assumptions: 'none',
           validateOnly,
           completion: {
             summary: 'Report accurately records 1 degraded criterion and 25 unknown measurements; its integrity audit passed.',
             verifiedHow: 'manual',
             testResult: 'Complete report read back; independent audit accepted its truthful evidence.',
-            coverage: { population: artifacts, checked: artifacts, residue: [] },
+            verification: {
+              workOutcome: 'other-no-new-change',
+              coverage: bucket === 'omitted'
+                ? { population: lunaAcceptedArtifacts, checked: lunaAcceptedArtifacts, residue: [] }
+                : {
+                  population: [...lunaRequestedCriteria, ...lunaAcceptedArtifacts],
+                  checked: [...lunaMeasuredCriteria, ...lunaAcceptedArtifacts],
+                  [bucket]: lunaUnknownCriteria,
+                  residue: [],
+                },
+            },
           },
         });
 
         expect(r.ok).toBe(false);
-        expect(r.verificationCoverageError).toContain('workDefinition.acceptanceCriteria');
-        for (const measurement of measurements) expect(r.verificationCoverageError).toContain(measurement);
+        expect(r.verificationCoverageError).toContain(
+          bucket === 'omitted' ? 'omits workDefinition.acceptanceCriteria' : 'unchecked acceptance criteria',
+        );
+        const missing = bucket === 'omitted' ? lunaRequestedCriteria : lunaUnknownCriteria;
+        for (const measurement of missing) expect(r.verificationCoverageError).toContain(measurement);
         expect(r).not.toHaveProperty('completion');
         expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+        expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+        expect(commentWorkItem).not.toHaveBeenCalled();
+        expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
       },
     );
+
+    it.each([false, true])('allows the same frozen Luna scope when all 26 requested measurements are checked (validateOnly=%s)', async (validateOnly) => {
+      getWorkItem.mockResolvedValue(lunaAssessment);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...lunaAssessment, state: 'resolved' }));
+      const population = [...lunaRequestedCriteria, ...lunaAcceptedArtifacts];
+      const r = await oneRaw({
+        id: 'WI-verify',
+        state: 'resolved',
+        assumptions: 'none',
+        validateOnly,
+        completion: {
+          summary: 'Measured the requested fleet criteria and retained the report and its integrity acceptance.',
+          verifiedHow: 'manual',
+          testResult: 'The complete requested measurement population is checked.',
+          verification: {
+            workOutcome: 'other-no-new-change',
+            coverage: { population, checked: population, residue: [] },
+          },
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(validateOnly ? 0 : 1);
+    });
+
+    it('retains the frozen Luna partial report as record-only progress without terminal success', async () => {
+      getWorkItem.mockResolvedValue(lunaAssessment);
+      const r = await oneRaw({
+        id: 'WI-verify',
+        recordOnly: true,
+        completion: {
+          summary: 'Report records 1 degraded criterion and 25 unknown requested measurements; measurement continues.',
+          verification: {
+            coverage: {
+              population: lunaRequestedCriteria,
+              checked: lunaMeasuredCriteria,
+              notChecked: lunaUnknownCriteria,
+              residue: [],
+            },
+          },
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(r.workItem.state).toBe('open');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
 
     it.each(['notChecked', 'notApplicable'] as const)(
       'rejects declared acceptance criteria left in %s even with an honest partial summary',

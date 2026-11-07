@@ -5884,6 +5884,8 @@ export async function mergeWorkItemPayload(
     unset?: readonly string[];
     expectedExternalBlockers?: unknown;
     expectedBlockerResolution?: unknown;
+    /** Raw prior definition, including legacy fields; presence enables an atomic comparison. */
+    expectedWorkDefinition?: unknown;
     expectedCustodianId?: string | null;
     requireNonTerminal?: boolean;
   } = {},
@@ -5910,6 +5912,8 @@ export async function mergeWorkItemPayload(
     const expectedBlockers = JSON.stringify(opts.expectedExternalBlockers === undefined ? [] : opts.expectedExternalBlockers);
     const fenceDecision = Object.hasOwn(opts, 'expectedBlockerResolution');
     const expectedDecision = JSON.stringify(opts.expectedBlockerResolution ?? null);
+    const fenceDefinition = Object.hasOwn(opts, 'expectedWorkDefinition');
+    const expectedDefinition = JSON.stringify(opts.expectedWorkDefinition ?? null);
     const fenceCustodian = Object.hasOwn(opts, 'expectedCustodianId');
     let wrote = false;
     const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
@@ -5935,6 +5939,7 @@ export async function mergeWorkItemPayload(
          AND feature_id = ${id}
          AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
          AND (${!fenceDecision} OR COALESCE(payload->'blockerResolution', 'null'::jsonb) = ${expectedDecision}::text::jsonb)
+         AND (${!fenceDefinition} OR COALESCE(payload->'workDefinition', 'null'::jsonb) = ${expectedDefinition}::text::jsonb)
          AND (${!fenceCustodian} OR taken_by IS NOT DISTINCT FROM ${opts.expectedCustodianId ?? null})
          AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
       RETURNING 1 AS ok`;

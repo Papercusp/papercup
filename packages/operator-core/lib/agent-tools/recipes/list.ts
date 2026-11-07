@@ -10,6 +10,7 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { orchestrationCallerSurface } from '../orchestration/contract-preflight';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { listRecipes } from '../../code-recipes-store';
@@ -53,9 +54,10 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const limit = args.limit ?? 25;
+    const catalog = orchestrationCallerSurface(ctx).catalog;
     const all = await listRecipes(getOrgPg().sql, { limit, includeTrivial: args.includeTrivial ?? false,
       authorizeSource: async recipe => Boolean(await resolveStoredSourceOperation(recipe,
-        { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx) })) });
+        { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx), catalog })) });
     const recipes = all.map((r) => ({
       id: r.id,
       title: r.title,

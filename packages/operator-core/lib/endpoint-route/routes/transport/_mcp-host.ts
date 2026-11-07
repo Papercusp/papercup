@@ -241,7 +241,7 @@ import {
   summaryGuidanceDescription,
   type ResultDoorSkipReason,
 } from '@papercusp/tooldef';
-import { MCP_SERVER_CAPABILITIES, mcpBootstrapInstructions } from './mcp-contract';
+import { MCP_SERVER_CAPABILITIES, mcpBootstrapInstructions, mcpToolsWithBootstrap } from './mcp-contract';
 import { withMcpDiagnosticWarnings, type McpCallResult } from './mcp-diagnostic-warnings';
 import { parseMcpToolText } from './mcp-result-text';
 import { loadOperatorToolCatalogue } from '../../../agent-tools/operator-tool-catalogue';
@@ -3288,7 +3288,7 @@ const INITIALIZE_STAGE_SLOW_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 2_500;
 })();
 
-/** Static connection guidance; per-session enrichment remains SDK-owned below. */
+/** Static listing guidance; per-session initialize enrichment stays SDK-owned. */
 function mcpInstructionsForServer(): string | undefined {
   // dynamic-tool-surface D-011: append the compact CAPABILITY MAP so a trimmed session (the
   // default now) knows WHAT exists to search for — discoverability at ~1-2k instead of the
@@ -3853,7 +3853,10 @@ async function getSlashPrompt(
 
 /** Reuse these options for every connection; negotiation remains SDK-owned. */
 export function mcpHostServerOptions() {
-  return { capabilities: MCP_SERVER_CAPABILITIES, instructions: mcpInstructionsForServer() };
+  // Common static guidance belongs on one tools/list entry. Some clients copy
+  // initialize.instructions onto every tool, multiplying the whole bootstrap.
+  // The initialize wrapper below still supplies authorized per-session context.
+  return { capabilities: MCP_SERVER_CAPABILITIES };
 }
 
 /** Register the complete operator protocol on a transport-independent SDK server. */
@@ -4209,7 +4212,7 @@ export function registerMcpHost(server: McpServer): void {
       toolsListPhases: phases.toMetadata(),
       outcome: 'success',
     }));
-    return { tools };
+    return { tools: mcpToolsWithBootstrap(tools, mcpInstructionsForServer()) };
   }));
 
   server.server.setRequestHandler(
@@ -6505,7 +6508,7 @@ export function registerMcpHost(server: McpServer): void {
   // SDK-owned), then append the session-start memory prelude — user +
   // harness mem0 recall (harness-identity query per D-005) + the
   // agent-insights index. Auth-gated: a failed OR bare (`kind:'none'`)
-  // spawn context gets the static text only — memories must never leak to
+  // spawn context gets the SDK base response only — memories must never leak to
   // an unauthenticated probe. Deadline-bounded + never-throws: a slow or
   // broken memory backend can never stall or break session establishment.
   const sdkInitialize = takeStoredInitializeHandler(server.server);

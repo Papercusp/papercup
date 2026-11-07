@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { reportFullFixture } from '../../../apps/operator-vite/src/components/reports/reports-test-fixture';
-import { assertReportBrowserTerminal, assertStableReportRuntime, liveReportInput, markdownHash, REPORT_READER_CASES, REPORT_READER_SPEC } from './reports-reader-live';
+import { assertReportBrowserTerminal, assertStableReportRuntime, liveReportInput, markdownHash, REPORT_READER_CASES, REPORT_READER_SPEC, runReportBrowser } from './reports-reader-live';
 
 const env = { OPERATOR_REPORT_PROOF_JSON: '/owned/get.json', OPERATOR_E2E_BASE_URL: 'http://127.0.0.1:3170',
   OPERATOR_REPORT_BUILD_SHA: 'abcdef012345', OPERATOR_REPORT_MARKER: 'unique stored marker', OPERATOR_REPORT_LIVE_OUTPUT_DIR: '/owned/browser' };
@@ -16,6 +19,29 @@ const ledger = () => [{ outcome: 'inserted', id: '123', filePath: REPORT_READER_
 const proof = () => ({ reportId: 'report / exact', sourceMarkdownSha256: markdownHash(body), exportSha256: 'c'.repeat(64), externalRequests: [] });
 
 describe('live Reports browser acceptance guards', () => {
+  it.each([0, 7])('retains real child streams and exit %i even without a Playwright report', async code => {
+    const directory = await mkdtemp(join(tmpdir(), 'report-browser-diagnostics-'));
+    try {
+      const run = runReportBrowser(process.execPath, ['-e', `console.log('startup stdout'); console.error('startup stderr'); process.exit(${code})`], {
+        cwd: directory, directory, env: process.env,
+      });
+      if (code) await expect(run).rejects.toMatchObject({ code });
+      else await run;
+      expect(await readFile(join(directory, 'child.stdout.log'), 'utf8')).toContain('startup stdout');
+      expect(await readFile(join(directory, 'child.stderr.log'), 'utf8')).toContain('startup stderr');
+      expect(JSON.parse(await readFile(join(directory, 'child.terminal.json'), 'utf8'))).toMatchObject({ code, signal: null, killed: false });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it('records a timed-out child as killed while preserving its startup output', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'report-browser-diagnostics-'));
+    try {
+      await expect(runReportBrowser(process.execPath, ['-e', "console.log('startup reached'); setInterval(() => {}, 1000)"], {
+        cwd: directory, directory, env: process.env, timeoutMs: 2_000,
+      })).rejects.toMatchObject({ killed: true, signal: 'SIGTERM' });
+      expect(await readFile(join(directory, 'child.stdout.log'), 'utf8')).toContain('startup reached');
+      expect(JSON.parse(await readFile(join(directory, 'child.terminal.json'), 'utf8'))).toMatchObject({ code: null, killed: true, signal: 'SIGTERM' });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it('admits the canonical report wire shape with exact encoded selector and full-body hash', () => {
     expect(liveReportInput(env, receipt())).toMatchObject({ reportId: 'report / exact', selector: '/reports?sel=report%20%2F%20exact', bodyHash: markdownHash(body) });
   });

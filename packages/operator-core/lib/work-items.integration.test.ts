@@ -1017,6 +1017,56 @@ describe('blocker decision payload CAS', () => {
   });
 });
 
+describe('work definition CAS (real PG)', () => {
+  const original = { acceptanceCriteria: ['Measure the requested population'] };
+
+  it.each(['task', 'feature'] as const)('%s refuses stale definition replacement and clear atomically', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'work definition CAS race', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: original, keep: 'original' }, { harness: 'papercup' });
+    const concurrent = { ...original, acceptanceCriteria: [...original.acceptanceCriteria, 'Verify automatic reporting'], legacy: { retain: true } };
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: concurrent, keep: 'concurrent' }, { harness: 'papercup' });
+    const before = await wi.getWorkItem(item.id, 'papercup');
+    for (const clear of [false, true]) {
+      const result = await wi.mergeWorkItemPayload(item.id, clear ? { wrong: true } : { workDefinition: original, wrong: true }, {
+        harness: 'papercup', expectedWorkDefinition: original,
+        unset: clear ? ['workDefinition', 'keep'] : ['keep'],
+      });
+      expect(result).toBeNull();
+      expect((await wi.getWorkItem(item.id, 'papercup'))?.payload).toEqual(before?.payload);
+    }
+  });
+
+  it.each(['task', 'feature'] as const)('%s supports absent-definition enrollment and preserves unrelated payload', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'work definition CAS enrollment', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { keep: 'concurrent' }, { harness: 'papercup' });
+    const result = await wi.mergeWorkItemPayload(item.id, { workDefinition: original }, {
+      harness: 'papercup', expectedWorkDefinition: undefined,
+    });
+    expect(result?.payload).toMatchObject({ workDefinition: original, keep: 'concurrent' });
+    expect(await wi.mergeWorkItemPayload(item.id, { wrong: true }, {
+      harness: 'papercup', expectedWorkDefinition: undefined, unset: ['workDefinition'],
+    })).toBeNull();
+    const cleared = await wi.mergeWorkItemPayload(item.id, {}, {
+      harness: 'papercup', expectedWorkDefinition: original, unset: ['workDefinition'],
+    });
+    expect(cleared?.payload).toMatchObject({ keep: 'concurrent' });
+    expect(cleared?.payload).not.toHaveProperty('workDefinition');
+  });
+
+  it.each(['task', 'feature'] as const)('%s admits only one concurrent revision of the same work definition', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'work definition CAS contenders', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: original }, { harness: 'papercup' });
+    const replacements = ['first', 'second'].map((firstUnit) => ({ ...original, firstUnit }));
+    const outcomes = await Promise.all(replacements.map((workDefinition) => wi.mergeWorkItemPayload(
+      item.id, { workDefinition }, { harness: 'papercup', expectedWorkDefinition: original },
+    )));
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    expect((await wi.getWorkItem(item.id, 'papercup'))?.payload).toMatchObject({
+      workDefinition: replacements[outcomes.findIndex(Boolean)],
+    });
+  });
+});
+
 describe('blocker history CAS (EI-25362976472267628, real PG)', () => {
   const history = [{ kind: 'event', ref: 'event:first', status: 'active', legacy: { retain: true },
     summary: 'Wait for first event', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', createdBy: 'agA' }];
@@ -1068,6 +1118,11 @@ describe('blocker history CAS (EI-25362976472267628, real PG)', () => {
     const item = await wi.createWorkItem({ kind: 'task', title: 'blocker history CAS setter', harness: 'papercup', createdBy: 'agA' });
     const before = await wi.getWorkItem(item.id, 'papercup');
     const realGet = wi.getWorkItem;
+    // This fixture isolates the real history CAS. Decision-evidence admission is
+    // exercised separately; its earlier refusal must not mask this race guard.
+    const boundary = await import('./blocker-resolution-evidence');
+    const admission = vi.spyOn(boundary, 'preflightBlockerDecision')
+      .mockResolvedValueOnce({ ok: true, ordinary: true });
     const spy = vi.spyOn(wi, 'getWorkItem').mockImplementationOnce(async (id, harness) => {
       const stale = await realGet(id, harness);
       await wi.mergeWorkItemPayload(item.id, { externalBlockers: history }, { harness: 'papercup' });
@@ -1085,6 +1140,7 @@ describe('blocker history CAS (EI-25362976472267628, real PG)', () => {
       expect(after?.state).toBe(before?.state);
     } finally {
       spy.mockRestore();
+      admission.mockRestore();
     }
   });
 });

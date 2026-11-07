@@ -19,6 +19,7 @@ import {
 } from './recipe-authority-derive';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { resolveStoredSourceOperation } from './recipe-source-operation';
+import type { CurrentCallerCapabilityCatalog } from './recipe-contract';
 
 // P-007: the pure static derivation lives in `recipe-authority-derive.ts` so the
 // Cupboard Worker can run the SAME analysis at publish time (this module pulls
@@ -44,6 +45,8 @@ export interface RecipeAuthorityContext {
   harness?: string | null;
   items?: string[] | null;
   resources?: string[] | null;
+  /** Server-measured discovery envelope; never serialized into an authority proof. */
+  catalog?: CurrentCallerCapabilityCatalog;
 }
 
 type LiveClaimRow = { plan_slug: string; harness_slug: string; item_id: string };

@@ -140,6 +140,35 @@ describe('parsed sources joined to independent process lifetimes', () => {
     expect(result.completeRuntimeClosureVerified).toBe(false);
     expect(result.dependencyQualification).toBe('required');
   });
+  it('joins original file census bytes while keeping generated and runtime scripts explicit', () => {
+    const rows=captures();
+    rows[0].splice(2,0,{kind:'source',target:'main',scriptId:'2',url:'[eval]',sha256:'b'.repeat(64),bytes:7});
+    rows[0].at(-1)!.sources=2;
+    const files={root:'/',files:[{path:'input.js',kind:'file' as const,sha256:'a'.repeat(64)}]};
+    const proof=bindRuntimeSourcePopulation(trace,terminal,rows,files);
+    expect(proof.fileInputs?.bindings.map(row=>row.processId)).toEqual([10,20]);
+    expect(proof.fileInputs?.unboundSources).toEqual([
+      {processId:10,target:'main',scriptId:'2',url:'[eval]',sha256:'b'.repeat(64)},
+    ]);
+    expect(proof.fileInputs?.originalSourceQualification).toBe('required');
+    expect(proof.completeRuntimeClosureVerified).toBe(false);
+  });
+  it.each(['changed-bytes','missing-child-input','duplicate','symlink','escape','relative-root','query','fragment','host','no-file'])(
+    'refuses %s file evidence rather than treating a parsed URL as original-source authority', variant=>{
+      const rows=captures();
+      const files={root:'/',files:[{path:'input.js',kind:'file' as 'file'|'symlink',sha256:'a'.repeat(64)}]};
+      if(variant==='changed-bytes') rows[1][1].sha256='b'.repeat(64);
+      if(variant==='missing-child-input') rows[1][1].url='file:///unrecorded.js';
+      if(variant==='duplicate') files.files.push({...files.files[0]});
+      if(variant==='symlink') files.files[0].kind='symlink';
+      if(variant==='escape') files.files[0].path='../input.js';
+      if(variant==='relative-root') files.root='relative';
+      if(variant==='query') rows[1][1].url+='?loader=1';
+      if(variant==='fragment') rows[1][1].url+='#loaded';
+      if(variant==='host') rows[1][1].url='file://localhost/input.js';
+      if(variant==='no-file') for(const capture of rows) capture[1].url='[eval]';
+      expect(()=>bindRuntimeSourcePopulation(trace,terminal,rows,files)).toThrow();
+    });
   it.each(['missing-child','extra-child','duplicate','wrong-executable','reexec','fork-only',
     'early-start','late-terminal','invalid-time','failed-capture','incomplete-worker','missing-source'])(
     'refuses %s instead of extending parent evidence to unobserved code', variant => {
@@ -181,6 +210,14 @@ describe('parsed sources joined to independent process lifetimes', () => {
     const observed=runChild(true);
     const result=bindRuntimeSourcePopulation(observed.text,observed.proof,observed.rows);
     expect(result.processes).toHaveLength(2);
+    const originalFiles=[preload,fileURLToPath(new URL('./runtime-file-opens.mjs',import.meta.url)),fixture];
+    const fileInputs={root:'/',files:originalFiles.map(file=>({path:file.slice(1),kind:'file' as const,
+      sha256:crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}))};
+    const bound=bindRuntimeSourcePopulation(observed.text,observed.proof,observed.rows,fileInputs);
+    expect(bound.fileInputs?.bindings.filter(row=>row.path===fixture.slice(1))).toHaveLength(2);
+    expect(bound.fileInputs?.unboundSources.some(row=>row.url==='[eval]')).toBe(true);
+    fileInputs.files.find(row=>row.path===fixture.slice(1))!.sha256='0'.repeat(64);
+    expect(()=>bindRuntimeSourcePopulation(observed.text,observed.proof,observed.rows,fileInputs)).toThrow('original file census');
     for(const rows of observed.rows) {
       expect(rows.some(row=>row.kind==='source' && row.url.endsWith(fixture))).toBe(true);
       const output=path.join(root,'source-'+rows[0].processId+'.jsonl');

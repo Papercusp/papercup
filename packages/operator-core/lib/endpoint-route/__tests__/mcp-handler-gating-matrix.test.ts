@@ -1441,6 +1441,22 @@ async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T
   }
 }
 
+describe('shared bootstrap export through the MCP host', () => {
+  it.each(['http', 'uds'] as const)('exports common guidance once through the real SDK %s transport', async connection => {
+    await withSdkHost(superuserExtra(), async client => {
+      expect(client.getInstructions() ?? '').not.toContain('Papercusp MCP — shared connection guidance');
+      const first = await client.listTools();
+      const marked = first.tools.filter(tool => tool.description?.includes('<!-- papercusp-mcp-bootstrap:v1 -->'));
+      expect(marked).toHaveLength(1);
+      expect(marked[0]!.description).toContain('Papercusp MCP — shared connection guidance');
+      expect(marked[0]!.description).toContain('Catalog entries are discoverable capabilities, not permission grants');
+      expect(marked[0]!.inputSchema.type).toBe('object');
+      const second = await client.listTools();
+      expect(second.tools).toEqual(first.tools);
+    }, connection);
+  });
+});
+
 describe('final report delivery through the MCP host', () => {
   it.each(['direct', 'nested', 'projected', 'spill'])(
     'backfills only the caller-visible edition after the final door: %s', async route => {

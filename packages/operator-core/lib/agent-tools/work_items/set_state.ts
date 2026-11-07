@@ -694,8 +694,9 @@ export default defineTool({
         // about whether a stranded close is visible to the caller.
         let terminalConflict: TerminalCompletionConflict | undefined;
         let blockerReceipt: { record: BlockerDecisionRecord; replayed: boolean } | undefined;
-        const { workItem, aliased, requestedState, expectedState, appliedState, aliasNote } =
-          await setWorkItemStateWithAliasInfo(it.id, it.state, {
+        let transition: Awaited<ReturnType<typeof setWorkItemStateWithAliasInfo>>;
+        try {
+          transition = await setWorkItemStateWithAliasInfo(it.id, it.state, {
             harness,
             by: ident.ownerId,
             blockerEvidenceContext: await blockerBoundaryContext(ctx, ident.ownerId, harness),
@@ -709,6 +710,16 @@ export default defineTool({
               terminalConflict = info;
             },
           });
+        } catch (error) {
+          // The writer attaches the shared structured refusal to its Error.
+          // Preserve it before runBulk reduces ordinary exceptions to text.
+          if (error instanceof Error && 'code' in error && typeof error.code === 'string'
+              && error.code.startsWith('blocker_decision_')) {
+            return { ...error, ok: false as const, id: it.id, error: error.message };
+          }
+          throw error;
+        }
+        const { workItem, aliased, requestedState, expectedState, appliedState, aliasNote } = transition;
         if (blockerReceipt?.replayed) return { ok: true as const, id: it.id, workItem,
           blockerDecision: blockerReceipt.record, replayed: true };
         const canonicalExpectedState = expectedState ?? requestedState ?? it.state;

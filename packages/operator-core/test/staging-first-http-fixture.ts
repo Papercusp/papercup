@@ -176,8 +176,9 @@ async function main() {
   if (isCurrentSuNative) e.DOCKER_HOST = privateNativeDockerHost(process.argv.slice(2));
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
+  const isSecurityCensus = e.STAGING_FIRST_HTTP_SCENARIO === 'security-census';
   const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools
-    || e.STAGING_FIRST_HTTP_SCENARIO === 'testing-background';
+    || isSecurityCensus || e.STAGING_FIRST_HTTP_SCENARIO === 'testing-background';
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,
@@ -224,7 +225,7 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
-  if (isCodexManagedTools || isOmpManagedTools) {
+  if (isCodexManagedTools || isOmpManagedTools || isSecurityCensus) {
     const { randomBytes } = await import('node:crypto');
     const { superuserTokenPath } = await import('../lib/superuser-token');
     mkdirSync(e.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
@@ -274,8 +275,16 @@ async function main() {
     };
   }
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv,
-    requireBuildIdentity: isCurrentSuNative || isCodexManagedTools || isOmpManagedTools });
+    requireBuildIdentity: isCurrentSuNative || isCodexManagedTools || isOmpManagedTools || isSecurityCensus });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (isSecurityCensus) {
+    const receipt = await (await import('./security-census-http-scenario')).measureSecurityCensusScenario({
+      workspace, base, evidenceDir, bundle, hostPid: host.pid!, expectedSha: health.sha,
+    });
+    await stopHost();
+    console.log('SECURITY_CENSUS_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (isCodexManagedTools || isOmpManagedTools) {
     const backend = isOmpManagedTools ? 'omp' : 'codex';
     const prefix = backend.toUpperCase();
