@@ -74,6 +74,59 @@ export type GroundedQueryArtifact = {
   cells: GroundedQueryCell[];
 };
 
+export const CACHE_IDENTITY_CASES = ['query-task-change', 'authorization-widen', 'authorization-narrow',
+  'identical-refresh', 'timeout-abstention', 'workspace-isolation', 'principal-isolation', 'source-change'] as const;
+export type CacheIdentityCell = {
+  scenario: typeof CACHE_IDENTITY_CASES[number]; selector: string; evidenceRefs: string[];
+  inputHash: string; authorityHash: string; returnedHash: string;
+  status: 'ready' | 'deadline' | 'error'; builds: number;
+  verdict: 'passed' | 'failed' | 'UNKNOWN';
+};
+export type CacheIdentityArtifact = {
+  schemaVersion: 'cache-identity-v1'; identity: DeliveryMatrixManifest['identity']; cells: CacheIdentityCell[];
+};
+
+/** Closed cache/builder fixture evidence, separate from native port delivery
+ * and independent acceptance. The trusted oracle is supplied separately. */
+export function validateCacheIdentityArtifact(value: unknown, expected: {
+  identity: CacheIdentityArtifact['identity']; cells: CacheIdentityCell[];
+}): { valid: boolean; closed: boolean; errors: string[] } {
+  const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const hash = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const errors: string[] = [], seen = new Set<string>();
+  const artifact = record(value) ? value : {};
+  if (artifact.schemaVersion !== 'cache-identity-v1') errors.push('schema-version');
+  const identity = record(artifact.identity) ? artifact.identity : {};
+  for (const field of ['planHash', 'rubricHash', 'barHash', 'specHash', 'sourceHash', 'testHash'] as const)
+    if (!hash(identity[field]) || identity[field] !== expected.identity[field]) errors.push(`identity:${field}`);
+  for (const field of ['planRevision', 'rubricRevision'] as const)
+    if (!Number.isSafeInteger(identity[field]) || Number(identity[field]) <= 0 || identity[field] !== expected.identity[field]) errors.push(`identity:${field}`);
+  if (typeof identity.runtimeGeneration !== 'string' || !identity.runtimeGeneration.trim() ||
+      identity.runtimeGeneration !== expected.identity.runtimeGeneration) errors.push('identity:runtimeGeneration');
+  const oracles = new Map(expected.cells.map(cell => [cell.scenario, cell]));
+  if (oracles.size !== CACHE_IDENTITY_CASES.length || expected.cells.length !== CACHE_IDENTITY_CASES.length ||
+      CACHE_IDENTITY_CASES.some(scenario => !oracles.has(scenario))) errors.push('oracle-population');
+  const cells = Array.isArray(artifact.cells) ? artifact.cells : [];
+  for (const cell of cells) {
+    if (!record(cell)) { errors.push('invalid-cell'); continue; }
+    const scenario = String(cell.scenario);
+    const oracle = expected.cells.find(entry => entry.scenario === scenario);
+    if (seen.has(scenario) || !oracle) errors.push(`population:${scenario}`);
+    seen.add(scenario);
+    if (!oracle) continue;
+    for (const field of ['inputHash', 'authorityHash', 'returnedHash'] as const)
+      if (!hash(cell[field]) || cell[field] !== oracle[field]) errors.push(`${scenario}:${field}`);
+    if (cell.verdict !== 'passed' || cell.selector !== `context reliability R-5: ${scenario}` ||
+        !Array.isArray(cell.evidenceRefs) || !cell.evidenceRefs.length ||
+        !cell.evidenceRefs.every(ref => typeof ref === 'string' && !!ref.trim())) errors.push(`${scenario}:execution-evidence`);
+    if (!Number.isSafeInteger(cell.builds) || Number(cell.builds) < 0 || cell.builds !== oracle.builds ||
+        cell.status !== oracle.status) errors.push(`${scenario}:outcome`);
+  }
+  const closed = cells.length === CACHE_IDENTITY_CASES.length && seen.size === CACHE_IDENTITY_CASES.length &&
+    CACHE_IDENTITY_CASES.every(scenario => seen.has(scenario));
+  return { valid: closed && !errors.length, closed, errors };
+}
+
 export type BootstrapExportCell = {
   client: typeof DELIVERY_MATRIX_CLIENTS[number];
   clientVersion: string;

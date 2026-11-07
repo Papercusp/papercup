@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCache } from '@papercusp/cache';
 
-const { notifySyncInvalidateMock } = vi.hoisted(() => ({ notifySyncInvalidateMock: vi.fn() }));
+const { notifySyncInvalidateMock, control } = vi.hoisted(() => ({
+  notifySyncInvalidateMock: vi.fn(),
+  control: { generation: 1, applied: 'identity-1', scope: 'task-1', unavailable: false },
+}));
+vi.mock('@papercusp/db-org', async original => ({ ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: async () => control.unavailable ? [] : [{ ...control }] }),
+}));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: notifySyncInvalidateMock }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-memory' }));
 
@@ -9,11 +15,90 @@ import { tagsForTableChange } from '../events/cache-eca-rule';
 import { invalidateUserMemoryViews, USER_MEMORY_SYNC_KEYS } from './invalidate-user-memory-views';
 import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 import {
-  getMemoryBlockBounded,
-  getMemoryBlockBoundedResult,
+  getMemoryBlockBounded as rawBlock,
+  getMemoryBlockBoundedResult as rawResult,
   MEMORY_CANONICAL_CACHE_TAG,
   type MemoryBlockBuildContext,
 } from './injection-block-cache';
+
+// Existing deadline/SWR cases hold query and authorization constant. Query
+// changes are exercised explicitly below, through the same production cache.
+const retrieval = { principalId: 'user-1', queryText: 'same query', authorizationScope: 'owner' };
+const getMemoryBlockBounded: typeof rawBlock = (ws, key, build, opts) =>
+  rawBlock(ws, key, build, { retrieval, ...opts });
+const getMemoryBlockBoundedResult: typeof rawResult = (ws, key, build, opts) =>
+  rawResult(ws, key, build, { retrieval, ...opts });
+
+it('context reliability: unrelated query and authority generations cannot reuse a block', async () => {
+  const cache = createCache();
+  let version = 0;
+  const build = vi.fn(async () => `block-${++version}`);
+  setSessionConfinementResolver(() => null);
+  control.generation = 1;
+  control.unavailable = false;
+  const opts = { cache, sessionId: 'session-1', softTtlMs: Infinity, retrieval };
+  try {
+    expect(await rawBlock('ws', 'conversation-1', build, opts)).toBe('block-1');
+    expect(await rawBlock('ws', 'conversation-1', build, { ...opts,
+      retrieval: { ...retrieval, queryText: ' same\n query ' } })).toBe('block-1');
+    for (const changed of [
+      { ...retrieval, queryText: 'unrelated query' },
+      { ...retrieval, taskContext: 'different task' },
+      { ...retrieval, principalId: 'user-2' },
+      { ...retrieval, authorizationScope: 'public' },
+    ]) expect(await rawBlock('ws', 'conversation-1', build, { ...opts, retrieval: changed })).toBe(`block-${version}`);
+    expect(build).toHaveBeenCalledTimes(5);
+    control.generation++;
+    expect(await rawBlock('ws', 'conversation-1', build, opts)).toBe('block-6');
+    control.applied = 'identity-2';
+    expect(await rawBlock('ws', 'conversation-1', build, opts)).toBe('block-7');
+    control.scope = 'task-2';
+    expect(await rawBlock('ws', 'conversation-1', build, opts)).toBe('block-8');
+    expect(await rawBlock('other-ws', 'conversation-1', build, opts)).toBe('block-9');
+    expect(await rawBlock('ws', 'conversation-2', build, opts)).toBe('block-10');
+    control.unavailable = true;
+    expect(await rawResult('ws', 'conversation-1', build, opts)).toEqual({ status: 'error', block: null });
+    expect(build).toHaveBeenCalledTimes(10);
+  } finally {
+    control.unavailable = false;
+    setSessionConfinementResolver(undefined);
+  }
+});
+
+it('does not reuse a rendered block when a caller omits retrieval identity', async () => {
+  const cache = createCache();
+  const build = vi.fn().mockResolvedValueOnce('old query').mockResolvedValueOnce('new query');
+  expect(await rawBlock('ws', 'conversation-1', build, { cache })).toBe('old query');
+  expect(await rawBlock('ws', 'conversation-1', build, { cache })).toBe('new query');
+});
+
+it('bounds the initial host-policy read before starting a build', async () => {
+  vi.useFakeTimers();
+  setSessionConfinementResolver(() => new Promise(() => {}));
+  const build = vi.fn(async () => 'must not build');
+  try {
+    const pending = rawResult('ws', 'conversation-1', build, {
+      cache: createCache(), retrieval, sessionId: 'policy-stalled', deadlineMs: 30,
+    });
+    await vi.advanceTimersByTimeAsync(30);
+    expect(await pending).toEqual({ status: 'deadline', block: null });
+    expect(build).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); setSessionConfinementResolver(undefined); }
+});
+
+it('fences a source change during a build and never joins the obsolete flight', async () => {
+  const cache = createCache();
+  let finish!: (text: string) => void;
+  const pending = rawResult('ws', 'conversation-1', () => new Promise<string>(resolve => { finish = resolve; }),
+    { cache, retrieval, softTtlMs: Infinity });
+  cache.invalidateByTag('ws', MEMORY_CANONICAL_CACHE_TAG);
+  expect(await rawBlock('ws', 'conversation-1', async () => 'current source',
+    { cache, retrieval, softTtlMs: Infinity })).toBe('current source');
+  finish('obsolete source');
+  expect(await pending).toEqual({ status: 'error', block: null });
+  expect(await rawBlock('ws', 'conversation-1', async () => 'unexpected rebuild',
+    { cache, retrieval, softTtlMs: Infinity })).toBe('current source');
+});
 
 /** A controllable build: counts calls, resolves/rejects on demand. */
 function controlledBuild(block: string | null = '## Operator memory') {

@@ -14,9 +14,9 @@
  * operator SWR cache and the caller's wait is capped via getOrSetBounded —
  * with one deliberate difference: **soft TTL = 0**. The block depends on the
  * turn's queryContext (the last user messages), so a cached block is ALWAYS
- * treated as stale: every read serves the previous build instantly and
- * revalidates with the CURRENT turn's query in the background. Under load the
- * chat gets memory with one-turn lag instead of a 5s stall; on a fast box a
+ * treated as stale: an identical authorized query serves its previous build
+ * instantly and revalidates in the background. Changed query/task/principal or
+ * control identity gets a cold miss and may abstain; on a fast box a
  * cold miss usually completes under the deadline and behavior matches the
  * unbounded path. The per-turn build cost is unchanged — it just runs off the
  * blocking path.
@@ -31,11 +31,12 @@
  */
 
 import { getOrSetBounded, type Cache } from '@papercusp/cache';
+import { getOrgPg } from '@papercusp/db-org';
+import { createHash, randomUUID } from 'node:crypto';
 import { getOperatorCache } from '../cache/instance';
-import { createMemoryWorkDeadline, type MemoryWorkDeadline } from './op-deadline';
+import { createMemoryWorkDeadline, MemoryTimeoutError, type MemoryWorkDeadline } from './op-deadline';
 
-/** Always serve-stale + revalidate: the block is query-dependent, so a cached
- *  build is by definition one turn behind — never "fresh". */
+/** Revalidate on every read of the same authorized query. */
 export const MEMORY_BLOCK_SOFT_TTL_MS = 0;
 /** Drop a stale block after this long — a resumed-after-idle conversation
  *  should race a fresh build rather than inject minutes-old recall. */
@@ -62,6 +63,14 @@ export interface MemoryBlockBuildContext {
 export interface MemoryBlockBoundedOpts {
   /** Launch identity for the authoritative gate BEFORE a stale cache read. */
   sessionId?: string;
+  /** Server-resolved inputs also passed to the builder. No client-supplied
+   * authorization generation is accepted; the session registry supplies it. */
+  retrieval?: {
+    principalId: string | null;
+    queryText: string;
+    taskContext?: string;
+    authorizationScope: string;
+  };
   /** Override the cold-miss wait cap (sentinel_scan turns have no human waiting). */
   deadlineMs?: number;
   /** Cache instance override (tests). Default: the operator singleton. */
@@ -75,12 +84,34 @@ export type MemoryBlockBoundedResult<T = string> =
   | { status: 'deadline'; block: null }
   | { status: 'error'; block: null };
 
+const normalizeContext = (text: string) => text.normalize('NFC').replace(/\s+/gu, ' ').trim();
+
+/** Reuse the control registry written by persistControlAnchor. Unknown authority
+ * never falls back to the old session-only key. */
+async function memoryBlockControlIdentity(workspaceId: string, sessionId: string): Promise<string> {
+  const rows = await getOrgPg().sql<{
+    generation: number | string; applied: unknown; scope: unknown;
+  }[]>`
+    SELECT control_generation AS generation,
+           control_state->'activation'->'applied' AS applied,
+           control_state->'scope' AS scope
+      FROM harness_shared.session_briefs
+     WHERE owner_id = ${sessionId} AND workspace_id = ${workspaceId}
+       AND control_state IS NOT NULL
+     LIMIT 1`;
+  const row = rows[0];
+  if (!row || !Number.isSafeInteger(Number(row.generation)) || Number(row.generation) < 0)
+    throw new Error('Memory cache control identity is unavailable.');
+  return JSON.stringify([Number(row.generation), row.applied, row.scope]);
+}
+
 /**
- * Get the rendered memory-injection block for (workspaceId, scopeKey), building
+ * Get the rendered memory-injection block for an authorized retrieval identity, building
  * with `build` (a closure over THIS turn's queryContext). Never rejects: a
  * failed or over-deadline build resolves null (the caller omits the section).
- * `scopeKey` must isolate conversations — stale recall must never bleed across
- * a different role/user/conversation.
+ * `scopeKey` isolates conversations; retrieval inputs and server control state
+ * additionally isolate principal, query, task and authorization. A caller that
+ * omits retrieval inputs gets bounded builds without cross-call reuse.
  */
 export async function getMemoryBlockBoundedResult<T = string>(
   workspaceId: string,
@@ -88,13 +119,37 @@ export async function getMemoryBlockBoundedResult<T = string>(
   build: (deadline: MemoryWorkDeadline, ctx: MemoryBlockBuildContext) => Promise<T | null>,
   opts: MemoryBlockBoundedOpts = {},
 ): Promise<MemoryBlockBoundedResult<T>> {
-  if (opts.sessionId) {
-    const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
-    if (!await sessionAllowsAmbientContext({ ownerId: opts.sessionId, workspaceId }))
-      return { status: 'ready', block: null };
+  const sessionId = opts.sessionId;
+  const deadlineMs = opts.deadlineMs ?? MEMORY_BLOCK_COLD_DEADLINE_MS;
+  const started = Date.now();
+  let controlIdentity = '';
+  if (sessionId) {
+    const deadline = createMemoryWorkDeadline(deadlineMs);
+    try {
+      const allowed = await deadline.run(async () => {
+        const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+        return sessionAllowsAmbientContext({ ownerId: sessionId, workspaceId });
+      }, 'memory-cache-policy');
+      if (!allowed) return { status: 'ready', block: null };
+      controlIdentity = await deadline.run(
+        () => memoryBlockControlIdentity(workspaceId, sessionId), 'memory-cache-authority');
+    } catch (error) {
+      return { status: error instanceof MemoryTimeoutError ? 'deadline' : 'error', block: null };
+    }
+    finally { deadline.close(); }
   }
   const cache = opts.cache ?? getOperatorCache();
-  const deadlineMs = opts.deadlineMs ?? MEMORY_BLOCK_COLD_DEADLINE_MS;
+  const tags = [MEMORY_BLOCK_CACHE_TAG, MEMORY_CANONICAL_CACHE_TAG];
+  const sourceIdentity = () => JSON.stringify(cache.generationSnapshot(workspaceId, tags));
+  const sourceGeneration = sourceIdentity();
+  const retrieval = opts.retrieval;
+  // Missing retrieval inputs are safe for legacy callers, but cannot reuse a
+  // rendered value. Only identical authorized queries share a single flight.
+  const identity = retrieval ? JSON.stringify([
+    scopeKey, sessionId ?? null, retrieval.principalId, normalizeContext(retrieval.queryText),
+    normalizeContext(retrieval.taskContext ?? ''), retrieval.authorizationScope, controlIdentity, sourceGeneration,
+  ]) : randomUUID();
+  const key = `memory-inject-block:v2:${createHash('sha256').update(identity).digest('hex')}`;
   // Flips once this call has returned: after a stale serve (the build is then a
   // background revalidate) or after the caller's wait cap. Read lazily, at the
   // moment a build step sizes a wait, never captured at build start: a stale hit
@@ -105,7 +160,7 @@ export async function getMemoryBlockBoundedResult<T = string>(
   const res = await getOrSetBounded<T | null>(
     cache,
     workspaceId,
-    `memory-inject-block:${scopeKey}`,
+    key,
     async () => {
       // Created only for an actual single-flight build, never for a cache hit
       // or a coalesced waiter. SWR and the caller's wait retain their semantics.
@@ -114,21 +169,39 @@ export async function getMemoryBlockBoundedResult<T = string>(
       finally { deadline.close(); }
     },
     {
-      deadlineMs,
+      deadlineMs: Math.max(0, deadlineMs - (Date.now() - started)),
       softTtlMs: opts.softTtlMs ?? MEMORY_BLOCK_SOFT_TTL_MS,
       hardTtlMs: opts.hardTtlMs ?? MEMORY_BLOCK_HARD_TTL_MS,
       // The memory-write path publishes a synthetic memory_canonical.changed
       // event through sync-sse. The generic cache-ECA bumps this base-table tag
       // in every listening process, so the next prompt cannot serve a superseded
       // block from its process-local SWR cache.
-      tags: [MEMORY_BLOCK_CACHE_TAG, MEMORY_CANONICAL_CACHE_TAG],
+      tags,
       // A null block (no hits / degraded store) is a completed build — cache it
       // so a quiet or degraded store isn't re-probed on the blocking path.
       cacheEmpty: true,
     },
   );
   callerAnswered = true;
-  if (res.ok) return { status: 'ready', block: res.value };
+  if (res.ok) {
+    if (sessionId) {
+      const deadline = createMemoryWorkDeadline(Math.max(0, deadlineMs - (Date.now() - started)));
+      try {
+        const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+        if (!await deadline.run(() => sessionAllowsAmbientContext({
+          ownerId: sessionId, workspaceId,
+        }), 'memory-cache-policy') || controlIdentity !== await deadline.run(
+          () => memoryBlockControlIdentity(workspaceId, sessionId), 'memory-cache-authority'))
+          return { status: 'ready', block: null };
+      } catch { return { status: 'error', block: null }; }
+      finally { deadline.close(); }
+    }
+    // A source write during a build or the final policy read invalidates THIS
+    // response too. The generation in the key prevents later callers joining
+    // the obsolete flight, using the cache's existing ECA clock.
+    if (sourceIdentity() !== sourceGeneration) return { status: 'error', block: null };
+    return { status: 'ready', block: res.value };
+  }
   if (res.reason === 'deadline') {
     // The single-flight build keeps running and will serve the NEXT turn;
     // this turn proceeds without the section.

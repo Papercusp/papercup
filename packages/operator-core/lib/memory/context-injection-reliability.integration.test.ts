@@ -5,6 +5,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createCache } from '@papercusp/cache';
+import { getMemoryBlockBoundedResult, MEMORY_CANONICAL_CACHE_TAG } from './injection-block-cache';
 import * as codex from '../../../../apps/operator/scripts/hooks/inject/adapters/codex.mjs';
 import * as claude from '../../../../apps/operator/scripts/hooks/inject/adapters/claude.mjs';
 import * as omp from '../../../../apps/operator/scripts/hooks/inject/adapters/omp.mjs';
@@ -17,14 +19,17 @@ import { _resetSessionEpochLedgerForTests } from './session-epoch-ledger';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 import routes from '../endpoint-route/routes/agent-mcp/mid-turn-context';
 import { DELIVERY_MATRIX_CLIENTS, GROUNDED_QUERY_CASES, validateGroundedQueryArtifact,
+  CACHE_IDENTITY_CASES, validateCacheIdentityArtifact, type CacheIdentityCell, type CacheIdentityArtifact,
   type GroundedQueryArtifact, type GroundedQueryCell } from './injection-delivery-coverage';
 
 const services = vi.hoisted(() => ({
   unavailable: false,
+  control: { generation: 1, applied: 'cache-fixture-identity', scope: 'cache-fixture-task' },
   search: vi.fn(), lexical: vi.fn(), coverage: vi.fn(),
 }));
 vi.mock('@papercusp/db-org', async orig => ({ ...await orig<typeof import('@papercusp/db-org')>(),
-  getOrgPg: () => ({ sql: async () => [] }),
+  getOrgPg: () => ({ sql: async (parts: TemplateStringsArray) =>
+    Array.isArray(parts) && parts.join('').includes('control_generation AS generation') ? [{ ...services.control }] : [] }),
 }));
 vi.mock('./backend', () => ({ getMemoryBackend: () => ({ name: 'query-integration-fixture',
   available: async () => ({ ok: !services.unavailable }), search: services.search, searchLexical: services.lexical,
@@ -88,6 +93,9 @@ let sequence = 0;
 // independent acceptance receipt. The runner records the invocation separately.
 const sourceSnapshot = [
   './injection.ts', './injection-delivery-coverage.ts', './context-injection-reliability.integration.test.ts',
+  './injection-block-cache.ts', '../auth.ts', '../agent-tools/coordination/control-anchor.ts',
+  '../endpoint-route/routes/agent-mcp/operator-converse.ts', '../agent-tools/operator/converse-prompt.ts',
+  '../endpoint-route/routes/agent-mcp/turn-start-memory.ts', '../../../../libs/generic/cache/src/cache.ts',
   '../endpoint-route/routes/agent-mcp/mid-turn-context.ts', '../../vitest.config.ts',
   '../../../../apps/operator/scripts/hooks/inject/core.mjs',
   '../../../../apps/operator/scripts/hooks/inject/recall-query.mjs',
@@ -102,6 +110,7 @@ beforeEach(() => {
   _resetSessionEpochLedgerForTests();
   resetMemoryDegradedForTest();
   services.unavailable = false;
+  services.control = { generation: 1, applied: 'cache-fixture-identity', scope: 'cache-fixture-task' };
   const rows = async (_query: string, opts: { scope: string[] }) => [
     { id: '11111111-1111-4111-8111-111111111111', text: 'grounded query fixture result', score: 0.95, scope: opts.scope[0] },
     { id: '22222222-2222-4222-8222-222222222222', text: 'below lexical relevance floor', score: 0.001, scope: opts.scope[0] },
@@ -241,4 +250,111 @@ it('context reliability R-3: artifact-validator', () => {
   reject(copy => { copy.cells[0]!.verdict = 'UNKNOWN'; });
   expect(validateGroundedQueryArtifact(null, expected).valid).toBe(false);
   expect(validateGroundedQueryArtifact(artifact, { identity, cells: [] }).valid).toBe(false);
+});
+
+for (const scenario of CACHE_IDENTITY_CASES) it(`context reliability R-5: ${scenario}`, async ({ annotate, task }) => {
+  const cache = createCache();
+  const base = { workspace: 'query-fixture-ws', principal: 'query-fixture-user',
+    query: 'repair cache for WI-6512', task: 'cache-task', authorization: 'owner' };
+  let builds = 0, source = 'source-one';
+  services.search.mockImplementation(async (query: string, opts: { scope: string[] }) => [{
+    id: '11111111-1111-4111-8111-111111111111', text: `${source}: ${query}: ${opts.scope[0]}`,
+    score: 0.95, scope: opts.scope[0],
+  }]);
+  let gate: Promise<void> | undefined, lastBuild: Promise<Awaited<ReturnType<typeof injection.prepareMemoryContextBlock>>> | undefined;
+  const read = (change: Partial<typeof base> = {}, softTtlMs = Infinity, deadlineMs = 500) => {
+    const input = { ...base, ...change }, wait = gate;
+    return getMemoryBlockBoundedResult(input.workspace, 'cache-fixture-conversation', () => {
+      builds++;
+      lastBuild = (async () => {
+        await wait;
+        return injection.prepareMemoryContextBlock({ userId: input.principal, workspaceId: input.workspace,
+          queryContext: input.query, harnessSlugs: [], hiveSlugs: [], budgetChars: 8000 });
+      })();
+      return lastBuild;
+    }, { cache, sessionId: 'query-fixture-session', softTtlMs, deadlineMs, retrieval: {
+      principalId: input.principal, queryText: input.query, taskContext: input.task, authorizationScope: input.authorization,
+    } });
+  };
+  const first = await read({}, scenario === 'identical-refresh' ? 0 : Infinity);
+  expect(first.status).toBe('ready');
+  expect(first.block?.text).toContain('source-one');
+  let result = first;
+  if (scenario === 'query-task-change') {
+    result = await read({ query: 'repair delivery receipts WI-6513' });
+    expect(result.block?.text).toContain('WI-6513');
+    result = await read({ task: 'other-task' });
+    expect(builds).toBe(3);
+  } else if (scenario === 'authorization-widen' || scenario === 'authorization-narrow') {
+    services.control.generation++;
+    services.control.applied = scenario;
+    services.control.scope = scenario === 'authorization-narrow' ? 'public' : 'owner-expanded';
+    result = await read();
+    expect(builds).toBe(2);
+  } else if (scenario === 'workspace-isolation' || scenario === 'principal-isolation') {
+    result = await read(scenario === 'workspace-isolation' ? { workspace: 'other-workspace' } : { principal: 'other-principal' });
+    expect(builds).toBe(2);
+    if (scenario === 'principal-isolation') expect(result.block?.text).toContain('other-principal');
+  } else if (scenario === 'source-change') {
+    source = 'source-two';
+    cache.invalidateByTag(base.workspace, MEMORY_CANONICAL_CACHE_TAG);
+    result = await read();
+    expect(result.block?.text).toContain('source-two');
+    expect(result.block?.text).not.toContain('source-one');
+  } else {
+    let release!: () => void;
+    gate = new Promise(resolve => { release = resolve; });
+    if (scenario === 'identical-refresh') {
+      source = 'source-two';
+      result = await read({}, 0);
+      expect(result.block?.text).toBe(first.block?.text);
+      expect(builds).toBe(2);
+    } else {
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      result = await read({ query: 'unrelated cold query WI-6514' }, Infinity, 20);
+      expect(result).toEqual({ status: 'deadline', block: null });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('20ms prompt-build deadline'));
+    }
+    release(); await lastBuild; await Promise.resolve();
+    if (scenario === 'identical-refresh') {
+      result = await read({}, 0);
+      expect(result.block?.text).toContain('source-two');
+    }
+  }
+  const cell: CacheIdentityCell = { scenario, selector: `context reliability R-5: ${scenario}`,
+    evidenceRefs: [`vitest:context-injection-reliability.integration.test.ts#R-5/${scenario}`],
+    inputHash: sha({ base, scenario }), authorityHash: sha(services.control), returnedHash: sha(result.block?.text ?? null),
+    builds, status: result.status, verdict: 'passed' };
+  const observation = { schemaVersion: 'cache-identity-observations-v1',
+    evidencePlane: 'current-tree-cache-builder-fixture', sourceSnapshot, cells: [cell] };
+  Object.assign(task.meta, { cacheIdentityObservations: observation });
+  await annotate(`cache-identity-v1 observations: ${scenario}`, { contentType: 'application/json', bodyEncoding: 'utf-8', body: JSON.stringify(observation) });
+});
+
+it('context reliability R-5: artifact-validator', () => {
+  const identity = { planRevision: 35, planHash: '1'.repeat(64), rubricRevision: 3, rubricHash: '2'.repeat(64),
+    barHash: '3'.repeat(64), specHash: '4'.repeat(64), sourceHash: '5'.repeat(64), testHash: '6'.repeat(64), runtimeGeneration: 'validator-fixture-only' };
+  const cells: CacheIdentityCell[] = CACHE_IDENTITY_CASES.map(scenario => ({ scenario,
+    selector: `context reliability R-5: ${scenario}`, evidenceRefs: ['validator-control-fixture'],
+    inputHash: sha(scenario), authorityHash: sha('authority'), returnedHash: sha(scenario), builds: 2,
+    status: scenario === 'timeout-abstention' ? 'deadline' : 'ready', verdict: 'passed' }));
+  const artifact: CacheIdentityArtifact = { schemaVersion: 'cache-identity-v1', identity, cells };
+  expect(validateCacheIdentityArtifact(artifact, { identity, cells })).toEqual({ valid: true, closed: true, errors: [] });
+  const reject = (mutate: (copy: CacheIdentityArtifact) => void) => {
+    const copy = structuredClone(artifact); mutate(copy);
+    expect(validateCacheIdentityArtifact(copy, { identity, cells }).valid).toBe(false);
+  };
+  reject(copy => { copy.cells.pop(); });
+  reject(copy => { copy.cells.push(copy.cells[0]!); });
+  reject(copy => { copy.cells[0]!.scenario = 'unknown' as never; });
+  reject(copy => { copy.cells[0]!.verdict = 'UNKNOWN'; });
+  reject(copy => { copy.cells[0]!.evidenceRefs = []; });
+  reject(copy => { copy.cells[0]!.returnedHash = sha('stale source'); });
+  reject(copy => { copy.cells[0]!.authorityHash = sha('other principal'); });
+  reject(copy => { copy.cells[0]!.builds = 0; });
+  reject(copy => { copy.cells[0]!.status = 'error'; });
+  reject(copy => { copy.identity.sourceHash = sha('old tree'); });
+  reject(copy => { copy.identity.runtimeGeneration = 'stale-runtime'; });
+  expect(validateCacheIdentityArtifact(null, { identity, cells }).valid).toBe(false);
+  expect(validateCacheIdentityArtifact(artifact, { identity, cells: [] }).valid).toBe(false);
 });

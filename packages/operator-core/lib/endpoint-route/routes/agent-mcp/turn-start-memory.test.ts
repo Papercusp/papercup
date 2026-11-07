@@ -122,7 +122,8 @@ vi.mock('../../../carry-note', () => ({
   shortCarryHash: shortCarryHashMock,
 }));
 vi.mock('../../../harness/routines/loop-fire', () => ({ clipLoopCheckpointForWake: clipLoopCheckpointForWakeMock }));
-vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
+const resolveUserMock = vi.hoisted(() => vi.fn(async (_headers?: Headers) => ({ id: 'u-1' })));
+vi.mock('../../../auth', () => ({ getSessionUserOrDefault: resolveUserMock }));
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   preparePendingControlTransition: preparePendingControlTransitionMock,
   markControlTransitionPrepared: markControlTransitionPreparedMock,
@@ -353,6 +354,18 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(out.text).toContain('continue without optional recall');
   });
 
+  it('uses authenticated request headers for the cache principal and ignores a body principal', async () => {
+    const request = new Request('http://localhost/agent-mcp/turn-start-memory', {
+      method: 'POST', headers: { cookie: 'session=private-fixture' },
+      body: JSON.stringify({ owner: 'sess-1', prompt: 'repair the queue boundary', principalId: 'forged-user' }),
+    });
+    await endpoint.handler(request);
+    await settle();
+    expect(resolveUserMock).toHaveBeenCalledWith(request.headers);
+    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', expect.any(String), expect.any(Function),
+      expect.objectContaining({ retrieval: expect.objectContaining({ principalId: 'u-1' }) }));
+  });
+
   it('returns orientation when memory misses its bounded deadline, without recording healthy quiet', async () => {
     getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'deadline', block: null });
     buildTurnStartOrientationBlockMock.mockResolvedValue({
@@ -365,7 +378,10 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 
     expect(out.text).toContain('improvement triage: top EI-1');
     expect(out.text).not.toContain('MEM-BLOCK');
-    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1:receipts-v1', expect.any(Function), { sessionId: 'sess-1' });
+    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1:receipts-v1', expect.any(Function), {
+      sessionId: 'sess-1', retrieval: { principalId: expect.any(String),
+        queryText: expect.any(String), authorizationScope: expect.any(String) },
+    });
     expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
   });
 

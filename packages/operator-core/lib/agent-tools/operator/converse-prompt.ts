@@ -344,8 +344,8 @@ export async function buildOperatorPrompt(
   // deadline-capped (getMemoryBlockBounded). buildMemoryContextBlock's internal
   // 5s per-op cap saturated on every search miss on a loaded box (pass-7 drill:
   // searchMs 5001–5114) — a typed turn paid 5s AND injected nothing. Now a turn
-  // serves the previous build instantly (soft TTL 0 ⇒ always revalidate with
-  // THIS turn's query in background) or gives up the section after the cold
+  // serves a previous build for the same authorized query (soft TTL 0 ⇒
+  // revalidate in background) or gives up the section after the cold
   // deadline; a sentinel_scan turn has no human waiting, so it takes a generous
   // deadline and warms the cache for typed turns instead.
   //
@@ -359,6 +359,7 @@ export async function buildOperatorPrompt(
       const { getMemoryBlockBounded } = await import('../../memory/injection-block-cache');
       // Stale recall must never bleed across a different role/trust/user/conversation.
       const memScopeKey = `${role}:${hostTrust}:${sessionUser?.id ?? 'anon'}:${input.conversationId ?? 'window'}`;
+      const queryText = lastUserContext(messages, 3);
       return await getMemoryBlockBounded(
         activeWorkspaceId(),
         memScopeKey,
@@ -371,12 +372,16 @@ export async function buildOperatorPrompt(
             knowledgeSourcesAllowed: hostTrust === 'owner',
             reportViewer: { isOwner: hostTrust === 'owner' },
             ...(hostTrust === 'public' ? { hiveSlugs: [] } : {}),
-            queryContext: lastUserContext(messages, 3),
+            queryContext: queryText,
             // The Sentinel's recall heading mirrors the operator one but names its own role
             // so an injected fact reads as the Sentinel's memory, not "Operator memory".
             ...(role === 'papercup' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
           }),
-        input.trigger === 'sentinel_scan' ? { deadlineMs: 60_000 } : undefined,
+        {
+          ...(input.trigger === 'sentinel_scan' ? { deadlineMs: 60_000 } : {}),
+          retrieval: { principalId: sessionUser?.id ?? null, queryText, taskContext: input.uiContext,
+            authorizationScope: JSON.stringify([role, hostTrust, [...harnessSlugs].sort()]) },
+        },
       );
     } catch (err) {
       console.warn(

@@ -649,7 +649,7 @@ const turnStartMemory = defineTool({
           import('../../../auth'),
           import('../../../turn-provenance/turn-provenance'),
         ]);
-        const user = await getSessionUserOrDefault().catch(() => null);
+        const user = await getSessionUserOrDefault(req.headers).catch(() => null);
         return {
           userId: user?.id ?? null,
           queryText: stripInjectedChrome(prompt),
@@ -772,7 +772,10 @@ const turnStartMemory = defineTool({
                 // the serial lexical leg was ~386 ms p50 of pure waiting.
                 overlapGatedLexical: true,
               });
-            }, { sessionId: owner }),
+            }, { sessionId: owner, retrieval: {
+              principalId: recallInput.userId, queryText: queryText.slice(0, PROMPT_QUERY_CLAMP),
+              authorizationScope: JSON.stringify([harness ?? null, identityRecallCacheSuffix(identityRecall)]),
+            } }),
           );
           if (!admitted.admitted) return '';
           const bounded = admitted.value;
