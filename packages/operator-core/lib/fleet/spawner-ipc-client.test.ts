@@ -71,6 +71,17 @@ function startServer(sock: string): Promise<net.Server> {
   return new Promise((resolve) => server.listen(sock, () => resolve(server)));
 }
 
+function deferClientConnect(socket: net.Socket, immediates: Array<() => void>): void {
+  vi.spyOn(net, 'createConnection').mockImplementation(((_socketPath: string, listener?: () => void) => {
+    if (listener) socket.once('connect', listener);
+    return socket;
+  }) as never);
+  vi.spyOn(globalThis, 'setImmediate').mockImplementation(((_callback: (...args: unknown[]) => void, ...args: unknown[]) => {
+    immediates.push(() => _callback(...args));
+    return {} as NodeJS.Immediate;
+  }) as never);
+}
+
 let server: net.Server;
 let client: SpawnerIpcClient;
 let sock: string;
@@ -110,6 +121,79 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
 
   it('rejects on an error response', async () => {
     await expect(client.call('boom')).rejects.toThrow(/RPC error -32001: kaboom/);
+  });
+
+  it('lets a connect queued with the deadline win before the deferred timeout verdict', async () => {
+    const socket = new net.Socket();
+    vi.spyOn(socket, 'unref').mockReturnValue(socket);
+    const immediates: Array<() => void> = [];
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    deferClientConnect(socket, immediates);
+
+    try {
+      const connection = client.ensureConnected();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(immediates).toHaveLength(1);
+
+      socket.emit('connect');
+      immediates[0]();
+      await expect(connection).resolves.toBeUndefined();
+
+      expect(info).toHaveBeenCalledWith('[spawner-ipc-client-connect-race]', expect.objectContaining({
+        event: 'connected-after-deadline',
+        clientConnectionId: expect.any(String),
+        connectTimeout: expect.objectContaining({
+          deadlineElapsedMs: expect.any(Number),
+          verdictDelayMs: expect.any(Number),
+          stateAtDeadline: expect.objectContaining({ connecting: expect.any(Boolean) }),
+          stateAtVerdict: expect.objectContaining({ destroyed: expect.any(Boolean) }),
+        }),
+      }));
+      expect(warning.mock.calls.some(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'connect-timeout',
+      )).toBe(false);
+    } finally {
+      client.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a genuinely stalled connect as a timeout and records socket state', async () => {
+    const socket = new net.Socket();
+    const immediates: Array<() => void> = [];
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    deferClientConnect(socket, immediates);
+
+    try {
+      const connection = client.ensureConnected();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(immediates).toHaveLength(1);
+      immediates[0]();
+      await expect(connection).rejects.toThrow('Connection timeout dialing spawner sidecar');
+
+      const fault = warning.mock.calls.find(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'connect-timeout',
+      )?.[1] as Record<string, unknown> | undefined;
+      expect(fault).toMatchObject({
+        event: 'connect-timeout',
+        connectTimeout: {
+          deadlineElapsedMs: expect.any(Number),
+          verdictDelayMs: expect.any(Number),
+          stateAtDeadline: expect.objectContaining({ pending: expect.any(Boolean) }),
+          stateAtVerdict: expect.objectContaining({ readyState: expect.any(String) }),
+        },
+      });
+    } finally {
+      client.close();
+      vi.useRealTimers();
+    }
   });
 
   it('scans fragmented large responses in linear work before resolving the exact result', async () => {

@@ -48,6 +48,23 @@ export interface SpawnerRpcError {
   data?: unknown;
 }
 
+type ConnectSocketState = Pick<net.Socket, 'connecting' | 'pending' | 'destroyed' | 'readyState'>;
+type ConnectTimeoutDiagnostics = {
+  deadlineElapsedMs: number;
+  verdictDelayMs: number;
+  stateAtDeadline: ConnectSocketState;
+  stateAtVerdict: ConnectSocketState;
+};
+
+function connectSocketState(socket: net.Socket): ConnectSocketState {
+  return {
+    connecting: socket.connecting,
+    pending: socket.pending,
+    destroyed: socket.destroyed,
+    readyState: socket.readyState,
+  };
+}
+
 /** Per-request push callbacks, registered at call() time, keyed by request id. */
 export interface SpawnerCallOpts {
   /** Fired once with the child OS pid (the sidecar's `spawn:pid` notification). */
@@ -117,6 +134,7 @@ export class SpawnerIpcClient {
       activeRequests?: Array<{ requestId: number; method: string; callerLabel?: ProcessExecCallerLabel }>;
       rpcTimeoutMs?: number;
       elapsedMs?: number;
+      connectTimeout?: ConnectTimeoutDiagnostics;
     } = {},
   ): void {
     const code = (details.error as NodeJS.ErrnoException | undefined)?.code;
@@ -134,6 +152,7 @@ export class SpawnerIpcClient {
       activeRequests: details.activeRequests ?? [],
       ...(details.rpcTimeoutMs !== undefined ? { rpcTimeoutMs: details.rpcTimeoutMs } : {}),
       ...(details.elapsedMs !== undefined ? { elapsedMs: details.elapsedMs } : {}),
+      ...(details.connectTimeout ? { connectTimeout: details.connectTimeout } : {}),
     });
   }
 
@@ -210,7 +229,22 @@ export class SpawnerIpcClient {
       this.clientConnectionId = randomUUID();
       this.serverFence = null;
       let transportFaultLogged = false;
+      const connectStartedAt = performance.now();
+      let connectDeadlineAt: number | null = null;
+      let connectStateAtDeadline: ConnectSocketState | null = null;
       const sock = net.createConnection(this.socketPath, () => {
+        if (connectDeadlineAt !== null && this.socket === sock) {
+          console.info('[spawner-ipc-client-connect-race]', {
+            event: 'connected-after-deadline',
+            clientConnectionId: this.clientConnectionId,
+            connectTimeout: {
+              deadlineElapsedMs: Math.round(connectDeadlineAt - connectStartedAt),
+              verdictDelayMs: Math.round(performance.now() - connectDeadlineAt),
+              stateAtDeadline: connectStateAtDeadline ?? connectSocketState(sock),
+              stateAtVerdict: connectSocketState(sock),
+            },
+          });
+        }
         this.connected = true;
         // Keep the persistent connection available for a long-lived host, but
         // do not let it keep a short-lived diagnostic process alive after its
@@ -226,10 +260,14 @@ export class SpawnerIpcClient {
           method: pending.method,
           ...(pending.callerLabel ? { callerLabel: pending.callerLabel } : {}),
         }));
-      const reportTransportFault = (event: string, error?: Error): void => {
+      const reportTransportFault = (
+        event: string,
+        error?: Error,
+        connectTimeout?: ConnectTimeoutDiagnostics,
+      ): void => {
         if (transportFaultLogged || this.socket !== sock) return;
         transportFaultLogged = true;
-        this.logFault(event, { error, activeRequests: activeRequests() });
+        this.logFault(event, { error, activeRequests: activeRequests(), ...(connectTimeout ? { connectTimeout } : {}) });
       };
 
       sock.on('data', (chunk: Buffer) => {
@@ -269,14 +307,29 @@ export class SpawnerIpcClient {
       });
 
       // Connection timeout: 5s (only reachable when the dial neither connects
-      // nor errors — e.g. a listener with a saturated accept queue).
+      // nor errors — e.g. a listener with a saturated accept queue). Defer the
+      // verdict by one immediate: timers run before poll, so a connect that has
+      // already completed in the kernel can otherwise lose to this timer. The
+      // sibling pid-keyed socket probe uses the same ordering guard.
       const timeout = setTimeout(() => {
         if (!this.connected && this.socket === sock) {
-          const e = new Error(`Connection timeout dialing spawner sidecar at ${this.socketPath}`);
-          reportTransportFault('connect-timeout', e);
-          this.teardown(sock, e);
-          settleErr(e);
-          sock.destroy();
+          connectDeadlineAt = performance.now();
+          connectStateAtDeadline = connectSocketState(sock);
+          setImmediate(() => {
+            if (this.socket !== sock) return;
+            const stateAtVerdict = connectSocketState(sock);
+            if (this.connected) return;
+            const e = new Error(`Connection timeout dialing spawner sidecar at ${this.socketPath}`);
+            reportTransportFault('connect-timeout', e, {
+              deadlineElapsedMs: Math.round(connectDeadlineAt! - connectStartedAt),
+              verdictDelayMs: Math.round(performance.now() - connectDeadlineAt!),
+              stateAtDeadline: connectStateAtDeadline ?? stateAtVerdict,
+              stateAtVerdict,
+            });
+            this.teardown(sock, e);
+            settleErr(e);
+            sock.destroy();
+          });
         }
       }, 5000);
       timeout.unref?.();

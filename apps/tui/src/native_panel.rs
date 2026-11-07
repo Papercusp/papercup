@@ -39,6 +39,12 @@ pub enum ReadModel {
     OperatorConversation,
     #[serde(rename = "operatorTurns.page")]
     OperatorTurns,
+    #[serde(rename = "plans.attention")]
+    Attention,
+    #[serde(rename = "plans.attentionItem")]
+    AttentionItem,
+    #[serde(rename = "plans.attentionBulkRun")]
+    AttentionBulkRun,
 }
 
 impl ReadModel {
@@ -57,6 +63,9 @@ impl ReadModel {
             Self::AccountOverride => "accounts.sessionOverride",
             Self::OperatorConversation => "operatorConversations.current",
             Self::OperatorTurns => "operatorTurns.page",
+            Self::Attention => "plans.attention",
+            Self::AttentionItem => "plans.attentionItem",
+            Self::AttentionBulkRun => "plans.attentionBulkRun",
         }
     }
 }
@@ -494,6 +503,17 @@ pub async fn run_cards() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_inbox_reads_reuse_canonical_models_and_literal_coordinates() {
+        use super::*;
+        for name in ["plans.attention", "plans.attentionItem", "plans.attentionBulkRun"] {
+            let args = json!({"id":"literal +/=& λ", "runId":"saved +/=& λ"});
+            let request = read_request(json!({"name":name,"args":args}).to_string().as_bytes()).unwrap();
+            assert_eq!(request.name.as_str(), name);
+            assert_eq!(Value::Object(request.args), args);
+        }
+        assert!(read_request(br#"{"name":"plans.attentionBulkRun.write"}"#.as_slice()).is_err());
+    }
     #[test]
     fn native_voice_validates_audio_identity_and_operation_before_transport() {
         use super::*;

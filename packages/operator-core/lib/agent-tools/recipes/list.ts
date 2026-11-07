@@ -13,6 +13,8 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { listRecipes } from '../../code-recipes-store';
+import { resolveStoredSourceOperation } from '../../recipe-source-operation';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'recipes:list',
@@ -49,9 +51,11 @@ export default defineTool({
           'default. Default false — the browse shows reuse-worthy multi-tool recipes only.',
       ),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const limit = args.limit ?? 25;
-    const all = await listRecipes(getOrgPg().sql, { limit, includeTrivial: args.includeTrivial ?? false });
+    const all = await listRecipes(getOrgPg().sql, { limit, includeTrivial: args.includeTrivial ?? false,
+      authorizeSource: async recipe => Boolean(await resolveStoredSourceOperation(recipe,
+        { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx) })) });
     const recipes = all.map((r) => ({
       id: r.id,
       title: r.title,

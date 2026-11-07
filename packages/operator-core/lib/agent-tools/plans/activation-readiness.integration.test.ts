@@ -298,11 +298,12 @@ describe('activation readiness application-read-only boundary', () => {
     expect(merged.ok).toBe(true);
     if (!merged.ok) throw new Error('source coverage must carry forward');
     expect(merged.activation).toEqual(coverage);
-    const exemption = { reason: 'Fixture documents an existing non-code acceptance obligation.' };
+    const exemption = { authority: 'fixture-P-001', rationale: 'An existing non-code acceptance obligation.',
+      scope: ['source-coverage'] };
     const saved = await fx.admin.begin(tx => setSpecClause({ harnessSlug: harness, planSlug: slug,
       specId: 'PRESERVED-EXEMPTION', expectedRevision: 0, planItemId: 'P-001',
       behavior: 'Existing source coverage and its exemption remain unchanged.', behaviorClass: 'boundary',
-      requiredEvidence: ['code'], requiredTestLayers: ['unit'], lifecycleStatus: 'draft',
+      requiredEvidence: ['code'], requiredTestLayers: ['unit'], lifecycleStatus: 'exempt',
       exemption, actorId: requesterId, falsifier: { observation: 'The exemption is removed.' } },
     { executor: tx as never, workspaceId: fx.workspaceId, harnessSlug: harness }));
     expect(saved).toMatchObject({ status: 'created' });

@@ -48,7 +48,82 @@
  * A selector must report cells it actually exercised; expanding these keys alone
  * supplies no execution or delivery evidence. Reuses this module's final-delivery
  * assessor rather than introducing another measurement service. */
+import { readRecallSignals } from '../../../../apps/operator/scripts/hooks/inject/recall-query.mjs';
+
 export const DELIVERY_MATRIX_CLIENTS = ['codex', 'claude', 'omp'] as const;
+export const GROUNDED_QUERY_CASES = ['task', 'symbol', 'path', 'search', 'error', 'exact-id',
+  'shell-negative', 'javascript-negative', 'heredoc-negative', 'serialized-json-negative',
+  'truncated-json-negative', 'lexical-only'] as const;
+
+export type GroundedQueryCell = {
+  client: typeof DELIVERY_MATRIX_CLIENTS[number];
+  scenario: typeof GROUNDED_QUERY_CASES[number];
+  selector: string;
+  evidenceRefs: string[];
+  inputHash: string;
+  signals: NonNullable<ReturnType<typeof readRecallSignals>>;
+  retrievalCalls: number;
+  semanticCalls: number;
+  lexicalCalls: number;
+  returnedText: string;
+  verdict: 'passed' | 'failed' | 'UNKNOWN';
+};
+export type GroundedQueryArtifact = {
+  schemaVersion: 'grounded-query-v1';
+  identity: DeliveryMatrixManifest['identity'];
+  cells: GroundedQueryCell[];
+};
+
+/** Query behavior extends the existing coverage assessor. The trusted fixture
+ * contract is separate from the artifact; this never certifies native delivery. */
+export function validateGroundedQueryArtifact(value: unknown, expected: {
+  identity: GroundedQueryArtifact['identity'];
+  cells: Array<Omit<GroundedQueryCell, 'selector' | 'evidenceRefs' | 'verdict'>>;
+}): { valid: boolean; closed: boolean; errors: string[]; missing: string[]; duplicates: string[]; unexpected: string[] } {
+  const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const hash = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const key = (v: { client?: unknown; scenario?: unknown }) => `${v.client}/${v.scenario}`;
+  const population = new Set(DELIVERY_MATRIX_CLIENTS.flatMap(client => GROUNDED_QUERY_CASES.map(scenario => key({ client, scenario }))));
+  const errors: string[] = [], duplicates: string[] = [], unexpected: string[] = [];
+  const actual = new Set<string>(), oracles = new Map(expected.cells.map(cell => [key(cell), cell]));
+  if (expected.cells.length !== population.size || oracles.size !== population.size ||
+      [...population].some(id => !oracles.has(id))) errors.push('oracle-population');
+  const artifact = record(value) ? value : {};
+  if (artifact.schemaVersion !== 'grounded-query-v1') errors.push('schema-version');
+  const identity = record(artifact.identity) ? artifact.identity : {};
+  for (const field of ['planHash', 'rubricHash', 'barHash', 'specHash', 'sourceHash', 'testHash'] as const) {
+    if (!hash(identity[field]) || identity[field] !== expected.identity[field]) errors.push(`identity:${field}`);
+  }
+  for (const field of ['planRevision', 'rubricRevision'] as const) {
+    if (!Number.isSafeInteger(identity[field]) || Number(identity[field]) <= 0 || identity[field] !== expected.identity[field]) errors.push(`identity:${field}`);
+  }
+  if (typeof identity.runtimeGeneration !== 'string' || !identity.runtimeGeneration.trim() ||
+      identity.runtimeGeneration !== expected.identity.runtimeGeneration) errors.push('identity:runtimeGeneration');
+  if (!Array.isArray(artifact.cells)) errors.push('cells-not-array');
+  for (const cell of Array.isArray(artifact.cells) ? artifact.cells : []) {
+    if (!record(cell)) { errors.push('invalid-cell'); continue; }
+    const id = key(cell);
+    if (actual.has(id)) duplicates.push(id);
+    actual.add(id);
+    if (!population.has(id)) { unexpected.push(id); continue; }
+    const oracle = oracles.get(id);
+    if (!oracle) continue;
+    const reject = (reason: string) => errors.push(`${id}:${reason}`);
+    if (cell.verdict !== 'passed') reject('verdict');
+    if (cell.selector !== `context reliability R-3: ${cell.scenario}` || !Array.isArray(cell.evidenceRefs) ||
+        !cell.evidenceRefs.length || !cell.evidenceRefs.every(ref => typeof ref === 'string' && !!ref.trim())) reject('execution-evidence');
+    if (!hash(cell.inputHash) || cell.inputHash !== oracle.inputHash) reject('input-hash');
+    const signals = readRecallSignals(cell.signals), oracleSignals = readRecallSignals(oracle.signals);
+    if (!signals || !oracleSignals || signals.fingerprint !== oracleSignals.fingerprint) reject('normalized-query');
+    for (const field of ['retrievalCalls', 'semanticCalls', 'lexicalCalls'] as const) {
+      if (!Number.isSafeInteger(cell[field]) || Number(cell[field]) < 0 || cell[field] !== oracle[field]) reject(field);
+    }
+    if (typeof cell.returnedText !== 'string' || cell.returnedText !== oracle.returnedText) reject('returned-content');
+  }
+  const missing = [...population].filter(id => !actual.has(id));
+  const closed = !missing.length && !duplicates.length && !unexpected.length;
+  return { valid: closed && !errors.length, closed, errors, missing, duplicates, unexpected };
+}
 export const DELIVERY_MATRIX_PORTS = ['initialize', 'orient', 'claim', 'create', 'turn-start', 'mid-turn', 'compact-reprime'] as const;
 export const DELIVERY_MATRIX_EXTRA_SINKS = ['operator', 'architect', 'oracle', 'agent-chats', 'system-launch', 'system-wake'] as const;
 export const DELIVERY_MATRIX_SOURCES = ['memory', 'corpus'] as const;

@@ -603,12 +603,15 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
     failPtool = false,
     trimByDefault = false,
     projectedResponse = "",
-    inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv(),
+    inheritedEnv: NodeJS.ProcessEnv = { ...hermeticSpawnEnv(), PAPERCUSP_HOME: undefined },
   ) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-source-lock-census-"));
     const repo = resolve(fixture, "repo");
     const queryPath = resolve(fixture, "query.json");
     const argsPath = resolve(fixture, "ptool-args.txt");
+    const homePath = resolve(fixture, "ptool-home.txt");
+    const resolverPath = resolve(fixture, "resolver-args.txt");
+    const workspaceHome = resolve(fixture, "workspace-state");
     mkdirSync(repo, { recursive: true });
     try {
       const result = spawnSync(
@@ -617,8 +620,16 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
           "-c",
           [
             "set -uo pipefail",
+            'node() {',
+            '  if [[ "$*" == *papercuspRootForWorkspace* ]]; then',
+            '    printf "%s\\n" "$*" > "$TEST_RESOLVER_ARGS_PATH"',
+            '    [ "${TEST_CENSUS_ROOT_FAILURE:-0}" != 1 ] || return 9',
+            '    printf "%s" "$TEST_WORKSPACE_HOME"',
+            '  else command node "$@"; fi',
+            '}',
             "ptool() {",
             '  printf "%s\\n" "$*" > "$TEST_PTOOL_ARGS_PATH"',
+            '  printf "%s" "${PAPERCUSP_HOME:-}" > "$TEST_PTOOL_HOME_PATH"',
             '  cat > "$TEST_PTOOL_QUERY_PATH"',
             '  [ "$TEST_PTOOL_FAIL" != 1 ] || return 7',
             '  if [ "$TEST_PTOOL_PROJECTED_TRUNCATION" = 1 ] && [[ "$*" == *--projection* ]]; then',
@@ -653,6 +664,9 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
             TEST_PTOOL_PROJECTED_RESPONSE: projectedResponse,
             TEST_PTOOL_QUERY_PATH: queryPath,
             TEST_PTOOL_ARGS_PATH: argsPath,
+            TEST_PTOOL_HOME_PATH: homePath,
+            TEST_RESOLVER_ARGS_PATH: resolverPath,
+            TEST_WORKSPACE_HOME: workspaceHome,
           },
         },
       );
@@ -661,6 +675,9 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         diagnostic: spawnDiagnostic(result),
         query: existsSync(queryPath) ? JSON.parse(readFileSync(queryPath, "utf8")) : null,
         ptoolArgs: existsSync(argsPath) ? readFileSync(argsPath, "utf8") : "",
+        ptoolHome: existsSync(homePath) ? readFileSync(homePath, "utf8") : "",
+        resolverArgs: existsSync(resolverPath) ? readFileSync(resolverPath, "utf8") : "",
+        workspaceHome,
         coordinationDomain: repo,
       };
     } finally {
@@ -690,6 +707,34 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
     expect(result.query.payloadTier).toBe('full');
     expect(result.stderr).toContain('verified no active source-file locks');
     expect(result.stderr).not.toContain('outer runner preload leaked');
+  });
+
+  it('resolves scrubbed workspace state only for the coordination census', () => {
+    const result = queryLocks(JSON.stringify({ active_locks: [] }));
+    expect(result.status, result.diagnostic).toBe(0);
+    expect(result.ptoolHome).toBe(result.workspaceHome);
+    expect(result.resolverArgs).toContain('papercuspRootForWorkspace(process.argv[1])');
+    expect(result.resolverArgs).toContain('fixture-workspace');
+    expect(lockCensusSource).not.toContain('export PAPERCUSP_HOME');
+  });
+
+  it('preserves an explicit caller state home without resolving another workspace', () => {
+    const result = queryLocks(JSON.stringify({ active_locks: [] }), false, false, '', {
+      ...hermeticSpawnEnv(), PAPERCUSP_HOME: '/explicit/caller-state',
+    });
+    expect(result.status, result.diagnostic).toBe(0);
+    expect(result.ptoolHome).toBe('/explicit/caller-state');
+    expect(result.resolverArgs).toBe('');
+  });
+
+  it('fails before querying locks when the workspace root cannot be resolved', () => {
+    const result = queryLocks(JSON.stringify({ active_locks: [] }), false, false, '', {
+      ...hermeticSpawnEnv(), PAPERCUSP_HOME: undefined, TEST_CENSUS_ROOT_FAILURE: '1',
+    });
+    expect(result.status, result.diagnostic).toBe(1);
+    expect(result.stderr).toContain('could not resolve the verifier source lock workspace home');
+    expect(result.query).toBeNull();
+    expect(result.ptoolArgs).toBe('');
   });
 
   it("refuses an active runtime-source edit and reports its holder", () => {

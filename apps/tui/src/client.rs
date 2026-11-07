@@ -4288,11 +4288,11 @@ mod tests {
             selection_source: "test".into(),
         };
         let server = tokio::spawn(async move {
-            for (status, payload) in [
-                (200, json!({"rows":[],"version":"exact-version","partial":true})),
-                (200, json!({"error":"source unavailable","rows":[]})),
-                (200, json!({"version":"missing-rows"})),
-                (503, json!({"error":"offline"})),
+            for (name, status, payload) in [
+                ("plans.attention", 200, json!({"rows":[],"version":"exact-version","partial":true})),
+                ("plans.attentionItem", 200, json!({"error":"source unavailable","rows":[]})),
+                ("plans.attentionBulkRun", 200, json!({"version":"missing-rows"})),
+                ("plans.attentionBulkRun", 503, json!({"error":"offline"})),
             ] {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
@@ -4311,21 +4311,21 @@ mod tests {
                 let url = reqwest::Url::parse(&format!("http://fixture{target}")).unwrap();
                 assert_eq!(url.path(), "/api/zero-harness/rest-query");
                 let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
-                assert_eq!(params.get("name").unwrap(), "plans.list");
+                assert_eq!(params.get("name").unwrap(), name);
                 let args: serde_json::Value = serde_json::from_str(params.get("args").unwrap()).unwrap();
                 assert_eq!(args, json!({"harness":"same & exact","query":"a+/=?"}));
                 let body = payload.to_string();
                 socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
             }
         });
-        let request = crate::native_panel::read_request(
-            br#"{"name":"plans.list","args":{"harness":"same & exact","query":"a+/=?"}}"#.as_slice(),
+        let request = |name: &str| crate::native_panel::read_request(
+            json!({"name":name,"args":{"harness":"same & exact","query":"a+/=?"}}).to_string().as_bytes(),
         ).unwrap();
-        assert_eq!(client.native_panel_read(&request).await.unwrap(), json!({"rows":[],"version":"exact-version","partial":true}));
-        let unavailable = client.native_panel_read(&request).await.unwrap_err().to_string();
+        assert_eq!(client.native_panel_read(&request("plans.attention")).await.unwrap(), json!({"rows":[],"version":"exact-version","partial":true}));
+        let unavailable = client.native_panel_read(&request("plans.attentionItem")).await.unwrap_err().to_string();
         assert!(unavailable.contains("source unavailable"), "{unavailable}");
-        assert!(client.native_panel_read(&request).await.unwrap_err().to_string().contains("no row envelope"));
-        let offline = client.native_panel_read(&request).await.unwrap_err().to_string();
+        assert!(client.native_panel_read(&request("plans.attentionBulkRun")).await.unwrap_err().to_string().contains("no row envelope"));
+        let offline = client.native_panel_read(&request("plans.attentionBulkRun")).await.unwrap_err().to_string();
         assert!(offline.contains("503"), "{offline}");
         server.await.unwrap();
     }

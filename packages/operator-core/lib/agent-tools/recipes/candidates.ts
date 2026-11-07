@@ -19,7 +19,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { recipeCandidates } from '../../code-recipes-candidates';
 import { pullSqlToolCandidates } from '../../sql-tool-candidate-pull';
-import { harnessArg } from '../_harness-scope';
+import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
+import { resolveStoredSourceOperation } from '../../recipe-source-operation';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveProseProfileSelection } from '../../search/prose-vector-dims';
 // tool-call-batching-wrappers-2026-06-21 P-004 / D-016 — the deterministic co-occurrence scoring leg.
@@ -85,7 +86,9 @@ export default defineTool({
         minRunCount: args.minRunCount,
         limit: args.limit,
       },
-      { embedder, toolCooccurrence, log: (msg) => ctx.log(msg) },
+      { embedder, toolCooccurrence, log: (msg) => ctx.log(msg),
+        authorizeSource: async recipe => Boolean(await resolveStoredSourceOperation(recipe,
+          { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx) })) },
     );
     // Reuse the existing source-authorized worklist after the asynchronous recipe
     // scoring. Its own final read renews ACLs, retention and history identity.

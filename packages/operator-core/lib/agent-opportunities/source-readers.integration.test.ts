@@ -8,7 +8,8 @@ import { buildScratchUri, safeScratchFilesystemPath } from '../scratch-uri';
 import { writeScratchReference } from '../scratch-reference';
 import { productionOpportunityReaders } from './source-readers';
 import { captureRecipe } from '../agent-tools/code/capture-recipe';
-import { getRecipe } from '../code-recipes-store';
+import { countRecipes, getRecipe, listRecipes, listRecipesActivityPage, summarizeRecipesActivity } from '../code-recipes-store';
+import { recipeCandidates } from '../code-recipes-candidates';
 import { resolveRecipeSourceOperation } from '../recipe-source-operation';
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
 
@@ -132,6 +133,8 @@ it('P007 automatic capture resolves only one exact host child in the current cal
 
 for (const family of ['sql', 'shell'] as const) {
   it(`P007 ${family}: authorized source capture/dedup survives real JSONB storage and source revocation`, async () => {
+    const publicCount = await countRecipes(f.db.adminSql);
+    const publicActivity = await summarizeRecipesActivity(f.db.adminSql, { includeTrivial: true });
     const scope = { ...managedScope, epoch: '2026-11' };
     const tool = family === 'sql' ? 'dev:pg_query' : 'capability:bash';
     const tools = [ { expose: { mcp: { name: tool } } } ] as never;
@@ -165,8 +168,45 @@ for (const family of ['sql', 'shell'] as const) {
     const hostile = "'; printf INJECTED; # $(printf EXTRA)";
     expect(secondCallerOperation?.prepare({ value0: hostile })).toMatchObject(family === 'sql'
       ? { sql: 'SELECT $1::text AS PRIVATE_COLUMN', parameters: [hostile] } : { cwd: '/PRIVATE_PATH' });
+    // Exercise the actual DB browse/worklist after warming it, using the same
+    // per-read source resolver the handlers provide. Neither the recipe id nor
+    // a previously successful read is an authorization token.
+    let current: Partial<Parameters<typeof resolveRecipeSourceOperation>[0]> = {};
+    const authorizeSource = async (recipe: { script: string; bindingSchema?: unknown; capabilityManifest?: unknown }) => {
+      const manifest = recipe.capabilityManifest as { sourceOperation?: unknown } | undefined;
+      return Boolean(await resolveRecipeSourceOperation({ ...input, sourceOperation: manifest?.sourceOperation,
+        script: recipe.script, bindingSchema: recipe.bindingSchema, ...current }));
+    };
+    const visible = async () => ({
+      listed: (await listRecipes(f.db.adminSql, { authorizeSource })).some(row => row.id === saved!.id),
+      reviewed: (await recipeCandidates(f.db.adminSql, { minRunCount: 1 }, { authorizeSource })).signals.some(row => row.id === saved!.id),
+    });
+    expect(await visible()).toEqual({ listed: true, reviewed: true });
+    expect((await listRecipes(f.db.adminSql, { includeTrivial: true })).some(row => row.id === saved!.id)).toBe(false);
+    expect((await recipeCandidates(f.db.adminSql, { minRunCount: 1 })).signals.some(row => row.id === saved!.id)).toBe(false);
+    expect(await countRecipes(f.db.adminSql)).toBe(publicCount);
+    expect(await summarizeRecipesActivity(f.db.adminSql, { includeTrivial: true })).toEqual(publicActivity);
+    expect((await listRecipesActivityPage(f.db.adminSql, { includeTrivial: true, limit: 100 })).some(row => row.id === saved!.id)).toBe(false);
+    expect((await listRecipes(f.db.adminSql, { authorizeSource: async () => { throw new Error('source unavailable'); } }))
+      .some(row => row.id === saved!.id)).toBe(false);
     permitted = false;
     expect(await resolveRecipeSourceOperation(input)).toBeNull();
+    expect(await visible()).toEqual({ listed: false, reviewed: false });
+    permitted = true;
+    expect(await visible()).toEqual({ listed: true, reviewed: true });
+    for (const denied of [
+      { workspaceId: 'foreign' }, { harness: 'foreign' },
+      { scope: { ...scope, key: new Uint8Array(32).fill(92) } },
+      { scope: { ...scope, epoch: 'rotated' } },
+      { now: Date.parse(saved!.capabilityManifest!.sourceOperation!.expiresAt) },
+    ]) {
+      current = denied;
+      expect(await visible()).toEqual({ listed: false, reviewed: false });
+    }
+    current = {};
+    expect(await visible()).toEqual({ listed: true, reviewed: true });
+    await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${saved!.capabilityManifest!.sourceOperation!.invocationId}::bigint`;
+    expect(await visible()).toEqual({ listed: false, reviewed: false });
   });
 }
 

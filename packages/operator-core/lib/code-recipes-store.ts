@@ -740,18 +740,33 @@ export function isLowValueRecipe(r: { toolsUsed?: string[] | null; title: string
  */
 export async function listRecipes(
   sql: postgres.Sql,
-  opts: { limit?: number; includeTrivial?: boolean } = {},
+  opts: { limit?: number; includeTrivial?: boolean;
+    /** Renew private-source permission for this read; absent means unavailable. */
+    authorizeSource?: (recipe: CodeRecipeRow) => Promise<boolean> } = {},
 ): Promise<CodeRecipeListRow[]> {
   const lim = clampLimit(opts.limit);
   const whereTrivial = opts.includeTrivial
     ? sql`TRUE`
-    : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
-  const rows = await sql<Omit<DbRow, 'script'>[]>`
-    SELECT ${LIST_SELECT_COLS(sql)} FROM harness_shared.code_recipes
-     WHERE ${whereTrivial}
+    : sql`(array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'
+        OR capability_manifest->'sourceOperation' IS NOT NULL)`;
+  const privateFilter = opts.authorizeSource ? sql`TRUE` : sql`capability_manifest->'sourceOperation' IS NULL`;
+  const rows = await sql<(Omit<DbRow, 'script'> & { requires_source?: boolean })[]>`
+    SELECT ${LIST_SELECT_COLS(sql)}, capability_manifest->'sourceOperation' IS NOT NULL AS requires_source
+      FROM harness_shared.code_recipes
+     WHERE ${whereTrivial} AND ${privateFilter}
      ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
      LIMIT ${lim}`;
-  return rows.map(mapListRow);
+  const visible: CodeRecipeListRow[] = [];
+  for (const row of rows) {
+    if (row.requires_source) {
+      try {
+        const recipe = await getRecipe(sql, row.id);
+        if (!recipe || !opts.authorizeSource || !await opts.authorizeSource(recipe)) continue;
+      } catch { continue; }
+    }
+    visible.push(mapListRow(row));
+  }
+  return visible;
 }
 
 /**
@@ -764,7 +779,8 @@ export async function countRecipes(sql: postgres.Sql, opts: { includeTrivial?: b
   const whereTrivial =
     (opts.includeTrivial ?? true) ? sql`TRUE` : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
   const rows = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM harness_shared.code_recipes WHERE ${whereTrivial}`;
+    SELECT count(*)::int AS n FROM harness_shared.code_recipes
+     WHERE ${whereTrivial} AND capability_manifest->'sourceOperation' IS NULL`;
   return rows[0]?.n ?? 0;
 }
 
@@ -814,7 +830,7 @@ export async function listRecipesActivityPage(
              date_trunc('milliseconds',
                GREATEST(COALESCE(last_run_at, 'epoch'::timestamptz), updated_at, created_at)) AS ts
         FROM harness_shared.code_recipes
-       WHERE ${whereTrivial}
+       WHERE ${whereTrivial} AND capability_manifest->'sourceOperation' IS NULL
     ) x
     WHERE ${windowPred}
       AND ${
@@ -854,7 +870,7 @@ export async function summarizeRecipesActivity(
     WITH scoped AS MATERIALIZED (
       SELECT id, title
         FROM harness_shared.code_recipes
-       WHERE ${whereTrivial}
+       WHERE ${whereTrivial} AND capability_manifest->'sourceOperation' IS NULL
     )
     SELECT count(*)::int AS total,
            count(*) FILTER (

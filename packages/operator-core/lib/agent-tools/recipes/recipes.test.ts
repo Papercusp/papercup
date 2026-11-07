@@ -23,6 +23,8 @@ import {
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import type { SqlCandidateWorklist } from '../../sql-tool-candidate-worklist';
+import { compileSourceOperation, describeRecipeSourceOperation } from '../../recipe-source-operation';
+import { deriveLegacyForegroundManifest } from '../../recipe-contract';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
@@ -42,6 +44,7 @@ const {
   searchSimilarRecipesMock,
   buildQueryEmbedderResolvedMock,
   resolvePresenceFleetMock,
+  resolveStoredSourceOperationMock,
   NO_RUNTIME_OBSERVATIONS,
 } = vi.hoisted(() => {
   // OrchestrateResult.runtimeObservations is REQUIRED on purpose, unlike every optional field
@@ -92,6 +95,7 @@ const {
     searchSimilarRecipesMock: vi.fn(async () => []),
     buildQueryEmbedderResolvedMock: vi.fn(async () => null),
     resolvePresenceFleetMock: vi.fn(async () => ({ fleetSlug: 'live-fleet', fleetRole: 'member' })),
+    resolveStoredSourceOperationMock: vi.fn(),
     NO_RUNTIME_OBSERVATIONS,
   };
 });
@@ -116,6 +120,10 @@ vi.mock('../../code-recipes-search', async (importOriginal) => ({
   searchSimilarRecipes: searchSimilarRecipesMock,
 }));
 vi.mock('../../code-recipes-candidates', () => ({ recipeCandidates: recipeCandidatesMock }));
+vi.mock('../../recipe-source-operation', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveStoredSourceOperation: resolveStoredSourceOperationMock,
+}));
 vi.mock('../../sql-tool-candidate-pull', () => ({ pullSqlToolCandidates: pullSqlToolCandidatesMock }));
 vi.mock('../../recipe-cooccurrence-leg', () => ({ buildRecipeCooccurrenceDep: async () => null }));
 vi.mock('../search/embedder', () => ({
@@ -166,6 +174,9 @@ import '../work_items/get';
 // Output-schema preflight regression uses the live optional `gate` field contract.
 import '../release/trace';
 import '../storage/usage';
+// Private operation adapters retain the real current-catalog checks.
+import '../dev/pg_query';
+import '../capability/bash';
 
 const findTool = (name: string) => {
   const t = listAllProjectedTools().find((x) => x.expose.mcp?.name === name);
@@ -182,11 +193,32 @@ describe('recipes:* registration (P-005, P-013)', () => {
     };
     listRecipesMock.mockResolvedValueOnce([{ ...publicRecipe, script: 'private source', executionTrace: { private: true } }]);
     const result = await recipeListTool.handler({ limit: 7, includeTrivial: true } as never, {} as never);
-    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, { limit: 7, includeTrivial: true });
+    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, expect.objectContaining({ limit: 7, includeTrivial: true, authorizeSource: expect.any(Function) }));
     expect(result).toEqual({ data: { ok: true, count: 1, recipes: [publicRecipe] } });
     listRecipesMock.mockResolvedValueOnce([]);
     expect(await recipeListTool.handler({} as never, {} as never)).toEqual({ data: { ok: true, count: 0, recipes: [] } });
-    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, { limit: 25, includeTrivial: false });
+    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, expect.objectContaining({ limit: 25, includeTrivial: false, authorizeSource: expect.any(Function) }));
+  });
+
+  it('P007 list and review renew private source authorization on each warm read', async () => {
+    const context = { log: () => {}, workspaceId: 'ws-test', harnessSlug: 'alpha', role: 'operator',
+      isSuperuser: false, uiClientId: 'reuser-test' } as never;
+    const recipe = { script: 'source adapter', capabilityManifest: { sourceOperation: { invocationId: '123' } } };
+    const resolvable = compileSourceOperation({ tool: 'capability:bash', args: { command: 'echo value', cwd: '/tmp' } },
+      { workspaceId: 'ws-test', sourceBoundary: 'tool-ledger', epoch: '2026-11', key: Buffer.alloc(32, 9) })!;
+    listRecipesMock.mockResolvedValueOnce([]);
+    await recipeListTool.handler({} as never, context);
+    const options = listRecipesMock.mock.calls.at(-1)![1] as { authorizeSource: (r: unknown) => Promise<boolean> };
+    resolveStoredSourceOperationMock.mockResolvedValueOnce(resolvable).mockResolvedValueOnce(null);
+    expect(await options.authorizeSource(recipe)).toBe(true);
+    expect(await options.authorizeSource(recipe)).toBe(false);
+    expect(resolveStoredSourceOperationMock).toHaveBeenLastCalledWith(recipe, expect.objectContaining({ workspace: 'ws-test', harness: 'alpha' }));
+    await recipeCandidatesTool.handler({} as never, context);
+    const calls = recipeCandidatesMock.mock.calls as unknown as Array<[unknown, unknown, { authorizeSource: (r: unknown) => Promise<boolean> }]>;
+    const deps = calls.at(-1)![2];
+    resolveStoredSourceOperationMock.mockResolvedValueOnce(resolvable).mockResolvedValueOnce(null);
+    expect(await deps.authorizeSource(recipe)).toBe(true);
+    expect(await deps.authorizeSource(recipe)).toBe(false);
   });
 
   for (const name of ['recipes:list', 'recipes:get', 'recipes:search', 'recipes:run', 'recipes:candidates']) {
@@ -434,6 +466,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
   beforeEach(() => {
     getRecipeMock.mockReset();
     recordRecipeRunMock.mockClear();
+    resolveStoredSourceOperationMock.mockReset().mockResolvedValue(null);
     runOrchestrationMock.mockClear();
     normalizeExecutionTraceMock.mockClear();
     orgSqlMock.mockReset();
@@ -630,6 +663,66 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     ];
     expect(options.timeoutMs).toBe(20_000);
   });
+
+  for (const family of ['sql', 'shell'] as const) {
+    const sourceFixture = () => {
+      const scope = { workspaceId: 'ws-test', sourceBoundary: 'authorized-tool-ledger', epoch: '2026-11', key: Buffer.alloc(32, 9) };
+      const tool = family === 'sql' ? 'dev:pg_query' : 'capability:bash';
+      const source = { id: '123', workspaceId: 'ws-test', harness: 'alpha', at: '2026-11-07T05:00:00Z', tool,
+        args: family === 'sql' ? { sql: 'SELECT $1::text AS value', parameters: ['PRIVATE'] }
+          : { command: "printf '%s\\n' PRIVATE", cwd: '/tmp' } };
+      const definition = describeRecipeSourceOperation(source, scope, Date.parse(source.at))!;
+      const recipe = { id: `source-${family}`, title: 'Source operation', description: 'Private operation',
+        ...definition, toolsUsed: [tool], updatedAt: source.at, createdAt: source.at, authorRole: 'operator',
+        runCount: 0, successCount: 0, tags: [], status: 'active',
+        capabilityManifest: { ...deriveLegacyForegroundManifest([tool]), sourceOperation: definition.sourceOperation } };
+      const authority = { version: 1, revision: recipeRevision(recipe.script, recipe.updatedAt, recipe),
+        context: { workspace: 'ws-test', harness: 'alpha' } };
+      const operation = compileSourceOperation(source, scope)!;
+      return { recipe, authority, operation, tool };
+    };
+
+    it(`P007 ${family}: a second caller replays typed bindings and renews source permission at dispatch`, async () => {
+      const { recipe, authority, operation, tool } = sourceFixture();
+      getRecipeMock.mockResolvedValue(recipe);
+      resolveStoredSourceOperationMock.mockResolvedValue(operation);
+      const hostile = "'; printf INJECTED; # $(printf EXTRA)";
+      const result = await findTool('recipes:run').fn({ id: recipe.id, authority,
+        bindings: { values: { value0: hostile } } }, mkCtx('operator'));
+      expect(JSON.parse((result as { content: { text: string }[] }).content[0].text).results[0]).toMatchObject({ ok: true });
+      expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
+      const options = runOrchestrationMock.mock.calls[0][1];
+      expect(options.inputs).toMatchObject({ value0: hostile, __sourceOperation: operation.prepare({ value0: hostile }) });
+      expect(resolveStoredSourceOperationMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ workspace: 'ws-test', harness: 'alpha' }));
+      // A successful warm preflight grants no later permission. This wrapper
+      // refuses before the current-caller dispatcher or projected handler.
+      resolveStoredSourceOperationMock.mockResolvedValue(null);
+      const next = vi.fn();
+      await expect(options.wrapDispatch!(listAllProjectedTools().find(t => t.expose.mcp?.name === tool)!,
+        tool, {}, mkCtx('operator'), next)).rejects.toThrow('authority_source_unavailable');
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it(`P007 ${family}: unsafe bindings and lost source authority are separate predispatch refusals`, async () => {
+      const { recipe, authority, operation } = sourceFixture();
+      const original = JSON.stringify(recipe);
+      getRecipeMock.mockResolvedValue(recipe);
+      resolveStoredSourceOperationMock.mockResolvedValue(operation);
+      const unsafe = await findTool('recipes:run').fn({ id: recipe.id, authority,
+        bindings: { values: { value0: { command: 'touch private' } } } }, mkCtx('operator'));
+      expect(JSON.parse((unsafe as { content: { text: string }[] }).content[0].text).results[0])
+        .toMatchObject({ ok: false, phase: 'preflight', executed: false, diagnostic: { code: 'binding_invalid' } });
+      expect(runOrchestrationMock).not.toHaveBeenCalled();
+      resolveStoredSourceOperationMock.mockResolvedValue(null);
+      const denied = await findTool('recipes:run').fn({ id: recipe.id, authority,
+        bindings: { values: { value0: 'safe' } } }, mkCtx('operator'));
+      expect(JSON.parse((denied as { content: { text: string }[] }).content[0].text).results[0])
+        .toMatchObject({ ok: false, phase: 'preflight', executed: false, error: 'authority_source_unavailable' });
+      expect(runOrchestrationMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(recipe)).toBe(original);
+      expect(recordRecipeRunMock.mock.calls.every(([, record]) => record.countTowardRecipe === false)).toBe(true);
+    });
+  }
 
   it('preflights typed bindings and passes only validated safe inputs into the VM', async () => {
     getRecipeMock.mockResolvedValue({
@@ -1026,6 +1119,27 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     ]);
     // The two present recipes were each orchestrated; the missing one was not.
     expect(runOrchestrationMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses validated runtime inputs to verify an entity-bound recipe and refuses a changed target', async () => {
+    const script = 'return await tools.workItems.get({id:inputs.item,harness:"alpha"});';
+    const updatedAt = '2026-11-07T05:00:00Z';
+    const bindingSchema = { version: 1, additionalProperties: false, properties: {
+      item: { type: 'string', required: true, lifetime: { kind: 'invocation-ephemeral' } },
+    } };
+    getRecipeMock.mockResolvedValue({ id: 'runtime-target', title: 'runtime-target', description: 'd', script,
+      updatedAt, bindingSchema, authorRole: 'operator', toolsUsed: ['work_items:get'], runCount: 0,
+      successCount: 0, status: 'active', tags: [] });
+    const authority = { version: 1, revision: recipeRevision(script, updatedAt, { bindingSchema }),
+      context: { harness: 'alpha', items: ['WI-bound'] } };
+    const call = (item: string) => findTool('recipes:run').fn({ id: 'runtime-target', authority,
+      bindings: { values: { item } } }, mkCtx('worker'));
+    const accepted = await call('WI-bound');
+    expect(JSON.parse((accepted as { content: { text: string }[] }).content[0].text).results[0]).toMatchObject({ ok: true });
+    const rejected = await call('WI-other');
+    expect(JSON.parse((rejected as { content: { text: string }[] }).content[0].text).results[0])
+      .toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
+    expect(runOrchestrationMock).toHaveBeenCalledOnce();
   });
 
   it('requires and revalidates authority for an entity-bound recipe (P-008)', async () => {

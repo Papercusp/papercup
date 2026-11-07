@@ -202,6 +202,8 @@ export interface RecipeCandidatesOpts {
 }
 
 export interface RecipeCandidatesDeps {
+  /** Renew private-source permission on every worklist read; absent means unavailable. */
+  authorizeSource?: (recipe: { script: string; bindingSchema?: unknown; capabilityManifest?: unknown }) => Promise<boolean>;
   /** Live embedder for the merge-cluster similarity legs (cosine). Absent ⇒ lexical + structural only. */
   embedder?: ((text: string) => Promise<number[]>) | null;
   /**
@@ -220,6 +222,8 @@ type RecipeRow = {
   title: string;
   description: string;
   script: string;
+  binding_schema?: unknown;
+  capability_manifest?: { sourceOperation?: unknown } | null;
   status: string;
   tools_used: string[] | null;
   run_count: number | string;
@@ -261,7 +265,7 @@ export function existingToolSlugSet(
   return { names, slugs };
 }
 
-export type RecipeSubstance = 'multi-tool' | 'result-processing' | 'primitive' | 'unknown';
+export type RecipeSubstance = 'multi-tool' | 'result-processing' | 'validated-operation' | 'primitive' | 'unknown';
 
 /** Reuse the facade parser's resolved call positions, then follow a conservative
  * straight-line result flow. This is ranking evidence, never execution proof or
@@ -387,7 +391,7 @@ export async function recipeCandidates(
               THEN (evidence->>'elapsedBeforeRecordMs')::numeric END AS elapsed_value
             FROM classified
         )
-      SELECT r.id, r.title, r.description, r.script, r.status, r.tools_used,
+      SELECT r.id, r.title, r.description, r.script, r.binding_schema, r.capability_manifest, r.status, r.tools_used,
              r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
              COUNT(run.id) AS observations,
              COALESCE(SUM(run.source_rows), 0) AS source_rows,
@@ -426,6 +430,13 @@ export async function recipeCandidates(
 
   const signals: RecipeSignal[] = [];
   for (const r of rows) {
+    const privateSource = Boolean(r.capability_manifest?.sourceOperation);
+    if (privateSource) {
+      try {
+        if (!deps.authorizeSource || !await deps.authorizeSource({ script: r.script,
+          bindingSchema: r.binding_schema, capabilityManifest: r.capability_manifest })) continue;
+      } catch { continue; }
+    }
     const runCount = asInt(r.run_count);
     const distinctAgents = asInt(r.distinct_agents);
     const toolsUsed = r.tools_used ?? [];
@@ -453,7 +464,7 @@ export async function recipeCandidates(
         reason: 'Recipe run receipts alone do not establish a completed source/client census or a compatible baseline.' },
     };
 
-    const substance = await recipeSubstance(r.script, toolsUsed);
+    const substance = privateSource ? 'validated-operation' : await recipeSubstance(r.script, toolsUsed);
     // A source-backed one-tool reduction can qualify. Trivial wrappers and
     // unsupported source never acquire substance from repeated use alone.
     let redundant = false;

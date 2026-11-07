@@ -2131,7 +2131,7 @@ reserve_verifier_disk() {
 verify_operator_source_lock_census() {
   local phase="${1:-snapshot}"
   local workspace="${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}"
-  local coordination_domain query_args lock_json blocking_rows census_status=0
+  local coordination_domain coordination_home query_args lock_json blocking_rows census_status=0
   local -a ptool_scope=()
 
   [ -n "$workspace" ] || {
@@ -2146,6 +2146,21 @@ verify_operator_source_lock_census() {
     echo "FATAL: could not resolve the verifier source lock domain: $REPO_DIR" >&2
     return 1
   }
+  # Managed shells scrub operator state paths. Resolve the selected workspace
+  # before ptool selects its bearer, using the existing workspace root seam.
+  # Keep this home local to the census; the isolated app has its own identity.
+  coordination_home="${PAPERCUSP_HOME:-}"
+  if [ -z "$coordination_home" ]; then
+    coordination_home="$(cd "$REPO_DIR" && NODE_OPTIONS= node --import tsx --input-type=module -e \
+      'import { papercuspRootForWorkspace } from "./packages/operator-core/lib/papercusp-root.ts"; process.stdout.write(papercuspRootForWorkspace(process.argv[1]));' "$workspace")" || {
+      echo "FATAL: could not resolve the verifier source lock workspace home ($phase)" >&2
+      return 1
+    }
+    [ -n "$coordination_home" ] || {
+      echo "FATAL: verifier source lock workspace home was empty ($phase)" >&2
+      return 1
+    }
+  fi
   query_args="$(node -e 'process.stdout.write(JSON.stringify({
     // This census is consumed by code, not rendered to a person. The default
     // trimmed tier can omit a held source file once the fleet has many locks.
@@ -2170,7 +2185,7 @@ verify_operator_source_lock_census() {
   # locks:queue opts out of result-door truncation for machine callers. An
   # explicit ptool projection re-enables that door, which can truncate this
   # census even at payloadTier=full; keep the raw JSON inside this process.
-  lock_json="$(printf '%s' "$query_args" | ptool "${ptool_scope[@]}" locks:queue --json -)" || {
+  lock_json="$(printf '%s' "$query_args" | PAPERCUSP_HOME="$coordination_home" ptool "${ptool_scope[@]}" locks:queue --json -)" || {
     echo "FATAL: could not read the live verifier source lock census with locks:queue ($phase)" >&2
     return 1
   }
