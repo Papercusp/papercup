@@ -1,0 +1,434 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-002 GNOME Organizer native placement",
+  "framework": "node",
+  "command": [
+    "env",
+    "PAPERCUSP_GNOME_JOURNEY=organizer",
+    "node",
+    "--test",
+    "--test-name-pattern=private GNOME Shell",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-07T19:30:29.179Z",
+  "finishedAt": "2026-11-07T19:30:46.065Z",
+  "summary": "13 native Organizer assertions passed in a private GNOME Shell 46 virtual seat with fixture PUI. Qualified plan, fleet and canonical goal groups arranged two exact terminals on their existing desktops, left the same-process unselected terminal unchanged and exposed remote, stale and missing failures. The accompanying maintained model/GSettings/GJS bridge suite passed 28 tests. Current-build evidence; installed-artifact three-OS acceptance and shipment remain pending.",
+  "assertions": [
+    {
+      "id": "organizer-1",
+      "passed": true,
+      "evidence": "native shortcut acquisition"
+    },
+    {
+      "id": "organizer-2",
+      "passed": true,
+      "evidence": "native seat supports input injection"
+    },
+    {
+      "id": "organizer-3",
+      "passed": true,
+      "evidence": "native input methods exist"
+    },
+    {
+      "id": "organizer-4",
+      "passed": true,
+      "evidence": "desktop ready for normal shortcuts"
+    },
+    {
+      "id": "organizer-5",
+      "passed": true,
+      "evidence": "Organizer shortcut summons a native actor"
+    },
+    {
+      "id": "organizer-6",
+      "passed": true,
+      "evidence": "Arrange exact-harness / same verifies exact placement and partial failures"
+    },
+    {
+      "id": "organizer-7",
+      "passed": true,
+      "evidence": "selected terminals remain on two distinct desktops"
+    },
+    {
+      "id": "organizer-8",
+      "passed": true,
+      "evidence": "unselected terminal sharing the process remains unchanged"
+    },
+    {
+      "id": "organizer-9",
+      "passed": true,
+      "evidence": "Arrange exact-fleet verifies exact placement and partial failures"
+    },
+    {
+      "id": "organizer-10",
+      "passed": true,
+      "evidence": "Arrange Goal  verifies exact placement and partial failures"
+    },
+    {
+      "id": "organizer-11",
+      "passed": true,
+      "evidence": "native receipts retain requested and observed geometry"
+    },
+    {
+      "id": "organizer-12",
+      "passed": true,
+      "evidence": "native panel exposes remote desktop failure"
+    },
+    {
+      "id": "organizer-13",
+      "passed": true,
+      "evidence": "Organizer dismisses independently"
+    }
+  ],
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029573",
+  "parentWorkItem": "WI-6554700010044395",
+  "plane": "current-build private GNOME virtual seat; fixture PUI; dirty worktree",
+  "sourceSha256AtRecording": {
+    "papercusp-desktop/native/gnome/extension.js": "1f18136777cdcaf6af5a5a50529e7106a9a12f7faa5165eb9ca00968f6892507",
+    "papercusp-desktop/native/gnome/panel-model.mjs": "55177bd298069bbdfcf896b38e8aa9fd9beb8bf6f7cc857ff2e0466287dbf9c2",
+    "papercusp-desktop/native/gnome/bridge.js": "fc1447f2cafe557d6e093427a0854f0b552b7ef0f06cdc391444ee514c1046ec",
+    "papercusp-desktop/native/gnome/helper.js": "b0c1069d87138b21870314f9a581adb6b49697b6877c40a800f8b2bda4cfc36f",
+    "papercusp-desktop/native/gnome/schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "940ad4930907c361134825580d6b014679af31bc9c854d289703c67f8de5f0d2",
+    "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "d2ebb5b925e73606ee2c8ff0c15709e3f6c9870ffcc26f1432ced45d2b3777f9"
+  },
+  "nativeProcess": {
+    "evidence": {
+      "ok": true,
+      "error": null,
+      "phase": "native Organizer placement",
+      "journey": "organizer",
+      "inputLog": [
+        {
+          "key": 65307,
+          "mode": 2
+        },
+        {
+          "focusStep": "before mapped fixture activation",
+          "currentTime": 0,
+          "windows": [
+            {
+              "title": "Unselected terminal [adv:99]",
+              "mapped": true,
+              "userTime": 498878327,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:42420]",
+              "mapped": true,
+              "userTime": 498878319,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:4242]",
+              "mapped": true,
+              "userTime": 498878305,
+              "focused": true
+            }
+          ]
+        },
+        {
+          "focusStep": "distractor focus verified",
+          "currentTime": 0,
+          "windows": [
+            {
+              "title": "Unselected terminal [adv:99]",
+              "mapped": true,
+              "userTime": 498878327,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:4242]",
+              "mapped": true,
+              "userTime": 498878305,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:42420]",
+              "mapped": true,
+              "userTime": 498878437,
+              "focused": true
+            }
+          ]
+        },
+        {
+          "button": 1,
+          "x": 1104,
+          "y": 255,
+          "source": "null",
+          "picked": "[0x560c03d0d620 StButton.button:last-child hover (\"Arrange exact-harness / same\")]",
+          "inside": [
+            {
+              "surface": "organizer",
+              "contains": true
+            }
+          ]
+        },
+        {
+          "button": 1,
+          "x": 1104,
+          "y": 381,
+          "source": "null",
+          "picked": "[0x560c039c9ea0 StButton.button:last-child hover (\"Arrange exact-fleet\")]",
+          "inside": [
+            {
+              "surface": "organizer",
+              "contains": true
+            }
+          ]
+        },
+        {
+          "button": 1,
+          "x": 1104,
+          "y": 381,
+          "source": "null",
+          "picked": "[0x560c03968ea0 StButton.button:hover last-child (\"Arrange Goal \")]",
+          "inside": [
+            {
+              "surface": "organizer",
+              "contains": true
+            }
+          ]
+        }
+      ],
+      "actionMode": 1,
+      "overview": false,
+      "windows": [
+        {
+          "title": "Needle agent [adv:42420]",
+          "minimized": false,
+          "focused": false
+        },
+        {
+          "title": "Unselected terminal [adv:99]",
+          "minimized": false,
+          "focused": false
+        },
+        {
+          "title": "Needle agent [adv:4242]",
+          "minimized": false,
+          "focused": true
+        }
+      ],
+      "states": [
+        {
+          "surface": "quick-access",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "goals",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "inbox",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        },
+        {
+          "surface": "organizer",
+          "visible": false,
+          "pinned": false,
+          "selection": null,
+          "detail": null
+        }
+      ],
+      "assertions": [
+        "native shortcut acquisition",
+        "native seat supports input injection",
+        "native input methods exist",
+        "desktop ready for normal shortcuts",
+        "Organizer shortcut summons a native actor",
+        "Arrange exact-harness / same verifies exact placement and partial failures",
+        "selected terminals remain on two distinct desktops",
+        "unselected terminal sharing the process remains unchanged",
+        "Arrange exact-fleet verifies exact placement and partial failures",
+        "Arrange Goal  verifies exact placement and partial failures",
+        "native receipts retain requested and observed geometry",
+        "native panel exposes remote desktop failure",
+        "Organizer dismisses independently"
+      ]
+    },
+    "progress": {
+      "phase": "native Organizer placement",
+      "journey": "organizer",
+      "elapsedMs": 7096.558,
+      "phases": [
+        {
+          "phase": "desktop startup",
+          "elapsedMs": 613.48
+        },
+        {
+          "phase": "focus fixture mapping",
+          "elapsedMs": 972.119
+        },
+        {
+          "phase": "focus fixture ready",
+          "elapsedMs": 4277.202
+        },
+        {
+          "phase": "native Organizer placement",
+          "elapsedMs": 4335.089
+        }
+      ],
+      "assertions": [
+        "native shortcut acquisition",
+        "native seat supports input injection",
+        "native input methods exist",
+        "desktop ready for normal shortcuts",
+        "Organizer shortcut summons a native actor",
+        "Arrange exact-harness / same verifies exact placement and partial failures",
+        "selected terminals remain on two distinct desktops",
+        "unselected terminal sharing the process remains unchanged",
+        "Arrange exact-fleet verifies exact placement and partial failures",
+        "Arrange Goal  verifies exact placement and partial failures",
+        "native receipts retain requested and observed geometry",
+        "native panel exposes remote desktop failure",
+        "Organizer dismisses independently"
+      ],
+      "inputLog": [
+        {
+          "key": 65307,
+          "mode": 2
+        },
+        {
+          "focusStep": "before mapped fixture activation",
+          "currentTime": 0,
+          "windows": [
+            {
+              "title": "Unselected terminal [adv:99]",
+              "mapped": true,
+              "userTime": 498878327,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:42420]",
+              "mapped": true,
+              "userTime": 498878319,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:4242]",
+              "mapped": true,
+              "userTime": 498878305,
+              "focused": true
+            }
+          ]
+        },
+        {
+          "focusStep": "distractor focus verified",
+          "currentTime": 0,
+          "windows": [
+            {
+              "title": "Unselected terminal [adv:99]",
+              "mapped": true,
+              "userTime": 498878327,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:4242]",
+              "mapped": true,
+              "userTime": 498878305,
+              "focused": false
+            },
+            {
+              "title": "Needle agent [adv:42420]",
+              "mapped": true,
+              "userTime": 498878437,
+              "focused": true
+            }
+          ]
+        },
+        {
+          "button": 1,
+          "x": 1104,
+          "y": 255,
+          "source": "null",
+          "picked": "[0x560c03d0d620 StButton.button:last-child hover (\"Arrange exact-harness / same\")]",
+          "inside": [
+            {
+              "surface": "organizer",
+              "contains": true
+            }
+          ]
+        },
+        {
+          "button": 1,
+          "x": 1104,
+          "y": 381,
+          "source": "null",
+          "picked": "[0x560c039c9ea0 StButton.button:last-child hover (\"Arrange exact-fleet\")]",
+          "inside": [
+            {
+              "surface": "organizer",
+              "contains": true
+            }
+          ]
+        },
+        {
+          "button": 1,
+          "x": 1104,
+          "y": 381,
+          "source": "null",
+          "picked": "[0x560c03968ea0 StButton.button:hover last-child (\"Arrange Goal \")]",
+          "inside": [
+            {
+              "surface": "organizer",
+              "contains": true
+            }
+          ]
+        }
+      ]
+    },
+    "sourceCustody": {
+      "archiveSha256": "1156c15f8ee3c81da2e6975118d7a62f214f24a496d011fb244d3f35bc979021",
+      "journey": "organizer",
+      "files": {
+        "extension.js": "84de94b260b4e273a18ac0cb04649b877c52b35aca0c06711fc23394fcafa9f3",
+        "workbench.js": "1f18136777cdcaf6af5a5a50529e7106a9a12f7faa5165eb9ca00968f6892507",
+        "panel-model.mjs": "55177bd298069bbdfcf896b38e8aa9fd9beb8bf6f7cc857ff2e0466287dbf9c2",
+        "bridge.js": "fc1447f2cafe557d6e093427a0854f0b552b7ef0f06cdc391444ee514c1046ec",
+        "helper.js": "b0c1069d87138b21870314f9a581adb6b49697b6877c40a800f8b2bda4cfc36f",
+        "schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml": "940ad4930907c361134825580d6b014679af31bc9c854d289703c67f8de5f0d2"
+      },
+      "testSha256": "d2ebb5b925e73606ee2c8ff0c15709e3f6c9870ffcc26f1432ced45d2b3777f9"
+    },
+    "status": 0,
+    "signal": null,
+    "error": null,
+    "stdout": "portal is not running: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.portal.IBus was not provided by any .service files\n",
+    "stderr": "libmutter-Message: 14:30:29.179: Running GNOME Shell (using mutter 46.2) as a Wayland display server\nlibmutter-Message: 14:30:29.999: Made thread 'KMS thread' realtime scheduled\nlibmutter-Message: 14:30:30.138: Added device '/dev/dri/card1' (nvidia-drm) using no mode setting.\nlibmutter-Message: 14:30:30.148: Created gbm renderer for '/dev/dri/card1'\nlibmutter-Message: 14:30:30.148: Boot VGA GPU /dev/dri/card1 selected as primary\n** Message: 14:30:30.169: Obtained a high priority EGL context\n** Message: 14:30:30.178: Obtained a high priority EGL context\nlibmutter-Message: 14:30:30.280: Added virtual monitor Meta-0\n\n(gnome-shell:806752): dbind-WARNING **: 14:30:30.336: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files\nlibmutter-Message: 14:30:30.578: Using Wayland display name 'workbench-test'\nWindow manager warning: Failed to set environment variable WAYLAND_DISPLAY for gnome-session: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Name \"org.gnome.SessionManager\" does not exist\nGNOME Shell-Message: 14:30:33.436: Unset XDG_SESSION_ID, getCurrentSessionProxy() called outside a user session. Asking logind directly.\nGNOME Shell-Message: 14:30:33.436: Will monitor session 13\n\n** (gnome-shell:806752): WARNING **: 14:30:34.049: Could not issue 'GetUnit' systemd call\n\n(gnome-shell:806752): Gjs-WARNING **: 14:30:34.130: Gio.UnixInputStream has been moved to a separate platform-specific library. Please update your code to use GioUnix.InputStream instead.\n0 inhibit() [\"resource:///org/gnome/shell/misc/loginManager.js\":209:8]\n1 InterpretGeneratorResume() [\"self-hosted\":1461:33]\n2 AsyncFunctionNext() [\"self-hosted\":852:26]\n3 anonymous() [\"resource:///org/gnome/shell/ui/init.js\":21:19]\n\n\n(gnome-shell:806752): GNOME Shell-CRITICAL **: 14:30:34.165: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Shell.CalendarServer was not provided by any .service files\n\nStack trace:\n  asyncCallback@resource:///org/gnome/gjs/modules/core/overrides/Gio.js:114:23\n  @resource:///org/gnome/shell/ui/init.js:21:20\n  \n\n(gnome-shell:806752): GNOME Shell-CRITICAL **: 14:30:34.166: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Shell.CalendarServer was not provided by any .service files\n\nStack trace:\n  asyncCallback@resource:///org/gnome/gjs/modules/core/overrides/Gio.js:114:23\n  @resource:///org/gnome/shell/ui/init.js:21:20\n  \ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.UDisks2VolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.UDisks2VolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.MTPVolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.MTPVolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.GPhoto2VolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.GPhoto2VolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.GoaVolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.GoaVolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\ninvoking IsSupported() failed for remote volume monitor with dbus name org.gtk.vfs.AfcVolumeMonitor:: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gtk.vfs.AfcVolumeMonitor was not provided by any .service files (g-dbus-error-quark, 2)\nGNOME Shell-Message: 14:30:34.213: Failed to register AuthenticationAgent\n/usr/share/ibus-table/engine/main.py:232: DeprecationWarning: Testing an element's truth value will raise an exception in future versions.  Use specific 'len(elem)' or 'elem is not None' test instead.\n  if element:\n** Message: 14:30:36.432: Failed to start camera monitor\nGNOME Shell-Message: 14:30:38.087: GNOME Shell started at Sat Nov 07 2026 14:30:33 GMT-0500 (Eastern Standard Time)\nGNOME Shell-Message: 14:30:38.097: Registering session with GDM\n\n(gnome-shell:806752): Gjs-WARNING **: 14:30:42.004: Gio.UnixOutputStream has been moved to a separate platform-specific library. Please update your code to use GioUnix.OutputStream instead.\n0 read/</this._writes</<() [\"file:///tmp/workbench-shell-yNu2YZ/data/gnome-shell/extensions/workbench@papercusp.ai/bridge.js\":68:22]\n1 read/</this._writes<() [\"file:///tmp/workbench-shell-yNu2YZ/data/gnome-shell/extensions/workbench@papercusp.ai/bridge.js\":67:51]\n2 anonymous() [\"resource:///org/gnome/shell/ui/init.js\":21:19]\n\n** Message: 14:30:44.958: Shutting down GNOME Shell\n\n(gnome-shell:806752): GLib-CRITICAL **: 14:30:44.959: g_hash_table_iter_next: assertion 'ri->version == ri->hash_table->version' failed\nlibmutter-Message: 14:30:45.189: Removed virtual monitor Meta-0\n"
+  },
+  "provenance": {
+    "originalProcessPath": "/tmp/wb-organizer-native-20261107/gnome-native-organizer/gnome-native-process.json",
+    "originalProcessSha256": "6ec6ec3cf08cb0e09fd15b4653a503c4d601d7b731c525d2e4433582c5dfa826",
+    "recordingMethod": "Retained completed subprocess evidence and logs recovered without rerunning the passed tests. Current source and test bytes checked against original custody.",
+    "timestampSource": "Native GNOME Shell start from captured stderr; finish bound is retained process evidence file mtime. These bound the native process only, not the full Node runner.",
+    "commandSource": "Equivalent maintained focused Node test invocation; original ledger wrapper and worktreeDirty qualifications remain in retained logs."
+  },
+  "logs": {
+    "/tmp/wb-organizer-native-20261107.log": {
+      "sha256": "ec3a4ba8c1b289b6bddcc3243bd4c9212c249d930bc77b034727333a9127ca98",
+      "body": "GNOME_NATIVE_PASS {\"ok\":true,\"error\":null,\"phase\":\"native Organizer placement\",\"journey\":\"organizer\",\"inputLog\":[{\"key\":65307,\"mode\":2},{\"focusStep\":\"before mapped fixture activation\",\"currentTime\":0,\"windows\":[{\"title\":\"Unselected terminal [adv:99]\",\"mapped\":true,\"userTime\":498878327,\"focused\":false},{\"title\":\"Needle agent [adv:42420]\",\"mapped\":true,\"userTime\":498878319,\"focused\":false},{\"title\":\"Needle agent [adv:4242]\",\"mapped\":true,\"userTime\":498878305,\"focused\":true}]},{\"focusStep\":\"distractor focus verified\",\"currentTime\":0,\"windows\":[{\"title\":\"Unselected terminal [adv:99]\",\"mapped\":true,\"userTime\":498878327,\"focused\":false},{\"title\":\"Needle agent [adv:4242]\",\"mapped\":true,\"userTime\":498878305,\"focused\":false},{\"title\":\"Needle agent [adv:42420]\",\"mapped\":true,\"userTime\":498878437,\"focused\":true}]},{\"button\":1,\"x\":1104,\"y\":255,\"source\":\"null\",\"picked\":\"[0x560c03d0d620 StButton.button:last-child hover (\\\"Arrange exact-harness / same\\\")]\",\"inside\":[{\"surface\":\"organizer\",\"contains\":true}]},{\"button\":1,\"x\":1104,\"y\":381,\"source\":\"null\",\"picked\":\"[0x560c039c9ea0 StButton.button:last-child hover (\\\"Arrange exact-fleet\\\")]\",\"inside\":[{\"surface\":\"organizer\",\"contains\":true}]},{\"button\":1,\"x\":1104,\"y\":381,\"source\":\"null\",\"picked\":\"[0x560c03968ea0 StButton.button:hover last-child (\\\"Arrange Goal \\\")]\",\"inside\":[{\"surface\":\"organizer\",\"contains\":true}]}],\"actionMode\":1,\"overview\":false,\"windows\":[{\"title\":\"Needle agent [adv:42420]\",\"minimized\":false,\"focused\":false},{\"title\":\"Unselected terminal [adv:99]\",\"minimized\":false,\"focused\":false},{\"title\":\"Needle agent [adv:4242]\",\"minimized\":false,\"focused\":true}],\"states\":[{\"surface\":\"quick-access\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null},{\"surface\":\"goals\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null},{\"surface\":\"inbox\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null},{\"surface\":\"organizer\",\"visible\":false,\"pinned\":false,\"selection\":null,\"detail\":null}],\"assertions\":[\"native shortcut acquisition\",\"native seat supports input injection\",\"native input methods exist\",\"desktop ready for normal shortcuts\",\"Organizer shortcut summons a native actor\",\"Arrange exact-harness / same verifies exact placement and partial failures\",\"selected terminals remain on two distinct desktops\",\"unselected terminal sharing the process remains unchanged\",\"Arrange exact-fleet verifies exact placement and partial failures\",\"Arrange Goal  verifies exact placement and partial failures\",\"native receipts retain requested and observed geometry\",\"native panel exposes remote desktop failure\",\"Organizer dismisses independently\"],\"sourceCustody\":{\"archiveSha256\":\"1156c15f8ee3c81da2e6975118d7a62f214f24a496d011fb244d3f35bc979021\",\"journey\":\"organizer\",\"files\":{\"extension.js\":\"84de94b260b4e273a18ac0cb04649b877c52b35aca0c06711fc23394fcafa9f3\",\"workbench.js\":\"1f18136777cdcaf6af5a5a50529e7106a9a12f7faa5165eb9ca00968f6892507\",\"panel-model.mjs\":\"55177bd298069bbdfcf896b38e8aa9fd9beb8bf6f7cc857ff2e0466287dbf9c2\",\"bridge.js\":\"fc1447f2cafe557d6e093427a0854f0b552b7ef0f06cdc391444ee514c1046ec\",\"helper.js\":\"b0c1069d87138b21870314f9a581adb6b49697b6877c40a800f8b2bda4cfc36f\",\"schemas/org.gnome.shell.extensions.papercusp-workbench.gschema.xml\":\"940ad4930907c361134825580d6b014679af31bc9c854d289703c67f8de5f0d2\"},\"testSha256\":\"d2ebb5b925e73606ee2c8ff0c15709e3f6c9870ffcc26f1432ced45d2b3777f9\"}}\n\u2714 private GNOME Shell renders actors and handles real seat keyboard, pointer and nested dismissal [organizer] (25065.217254ms)\n\u2139 tests 1\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 32625.930835\nTEST_FILE_LEDGER runner=node:test rows=1 reason=\"worktree_dirty: git status unreadable before the run: {\\\"command\\\":\\\"git status --porcelain --untracked-files=all\\\",\\\"timeoutMs\\\":2000,\\\"elapsedMs\\\":2021,\\\"code\\\":null,\\\"signal\\\":\\\"SIGKILL\\\",\\\"killed\\\":true,\\\"message\\\":\\\"command timed out\\\",\\\"stderr\\\":\\\"\\\",\\\"identity\\\":{\\\"uid\\\":1000,\\\"gid\\\":1000,\\\"namespaces\\\":{\\\"user\\\":\\\"user:[4026531837]\\\",\\\"mnt\\\":\\\"mnt:[4026531832]\\\"}},\\\"gitTrace\\\":{\\\"events\\\":1766,\\\"droppedLines\\\":0,\\\"rootProcessId\\\":\\\"fbd3ccdae59d\\\",\\\"lastEvents\\\":[{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"untracked\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"dir\\\",\\\"label\\\":\\\"read_directory\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"dir\\\",\\\"label\\\":\\\"read_directory\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"t_rel\\\":0.218605,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"untracked\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_rel\\\":0.218896,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"data\\\",\\\"category\\\":\\\"status\\\",\\\"key\\\":\\\"count/changed\\\",\\\"value\\\":\\\"27\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_abs\\\":0.8248,\\\"t_rel\\\":0.8248,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"data\\\",\\\"category\\\":\\\"status\\\",\\\"key\\\":\\\"count/untracked\\\",\\\"value\\\":\\\"4\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_abs\\\":0.82481,\\\"t_rel\\\":0.82481,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"data\\\",\\\"category\\\":\\\"status\\\",\\\"key\\\":\\\"count/ignored\\\",\\\"value\\\":\\\"0\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_abs\\\":0.824817,\\\"t_rel\\\":0.824817,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"print\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"print\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_rel\\\":0.000059,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"exit\\\",\\\"thread\\\":\\\"main\\\",\\\"t_abs\\\":0.824897,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"data_json\\\",\\\"category\\\":\\\"traverse_trees\\\",\\\"key\\\":\\\"statistics\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_abs\\\":0.824906,\\\"t_rel\\\":0.824906,\\\"processId\\\":\\\"fbd3ccdae59d\\\"},{\\\"event\\\":\\\"atexit\\\",\\\"thread\\\":\\\"main\\\",\\\"t_abs\\\":0.824916,\\\"processId\\\":\\\"fbd3ccdae59d\\\"}],\\\"openRegions\\\":[]}}; {\\\"command\\\":\\\"git status --porcelain --untracked-files=all\\\",\\\"timeoutMs\\\":8000,\\\"elapsedMs\\\":8010,\\\"code\\\":null,\\\"signal\\\":\\\"SIGKILL\\\",\\\"killed\\\":true,\\\"message\\\":\\\"command timed out\\\",\\\"stderr\\\":\\\"\\\",\\\"identity\\\":{\\\"uid\\\":1000,\\\"gid\\\":1000,\\\"namespaces\\\":{\\\"user\\\":\\\"user:[4026531837]\\\",\\\"mnt\\\":\\\"mnt:[4026531832]\\\"}},\\\"gitTrace\\\":{\\\"events\\\":1242,\\\"droppedLines\\\":0,\\\"rootProcessId\\\":\\\"4c2f5a014ffc\\\",\\\"lastEvents\\\":[{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"index\\\",\\\"label\\\":\\\"do_read_index\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_rel\\\":0.000462,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"index\\\",\\\"label\\\":\\\"refresh\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"data\\\",\\\"category\\\":\\\"index\\\",\\\"key\\\":\\\"refresh/sum_lstat\\\",\\\"value\\\":\\\"84\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"t_abs\\\":0.003331,\\\"t_rel\\\":0.000527,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"data\\\",\\\"category\\\":\\\"index\\\",\\\"key\\\":\\\"refresh/sum_scan\\\",\\\"value\\\":\\\"0\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"t_abs\\\":0.003345,\\\"t_rel\\\":0.000541,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"index\\\",\\\"label\\\":\\\"refresh\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_rel\\\":0.000553,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"worktrees\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"diff\\\",\\\"label\\\":\\\"setup\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"diff\\\",\\\"label\\\":\\\"setup\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"t_rel\\\":0.000014,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"diff\\\",\\\"label\\\":\\\"write back to queue\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"diff\\\",\\\"label\\\":\\\"write back to queue\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":2,\\\"t_rel\\\":0.000011,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_leave\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"worktrees\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"t_rel\\\":0.000095,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"index\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"}],\\\"openRegions\\\":[{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"worktrees\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"processId\\\":\\\"4c2f5a014ffc\\\"},{\\\"event\\\":\\\"region_enter\\\",\\\"category\\\":\\\"status\\\",\\\"label\\\":\\\"index\\\",\\\"thread\\\":\\\"main\\\",\\\"nesting\\\":1,\\\"processId\\\":\\\"e743889eae54\\\",\\\"parentProcessId\\\":\\\"4c2f5a014ffc\\\"}]}}\"\n"
+    },
+    "/tmp/wb-organizer-unit-final-20261107.log": {
+      "sha256": "ecc50ea98e58e562c74e6fb6abd4c3cc0b8b2b9fb103205613385508863fdce2",
+      "body": "\u2714 Organizer uses qualified plans, fleet identities and canonical goal links (5.804449ms)\n\u2714 Organizer tiles exact terminals independently within each desktop and monitor (2.289786ms)\n\u2714 Organizer reports remote, stale and shared windows without moving them (1.19477ms)\n\u2714 Organizer refuses changed sessions and unverified placement receipts (4.017696ms)\n\u2714 Inbox context refuses conflicting, partial and stale identities and clears hidden selections (2.998776ms)\n\u2714 Inbox named choices require source Resolve and preserve exact option identities (0.628134ms)\n\u2714 Inbox saved progress uses the persisted denominator and excludes owner-only work from Apply (0.964574ms)\n\u2714 Inbox run refresh preserves edits, rejects overlapping writes and recovers read failures (0.799115ms)\n\u2714 Inbox writes demand exact environment and terminal receipt and never repeat confirmed effects (0.831527ms)\n\u2714 Inbox batch admission freezes only visible questions and resumes only retryable items (1.172697ms)\n\u2714 canonical ended session rows retain Agents results and exact launch identities (14.394243ms)\n\u2714 native agent selection distinguishes incarnations and retains an unregistered ended session (0.392599ms)\n\u2714 native agent activation revalidates exact owner, live incarnation and actual desktop host (0.635218ms)\n\u2714 native activation refuses a replaced session behind the same selected owner (0.476731ms)\n\u2714 native resume retains exact canonical launch and saved host, including an ownerless ended launch (0.591473ms)\n\u2714 native resume refuses changed, live, ambiguous, inaccessible and hostless selections (0.729891ms)\n\u2714 native focus rejects shared labels, PID guesses, missing windows and conflicting exact handles (0.416285ms)\n\u2714 native results expose later matches while retaining exact selection and source capacity (7.432236ms)\n\u2714 qualified identity survives identical titles, harnesses and literal search characters (0.479797ms)\n\u2714 each canonical source has reserved result capacity including Work on everything (1.023358ms)\n\u2714 server search follows the query and scoped refreshes never request unrelated sources (0.489787ms)\n\u2714 canonical aggregate rows distinguish a real empty portfolio from unavailable or malformed data (1.204939ms)\n\u2714 independent source failures preserve useful results and stale completions cannot overwrite a refresh (0.400264ms)\n\u2714 Escape closes detail first; toggle, outside focus, independent pins and drafts retain their context (0.238091ms)\n\u2714 keyboard selection retains canonical identity when a different source arrives first (0.348314ms)\n\u2714 shortcut replacement retains old runtime bindings on collision and releases only successful replacements (1.001365ms)\n\u2714 GSettings schema compiles strictly in private storage (24.459888ms)\n\u2714 actual GJS bridge sends exact stdin through an argv path and rejects failed or malformed reads (492.673103ms)\n\u2139 tests 28\n\u2139 suites 0\n\u2139 pass 28\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 7479.32249\nTEST_FILE_LEDGER runner=node:test rows=1 reason=\"worktree_dirty: 31 porcelain line(s) before the run: M apps/operator/bin/release/dependency-generation.sh |  M apps/operator/lib/release/dependency-generation.test.ts |  M apps/operator/package.json |  M apps/operator/scripts/hooks/inject/__tests__/dispatcher.test.ts |  M apps/operator/scripts/hooks/inject/core.mjs\"\n"
+    }
+  },
+  "scopeLimits": [
+    "Private virtual seat and fixture PUI only; no installed native three-OS certificate.",
+    "Full requested and observed Organizer receipts were asserted in the native test but omitted by the old finish serializer.",
+    "Dirty worktree proof is not proof that the test ran a clean commit.",
+    "No fresh-install, upgrade, login, macOS/Windows runtime, release or shipment proof."
+  ]
+}

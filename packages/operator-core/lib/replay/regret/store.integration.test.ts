@@ -156,6 +156,55 @@ describe('regret_findings lifecycle (migration 248)', () => {
 });
 
 describe('readSelectionRows (spawned_agents ⋈ run_output ⋈ features)', () => {
+  it('cancels a stalled selection on PostgreSQL and restores the pooled connection', async () => {
+    const locker = await sql.reserve();
+    try {
+      await locker`BEGIN`;
+      await locker`LOCK TABLE harness_shared.spawned_agents IN ACCESS EXCLUSIVE MODE`;
+      await expect(readSelectionRows(sql, WS, 7, { statementTimeoutMs: 50 }))
+        .rejects.toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '57014', timeoutSource: 'pg' });
+      const [waiting] = await locker<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND pid <> pg_backend_pid()
+          AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE '%SELECT sa.run_id%'`;
+      expect(waiting?.count).toBe('0');
+    } finally {
+      await locker`ROLLBACK`;
+      locker.release();
+    }
+    await expect(readSelectionRows(sql, WS, 7)).resolves.toEqual([]);
+  });
+
+  it('cancels the actual database read when its caller aborts', async () => {
+    const locker = await sql.reserve();
+    const controller = new AbortController();
+    const waitingReads = async () => {
+      // PostgreSQL caches activity observations inside this long transaction;
+      // refresh before polling for the reader to arrive or disappear.
+      await locker`SELECT pg_stat_clear_snapshot()`;
+      const [row] = await locker<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND pid <> pg_backend_pid()
+          AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE '%SELECT sa.run_id%'`;
+      return row?.count;
+    };
+    try {
+      await locker`BEGIN`;
+      await locker`LOCK TABLE harness_shared.spawned_agents IN ACCESS EXCLUSIVE MODE`;
+      const pending = readSelectionRows(sql, WS, 7, { signal: controller.signal });
+      void pending.catch(() => undefined);
+      await expect.poll(waitingReads, { timeout: 5000 }).toBe('1');
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      await expect.poll(waitingReads, { timeout: 5000 }).toBe('0');
+    } finally {
+      controller.abort();
+      await locker`ROLLBACK`;
+      locker.release();
+    }
+    await expect(readSelectionRows(sql, WS, 7)).resolves.toEqual([]);
+  });
+
   it('joins terminal spawns with transcript size and bounce attempts; LEFT-tolerates missing usage', async () => {
     await sql`
       INSERT INTO harness_shared.harness_features_consolidated

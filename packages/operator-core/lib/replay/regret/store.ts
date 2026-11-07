@@ -29,6 +29,7 @@ import type { CandidateChange, CandidateReplayScore } from './counterfactual-cor
 import type { RegretTickDeps } from './mine';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { recordProducerObservation, withProducerLifecycleWrite } from '../../experiment/producer-lifecycle-store';
+import { boundedOrgTxn, type BoundedOrgTxnOptions } from '../../pg-bounded-txn';
 
 export type ReplayStatus = 'pending' | 'replayed' | 'skipped';
 
@@ -53,7 +54,25 @@ export interface RegretFindingRecord {
 const READ_LIMIT = 2000;
 
 /** Terminal spawns in the window with usage, transcript-presence, and bounce joins. */
-export async function readSelectionRows(sql: Sql, workspaceId: string, windowDays: number): Promise<SelectionInputRow[]> {
+export async function readSelectionRows(
+  sql: Sql,
+  workspaceId: string,
+  windowDays: number,
+  options: Pick<BoundedOrgTxnOptions, 'signal' | 'statementTimeoutMs'> = {},
+): Promise<SelectionInputRow[]> {
+  // PgBouncer does not apply the configured pool startup timeout. Keep this
+  // analytics scan in a bounded read transaction so a stalled read releases
+  // its snapshot, including when its caller abandons it.
+  return boundedOrgTxn(tx => readSelectionRowsInTxn(tx, workspaceId, windowDays), {
+    client: sql,
+    readOnly: true,
+    statementTimeoutMs: options.statementTimeoutMs ?? 30_000,
+    signal: options.signal,
+    phase: 'regret:selection',
+  });
+}
+
+async function readSelectionRowsInTxn(sql: Sql, workspaceId: string, windowDays: number): Promise<SelectionInputRow[]> {
   const scopes = [...new Set([workspaceId, '*'])];
   const rows = await sql<
     {

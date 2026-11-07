@@ -72,21 +72,22 @@ export function cutUnitFor(platform?: Platform): string {
 export function cutUnitForTask(taskId: string): string {
   return serviceUnitForTask(taskId);
 }
-function rootScopedCutPath(extension: 'log' | 'done' | 'started', platform: Platform | undefined, root: string): string {
+function rootScopedCutPath(extension: 'log' | 'done' | 'started', platform: Platform | undefined, root: string, operationId?: string): string {
   const rootKey = createHash('sha256').update(path.resolve(root)).digest('hex').slice(0, 24);
   const unit = platform ? `${CUT_UNIT}-${platform}` : CUT_UNIT;
-  return `/tmp/${unit}-${rootKey}.${extension}`;
+  const operationKey = operationId ? `-${createHash('sha256').update(operationId).digest('hex').slice(0, 24)}` : '';
+  return `/tmp/${unit}-${rootKey}${operationKey}.${extension}`;
 }
-export function cutLogFor(platform?: Platform, root?: string): string {
-  if (root !== undefined) return rootScopedCutPath('log', platform, root);
+export function cutLogFor(platform?: Platform, root?: string, operationId?: string): string {
+  if (root !== undefined) return rootScopedCutPath('log', platform, root, operationId);
   return platform ? `/tmp/${CUT_UNIT}-${platform}.log` : CUT_LOG;
 }
-export function cutDoneFor(platform?: Platform, root?: string): string {
-  if (root !== undefined) return rootScopedCutPath('done', platform, root);
+export function cutDoneFor(platform?: Platform, root?: string, operationId?: string): string {
+  if (root !== undefined) return rootScopedCutPath('done', platform, root, operationId);
   return platform ? `/tmp/${CUT_UNIT}-${platform}.done` : CUT_DONE;
 }
-export function cutStartedFor(platform?: Platform, root?: string): string {
-  if (root !== undefined) return rootScopedCutPath('started', platform, root);
+export function cutStartedFor(platform?: Platform, root?: string, operationId?: string): string {
+  if (root !== undefined) return rootScopedCutPath('started', platform, root, operationId);
   return platform ? `/tmp/${CUT_UNIT}-${platform}.started` : CUT_STARTED;
 }
 /** Stable lock for the logical whole-cut/platform slot, independent of task unit id. */
@@ -500,7 +501,7 @@ export function wrapWithStagingSyncLock(
 /** Pure: the full `systemd-run` argv for the detached LOCAL cut. Mirrors
  *  release-deploy-launch.buildSystemdRunArgv (PATH passthrough so the transient unit
  *  doesn't depend on the systemd-manager env). The inner command clears a stale DONE
- *  sentinel, writes root-scoped status files and updates the host-wide pointers, then
+ *  sentinel, writes operation-scoped status files and updates the latest-cut pointers, then
  *  records the real exit code. Exported for unit testing the command construction. */
 export function buildCutArgv(
   root: string,
@@ -518,18 +519,31 @@ export function buildCutArgv(
     .map(([k, v]) => `${k}=${shellSingleQuote(v)}`)
     .join(' ');
   const taskId = runtime.releaseTaskId?.trim();
+  const operationId = env.PAPERCUSP_RELEASE_OPERATION_ID;
   const unit = taskId ? cutUnitForTask(taskId) : cutUnitFor(platform);
-  const log = cutLogFor(platform, root);
-  const done = cutDoneFor(platform, root);
-  const started = cutStartedFor(platform, root);
+  const log = cutLogFor(platform, root, operationId);
+  const done = cutDoneFor(platform, root, operationId);
+  const started = cutStartedFor(platform, root, operationId);
   // Rootless status and preflight keep their host-wide view of the latest cut;
-  // an explicit root reads its own independent markers/log/done files.
+  // root-scoped aliases also advance, but each operation's evidence remains intact.
   const currentStatusPointers = [
+    [log, cutLogFor(platform, root)],
+    [done, cutDoneFor(platform, root)],
+    [started, cutStartedFor(platform, root)],
     [log, cutLogFor(platform)],
     [done, cutDoneFor(platform)],
     [started, cutStartedFor(platform)],
   ]
-    .map(([target, pointer]) => `ln -sfn ${shellSingleQuote(target!)} ${shellSingleQuote(pointer!)}`)
+    .filter(([target, pointer]) => target !== pointer)
+    .map(([target, pointer]) => {
+      // Older launchers wrote regular files at the alias paths. Preserve those
+      // bytes before replacing them with links; never overwrite an older archive.
+      const retained = `${pointer}.before-${createHash('sha256').update(operationId ?? log).digest('hex').slice(0, 24)}`;
+      return `if [ -e ${shellSingleQuote(pointer!)} ] && [ ! -L ${shellSingleQuote(pointer!)} ]; then ` +
+        `[ ! -e ${shellSingleQuote(retained)} ] || exit 73; ` +
+        `mv -- ${shellSingleQuote(pointer!)} ${shellSingleQuote(retained)} || exit $?; fi; ` +
+        `ln -sfn ${shellSingleQuote(target!)} ${shellSingleQuote(pointer!)} || exit $?`;
+    })
     .join('; ') + '; ';
   const lock = cutLockFor(platform);
   // A first pass writes these version fields before cutting the seed. A retry
@@ -555,23 +569,25 @@ export function buildCutArgv(
     ? wrapWithStagingSyncLock(sourceCutter)
     : sourceCutter;
   // The started marker carries the OPERATION IDENTITY, not just a timestamp (P-001).
-  // The sentinels are per-PLATFORM and therefore SHARED across successive cuts of the
-  // same leg, so an anonymous marker cannot distinguish "my cut is still running" from
+  // The latest-cut pointers are shared across successive cuts of the same leg,
+  // so an anonymous marker cannot distinguish "my cut is still running" from
   // "a later cut took this unit and my operation is long gone" — and the DONE sentinel a
   // stale reader then picks up belongs to that other cut, which reads as a success the
   // operation never had. Stamping the ids here is what lets restart discovery correlate
   // a live unit back to its journal row instead of guessing from the log.
   // `STARTED:<epoch>` stays the FIRST line so a marker written by an older launcher, or
   // read by an older parser, still resolves.
-  const operationId = env.PAPERCUSP_RELEASE_OPERATION_ID;
   const markerTaskId = env.PAPERCUSP_RELEASE_TASK_ID;
   const startedMarker =
     operationId && markerTaskId
       ? `printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n' "$(date +%s)" ${shellSingleQuote(operationId)} ${shellSingleQuote(markerTaskId)} > ${started}; `
       : `printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; `;
+  const statusLocationMarker = operationId
+    ? `echo ${shellSingleQuote(`STATUS_BASE:${log.slice(0, -4)}`)} >> ${started}; `
+    : '';
   const inner =
     `exec 9>${shellSingleQuote(lock)}; flock -n 9 || { echo 'release_cut_slot_busy' >&2; exit 73; }; ` +
-    `rm -f ${done}; ${currentStatusPointers}${startedMarker}systemd-notify --ready || exit $?; ` +
+    `rm -f ${done}; ${currentStatusPointers}${startedMarker}${statusLocationMarker}systemd-notify --ready || exit $?; ` +
     `${resumeReset}${envPrefix} ${cutterInvocation} > ${log} 2>&1; echo "DONE:$?" > ${done}`;
   return [
     '--user',
@@ -700,8 +716,8 @@ export function launchDetachedCut(
       channel: opts.channel,
       legs,
       argv: launchArgv,
-      logPath: cutLogFor(opts.platform),
-      donePath: cutDoneFor(opts.platform),
+      logPath: cutLogFor(opts.platform, root, opts.runtime.releaseOperationId?.trim()),
+      donePath: cutDoneFor(opts.platform, root, opts.runtime.releaseOperationId?.trim()),
       operationId: opts.runtime.releaseOperationId?.trim() || null,
       taskId: opts.runtime.releaseTaskId?.trim() || null,
     };
@@ -746,6 +762,8 @@ export interface CutOperationMarker {
   taskId: string | null;
   /** Epoch SECONDS as written by the wrapper's `date +%s` (null if unparseable). */
   startedAtSec: number | null;
+  /** Immutable evidence named by a managed operation; absent on older markers. */
+  statusBase?: string;
 }
 
 export interface CutStatus {
@@ -771,10 +789,12 @@ export function parseCutStartedMarker(text: string): CutOperationMarker {
   const startedAt = text.match(/^STARTED:(\d+)/m);
   const operation = text.match(/^OPERATION:(.+)$/m);
   const task = text.match(/^TASK:(.+)$/m);
+  const statusBase = text.match(/^STATUS_BASE:(\/tmp\/papercup-release-cut(?:-(?:linux|mac|windows|arm64))?-[a-f0-9]{24}-[a-f0-9]{24})$/m);
   return {
     operationId: operation?.[1]?.trim() || null,
     taskId: task?.[1]?.trim() || null,
     startedAtSec: startedAt ? Number(startedAt[1]) : null,
+    ...(statusBase ? { statusBase: statusBase[1] } : {}),
   };
 }
 
@@ -916,8 +936,8 @@ function cutStatusProbe(deps: Omit<ReadCutStatusDeps, 'isUnitActive'>): CutStatu
   return {
     exists,
     read,
-    logPath: cutLogFor(deps.platform, deps.root),
-    donePath: cutDoneFor(deps.platform, deps.root),
+    logPath: operation?.statusBase ? `${operation.statusBase}.log` : cutLogFor(deps.platform, deps.root),
+    donePath: operation?.statusBase ? `${operation.statusBase}.done` : cutDoneFor(deps.platform, deps.root),
     startedSeen,
     operation,
     unit,

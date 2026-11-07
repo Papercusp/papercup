@@ -1,7 +1,7 @@
 /**
  * release-cut-launch.test.ts — the LOCAL desktop-release cutter's PURE primitives
- * (desktop-update-center-and-release-tooling P-5 Unit B). No real cut; dependency-marker
- * cases exercise the canonical reader against temporary files. Other branches use injected deps,
+ * (desktop-update-center-and-release-tooling P-5 Unit B). No real cut; filesystem cases
+ * exercise the canonical reader and generated wrapper with temporary fixture scripts. Other branches use injected deps,
  * per RELEASE-RUNBOOK D-007
  * (no claim of "verified" rests on a live VM/build run that did not happen).
  *
@@ -492,7 +492,7 @@ describe('buildCutArgv', () => {
       expect(readinessArgv).toContain('--property=NotifyAccess=all');
       const command = readinessArgv.at(-1)!;
       const notifyAt = command.indexOf('systemd-notify --ready || exit $?;');
-      expect(notifyAt).toBeGreaterThan(command.indexOf(`> ${cutStartedFor(platform, root)}`));
+      expect(notifyAt).toBeGreaterThan(command.indexOf(`> ${cutStartedFor(platform, root, releaseTaskId ? 'readiness-operation' : undefined)}`));
       expect(notifyAt).toBeGreaterThan(command.indexOf('flock -n 9'));
       expect(notifyAt).toBeLessThan(command.indexOf('PAPERCUSP_PUBLISH_GITHUB='));
     }
@@ -629,6 +629,79 @@ describe('readCutStatus', () => {
     expect(s.logTail).toBeNull();
     expect(reads).toEqual([started, done]);
     expect(reads).not.toContain(log);
+  });
+});
+
+describe('managed cut evidence retention', () => {
+  it('retains failed and legacy evidence when a later cut of the same root succeeds', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-evidence-retention-'));
+    const script = path.join(root, 'bin', 'release-local.sh');
+    const aliases = [cutLogFor(undefined, root), cutDoneFor(undefined, root), cutStartedFor(undefined, root)];
+    const operations = ['failed-operation', 'successful-operation'];
+    const evidenceFiles = operations.flatMap((op) => [
+      cutLogFor(undefined, root, op), cutDoneFor(undefined, root, op), cutStartedFor(undefined, root, op),
+    ]);
+    const legacy = ['legacy failure details', 'DONE:9', 'STARTED:1\nOPERATION:legacy\nTASK:legacy-task\n'];
+    const retainedFiles: string[] = [];
+    const isolateHostPath = (value: string) => value
+      .replaceAll(CUT_LOG, path.join(root, 'latest.log'))
+      .replaceAll(CUT_DONE, path.join(root, 'latest.done'))
+      .replaceAll(CUT_STARTED, path.join(root, 'latest.started'))
+      .replaceAll('/tmp/papercup-release-cut.lock', path.join(root, 'cut.lock'));
+    try {
+      fs.mkdirSync(path.dirname(script));
+      aliases.forEach((file, i) => fs.writeFileSync(file, legacy[i]));
+      const run = (operationId: string, exitCode: number) => {
+        fs.writeFileSync(script, `echo '${operationId} diagnostic'; exit ${exitCode}\n`);
+        const command = buildCutArgv(root, '0.0.8', 'alpha', {}, '1'.repeat(40), '/usr/bin:/bin', {
+          ownerName: 'Test Owner', releaseTaskId: operationId.replaceAll('-', ''), releaseOperationId: operationId,
+        }).at(-1)!;
+        const result = spawnSync('bash', ['-c', `systemd-notify() { :; }; ${isolateHostPath(command)}`], {
+          encoding: 'utf8', timeout: 5000,
+        });
+        expect(result.status, result.stderr).toBe(0);
+      };
+      run(operations[0], 1);
+      const first = readCutStatus({ root, isUnitActive: () => false });
+      expect(first).toMatchObject({ state: 'failed', exitCode: 1 });
+      expect(first.logTail).toContain('failed-operation diagnostic');
+      const firstMarker = fs.readFileSync(cutStartedFor(undefined, root, operations[0]), 'utf8');
+      const firstBytes = evidenceFiles.slice(0, 3).map((file) => fs.readFileSync(file, 'utf8'));
+      run(operations[1], 0);
+      expect(evidenceFiles.slice(0, 3).map((file) => fs.readFileSync(file, 'utf8'))).toEqual(firstBytes);
+      const latest = readCutStatus({ root, isUnitActive: () => false });
+      expect(latest).toMatchObject({
+        state: 'done', exitCode: 0, logPath: cutLogFor(undefined, root, operations[1]),
+        donePath: cutDoneFor(undefined, root, operations[1]),
+      });
+      expect(latest.logTail).toContain('successful-operation diagnostic');
+      const host = readCutStatus({
+        isUnitActive: () => false,
+        existsSync: (file) => fs.existsSync(isolateHostPath(file)),
+        readFileSync: (file) => fs.readFileSync(isolateHostPath(file), 'utf8'),
+      });
+      expect(host).toMatchObject({ state: 'done', logPath: latest.logPath, donePath: latest.donePath });
+      // A new launch may advance aliases after a reader captured the old marker.
+      // That reader must still return the old operation's outcome and diagnostics.
+      const captured = readCutStatus({
+        root, isUnitActive: () => false,
+        readFileSync: (file) => file === aliases[2] ? firstMarker : fs.readFileSync(file, 'utf8'),
+      });
+      expect(captured).toMatchObject({ state: 'failed', exitCode: 1, logPath: first.logPath });
+      const names = fs.readdirSync('/tmp');
+      aliases.forEach((file, i) => {
+        const retained = names.filter((name) => name.startsWith(`${path.basename(file)}.before-`));
+        retainedFiles.push(...retained.map((name) => path.join('/tmp', name)));
+        expect(retained).toHaveLength(1);
+        expect(fs.readFileSync(retainedFiles.at(-1)!, 'utf8')).toBe(legacy[i]);
+      });
+    } finally {
+      retainedFiles.push(...fs.readdirSync('/tmp')
+        .filter((name) => aliases.some((file) => name.startsWith(`${path.basename(file)}.before-`)))
+        .map((name) => path.join('/tmp', name)));
+      for (const file of [...aliases, ...evidenceFiles, ...retainedFiles]) fs.rmSync(file, { force: true });
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2210,7 +2283,7 @@ describe('buildCutArgv — the started marker carries the operation identity', (
     expect(cmd).toContain("printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n'");
     expect(cmd).toContain("'op-1'");
     expect(cmd).toContain("'task1'");
-    expect(cmd).toContain(`> ${cutStartedFor(undefined, '/root/papercusp-desktop')}`);
+    expect(cmd).toContain(`> ${cutStartedFor(undefined, '/root/papercusp-desktop', 'op-1')}`);
   });
 
   it('writes the plain timestamp-only marker for an unmanaged cut', () => {

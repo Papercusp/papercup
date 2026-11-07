@@ -73,6 +73,22 @@ describe('mcp-proxy runtime-vintage boot report', () => {
   });
 });
 
+describe('cluster boot-failure diagnosis', () => {
+  it('does not label generic early worker exits as dependency-integrity failures', () => {
+    const start = honoHostSrc.indexOf('onBootFailure:');
+    const end = honoHostSrc.indexOf('// Graceful drain on shutdown.', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+
+    const callback = honoHostSrc.slice(start, end);
+    expect(callback).toContain('root cause is unknown');
+    expect(callback).toContain('Inspect the first worker error above');
+    expect(callback).toContain('process.exit(1)');
+    expect(callback).not.toContain('BOOT_INTEGRITY_EXIT_CODE');
+    expect(callback).not.toMatch(/MODULE_NOT_FOUND|npm ci|cluster UNBOOTABLE/);
+  });
+});
+
 /** Each guard, with the module it lives in — both must appear at the boot site. */
 const STARTUP_GUARDS: Array<{ fn: string; module: string; catches: string }> = [
   {
@@ -459,7 +475,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
   });
 
   it('fails closed when the request migration preflight rejects instead of serving anyway', () => {
-    const wait = honoHostSrc.indexOf('void waitForBootMigrationGate().then(() => {');
+    const wait = honoHostSrc.search(/void waitForBootMigrationGate\(\)\.then\(\s*(?:async\s*)?\(\)\s*=>\s*\{/);
     const start = honoHostSrc.indexOf('startRequestServers();', wait);
     const failure = honoHostSrc.indexOf('request-serving startup withheld:', wait);
     const exit = honoHostSrc.indexOf('process.exit(1);', failure);

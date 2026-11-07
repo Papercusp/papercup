@@ -1,0 +1,552 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 native Windows Organizer exact placement",
+  "framework": "operational",
+  "command": [
+    "ssh",
+    "win-vm",
+    "$ProgressPreference='SilentlyContinue'; $env:PAPERCUSP_NATIVE_EVIDENCE_DIR='C:/Users/user/AppData/Local/Temp/workbench-organizer-evidence-20261107-b3cf9'; & 'C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/native-workbench-windows-host.ps1' -SourceDirectory 'C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9' -Phase organizer -Interactive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-07T19:51:20.080911+00:00",
+  "finishedAt": "2026-11-07T19:51:42.362191+00:00",
+  "summary": "The maintained Windows fixture passed 30 model/native WPF Organizer checks on the signed-in desktop. Plan, fleet and canonical goal actions each returned measured placement receipts for two exact HWNDs, unsupported/offline/missing receipts for three others and left an unselected same-process window unchanged. Late cancellation and identity replacement refused geometry mutation. Separate current-source settings migration passed35. This is current-build fixture-PUI evidence; installed-artifact three-OS acceptance and shipment remain pending.",
+  "assertions": [
+    {
+      "id": "windows-organizer-1",
+      "passed": true,
+      "evidence": "Organizer qualifies identical plan slugs by their canonical harness"
+    },
+    {
+      "id": "windows-organizer-2",
+      "passed": true,
+      "evidence": "Organizer uses canonical fleet identity"
+    },
+    {
+      "id": "windows-organizer-3",
+      "passed": true,
+      "evidence": "Organizer goal links use the canonical plan rail rather than project membership"
+    },
+    {
+      "id": "windows-organizer-4",
+      "passed": true,
+      "evidence": "Organizer goal links include only canonical live holders"
+    },
+    {
+      "id": "windows-organizer-5",
+      "passed": true,
+      "evidence": "Organizer refuses a changed goal identity"
+    },
+    {
+      "id": "windows-organizer-6",
+      "passed": true,
+      "evidence": "Organizer preserves independent remote stale and missing terminal receipts"
+    },
+    {
+      "id": "windows-organizer-7",
+      "passed": true,
+      "evidence": "Organizer leaves an unselected terminal in the same process unchanged"
+    },
+    {
+      "id": "windows-organizer-8",
+      "passed": true,
+      "evidence": "Organizer preserves separate desktops rather than collecting windows on the active desktop"
+    },
+    {
+      "id": "windows-organizer-9",
+      "passed": true,
+      "evidence": "Organizer tiles within each existing monitor work area"
+    },
+    {
+      "id": "windows-organizer-10",
+      "passed": true,
+      "evidence": "Organizer keeps requested and observed native geometry in its receipts"
+    },
+    {
+      "id": "windows-organizer-11",
+      "passed": true,
+      "evidence": "Organizer refuses a partial roster before any mutation"
+    },
+    {
+      "id": "windows-organizer-12",
+      "passed": true,
+      "evidence": "Organizer partial roster refusal moves no windows"
+    },
+    {
+      "id": "windows-organizer-13",
+      "passed": true,
+      "evidence": "Organizer refuses degraded canonical window identity"
+    },
+    {
+      "id": "windows-organizer-14",
+      "passed": true,
+      "evidence": "Organizer refuses a terminal that left the selected group"
+    },
+    {
+      "id": "windows-organizer-15",
+      "passed": true,
+      "evidence": "Organizer refuses a replaced recorded window"
+    },
+    {
+      "id": "windows-organizer-16",
+      "passed": true,
+      "evidence": "Organizer refuses a placement receipt on a different desktop"
+    },
+    {
+      "id": "windows-organizer-17",
+      "passed": true,
+      "evidence": "Organizer cannot claim a moved terminal from an unchanged rectangle"
+    },
+    {
+      "id": "windows-organizer-18",
+      "passed": true,
+      "evidence": "Organizer refuses multiple sessions sharing one exact native window"
+    },
+    {
+      "id": "windows-organizer-19",
+      "passed": true,
+      "evidence": "native Windows adapter observes the documented virtual desktop identity"
+    },
+    {
+      "id": "windows-organizer-20",
+      "passed": true,
+      "evidence": "Organizer summons a resident native WPF panel"
+    },
+    {
+      "id": "windows-organizer-21",
+      "passed": true,
+      "evidence": "Arrange one / same reports exact placements and partial failures"
+    },
+    {
+      "id": "windows-organizer-22",
+      "passed": true,
+      "evidence": "native Windows placement is measured rather than inferred from SetWindowPos"
+    },
+    {
+      "id": "windows-organizer-23",
+      "passed": true,
+      "evidence": "native Organizer leaves an unselected same-process window unchanged"
+    },
+    {
+      "id": "windows-organizer-24",
+      "passed": true,
+      "evidence": "Arrange fleet reports exact placements and partial failures"
+    },
+    {
+      "id": "windows-organizer-25",
+      "passed": true,
+      "evidence": "Arrange Goal reports exact placements and partial failures"
+    },
+    {
+      "id": "windows-organizer-26",
+      "passed": true,
+      "evidence": "native Organizer preserves the observed desktop for each window"
+    },
+    {
+      "id": "windows-organizer-27",
+      "passed": true,
+      "evidence": "native arrangement cancellation refuses mutation"
+    },
+    {
+      "id": "windows-organizer-28",
+      "passed": true,
+      "evidence": "native late cancellation after restore prevents geometry mutation"
+    },
+    {
+      "id": "windows-organizer-29",
+      "passed": true,
+      "evidence": "native late terminal identity replacement cannot move a recycled handle"
+    },
+    {
+      "id": "windows-organizer-30",
+      "passed": true,
+      "evidence": "Organizer dismisses independently and retains its native resident"
+    }
+  ],
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "nativeResult": {
+    "ok": true,
+    "platform": "windows",
+    "phase": "organizer",
+    "cases": [
+      "Organizer qualifies identical plan slugs by their canonical harness",
+      "Organizer uses canonical fleet identity",
+      "Organizer goal links use the canonical plan rail rather than project membership",
+      "Organizer goal links include only canonical live holders",
+      "Organizer refuses a changed goal identity",
+      "Organizer preserves independent remote stale and missing terminal receipts",
+      "Organizer leaves an unselected terminal in the same process unchanged",
+      "Organizer preserves separate desktops rather than collecting windows on the active desktop",
+      "Organizer tiles within each existing monitor work area",
+      "Organizer keeps requested and observed native geometry in its receipts",
+      "Organizer refuses a partial roster before any mutation",
+      "Organizer partial roster refusal moves no windows",
+      "Organizer refuses degraded canonical window identity",
+      "Organizer refuses a terminal that left the selected group",
+      "Organizer refuses a replaced recorded window",
+      "Organizer refuses a placement receipt on a different desktop",
+      "Organizer cannot claim a moved terminal from an unchanged rectangle",
+      "Organizer refuses multiple sessions sharing one exact native window",
+      "native Windows adapter observes the documented virtual desktop identity",
+      "Organizer summons a resident native WPF panel",
+      "Arrange one / same reports exact placements and partial failures",
+      "native Windows placement is measured rather than inferred from SetWindowPos",
+      "native Organizer leaves an unselected same-process window unchanged",
+      "Arrange fleet reports exact placements and partial failures",
+      "Arrange Goal reports exact placements and partial failures",
+      "native Organizer preserves the observed desktop for each window",
+      "native arrangement cancellation refuses mutation",
+      "native late cancellation after restore prevents geometry mutation",
+      "native late terminal identity replacement cannot move a recycled handle",
+      "Organizer dismisses independently and retains its native resident"
+    ],
+    "count": 30,
+    "organizerRuns": [
+      {
+        "group": "plan",
+        "receipts": [
+          {
+            "OwnerId": "owner-201",
+            "SessionId": "201",
+            "Host": "W-",
+            "Desktop": "0559926b-bea7-4b50-a9f3-606250934c97",
+            "Monitor": "65537",
+            "Status": "moved",
+            "Error": null,
+            "Requested": {
+              "X": 12,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            },
+            "Observed": {
+              "X": 12,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            }
+          },
+          {
+            "OwnerId": "owner-202",
+            "SessionId": "202",
+            "Host": "W-",
+            "Desktop": "0559926b-bea7-4b50-a9f3-606250934c97",
+            "Monitor": "65537",
+            "Status": "moved",
+            "Error": null,
+            "Requested": {
+              "X": 652,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            },
+            "Observed": {
+              "X": 652,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            }
+          },
+          {
+            "OwnerId": "owner-203",
+            "SessionId": "203",
+            "Host": "remote-host",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "unsupported",
+            "Error": "The selected session is ended or on another machine; use its saved connection to resume it",
+            "Requested": null,
+            "Observed": null
+          },
+          {
+            "OwnerId": "owner-204",
+            "SessionId": "204",
+            "Host": "W-",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "offline",
+            "Error": "The selected session changed; refresh the results",
+            "Requested": null,
+            "Observed": null
+          },
+          {
+            "OwnerId": "owner-205",
+            "SessionId": "205",
+            "Host": "W-",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "failed",
+            "Error": "The exact terminal window is unavailable or ambiguous",
+            "Requested": null,
+            "Observed": null
+          }
+        ]
+      },
+      {
+        "group": "fleet",
+        "receipts": [
+          {
+            "OwnerId": "owner-201",
+            "SessionId": "201",
+            "Host": "W-",
+            "Desktop": "0559926b-bea7-4b50-a9f3-606250934c97",
+            "Monitor": "65537",
+            "Status": "moved",
+            "Error": null,
+            "Requested": {
+              "X": 12,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            },
+            "Observed": {
+              "X": 12,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            }
+          },
+          {
+            "OwnerId": "owner-202",
+            "SessionId": "202",
+            "Host": "W-",
+            "Desktop": "0559926b-bea7-4b50-a9f3-606250934c97",
+            "Monitor": "65537",
+            "Status": "moved",
+            "Error": null,
+            "Requested": {
+              "X": 652,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            },
+            "Observed": {
+              "X": 652,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            }
+          },
+          {
+            "OwnerId": "owner-203",
+            "SessionId": "203",
+            "Host": "remote-host",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "unsupported",
+            "Error": "The selected session is ended or on another machine; use its saved connection to resume it",
+            "Requested": null,
+            "Observed": null
+          },
+          {
+            "OwnerId": "owner-204",
+            "SessionId": "204",
+            "Host": "W-",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "offline",
+            "Error": "The selected session changed; refresh the results",
+            "Requested": null,
+            "Observed": null
+          },
+          {
+            "OwnerId": "owner-205",
+            "SessionId": "205",
+            "Host": "W-",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "failed",
+            "Error": "The exact terminal window is unavailable or ambiguous",
+            "Requested": null,
+            "Observed": null
+          }
+        ]
+      },
+      {
+        "group": "goal",
+        "receipts": [
+          {
+            "OwnerId": "owner-201",
+            "SessionId": "201",
+            "Host": "W-",
+            "Desktop": "0559926b-bea7-4b50-a9f3-606250934c97",
+            "Monitor": "65537",
+            "Status": "moved",
+            "Error": null,
+            "Requested": {
+              "X": 12,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            },
+            "Observed": {
+              "X": 12,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            }
+          },
+          {
+            "OwnerId": "owner-202",
+            "SessionId": "202",
+            "Host": "W-",
+            "Desktop": "0559926b-bea7-4b50-a9f3-606250934c97",
+            "Monitor": "65537",
+            "Status": "moved",
+            "Error": null,
+            "Requested": {
+              "X": 652,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            },
+            "Observed": {
+              "X": 652,
+              "Y": 12,
+              "Width": 616,
+              "Height": 728
+            }
+          },
+          {
+            "OwnerId": "owner-203",
+            "SessionId": "203",
+            "Host": "remote-host",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "unsupported",
+            "Error": "The selected session is ended or on another machine; use its saved connection to resume it",
+            "Requested": null,
+            "Observed": null
+          },
+          {
+            "OwnerId": "owner-204",
+            "SessionId": "204",
+            "Host": "W-",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "offline",
+            "Error": "The selected session changed; refresh the results",
+            "Requested": null,
+            "Observed": null
+          },
+          {
+            "OwnerId": "owner-205",
+            "SessionId": "205",
+            "Host": "W-",
+            "Desktop": null,
+            "Monitor": null,
+            "Status": "failed",
+            "Error": "The exact terminal window is unavailable or ambiguous",
+            "Requested": null,
+            "Observed": null
+          }
+        ]
+      }
+    ],
+    "processSessionId": 1,
+    "interactiveDesktop": true,
+    "scope": "native-organizer-fixture"
+  },
+  "sourceCustody": {
+    "startedAt": "2026-11-07T19:51:20.080911+00:00",
+    "finishedAt": "2026-11-07T19:51:42.362191+00:00",
+    "exitCode": 0,
+    "command": "$ProgressPreference='SilentlyContinue'; $env:PAPERCUSP_NATIVE_EVIDENCE_DIR='C:/Users/user/AppData/Local/Temp/workbench-organizer-evidence-20261107-b3cf9'; & 'C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/native-workbench-windows-host.ps1' -SourceDirectory 'C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9' -Phase organizer -Interactive",
+    "sourceSha256": {
+      "papercusp-desktop/native/windows/WorkbenchModel.cs": "fbc28457b140f000cb854935b6bc30696b73dad97227b6a40467aa368419faba",
+      "papercusp-desktop/native/windows/PuiReadBridge.cs": "a4594b4a517f24fa7114758db084f71a1958fa8c5b2c742683fe45619a2a9708",
+      "papercusp-desktop/native/windows/WorkbenchHost.cs": "97daf8503ae3f1e7d7a86fc3dc0e16d1ca3e28ef70f357d7da58ed71a248e599",
+      "papercusp-desktop/native/windows/workbench.ps1": "038b14e0e94088dfe8b02ae80e254a3dc2eae2dc5799904e129d22e822396292",
+      "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "29863e75be577dddd2d8a47bf9c7509a76b25f443370ee6833d7f6c00b68bc40",
+      "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "adcdb6c863f87565679dc915947aab8950ceb2404e925be40f1edf434feefa8e",
+      "papercusp-desktop/test/native-workbench-windows.test.mjs": "0014f806aa6f55b964e4a2d81e3f77a5c0cd4f2201b056d057978186d41aca95"
+    }
+  },
+  "remoteSourceHashes": [
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\native-workbench-windows-host.ps1",
+      "Hash": "ADCDB6C863F87565679DC915947AAB8950CEB2404E925BE40F1EDF434FEEFA8E"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\native-workbench-windows-lifecycle.ps1",
+      "Hash": "293BD4A0094D3D696202AE2D551F717B61A4061A6F3166124A93538C78FC7C8A"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\PuiReadBridge.cs",
+      "Hash": "A4594B4A517F24FA7114758DB084F71A1958FA8C5B2C742683FE45619A2A9708"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\workbench.ps1",
+      "Hash": "038B14E0E94088DFE8B02AE80E254A3DC2EAE2DC5799904E129D22E822396292"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchHost.cs",
+      "Hash": "97DAF8503AE3F1E7D7A86FC3DC0E16D1CA3E28EF70F357D7DA58ED71A248E599"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchLifecycle.psm1",
+      "Hash": "29863E75BE577DDDD2D8A47BF9C7509A76B25F443370EE6833D7F6C00B68BC40"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchModel.cs",
+      "Hash": "FBC28457B140F000CB854935B6BC30696B73DAD97227B6A40467AA368419FABA"
+    }
+  ],
+  "settingsMigration": {
+    "resident": false,
+    "ok": true,
+    "platform": "windows",
+    "cases": [
+      "first install enables native panels with distinct default shortcuts",
+      "first install enables the Accounts shortcut",
+      "first install enables Inbox on Ctrl Alt B",
+      "Inbox migration chooses a free accelerator without resetting existing panels",
+      "installer persists the migrated Inbox shortcut",
+      "upgrade preserves explicitly disabled Inbox",
+      "first install enables Organizer on Ctrl Alt O",
+      "Organizer migration avoids existing shortcuts",
+      "installer persists the migrated Organizer shortcut",
+      "upgrade preserves explicitly disabled Organizer",
+      "Organizer upgrade retains the prior Quick Access shortcut",
+      "adding Accounts preserves legacy disable and shortcut choices",
+      "Accounts migration avoids existing Quick Access and Inbox shortcuts",
+      "preserve-existing installer persists the missing Accounts binding",
+      "login registration uses the exact installed controller and fixed argv",
+      "Workbench registration preserves unrelated login applications",
+      "native login command preserves spaces apostrophes and literal dollar signs",
+      "upgrade preserves account shortcuts and individual panel disable",
+      "upgrade refreshes the registered installation without resetting choices",
+      "disable removes this accounts Workbench login value",
+      "reinstall does not re-enable an explicitly disabled account",
+      "explicit enable restores login registration",
+      "duplicate enabled shortcuts are refused before writing",
+      "reserved F12 remains invalid even for a disabled panel",
+      "invalid native modifier bits are refused",
+      "invalid settings leave both persistence and login state unchanged",
+      "concurrent settings writer cannot bypass the per-account lock",
+      "registry failure is surfaced instead of accepting a partial settings update",
+      "registry failure restores the previous settings",
+      "missing resident is reported without starting a service or touching another account",
+      "settings wake targets the exact account and state-directory identity",
+      "uninstalling another role preserves the current roles login entry",
+      "uninstall removes owned login registration and retains account preferences",
+      "retained preferences survive uninstall and reinstall",
+      "corrupt preferences fail visibly instead of silently resetting shortcuts"
+    ],
+    "count": 35
+  },
+  "logs": {
+    "/tmp/wb-organizer-windows-20261107-v2.err": "PHASE compile: loading the production WPF source and full assembly references\nPASS Organizer qualifies identical plan slugs by their canonical harness\nPASS Organizer uses canonical fleet identity\nPASS Organizer goal links use the canonical plan rail rather than project membership\nPASS Organizer goal links include only canonical live holders\nPASS Organizer refuses a changed goal identity\nPASS Organizer preserves independent remote stale and missing terminal receipts\nPASS Organizer leaves an unselected terminal in the same process unchanged\nPASS Organizer preserves separate desktops rather than collecting windows on the active desktop\nPASS Organizer tiles within each existing monitor work area\nPASS Organizer keeps requested and observed native geometry in its receipts\nPASS Organizer refuses a partial roster before any mutation\nPASS Organizer partial roster refusal moves no windows\nPASS Organizer refuses degraded canonical window identity\nPASS Organizer refuses a terminal that left the selected group\nPASS Organizer refuses a replaced recorded window\nPASS Organizer refuses a placement receipt on a different desktop\nPASS Organizer cannot claim a moved terminal from an unchanged rectangle\nPASS Organizer refuses multiple sessions sharing one exact native window\nPASS native Windows adapter observes the documented virtual desktop identity\nPASS Organizer summons a resident native WPF panel\nPASS Arrange one / same reports exact placements and partial failures\nPASS native Windows placement is measured rather than inferred from SetWindowPos\nPASS native Organizer leaves an unselected same-process window unchanged\nPASS Arrange fleet reports exact placements and partial failures\nPASS Arrange Goal reports exact placements and partial failures\nPASS native Organizer preserves the observed desktop for each window\nPASS native arrangement cancellation refuses mutation\nPASS native late cancellation after restore prevents geometry mutation\nPASS native late terminal identity replacement cannot move a recycled handle\nPASS Organizer dismisses independently and retains its native resident\nWORKBENCH_FIXTURE_EVIDENCE C:\\Users\\user\\AppData\\Local\\Temp\\workbench-organizer-evidence-20261107-b3cf9\\Papercusp-WorkbenchFixture-4704c93de44b473e894ce539e1b4497c\\diagnostic.json\n",
+    "/tmp/wb-organizer-windows-lifecycle-20261107-v1.err": "#< CLIXML\n2026-11-07T19:48:14.0002870Z PASS first install enables native panels with distinct default shortcuts\n2026-11-07T19:48:14.0361408Z PASS first install enables the Accounts shortcut\n2026-11-07T19:48:14.4237714Z PASS first install enables Inbox on Ctrl Alt B\n2026-11-07T19:48:14.5268836Z PASS Inbox migration chooses a free accelerator without resetting existing panels\n2026-11-07T19:48:14.5766603Z PASS installer persists the migrated Inbox shortcut\n2026-11-07T19:48:14.6922399Z PASS upgrade preserves explicitly disabled Inbox\n2026-11-07T19:48:14.7264837Z PASS first install enables Organizer on Ctrl Alt O\n2026-11-07T19:48:14.7528094Z PASS Organizer migration avoids existing shortcuts\n2026-11-07T19:48:14.8029575Z PASS installer persists the migrated Organizer shortcut\n2026-11-07T19:48:14.8740659Z PASS upgrade preserves explicitly disabled Organizer\n2026-11-07T19:48:14.8761430Z PASS Organizer upgrade retains the prior Quick Access shortcut\n2026-11-07T19:48:14.9158925Z PASS adding Accounts preserves legacy disable and shortcut choices\n2026-11-07T19:48:14.9180098Z PASS Accounts migration avoids existing Quick Access and Inbox shortcuts\n2026-11-07T19:48:14.9760546Z PASS preserve-existing installer persists the missing Accounts binding\n2026-11-07T19:48:15.0187754Z PASS login registration uses the exact installed controller and fixed argv\n2026-11-07T19:48:15.0286051Z PASS Workbench registration preserves unrelated login applications\n2026-11-07T19:48:16.6876450Z PASS native login command preserves spaces apostrophes and literal dollar signs\n2026-11-07T19:48:16.8157314Z PASS upgrade preserves account shortcuts and individual panel disable\n2026-11-07T19:48:16.8199701Z PASS upgrade refreshes the registered installation without resetting choices\n2026-11-07T19:48:16.9181598Z PASS disable removes this accounts Workbench login value\n2026-11-07T19:48:16.9715969Z PASS reinstall does not re-enable an explicitly disabled account\n2026-11-07T19:48:17.0085005Z PASS explicit enable restores login registration\n2026-11-07T19:48:17.1282613Z PASS duplicate enabled shortcuts are refused before writing\n2026-11-07T19:48:17.1358639Z PASS reserved F12 remains invalid even for a disabled panel\n2026-11-07T19:48:17.1422232Z PASS invalid native modifier bits are refused\n2026-11-07T19:48:17.1485854Z PASS invalid settings leave both persistence and login state unchanged\n2026-11-07T19:48:17.1961598Z PASS concurrent settings writer cannot bypass the per-account lock\n2026-11-07T19:48:17.2783845Z PASS registry failure is surfaced instead of accepting a partial settings update\n2026-11-07T19:48:17.2860434Z PASS registry failure restores the previous settings\n2026-11-07T19:48:17.3354018Z PASS missing resident is reported without starting a service or touching another account\n2026-11-07T19:48:17.3785607Z PASS settings wake targets the exact account and state-directory identity\n2026-11-07T19:48:17.3971086Z PASS uninstalling another role preserves the current roles login entry\n2026-11-07T19:48:17.4102555Z PASS uninstall removes owned login registration and retains account preferences\n2026-11-07T19:48:17.4154043Z PASS retained preferences survive uninstall and reinstall\n2026-11-07T19:48:17.5411236Z PASS corrupt preferences fail visibly instead of silently resetting shortcuts\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN><MS><I64 N=\"SourceId\">2</I64><PR N=\"Record\"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj></Objs>"
+  },
+  "scopeLimits": [
+    "Current-build WPF windows and fixture PUI only; not installed-artifact shipment proof.",
+    "Two-desktop/two-monitor separation exercised by the maintained model; actual WPF placement used one real desktop/monitor.",
+    "Source bytes copied to the Windows rig and matched through Get-FileHash; dirty-worktree evidence is not clean-commit proof.",
+    "Later harness-only changes are separately verified; this artifact preserves the exact original v2 fixture/test hashes.",
+    "Actual resident lifecycle rerun and its harness audit remain pending; no resident45 pass asserted."
+  ]
+}

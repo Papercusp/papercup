@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, '../../..');
@@ -31,9 +32,9 @@ describe.skipIf(!entry)('isolated application host runtime', () => {
 
   it.each(interpreters)('$name boots the actual host on private PostgreSQL and releases its runtime', async ({ executable, name }) => {
     expect(digest(entry!)).toBe(entrySha256);
-    const artifactRoot = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
-    if (artifactRoot) mkdirSync(artifactRoot, { recursive: true });
-    const evidenceDir = artifactRoot ? mkdtempSync(join(artifactRoot, `application-host-${name}-`)) : null;
+    const artifactRoot = process.env.PAPERCUSP_TEST_ARTIFACT_DIR ?? defaultEvidenceRoot('application-host');
+    mkdirSync(artifactRoot, { recursive: true });
+    const evidenceDir = mkdtempSync(join(artifactRoot, `application-host-${name}-`));
     const preserveOutput = (result: { stdout?: string; stderr?: string }) => {
       if (!evidenceDir) return;
       writeFileSync(join(evidenceDir, 'stdout.log'), result.stdout ?? '');
@@ -44,11 +45,14 @@ describe.skipIf(!entry)('isolated application host runtime', () => {
     const controller = `
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import postgres from 'postgres';
-const [executable, expectedName, retainedNode, entry] = process.argv.slice(1);
+const [executable, expectedName, retainedNode, entry, evidenceDir, expectedEntrySha256] = process.argv.slice(1);
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+assert.equal(digest(readFileSync(entry)), expectedEntrySha256);
 assert.match(process.env.PAPERCUSP_WORKSPACE_ID, /^test-runtime-/);
 const db = new URL(process.env.HARNESS_ADMIN_DATABASE_URL);
 assert.equal(db.port, process.env.PAPERCUSP_PG_PORT);
@@ -64,46 +68,92 @@ const child = spawn(executable, [entry], {
     PAPERCUSP_SERVE_UI: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let output = '';
-for (const stream of [child.stdout, child.stderr]) {
+for (const [channel, stream] of [['stdout', child.stdout], ['stderr', child.stderr]]) {
   stream.setEncoding('utf8'); // boundary-safe decode (WI-6728)
   stream.on('data', bytes => {
+    appendFileSync(join(evidenceDir, 'host-' + channel + '.log'), bytes);
     output = (output + bytes).slice(-32000);
   });
 }
 const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
 let admitted = false;
+let observedHealth;
+let readinessError;
+// operator.json is written by serve.ts, not the direct hono-host entry this
+// fixture launches. The isolated launcher already owns the URL and port.
+const privateBase = new URL(process.env.PAPERCUSP_OPERATOR_URL);
+assert.equal(privateBase.hostname, '127.0.0.1');
+assert.equal(Number(privateBase.port), Number(process.env.PAPERCUSP_HONO_PORT));
+assert.ok(![3070, 3170, 3271].includes(Number(privateBase.port)));
 try {
   const deadline = Date.now() + 90000;
   while (Date.now() < deadline) {
     assert.equal(child.exitCode, null, 'host exited before readiness: ' + output);
     assert.equal(child.signalCode, null, 'host signaled before readiness: ' + output);
     try {
-      const discovery = JSON.parse(readFileSync(join(process.env.PAPERCUSP_HOME, 'operator.json'), 'utf8'));
-      assert.equal(discovery.pid, child.pid);
-      assert.equal(discovery.port, Number(process.env.PAPERCUSP_HONO_PORT));
       if (process.platform === 'linux') assert.equal(realpathSync('/proc/' + child.pid + '/exe'), realpathSync(executable));
-      const response = await fetch(discovery.httpUrl + '/api/health', { signal: AbortSignal.timeout(2000) });
+      const response = await fetch(new URL('/api/health', privateBase), { signal: AbortSignal.timeout(2000) });
       assert.equal(response.status, 200, 'host health response: ' + output);
       const health = await response.json();
       assert.equal(health.ok, true);
       assert.equal(health.service, 'papercusp-operator');
+      observedHealth = health;
       admitted = true;
       break;
     } catch (error) {
+      readinessError = String(error);
       if (error.code !== 'ENOENT' && error.name !== 'TimeoutError'
         && !String(error.message).includes('fetch failed')) throw error;
     }
     await delay(200);
   }
-  assert.ok(admitted, 'host readiness deadline: ' + output);
+  assert.ok(admitted, 'host readiness deadline; lastError=' + readinessError + ': ' + output);
   const sql = postgres(db.toString(), { max: 1 });
+  let database;
+  let schema;
+  const workspace = process.env.PAPERCUSP_WORKSPACE_ID;
+  const privateMessage = { msg_id: 'application-host-private-state-proof', from: 'runtime-proof',
+    to: ['human'], summary: 'Private host fixture roundtrip', ts: '2026-11-06T00:00:00.000Z' };
   try {
     const [row] = await sql\`SELECT current_database() AS name, current_setting('port')::int AS port\`;
     assert.equal(row.name, 'papercusp');
     assert.equal(row.port, Number(db.port));
+    database = row;
+    await sql\`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, ts)
+      VALUES (\${workspace}, 'coord', 'runtime-proof', \${privateMessage.msg_id},
+        \${sql.json(privateMessage)}, '2026-11-06T00:00:00.000Z')\`;
+    const messages = await sql\`SELECT body FROM harness_shared.coord_event_log
+      WHERE workspace_id = \${workspace} AND msg_id = \${privateMessage.msg_id}\`;
+    assert.equal(messages.length, 1);
+    assert.deepEqual(messages[0].body, privateMessage);
+    schema = await sql\`SELECT table_schema, table_name, column_name, data_type, udt_name, is_nullable
+      FROM information_schema.columns WHERE table_schema IN ('public', 'harness_shared')
+      ORDER BY table_schema, table_name, ordinal_position\`;
+    assert.ok(schema.length > 0);
   } finally { await sql.end(); }
-  console.log('APPLICATION_HOST_RUNTIME_READY ' + JSON.stringify({ name: expectedName, pid: child.pid, privatePg: true }));
+  const environmentKeys = ['PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_HONO_PORT', 'PAPERCUSP_PG_PORT',
+    'PAPERCUSP_BACKGROUND_WORKERS', 'PAPERCUSP_DBOS_ENABLE', 'PAPERCUSP_DBOS_ORCHESTRATOR',
+    'PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES', 'PAPERCUSP_DBOS_ROUTINES', 'PAPERCUSP_DBOS_TIMERS',
+    'PAPERCUSP_DBOS_AUTOLOOP', 'PAPERCUSP_CLUSTER', 'PAPERCUSP_CLUSTER_WORKERS',
+    'PAPERCUSP_QUERY_EMBED_ACQUIRE_BUDGET_MS', 'PAPERCUSP_PG_SQL_DIR'];
+  const environment = Object.fromEntries(environmentKeys.map(key => [key, process.env[key] ?? null]));
+  assert.equal(environment.PAPERCUSP_BACKGROUND_WORKERS, '1');
+  assert.equal(environment.PAPERCUSP_DBOS_ROUTINES, '0');
+  assert.equal(environment.PAPERCUSP_CLUSTER_WORKERS, '0');
+  const schemaBytes = JSON.stringify(schema);
+  const receipt = { name: expectedName, pid: child.pid, privatePg: true, workspace, database,
+    health: observedHealth, environment, entrySha256: expectedEntrySha256,
+    schemaSha256: digest(schemaBytes), privateStateRoundtrip: true };
+  if (evidenceDir) {
+    writeFileSync(join(evidenceDir, 'schema.json'), schemaBytes, { flag: 'wx' });
+    writeFileSync(join(evidenceDir, 'runtime.json'), JSON.stringify(receipt), { flag: 'wx' });
+  }
+  assert.equal(digest(readFileSync(entry)), expectedEntrySha256);
+  console.log('APPLICATION_HOST_RUNTIME_READY ' + JSON.stringify(receipt));
 } catch (error) {
+  writeFileSync(join(evidenceDir, 'controller-failure.json'), JSON.stringify({
+    message: String(error), stack: error.stack, childPid: child.pid, admitted, readinessError,
+  }), { flag: 'wx' });
   // Keep the actual host diagnostics with a controller failure. Cleanup output
   // follows this error, so the outer fixture also retains complete raw streams.
   throw new Error('host output:\\n' + output + '\\ncontroller failure: ' + (error.stack ?? error));
@@ -116,7 +166,7 @@ try {
 `;
     const { stdout, stderr } = await run(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
       '--isolated-runtime', '--', process.execPath, '--input-type=module', '-e', controller,
-      executable, name, process.execPath, entry!], { cwd: root, env: { ...process.env },
+      executable, name, process.execPath, entry!, evidenceDir ?? '', entrySha256], { cwd: root, env: { ...process.env },
       timeout: 180_000, maxBuffer: 8 * 1024 * 1024 }).catch((error: { code?: string; stdout?: string; stderr?: string }) => {
         preserveOutput(error);
         throw new Error(`Isolated ${name} host failed (${error.code ?? 'unknown'}; evidence=${evidenceDir ?? 'inline'}):\n${(error.stderr ?? '').slice(-12000)}\n${(error.stdout ?? '').slice(-4000)}`);
@@ -124,7 +174,11 @@ try {
     preserveOutput({ stdout, stderr });
     expect(stdout, stderr.slice(-2000)).toContain('APPLICATION_HOST_RUNTIME_READY ');
     const marker = stdout.split('\n').find(line => line.startsWith('APPLICATION_HOST_RUNTIME_READY '))!;
-    expect(JSON.parse(marker.slice('APPLICATION_HOST_RUNTIME_READY '.length))).toMatchObject({ name, privatePg: true });
+    const runtime = JSON.parse(marker.slice('APPLICATION_HOST_RUNTIME_READY '.length));
+    expect(runtime).toMatchObject({ name, privatePg: true, privateStateRoundtrip: true, entrySha256 });
+    expect(runtime.environment).toMatchObject({ PAPERCUSP_BACKGROUND_WORKERS: '1',
+      PAPERCUSP_DBOS_ROUTINES: '0', PAPERCUSP_CLUSTER_WORKERS: '0' });
+    if (evidenceDir) expect(digest(join(evidenceDir, 'schema.json'))).toBe(runtime.schemaSha256);
     const cleanup = (stdout + '\n' + stderr).split('\n')
       .filter(line => line.startsWith('[with-test-pg] cleanup '))
       .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))

@@ -29,6 +29,9 @@ export const HELD_OUT_SUBJECT_CASES = [
 /** D023 adds a separate population without changing the five registered-tool
  * labels above. Procedural overlap is insufficient for lease/actor expertise. */
 const nativeLeaseQuestion = 'For native isolated session-port consults, what evidence distinguishes child mutation of source plan leases from legitimate source renewal, system cleanup, and mutate-then-revert? I need a concrete actor-correlated before/after audit that preserves the original native receipt when timeout cleanup runs.';
+// EI-28156675886656027: the negative is the exact indexed turn that qualified;
+// the technical positive preserves the answer in post1218842.
+const nativeBindingQuestion = 'For a psu-pty-host-hosted Claude source whose native session id rotates across cold /clear wakes, what does the consult router need (binding row, child_launch_session_id, or adv_session native id) for the source to count as exactly tracked so a same-backend consult FORKS it rather than converting a historical incarnation? Which function decides exact tracking, and is the rotation case covered by a test?';
 export const NATURAL_QUESTION_SUBJECT_CASES = [
   { id: 'native-lease-actor', subject: nativeLeaseQuestion, relevant: ['lease-auditor'], passages: [
     { id: 'lease-auditor', text: 'I captured the source plan claims before the isolated child launched, then correlated every claim acquisition, renewal, release and revert with its caller owner and native physical-call receipt. Source renewals and system cleanup had distinct actors. I retained the source prefix and original child transcript before timeout cleanup, and checked the append-only history for mutate-then-revert between equal endpoints.' },
@@ -38,6 +41,10 @@ export const NATURAL_QUESTION_SUBJECT_CASES = [
   { id: 'native-lease-no-expert', subject: nativeLeaseQuestion, relevant: [], passages: [
     { id: 'continuation-policy', text: 'A fresh continuation checks whoami, reads its checkpoint and declares its plan lane. Before/after identity verification prevents working under the wrong owner.' },
     { id: 'receipt-delivery', text: 'The session-port kickoff parent waited for a receipt after native delivery. I repaired the acknowledgement ordering so the parent stops waiting once delivery is confirmed.' },
+  ] },
+  { id: 'native-binding-rotation', subject: nativeBindingQuestion, relevant: ['native-binding-reviewer'], passages: [
+    { id: 'native-binding-reviewer', text: 'Exact tracking requires the evidence native UUID to match the current binding native id. isExactTrackedResumeTarget in consult-dispatch.ts decides it: binding.coordOwnerId must equal ownerId and binding.sessionId must equal the evidence native session id. planDispatchOperation forks Claude to Claude only when the source is not historical. child_launch_session_id is not read by routing. Across cold /clear rotation, reanchorAdvSessionNativeId overwrites adv_sessions.session_id without predecessor history. Earlier evidence mismatches the current binding and converts instead of forking. consult-dispatch.test.ts constructs the current-binding versus historical-evidence-id mismatch and asserts convert with --resume=7.' },
+    { id: 'startup-acceptance-hold', text: 'I’ll verify the session identity, then read the current acceptance state. I’ll preserve the test and runtime hold until explicit clearance arrives.' },
   ] },
 ] as const;
 
