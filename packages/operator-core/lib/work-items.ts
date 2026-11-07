@@ -29,7 +29,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { assertWorkItemDefinitionUnchanged, readWorkItemDefinition, WorkItemDefinitionChangedError, type WorkItemDefinition } from './work-item-definition';
+import { assertWorkItemDefinitionUnchanged, readWorkItemDefinition, type WorkItemDefinition } from './work-item-definition';
 import { createPlanSearchSource } from './agent-tools/search/knowledge-sources';
 import { observeFallback } from './degradation/fallback-observations';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
@@ -4826,6 +4826,16 @@ export async function setWorkItemState(
     // set_state) already catches and reports as `stateError` (the completion record is
     // never lost, EI-24).
     const rows = await boundedOrgTxn(async (tx) => {
+      if (isTerminal && Object.hasOwn(opts, 'expectedWorkDefinition')) {
+        const current = await tx<{ payload: unknown }[]>`
+          SELECT payload FROM harness_shared.harness_features_consolidated
+           WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${wi.harness} AND feature_id = ${id}
+           FOR UPDATE`;
+        if (!current.length) return [] as FeatureRowDb[];
+        // Check under the same row lock as the terminal write, matching the issue
+        // lifecycle path. Other zero-row CAS refusals retain their own meaning.
+        assertWorkItemDefinitionUnchanged(current[0].payload, opts.expectedWorkDefinition);
+      }
       if (blockerMutation) await applyBlockerDecisionMutation(tx, {
         workspace: activeWorkspaceId(), harness: wi.harness!, id,
       }, blockerMutation);
@@ -4960,9 +4970,6 @@ export async function setWorkItemState(
                payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
              }) : tx`TRUE`}
       RETURNING ${tx.unsafe(FEATURE_COLS)}`;
-      if (isTerminal && Object.hasOwn(opts, 'expectedWorkDefinition') && !updated.length) {
-        throw new WorkItemDefinitionChangedError();
-      }
       if (blockerMutation && !updated.length) throw new BlockerDecisionMutationConflict();
       return updated;
     });

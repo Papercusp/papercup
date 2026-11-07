@@ -1067,6 +1067,133 @@ describe('work definition CAS (real PG)', () => {
   });
 });
 
+describe('work definition terminal CAS (real PG)', () => {
+  const original = { acceptanceCriteria: ['Measure the requested population'] };
+  const evidence = { summary: 'Measured the original population', verifiedHow: 'manual' as const, testResult: 'Original criterion checked' };
+
+  it.each(['task', 'feature'] as const)('%s refuses a successful close validated against a stale definition without terminal side effects', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'stale definition terminal race', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: original }, { harness: 'papercup' });
+    const validated = (await wi.getWorkItem(item.id, 'papercup'))?.payload as Record<string, unknown>;
+    const concurrent = { acceptanceCriteria: [...original.acceptanceCriteria, 'Verify automatic reporting'] };
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: concurrent, keep: 'concurrent' }, { harness: 'papercup' });
+    const before = await wi.getWorkItem(item.id, 'papercup');
+
+    await expect(wi.setWorkItemStateWithAliasInfo(item.id, 'resolved', {
+      harness: 'papercup', by: 'agA', completionAuthority: 'committed', completionEvidence: evidence,
+      ...{ expectedWorkDefinition: validated.workDefinition },
+    })).rejects.toMatchObject({ code: 'work_definition_changed' });
+
+    const after = await wi.getWorkItem(item.id, 'papercup');
+    expect(after?.state).toBe(before?.state);
+    expect(after?.payload).toEqual(before?.payload);
+    expect(after?.terminalOwner).toBe(before?.terminalOwner);
+    expect(after?.terminalCompletionEvidence).toEqual(before?.terminalCompletionEvidence);
+  });
+
+  it.each(['task', 'feature'] as const)('%s refuses a successful close when a definition was enrolled after validation', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'new definition terminal race', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: original }, { harness: 'papercup' });
+    const before = await wi.getWorkItem(item.id, 'papercup');
+
+    await expect(wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'agA', completionAuthority: 'committed', completionEvidence: evidence,
+      ...{ expectedWorkDefinition: undefined },
+    })).rejects.toMatchObject({ code: 'work_definition_changed' });
+
+    const after = await wi.getWorkItem(item.id, 'papercup');
+    expect(after?.state).toBe('open');
+    expect(after?.payload).toEqual(before?.payload);
+    expect(after?.terminalCompletionEvidence).toBeNull();
+  });
+
+  it.each(['task', 'feature'] as const)('%s closes the exact validated definition while preserving unrelated concurrent metadata', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'current definition terminal control', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: original, keep: 'concurrent' }, { harness: 'papercup' });
+    const result = await wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'agA', completionAuthority: 'committed', completionEvidence: evidence,
+      ...{ expectedWorkDefinition: original },
+    });
+
+    expect(result?.state).toBe('done');
+    expect(result?.payload).toMatchObject({ workDefinition: original, keep: 'concurrent' });
+    expect(result?.terminalCompletionEvidence).toMatchObject(evidence);
+  });
+
+  it.each(['task', 'feature'] as const)('%s rechecks the validated definition after a concurrent row-lock winner', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'interleaved definition terminal race', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: original }, { harness: 'papercup' });
+    const before = await wi.getWorkItem(item.id, 'papercup');
+    const concurrent = { acceptanceCriteria: [...original.acceptanceCriteria, 'Verify automatic reporting'] };
+    let releaseWinner!: () => void;
+    let winnerLocked!: () => void;
+    let winnerPid!: number;
+    const hold = new Promise<void>((resolve) => { releaseWinner = resolve; });
+    const locked = new Promise<void>((resolve) => { winnerLocked = resolve; });
+    const winner = db.sql.begin(async (tx) => {
+      await tx`SELECT feature_id FROM harness_shared.work_items
+                WHERE workspace_id = 'default' AND feature_id = ${item.id} FOR UPDATE`;
+      const [row] = await tx`SELECT pg_backend_pid() AS pid`;
+      winnerPid = Number(row.pid);
+      winnerLocked();
+      await hold;
+      await tx`UPDATE harness_shared.work_items
+                  SET payload = payload || ${JSON.stringify({ workDefinition: concurrent, keep: 'winner' })}::text::jsonb
+                WHERE workspace_id = 'default' AND feature_id = ${item.id}`;
+    });
+    await locked;
+    const closing = wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'agA', completionAuthority: 'committed', completionEvidence: evidence,
+      ...{ expectedWorkDefinition: original },
+    }).then((value) => ({ value, error: undefined }), (error: unknown) => ({ value: undefined, error }));
+    try {
+      // A measured lock wait proves the close passed its initial unlocked read.
+      // Commit the extended definition only once the actual lifecycle writer waits.
+      await vi.waitFor(async () => {
+        const blocked = await db.sql`SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database() AND ${winnerPid} = ANY(pg_blocking_pids(pid))`;
+        expect(blocked.length).toBeGreaterThan(0);
+      }, { timeout: 5_000, interval: 10 });
+    } finally {
+      releaseWinner();
+      await winner;
+    }
+    expect((await closing).error).toMatchObject({ code: 'work_definition_changed' });
+    const after = await wi.getWorkItem(item.id, 'papercup');
+    expect(after?.state).toBe('open');
+    expect(after?.payload).toEqual({ ...(before?.payload as Record<string, unknown>), workDefinition: concurrent, keep: 'winner' });
+    expect(after?.terminalCompletionEvidence).toBeNull();
+  });
+
+  it.each(['task', 'feature'] as const)('%s preserves an unrelated terminal CAS refusal without misreporting a definition change', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'unchanged definition with stale lifecycle snapshot', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { workDefinition: original }, { harness: 'papercup' });
+    const before = await wi.getWorkItem(item.id, 'papercup');
+
+    const result = await wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'agA', completionAuthority: 'committed', completionEvidence: evidence,
+      expectedWorkDefinition: original, unclaimedSnapshotTs: 0,
+    });
+
+    expect(result).toBeNull();
+    const after = await wi.getWorkItem(item.id, 'papercup');
+    expect(after?.state).toBe('open');
+    expect(after?.payload).toEqual(before?.payload);
+    expect(after?.terminalCompletionEvidence).toBeNull();
+  });
+
+  it.each(['task', 'feature'] as const)('%s preserves an exact absent-definition legacy close', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'legacy definition terminal control', harness: 'papercup', createdBy: 'agA' });
+    const result = await wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'agA', completionAuthority: 'committed', completionEvidence: evidence,
+      ...{ expectedWorkDefinition: undefined },
+    });
+
+    expect(result?.state).toBe('done');
+    expect(result?.terminalCompletionEvidence).toMatchObject(evidence);
+  });
+});
+
 describe('blocker history CAS (EI-25362976472267628, real PG)', () => {
   const history = [{ kind: 'event', ref: 'event:first', status: 'active', legacy: { retain: true },
     summary: 'Wait for first event', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', createdBy: 'agA' }];
