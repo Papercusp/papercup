@@ -1,6 +1,7 @@
 /** Production adapter -> endpoint -> real query/builder integration. External
  * storage/index/identity services are deterministic fixtures. These tests do
- * not certify installed-client emission, a serving runtime or shipment. */
+ * query fixtures do not certify native emission. R-7 separately observes installed
+ * client exports with private homes and no inference. Neither proves shipment. */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -19,7 +20,9 @@ import { _resetSessionEpochLedgerForTests } from './session-epoch-ledger';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
 import routes from '../endpoint-route/routes/agent-mcp/mid-turn-context';
 import { DELIVERY_MATRIX_CLIENTS, GROUNDED_QUERY_CASES, validateGroundedQueryArtifact,
+  validateBootstrapExportArtifact, type BootstrapExportArtifact, type BootstrapExportCell,
   type GroundedQueryArtifact, type GroundedQueryCell } from './injection-delivery-coverage';
+import { captureNativeMcp, frozenBootstrap, baselineHash } from './fixtures/native-mcp-export';
 
 const services = vi.hoisted(() => ({
   unavailable: false,
@@ -304,6 +307,91 @@ it('context reliability R-7: contradiction-lint', () => {
   expect(guidance).toContain('Evidence-only judges use coord:orient {} without intent');
   expect(guidance).not.toContain('WRITE a new/updated MDX');
   expect(guidance).not.toContain('call ANY tool');
+});
+
+const nativeExports = new Map<typeof DELIVERY_MATRIX_CLIENTS[number], Promise<BootstrapExportCell>>();
+function observeNativeBootstrap(client: typeof DELIVERY_MATRIX_CLIENTS[number]): Promise<BootstrapExportCell> {
+  const prior = nativeExports.get(client);
+  if (prior) return prior;
+  const observation = (async () => {
+    const { baseline } = frozenBootstrap();
+    const { exported } = bootstrapReplay();
+    const before = await captureNativeMcp(client, baseline.tools);
+    const after = await captureNativeMcp(client, exported);
+    expect(after.clientVersion).toBe(before.clientVersion);
+    return { client, clientVersion: after.clientVersion, evidencePlane: after.evidencePlane,
+      before: before.descriptors.filter(tool => tool.description.includes('exec tool declaration:')),
+      after: after.descriptors.filter(tool => tool.description.includes('exec tool declaration:')),
+      evidenceRefs: [`vitest:context reliability R-7: ${client}-wire`] };
+  })();
+  nativeExports.set(client, observation);
+  return observation;
+}
+
+for (const client of DELIVERY_MATRIX_CLIENTS) it(`context reliability R-7: ${client}-wire`, async ({ task }) => {
+  const { exported } = bootstrapReplay();
+  const observation = await observeNativeBootstrap(client);
+  const prior = observation.before, next = observation.after;
+  expect(prior).toHaveLength(55);
+  expect(next).toHaveLength(55);
+  expect(next.map(tool => tool.name)).toEqual(prior.map(tool => tool.name));
+  for (const tool of exported) {
+    expect(next.filter(row => row.name.endsWith(tool.name) && row.description === tool.description)).toHaveLength(1);
+  }
+  const beforeText = JSON.stringify(prior), afterText = JSON.stringify(next);
+  expect(afterText.split('<!-- papercusp-mcp-bootstrap:v1 -->').length - 1).toBe(1);
+  expect(Buffer.byteLength(afterText)).toBeLessThan(Buffer.byteLength(beforeText));
+  Object.assign(task.meta, { bootstrapNativeReplay: { client, clientVersion: observation.clientVersion,
+    evidencePlane: observation.evidencePlane, baselineHash, toolCount: next.length,
+    beforeBytes: Buffer.byteLength(beforeText), afterBytes: Buffer.byteLength(afterText),
+    beforeHash: sha(prior), afterHash: sha(next), commonBootstrapCopies: 1, typedContractsPreserved: true,
+    inputSchema: 'owned-empty-object-fixture', productionRuntime: 'UNKNOWN', billedTokens: 'UNKNOWN',
+    externalReinsertion: 'UNKNOWN' } });
+}, 90_000);
+
+it('context reliability R-7: claude-omp-export-replay', async ({ task }) => {
+  const { baseline, prefix, guidance, exported } = bootstrapReplay();
+  const cells = await Promise.all(DELIVERY_MATRIX_CLIENTS.map(observeNativeBootstrap));
+  const identity = { planRevision: 32, planHash: '1'.repeat(64), rubricRevision: 3, rubricHash: '2'.repeat(64),
+    barHash: '3'.repeat(64), specHash: '4'.repeat(64), sourceHash: '5'.repeat(64), testHash: '6'.repeat(64), runtimeGeneration: 'local-native-fixture-only' };
+  const result = validateBootstrapExportArtifact({ schemaVersion: 'bootstrap-export-v1', identity,
+    baselineArtifactHash: baselineHash, cells }, { identity, baselineArtifactHash: baselineHash,
+    baseline: baseline.tools, exported, oldPrefix: prefix, bootstrap: guidance });
+  expect(result).toMatchObject({ valid: true, closed: true });
+  Object.assign(task.meta, { bootstrapExportCoverage: { ...result,
+    identityKind: 'fixture-only; acceptance identity not asserted', clients: cells.map(cell => ({
+      client: cell.client, clientVersion: cell.clientVersion, evidencePlane: cell.evidencePlane,
+      beforeHash: sha(cell.before), afterHash: sha(cell.after), evidenceRefs: cell.evidenceRefs })) } });
+}, 90_000);
+
+it('context reliability R-7: artifact-validator', () => {
+  const { baseline, prefix, guidance, exported } = bootstrapReplay();
+  const identity = { planRevision: 32, planHash: '1'.repeat(64), rubricRevision: 3, rubricHash: '2'.repeat(64),
+    barHash: '3'.repeat(64), specHash: '4'.repeat(64), sourceHash: '5'.repeat(64), testHash: '6'.repeat(64), runtimeGeneration: 'validator-fixture-only' };
+  const cells: BootstrapExportCell[] = DELIVERY_MATRIX_CLIENTS.map(client => ({ client, clientVersion: 'fixture-only',
+    evidencePlane: client === 'omp' ? 'installed-client-registration' : 'installed-client-local-request',
+    before: baseline.tools, after: exported, evidenceRefs: ['validator-control-fixture'] }));
+  const artifact: BootstrapExportArtifact = { schemaVersion: 'bootstrap-export-v1', identity, baselineArtifactHash: baselineHash, cells };
+  const oracle = { identity, baselineArtifactHash: baselineHash, baseline: baseline.tools, exported, oldPrefix: prefix, bootstrap: guidance };
+  expect(validateBootstrapExportArtifact(artifact, oracle)).toMatchObject({ valid: true, closed: true });
+  const reject = (mutate: (copy: BootstrapExportArtifact) => void) => {
+    const copy = structuredClone(artifact); mutate(copy);
+    expect(validateBootstrapExportArtifact(copy, oracle).valid).toBe(false);
+  };
+  reject(copy => { copy.cells.pop(); });
+  reject(copy => { copy.cells.push(copy.cells[0]!); });
+  reject(copy => { copy.cells[0]!.client = 'unknown' as never; });
+  reject(copy => { copy.cells[0]!.clientVersion = ''; });
+  reject(copy => { copy.cells[0]!.evidencePlane = 'installed-client-registration'; });
+  reject(copy => { copy.baselineArtifactHash = 'a'.repeat(64); });
+  reject(copy => { copy.identity.sourceHash = 'b'.repeat(64); });
+  reject(copy => { copy.cells[0]!.after.pop(); });
+  reject(copy => { copy.cells[0]!.after[0]!.name = 'wrong'; });
+  reject(copy => { copy.cells[0]!.after[0]!.description += '\nchanged contract'; });
+  reject(copy => { copy.cells[0]!.after[0]!.description += guidance; });
+  reject(copy => { copy.cells[0]!.after = copy.cells[0]!.before; });
+  reject(copy => { copy.cells[0]!.evidenceRefs = []; });
+  expect(validateBootstrapExportArtifact(null, oracle).valid).toBe(false);
 });
 
 it('context reliability R-3: artifact-validator', () => {

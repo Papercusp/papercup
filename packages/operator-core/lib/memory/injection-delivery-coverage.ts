@@ -74,6 +74,74 @@ export type GroundedQueryArtifact = {
   cells: GroundedQueryCell[];
 };
 
+export type BootstrapExportCell = {
+  client: typeof DELIVERY_MATRIX_CLIENTS[number];
+  clientVersion: string;
+  evidencePlane: 'installed-client-local-request' | 'installed-client-registration';
+  before: Array<{ name: string; description: string }>;
+  after: Array<{ name: string; description: string }>;
+  evidenceRefs: string[];
+};
+export type BootstrapExportArtifact = {
+  schemaVersion: 'bootstrap-export-v1';
+  identity: DeliveryMatrixManifest['identity'];
+  baselineArtifactHash: string;
+  cells: BootstrapExportCell[];
+};
+
+/** Closed export population with an independently frozen descriptor oracle.
+ * OMP registration is deliberately distinct from a provider-request capture.
+ * This assessor cannot turn either into production/billing evidence. */
+export function validateBootstrapExportArtifact(value: unknown, expected: {
+  identity: BootstrapExportArtifact['identity']; baselineArtifactHash: string;
+  baseline: BootstrapExportCell['before']; exported: BootstrapExportCell['after'];
+  oldPrefix: string; bootstrap: string;
+}): { valid: boolean; closed: boolean; errors: string[]; missing: string[] } {
+  const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const errors: string[] = [], seen = new Set<string>();
+  const artifact = record(value) ? value : {};
+  if (artifact.schemaVersion !== 'bootstrap-export-v1') errors.push('schema-version');
+  if (artifact.baselineArtifactHash !== expected.baselineArtifactHash || !/^[a-f0-9]{64}$/.test(expected.baselineArtifactHash)) errors.push('baseline-hash');
+  const identity = record(artifact.identity) ? artifact.identity : {};
+  for (const [key, wanted] of Object.entries(expected.identity)) {
+    if (identity[key] !== wanted) errors.push(`identity:${key}`);
+  }
+  if (expected.baseline.length !== 55 || expected.exported.length !== 55 || !expected.oldPrefix || !expected.bootstrap) errors.push('oracle-population');
+  const cells = Array.isArray(artifact.cells) ? artifact.cells : [];
+  for (const cell of cells) {
+    if (!record(cell)) { errors.push('malformed-cell'); continue; }
+    const client = String(cell.client);
+    if (!DELIVERY_MATRIX_CLIENTS.some(name => name === client)) errors.push(`unexpected:${client}`);
+    if (seen.has(client)) errors.push(`duplicate:${client}`);
+    seen.add(client);
+    if (typeof cell.clientVersion !== 'string' || !cell.clientVersion.trim()) errors.push(`version:${client}`);
+    if (cell.evidencePlane !== (client === 'omp' ? 'installed-client-registration' : 'installed-client-local-request')) errors.push(`plane:${client}`);
+    if (!Array.isArray(cell.evidenceRefs) || !cell.evidenceRefs.length || cell.evidenceRefs.some(ref => typeof ref !== 'string' || !ref.trim())) errors.push(`evidence:${client}`);
+    const before = Array.isArray(cell.before) ? cell.before : [], after = Array.isArray(cell.after) ? cell.after : [];
+    if (before.length !== 55 || after.length !== 55) errors.push(`population:${client}`);
+    const names = new Set<string>();
+    for (let index = 0; index < before.length; index++) {
+      const prior = before[index], next = after[index];
+      if (!record(prior) || !record(next) || typeof prior.name !== 'string' || typeof next.name !== 'string' ||
+          typeof prior.description !== 'string' || typeof next.description !== 'string') { errors.push(`descriptor:${client}/${index}`); continue; }
+      if (names.has(prior.name) || prior.name !== next.name) errors.push(`names:${client}/${index}`);
+      names.add(prior.name);
+      const name = prior.name;
+      const original = expected.baseline.find(tool => name.endsWith(tool.name));
+      const exported = expected.exported.find(tool => name.endsWith(tool.name));
+      if (!original || !exported || prior.description !== original.description || next.description !== exported.description) errors.push(`contract:${client}/${index}`);
+    }
+    const oldText = JSON.stringify(before), newText = JSON.stringify(after);
+    const count = (text: string, fragment: string) => text.split(JSON.stringify(fragment).slice(1, -1)).length - 1;
+    if (count(newText, '<!-- papercusp-mcp-bootstrap:v1 -->') !== 1 || count(newText, expected.bootstrap) !== 1 ||
+        count(newText, expected.oldPrefix) !== 0) errors.push(`bootstrap:${client}`);
+    if (Buffer.byteLength(newText, 'utf8') >= Buffer.byteLength(oldText, 'utf8')) errors.push(`bytes:${client}`);
+  }
+  const missing = DELIVERY_MATRIX_CLIENTS.filter(client => !seen.has(client));
+  const closed = !missing.length && cells.length === DELIVERY_MATRIX_CLIENTS.length;
+  return { valid: closed && !errors.length, closed, errors, missing };
+}
+
 /** Query behavior extends the existing coverage assessor. The trusted fixture
  * contract is separate from the artifact; this never certifies native delivery. */
 export function validateGroundedQueryArtifact(value: unknown, expected: {
