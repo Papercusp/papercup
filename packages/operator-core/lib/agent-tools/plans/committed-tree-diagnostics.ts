@@ -2,7 +2,7 @@
  * clients. Keep this type-only: importing the reader implementation here would
  * pull its sidecar/task/DBOS graph into standalone declaration generation. */
 
-import type { ExecFileTiming } from '../../sync-exec-replay';
+import type { ExecFileTiming } from '../../sync-exec-types';
 
 /** The route and caller PID at the default reader's process boundary. */
 export interface BlobBatchSpawnBoundary {

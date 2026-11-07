@@ -23,18 +23,8 @@
 import { execFile, type ExecSyncOptions } from 'node:child_process';
 
 import { pinModuleState } from '@papercusp/module-singleton';
-
-/** Monotonic offsets from the call boundary, retained when a child fails. */
-export interface ExecFileTiming {
-  startedAtUnixMs: number;
-  parentPid: number;
-  childPid: number | null;
-  spawnReturnedMs: number | null;
-  spawnEventMs: number | null;
-  firstOutputMs: number | null;
-  exitMs: number | null;
-  callbackMs: number;
-}
+import type { ExecFileTiming } from './sync-exec-types';
+export type { ExecFileTiming } from './sync-exec-types';
 
 export interface ExecResult {
   status: number | null;
