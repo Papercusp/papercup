@@ -4455,8 +4455,10 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       expect(await pending).toMatchObject({ status: 0, processDiagnostic: snapshot, timedOut: false });
       await vi.advanceTimersByTimeAsync(1_000);
       expect(reader).toHaveBeenCalledTimes(1);
-      const phases = progress.filter(line => line.startsWith('TEST_FILE_FINALIZATION '))
-        .map(line => JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length)).phase);
+      const finalization = progress.filter(line => line.startsWith('TEST_FILE_FINALIZATION '))
+        .map(line => JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length)));
+      expect(finalization.find(event => event.phase === 'files-complete')).toMatchObject({ scope: 'group' });
+      const phases = finalization.map(event => event.phase);
       expect(phases).toEqual(['governed-start', 'child-start', 'files-complete', 'child-exit', 'child-close',
         'demand-sample-start', 'demand-sample-returned', 'child-returned', 'governed-returned']);
     } finally {
