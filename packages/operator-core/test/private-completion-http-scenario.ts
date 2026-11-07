@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItem } from '../lib/work-items';
-import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../lib/coord-lifecycle/records';
+import { CompletionWorkOutcomeSchema, TERMINAL_COMPLETION_EVIDENCE_KEY,
+  type CompletionRecord } from '../lib/coord-lifecycle/records';
 import { connectAgentMcp } from '../lib/agent-mcp-client';
 import { readSuperuserToken } from '../lib/superuser-token';
 
@@ -21,13 +22,17 @@ const createArgs = { kind: 'task', title: 'Private report-only completion contro
   assign_to: 'self', state: 'wip', changeKinds: ['no-code-change'] };
 const publishArgs = { title: 'Private completion control', body_md: reportBody,
   visibility: 'workspace' };
-const completion = { summary: 'Published and read back the disposable report.',
+const completion: CompletionRecord = { summary: 'Published and read back the disposable report.',
   testsRun: 'HTTP reports:publish followed by reports:get with exact body comparison',
   testResult: 'The complete report body and workspace visibility matched.',
-  verifiedHow: 'manual', filesChanged: [] };
+  verifiedHow: 'manual', filesChanged: [],
+  verification: { workOutcome: 'verified-existing' } };
 
 /** Catch caller-contract mistakes before starting the private PG/API build. */
 export async function validatePrivateCompletionRequests() {
+  // New successful closes require this semantic field even though historical
+  // completion records keep it optional in the transport schema.
+  CompletionWorkOutcomeSchema.parse(completion.verification?.workOutcome);
   const [create, publish, complete] = await Promise.all([
     import('../lib/agent-tools/work_items/create'), import('../lib/agent-tools/reports/publish'),
     import('../lib/agent-tools/work_items/complete'),
@@ -172,6 +177,7 @@ export async function measurePrivateCompletionScenario(o: Options) {
   // request receipt retains the explicit [], and storage must name no paths.
   assert.deepEqual(evidence?.filesChanged ?? [], []);
   assert.equal(evidence?.testResult, completion.testResult);
+  assert.equal(evidence?.workOutcome, completion.verification?.workOutcome);
   const completionElapsedMs = requests.at(-1)!.elapsedMs;
   let replay: { tagged: boolean; originalHandlerExecutions: number; elapsedMs: number } | undefined;
   if (client) {

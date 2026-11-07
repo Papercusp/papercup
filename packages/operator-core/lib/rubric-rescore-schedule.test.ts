@@ -303,6 +303,31 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it('a failed instrument batch surfaces as a soft error so routines do not clear health', async () => {
+    const criterion = { key: 'redundancy', check: {
+      kind: 'instrument', instrumentKey: 'code-intel:reuse-redundancy-per-1000-lines',
+    } } as unknown as CheckedCriterion;
+    const { deps, record, emit } = depsFor([criterion], [], []);
+    deps.runInstruments = vi.fn(async () => [{
+      check: { id: 'redundancy:instrument', rubricRef: RUBRIC, criterionKey: 'redundancy',
+        kind: 'instrument', value: null, unit: 'count' },
+      verdict: 'error', measuredAt: '2026-11-07T16:24:16.458Z', durationMs: 68_212,
+      detail: 'Raw collection unavailable: callers worker exceeded its deadline',
+    }]) as never;
+
+    const res = await runRubricRescoreAction(
+      { workspaceId: 'ws-test', installSlug: 'papercusp', payloadTemplate: {
+        harnessSlug: 'papercusp', input: { rubricRef: RUBRIC },
+      } } as never,
+      deps,
+    );
+
+    expect(res.softError).toContain('1 of 1 instrument checks could not be measured: redundancy');
+    expect(res.diagnostics).toMatchObject({ rubricRescore: { instrumentError: expect.stringContaining('redundancy') } });
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('a failed current probe supersedes historical success and leaves independent probes running', async () => {
     const { deps, record } = depsFor([probeCriterion('slow'), probeCriterion('steady')], [], []);
     const evaluateProbes = vi.fn(async (input: { criteria: ReadonlyArray<{ key: string }> }) => {

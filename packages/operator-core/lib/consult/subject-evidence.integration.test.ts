@@ -11,7 +11,7 @@ import { flushFallbackObservations } from '../degradation/fallback-observations'
 import { linuxProcStateFromStat, linuxStartTicksFromProcStat } from '../process-identity';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
-import { scoreSubjectEvidence, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
+import { scoreSubjectEvidence, subjectContrasts, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES, NATURAL_QUESTION_SUBJECT_CASES } from './subject-evidence.fixtures';
 import '../agent-tools/index';
 
@@ -243,6 +243,7 @@ describe('registered subject evidence with the real local scorer', () => {
       }
     };
     const baseScorer = await buildSidecarAwareReranker();
+    const naturalPairs: Array<{ passage: string; contracts: string[]; scores: Array<number | null> }> = [];
     const scorer: typeof baseScorer = async (query, contracts, opts) => {
       const callStartedAt = Date.now();
       const phaseSamples: Record<string, unknown>[] = [];
@@ -318,6 +319,7 @@ describe('registered subject evidence with the real local scorer', () => {
         console.info('subject-contract-scores', JSON.stringify({ elapsedMs,
           contracts: contracts.map(c => c.split('\n')[0]), scores }));
         if (contracts[0]?.includes('?')) {
+          naturalPairs.push({ passage: query, contracts, scores });
           console.info('subject-natural-contract-pairs', JSON.stringify({ passage: query, contracts, scores }));
         }
         return scores;
@@ -382,17 +384,42 @@ describe('registered subject evidence with the real local scorer', () => {
       console.info('subject-scorer-ready-state', JSON.stringify(await readScorerState()));
     }
     const naturalMeasurements = [];
+    const forwardMeasurements = [];
     for (const scenario of NATURAL_QUESTION_SUBJECT_CASES) {
       // Keep the production direction separate from this diagnostic. The same
       // primary question and passages, on the same owned runtime, distinguish
       // a query/document representation error from missing contrast contracts.
       const primary = subjectEvidenceQuery(scenario.subject)!;
       const forward = await scorer(primary, scenario.passages.map(p => p.text), { deadline: Date.now() + 4000 });
+      forwardMeasurements.push({ id: scenario.id, scores: forward });
       console.info('subject-natural-forward-pairs', JSON.stringify({ id: scenario.id, query: primary,
         passages: scenario.passages, scores: forward }));
       const scores = await scoreSubjectEvidence(scenario.subject, scenario.passages.map(p => p.text),
         Date.now() + 4000, { scorer });
       naturalMeasurements.push({ id: scenario.id, scores });
+    }
+    // Compare the same real passage and targets while changing only which
+    // existing action contracts compete. Keep this diagnosis in the retained
+    // assertion: JSON reporters suppress the informational console output.
+    const bindingScenario = NATURAL_QUESTION_SUBJECT_CASES[2];
+    const contracts = listAllProjectedTools().flatMap(tool => tool.expose.mcp
+      ? [{ name: tool.expose.mcp.name, description: tool.description }] : []);
+    const identityContract = contracts.find(contract => contract.name === 'coord:whoami');
+    const contrastVariants = [];
+    for (const passage of bindingScenario.passages) {
+      const baselinePair = naturalPairs.find(pair => pair.passage === passage.text);
+      if (!baselinePair) continue;
+      const primaryAction = passage.text.split(/(?<=[.!?])\s+(?=[A-Z])/u, 1)[0]!;
+      const nominated = subjectContrasts(bindingScenario.subject, primaryAction, contracts);
+      const primaryActionScores = await scorer(passage.text, [...baselinePair.contracts.slice(0, 2),
+        ...nominated.map(contract => subjectEvidenceQuery(contract.name, contract.description)!)],
+      { deadline: Date.now() + 4000 });
+      const identityScores = identityContract
+        ? await scoreSubjectEvidence(bindingScenario.subject, [passage.text], Date.now() + 4000,
+          { scorer, contracts: [identityContract] })
+        : [null];
+      contrastVariants.push({ passage: passage.id, nominated: nominated.map(contract => contract.name),
+        primaryActionScores, identityScores });
     }
     const natural = evaluateSubjectCases(naturalMeasurements, SUBJECT_EVIDENCE_MIN_SCORE,
       NATURAL_QUESTION_SUBJECT_CASES);
@@ -413,6 +440,12 @@ describe('registered subject evidence with the real local scorer', () => {
       `natural-question measurements must be available: ${JSON.stringify({ runtime, failures })}`).toBe(0);
     expect(natural.cases[0].selected).toEqual(['lease-auditor']);
     expect(natural.cases[1].selected).toEqual([]);
+    expect(natural.cases[2].selected, JSON.stringify({ runtime, ownedScorer: !!privateHome,
+      measured: natural.cases[2], forward: forwardMeasurements[2],
+      contrastVariants,
+      reverse: naturalPairs.filter(pair => pair.contracts[0] ===
+        subjectEvidenceQuery(NATURAL_QUESTION_SUBJECT_CASES[2].subject)),
+    })).toEqual(['native-binding-reviewer']);
     expect(natural.summary.falseExpertSelections).toBe(0);
     const positives = measured.filter(r => r.relevant.length);
     const negatives = measured.filter(r => !r.relevant.length);

@@ -144,6 +144,8 @@ export interface RubricRescoreOutcome {
   crossings: RubricCriterionRegressedPayload[];
   /** Probe criteria that could not be judged this fire; each keeps its prior ledger rows. */
   probeError?: string;
+  /** Instrument checks that failed to measure; the routine must not clear its health error. */
+  instrumentError?: string;
 }
 
 /**
@@ -260,6 +262,12 @@ export async function rescoreRubric(
   const probeError = probeErrors.length > 0
     ? `${probeErrors.length} of ${probeCriteria.length} probe criteria unjudged; ${probeErrors.join(' | ')}`
     : undefined;
+  const instrumentResults = results.filter(result => result.check.kind === 'instrument');
+  const instrumentFailures = instrumentResults.filter(result => result.verdict === 'error');
+  const instrumentError = instrumentFailures.length > 0
+    ? `${instrumentFailures.length} of ${instrumentResults.length} instrument checks could not be measured: ` +
+      instrumentFailures.map(result => result.check.criterionKey).join(', ')
+    : undefined;
 
   const testRunIds = results.length > 0
     ? await (deps.record ?? ((r, s) => recordRubricCheckResults(r, s, getOrgPg().sql as never)))(results, {
@@ -287,7 +295,8 @@ export async function rescoreRubric(
       workspaceId,
     });
   }
-  return { rubricRef, executed: results.length, testRunIds, crossings, ...(probeError ? { probeError } : {}) };
+  return { rubricRef, executed: results.length, testRunIds, crossings,
+    ...(probeError ? { probeError } : {}), ...(instrumentError ? { instrumentError } : {}) };
 }
 
 /** The routine handler: payload `{ templateSlug, harnessSlug, input: { rubricRef } }`. */
@@ -298,9 +307,13 @@ export async function runRubricRescoreAction(ctx: SystemActionCtx, deps: RubricR
   const harnessSlug = typeof payload.harnessSlug === 'string' ? payload.harnessSlug : ctx.installSlug;
   const outcome = await rescoreRubric({ rubricRef, workspaceId: ctx.workspaceId, harnessSlug,
     schedule: { ...ctx.triggerConfig, action: { system: RUBRIC_RESCORE_ACTION, input: payload.input } } }, deps);
+  const softErrors = [
+    ...(outcome.instrumentError ? ['instrument batch: ' + outcome.instrumentError] : []),
+    ...(outcome.probeError ? ['probe batch: ' + outcome.probeError] : []),
+  ];
   return {
     diagnostics: { rubricRescore: outcome },
-    ...(outcome.probeError ? { softError: `rubric-rescore probe batch: ${outcome.probeError}`.slice(0, 600) } : {}),
+    ...(softErrors.length > 0 ? { softError: ('rubric-rescore: ' + softErrors.join('; ')).slice(0, 600) } : {}),
   };
 }
 

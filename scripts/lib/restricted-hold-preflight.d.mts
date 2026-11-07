@@ -8,6 +8,7 @@ export declare const RESTRICTED_HOLD_PREFLIGHT_DONE: 'admitted-by-testing-run';
 export declare const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER: 'admitted-by-test-router';
 export declare const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST: 'admitted-by-vitest-root';
 export declare const RESTRICTED_HOLD_PREFLIGHT_CLI: string;
+export declare const RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS: number;
 
 export type BundleHoldProgress = { step: string; event: 'start' | 'progress' | 'end'; status?: number; error?: string;
   completedFiles?: number; totalFiles?: number; bytesRead?: number; nextPath?: string;

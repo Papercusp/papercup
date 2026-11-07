@@ -37,7 +37,6 @@ import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
 import { installGuardHttpDiagnostics } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
-import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { externalIngressHandler, handler, stopDesktopPortalHost } from './host-handler';
 import { recoverAdmissionPreviewsAtHostBoot } from '@papercusp/operator-core/lib/agent-tools/release/repair-queue';
@@ -1006,21 +1005,20 @@ const clusterHandle = sidecarMode ? null : startCluster({
       process.exit(1);
     });
   },
-  // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers
-  // exits within the boot grace window and NONE ever stays up — an UNBOOTABLE build
-  // (MODULE_NOT_FOUND / a boot-time throw the preflight manifest didn't enumerate) —
-  // halt the respawn storm and exit the primary with the integrity code. A clean,
-  // fast, distinct failure lets systemd/deploy-cli surface it and roll back to the
-  // last-good build, instead of flapping every worker for ~35 min (the all-pages
-  // outage). A worker that crashes AFTER serving still respawns normally.
-  onUnbootable: ({ consecutiveBootFailures, lastCode, lastSignal }) => {
+  // Boot-failure backstop: the cluster primary can observe uptime, exit code, and
+  // signal, but not the worker's thrown error. A whole generation exiting inside
+  // the grace window therefore does not prove a dependency-integrity failure.
+  // Stop the local respawn storm; use the ordinary process-failure path so systemd
+  // can retry transient startup failures. The boot-integrity preflight retains its
+  // distinct exit code when it has measured missing dependencies.
+  onBootFailure: ({ consecutiveBootFailures, lastCode, lastSignal }) => {
     console.error(
-      `[hono-host] cluster UNBOOTABLE: ${consecutiveBootFailures} worker(s) failed to boot and none ` +
-        `stayed up (last exit code=${lastCode} signal=${lastSignal}). Exiting the primary (${BOOT_INTEGRITY_EXIT_CODE}) ` +
-        `so the supervisor/deploy rolls back to the last-good build rather than crash-looping. See the ` +
-        `[boot-integrity] line above for the likely missing module(s); run \`npm ci\` in this checkout if persistent.`,
+      `[hono-host] cluster startup failed: ${consecutiveBootFailures} worker(s) exited before staying healthy ` +
+        `(last exit code=${lastCode} signal=${lastSignal}); root cause is unknown from the supervisor's ` +
+        `worker-exit telemetry. Inspect the first worker error above before choosing remediation. ` +
+        'Exiting the primary with code 1 for the ordinary service restart policy.',
     );
-    process.exit(BOOT_INTEGRITY_EXIT_CODE);
+    process.exit(1);
   },
 });
 

@@ -24,6 +24,7 @@ import bashTool from './bash';
 import bashOutputTool from './bash_output';
 import bashKillTool from './bash_kill';
 import { __resetBashJobs, getJob, killJob } from './bash-jobs';
+import { getTask } from '../../task-manager/store';
 
 type Result = {
   content: Array<{ text: string }>;
@@ -35,13 +36,13 @@ const bashOutput = bashOutputTool as unknown as Tool;
 const bashKill = bashKillTool as unknown as Tool;
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-yield-integration-'));
 
-function ctx() {
+function ctx(signal = new AbortController().signal) {
   return {
     projectDir: STATE,
     stateDir: STATE,
     workspaceId: 'papercusp-workspace',
     harnessSlug: 'papercusp',
-    signal: new AbortController().signal,
+    signal,
     emit: () => {},
     role: 'operator',
   } as never;
@@ -142,6 +143,123 @@ describe('capability:bash start-once response yield — integration', () => {
     }
   });
 
+  it('reports the execution deadline separately from a response-window yield', async () => {
+    const controller = new AbortController();
+    const result = await bash.handler(
+      { command: 'exec sleep 30', timeout: 300, yield_after_ms: 5_000 },
+      ctx(controller.signal),
+    );
+    const job = getJob(String(result._meta?.shellExecution?.bash_id));
+    try {
+      expect(result._meta?.shellExecution).toMatchObject({
+        status: 'timed_out', running: false, yielded: false,
+      });
+      expect(job).toBeDefined();
+      expect(job?.status).toBe('timed_out');
+      expect(job?.endedAt).not.toBeNull();
+      expect(result.content[0]?.text).toContain('execution deadline reached');
+      expect(job?.killReason).toBeUndefined();
+      expect(controller.signal.aborted).toBe(false);
+    } finally {
+      if (job) killJob(job);
+    }
+  });
+
+  it('reports caller abort separately from execution and response deadlines', async () => {
+    const ready = join(STATE, `abort-ready-${crypto.randomUUID()}`);
+    const controller = new AbortController();
+    const response = bash.handler(
+      {
+        command: `printf ready > ${JSON.stringify(ready)}; exec sleep 30`,
+        timeout: 30_000,
+        yield_after_ms: 10_000,
+      },
+      ctx(controller.signal),
+    );
+    try {
+      // Abort only after the command itself ran: a preflight cancellation
+      // cannot masquerade as stopping the admitted, running command.
+      await expect.poll(() => existsSync(ready), { timeout: 5_000 }).toBe(true);
+      controller.abort();
+      const result = await response;
+      expect(result._meta?.shellExecution).toMatchObject({
+        status: 'killed', running: false, yielded: false,
+      });
+      const job = getJob(String(result._meta?.shellExecution?.bash_id));
+      expect(job).toBeDefined();
+      expect(job?.killReason).toBe('caller aborted the response request');
+      expect(job?.deadlineReason).toBeUndefined();
+      expect(job?.endedAt).not.toBeNull();
+    } finally {
+      controller.abort();
+      await response;
+    }
+  }, 20_000);
+
+  it('reports explicit kill separately from execution deadline and caller abort', async () => {
+    const controller = new AbortController();
+    const launch = payload(await bash.handler(
+      { command: 'exec sleep 30', timeout: 30_000, yield_after_ms: 25 },
+      ctx(controller.signal),
+    ));
+    const job = getJob(String(launch.bash_id));
+    try {
+      expect(job).toBeDefined();
+      const killed = payload(await bashKill.handler({ bash_id: launch.bash_id }, ctx()));
+      expect(killed).toMatchObject({ ok: true, status: 'killed' });
+      await expect.poll(() => job?.endedAt, { timeout: 5_000 }).not.toBeNull();
+      const terminal = payload(await bashOutput.handler({ bash_id: launch.bash_id }, ctx()));
+      expect(terminal.status).toBe('killed');
+      expect(job?.killReason).toBe('capability:bash_kill requested termination');
+      expect(job?.deadlineReason).toBeUndefined();
+      expect(controller.signal.aborted).toBe(false);
+    } finally {
+      if (job) killJob(job);
+    }
+  });
+
+  it.each([0, 7, 37])('preserves observed exit %i through the command handler', async (exitCode) => {
+    const result = await bash.handler(
+      { command: `printf EXIT-TRUTH; exit ${exitCode}`, timeout: 10_000, yield_after_ms: 25 },
+      ctx(),
+    );
+    let terminal = result._meta?.shellExecution;
+    let output = result.content[0]?.text ?? '';
+    let job: ReturnType<typeof getJob>;
+    try {
+      // Exit truth is independent of response timing. Follow only an actual
+      // yielded handle; keep refusals visible instead of treating them as jobs.
+      if (!terminal) {
+        const launch = payload(result);
+        expect(launch, JSON.stringify(result)).toMatchObject({
+          yielded: true,
+          bash_id: expect.any(String),
+          task_id: expect.any(String),
+        });
+        job = getJob(String(launch.bash_id));
+        expect(job, JSON.stringify(launch)).toMatchObject({
+          id: launch.bash_id, taskId: launch.task_id,
+        });
+        output = String(launch.output ?? '');
+        await expect.poll(async () => {
+          terminal = payload(await bashOutput.handler(
+            { bash_id: launch.bash_id, task_id: launch.task_id }, ctx(),
+          ));
+          output += String(terminal.output ?? '');
+          return terminal.status;
+        }, { timeout: 5_000 }).not.toBe('running');
+      }
+      expect(terminal, JSON.stringify(terminal)).toMatchObject({
+        status: exitCode === 0 ? 'completed' : 'failed',
+        exit_code: exitCode,
+        running: false,
+      });
+      expect(output).toContain('EXIT-TRUTH');
+    } finally {
+      if (job) killJob(job);
+    }
+  }, 20_000);
+
   it('kills the running command descendant through the managed kill handler', async () => {
     const barrier = join(STATE, `descendant-barrier-${crypto.randomUUID()}`);
     const killedMarker = join(STATE, `killed-descendant-${crypto.randomUUID()}`);
@@ -186,6 +304,113 @@ describe('capability:bash start-once response yield — integration', () => {
       // Release first so even a regressed orphan can terminate naturally.
       writeFileSync(barrier, 'release');
       for (const job of jobs) killJob(job);
+    }
+  }, 20_000);
+
+  it('retrieves the original command from a fresh caller context using only its durable task handle', async () => {
+    const barrier = join(STATE, `carry-barrier-${crypto.randomUUID()}`);
+    const marker = `${barrier}.invocations`;
+    const previous = new AbortController();
+    const launch = payload(await bash.handler(
+      {
+        command: `printf 'entered\\n' >> ${JSON.stringify(marker)}; ` +
+          `while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; ` +
+          `printf 'finished\\n' >> ${JSON.stringify(marker)}; printf CARRIED-COMPLETION`,
+        timeout: 15_000,
+        yield_after_ms: 25,
+      },
+      ctx(previous.signal),
+    ));
+    const originalJob = getJob(String(launch.bash_id));
+    try {
+      expect(launch).toMatchObject({ status: 'running', yielded: true, task_id: expect.any(String) });
+      expect(originalJob).toBeDefined();
+      // Carry only the serialized durable handle into a new request context.
+      // This is a handler boundary, not a claimed live-session carry drill.
+      const carried = JSON.parse(JSON.stringify({ task_id: launch.task_id }));
+      previous.abort();
+      expect(payload(await bashOutput.handler(carried, ctx()))).toMatchObject({
+        bash_id: launch.bash_id, task_id: launch.task_id, status: 'running',
+      });
+      writeFileSync(barrier, 'release');
+      await expect.poll(async () => payload(await bashOutput.handler(carried, ctx())), { timeout: 5_000 })
+        .toMatchObject({ status: 'completed', exit_code: 0 });
+      expect(getJob(String(launch.bash_id))).toBe(originalJob);
+      expect(readFileSync(String(launch.log_path), 'utf8')).toContain('CARRIED-COMPLETION');
+      expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['entered', 'finished']);
+    } finally {
+      writeFileSync(barrier, 'release');
+      if (originalJob) killJob(originalJob);
+    }
+  }, 20_000);
+
+  it('recovers the original terminal command after the process-local job registry is cleared', async () => {
+    const barrier = join(STATE, `registry-barrier-${crypto.randomUUID()}`);
+    const marker = `${barrier}.invocations`;
+    const launch = payload(await bash.handler(
+      {
+        command: `printf 'entered\\n' >> ${JSON.stringify(marker)}; ` +
+          `while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; ` +
+          'printf REGISTRY-RECOVERED',
+        timeout: 15_000,
+        yield_after_ms: 25,
+      },
+      ctx(),
+    ));
+    const originalJob = getJob(String(launch.bash_id));
+    try {
+      expect(originalJob).toBeDefined();
+      writeFileSync(barrier, 'release');
+      await expect.poll(() => originalJob?.endedAt, { timeout: 5_000 }).not.toBeNull();
+      await expect.poll(async () => (await getTask(String(launch.task_id)))?.state, { timeout: 5_000 })
+        .toBe('exited');
+      // Clear only after real child close and the durable exit have been observed.
+      // Recovery must now read the ledger/log, with no live job to reuse.
+      __resetBashJobs();
+      expect(getJob(String(launch.bash_id))).toBeUndefined();
+      const recovered = payload(await bashOutput.handler({ task_id: launch.task_id }, ctx()));
+      expect(recovered).toMatchObject({
+        bash_id: launch.bash_id, task_id: launch.task_id, status: 'completed', exit_code: 0,
+      });
+      expect(String(recovered.output)).toContain('REGISTRY-RECOVERED');
+      expect(getJob(String(launch.bash_id))).toBeUndefined();
+      expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['entered']);
+    } finally {
+      writeFileSync(barrier, 'release');
+      if (originalJob) killJob(originalJob);
+    }
+  }, 20_000);
+
+  it('keeps the command running until its owned background descendant completes', async () => {
+    const barrier = join(STATE, `terminal-descendant-${crypto.randomUUID()}`);
+    const ready = `${barrier}.ready`;
+    const finished = `${barrier}.finished`;
+    const launch = payload(await bash.handler(
+      {
+        command: `( printf ready > ${JSON.stringify(ready)}; ` +
+          `while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; ` +
+          `printf finished > ${JSON.stringify(finished)} ) & wait; printf DESCENDANT-COMPLETE`,
+        timeout: 15_000,
+        yield_after_ms: 25,
+      },
+      ctx(),
+    ));
+    const job = getJob(String(launch.bash_id));
+    try {
+      expect(job).toBeDefined();
+      await expect.poll(() => existsSync(ready), { timeout: 5_000 }).toBe(true);
+      expect(existsSync(finished)).toBe(false);
+      expect(payload(await bashOutput.handler({ task_id: launch.task_id }, ctx())))
+        .toMatchObject({ status: 'running' });
+      writeFileSync(barrier, 'release');
+      await expect.poll(async () => payload(await bashOutput.handler({ task_id: launch.task_id }, ctx())),
+        { timeout: 5_000 }).toMatchObject({ status: 'completed', exit_code: 0 });
+      expect(readFileSync(finished, 'utf8')).toBe('finished');
+      expect(readFileSync(String(launch.log_path), 'utf8')).toContain('DESCENDANT-COMPLETE');
+      expect(job?.endedAt).not.toBeNull();
+    } finally {
+      writeFileSync(barrier, 'release');
+      if (job) killJob(job);
     }
   }, 20_000);
 
