@@ -27,7 +27,7 @@ async function sha256File(path) {
   return sha256Bytes(await readFile(path));
 }
 
-async function walkFiles(root) {
+async function walkFiles(root, excluded = new Set([".git", "node_modules", "dist"])) {
   const absoluteRoot = resolve(root);
   const info = await stat(absoluteRoot);
   if (info.isFile())
@@ -40,12 +40,7 @@ async function walkFiles(root) {
     const children = await readdir(directory, { withFileTypes: true });
     children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const child of children) {
-      if (
-        child.name === ".git" ||
-        child.name === "node_modules" ||
-        child.name === "dist"
-      )
-        continue;
+      if (excluded.has(child.name)) continue;
       const absolute = join(directory, child.name);
       const childRelative = prefix ? `${prefix}/${child.name}` : child.name;
       if (child.isDirectory()) await visit(absolute, childRelative);
@@ -57,8 +52,8 @@ async function walkFiles(root) {
   return entries;
 }
 
-async function hashTree(root) {
-  const files = await walkFiles(root);
+async function hashTree(root, excluded) {
+  const files = await walkFiles(root, excluded);
   const rows = [];
   for (const file of files)
     rows.push(`${file.relative}\0${await sha256File(file.absolute)}\n`);
@@ -146,6 +141,16 @@ export async function buildManifest({
   const output = resolve(outputDir);
   const runtime = resolve(output, runtimePath);
   const submoduleRoot = resolve(root, "libs/papercusp");
+  const runtimeModules = join(output, "node_modules");
+  const runtimeModulesInfo = await stat(runtimeModules).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  // Runtime dist/ and nested node_modules contain executable dependencies.
+  // The source-tree exclusions used by migration/model inputs do not apply.
+  const runtimeDependencies = runtimeModulesInfo
+    ? await hashTree(runtimeModules, new Set([".git"]))
+    : null;
   const inputs = {
     schemaVersion: SCHEMA_VERSION,
     runtime: {
@@ -156,7 +161,10 @@ export async function buildManifest({
       superprojectSha: sourceSha ?? git(root, ["rev-parse", "HEAD"]),
       papercuspSha: submoduleSha ?? git(submoduleRoot, ["rev-parse", "HEAD"]),
     },
-    dependencies: await hashInputs(dependencyInputs, root),
+    dependencies: [
+      ...await hashInputs(dependencyInputs, root),
+      ...(runtimeDependencies ? [{ input: "runtime/node_modules", ...runtimeDependencies }] : []),
+    ],
     migrations: await hashInputs(migrationInputs, root),
     seeds: await hashInputs(seedInputs, root),
     optionalPacks: {

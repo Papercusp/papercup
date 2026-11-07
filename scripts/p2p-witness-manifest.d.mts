@@ -47,16 +47,11 @@ export function buildManifest({ repoRoot, outputDir, sourceSha, submoduleSha, ru
             superprojectSha: string;
             papercuspSha: string;
         };
-        dependencies: ({
-            path: string;
-            fileCount: number;
-            sha256: string;
-            input: string;
-        } | {
+        dependencies: {
             path: string;
             sha256: string;
             input: string;
-        })[];
+        }[];
         migrations: ({
             path: string;
             fileCount: number;

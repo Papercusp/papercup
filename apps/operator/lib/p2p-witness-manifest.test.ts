@@ -30,6 +30,24 @@ async function fixture() {
 }
 
 describe("P2P witness manifest", () => {
+  it("binds copied runtime dist and nested dependency bytes", async () => {
+    const f = await fixture();
+    const runtime = join(f.output, "node_modules/runtime/dist");
+    const nested = join(f.output, "node_modules/runtime/node_modules/child");
+    await mkdir(runtime, { recursive: true });
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(runtime, "index.js"), "runtime-v1");
+    await writeFile(join(nested, "index.js"), "child-v1");
+    const args = { repoRoot: f.root, outputDir: f.output, sourceSha: "source-a", submoduleSha: "submodule-a" };
+    const first = await buildManifest(args);
+    expect(first.inputs.dependencies.find(row => row.input === "runtime/node_modules")).toMatchObject({ fileCount: 2 });
+    await writeFile(join(runtime, "index.js"), "runtime-v2");
+    const changedRuntime = await buildManifest(args);
+    expect(changedRuntime.artifactId).not.toBe(first.artifactId);
+    await writeFile(join(nested, "index.js"), "child-v2");
+    expect((await buildManifest(args)).artifactId).not.toBe(changedRuntime.artifactId);
+  });
+
   it("is deterministic and carries the source, runtime, migration, and seed identities", async () => {
     const f = await fixture();
     const args = {
