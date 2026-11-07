@@ -60,6 +60,7 @@ it('runs maintained verifier source producer regressions', () => {
   expect(result.error, result.stdout + result.stderr).toBeUndefined();
   expect(result.status, result.stdout + result.stderr).toBe(0);
   expect(result.stdout).toMatch(/ok \d+ - archive inputs and requirements each use one fresh full census and reject later tampering/);
+  expect(result.stdout).toMatch(/ok \d+ - multi-workspace closure verification uses one fresh census and rejects later source and output tampering/);
 }, 60_000);
 const RUN_LIB_TIMEOUT_MS = 45_000;
 const scratch: string[] = [];
