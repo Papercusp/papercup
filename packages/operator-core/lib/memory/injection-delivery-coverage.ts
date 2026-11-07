@@ -89,6 +89,13 @@ export type BootstrapExportArtifact = {
   cells: BootstrapExportCell[];
 };
 
+/** Installed Claude Code expands this punctuation before its provider request.
+ * Apply the measured transform to the frozen oracle only: never normalize the
+ * observation, which must still match in full. Server exports stay byte-exact. */
+export function bootstrapDescriptionForClient(client: string, description: string): string {
+  return client === 'claude' ? description.replaceAll('…', '...') : description;
+}
+
 /** Closed export population with an independently frozen descriptor oracle.
  * OMP registration is deliberately distinct from a provider-request capture.
  * This assessor cannot turn either into production/billing evidence. */
@@ -129,12 +136,15 @@ export function validateBootstrapExportArtifact(value: unknown, expected: {
       const name = prior.name;
       const original = expected.baseline.find(tool => name.endsWith(tool.name));
       const exported = expected.exported.find(tool => name.endsWith(tool.name));
-      if (!original || !exported || prior.description !== original.description || next.description !== exported.description) errors.push(`contract:${client}/${index}`);
+      if (!original || !exported ||
+          prior.description !== bootstrapDescriptionForClient(client, original.description) ||
+          next.description !== bootstrapDescriptionForClient(client, exported.description)) errors.push(`contract:${client}/${index}`);
     }
     const oldText = JSON.stringify(before), newText = JSON.stringify(after);
     const count = (text: string, fragment: string) => text.split(JSON.stringify(fragment).slice(1, -1)).length - 1;
-    if (count(newText, '<!-- papercusp-mcp-bootstrap:v1 -->') !== 1 || count(newText, expected.bootstrap) !== 1 ||
-        count(newText, expected.oldPrefix) !== 0) errors.push(`bootstrap:${client}`);
+    if (count(newText, '<!-- papercusp-mcp-bootstrap:v1 -->') !== 1 ||
+        count(newText, bootstrapDescriptionForClient(client, expected.bootstrap)) !== 1 ||
+        count(newText, bootstrapDescriptionForClient(client, expected.oldPrefix)) !== 0) errors.push(`bootstrap:${client}`);
     if (Buffer.byteLength(newText, 'utf8') >= Buffer.byteLength(oldText, 'utf8')) errors.push(`bytes:${client}`);
   }
   const missing = DELIVERY_MATRIX_CLIENTS.filter(client => !seen.has(client));
