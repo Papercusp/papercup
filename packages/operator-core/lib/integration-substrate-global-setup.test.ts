@@ -9,20 +9,21 @@ const privateTransport = fileURLToPath(new URL(
 const selfOwnedLoopTurn = fileURLToPath(new URL(
   './harness/routines/loop-turn-start-reconcile.integration.test.ts', import.meta.url,
 ));
+const selfOwnedPromptOrigin = fileURLToPath(new URL('./search/session-ingest-prompt-origin.integration.test.ts', import.meta.url));
 const databaseTest = fileURLToPath(new URL('./work-items-corroboration.integration.test.ts', import.meta.url));
 const selectionCanary = fileURLToPath(new URL('./integration-substrate-selection.integration.test.ts', import.meta.url));
 const lifecycleCandidate = fileURLToPath(new URL('./harness/git-sync/lifecycle-candidate.integration.test.ts', import.meta.url));
 const project = { name: 'fixture-project' };
 
 describe('operator-core integration substrate selection (EI-26266395178004133)', () => {
-  it.each([privateTransport, selfOwnedLoopTurn, selectionCanary, lifecycleCandidate])('omits PostgreSQL for the exact selected private suite %s', async path => {
+  it.each([privateTransport, selfOwnedLoopTurn, selfOwnedPromptOrigin, selectionCanary, lifecycleCandidate])('omits PostgreSQL for the exact selected private suite %s', async path => {
     const loaders = { baseline: vi.fn(), org: vi.fn() };
     await setupIntegrationSubstrate(project, [path], loaders);
     expect(loaders.baseline).not.toHaveBeenCalled();
     expect(loaders.org).not.toHaveBeenCalled();
   });
 
-  it.each([{ paths: [] }, { paths: [databaseTest] }, { paths: [privateTransport, databaseTest] }, { paths: [`${privateTransport}.other`] }])(
+  it.each([{ paths: [] }, { paths: [databaseTest] }, { paths: [privateTransport, databaseTest] }, { paths: [selfOwnedPromptOrigin, databaseTest] }, { paths: [`${privateTransport}.other`] }, { paths: [`${selfOwnedPromptOrigin}.other`] }])(
     'retains PostgreSQL for empty, database, mixed and unknown selections: $paths', ({ paths }) => {
       expect(integrationNeedsPostgres(paths)).toBe(true);
     },

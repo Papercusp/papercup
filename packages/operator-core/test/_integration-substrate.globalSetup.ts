@@ -56,6 +56,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/search/bench/selected-corpus-schema.integration.test.ts',
   // Runs the ingest and completion readers in its own disposable current-build runtime.
   '../lib/search/session-ingest-loop-namespace.integration.test.ts',
+  // Owns a migrated disposable runtime and tears it down; no shared baseline.
+  '../lib/search/session-ingest-prompt-origin.integration.test.ts',
   // Canonical HTTP bootstrap and real native CLI run in its disposable API/PG runtime.
   '../lib/search/loop-namespace-native.integration.test.ts',
 ].map(path => fileURLToPath(new URL(path, import.meta.url))));
