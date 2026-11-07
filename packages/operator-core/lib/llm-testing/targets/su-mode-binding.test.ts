@@ -16,6 +16,15 @@ import { REPORT_KINDS, REPORT_VISIBILITIES } from '../../report-library';
 const IDEATE_RITUAL = 'blender:ideate-pass-record';
 
 describe('su target mode binding', () => {
+  it('renders authority checks before blocker repair in the actual AUTO prompt', async () => {
+    const prompt = await loadPlaybookBody(['auto']);
+    expect(prompt).toContain('evidence BEFORE attempting a remedy');
+    expect(prompt).toContain("A named provider's outstanding dependency");
+    expect(prompt).toContain('An advertised repair command is not an');
+    expect(prompt).toContain('current evidence establishing that boundary is sufficient to justify no attempt');
+    expect(prompt).toContain('an empty list is correct when none is authorized');
+  }, 60_000);
+
   it('advertises production Reports vocabularies and required title constraints', () => {
     const publish = SU_CATALOG.find(tool => tool.name === 'reports:publish')!;
     expect(publish.input).toMatchObject({ required: ['title'], properties: {

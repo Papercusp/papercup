@@ -25,13 +25,17 @@ import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
 
 /** Records the paths every guardFileLock call was asked to hold, then delegates to the real guard. */
 const lockedPathSets: string[][] = [];
+let afterLockAcquired: (() => void) | undefined;
 vi.mock('../locks/file-lock-guard', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../locks/file-lock-guard')>();
   return {
     ...actual,
     guardFileLock: (ctx: unknown, paths: string[], spec: unknown, run: () => unknown) => {
       lockedPathSets.push([...paths]);
-      return (actual.guardFileLock as unknown as (...a: unknown[]) => unknown)(ctx, paths, spec, run);
+      return (actual.guardFileLock as unknown as (...a: unknown[]) => unknown)(ctx, paths, spec, () => {
+        afterLockAcquired?.();
+        return run();
+      });
     },
   };
 });
@@ -91,6 +95,7 @@ function body(cell: Cell): string {
 
 beforeEach(() => {
   lockedPathSets.length = 0;
+  afterLockAcquired = undefined;
 });
 
 describe('capability:notebook_edit — replace', () => {
@@ -461,12 +466,22 @@ describe('capability:notebook_edit — through managed authority and locks', () 
   });
 
   it('takes the lock BEFORE reading, so a rejected notebook was still coordinated', async () => {
-    const p = join(DIR, `${seq++}-bad.ipynb`);
-    writeFileSync(p, 'not json', 'utf8');
+    const p = notebook([codeCell('aaa', ['x = 1\n'])]);
+    const acquired = vi.fn(() => writeFileSync(p, 'not json', 'utf8'));
+    afterLockAcquired = acquired;
+    try {
+      // A pre-lock read would cache the valid notebook and overwrite this
+      // content. Only a read inside the acquired lock sees the refusal input.
+      const r = await edit({ notebook_path: p, cell_id: 'aaa', new_source: 'x = 2\n' });
 
-    await edit({ notebook_path: p, cell_id: '0', new_source: 'x = 1\n' });
-
-    expect(lockedPathSets[0]).toEqual([p]);
+      expect(acquired).toHaveBeenCalledOnce();
+      expect(lockedPathSets[0]).toEqual([p]);
+      expect(r.isError).toBe(true);
+      expect(parse(r).reason).toBe('not_a_notebook');
+      expect(readFileSync(p, 'utf8')).toBe('not json');
+    } finally {
+      afterLockAcquired = undefined;
+    }
   });
 
   it('declares fs-write authority, not a read capability', () => {
