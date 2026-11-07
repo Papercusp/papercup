@@ -194,6 +194,25 @@ describe('committed reporter database route', () => {
     }, null, receiptFile).PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT).toBeUndefined();
   });
 
+  it('carries the persistent generation store into nested committed verifiers', () => {
+    const original = mkdtempSync(join(tmpdir(), 'committed-generation-route-'));
+    const store = join(original, 'persistent-store');
+    const override = join(original, 'explicit-store');
+    try {
+      mkdirSync(join(original, '.papercusp'));
+      writeFileSync(join(original, '.papercusp/dependency-generation-root'), store + '\n/previous/store\n');
+      const child = mod.lintAsCommittedChildEnv({}, original);
+      expect(child.PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBe(store);
+      const nested = mod.lintAsCommittedChildEnv(child);
+      expect(nested.PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBe(store);
+      expect(mod.lintAsCommittedChildEnv({ PAPERCUSP_DEPENDENCY_GENERATION_ROOT: override }, original)
+        .PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBe(override);
+      rmSync(join(original, '.papercusp/dependency-generation-root'));
+      expect(mod.lintAsCommittedChildEnv({}, original).PAPERCUSP_DEPENDENCY_GENERATION_ROOT)
+        .toBe(join(original, '.papercusp/dependency-generations'));
+    } finally { rmSync(original, { recursive: true, force: true }); }
+  });
+
   it('retains failed test:file receipts for diagnosis and reuses the stale-root sweep for cleanup', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lint-as-committed-receipt-retention-'));
     const receiptDir = mkdtempSync(join(root, `${mod.WORK_ROOT_PREFIX}receipts-`));
