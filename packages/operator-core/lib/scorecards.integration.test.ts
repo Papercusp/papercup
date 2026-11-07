@@ -1208,7 +1208,7 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       if (barSetHash !== undefined) expect(result.scorecard.barSetHash).toBe(barSetHash);
       expect(result.scorecard.auditTarget).toMatchObject({ current: purpose !== 'diagnostic' });
       if (purpose) expect(result.scorecard.auditTarget.purpose).toBe(purpose);
-      if (Array.isArray(result.scorecard.criteria)) {
+      if ('criteria' in result.scorecard && Array.isArray(result.scorecard.criteria)) {
         const criteria = result.scorecard.criteria as ScorecardEvidenceCriterion[];
         expect(criteria.map(({ evidenceAction: _action, ...entry }) => entry))
           .toEqual([{ key: 'measured', ...observation.ratings.measured }]);

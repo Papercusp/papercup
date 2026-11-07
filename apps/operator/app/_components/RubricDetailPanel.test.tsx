@@ -11,6 +11,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import RubricDetailPanel, {
   mergeScorecardHistoryPage,
 } from "./RubricDetailPanel";
+import ScorecardDetail, { type ScorecardRow } from './ScorecardDetail';
+
+const procedureRead = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/operator-core/lib/call-tool', () => ({ callTool: procedureRead }));
 
 const sync = vi.hoisted(() => {
   const trendData = [
@@ -158,6 +162,7 @@ const sync = vi.hoisted(() => {
     },
   ];
   const summaryData = [{ total: 843, matched: 843, facets: [], selection: [] }];
+  const acceptedPage: typeof firstPage = [];
   return {
     useSyncQuery: vi.fn(
       ({
@@ -165,13 +170,15 @@ const sync = vi.hoisted(() => {
         args,
       }: {
         queryName: string;
-        args?: { cursor?: string };
+        args?: { cursor?: string; mode?: string; limit?: number };
       }) => ({
         data:
           queryName === "rubrics.trend"
             ? trendData
             : queryName === "scorecards.summary"
               ? summaryData
+              : args?.mode === 'accepted'
+                ? acceptedPage
               : args?.cursor
                 ? secondPage
                 : firstPage,
@@ -185,6 +192,7 @@ const sync = vi.hoisted(() => {
 
 vi.mock("@papercusp/sync", () => ({
   useSyncQuery: sync.useSyncQuery,
+  onSyncBusEvent: vi.fn(() => () => {}),
 }));
 
 const defaultSyncQuery = sync.useSyncQuery.getMockImplementation()!;
@@ -193,6 +201,122 @@ afterEach(() => {
   cleanup();
   sync.useSyncQuery.mockClear();
   sync.useSyncQuery.mockImplementation(defaultSyncQuery);
+  procedureRead.mockReset();
+});
+
+describe('scorecard coverage and pinned procedure presentation', () => {
+  it('keeps a failed attempt and historical measurement separate in the actual detail view', () => {
+    const card: ScorecardRow = { issueId: 'EI-history-ui', createdAt: '2026-11-01T12:01:00Z', createdBy: 'su-test',
+      rubricRef: 'history-ui', nKeys: 1, missingKeys: [], rubricResolved: true, score10: null,
+      exclusionReasons: ['audit-pending'], gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-11-01T12:01:00Z' },
+      ratings: { latency: { rating: 'unknown', evidence: 'Current collection failed.', nextEvidenceAction: 'Repair the collection check.',
+        ledgerResult: { testRunId: 2, value: null, unit: 'ms', status: 'error', finishedAt: '2026-11-01T12:00:30Z',
+          ageMs: 30_001, freshness: 'failed', comparisonTime: '2026-11-01T12:01:00.001Z' },
+        lastMeasurement: { testRunId: 1, value: 840, unit: 'ms', status: 'pass', finishedAt: '2026-11-01T12:00:00Z',
+          ageMs: 60_001, freshness: 'stale', comparisonTime: '2026-11-01T12:01:00.001Z' } } } };
+    render(<ScorecardDetail scorecard={card} />);
+    expect(screen.getByLabelText('Latest attempt').textContent).toContain('unavailable ms · error');
+    expect(screen.getByLabelText('Last measurement').textContent).toContain('840 ms · pass');
+    expect(screen.getByLabelText('Last measurement').textContent).toContain('60001 ms · stale');
+    expect(screen.getByText('Excluded: audit-pending')).toBeTruthy();
+    expect(screen.getByText('Next evidence action: Repair the collection check.')).toBeTruthy();
+  });
+
+  it('grading history keeps last accepted across pending pages', async () => {
+    const accepted = { issueId: 'older-accepted', createdAt: '2026-06-01T00:00:00Z',
+      createdBy: 'owner', rubricRef: 'rubric-quality', nKeys: 1, missingKeys: [], rubricResolved: true, score10: 10,
+      _meta: { nextCursor: null, hasMore: false } };
+    const acceptedPage = [accepted];
+    sync.useSyncQuery.mockImplementation(opts => opts.queryName === 'scorecards.list' && opts.args?.mode === 'accepted'
+      ? { data: acceptedPage, loading: false, fetching: false, error: null } : defaultSyncQuery(opts));
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    expect(screen.getByLabelText('Last accepted result').textContent).toContain('older-accepted');
+    expect(screen.getByLabelText('History view')).toHaveProperty('value', 'review-history');
+    fireEvent.click(screen.getByText('Grading history'));
+    fireEvent.click(screen.getByRole('button', { name: 'Load older scorecards' }));
+    await waitFor(() => expect(screen.getByText('scorecard-2')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('History view'), { target: { value: 'accepted' } });
+    await waitFor(() => expect(screen.queryByText('scorecard-2')).toBeNull());
+    expect(sync.useSyncQuery).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'scorecards.list',
+      args: { rubricRef: 'rubric-quality', mode: 'accepted', limit: 100 } }));
+    expect(screen.getByLabelText('Last accepted result').textContent).toContain('older-accepted');
+  });
+  it('labels history record presence as rating keys without claiming assessment completion', () => {
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    fireEvent.click(screen.getByText('Grading history'));
+    expect(screen.getByRole('columnheader', { name: 'Rating keys' })).toBeTruthy();
+    expect(screen.getByText('all present')).toBeTruthy();
+    expect(screen.queryByRole('columnheader', { name: 'Completeness' })).toBeNull();
+  });
+
+  const keys = Array.from({ length: 26 }, (_, index) => `criterion-${index}`);
+  const fixture = (): ScorecardRow => ({ issueId: 'EI-coverage-ui', createdAt: '2026-11-02T00:00:00Z', createdBy: 'su-grader',
+    rubricRef: 'coverage-ui', ratings: Object.fromEntries(keys.map(key => [key, { rating: 'unknown', evidence: 'Not assessed.' }])),
+    nKeys: 26, missingKeys: [], rubricResolved: true, score10: null,
+    gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: '2026-11-02T00:00:00Z' },
+    coverage: { population: 'rubric', denominator: 26,
+      record: { expected: 26, present: 26, missingKeys: [], extraKeys: [] },
+      rating: { known: [], unknown: keys, missing: [], inapplicable: [] },
+      evidence: { current: [], stale: [], absent: [], unknown: keys },
+      freshness: { current: [], stale: [], unknown: keys }, unresolvedKeys: keys,
+      requestedScope: { state: 'unknown', denominator: null, reason: 'canonical-scope-authority-unavailable' }, fulfillment: 'unknown' },
+  });
+
+  it('keeps 26 present unknown keys, zero support, unresolved scope and a passed audit separate', () => {
+    render(<ScorecardDetail scorecard={fixture()} />);
+    const coverage = screen.getByLabelText('Assessment coverage');
+    expect(coverage.textContent).toContain('26/26 rating keys present');
+    expect(coverage.textContent).toContain('0/26 supported');
+    expect(coverage.textContent).toContain('26 unresolved');
+    expect(coverage.textContent).toContain('Requested scope unknown');
+    expect(coverage.textContent).toContain('Fulfillment unknown');
+    expect(screen.getByText('passed')).toBeTruthy();
+    expect(screen.queryByText(/complete — all/)).toBeNull();
+  });
+
+  it('shows sparse support separately from a complete record and preserves the numeric average', () => {
+    const card = fixture();
+    card.score10 = 5;
+    card.ratings[keys[0]!] = { rating: 'degraded', evidence: 'One supported adverse result.' };
+    card.coverage!.rating = { known: [keys[0]!], unknown: keys.slice(1), missing: [], inapplicable: [] };
+    card.coverage!.evidence = { current: [keys[0]!], stale: [], absent: keys.slice(1), unknown: [] };
+    card.coverage!.unresolvedKeys = keys.slice(1);
+    render(<ScorecardDetail scorecard={card} />);
+    expect(screen.getByLabelText('Assessment coverage').textContent).toContain('26/26 rating keys present · 1/26 supported · 25 unresolved');
+    expect(screen.getByText('5 / 10')).toBeTruthy();
+    expect(screen.getByText('passed')).toBeTruthy();
+    expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Fulfillment unknown');
+  });
+
+  it('uses the pinned read reference and refuses a newer definition instead of displaying its procedure', async () => {
+    const card = fixture();
+    card.evidenceActions = [{ criterionKey: keys[0]!, category: 'recover-historical', reason: 'historical-missing',
+      sourceRefs: ['binding:original'], nextEvidenceAction: 'Recover original records.', snapshot: 'resolved', readiness: 'manual',
+      context: { subjectRef: 'fleet:ui', windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z',
+        rubricRef: 'coverage-ui', rubricRevision: 3, criteriaHash: 'original-hash', comparisonTime: '2026-11-02T00:00:00Z' },
+      procedure: { source: 'criterion', excerpt: 'Original procedure excerpt.', methodRef: null, missingSpecificity: false },
+      provenance: { shared: 'scorecard-ledger-fill', rubricRef: 'coverage-ui', rubricRevision: 3, criteriaHash: 'original-hash' },
+      read: { tool: 'scorecards:get', args: { issueId: card.issueId, criterionKey: keys[0]! } },
+      definitionRead: { tool: 'rubrics:get', args: { rubricRef: 'coverage-ui', revision: 3, detail: 'full' } },
+      finishCondition: 'Retain original sources and apply ordinary acceptance checks.' }];
+    card.omittedActionCount = 25;
+    procedureRead.mockResolvedValueOnce({ content: [{ type: 'text', text: JSON.stringify({ results: [{ ok: true,
+      rubric: { rubricId: 'coverage-ui', revision: 4, criteriaHash: 'new-hash', criteria: [{ key: keys[0], method: 'WRONG CURRENT PROCEDURE' }] } }] }) }] });
+    render(<ScorecardDetail scorecard={card} />);
+    fireEvent.click(screen.getByText('Procedure context'));
+    fireEvent.click(screen.getByRole('button', { name: `Read full procedure for ${keys[0]}` }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('could not be verified'));
+    expect(procedureRead).toHaveBeenCalledWith('rubrics:get', { rubricRef: 'coverage-ui', revision: 3, detail: 'full' });
+    expect(screen.queryByText('WRONG CURRENT PROCEDURE')).toBeNull();
+    expect(screen.getByText('25 more criterion actions in the full evidence read.')).toBeTruthy();
+    procedureRead.mockResolvedValueOnce({ content: [{ type: 'text', text: JSON.stringify({ results: [{ ok: true,
+      rubric: { rubricId: 'coverage-ui', revision: 3, criteriaHash: 'original-hash', criteria: [
+        { key: keys[0], method: 'Read original archive; literal $(never-execute).', replication: 'Retain exact inputs.' },
+      ] } }] }) }] });
+    fireEvent.click(screen.getByRole('button', { name: `Read full procedure for ${keys[0]}` }));
+    await waitFor(() => expect(screen.getByText(/Read original archive; literal/).textContent).toContain('$(never-execute)'));
+    expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Fulfillment unknown');
+  });
 });
 
 describe("RubricDetailPanel unknown rating breakdown", () => {
@@ -263,7 +387,7 @@ describe("RubricDetailPanel focused evidence", () => {
     expect(sync.useSyncQuery).toHaveBeenCalledWith(
       expect.objectContaining({
         queryName: "scorecards.list",
-        args: { rubricRef: "rubric-quality", limit: 100 },
+        args: { rubricRef: "rubric-quality", limit: 100, mode: 'review-history' },
       }),
     );
     expect(sync.useSyncQuery).toHaveBeenCalledWith(
@@ -287,6 +411,7 @@ describe("RubricDetailPanel focused evidence", () => {
         args: {
           rubricRef: "rubric-quality",
           limit: 100,
+          mode: 'review-history',
           cursor: "cursor-2",
         },
       }),
@@ -310,7 +435,8 @@ describe("RubricDetailPanel focused evidence", () => {
     ).toBeTruthy();
     expect(changingTable.textContent).not.toContain("Rated");
     expect(screen.queryByText("Stable evidence")).toBeNull();
-    expect(screen.queryByText("scorecard-3")).toBeNull();
+    expect(screen.getByLabelText('Last accepted result').textContent).toContain('No accepted result.');
+    expect(screen.queryByRole('table', { name: /newest first/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Stable criteria/ }));
     expect(screen.getByText("Stable evidence")).toBeTruthy();
