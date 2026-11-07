@@ -192,13 +192,15 @@ describe('native budget calibration lifetime', () => {
         PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 3_600_000),
         PAPERCUSP_APP_OPERATION_LIVE_PROFILE: '', TEST_BUDGET_MUTATION: mutation,
       } });
-      return { ...result, body, snapshotExists: existsSync(`${wrapper}.budget.jsonl`) };
+      return { ...result, body, snapshotExists: existsSync(`${wrapper}.budget.jsonl`),
+        failure: JSON.stringify({ status: result.status, signal: result.signal,
+          error: result.error?.stack, stderr: result.stderr }) };
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
 
   it.each(['delete', 'overwrite'])('keeps the validated forecast when retention or a writer can %s its source', mutation => {
     const result = probe([{ phase: 'prepare', status: 'passed', elapsedMs: 4000 }], mutation);
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, result.failure).toBe(0);
     expect(result.stdout).toBe(result.body);
     expect(result.stderr).toContain('VERIFY_TAURI_BUDGET_SNAPSHOT');
     for (const phase of ['prepare', 'boot', 'assert']) {
@@ -214,7 +216,7 @@ describe('native budget calibration lifetime', () => {
     [{ phase: 'prepare', status: 'passed', elapsedMs: 4000 }, { phase: 'prepare', status: 'passed', elapsedMs: 5000 }],
   ])('refuses invalid calibration before retention (%j)', (...rows) => {
     const result = probe(rows);
-    expect(result.status).toBe(2);
+    expect(result.status, result.failure).toBe(2);
     expect(result.stderr).toContain('Verifier budget requires one completed prepare phase');
     expect(result.stdout).toBe('');
     expect(result.snapshotExists).toBe(false);

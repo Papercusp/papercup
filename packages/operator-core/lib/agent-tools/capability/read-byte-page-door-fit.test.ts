@@ -279,7 +279,7 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(Buffer.concat(chunks).equals(original)).toBe(true);
   });
 
-  it('requires byte windows and enforces workspace scope for volatile scratch fallbacks', async () => {
+  it('requires byte windows for volatile scratch fallbacks', async () => {
     const fallback = storeVolatileScratchReference({
       payload: 'small fallback',
       workspaceId: 'ws-1',
@@ -288,8 +288,30 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     });
     expect(fallback).not.toBeNull();
 
-    const noWindow = await readThroughDoor({ file_path: fallback!.uri });
+    const allowed = await readThroughDoor(
+      { file_path: fallback!.uri, byte_offset: 0, byte_limit: 256 },
+      { workspaceId: 'ws-1' },
+    );
+    expect(allowed.parsed).toMatchObject({ ok: true });
+
+    const noWindow = await readThroughDoor({ file_path: fallback!.uri }, { workspaceId: 'ws-1' });
     expect(noWindow.parsed).toMatchObject({ ok: false, reason: 'volatile_reference_requires_byte_window' });
+  });
+
+  it('refuses foreign-workspace byte access to volatile scratch fallbacks', async () => {
+    const fallback = storeVolatileScratchReference({
+      payload: 'small fallback',
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+    });
+    expect(fallback).not.toBeNull();
+
+    const allowed = await readThroughDoor(
+      { file_path: fallback!.uri, byte_offset: 0, byte_limit: 256 },
+      { workspaceId: 'ws-1' },
+    );
+    expect(allowed.parsed).toMatchObject({ ok: true });
 
     const wrongWorkspace = await readThroughDoor(
       { file_path: fallback!.uri, byte_offset: 0, byte_limit: 256 },

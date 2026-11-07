@@ -4,8 +4,12 @@ import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import {
   CODE_RUN_ADOPTION_SQL,
+  CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS,
+  RECIPE_OUTCOME_REPORT_SQL,
   readRecipeOutcomeReport,
+  readCodeRunAdoption,
   spawnRowsFromCalls,
+  summarizeSpawnAdoption,
   type CallRow,
   type SpawnAdoptionRow,
 } from './code-run-adoption';
@@ -76,6 +80,13 @@ describe('adoption SQL: one turn stream without materialized call reuse', () => 
     expect(actual.find((r) => r.role === 'mixed')).toMatchObject({ distinctTurns: 4, maxSameToolTurns: 3 });
   });
 
+  it('reads the existing bounded adoption batch using real driver result sets', async () => {
+    const actual = await readCodeRunAdoption(async <T>(query: string, params: unknown[]) =>
+      await sql.unsafe(query, params as never) as unknown as T[], { sinceDays: 7 });
+    expect(actual.sort((a, b) => a.role.localeCompare(b.role)))
+      .toEqual(summarizeSpawnAdoption(expected).sort((a, b) => a.role.localeCompare(b.role)));
+  });
+
   it('does not materialize the reused call or turn streams in the PostgreSQL plan', async () => {
     const rows = await sql.unsafe(`EXPLAIN (FORMAT JSON) ${CODE_RUN_ADOPTION_SQL}`, [7]);
     const plan = JSON.stringify(rows[0]!['QUERY PLAN']);
@@ -141,5 +152,55 @@ describe('R13 exact-window recipe outcome report (real PG)', () => {
     // Two plausible host rows do not authorize choosing the convenient one.
     await host('authored', 20);
     expect((await read()).measurement).toMatchObject({ authored: 0, unknown: 3, unscopedWorkspaceReceipts: 2 });
+  });
+
+  it('scans invocation history once across distinct receipts', async () => {
+    for (let i = 0; i < 20; i++) {
+      await host('plan-' + i, 10);
+      await run('plan-' + i, 0);
+    }
+    const rows = await sql.unsafe('EXPLAIN (ANALYZE, FORMAT JSON) ' + RECIPE_OUTCOME_REPORT_SQL,
+      [scope.workspaceId, scope.harnessSlug, scope.windowStart, scope.windowEnd]);
+    type Plan = { 'Relation Name'?: string; 'Actual Loops'?: number; Plans?: Plan[] };
+    const scans: Plan[] = [];
+    const visit = (node: Plan) => {
+      if (node['Relation Name'] === 'tool_invocations') scans.push(node);
+      for (const child of node.Plans ?? []) visit(child);
+    };
+    visit(rows[0]!['QUERY PLAN'][0].Plan);
+    expect(scans).toHaveLength(1);
+    expect(scans[0]!['Actual Loops']).toBe(1);
+  });
+
+  it('cancels a slow report on the server without leaking its timeout to the pooled connection', async () => {
+    const before = await sql.unsafe('SHOW statement_timeout');
+    await expect(readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) => {
+      const bounded = query.replace(CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS + 'ms', '20ms');
+      return await sql.unsafe(bounded + '; SELECT pg_sleep(1)', params as never) as unknown as T[];
+    }, scope)).rejects.toMatchObject({ code: '57014' });
+    expect(await sql.unsafe('SHOW statement_timeout')).toEqual(before);
+    expect((await read()).measurement).not.toBeNull();
+  });
+
+  it('keeps quoted and backslash-containing scope values literal in the timeout batch', async () => {
+    const workspaceId = "report\\'; SELECT pg_sleep(1); --";
+    const harnessSlug = "app\\'quoted";
+    await sql.unsafe("INSERT INTO harness_shared.code_recipe_runs"
+      + " (recipe_id,workspace_id,agent_owner,agent_role,success,reused,execution_trace,ts)"
+      + " VALUES ('quoted',$1,'agent-one','operator',true,true,$2::jsonb,'2026-10-01T12:00:00Z')",
+    [workspaceId, sql.json({ usage: { version: 1, choice: 'agent', selection: 'saved-replay',
+      outcome: 'success', mode: 'commit', settled: true },
+    runEvidence: { version: 1, invocationId: 'quoted-call', attempt: 0 } })]);
+    await sql.unsafe("INSERT INTO harness_shared.tool_invocations"
+      + " (workspace_id,harness_slug,tool_name,invoked_at,metadata_json)"
+      + " VALUES ($1,$2,'code:run','2026-10-01T12:00:01Z',$3::jsonb)",
+    [workspaceId, harnessSlug, sql.json({ otel: { callId: 'quoted-call' } })]);
+    const [fixture] = await sql.unsafe("SELECT jsonb_typeof(r.execution_trace) AS trace_type,"
+      + " jsonb_typeof(t.metadata_json) AS metadata_type FROM harness_shared.code_recipe_runs r"
+      + " JOIN harness_shared.tool_invocations t USING (workspace_id) WHERE r.workspace_id = $1", [workspaceId]);
+    expect(fixture).toEqual({ trace_type: 'object', metadata_type: 'object' });
+    const report = await readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) =>
+      await sql.unsafe(query, params as never) as unknown as T[], { ...scope, workspaceId, harnessSlug });
+    expect(report.measurement).toMatchObject({ attempts: 1, replaySuccesses: 1, dispatches: 1 });
   });
 });

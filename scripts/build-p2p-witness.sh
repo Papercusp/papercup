@@ -45,6 +45,25 @@ echo "→ bundling headless P2P witness"
   --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
   "${HOST_EXTERNALS[@]}")
 
+# External imports must resolve from the produced tree, not the build checkout.
+# Reuse the production copier and its nested/optional dependency policy.
+REPO_ROOT="$ROOT"
+WEB_DIR="$ROOT/apps/operator"
+SIDECAR_DIR="$STAGE"
+TARGET_OS="$(node -p 'process.platform')"
+TARGET_ARCH="$(node -p 'process.arch')"
+_bare_node_platform="$TARGET_OS"
+_bare_node_arch="$TARGET_ARCH"
+nat_copied=0
+nat_missing=0
+_seen="|"
+source "$ROOT/papercusp-desktop/bin/lib/transformers-models.sh"
+source "$ROOT/papercusp-desktop/bin/lib/host-runtime-closure.sh"
+mkdir -p "$STAGE/node_modules"
+copy_host_external_closures
+assert_runtime_dependency_closure "$STAGE"
+[[ "$nat_missing" == 0 ]] || { echo "ERROR: witness runtime dependencies are incomplete" >&2; exit 1; }
+
 if [[ -n "$MODEL_PACK" ]]; then
   [[ -e "$MODEL_PACK" ]] || { echo "ERROR: model pack does not exist: $MODEL_PACK" >&2; exit 2; }
   cp -a "$MODEL_PACK" "$STAGE/packs/model"

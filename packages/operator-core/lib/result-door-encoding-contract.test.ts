@@ -189,7 +189,7 @@ function spillRawBytes(): Buffer {
 }
 
 describe('EI-20685195115158619: spill cursor encoding contract', () => {
-  it('recovers authorized spilled media in a fresh process and reports lost volatile references honestly', () => {
+  function probeMedia(mode: 'recover' | 'owner' | 'workspace' | 'lost') {
     const owner = 'su-media-recovery';
     const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=', 'base64');
     // A valid mono PCM WAV, with a payload large enough to require paging.
@@ -211,18 +211,18 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     const reference = envelope.content[0];
     expect(reference).toMatchObject({ kind: 'reference', audience: 'owner' });
     expect(envelope.incomplete).toMatchObject({ recoverable: true, spilledItems: 3 });
-    const volatile = storeVolatileScratchReference({
+    const volatile = mode === 'lost' ? storeVolatileScratchReference({
       payload: 'process-local media', workspaceId: WS, ownerId: owner,
       audience: 'owner', mediaType: 'text/plain', content: [],
-    });
-    expect(volatile).not.toBeNull();
+    }) : null;
+    if (mode === 'lost') expect(volatile).not.toBeNull();
 
     // A separate Node process loads the real reader: no writer Map, mocks,
     // prior tool response, or client-memory payload is available to it.
     const probe = String.raw`
       import { createHash } from 'node:crypto';
       import { pathToFileURL } from 'node:url';
-      const [readerPath, uri, workspaceId, ownerId, volatileUri] = process.argv.slice(1);
+      const [readerPath, uri, workspaceId, ownerId, volatileUri, mode] = process.argv.slice(1);
       const { default: reader } = await import(pathToFileURL(readerPath).href);
       const context = (owner, workspace = workspaceId) => ({
         uiClientId: owner, isSuperuser: true, workspaceId: workspace,
@@ -234,31 +234,40 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
         return JSON.parse(result.content.find(item => item.type === 'text').text);
       };
       const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-      const rejectedOwner = await read({ file_path: uri, content_indexes: [1, 2] }, context('su-foreign'));
-      const rejectedWorkspace = await read({ file_path: uri, content_indexes: [1] }, context(ownerId, 'foreign-workspace'));
-      const selected = await read({ file_path: uri, content_indexes: [1, 2] });
-      if (!selected.ok) throw new Error(JSON.stringify(selected));
-      const pages = [];
-      let args = { file_path: uri, byte_offset: 0, byte_limit: 1_024 };
-      while (args) {
-        const page = await read(args);
-        if (!page.ok || page.encoding !== 'base64') throw new Error(JSON.stringify(page));
-        const bytes = Buffer.from(page.data, 'base64');
-        if (bytes.length !== page.byte_length || bytes.toString('base64') !== page.data || page.byte_offset !== Buffer.concat(pages).length) {
-          throw new Error('noncanonical or noncontiguous byte page');
+      let observation;
+      if (mode === 'recover') {
+        const selected = await read({ file_path: uri, content_indexes: [1, 2] });
+        if (!selected.ok) throw new Error(JSON.stringify(selected));
+        const pages = [];
+        let args = { file_path: uri, byte_offset: 0, byte_limit: 1_024 };
+        while (args) {
+          const page = await read(args);
+          if (!page.ok || page.encoding !== 'base64') throw new Error(JSON.stringify(page));
+          const bytes = Buffer.from(page.data, 'base64');
+          if (bytes.length !== page.byte_length || bytes.toString('base64') !== page.data || page.byte_offset !== Buffer.concat(pages).length) {
+            throw new Error('noncanonical or noncontiguous byte page');
+          }
+          if (page.eof !== (page.next_cursor === null)) throw new Error('cursor/EOF disagreement');
+          pages.push(bytes);
+          args = page.next_cursor?.args ?? null;
         }
-        if (page.eof !== (page.next_cursor === null)) throw new Error('cursor/EOF disagreement');
-        pages.push(bytes);
-        args = page.next_cursor?.args ?? null;
+        const restored = JSON.parse(Buffer.concat(pages).toString('utf8'));
+        const media = items => items.map(item => ({ type: item.type, mimeType: item.mimeType,
+          hash: hash(Buffer.from(item.data, 'base64')), bytes: Buffer.from(item.data, 'base64').length }));
+        observation = { selected: media(selected.content), paged: media(restored.content.slice(1)), pageCount: pages.length };
+      } else {
+        // Calibrate this boundary with permitted access, without exercising
+        // media reconstruction or another refusal outcome in the same case.
+        const allowed = await read({ file_path: uri, content_indexes: [1] });
+        const refused = mode === 'owner'
+          ? await read({ file_path: uri, content_indexes: [1] }, context('su-foreign'))
+          : mode === 'workspace'
+            ? await read({ file_path: uri, content_indexes: [1] }, context(ownerId, 'foreign-workspace'))
+            : await read({ file_path: volatileUri, byte_offset: 0, byte_limit: 1_024 });
+        observation = { allowed: allowed.ok, refused: refused.ok, reason: refused.reason };
       }
-      const restored = JSON.parse(Buffer.concat(pages).toString('utf8'));
-      const media = items => items.map(item => ({ type: item.type, mimeType: item.mimeType,
-        hash: hash(Buffer.from(item.data, 'base64')), bytes: Buffer.from(item.data, 'base64').length }));
-      const lost = await read({ file_path: volatileUri, byte_offset: 0, byte_limit: 1_024 });
       console.log('MEDIA_RECOVERY_RESULT ' + JSON.stringify({
-        selected: media(selected.content), paged: media(restored.content.slice(1)),
-        pageCount: pages.length, ownerRefusal: rejectedOwner.reason,
-        workspaceRefusal: rejectedWorkspace.reason, volatileLost: lost.reason,
+        ...observation,
         returnedWriterPid: process.ppid, readerPid: process.pid,
       }));
     `;
@@ -269,7 +278,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
       // can consume the entire 15s contract-probe budget before the handler
       // is exercised.
       fileURLToPath(new URL('./agent-tools/capability/read-handler.ts', import.meta.url)),
-      reference.uri, WS, owner, volatile!.uri,
+      reference.uri, WS, owner, volatile?.uri ?? '', mode,
     ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 30_000 });
     const line = output.split('\n').find(row => row.startsWith('MEDIA_RECOVERY_RESULT '));
     expect(line, output).toBeDefined();
@@ -278,14 +287,31 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
       type: index === 0 ? 'image' : 'audio', mimeType: index === 0 ? 'image/png' : 'audio/wav',
       bytes: bytes.length, hash: createHash('sha256').update(bytes).digest('hex'),
     }));
+    expect(recovered.readerPid).not.toBe(process.pid);
+    expect(recovered.returnedWriterPid).toBe(process.pid);
+    return { recovered, expected };
+  }
+
+  it('recovers authorized spilled media bytes and types in a fresh process', () => {
+    const { recovered, expected } = probeMedia('recover');
     expect(recovered.selected).toEqual(expected);
     expect(recovered.paged).toEqual(expected);
     expect(recovered.pageCount).toBeGreaterThan(1);
-    expect(recovered.ownerRefusal).toBe('forbidden_reference');
-    expect(recovered.workspaceRefusal).toBe('workspace_mismatch');
-    expect(recovered.volatileLost).toBe('expired_reference');
-    expect(recovered.readerPid).not.toBe(process.pid);
-    expect(recovered.returnedWriterPid).toBe(process.pid);
+  }, 20_000);
+
+  it('refuses a foreign owner reading spilled media in a fresh process', () => {
+    const { recovered } = probeMedia('owner');
+    expect(recovered).toMatchObject({ allowed: true, refused: false, reason: 'forbidden_reference' });
+  }, 20_000);
+
+  it('refuses a foreign workspace reading spilled media in a fresh process', () => {
+    const { recovered } = probeMedia('workspace');
+    expect(recovered).toMatchObject({ allowed: true, refused: false, reason: 'workspace_mismatch' });
+  }, 20_000);
+
+  it('reports a lost volatile media reference honestly in a fresh process', () => {
+    const { recovered } = probeMedia('lost');
+    expect(recovered).toMatchObject({ allowed: true, refused: false, reason: 'expired_reference' });
   }, 20_000);
 
   it('binds the encoding key to the field it describes, not to the file', () => {

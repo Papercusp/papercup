@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 actual Windows Inbox and command-specific environment refusal",
+  "framework": "operational",
+  "command": [
+    "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; & 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/native-workbench-windows-host.ps1' -SourceDirectory 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9' -Phase environment-refusal",
+    "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; $env:PAPERCUSP_NATIVE_EVIDENCE_DIR='C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/actual-inbox-evidence'; & 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/native-workbench-windows-host.ps1' -SourceDirectory 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9' -Phase operator-inbox -Interactive -PuiExecutable 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/pui-inbox-current.exe' -OperatorUrl 'http://10.0.2.2:34179' -ExpectedWorkspace 'papercusp-workspace' -ExpectedPlan 'quick-access-search-launcher-2026-10-26'"
+  ],
+  "startedAt": "2026-11-07T18:37:09.272473+00:00",
+  "finishedAt": "2026-11-07T18:37:52.440331+00:00",
+  "exitCode": 0,
+  "summary": "19 maintained native assertions passed: command-specific refusal oracle (7), actual PUI and canonical operator Inbox on the signed-in Windows desktop (12). Current-build runtime evidence only; exact installed Ubuntu/macOS/Windows independent acceptance and shipment remain pending.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "relatedIssues": [
+    "EI-28153421263641336",
+    "EI-28140695822008384",
+    "EI-28142336654347264"
+  ],
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "14164bef47b52995798192327926d5af063822fd990099c85eab115d3523e096",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "7cd3a7c87acf47ef2ac83596763bdf1f23d5a63a75c1f3784dd0e892709fe519",
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "a4594b4a517f24fa7114758db084f71a1958fa8c5b2c742683fe45619a2a9708",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "7ce182a3c883558d8bb2edb2b68b058155d321cfe15f2c4cd0036944275e36b7",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "9b1c56cca8c72de92fdfbb0bf78de2c6438579922e3b52914b0f738a230ce5b4"
+  },
+  "puiSha256": "c6a787fec3c641e07154243876f4b4a9a6d3ba46cf04b0c2928c4051e24d2047",
+  "nativeSourceCustody": [
+    {
+      "Path": "C:\\Users\\User\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchHost.cs",
+      "Hash": "14164BEF47B52995798192327926D5AF063822FD990099C85EAB115D3523E096"
+    },
+    {
+      "Path": "C:\\Users\\User\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchModel.cs",
+      "Hash": "7CD3A7C87ACF47EF2AC83596763BDF1F23D5A63A75C1F3784DD0E892709FE519"
+    },
+    {
+      "Path": "C:\\Users\\User\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\PuiReadBridge.cs",
+      "Hash": "A4594B4A517F24FA7114758DB084F71A1958FA8C5B2C742683FE45619A2A9708"
+    },
+    {
+      "Path": "C:\\Users\\User\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\native-workbench-windows-host.ps1",
+      "Hash": "7CE182A3C883558D8BB2EDB2B68B058155D321CFE15F2C4CD0036944275E36B7"
+    },
+    {
+      "Path": "C:\\Users\\User\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\pui-inbox-current.exe",
+      "Hash": "C6A787FEC3C641E07154243876F4B4A9A6D3BA46CF04B0C2928C4051E24D2047"
+    }
+  ],
+  "operatorEvidence": {
+    "at": "2026-11-07T18:32:47.317229+00:00",
+    "artifact": ".papercusp/scratch/workbench-attention-api-b3cf-20261107/hono-host.mjs",
+    "plane": "isolated-full-Hono-HTTP-current-build",
+    "requests": [
+      {
+        "name": "identity",
+        "status": 200,
+        "elapsedMs": 137,
+        "bodyBytes": 348,
+        "sha256": "54a63f116e0a58c4b7be5c9ac35f341b9f998cccf5f54af086450f33cf30ab27",
+        "identity": {
+          "schemaVersion": 1,
+          "workspaceId": "papercusp-workspace",
+          "store": {
+            "id": "pg-a9c7b890119f",
+            "target": "postgresql://localhost:5432/papercusp",
+            "source": "env"
+          },
+          "build": {
+            "version": "0.0.0",
+            "sha": null
+          },
+          "agentChat": {
+            "scope": "workspace:papercusp-workspace",
+            "route": "/api/agent-chats"
+          },
+          "capabilities": {
+            "attachedSuSession": true,
+            "attachedSuSessionApprovals": true
+          }
+        }
+      },
+      {
+        "name": "attention-cold",
+        "status": 200,
+        "elapsedMs": 8433,
+        "bodyBytes": 2168011,
+        "sha256": "6d1041316f881ceebac996d2fa892488dac95804c49887efd5ffa093ed0c0877",
+        "rowCount": 326,
+        "timing": {
+          "unit": "ms",
+          "resolverStartedAtMs": 1794076359142,
+          "resolverCompletedAtMs": 1794076366396,
+          "resolverMs": 7254
+        },
+        "error": null
+      }
+    ]
+  },
+  "operatorArtifactSha256": "73187107b30ccda3dda23cbb78d259e60b2368bc010052b495e54f4c6b53ef9f",
+  "runs": [
+    {
+      "phase": "environment-refusal",
+      "exitCode": 0,
+      "startedAt": "2026-11-07T18:37:09.272473+00:00",
+      "finishedAt": "2026-11-07T18:37:16.070655+00:00",
+      "command": "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; & 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/native-workbench-windows-host.ps1' -SourceDirectory 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9' -Phase environment-refusal",
+      "stdoutEvidence": "/tmp/wb-environment-refusal-native-20261107-v3.json",
+      "stderrEvidence": "/tmp/wb-environment-refusal-native-20261107-v3.err",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "environment-refusal",
+        "cases": [
+          "native PUI environment refusal is recognized through its process error",
+          "native Inbox environment refusal is recognized through its command-specific process error",
+          "an Inbox command refusal cannot satisfy the native read refusal oracle",
+          "a native read refusal cannot satisfy the Inbox command refusal oracle",
+          "a successful changed-environment call cannot satisfy the refusal oracle",
+          "an unrelated process error cannot satisfy the environment refusal oracle",
+          "a timeout cannot satisfy the environment refusal oracle"
+        ],
+        "count": 7,
+        "processSessionId": 0,
+        "interactiveDesktop": false,
+        "scope": "native-environment-refusal-fixture"
+      }
+    },
+    {
+      "phase": "operator-inbox",
+      "exitCode": 0,
+      "startedAt": "2026-11-07T18:37:16.094763+00:00",
+      "finishedAt": "2026-11-07T18:37:52.440331+00:00",
+      "command": "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; $env:PAPERCUSP_NATIVE_EVIDENCE_DIR='C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/actual-inbox-evidence'; & 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/native-workbench-windows-host.ps1' -SourceDirectory 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9' -Phase operator-inbox -Interactive -PuiExecutable 'C:/Users/User/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9/pui-inbox-current.exe' -OperatorUrl 'http://10.0.2.2:34179' -ExpectedWorkspace 'papercusp-workspace' -ExpectedPlan 'quick-access-search-launcher-2026-10-26'",
+      "stdoutEvidence": "/tmp/wb-inbox-actual-pui-native-20261107-v6.json",
+      "stderrEvidence": "/tmp/wb-inbox-actual-pui-native-20261107-v6.err",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "operator-inbox",
+        "cases": [
+          "actual Inbox PUI selects the explicit operator workspace",
+          "actual PUI loads canonical Inbox groups: ",
+          "actual PUI restores the canonical saved run or explicit absence: ",
+          "actual Inbox renders in a chrome-free resident native HWND",
+          "actual Inbox displays the selected operator and workspace",
+          "actual Inbox renders each canonical question identity and visible count",
+          "actual Inbox exposes the native batch and selected review controls",
+          "actual Inbox uses saved identity and item outcomes with the persisted total",
+          "actual Inbox read refuses a changed selected workspace",
+          "actual native-inbox command refuses a changed workspace before run control",
+          "actual Inbox filters the canonical list without replacing its source",
+          "actual Inbox retains its native HWND and query across toggles"
+        ],
+        "count": 12,
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-operator-inbox-fixture"
+      }
+    }
+  ],
+  "harnessRepair": {
+    "rootCause": "The fixture assumed model InvalidOperationException for a process refusal, then assumed one stderr message across native-read and native-inbox. Production PuiReadBridge preserves CLI stderr as IOException; the commands have different exact refusal messages.",
+    "fix": "Use an exact command-specific IOException message at each of the three actual PUI negative-control sites. Keep the model refusal helper unchanged.",
+    "recurrenceGuard": "The registered environment-refusal phase recognizes both exact messages and rejects cross-command messages in both directions, success, unrelated IOException and timeout.",
+    "priorFailureEvidence": [
+      "/tmp/wb-inbox-actual-pui-native-20261107-v4.err",
+      "/tmp/wb-inbox-actual-pui-native-20261107-v5.err"
+    ]
+  },
+  "limitations": [
+    "This is the current source compiled by the maintained WPF fixture, not a packaged installed-artifact acceptance certificate.",
+    "The isolated API bundle serves the canonical workspace and existing saved run; run control is tested only with a wrong-workspace request refused before mutation.",
+    "No claim of full Workbench completion, independent three-OS acceptance or shipment."
+  ]
+}

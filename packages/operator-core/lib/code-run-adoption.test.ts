@@ -37,7 +37,6 @@ import {
   buildCodeRunAdoptionQuery,
   readCodeRunInstrumentation,
   readRecipeOutcomeReport,
-  RECIPE_OUTCOME_REPORT_SQL,
   readNativeExecRouting,
   __resetCodeRunAdoptionCacheForTests,
   type CallRow,
@@ -47,8 +46,11 @@ import {
 it('R13 recipe report keeps raw units and missing source coverage separate from benefit claims', async () => {
   const scope = { workspaceId: 'ws', harnessSlug: 'app', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
   const report = await readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) => {
-    expect(query).toBe(RECIPE_OUTCOME_REPORT_SQL);
-    expect(params).toEqual(['ws', 'app', '2026-10-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z']);
+    expect(query).toContain("SET LOCAL statement_timeout = '" + CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS + "ms';");
+    expect(query).toContain("workspace_id = E'ws'");
+    expect(query).toContain("host_harness = E'app'");
+    expect(query).toContain("E'2026-10-01T00:00:00.000Z'::timestamptz");
+    expect(params).toEqual([]);
     return [{ report: { sourceRows: 0, attempts: 0, returnedContextBytes: null } }] as unknown as T[];
   }, scope);
   expect(report).toMatchObject({ measurement: { attempts: 0, returnedContextBytes: null },
@@ -58,6 +60,14 @@ it('R13 recipe report keeps raw units and missing source coverage separate from 
     lineage: { criterionKey: 'provider-outcomes', instrumentKey: 'code-intel:reuse-provider-outcomes' } });
   await expect(readRecipeOutcomeReport(async () => [], { ...scope, harnessSlug: '' })).rejects.toThrow('Exact scope');
   await expect(readRecipeOutcomeReport(async () => [], { ...scope, windowEnd: '2999-01-01' })).rejects.toThrow('closed');
+  await expect(readRecipeOutcomeReport(async () => [], { ...scope, harnessSlug: 'app\0' })).rejects.toThrow('Exact scope');
+});
+
+it('reads the report from the SELECT result of a real simple-protocol batch shape', async () => {
+  const scope = { workspaceId: 'ws', harnessSlug: 'app', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+  const report = await readRecipeOutcomeReport(async <T>() =>
+    [[], [{ report: { attempts: 3 } }]] as unknown as T[], scope);
+  expect(report.measurement).toEqual({ attempts: 3 });
 });
 
 describe('P-008 run instrumentation and native-exec routing reads', () => {

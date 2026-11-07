@@ -122,6 +122,35 @@ const lane = (args: {
 };
 
 describe('evaluateExactPlanAdmission', () => {
+  it('replays the migrated P536 rows as one canonical execution lane on resume', () => {
+    // Physical topology read from WI-6554700010037375 and WI-6554700010026007
+    // on 2026-11-07. Only plan readiness/lane availability are simulated: this
+    // unit replay does not reopen the real blocked P536 or admit its native run.
+    const execution = { id: 'WI-6554700010026007', family: 'issue' as const,
+      state: 'open', parent: 'WI-6554700010037375', sourcePlanItemIds: ['P-536'],
+      payload: { plan_item: { item_id: 'P-536', plan_slug: 'p2p-public-release-endgame-2026-09-01', harness_slug: 'papercusp' } } };
+    const shadow = { id: 'WI-6554700010037375', family: 'feature' as const,
+      state: 'blocked', sourcePlanItemIds: ['P-536'],
+      payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } };
+    const replay = (workItems: Array<typeof execution | typeof shadow>) => evaluateExactPlanAdmission({
+      planSlug: 'p2p-public-release-endgame-2026-09-01', planItems: [item('P-536')],
+      workItems, laneHealth: lane({ issue: 1, feature: 0 }),
+    });
+    const canonical = [{ planItemId: 'P-536', workItemId: execution.id }];
+
+    expect(replay([execution])).toMatchObject({ ready: true, actionableRows: canonical });
+    expect(replay([shadow, execution])).toMatchObject({ ready: true,
+      promotion: { rows: 2, duplicateActionable: [], missingActionableItemIds: [] }, actionableRows: canonical });
+    expect(replay([shadow])).toMatchObject({ ready: false, reason: 'promotion-lag',
+      promotion: { missingActionableItemIds: ['P-536'] } });
+    // A real second execution row must still be rejected; migration metadata
+    // exempts only the parked shadow, not arbitrary duplicate work.
+    expect(replay([shadow, execution, { ...execution, id: 'WI-competing', parent: 'WI-unrelated' }]))
+      .toMatchObject({ ready: false, reason: 'duplicate-coverage', promotion: {
+        duplicateActionable: [{ planItemId: 'P-536', workItemIds: [execution.id, 'WI-competing'] }],
+      } });
+  });
+
   it('counts reconciled live parent and child coverage as one execution lane', () => {
     const result = evaluateExactPlanAdmission({
       planSlug: 'plan-a', planItems: [item('P-001')],

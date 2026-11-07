@@ -1,0 +1,342 @@
+{
+  "schemaVersion": "luna-r1-park-condition-reconciliation-v1",
+  "workItem": "WI-6554700010045700",
+  "generatedAt": "2026-11-07T18:47:24.523945+00:00",
+  "id": "EI-22728510169731463",
+  "priorQualification": {
+    "schemaVersion": "luna-r1-causal-qualification-v1",
+    "id": "EI-22728510169731463",
+    "sourceLedger": {
+      "path": "/home/marsh-office/.papercusp/evidence/c52-luna-r1-20261106/causal-ledger-v4.jsonl",
+      "sha256": "7f1962fb5c22f1bc2be9625406b315f6b5f4fd190b4743d7f972a4fb2c935866",
+      "rowSourceSha256": "df2f190ce7ec13097629cf8d51d7fcd9eb33523d097ce270ee6091f6a948af1e"
+    },
+    "frozenState": "open",
+    "frozenFloors": [
+      "claim-hold"
+    ],
+    "currentControlObservedAt": "2026-11-07 11:32:12.960427-05",
+    "currentState": "open",
+    "currentHolder": null,
+    "currentFloorVerdict": {
+      "id": "EI-22728510169731463",
+      "admissible": false,
+      "refusedBy": "claim-hold",
+      "failedFloors": [
+        "claim-hold"
+      ],
+      "detail": "payload._claimHold = true — deliberately held (WI-2797). TWO provenance conventions, both must be checked before assuming a row is unattributed: `held_open_by`/`held_open_reason` (a liveness-bound LEASE, work_items:hold_open) or `claim_hold_by`/`claim_hold_reason` (a durable PARK that outlives its parker's session, release{claimHold:true}) — see readWorkItemClaimHoldProvenance / EI-18672701535825889."
+    },
+    "floorDifference": {
+      "noLongerObserved": [],
+      "newlyObserved": []
+    },
+    "adoptionQualification": null,
+    "parkQualification": {
+      "artifact": ".papercusp/evidence/c52-luna-r1-20261106/current-park-qualification-20261107T1715Z.json",
+      "controlSnapshotAt": "2026-11-07 11:32:12.960427-05",
+      "measuredAt": "2026-11-07T17:24:57.515Z",
+      "qualificationAsMeasured": "satisfied",
+      "certification": "refuted-by-exact-payload; preserve owner pause"
+    },
+    "disposition": "unassessed",
+    "executionEvidence": null,
+    "nextActions": [
+      "preserve owner pause: fired scoped resume has no expected-condition proof and does not establish required system-wide owner resume"
+    ],
+    "limits": [
+      "separately dated observations; not an immutable current-state snapshot",
+      "a correct floor or release path does not prove underlying legitimacy",
+      "adoption eligibility is report revision, not permission to implement"
+    ]
+  },
+  "priorLedger": {
+    "path": ".papercusp/evidence/c52-luna-r1-20261106/causal-qualification-20261107T1800Z.jsonl",
+    "sha256": "a4b3b764123263d73e1b871719ebfa5a9c9d1b5fac9ff5a883076919e4e6ce16"
+  },
+  "eventEvidence": {
+    "path": "/tmp/c52-owner-resume-event-current.json",
+    "sha256": "e060e55d03c6ce1f9d259910f9e3db98487c5e52922fcbd4c1b7cee8d5b2e4a4",
+    "value": {
+      "ok": true,
+      "event_inspection": {
+        "event": "owner-resume:papercusp-pause-20260908T234015Z",
+        "current_generation": 1,
+        "current_state": "fired",
+        "fire_latch": {
+          "first_fired_at": "2026-09-09 03:56:48.84735-04",
+          "last_fired_at": "2026-09-09 03:56:48.84735-04",
+          "last_fired_by": "su-8a7b7b3f-40f4-41ee-a2b9-0c6ed8c4d689",
+          "fire_count": 1
+        },
+        "declarations": [],
+        "waiters": [
+          {
+            "await_id": 170165,
+            "subscriber_id": "su-4f067281-8828-42fe-93f9-8ace6f03126a",
+            "policy": "wake",
+            "state": "fired",
+            "registered_at": "2026-09-09T02:56:12.382Z",
+            "fired_at": "2026-09-09T03:26:14.485Z",
+            "fired_reason": "timeout",
+            "cancelled_at": null,
+            "expires_ts": "2026-09-09T03:26:12.382Z"
+          },
+          {
+            "await_id": 170161,
+            "subscriber_id": "su-4f067281-8828-42fe-93f9-8ace6f03126a",
+            "policy": "wake",
+            "state": "fired",
+            "registered_at": "2026-09-09T02:38:41.888Z",
+            "fired_at": "2026-09-09T02:53:51.507Z",
+            "fired_reason": "timeout",
+            "cancelled_at": null,
+            "expires_ts": "2026-09-09T02:53:41.888Z"
+          },
+          {
+            "await_id": 170158,
+            "subscriber_id": "su-4f067281-8828-42fe-93f9-8ace6f03126a",
+            "policy": "wake",
+            "state": "fired",
+            "registered_at": "2026-09-09T02:22:35.317Z",
+            "fired_at": "2026-09-09T02:37:35.319Z",
+            "fired_reason": "timeout",
+            "cancelled_at": null,
+            "expires_ts": "2026-09-09T02:37:35.317Z"
+          }
+        ],
+        "wake_outcomes": [
+          {
+            "delivery_id": 342941,
+            "subscriber_id": "su-4f067281-8828-42fe-93f9-8ace6f03126a",
+            "status": "delivered",
+            "channel": "psu-socket-inject",
+            "turn_invoked": true,
+            "turn_proof": null,
+            "turn_started_at": null,
+            "attempts": 2,
+            "source": null,
+            "last_error": null,
+            "created_at": "2026-09-09T03:26:14.489Z",
+            "delivered_at": "2026-09-09T03:27:05.669Z"
+          },
+          {
+            "delivery_id": 342776,
+            "subscriber_id": "su-4f067281-8828-42fe-93f9-8ace6f03126a",
+            "status": "delivered",
+            "channel": "psu-socket-inject",
+            "turn_invoked": true,
+            "turn_proof": null,
+            "turn_started_at": null,
+            "attempts": 2,
+            "source": null,
+            "last_error": null,
+            "created_at": "2026-09-09T02:53:51.511Z",
+            "delivered_at": "2026-09-09T02:54:36.626Z"
+          },
+          {
+            "delivery_id": 342773,
+            "subscriber_id": "su-4f067281-8828-42fe-93f9-8ace6f03126a",
+            "status": "delivered",
+            "channel": "psu-socket-inject",
+            "turn_invoked": true,
+            "turn_proof": null,
+            "turn_started_at": null,
+            "attempts": 2,
+            "source": null,
+            "last_error": null,
+            "created_at": "2026-09-09T02:37:35.322Z",
+            "delivered_at": "2026-09-09T02:38:21.523Z"
+          }
+        ],
+        "history_window": {
+          "limit": 10,
+          "declarations": {
+            "loaded_rows": 1,
+            "shown": 0,
+            "omitted_loaded": 1,
+            "more_available": true
+          },
+          "waiters": {
+            "loaded_rows": 3,
+            "shown": 3,
+            "omitted_loaded": 0,
+            "more_available": false
+          },
+          "wake_outcomes": {
+            "loaded_rows": 3,
+            "shown": 3,
+            "omitted_loaded": 0,
+            "more_available": false
+          }
+        },
+        "recovery": {
+          "event": "owner-resume:papercusp-pause-20260908T234015Z",
+          "announcement_id": 170131,
+          "generation": 1,
+          "current_generation": 1,
+          "inactive": "fired-expected-unproven",
+          "next_verb": {
+            "verb": "events:status",
+            "args": {
+              "event": "owner-resume:papercusp-pause-20260908T234015Z",
+              "after_generation": 1
+            },
+            "target": {
+              "kind": "waiter",
+              "ref": null
+            }
+          },
+          "evidence": {
+            "checked_at_ms": 1794072409960,
+            "declared_by": "su-8b9d39ca-4bd8-44bd-ba29-f25593b1c246",
+            "generation_state": "fired",
+            "catalog": {
+              "status": "measured",
+              "value": {
+                "member": false,
+                "nearMiss": [
+                  "harness:papercusp:apps-tui-brain-view-rs-commit-ready-ee5b792e",
+                  "harness:papercusp:event:harness:papercusp:safe-install-writer-release:WI-6554700010030253",
+                  "harness:papercusp:execution-authority-native-restored-EI-27653346710942048"
+                ]
+              }
+            },
+            "fire_history": {
+              "status": "measured",
+              "value": {
+                "exactFired": true,
+                "familyFires": 1,
+                "priorGenerationFired": false,
+                "lastFiredAt": "2026-09-09 03:56:48.84735-04"
+              }
+            },
+            "owner_liveness": {
+              "status": "measured",
+              "value": {
+                "declaredByLiveness": "ended",
+                "liveSuccessorIds": []
+              }
+            },
+            "producer_health": null,
+            "expected_condition": null,
+            "expected_verdict": "not-declared",
+            "reasons": [
+              "the exact key fired but its declared expected condition is not-declared; only a matching proof is success — wait for a fresh generation"
+            ]
+          },
+          "rule": "Evidence, including owner_liveness, is a point-in-time snapshot measured at evidence.checked_at_ms; re-read current ownership before acting on an older snapshot. A timeout stays a timeout until the exact key fires with a matching generation and expected condition; follow next_verb, never treat this wake as the gate opening."
+        },
+        "resync": {
+          "required": false,
+          "reason": "watermark_not_supplied",
+          "consumer_generation": null,
+          "authoritative_generation": 1,
+          "rule": "Replace cached state with this exact-key snapshot whenever required=true; then persist authoritative_generation as the next watermark.",
+          "next_verb": "events:status { event: \"owner-resume:papercusp-pause-20260908T234015Z\", after_generation: 1 }"
+        }
+      }
+    }
+  },
+  "fireEvidence": {
+    "path": "/tmp/c52-owner-resume-fire-payload.json",
+    "sha256": "e9e62301998579f0768458f09dfdebc14fef837d723c93235946cbc28d9e7ec7",
+    "value": {
+      "mode": "query",
+      "rowCount": 1,
+      "truncated": false,
+      "fields": [
+        "workspace_id",
+        "event_key",
+        "last_fired_by",
+        "last_fired_at",
+        "last_payload"
+      ],
+      "elapsedMs": 320,
+      "rows": [
+        {
+          "workspace_id": "default",
+          "event_key": "owner-resume:papercusp-pause-20260908T234015Z",
+          "last_fired_by": "su-8a7b7b3f-40f4-41ee-a2b9-0c6ed8c4d689",
+          "last_fired_at": "2026-09-09 07:56:48.84735+00",
+          "last_payload": {
+            "scope": "desktop-agent-mcp-uds-2026-09-08",
+            "ownerDirected": true
+          }
+        }
+      ]
+    }
+  },
+  "correction": {
+    "oldReachabilityLabel": "satisfied",
+    "conditionSatisfaction": "not established: custom announcement has no matching expected-condition proof and fired payload is narrower than the system-wide owner-resume requirement",
+    "safeToClear": false,
+    "parkCleared": false,
+    "ownerResumeAuthority": "unverified",
+    "finalLegitimacyDisposition": "unassessed",
+    "sameIdExecutionEvidence": null
+  },
+  "sourceGuardProof": {
+    "task": "0mw6pxte0z2a4yx17l9",
+    "nativeReason": "passed",
+    "unhandledErrorCount": 0,
+    "skipped": 0,
+    "files": [
+      {
+        "path": "packages/operator-core/lib/work-items-durable-park-audit.test.ts",
+        "state": "passed",
+        "execution": {
+          "passed": 37,
+          "failed": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "path": "packages/operator-core/lib/external-condition-reachability.test.ts",
+        "state": "passed",
+        "execution": {
+          "passed": 60,
+          "failed": 0,
+          "skipped": 0
+        }
+      }
+    ],
+    "sourceBindings": [
+      {
+        "testFile": "packages/operator-core/lib/work-items-durable-park-audit.test.ts",
+        "path": "packages/operator-core/lib/external-condition-reachability.ts",
+        "sha256": "8471910613f372071a78971f5a728f80deff18778b12536b87246c5dcd3d1f6b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "8471910613f372071a78971f5a728f80deff18778b12536b87246c5dcd3d1f6b",
+        "freshSha256": "8471910613f372071a78971f5a728f80deff18778b12536b87246c5dcd3d1f6b"
+      },
+      {
+        "testFile": "packages/operator-core/lib/external-condition-reachability.test.ts",
+        "path": "packages/operator-core/lib/external-condition-reachability.test.ts",
+        "sha256": "211b07d163784928fcf7550aa88ac29b63415285184e4dbf647de72066196154",
+        "basis": "vite-pre-transform",
+        "currentSha256": "211b07d163784928fcf7550aa88ac29b63415285184e4dbf647de72066196154",
+        "freshSha256": "211b07d163784928fcf7550aa88ac29b63415285184e4dbf647de72066196154"
+      },
+      {
+        "testFile": "packages/operator-core/lib/external-condition-reachability.test.ts",
+        "path": "packages/operator-core/lib/external-condition-reachability.ts",
+        "sha256": "8471910613f372071a78971f5a728f80deff18778b12536b87246c5dcd3d1f6b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "8471910613f372071a78971f5a728f80deff18778b12536b87246c5dcd3d1f6b",
+        "freshSha256": "8471910613f372071a78971f5a728f80deff18778b12536b87246c5dcd3d1f6b"
+      }
+    ],
+    "scope": "local dirty source; config/main-process/importgraph identity unknown",
+    "nativeCustodyDirectory": "/home/marsh-office/.papercusp/test-artifacts/testing-run/native-router-X1rcGG",
+    "nativeCustodyManifestRef": "9013dd489553e2f147515ec422e2e28ead56e83f6f2401419f992cd3dab8df22.native-proof.json",
+    "manifestPathVerified": false
+  },
+  "controlWrites": false,
+  "limits": [
+    "No new event evaluation or test run; uses preserved exact event/fire observations and completed native source proof.",
+    "The original6221-ID cohort and all existing dispositions remain unchanged.",
+    "Correcting a false-positive release diagnosis does not prove arbitrary park prose or owner authority.",
+    "Final source-proof runtime/config limitations remain explicit; no canonical test-ledger acknowledgement is inferred from task completion."
+  ]
+}

@@ -59,10 +59,9 @@ export const RECIPE_OUTCOME_REPORT_SQL = `
 WITH recipe_run_source AS (
   SELECT * FROM harness_shared.code_recipe_runs
    WHERE workspace_id = $1 AND ts >= $3::timestamptz AND ts < $4::timestamptz
-), ${RECIPE_RUN_RECEIPTS_CTE}, with_host AS (
-  SELECT c.*, h.host_rows, h.host_harness, h.host_ref, h.context_bytes, h.recorded_context_bytes
-  FROM classified c LEFT JOIN LATERAL (
-    SELECT count(*) AS host_rows, min(harness_slug) AS host_harness,
+), ${RECIPE_RUN_RECEIPTS_CTE}, host_invocations AS MATERIALIZED (
+    SELECT t.metadata_json->'otel'->>'callId' AS invocation_id,
+      count(*) AS host_rows, min(harness_slug) AS host_harness,
       min(id)::text AS host_ref,
       CASE WHEN count(*) = 1 THEN min(CASE
         WHEN metadata_json->>'returnedContextBytes' ~ '^[0-9]{1,15}$'
@@ -75,9 +74,13 @@ WITH recipe_run_source AS (
     WHERE t.workspace_id = $1
       AND t.invoked_at >= $3::timestamptz - interval '1 day'
       AND t.invoked_at < $4::timestamptz + interval '1 day'
-      AND t.metadata_json->'otel'->>'callId' = c.evidence->>'invocationId'
+      AND t.metadata_json->'otel'->>'callId' IN (SELECT evidence->>'invocationId' FROM classified)
       AND lower(replace(replace(t.tool_name, ':', ''), '_', '')) IN ('coderun', 'recipesrun')
-  ) h ON true
+    GROUP BY t.metadata_json->'otel'->>'callId'
+), with_host AS (
+  SELECT c.*, COALESCE(h.host_rows, 0) AS host_rows, h.host_harness, h.host_ref,
+    h.context_bytes, h.recorded_context_bytes
+  FROM classified c LEFT JOIN host_invocations h ON h.invocation_id = c.evidence->>'invocationId'
 ), scoped AS (
   SELECT *, host_rows = 1 AND host_harness = $2 AS attributed,
     known AND usage->>'choice' = 'agent' AND usage->>'mode' = 'commit'
@@ -118,10 +121,18 @@ SELECT jsonb_build_object(
 
 export async function readRecipeOutcomeReport(runQuery: RunQuery, scope: RecipeOutcomeScope) {
   const start = Date.parse(scope.windowStart), end = Date.parse(scope.windowEnd);
-  if (!scope.workspaceId.trim() || !scope.harnessSlug.trim() || !Number.isFinite(start)
+  if (!scope.workspaceId.trim() || !scope.harnessSlug.trim()
+    || scope.workspaceId.includes('\0') || scope.harnessSlug.includes('\0') || !Number.isFinite(start)
     || !Number.isFinite(end) || start >= end || end > Date.now()) throw new Error('Exact scope and closed recipe outcome window required');
-  const [row] = await runQuery<{ report: Record<string, unknown> }>(RECIPE_OUTCOME_REPORT_SQL,
-    [scope.workspaceId, scope.harnessSlug, new Date(start).toISOString(), new Date(end).toISOString()]);
+  // Like buildCodeRunAdoptionQuery, use one simple-protocol batch so the
+  // server cancels an expensive scan and the local timeout cannot leak to the
+  // next pooled query. E-literals escape both backslashes and apostrophes.
+  const quote = (value: string) => "E'" + value.replaceAll('\\', '\\\\').replaceAll("'", "''") + "'";
+  const values = [scope.workspaceId, scope.harnessSlug, new Date(start).toISOString(), new Date(end).toISOString()];
+  const query = "SET LOCAL statement_timeout = '" + CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS + "ms';\n"
+    + RECIPE_OUTCOME_REPORT_SQL.replace(/\$([1-4])\b/g, (_, index: string) => quote(values[Number(index) - 1]!));
+  // postgres.js returns one result set per statement in a simple batch.
+  const [row] = (await runQuery<{ report: Record<string, unknown> }>(query, [])).flat();
   return {
     scope, boundary: 'recipe-run-recorded-at' as const,
     measurement: row?.report ?? null,
@@ -816,7 +827,7 @@ export async function readCodeRunAdoption(
     // LIMIT) as a single simple-protocol statement batch — an EMPTY params array is what makes
     // postgres.js use the simple protocol (see buildCodeRunAdoptionQuery's doc); a $1-bound call
     // would run only the first statement's binding and reject/ignore the SET LOCAL batching.
-    const rows = await runQuery<{
+    const rows = (await runQuery<{
       role: string;
       day: string;
       work_calls: number | string;
@@ -825,7 +836,7 @@ export async function readCodeRunAdoption(
       max_same_tool_turns: number | string;
       distinct_turns: number | string;
       used_code_run: boolean;
-    }>(buildCodeRunAdoptionQuery(sinceDays), []);
+    }>(buildCodeRunAdoptionQuery(sinceDays), [])).flat();
     const spawnRows: SpawnAdoptionRow[] = rows.map((r) => ({
       role: r.role,
       day: r.day,

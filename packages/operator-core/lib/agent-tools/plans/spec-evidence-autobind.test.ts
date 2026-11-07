@@ -194,6 +194,38 @@ describe('decideAutobind', () => {
 });
 
 describe('runSpecEvidenceAutobind over fixture ledger rows', () => {
+  it('preserves the P536 execution proof on resume and binds again only for a changed clause', async () => {
+    // Same canonical execution identity as the measured migrated P536 admission
+    // fixture. The clause, ledger run and binding below are unit fixture data,
+    // not an assertion that the historical native P536 controls passed.
+    const originalTarget = { ...target, planSlug: 'p2p-public-release-endgame-2026-09-01',
+      workItemId: 'WI-6554700010026007', specId: 'SPEC-P536-fixture', specRevision: 1 };
+    const originalProof = Object.freeze(binding(7, 10));
+    const { deps, writes } = fixture({ runs: [run(10, 'pass')] });
+    let currentTarget = originalTarget;
+    deps.loadTargets = async () => [currentTarget];
+    deps.loadLiveBindings = async () => new Map([[clauseKey(originalTarget), [originalProof]]]);
+
+    const before = await runSpecEvidenceAutobind('ws', deps);
+    // Rehydrating the execution target after its migration shadow was attached
+    // changes bookkeeping, not the clause, run, binding id or proof payload.
+    currentTarget = { ...originalTarget };
+    const resumed = await runSpecEvidenceAutobind('ws', deps);
+    expect(before.decisions).toEqual({ noop: 1, bind: 0, retract: 0 });
+    expect(resumed.decisions).toEqual(before.decisions);
+    expect(writes).toEqual([]);
+    expect((await deps.loadLiveBindings('ws', [currentTarget])).get(clauseKey(currentTarget)))
+      .toEqual([originalProof]);
+    expect(originalProof).toEqual(binding(7, 10));
+
+    // Scope/revision changes cannot inherit the unchanged-clause receipt.
+    currentTarget = { ...originalTarget, specRevision: 2 };
+    const changed = await runSpecEvidenceAutobind('ws', deps);
+    expect(changed.outcomes).toEqual([{ kind: 'bound', target: currentTarget, runId: 10 }]);
+    expect(writes).toEqual([{ op: 'bind', runId: 10 }]);
+    expect(originalProof).toEqual(binding(7, 10));
+  });
+
   it('produces a binding from a qualifying pass without any agent call', async () => {
     const { deps, writes } = fixture({ runs: [run(9, 'fail'), run(10, 'pass')] });
     const result = await runSpecEvidenceAutobind('ws', deps);
