@@ -25,8 +25,9 @@
  * that can hang is a scan that piles up.
  */
 
-import { linuxProcessIdentityFromStat, linuxStartTicksFromProcStat } from '../process-identity';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { linuxProcessIdentityFromStat, linuxStartTicksFromProcStat, linuxPpidFromProcStat } from '../process-identity';
+import { readFile, readdir, readlink, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import {
   CGROUP_ROOT,
   absCgroupDir,
@@ -114,6 +115,113 @@ const nodeAsyncCgroupFs: AsyncCgroupFs = {
       .catch(() => []),
   isDir: (path) => stat(path).then((s) => s.isDirectory(), () => false),
 };
+
+type EvidenceFs = {
+  readFile(path: string, signal: AbortSignal): Promise<string>;
+  readDir(path: string): Promise<Array<{ name: string; isDirectory: boolean; isSymbolicLink: boolean }>>;
+  readLink(path: string): Promise<string>;
+};
+const evidenceFs: EvidenceFs = {
+  readFile: (path, signal) => readFile(path, { encoding: 'utf8', signal }),
+  readDir: async path => (await readdir(path, { withFileTypes: true })).map(entry => ({
+    name: entry.name, isDirectory: entry.isDirectory(), isSymbolicLink: entry.isSymbolicLink(),
+  })),
+  readLink: path => readlink(path),
+};
+
+/** Unfiltered, read-only kernel evidence for the current user-manager subtree.
+ * Unlike the inventory view, unreadable/disappearing groups and processes refuse
+ * the entire observation. Two equal walks and identity rechecks detect churn;
+ * they do NOT fence a creator or establish historical/host-wide absence. A caller
+ * still needs its committed creator fence and actual source qualification.
+ * The fs/pid seam is for conventional tests, never a transport input.
+ */
+export async function scanUserManagerEvidence(options: {
+  signal?: AbortSignal; fs?: EvidenceFs; selfPid?: number;
+} = {}) {
+  const io = options.fs ?? evidenceFs, selfPid = options.selfPid ?? process.pid;
+  const signal = AbortSignal.any([AbortSignal.timeout(5_000), ...(options.signal ? [options.signal] : [])]);
+  const fail = (reason: string): never => { throw new Error('process_evidence_' + reason); };
+  if (!Number.isSafeInteger(selfPid) || selfPid <= 0) fail('invalid_pid');
+  const text = (path: string) => awaitAbortable(() => io.readFile(path, signal), signal);
+  const link = (path: string) => awaitAbortable(() => io.readLink(path), signal);
+  const bootPath = '/proc/sys/kernel/random/boot_id';
+  const boot = (await text(bootPath)).trim();
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(boot)) fail('boot_unknown');
+  const selfPath = '/proc/' + selfPid;
+  const selfCgroup = parseProcCgroup(await text(selfPath + '/cgroup'));
+  const manager = deriveUserManagerRoot(selfCgroup);
+  const namespace = await link(selfPath + '/ns/pid');
+  if (!manager || !/^pid:\[[0-9]+\]$/.test(namespace)) fail('scope_unknown');
+  const root = CGROUP_ROOT + manager;
+  // Positive visibility control: a missing/inaccessible root is never empty.
+  const visible = await text(root + '/cgroup.events');
+  if (!/^populated [01]$/m.test(visible)) fail('scope_unknown');
+  type Member = { pid: number; cgroup: string };
+  const walk = async (): Promise<Member[]> => {
+    const pending = [{ path: manager!, depth: 0 }], groups = new Set<string>(), members = new Map<number, Member>();
+    while (pending.length) {
+      signal.throwIfAborted();
+      const batch = pending.splice(0, 16);
+      const children = await mapWithConcurrency(batch, 16, async ({ path, depth }) => {
+        if (groups.has(path) || groups.size >= 4096 || depth > 32) fail('population_incomplete');
+        groups.add(path);
+        const absolute = CGROUP_ROOT + path;
+        const [raw, entries] = await Promise.all([
+          text(absolute + '/cgroup.procs'), awaitAbortable(() => io.readDir(absolute), signal),
+        ]);
+        const lines = raw.trim().split(/\s+/).filter(Boolean);
+        for (const value of lines) {
+          const pid = Number(value);
+          if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(pid) || members.has(pid)) fail('membership_changed');
+          if (members.size >= 4096) fail('population_incomplete');
+          members.set(pid, { pid, cgroup: path });
+        }
+        return entries.flatMap(entry => {
+          if (entry.isSymbolicLink || !entry.name || /[/\\]/.test(entry.name) || ['.', '..'].includes(entry.name))
+            return fail('directory_invalid');
+          return entry.isDirectory ? [{ path: path + '/' + entry.name, depth: depth + 1 }] : [];
+        });
+      });
+      pending.push(...children.flat());
+    }
+    return [...members.values()].sort((a, b) => a.pid - b.pid);
+  };
+  const first = await walk();
+  if (!first.some(p => p.pid === selfPid && p.cgroup === selfCgroup)) fail('self_not_observed');
+  const processes = await mapWithConcurrency(first, 16, async member => {
+    const base = '/proc/' + member.pid;
+    const before = await text(base + '/stat');
+    const identity = linuxProcessIdentityFromStat(boot, before), parentPid = linuxPpidFromProcStat(before);
+    if (!identity || parentPid === null || !before.startsWith(member.pid + ' (')) fail('identity_unknown');
+    const [rawCgroup, command, pidNamespace] = await Promise.all([
+      text(base + '/cgroup'), text(base + '/cmdline'), link(base + '/ns/pid'),
+    ]);
+    if (parseProcCgroup(rawCgroup) !== member.cgroup || pidNamespace !== namespace) fail('membership_changed');
+    // Raw argv may contain prompts/credentials. Retain only its content digest.
+    return { ...member, identity: identity!, parentPid: parentPid!,
+      commandHash: createHash('sha256').update(command).digest('hex') };
+  });
+  const second = await walk();
+  if (JSON.stringify(first) !== JSON.stringify(second)) fail('population_changed');
+  await mapWithConcurrency(processes, 16, async member => {
+    const base = '/proc/' + member.pid;
+    const [raw, cgroup, command, pidNamespace] = await Promise.all([
+      text(base + '/stat'), text(base + '/cgroup'), text(base + '/cmdline'), link(base + '/ns/pid'),
+    ]);
+    if (!raw.startsWith(member.pid + ' (') || linuxProcessIdentityFromStat(boot, raw) !== member.identity ||
+        linuxPpidFromProcStat(raw) !== member.parentPid || parseProcCgroup(cgroup) !== member.cgroup ||
+        createHash('sha256').update(command).digest('hex') !== member.commandHash || pidNamespace !== namespace)
+      fail('identity_changed');
+  });
+  if ((await text(bootPath)).trim() !== boot || parseProcCgroup(await text(selfPath + '/cgroup')) !== selfCgroup ||
+      await link(selfPath + '/ns/pid') !== namespace) fail('scope_changed');
+  signal.throwIfAborted();
+  return { schema: 'user-manager-process-evidence/v1' as const, observedAt: new Date().toISOString(),
+    bootId: boot, pidNamespace: namespace, userManagerRoot: manager!, selfPid, processes,
+    scope: 'two stable observations of the current user-manager cgroup subtree' as const,
+    creatorFence: 'required' as const, sourceQualification: 'required' as const };
+}
 
 /** Race an async filesystem operation with the scan deadline. The signal lets
  * cancellable Node reads stop at the OS boundary; it also prevents non-cancellable

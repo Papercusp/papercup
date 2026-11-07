@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scanProcesses, scanProcessesAsync, deriveUserManagerRoot, defaultForeignSignature } from './scan';
+import { scanProcesses, scanProcessesAsync, scanUserManagerEvidence, deriveUserManagerRoot, defaultForeignSignature } from './scan';
 import type { CgroupFs } from './cgroup-read';
 import { isTerminalWindowScope } from './scope-class';
 
@@ -60,6 +60,106 @@ describe('deriveUserManagerRoot', () => {
   it('returns null for a shape it does not recognise — degrade, never guess', () => {
     expect(deriveUserManagerRoot('/system.slice/papercup.service')).toBeNull();
     expect(deriveUserManagerRoot(null)).toBeNull();
+  });
+});
+
+describe('scanUserManagerEvidence — strict unfiltered kernel observation', () => {
+  const boot = '12345678-1234-1234-1234-123456789abc';
+  function fixture() {
+    const kernel = box({ cgroups: { [MGR]: [], [OURS]: [999], [`${MGR}/unrelated.scope`]: [12] },
+      selfCgroup: OURS, bootId: boot, cmdlines: { 12: 'no-repository-signature --secret=never-render' } });
+    const files = new Map<string, string>(), reads = new Map<string, number>();
+    const io = {
+      readFile: async (path: string) => {
+        reads.set(path, (reads.get(path) ?? 0) + 1);
+        if (files.has(path)) return files.get(path)!;
+        if (path.endsWith('/cgroup.events')) return 'populated 1\nfrozen 0\n';
+        const value = kernel.readFile(path);
+        if (value === null && path.endsWith('/cgroup.procs')) return '';
+        if (value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return value;
+      },
+      readDir: async (path: string) => kernel.readDir(path).map(name => ({ name, isDirectory: true, isSymbolicLink: false })),
+      readLink: async () => 'pid:[4026531836]',
+    };
+    return { io, files, reads };
+  }
+
+  it('includes foreign processes without a signature and exposes no argv or absence authority', async () => {
+    const f = fixture();
+    const proof = await scanUserManagerEvidence({ fs: f.io, selfPid: 999 });
+    expect(proof.processes.map(p => p.pid)).toEqual([12, 999]);
+    expect(proof).toMatchObject({ bootId: boot, userManagerRoot: MGR, creatorFence: 'required', sourceQualification: 'required' });
+    expect(proof.processes[0]).toMatchObject({ identity: `linux:${boot}:1012`, parentPid: 1 });
+    expect(proof.processes[0]!.commandHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(proof)).not.toContain('never-render');
+    expect(f.reads.get(`${ROOT}${MGR}/unrelated.scope/cgroup.procs`)).toBe(2);
+  });
+
+  it.each(['EACCES', 'EIO', 'ENOENT'])('refuses %s on a group instead of proving empty', async code => {
+    const f = fixture(), read = f.io.readFile;
+    f.io.readFile = async path => {
+      if (path === `${ROOT}${MGR}/unrelated.scope/cgroup.procs`) throw Object.assign(new Error(code), { code });
+      return read(path);
+    };
+    await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow(code);
+  });
+
+  it('refuses a missing visibility control or boot identity', async () => {
+    for (const path of [`${ROOT}${MGR}/cgroup.events`, '/proc/sys/kernel/random/boot_id']) {
+      const f = fixture(); f.files.set(path, '');
+      await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow('process_evidence_');
+    }
+  });
+
+  it('refuses disappearing and newly appearing processes between complete walks', async () => {
+    for (const membership of ['', '12\n13']) {
+      const f = fixture(), read = f.io.readFile;
+      const path = `${ROOT}${MGR}/unrelated.scope/cgroup.procs`;
+      f.io.readFile = async p => p === path && f.reads.get(p) === 1 ? membership : read(p);
+      await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow('population_changed');
+    }
+  });
+
+  it('refuses PID reuse, reparenting and exec changes during the observation', async () => {
+    for (const change of ['reuse', 'parent', 'exec']) {
+      const f = fixture(), read = f.io.readFile;
+      f.io.readFile = async path => {
+        const value = await read(path);
+        if (path === '/proc/12/stat' && f.reads.get(path) === 2)
+          return change === 'reuse' ? value.replace('1012', '2012') : change === 'parent' ? value.replace(' S 1 ', ' S 2 ') : value;
+        if (change === 'exec' && path === '/proc/12/cmdline' && f.reads.get(path) === 2) return 'different executable';
+        return value;
+      };
+      await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow('identity_changed');
+    }
+  });
+
+  it('refuses a process in another cgroup or PID namespace', async () => {
+    for (const change of ['cgroup', 'namespace']) {
+      const f = fixture();
+      if (change === 'cgroup') f.files.set('/proc/12/cgroup', '0::/other\n');
+      else f.io.readLink = async (path?: string) => path === '/proc/12/ns/pid' ? 'pid:[99]' : 'pid:[4026531836]';
+      await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow('membership_changed');
+    }
+  });
+
+  it('refuses duplicate membership, invalid kernel PIDs and unsafe directory entries', async () => {
+    for (const value of ['12\n12', 'not-a-pid', '9007199254740992']) {
+      const f = fixture(); f.files.set(`${ROOT}${MGR}/unrelated.scope/cgroup.procs`, value);
+      await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow('membership_changed');
+    }
+    const f = fixture();
+    f.io.readDir = async () => [{ name: '..', isDirectory: true, isSymbolicLink: false }];
+    await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow('directory_invalid');
+  });
+
+  it('refuses population overflow and cancellation without returning partial evidence', async () => {
+    const f = fixture();
+    f.files.set(`${ROOT}${MGR}/unrelated.scope/cgroup.procs`, Array.from({ length: 4097 }, (_, i) => String(i + 10000)).join('\n'));
+    await expect(scanUserManagerEvidence({ fs: f.io, selfPid: 999 })).rejects.toThrow('population_incomplete');
+    const controller = new AbortController(); controller.abort(new Error('fixture cancelled'));
+    await expect(scanUserManagerEvidence({ fs: fixture().io, selfPid: 999, signal: controller.signal })).rejects.toThrow('fixture cancelled');
   });
 });
 
