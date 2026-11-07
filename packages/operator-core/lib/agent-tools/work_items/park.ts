@@ -164,7 +164,7 @@ export default defineTool({
     } catch (error) {
       const problem = error as Error & { code?: string; missing?: unknown; nextAction?: unknown; priorLength?: number };
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, id: args.id,
-        error: problem.code ?? problem.message, missing: problem.missing, nextAction: problem.nextAction,
+        code: problem.code, error: problem.code ?? problem.message, missing: problem.missing, nextAction: problem.nextAction,
         priorLength: problem.priorLength,
         note: 'Park did not return a commit receipt; read the canonical work-item and checkpoint before retrying.' }) }] };
     }

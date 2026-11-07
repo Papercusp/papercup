@@ -234,7 +234,7 @@ describe('public blocker resolution boundaries', () => {
     expect(await state(id, 'defer-before-resume')).toMatchObject({ ok: true });
     const before = await snapshot(id);
     expect(await call(setBlocker, { id, harness: HARNESS, ref: EVENT, clear: true,
-      blockerDecision: resolution('premature-resume') })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+      blockerDecision: { ...resolution('premature-resume'), priorRevision: 1 } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
     expect(await snapshot(id)).toEqual(before);
     await repairCondition();
     expect(await call(setBlocker, { id, harness: HARNESS, ref: EVENT, clear: true,
