@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "Workbench P-005 actual Windows WPF/PUI/canonical staging read integration",
-  "framework": "powershell",
+  "framework": "operational",
   "command": [
     "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -Phase operator -Interactive -PuiExecutable pui-current.exe -OperatorUrl http://10.0.2.2:3170 -ExpectedWorkspace papercusp-workspace -ExpectedPlan quick-access-search-launcher-2026-10-26",
     "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-bridge.ps1 -Phase fixture -BridgeSource PuiReadBridge.cs",
