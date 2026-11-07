@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
@@ -38,11 +39,42 @@ import { decideSensitiveAction, executeSensitiveAction, executeSensitiveActionIn
 
 let fx: PlanPgFixture;
 const migrationName = '1623-blind-review-continuation-custody.sql.DRAFT';
-const migration = readFileSync(new URL('../../../libs/papercusp/libs/db/sql/' + migrationName, import.meta.url), 'utf8');
+const migrationBytes = readFileSync(new URL('../../../libs/papercusp/libs/db/sql/' + migrationName, import.meta.url));
+const migration = migrationBytes.toString('utf8');
+const migrationSha256 = createHash('sha256').update(migrationBytes).digest('hex');
+const migrationArtifactDir = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+const migrationArtifactStem = 'blind-review-continuation-migration-' + randomUUID();
+let migrationDatabase: string | null = null;
+function migrationFixtureReceipt(event: 'applied' | 'already-present' | 'disposed' | 'cleanup-failed') {
+  const receipt = { event, migrationName, sha256: migrationSha256, byteLength: migrationBytes.length,
+    runId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null, database: migrationDatabase,
+    scope: 'isolated-plan-pg-fixture', inputFile: migrationArtifactDir
+      ? join(migrationArtifactDir, migrationArtifactStem + '.sql') : null };
+  if (migrationArtifactDir) appendFileSync(join(migrationArtifactDir, migrationArtifactStem + '.jsonl'),
+    JSON.stringify(receipt) + '\n');
+  console.log('BLIND_REVIEW_CUSTODY_MIGRATION_FIXTURE ' + JSON.stringify(receipt));
+}
 beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
+  // Retain the actual SQL argument, not merely the path observed by fs capture.
+  // The decode must be lossless for this digest to identify the bytes sent to PG.
+  expect(Buffer.from(migration, 'utf8')).toEqual(migrationBytes);
+  const [database] = await fx.admin`SELECT current_database() AS name,
+    current_setting('server_encoding') AS server_encoding, current_setting('client_encoding') AS client_encoding`;
+  expect(database!.server_encoding).toBe('UTF8');
+  expect(database!.client_encoding).toBe('UTF8');
+  migrationDatabase = database!.name;
+  if (migrationArtifactDir) {
+    mkdirSync(migrationArtifactDir, { recursive: true });
+    const inputFile = join(migrationArtifactDir, migrationArtifactStem + '.sql');
+    writeFileSync(inputFile, migrationBytes, { flag: 'wx' });
+    expect(readFileSync(inputFile)).toEqual(migrationBytes);
+  }
   const [present] = await fx.admin`SELECT to_regclass('harness_shared.blind_review_continuation_custody') AS name`;
-  if (!present!.name) await fx.admin.begin(tx => tx.unsafe(migration));
+  if (!present!.name) {
+    await fx.admin.begin(tx => tx.unsafe(migration));
+    migrationFixtureReceipt('applied');
+  } else migrationFixtureReceipt('already-present');
   const [runtime] = await fx.admin`SELECT to_regclass('harness_shared.blind_review_runtime_leases') AS name`;
   if (!runtime!.name) await fx.admin.begin(tx => tx.unsafe(readFileSync(new URL(
     '../../../libs/papercusp/libs/db/sql/1578-blind-review-runtime-custody.sql.DRAFT', import.meta.url), 'utf8')));
@@ -51,7 +83,16 @@ beforeAll(async () => {
   if (!replacement) await fx.admin.begin(tx => tx.unsafe(readFileSync(
     new URL('../../../libs/papercusp/libs/db/sql/1567-blind-review-replacement-attempts.sql', import.meta.url), 'utf8')));
 }, 120_000);
-afterAll(async () => { await fx?.dispose(); });
+afterAll(async () => {
+  if (!fx) return;
+  try {
+    await fx.dispose();
+    migrationFixtureReceipt('disposed');
+  } catch (error) {
+    migrationFixtureReceipt('cleanup-failed');
+    throw error;
+  }
+});
 
 async function fixture() {
   const key = randomUUID(), ws = fx.workspaceId, owner = 'su-continuation-' + key;
