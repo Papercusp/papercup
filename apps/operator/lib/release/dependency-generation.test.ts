@@ -40,6 +40,53 @@ const SCRIPT =
 
 const roots: string[] = [];
 
+describe('disposable committed-reader generation stores', () => {
+  function reader(managed = true) {
+    const fixture = mkdtempSync(join(tmpdir(), 'generation-store-lifetime-'));
+    roots.push(fixture);
+    const integration = join(fixture, 'reader');
+    mkdirSync(join(integration, '.git'), { recursive: true });
+    if (managed) writeFileSync(join(integration, '.git/lint-as-committed-owner.json'), '{}');
+    return { integration, store: join(fixture, 'persistent-store') };
+  }
+
+  function select(integration: string, store = '', selection = '') {
+    return spawnSync('bash', ['-c',
+      'source "$SCRIPT"; dependency_generation_resolve_root "$INTEGRATION" "$EXPLICIT" 1'], {
+      encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration,
+        EXPLICIT: selection === 'explicit' ? store : '',
+        PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'environment' ? store : '' },
+    });
+  }
+
+  it('refuses an implicit store before allocating retained generations inside a disposable reader', () => {
+    const { integration } = reader();
+    const result = select(integration);
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain('explicit persistent generation store');
+    expect(result.stdout).toBe('');
+    expect(existsSync(join(integration, '.papercusp'))).toBe(false);
+  });
+
+  it.each(['explicit', 'environment', 'recorded'])('preserves the existing %s store selection', selection => {
+    const { integration, store } = reader();
+    if (selection === 'recorded') {
+      mkdirSync(join(integration, '.papercusp'));
+      writeFileSync(join(integration, '.papercusp/dependency-generation-root'), store + '\n');
+    }
+    const result = select(integration, store, selection);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(store);
+  });
+
+  it('keeps the ordinary repository fallback available', () => {
+    const { integration } = reader(false);
+    const result = select(integration);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(join(integration, '.papercusp/dependency-generations'));
+  });
+});
+
 // A synchronous child blocks Vitest's worker and its case-timeout callback.
 // Emit directly to the worker's stderr before entering that child so the file
 // watchdog can identify the exact case/phase even when the child never returns.
