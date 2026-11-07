@@ -52,7 +52,8 @@ const PLAN = 'p2p-public-release-endgame-2026-09-01';
 const WORKSPACE = 'private-seed-population-workspace';
 const HARNESS = 'papercusp';
 const SOURCE = 'cbd21646b5c73bd23cad5608f9526cf9bd0048ce';
-const AT = Date.parse('2026-10-23T08:00:00Z');
+// Native Corestore uses the OS clock; capture one current timestamp for every signed fixture.
+const AT = Date.now();
 // Independent PG population: never derive these from the log or exported rows.
 const WORK = 'papercusp/WI-900001';
 const OBSERVATION = 'papercusp/EI-900002';
