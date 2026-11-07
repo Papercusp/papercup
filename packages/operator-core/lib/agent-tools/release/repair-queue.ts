@@ -1031,7 +1031,7 @@ function sameAdmissionPrecheck(
   // its own operation (including the source it was measured from).
   if (state.measurement && (
     // EI-27114233692780034: state.radius is a jsonb read-back (keys re-ordered), so compare canonically.
-    canonicalJson(state.radius) !== canonicalJson(input.radius) ||
+    canonicalJson(state.radius ?? null) !== canonicalJson(input.radius ?? null) ||
     state.measurement.identity !== admissionPrecheckMeasurementIdentity(state, input.signature)
   )) return false;
   const measuredTree = (() => {
@@ -2166,16 +2166,37 @@ export default defineTool({
           // so any re-confirm resumes them; it needs no retryPrecheck opt-in.
           const deferredTreeBusy = matchingPrecheck?.status === 'deferred' &&
             matchingPrecheck.verdict?.ran === false && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy';
+          let retainedMeasurement = matchingPrecheck?.measurement;
+          // Older small pre-checks stored their complete native rows only in the verdict.
+          // Recover those rows on an explicit retry after validating the same immutable
+          // commit and population; a stale or partial verdict is never reusable proof.
+          if (args.retryPrecheck === true && matchingPrecheck?.status === 'failed' &&
+              matchingPrecheck.builtTree && !retainedMeasurement && matchingPrecheck.verdict?.ran === true &&
+              matchingPrecheck.verdict.unmeasured.length > 0) {
+            try {
+              if (matchingPrecheck.verdict.commit !== matchingPrecheck.builtCommit ||
+                  canonicalJson(matchingPrecheck.verdict.population) !== canonicalJson(population))
+                throw new Error('retained verdict commit or population differs from this operation');
+              validateAdmissionPrecheckResults(population.files, matchingPrecheck.verdict.results, true);
+              retainedMeasurement = { schemaVersion: 1,
+                identity: admissionPrecheckMeasurementIdentity(matchingPrecheck, queue.signature),
+                results: matchingPrecheck.verdict.results.map(result => ({ ...result })) };
+            } catch (error) {
+              return json({ ...base, ok: false, admitted: false, refused: true, dryRun: false,
+                verdict: 'refused', reason: 'precheck-retained-evidence-invalid', detail: String(error),
+                judgedSha: queue.repairHead });
+            }
+          }
           const failedWithUnmeasuredRows = matchingPrecheck?.status === 'failed' &&
             matchingPrecheck.verdict?.ran === true && matchingPrecheck.verdict.unmeasured.length > 0 &&
-            matchingPrecheck.measurement?.results.some(result => result.status === 'unmeasured') === true;
+            retainedMeasurement?.results.some(result => result.status === 'unmeasured') === true;
           const retryRequested = args.retryPrecheck === true && (
             matchingPrecheck?.status === 'running' ||
             failedWithUnmeasuredRows ||
             (matchingPrecheck?.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
               matchingPrecheck.verdict.reason === 'runner-failed'));
-          const resume = matchingPrecheck?.measurement && (deferredTreeBusy || retryRequested)
-            ? matchingPrecheck : undefined;
+          const resume = matchingPrecheck && retainedMeasurement && (deferredTreeBusy || retryRequested)
+            ? { ...matchingPrecheck, measurement: retainedMeasurement } : undefined;
           const operationId =
             resume?.operationId ??
             `${FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX}${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +

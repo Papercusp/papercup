@@ -213,6 +213,38 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(output).toHaveBeenCalledTimes(1);
   });
 
+  it.each([1, 35, 40])('retains small-population progress after interruption and retries only missing files (%s)', async size => {
+    let persisted = wide(size);
+    const files = [...persisted.admissionPrecheck!.files];
+    const transition = async (_target: unknown, update: (current: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue) => {
+      persisted = jsonbRoundTrip(update(persisted));
+    };
+    const common = {
+      getTask: async () => ({ state: 'running' as const, confined: true }),
+      readQueue: async () => ({ status: 'value' as const, queue: persisted }),
+      transition, now: () => 30,
+    };
+    const interrupted = await runAdmissionPrecheckWorker(input, { ...common,
+      createRunner: () => async run => {
+        for (const path of run.files.slice(0, -1)) await run.onFileResult?.({ path, status: 'pass' });
+        throw new Error('connection lost before the final file');
+      },
+    });
+    expect(interrupted).toMatchObject({ status: 'settled', verdict: { ok: false } });
+    expect(persisted.admissionPrecheck!.measurement!.results.map(result => result.path)).toEqual(files.slice(0, -1));
+    persisted = { ...persisted, admissionPrecheck: { ...persisted.admissionPrecheck!, status: 'running', verdict: undefined } };
+    const resumedFiles: string[] = [];
+    const resumed = await runAdmissionPrecheckWorker(input, { ...common,
+      createRunner: () => async run => {
+        resumedFiles.push(...run.files);
+        return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
+      },
+    });
+    expect(resumedFiles).toEqual(files.slice(-1));
+    expect(resumed).toMatchObject({ status: 'settled', verdict: { ok: true } });
+    expect(persisted.admissionPrecheck!.measurement!.results).toHaveLength(size);
+  });
+
   it('aggregates JSONB-reordered native results across execution groups', async () => {
     let persisted = jsonbRoundTrip(wide(41));
     const outcome = await runAdmissionPrecheckWorker(input, {
@@ -650,9 +682,9 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       runnerTaskId: input.taskId,
       status: 'passed',
       currentFile: 'lib/red.test.ts',
-      completedCount: 0,
+      completedCount: 1,
       totalCount: 1,
-      heartbeatAtMs: 20,
+      heartbeatAtMs: 30,
       verdict: { ok: true, ran: true, fixes: ['lib/red.test.ts'] },
     });
     expect(persisted.dispatchReservation).toBeUndefined();
@@ -700,13 +732,14 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     /** `atBuilt`/`atPrevious` answer per file at the built commit 'c…' and the repair head 'b…'. */
     const settle = async (precheck: FrozenRepairAdmissionPrecheck, atBuilt: Record<string, Status>, atPrevious: Record<string, Status>) => {
       let persisted = queue(precheck);
-      const calls: Array<{ suffix: string | undefined; commit: string; files: string[] }> = [];
+      const calls: Array<{ suffix: string | undefined; commit: string; files: string[]; expectedTree?: string }> = [];
       const outcome = await runAdmissionPrecheckWorker(input, {
         getTask: async () => ({ state: 'running', confined: true }),
         readQueue: async () => ({ status: 'value', queue: persisted }),
         transition: async (_target, update) => { persisted = update(persisted); },
         createRunner: options => async run => {
-          calls.push({ suffix: options.precheckRootSuffix, commit: run.commit, files: [...run.files] });
+          calls.push({ suffix: options.precheckRootSuffix, commit: run.commit, files: [...run.files],
+            ...(run.expectedTree ? { expectedTree: run.expectedTree } : {}) });
           const table = run.commit === 'c'.repeat(40) ? atBuilt : atPrevious;
           const results = run.files.map(path => ({ path, status: table[path] ?? 'pass' as Status }));
           for (const result of results) await run.onFileResult?.(result);
@@ -721,7 +754,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       const { persisted, calls } = await settle(operation({ files, totalCount: files.length, radius }),
         { 'ws-a/near.test.ts': 'fail' }, { 'ws-a/near.test.ts': 'fail' });
       expect(calls).toEqual([
-        { suffix: undefined, commit: 'c'.repeat(40), files },
+        { suffix: undefined, commit: 'c'.repeat(40), files, expectedTree: 'd'.repeat(40) },
         { suffix: '-previous-head', commit: 'b'.repeat(40), files: ['ws-a/near.test.ts'] },
       ]);
       expect(persisted.admissionPrecheck).toMatchObject({ status: 'passed', verdict: { ok: true, fixes: ['lib/red.test.ts'],
@@ -835,10 +868,10 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     it('a red that fails ONCE then passes its re-run at the SAME built commit is an advisory flake, and the admission publishes', async () => {
       const { persisted, calls } = await settle(operation({ files, totalCount: files.length, radius }), { flaky: { 'ws-a/near.test.ts': 1 } });
       expect(calls).toEqual([
-        { suffix: undefined, commit: 'c'.repeat(40), files },
+        { suffix: undefined, commit: 'c'.repeat(40), files, expectedTree: 'd'.repeat(40) },
         { suffix: '-previous-head', commit: 'b'.repeat(40), files: ['ws-a/near.test.ts'] },
         // The confirmation re-run: the main tree, the built commit, only the would-be-attributed file.
-        { suffix: undefined, commit: 'c'.repeat(40), files: ['ws-a/near.test.ts'] },
+        { suffix: undefined, commit: 'c'.repeat(40), files: ['ws-a/near.test.ts'], expectedTree: 'd'.repeat(40) },
       ]);
       expect(persisted.admissionPrecheck).toMatchObject({ status: 'passed', verdict: { ok: true, fixes: ['lib/red.test.ts'],
         flakyAtBuiltCommit: ['ws-a/near.test.ts'],
@@ -847,7 +880,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
 
     it('a red that fails its re-run too is attributed: admission-imports-red', async () => {
       const { persisted, calls } = await settle(operation({ files, totalCount: files.length, radius }), { red: ['ws-a/near.test.ts'] });
-      expect(calls.at(-1)).toEqual({ suffix: undefined, commit: 'c'.repeat(40), files: ['ws-a/near.test.ts'] });
+      expect(calls.at(-1)).toEqual({ suffix: undefined, commit: 'c'.repeat(40), files: ['ws-a/near.test.ts'], expectedTree: 'd'.repeat(40) });
       expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', verdict: { ok: false, code: 'admission-imports-red',
         importedRed: ['ws-a/near.test.ts'], confirmation: { results: [{ path: 'ws-a/near.test.ts', status: 'fail' }] } } });
       expect(persisted.admissionPrecheck?.verdict).not.toHaveProperty('flakyAtBuiltCommit');
@@ -897,7 +930,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       },
       now: () => 30,
     });
-    expect(stale.status).toBe('settled');
+    expect(stale).toMatchObject({ status: 'interrupted', reason: expect.stringContaining('identity changed') });
     expect(persisted.admissionPrecheck).toMatchObject({ operationId: 'repair-precheck-newer', status: 'running' });
   });
 

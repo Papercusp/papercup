@@ -726,7 +726,9 @@ export async function runAdmissionPrecheckWorker(
     (lazyBaselineRunner ??= deps.createRunner({ ...runnerOptions, precheckRootSuffix: ADMISSION_PRECHECK_BASELINE_ROOT_SUFFIX }))(run);
   try {
   try {
-  if (operation.files.length > ADMISSION_RADIUS_CAP || operation.measurement)
+  // Small populations need the same durable per-file custody as multi-group runs:
+  // one unavailable child must not discard the other measured files on retry.
+  if (operation.builtTree || operation.files.length > ADMISSION_RADIUS_CAP || operation.measurement)
     return await runBoundedAdmissionPrecheck(input, queue, deps, runner, finalize, baselineRunner);
   let run: FixPrecheckRunResult;
   try {

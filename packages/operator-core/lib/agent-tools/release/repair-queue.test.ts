@@ -492,9 +492,8 @@ describe('release:repair-queue', () => {
   });
 
   it('documents request scope without accepting target identity in the operation payload', () => {
-    // 32963fcf18 moved the "selected harness scope" sentence into guidance.notWhen; the
-    // description still names the request scope, so assert each where it actually lives.
-    expect(tool.description).toContain('for the selected harness (operator home if unscoped)');
+    // Scope guidance lives in notWhen; the description names the frozen queue.
+    expect(tool.description).toContain('frozen repair queue');
     expect(tool.guidance?.notWhen).toContain('Use the selected harness scope, not a harness/workspace key in the payload');
     expect(tool.args.safeParse({ op: 'get', harness: 'other' }).success).toBe(false);
   });
@@ -1532,8 +1531,8 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true]);
     });
 
-    const wideFixture = () => {
-      const files = ['lib/red.test.ts', ...Array.from({ length: 80 }, (_, i) => `lib/guard-${i}.test.ts`)];
+    const wideFixture = (size = 81) => {
+      const files = ['lib/red.test.ts', ...Array.from({ length: size - 1 }, (_, i) => `lib/guard-${i}.test.ts`)];
       const radius = { status: 'measured' as const, reason: 'ok', guarded: files.slice(1), reportOnly: [],
         legs: Object.fromEntries(files.map(file => [file, '@t/core'])) };
       const operation = { ...queue.admissionPrecheck, sourceCommit: 'e'.repeat(40), builtTree: 'f'.repeat(40), files, radius };
@@ -1681,6 +1680,36 @@ describe('release:repair-queue', () => {
       expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe('fail');
       expect(dryRuns()).toEqual([true]);
     });
+
+    it.each(['valid', 'commit', 'population', 'partial', 'duplicate'] as const)(
+      'small-population retry validates retained native verdict rows (%s)', async kind => {
+        const fixture = wideFixture(35);
+        wideDoor(fixture);
+        const results = fixture.files.map(path => ({ path,
+          status: path === fixture.files.at(-1) ? 'unmeasured' as const : 'pass' as const }));
+        const population = precheckPopulation({ signature: queue.signature, admittedPaths: ['lib/red.test.ts'], radius: fixture.radius });
+        const verdict = evaluateFixPrecheck(population, { ran: true, commit: fixture.operation.builtCommit, results });
+        if (!verdict.ran) throw new Error('expected native verdict');
+        if (kind === 'commit') verdict.commit = '9'.repeat(40);
+        if (kind === 'population') verdict.population = { ...population, files: population.files.slice(1) };
+        if (kind === 'partial') verdict.results = results.slice(1);
+        if (kind === 'duplicate') verdict.results = [...results, results[0]!];
+        mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: {
+          ...fixture.operation, status: 'failed', verdict, runnerTaskId: 'expired-task',
+        } } });
+        const started = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+          retryPrecheck: true } as never, { role: 'su' } as never));
+        if (kind === 'valid') {
+          expect(started).toMatchObject({ verdict: 'precheck-running', precheckOperation: {
+            operationId: fixture.operation.operationId, measurement: { results },
+          } });
+          expect(mocks.startPrecheckWorker).toHaveBeenCalledWith(expect.objectContaining({ operationId: fixture.operation.operationId }));
+        } else {
+          expect(started).toMatchObject({ refused: true, reason: 'precheck-retained-evidence-invalid' });
+          expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+        }
+        expect(dryRuns()).toEqual([true]);
+      });
 
     it('retryPrecheck resumes a failed measured aggregate with unmeasured rows on the same operation', async () => {
       const fixture = wideFixture();
@@ -2004,6 +2033,7 @@ describe('release:repair-queue', () => {
         totalCount: number;
         heartbeatAtMs: number;
       }> = [];
+      const progressTransitions: Array<(fresh: typeof queue) => typeof queue> = [];
       const runner = vi.fn(async ({ commit, files, onProgress }: {
         commit: string;
         files: readonly string[];
@@ -2021,6 +2051,7 @@ describe('release:repair-queue', () => {
           heartbeatAtMs: Date.now(),
         };
         await onProgress?.(snapshot);
+        progressTransitions.push(mocks.transition.mock.calls.at(-1)?.[1] as (fresh: typeof queue) => typeof queue);
         progressSnapshots.push(snapshot);
         return {
           ran: true as const,
@@ -2075,6 +2106,7 @@ describe('release:repair-queue', () => {
       expect(mocks.write.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.startPrecheckWorker.mock.invocationCallOrder[0],
       );
+      const settled = await settledPrecheckQueue();
       expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
       expect(mocks.precheckFactory).toHaveBeenCalledWith({
         integrationRoot: '/canonical',
@@ -2082,17 +2114,16 @@ describe('release:repair-queue', () => {
       });
       expect(runner).toHaveBeenCalledWith({
         commit: NEW_HEAD,
+        expectedTree: 'f'.repeat(40),
         files: ['lib/red.test.ts'],
+        onFileResult: expect.any(Function),
         onProgress: expect.any(Function),
       });
-      const settled = await settledPrecheckQueue();
       expect(settled.admissionPrecheck).toMatchObject({ status: 'passed', builtCommit: NEW_HEAD });
       expect(progressSnapshots).toEqual([
         { currentFile: 'lib/red.test.ts', completedCount: 0, totalCount: 1, heartbeatAtMs: expect.any(Number) },
       ]);
-      const progressTransition = mocks.transition.mock.calls[0]?.[1] as
-        | ((fresh: typeof queue) => typeof queue)
-        | undefined;
+      const progressTransition = progressTransitions[0];
       expect(progressTransition).toEqual(expect.any(Function));
       const pendingMarker = mocks.write.mock.calls[0]?.[1] as typeof queue;
       const progressed = progressTransition!(pendingMarker);
