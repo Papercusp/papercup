@@ -892,6 +892,43 @@ function isCanonicalGradingAuditAwait(args) {
 }
 
 /**
+ * Normalize the documented ptool_scope wrapper only for a tools:find heredoc.
+ * Validate the resolved scope values before replacing the array expansion with
+ * the existing canonical env-reference form; never evaluate shell syntax.
+ * @param {string} command
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string | null}
+ */
+function normalizeCanonicalPtoolScopeFind(command, env) {
+  const normalized = command.replace(/\r\n/g, '\n');
+  if (normalized.includes('\r')) return null;
+  const prelude = [
+    'ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")',
+    'if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]; then',
+    '  ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")',
+    'fi',
+  ].join('\n') + '\n';
+  if (!normalized.startsWith(prelude)) return normalized;
+
+  const rest = normalized.slice(prelude.length);
+  const newline = rest.indexOf('\n');
+  if (newline < 0) return null;
+  const header = rest.slice(0, newline);
+  const match = /^ptool[ \t]+tools:find[ \t]+--json[ \t]+-[ \t]+"\$\{ptool_scope\[@\]\}"[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  if (!match) return null;
+
+  const workspace = env.PAPERCUSP_WORKSPACE;
+  if (typeof workspace !== 'string' || !/^[A-Za-z0-9._-]+$/.test(workspace)) return null;
+  const harness = env.PAPERCUSP_HARNESS_SLUG;
+  const hasHarness = typeof harness === 'string' && harness.length > 0;
+  if (hasHarness && !/^[A-Za-z0-9._-]+$/.test(harness)) return null;
+
+  const scopes = ' --workspace="$PAPERCUSP_WORKSPACE"' +
+    (hasHarness ? ' --harness="$PAPERCUSP_HARNESS_SLUG"' : '');
+  return 'ptool tools:find --json -' + scopes + " <<'" + match[1] + "'\n" + rest.slice(newline + 1);
+}
+
+/**
  * A bounded, single typed operator call cannot run arbitrary shell code. The
  * read-only diagnostics enforce their own role and input constraints at the
  * operator. These calls still cross the authenticated operator; an actual
@@ -901,8 +938,8 @@ function isCanonicalGradingAuditAwait(args) {
  */
 function isCanonicalReviewPtoolCommand(command, env) {
   if (command.length > 32_768 || command.includes(String.fromCharCode(0))) return false;
-  const normalized = command.replace(/\r\n/g, '\n');
-  if (normalized.includes('\r')) return false;
+  const normalized = normalizeCanonicalPtoolScopeFind(command, env);
+  if (normalized === null) return false;
   const lines = normalized.split('\n');
   if (lines.at(-1) === '') lines.pop();
   if (lines.length < 3) return false;

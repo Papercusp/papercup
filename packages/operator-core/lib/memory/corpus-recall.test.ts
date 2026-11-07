@@ -664,8 +664,11 @@ describe('selectCorpusLines', () => {
       budgetChars: 100_000,
     });
     // teaser <= 220 chars; the rest of the line is the source label.
-    expect(lines[0].line.length).toBeLessThan(400);
+    expect(lines[0].line.length).toBeLessThan(500);
     expect(lines[0].line).not.toContain('x'.repeat(500));
+    expect(lines[0].operative).toBe(false);
+    expect(lines[0].line).toContain('source-pointer');
+    expect(lines[0].line).not.toContain('http2 x');
   });
 
   it('ignores hits from sources it does not own', () => {

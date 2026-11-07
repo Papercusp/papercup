@@ -1,3 +1,5 @@
+import { renderContextSourceUnit } from './temporal-render';
+
 /**
  * corpus-recall — the PURE selection core for the second retrieval leg
  * (context-injection-audit-2026-07-28 P-008, built to D-037).
@@ -108,6 +110,8 @@ export interface CorpusLine {
   line: string;
   handle: CorpusHandle;
   score: number;
+  /** A provenance-only pointer cannot commit the source's operative delivery. */
+  operative?: boolean;
 }
 
 export type CorpusDropReason =
@@ -814,9 +818,10 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
         : kind === 'session' ? `session ${ref}`
         : `${kind} ${ref}${hit.meta?.section ? ` › ${hit.meta.section}` : ''}${kind === 'report' ? ' · dated evidence' : ''}`;
     const knowledge = kind === 'plan' || kind === 'doc' || kind === 'report';
-    const teaser = oneLine(hitText(hit)).slice(0, knowledge ? 700 : CORPUS_TEASER_MAX_CHARS);
+    const unit = renderContextSourceUnit(hitText(hit), { kind, ref, link: handle.resolve },
+      knowledge ? 700 : CORPUS_TEASER_MAX_CHARS);
     const citation = knowledge ? ` — ${handle.resolve}` : '';
-    const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${teaser}${citation}`;
+    const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${unit.text}${citation}`;
     // WI-6870: no first-entry exemption — the teaser already caps hitText, but the
     // label/date wrapper around it can still push a single line over budget
     // (measured 945 chars against a 900 budget); the exemption let that first entry
@@ -828,7 +833,7 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       continue;
     }
     spent += line.length;
-    lines.push({ line, handle, score: hit.score });
+    lines.push({ line, handle, score: hit.score, operative: unit.operative });
   }
 
   return { lines, dropped };

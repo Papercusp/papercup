@@ -7,6 +7,26 @@
  * validity metadata while leaving stale guidance looking current.
  */
 
+import { createHash } from 'node:crypto';
+
+/** Source content is quoted evidence. A size limit may replace a whole unit
+ * with provenance, but must never retain an imperative prefix and lose its
+ * conditions. The hash describes this retrieved unit, not an unseen full source. */
+export function renderContextSourceUnit(text: string, source: {
+  kind: string; ref: string; link: string;
+}, maxChars: number, pointerOnly = false): { text: string; operative: boolean } {
+  const quoted = `source-evidence ${JSON.stringify(text)}`;
+  if (!pointerOnly && quoted.length <= maxChars) return { text: quoted, operative: true };
+  const unitHash = createHash('sha256').update(text.normalize('NFC').replace(/\r\n?/g, '\n')).digest('hex');
+  // A memory URI repeats the same stable id already carried by ref. Keeping
+  // both can make the provenance alone overflow a small native sink's budget.
+  const provenance = source.kind === 'memory' ? { kind: source.kind, ref: source.ref } : source;
+  return {
+    text: `source-pointer ${JSON.stringify({ ...provenance, revision: 'unknown', passage: 'retrieved-unit', unitHash, omitted: true })}`,
+    operative: false,
+  };
+}
+
 type ValidityMetadata = {
   status?: unknown;
   invalid_at?: unknown;

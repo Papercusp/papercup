@@ -661,6 +661,47 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: unavailable authority permits only the documented scoped ptool tools:find wrapper', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const scopedPtool = (tool: string, args: unknown) => [
+      'ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")',
+      'if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]; then',
+      '  ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")',
+      'fi',
+      'ptool ' + tool + ' --json - "${ptool_scope[@]}" <<\'JSON\'',
+      JSON.stringify(args),
+      'JSON',
+    ].join('\n');
+    const safe = scopedPtool('tools:find', { query: 'work_items:claim' });
+    const unsafe = scopedPtool('work_items:complete', { id: 'WI-123', state: 'done' });
+    const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    const env = {
+      PAPERCUSP_SID: 'sid-scoped-find',
+      PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp',
+    };
+
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: safe } }, env, fetchImpl })).toBeNull();
+      expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: safe } },
+        env: { ...env, PAPERCUSP_HARNESS_SLUG: '' }, fetchImpl })).toBeNull();
+
+      for (const [cmd, callEnv] of [
+        [unsafe, env],
+        [safe, { ...env, PAPERCUSP_HARNESS_SLUG: 'papercusp;touch' }],
+      ] as const) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env: callEnv, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+    }
+  });
+
   it('pre-tool: a wall during authority fetch permits grouped read-only inspection but still denies writes', async () => {
     const { runInjection } = await import('../core.mjs');
     const stalledFetch = ((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {

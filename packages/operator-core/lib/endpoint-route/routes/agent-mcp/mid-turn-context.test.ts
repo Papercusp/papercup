@@ -110,6 +110,16 @@ import routes, {
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
 import { setSessionConfinementResolver } from '../../../capability-envelope/session-confinement-port';
 
+it('context reliability: final rendering preserves late prerequisites or emits only a pointer', () => {
+  const complete = '- [memory] source-evidence "Execute only after explicit approval."';
+  const long = '- [memory] source-evidence "Execute now. ' + 'detail '.repeat(100) + 'Unless approval is absent."';
+  const heading = '## Recalled source evidence\n\n';
+  const packed = clampToBudget(heading + long + '\n' + complete, heading.length + complete.length);
+  expect(packed).toBe(heading + complete);
+  expect(packed).not.toContain('Execute now.');
+  expect(clampToBudget(heading + long, 350)).toBe('');
+});
+
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
 };
@@ -182,7 +192,7 @@ describe('exact mid-turn emission receipts', () => {
     const a = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 4, 'mid-turn', '- complete memory condition ☃');
     const b = memoryFragmentOffer('corpus', 'WI-42', 4, 'mid-turn', '- ' + 'clipped condition '.repeat(35));
     preparedFragmentsMock.mockReturnValue([a, b]);
-    buildMemoryContextBlockMock.mockResolvedValue(a.rendered + '\n' + b.rendered);
+    buildMemoryContextBlockMock.mockResolvedValue('## Memory\n\n' + a.rendered + '\n' + b.rendered);
     const res = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', {
       method: 'POST', body: JSON.stringify({ owner: who, client: 'codex', memoryReceiptMode: true,
         tool: 'Grep', toolInput: { pattern: 'receipt candidate' } }),
@@ -719,18 +729,8 @@ describe('mid-turn-context — P-018 acceptance: fires EARLY, on the first grep'
   });
 });
 
-describe('mid-turn-context — the budget is enforced HERE, because injection.ts does not', () => {
-  // THE DEFECT THIS PINS (found by running the P-018 acceptance case against live
-  // retrieval, not by reading the code): buildMemoryContextBlock treats budgetChars
-  // as advisory for the FIRST row. Its admit() is
-  //     if (spent + line.length > budget && lines.length > 0) return false;
-  // so row one is emitted whole at any size — deliberate there (a small-budget
-  // caller should get something rather than null), wrong here. Measured against the
-  // real store, the top-ranked record for the acceptance query is ~3,700 chars
-  // against this endpoint's 350. Since this fires per tool BATCH, an unclamped
-  // endpoint reintroduces exactly the context flood the 350 budget exists to
-  // prevent — and the epoch dedup does NOT save us, because it bounds the repeat
-  // of ONE record, not the size of fifty distinct ones.
+describe('mid-turn-context — complete units within the final budget', () => {
+  // Legacy/unstructured oversized output must also fail safely at the sink.
   const OVERSIZED = `## Possibly relevant (mid-turn)\n\n- [project @ papercusp] (id=980ce692) ${'x'.repeat(4000)}`;
 
   it('clamps a single oversized row that buildMemoryContextBlock emitted whole', async () => {
@@ -741,11 +741,10 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
     expect(OVERSIZED.length).toBeGreaterThan(4000);
   });
 
-  it('keeps the memory id when clipping without prescribing a possibly unavailable tool', async () => {
+  it('omits an oversized legacy row without leaking its prefix', async () => {
     buildMemoryContextBlockMock.mockResolvedValueOnce(OVERSIZED);
     const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'slow session history' } });
-    expect(out.text).toContain('id=980ce692');
-    expect(out.text).toContain('(clipped; id retained)');
+    expect(out.text).toBe('');
     expect(out.text).not.toContain('memory:search');
   });
 
@@ -758,11 +757,10 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
     expect(clampToBudget('')).toBe('');
   });
 
-  it('cuts at a word boundary when one is available, not mid-token', () => {
+  it('omits oversized unstructured text even if it has word boundaries', () => {
     const block = `${'word '.repeat(100)}TAIL`;
     const out = clampToBudget(block, 120);
-    const head = out.split(' … ')[0]!;
-    expect(head.endsWith('word')).toBe(true);
+    expect(out).toBe('');
   });
 
   // WI-6857 CUT 2. The clamp is a repair for the mem0 leg's UNENFORCED budget
@@ -787,7 +785,7 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
     const block = `## Possibly relevant (mid-turn)\n\n- [project] (id=abc) ${'x'.repeat(4000)}\n\n${CORPUS}`;
     const out = clampToBudget(block);
     const mem0 = out.slice(0, out.indexOf(`\n\n### ${CORPUS_BLOCK_HEADING}`));
-    expect(mem0).toContain('(clipped');
+    expect(mem0).toBe('');
     expect(mem0.length).toBeLessThan(500);
   });
 

@@ -55,7 +55,7 @@ import {
 import { lexicalQueryText, retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
 import { jevFunnelEntry, jevMemoryBudgetMs, runJevMemoryGate } from './jev-memory-gate';
-import { annotateSupersededMemory } from './temporal-render';
+import { annotateSupersededMemory, renderContextSourceUnit } from './temporal-render';
 import { systemDistinctId } from '../flag-distinct-id';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
@@ -954,7 +954,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         heading: CORPUS_BLOCK_HEADING,
         lines: lines.map((l) => l.line),
         refs: lines.map((l) => l.handle.ref),
-        fragments: sessionId ? lines.map(l => memoryFragmentOffer('corpus', l.handle.ref, epoch,
+        fragments: sessionId ? lines.filter(l => l.operative !== false).map(l => memoryFragmentOffer('corpus', l.handle.ref, epoch,
           input.session?.port ?? 'injection', l.line)) : [],
         embedderAvailable: res.embedderAvailable,
         candidateCount: res.candidateCount,
@@ -1772,27 +1772,9 @@ async function buildBlockInner(
     let spent = 0;
     const lines: string[] = [];
     const admit = (line: string): boolean => {
-      // The `&& lines.length > 0` is the ALWAYS-EMIT-ONE-ROW contract, and it is
-      // load-bearing across modules — do not "tighten" it again without reading
-      // mid-turn-context.ts:174-190, which documents this exact clause and depends on it:
-      // a caller with a small budget must get SOMETHING rather than null.
-      //
-      // WI-6870 removed it, reasoning that MAX_ENTRY_CHARS (above) already keeps any single
-      // line well under a normal budget so strict enforcement could no longer starve the
-      // other candidates (measured: one 4,901-char memory against a 4,000 budget). That is
-      // true for a NORMAL budget and false for a small one: the mid-turn endpoint passes
-      // MID_TURN_BUDGET_CHARS = 350, so a line clamped to 900 STILL overflows and the first
-      // row was rejected — buildMemoryContextBlock returned nothing and mid-turn context
-      // injection silently delivered NOTHING (WI-7163; caught by the P-018 acceptance
-      // replay, which red-pinned the green gate).
-      //
-      // MAX_ENTRY_CHARS is the real fix for WI-6870's starvation case and is retained; this
-      // exemption is bounded by it, so the 4,901-char scenario cannot recur through here.
-      // Small-budget callers clamp themselves — see mid-turn-context.ts `clampToBudget()`,
-      // which truncates keeping the HEAD precisely so scope + id + lede survive.
-      // NOTE: the corpus leg (corpus-recall.ts) is deliberately STRICT and stays that way —
-      // its no-first-entry-exemption behavior is pinned by corpus-recall.test.ts (WI-6870).
-      if (spent + line.length > budget && lines.length > 0) return false;
+      // P-004: a complete source unit or pointer must fit, including the first.
+      // Final sinks may omit a whole unit; they must never slice its conditions.
+      if (spent + line.length > budget) return false;
       lines.push(line);
       spent += line.length;
       return true;
@@ -1810,7 +1792,7 @@ async function buildBlockInner(
     // happen over the admitted set, not the candidate set — a leg that offers
     // candidates and never lands one is contributing nothing, and that is exactly
     // what a pre-filter count cannot show.
-    type RenderRow = { line: string; id?: string; text: string; entry: MemoryEntry };
+    type RenderRow = { line: string; id?: string; text: string; entry: MemoryEntry; operative: boolean };
     const mainRows: RenderRow[] = [];
     const packRows: RenderRow[] = [];
     for (const hit of ranked) {
@@ -1818,19 +1800,15 @@ async function buildBlockInner(
         const fullText = hit.text ?? '';
         const displayText = hit.injectionText ?? fullText;
         const annotatedText = annotateSupersededMemory(displayText, hit.metadata);
-        // WI-6870: clamp the RENDERED text to MAX_ENTRY_CHARS so a single oversized memory
-        // can't blow the whole budget by itself. Dedup below still compares the FULL text
-        // (not this clamped copy), so two distinct long entries that happen to share a
-        // >900-char prefix are never mistaken for near-duplicates.
-        const boundedText =
-          annotatedText.length > MAX_ENTRY_CHARS
-            ? `${annotatedText.slice(0, MAX_ENTRY_CHARS)}… (truncated — ask an authorized memory reader for the full entry)`
-            : annotatedText;
+        const unit = renderContextSourceUnit(annotatedText, {
+          kind: 'memory', ref: hit.id ?? 'unknown', link: `memory:${encodeURIComponent(hit.id ?? '')}`,
+        }, MAX_ENTRY_CHARS, displayText !== fullText);
         return {
-          line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${boundedText}`,
+          line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${unit.text}`,
           id: hit.id,
           text: fullText,
           entry: hit,
+          operative: unit.operative,
         };
       };
       if (survivingHive.has(hit)) {
@@ -1852,7 +1830,7 @@ async function buildBlockInner(
     const { kept: dedupedRendered } = collapseNearDuplicates(renderedRows, (r) => r.text);
     funnel.dropped.nearDuplicate = renderedRows.length - dedupedRendered.length;
     let truncated = false;
-    for (const { line, entry } of dedupedRendered) {
+    for (const { line, entry, operative } of dedupedRendered) {
       // WI-6870: skip-and-continue instead of a hard break. A `break` here discarded every
       // remaining (lower-ranked but possibly SMALLER) entry once ONE entry didn't fit —
       // measured mean 849 chars (21%) of the budget left on the table per turn, worst case
@@ -1865,7 +1843,7 @@ async function buildBlockInner(
         continue;
       }
       admittedEntries.push(entry);
-      if (input.session?.sessionId && sessionEpoch !== null && typeof entry.id === 'string') {
+      if (operative && input.session?.sessionId && sessionEpoch !== null && typeof entry.id === 'string') {
         fragments?.push(memoryFragmentOffer('memory', entry.id, sessionEpoch, input.session.port ?? 'injection', redactSensitiveText(line)));
       }
     }

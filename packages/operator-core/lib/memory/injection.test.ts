@@ -6,6 +6,30 @@ import * as recallStaleness from './recall-staleness';
 import * as flagServer from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { resetOperatorCacheForTests } from '../cache/instance';
+import { renderContextSourceUnit } from './temporal-render';
+
+describe('context reliability: complete source rendering', () => {
+  it.each([
+    ['late-negation', 'Do not execute without the receipt.'],
+    ['approval', 'Only execute after explicit approval.'],
+    ['exception', 'Except when the account is suspended.'],
+    ['expiry', 'This authorization expires at midnight.'],
+    ['supersession', 'This replaces the previous instruction.'],
+  ])('context reliability R-4: %s entry', (_scenario, condition) => {
+    const text = 'Execute the migration. ' + 'supporting detail '.repeat(70) + condition;
+    const unit = renderContextSourceUnit(text, { kind: 'memory', ref: 'fixture', link: 'memory:fixture' }, 450);
+    expect(unit.operative).toBe(false);
+    expect(unit.text).toMatch(/^source-pointer /);
+    expect(unit.text).not.toContain('Execute the migration');
+    expect(unit.text).not.toContain(condition);
+    expect(JSON.parse(unit.text.slice('source-pointer '.length))).toMatchObject({
+      kind: 'memory', ref: 'fixture', revision: 'unknown', passage: 'retrieved-unit', omitted: true,
+    });
+    const complete = renderContextSourceUnit(text, { kind: 'memory', ref: 'fixture', link: 'memory:fixture' }, 10000);
+    expect(complete.operative).toBe(true);
+    expect(JSON.parse(complete.text.slice('source-evidence '.length))).toBe(text);
+  });
+});
 import {
   MEMORY_INJECT_TIMEOUT_MS,
   MemoryTimeoutError,
@@ -992,7 +1016,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
         potSlugs: [],
-        budgetChars: 60,
+        budgetChars: 120,
       });
       await flush();
 
@@ -1150,14 +1174,10 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
     });
 
     /**
-     * The property that made the clamp the RIGHT lever rather than merely a
-     * cheaper one (D-090): a clamped entry stays RECOVERABLE. It keeps its scope,
-     * id and lede and tells the agent how to request the rest without assuming
-     * that this recipient is allowed to search memory, whereas an entry
-     * dropped for budget is invisible and unrecoverable. If the clamp ever starts
-     * truncating silently, halving it stops being a safe trade and this fails.
+     * An oversized source stays addressable without printing a potentially
+     * misleading prefix. Its pointer is provenance, not operative evidence.
      */
-    it('a clamped entry says how to recover the rest, so shortening stays non-destructive', async () => {
+    it('an oversized entry retains provenance without an imperative prefix', async () => {
       useBackend(mockBackend([{ id: 'long1', text: `mnemonic ${'detail '.repeat(400)}` }]));
       const block = await buildMemoryContextBlock({
         userId: 'u1',
@@ -1169,22 +1189,18 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       });
       await flush();
 
-      expect(block).toContain('truncated — ask an authorized memory reader for the full entry');
+      expect(block).toContain('source-pointer');
       expect(block).not.toContain('memory:search');
       expect(block).toContain('id=long1');
-      // The lede survives the cut — a truncated entry is still identifiable.
-      expect(block).toContain('mnemonic');
+      expect(block).toContain('"omitted":true');
+      expect(block).not.toContain('mnemonic');
     });
 
     /**
-     * The THIRD reading of utilization, and the one most likely to be mistaken
-     * for a bad write: >1.0 is correct. `admit()` skips the budget check while
-     * `lines.length === 0` (the ALWAYS-EMIT-ONE-ROW contract), so a single
-     * oversized first entry is admitted whatever its length — this is the
-     * mid-turn WI-7163 case, where removing the exemption made mid-turn deliver
-     * nothing at all. Pinned so nobody "corrects" spent > budgetChars later.
+     * The first row follows the same complete-unit budget as later rows. A
+     * tiny budget yields no source text rather than an incomplete instruction.
      */
-    it('reports spent ABOVE the budget when the always-emit-one-row exemption fires', async () => {
+    it('never admits an oversized first row above the budget', async () => {
       useBackend(
         mockBackend([
           { id: 'big1', text: 'y'.repeat(400) },
@@ -1204,11 +1220,10 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
         admission: { admitted: number; truncated: boolean; spent?: number; budgetChars?: number };
       };
-      expect(admission.admitted).toBe(1);
+      expect(admission.admitted).toBe(0);
       expect(admission.truncated).toBe(true);
       expect(admission.budgetChars).toBe(50);
-      // The exemption delivered a line far larger than the budget allowed.
-      expect(admission.spent!).toBeGreaterThan(50);
+      expect(admission.spent).toBe(0);
     });
 
     it('records EVERY stage even at zero — a filter that ran and removed nothing is not a filter that never ran', async () => {
@@ -1696,8 +1711,8 @@ describe('buildMemoryContextBlock', () => {
     ]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'who am i' });
     expect(block).toContain('## Operator memory (relevant entries)');
-    expect(block).toContain('- [preference] (id=i1) User prefers terse replies');
-    expect(block).toContain('- [identity] (id=i2) User name is Aviyn');
+    expect(block).toContain('- [preference] (id=i1) source-evidence "User prefers terse replies"');
+    expect(block).toContain('- [identity] (id=i2) source-evidence "User name is Aviyn"');
   });
 
   it('redacts credential-bearing memory text before returning the recall block', async () => {
@@ -1722,13 +1737,13 @@ describe('buildMemoryContextBlock', () => {
     const block = await buildMemoryContextBlock({
       userId: null, workspaceId: 'ws', harnessSlugs: ['papercup'], queryContext: 'storage?',
     });
-    expect(block).toContain('- [project @ papercup] (id=i3) Project uses PG by default');
+    expect(block).toContain('- [project @ papercup] (id=i3) source-evidence "Project uses PG by default"');
   });
 
   it('falls back to unknown kind when the entry has none', async () => {
     useBackend(mockBackend([{ id: 'i4', text: 'Bare fact' }]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
-    expect(block).toContain('- [unknown] (id=i4) Bare fact');
+    expect(block).toContain('- [unknown] (id=i4) source-evidence "Bare fact"');
   });
 
   it('respects custom heading', async () => {
@@ -1857,8 +1872,8 @@ describe('buildMemoryContextBlock', () => {
         },
       ],
     ]);
-    expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) Hive convention: tests ship with the feature');
-    expect(block).toContain('- [feedback @ member-a] (id=a1) Harness note: run npm test before pushing');
+    expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) source-evidence "Hive convention: tests ship with the feature"');
+    expect(block).toContain('- [feedback @ member-a] (id=a1) source-evidence "Harness note: run npm test before pushing"');
   });
 
   it('P-008: collapses near-duplicate memories (same fact under different ids) before the budget', async () => {
@@ -1933,7 +1948,7 @@ describe('buildMemoryContextBlock', () => {
       try {
         useBackend(mockBackend(rows));
         const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
-        expect(block).toContain('- [project] (id=p1) A probationary lesson');
+        expect(block).toContain('- [project] (id=p1) source-evidence "A probationary lesson"');
         expect(block).not.toContain('probationary]');
       } finally {
         delete process.env[FLAG_ENV];
@@ -1945,8 +1960,8 @@ describe('buildMemoryContextBlock', () => {
       try {
         useBackend(mockBackend(rows));
         const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
-        expect(block).toContain('- [project · probationary] (id=p1) A probationary lesson');
-        expect(block).toContain('- [project] (id=v1) A validated fact'); // legacy grandfathered
+        expect(block).toContain('- [project · probationary] (id=p1) source-evidence "A probationary lesson"');
+        expect(block).toContain('- [project] (id=v1) source-evidence "A validated fact"'); // legacy grandfathered
       } finally {
         delete process.env[FLAG_ENV];
       }
@@ -1978,10 +1993,9 @@ describe('buildMemoryContextBlock', () => {
 
       const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
 
-      expect(block).toContain(
-        "- [project] (id=m-stale) ⚠ STALE — dead anchors: file:packages/gone.ts. Verify, don't rely. guidance from the removed module",
-      );
-      expect(block).toContain('- [project] (id=m-healthy) guidance from the current module');
+      expect(block).toContain('- [project] (id=m-stale) source-pointer');
+      expect(block).not.toContain('guidance from the removed module');
+      expect(block).toContain('- [project] (id=m-healthy) source-evidence "guidance from the current module"');
       expect(block).not.toContain('m-healthy) ⚠ STALE');
     });
 
@@ -1992,7 +2006,7 @@ describe('buildMemoryContextBlock', () => {
 
       const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
 
-      expect(block).toBe('## Operator memory (relevant entries)\n\n- [project] (id=m-stale) guidance from the removed module');
+      expect(block).toBe('## Operator memory (relevant entries)\n\n- [project] (id=m-stale) source-evidence "guidance from the removed module"');
       expect(block).not.toContain('STALE');
     });
 
@@ -2003,7 +2017,7 @@ describe('buildMemoryContextBlock', () => {
 
       const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
 
-      expect(block).toBe('## Operator memory (relevant entries)\n\n- [project] (id=m-healthy) guidance from the current module');
+      expect(block).toBe('## Operator memory (relevant entries)\n\n- [project] (id=m-healthy) source-evidence "guidance from the current module"');
     });
 
     it.each(['flag', 'storage'] as const)('retains healthy recall while the advisory %s lookup is pending', async (phase) => {
@@ -2037,7 +2051,7 @@ describe('buildMemoryContextBlock', () => {
       try {
         const result = await block;
         expect(started).toBe(true);
-        expect(result).toContain('id=m-healthy) healthy advisory control');
+        expect(result).toContain('id=m-healthy) source-evidence "healthy advisory control"');
         expect(deadline.signal.aborted).toBe(false);
         expect(backend.search).toHaveBeenCalledOnce();
         if (phase === 'flag') expect(storage).not.toHaveBeenCalled();
@@ -2075,6 +2089,28 @@ describe('buildMemoryContextBlock', () => {
  * rendering assertions live in the P-003 describe below.
  */
 describe('corpus leg carries its own retrieval health (P-001)', () => {
+  it('does not offer provenance-only memory or corpus pointers for operative delivery', async () => {
+    useBackend(mockBackend([{
+      id: '11111111-1111-4111-8111-111111111111',
+      text: 'Execute the migration. ' + 'detail '.repeat(100) + 'Only after explicit approval.',
+    }]));
+    corpusIoResult = {
+      block: null, dropped: [], embedderAvailable: true, candidateCount: 1,
+      lines: [{ line: '- [doc fixture] source-pointer {"omitted":true}', operative: false, score: 1,
+        handle: { kind: 'doc', ref: 'doc:fixture', query: ['delivery'], resolve: 'docs:get' } }],
+    };
+    const input = { userId: 'u1', workspaceId: 'ws', queryContext: 'migration approval',
+      harnessSlugs: ['papercusp'], potSlugs: [], budgetChars: 1800,
+      session: { sessionId: 'su-pointer', epoch: 7, port: 'mid-turn' } };
+    for (let i = 0; i < 2; i++) {
+      const prepared = await prepareMemoryContextBlock(input);
+      expect(prepared?.text).toContain('source-pointer');
+      expect(prepared?.text).not.toContain('Execute the migration');
+      expect(prepared?.fragments).toEqual([]);
+    }
+    expect(sqlMockState.statements.some(statement => /INSERT\s+INTO\s+harness_shared\.(memory_session_surfaced|corpus_session_surfaced)/i.test(statement))).toBe(false);
+  });
+
   it('prepares complete memory/corpus fragments with the exact rendered text and captured epoch, without stamping delivery', async () => {
     useBackend(mockBackend([{
       id: '11111111-1111-4111-8111-111111111111', text: 'retain verified delivery evidence ☃',

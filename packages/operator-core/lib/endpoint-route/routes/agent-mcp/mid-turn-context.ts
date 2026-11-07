@@ -447,32 +447,10 @@ export function deriveQuery(tool: string, input: unknown): string {
 }
 
 /**
- * Enforce the mid-turn budget HERE, at the endpoint. This is not belt-and-braces:
- * `buildMemoryContextBlock` does NOT enforce `budgetChars` for the first row.
- * Its `admit()` reads
- *
- *     if (spent + line.length > budget && lines.length > 0) return false;
- *
- * — the `&& lines.length > 0` deliberately lets the FIRST row through whole,
- * whatever its size, so that a caller with a small budget gets *something* rather
- * than null. Correct for turn-start (4000 chars, one injection per turn). NOT
- * correct here: measured against the P-018 acceptance case, the top-ranked record
- * is ~3,700 chars — over 10x this endpoint's 350 — and this fires per tool BATCH,
- * so the docstring arithmetic above ("~17k worst case for fifty calls") would have
- * been wrong by an order of magnitude in exactly the direction the owner warned
- * about. The epoch dedup bounds the REPEAT of one record, not the size of fifty
- * distinct ones.
- *
- * Fixing it in injection.ts was not an option: that file is the P-041 retrieval
- * baseline and is gated by D-022, and every other caller depends on the
- * always-emit-one-row behavior. So the clamp lives at the one call site whose
- * contract is a TEASER.
- *
- * The clamp keeps the head, which is where the value is: the block opens with the
- * heading, then `- [scope] (id=…) <the memory's first sentence>`. So a clipped
- * teaser still carries the scope, the id (the handle for `memory:search`), and the
- * lede — which is the entire intended shape of an interruption cheap enough to
- * ignore.
+ * Pack complete memory rows within the final sink budget. Retrieval bounds the
+ * source body; this sink also accounts for headings and line separators. A
+ * source is quoted on one physical row or replaced by provenance alone. Never
+ * preserve an imperative prefix while cutting its condition or exception.
  */
 export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CHARS): string {
   if (!block) return '';
@@ -569,14 +547,22 @@ async function resolveFailureLoopHintText(hint: FailureLoopHint): Promise<string
 /** The char clamp itself, applied to ONE section. PURE. */
 function clampSection(section: string, budget: number): string {
   if (section.length <= budget) return section;
-  const cut = section.slice(0, budget);
-  // Prefer a word boundary, but never sacrifice most of the budget to find one.
-  const lastSpace = cut.lastIndexOf(' ');
-  const head = lastSpace > budget * 0.6 ? cut.slice(0, lastSpace) : cut;
-  // Principals calling this shared endpoint can have different tool grants.
-  // Keep the stable id, but do not prescribe memory:search to callers that
-  // may not be allowed to invoke it.
-  return `${head.trimEnd()} … (clipped; id retained)`;
+  // Source bodies are JSON-quoted onto one line by the shared renderers. Keep
+  // only complete rows. Unstructured or legacy multiline content is omitted
+  // whole: a newline or word boundary is not a safe instruction boundary.
+  const match = /^(## [^\n]+)\n\n([\s\S]*)$/.exec(section);
+  if (!match) return '';
+  const rows = match[2].split('\n').filter(Boolean);
+  if (rows.some(row => !row.startsWith('- '))) return '';
+  let result = match[1] + '\n\n';
+  let count = 0;
+  for (const row of rows) {
+    const next = (count ? '\n' : '') + row;
+    if (result.length + next.length > budget) continue;
+    result += next;
+    count += 1;
+  }
+  return count ? result : '';
 }
 
 /** One tool call as the PostToolBatch hook ships it (clamped, see the script). */
@@ -1029,7 +1015,7 @@ const midTurnContext = defineTool({
       // it from a dead hook is the false alarm D-005 §3 exists to prevent.
       void recordInjectionCoverage([{ ...coverage, outcome: block ? 'recalled' : 'no-recall' }]);
 
-      // The budget is advisory inside buildMemoryContextBlock; see clampToBudget.
+      // Account for final section overhead without cutting a source unit.
       return respond(block);
     } catch {
       recordSuppression('suppressed-handler-error');
