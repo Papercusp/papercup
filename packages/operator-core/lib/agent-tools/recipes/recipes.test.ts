@@ -1146,6 +1146,60 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(runOrchestrationMock).toHaveBeenCalledOnce();
   });
 
+  const mockBoundGetterRecipe = () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'getter-runtime-target', title: 'Bound getter target', description: 'd',
+      script: 'return await tools.workItems.get({id:inputs.item,harness:"alpha"});',
+      updatedAt: '2026-11-07T05:00:00Z',
+      bindingSchema: { version: 1, additionalProperties: false, properties: {
+        item: { type: 'string', required: true, lifetime: { kind: 'invocation-ephemeral' } },
+      } },
+      authorRole: 'operator', toolsUsed: ['work_items:get'], runCount: 0,
+      successCount: 0, status: 'active', tags: [],
+    });
+  };
+
+  it('recipes:get resolves validated bindings for an exact metadata round trip and rejects a changed target', async () => {
+    mockBoundGetterRecipe();
+    const bindings = { values: { item: 'WI-bound' } };
+    const fetched = await findTool('recipes:get').fn({ id: 'getter-runtime-target', bindings }, mkCtx('worker'));
+    const item = JSON.parse((fetched as { content: { text: string }[] }).content[0].text).results[0];
+    expect(item).toMatchObject({ ok: true, recipe: { authority: {
+      runnable: true, refsMeasured: true, refs: { harnesses: ['alpha'], items: ['WI-bound'] },
+    } } });
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+
+    const authority = item.recipe.authority;
+    const accepted = await findTool('recipes:run').fn({ id: 'getter-runtime-target', authority, bindings,
+      dryRun: true }, mkCtx('worker'));
+    expect(JSON.parse((accepted as { content: { text: string }[] }).content[0].text).results[0])
+      .toMatchObject({ ok: true });
+    const rejected = await findTool('recipes:run').fn({ id: 'getter-runtime-target', authority,
+      bindings: { values: { item: 'WI-other' } }, dryRun: true }, mkCtx('worker'));
+    expect(JSON.parse((rejected as { content: { text: string }[] }).content[0].text).results[0])
+      .toMatchObject({ ok: false, error: 'authority_entity_mismatch', executed: false });
+    expect(runOrchestrationMock).toHaveBeenCalledOnce();
+  });
+
+  it('recipes:get leaves an omitted dynamic binding unmeasured', async () => {
+    mockBoundGetterRecipe();
+    const fetched = await findTool('recipes:get').fn({ id: 'getter-runtime-target' }, mkCtx('worker'));
+    expect(JSON.parse((fetched as { content: { text: string }[] }).content[0].text).results[0])
+      .toMatchObject({ ok: true, recipe: { authority: { runnable: false, refsMeasured: false } } });
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { item: 42 }, { item: 'WI-bound', undeclared: true }])(
+    'recipes:get refuses invalid invocation bindings before resolving authority: %j', async values => {
+      mockBoundGetterRecipe();
+      const fetched = await findTool('recipes:get').fn({ id: 'getter-runtime-target', bindings: { values } }, mkCtx('worker'));
+      const item = JSON.parse((fetched as { content: { text: string }[] }).content[0].text).results[0];
+      expect(item).toMatchObject({ ok: false, error: 'binding_invalid' });
+      expect(item).not.toHaveProperty('recipe');
+      expect(runOrchestrationMock).not.toHaveBeenCalled();
+    },
+  );
+
   it('requires and revalidates authority for an entity-bound recipe (P-008)', async () => {
     const script = `return await tools.workItems.get({ id: 'WI-bound', harness: 'alpha' });`;
     const updatedAt = '2026-07-13T12:00:00.000Z';

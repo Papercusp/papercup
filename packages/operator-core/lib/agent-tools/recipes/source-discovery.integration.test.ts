@@ -1,15 +1,20 @@
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
-import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import type { ProjectedTool, UnifiedToolContext } from '@papercusp/agent-mcp';
+import { listAllProjectedTools, runToolOrchestration } from '@papercusp/agent-mcp';
 import { sqlMiningFixture } from '../../../test/_sql-mining-fixture';
 import { captureRecipe } from '../code/capture-recipe';
 import { productionOpportunityReaders } from '../../agent-opportunities/source-readers';
 import { resolveStoredSourceOperation } from '../../recipe-source-operation';
 import { getRecipe } from '../../code-recipes-store';
 import { recipeCandidates } from '../../code-recipes-candidates';
-import { recipeSourceOperationSchema } from '../../recipe-contract';
+import { deriveLegacyForegroundManifest, recipeSourceOperationSchema, type RecipeBindingSchemaV1 } from '../../recipe-contract';
+import { normalizeExecutionTrace } from '../../orchestration-trace';
 import recipeGet from './get';
 import recipeSearch from './search';
 import recipeList from './list';
+import recipeRun from './run';
 import { orchestrationCallerSurface } from '../orchestration/contract-preflight';
 import { findTopRecipeForWake } from '../../harness/routines/loop-wake-recipe';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
@@ -22,17 +27,39 @@ let fixture: Awaited<ReturnType<typeof sqlMiningFixture>>;
 let permitted = true;
 let callerPermitted = true;
 let toolPresent = true;
+let dispatches: Array<{ name: string; args: Record<string, unknown> }> = [];
 const workspaceId = 'sql-mining-test', harnessSlug = 'mining-test';
 const originalScope = { workspaceId, sourceBoundary: 'authorized-tool-ledger',
   epoch: new Date().toISOString().slice(0, 7), key: new Uint8Array(32).fill(83) };
 let scope = originalScope;
 vi.mock('@papercusp/agent-mcp', async original => ({
   ...await original<Record<string, unknown>>(),
-  listAllProjectedTools: () => toolPresent ? ['dev:pg_query', 'capability:bash'].map(name => ({
+  listAllProjectedTools: () => toolPresent ? ['dev:pg_query', 'capability:bash', 'discovery:pots', 'lexicon:active_pack'].map(name => ({
+    pluginName: 'fixture', description: 'Controlled actual SQL or shell execution', capabilities: [],
     expose: { mcp: { name } }, effect: 'read',
     agentRoles: callerPermitted ? ['operator', 'su'] : ['operator'],
-  })) : [],
+    inputSchema: { type: 'object', additionalProperties: true },
+    fn: async input => {
+      const args = input as Record<string, unknown>;
+      dispatches.push({ name, args });
+      if (name === 'dev:pg_query') {
+        const rows = await fixture.db.adminSql.unsafe(args.sql as string, args.parameters as string[]);
+        return { content: [], structuredContent: { rows } };
+      }
+      if (name !== 'capability:bash') {
+        const [row] = await fixture.db.adminSql`SELECT ${args.value as string}::text AS value`;
+        return { content: [], structuredContent: row };
+      }
+      const { stdout } = await promisify(execFile)('/bin/sh', ['-c', args.command as string], {
+        cwd: args.cwd as string, timeout: 5_000,
+      });
+      return { content: [], structuredContent: { output: stdout, exit_code: 0 } };
+    },
+  } satisfies ProjectedTool)) : [],
 }));
+// Exercise the real recipe VM and dispatcher with controlled actual SQL/shell
+// handlers. Outer host telemetry is covered by its separate compiled fixture.
+vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 vi.mock('@papercusp/db-org', async original => ({
   ...await original<Record<string, unknown>>(), getOrgPg: () => ({ sql: fixture.db.adminSql }),
 }));
@@ -52,6 +79,7 @@ beforeAll(async () => { fixture = await sqlMiningFixture(); }, 120_000);
 afterAll(async () => { await fixture?.cleanup(); });
 beforeEach(async () => {
   await fixture.clear(); permitted = true; callerPermitted = true; toolPresent = true; scope = originalScope;
+  dispatches = [];
 });
 const context = (over: Partial<UnifiedToolContext> = {}) => ({
   workspaceId, harnessSlug, role: 'su', isSuperuser: true,
@@ -62,8 +90,69 @@ function data(result: unknown): Record<string, any> {
   return envelope.data ?? JSON.parse(envelope.content!.find(row => row.type === 'text')!.text!);
 }
 
+it('P007 composition: capture, exact dedup and second-caller typed replay preserve immutable success and independent refusal receipts', async () => {
+  const script = 'const first = await tools.discovery.pots({ value: inputs.value }); return await tools.lexicon.active_pack({ value: first.value });';
+  const tools = listAllProjectedTools();
+  const allowed = new Set(['discovery:pots', 'lexicon:active_pack']);
+  const bindingSchema: RecipeBindingSchemaV1 = { version: 1, additionalProperties: false,
+    properties: { value: { type: 'string', required: true, lifetime: { kind: 'stable' } } } };
+  const capabilityManifest = { ...deriveLegacyForegroundManifest([...allowed]), replay: { class: 'read-only' as const } };
+  const observed = await runToolOrchestration(script, { ctx: { ...context({ role: 'operator', uiClientId: 'su-composition-author' }), codeMode: true },
+    deps: {}, tools, allowed, inputs: { value: 'original observation' } });
+  expect(observed, JSON.stringify(observed)).toMatchObject({ ok: true, dispatchCount: 2,
+    summary: { value: 'original observation' } });
+  const trace = await normalizeExecutionTrace({ script, backend: 'server', tools, allowed,
+    callRecords: observed.callRecords, dispatchTimings: observed.dispatchTimings });
+  const input = { script, title: 'Typed composition replay', workspaceId, harness: harnessSlug,
+    ownerId: 'su-composition-author', role: 'operator', tools, allowed, bindingSchema, capabilityManifest, executionTrace: trace };
+  const deps = { sql: fixture.db.adminSql, embed: async () => null, resolveHive: async () => null };
+  const captured = await captureRecipe(deps, input);
+  expect(captured).not.toBeNull();
+  const reused = await captureRecipe(deps, input);
+  expect(reused).toMatchObject({ disposition: 'exact-fingerprint-reuse', row: { id: captured!.row.id } });
+  const saved = (await getRecipe(fixture.db.adminSql, captured!.row.id))!;
+  const fetched = data(await recipeGet.handler({ id: saved.id } as never, context())).results[0];
+  expect(fetched).toMatchObject({ ok: true, recipe: { id: saved.id, authorRole: 'operator',
+    authority: { runnable: true, refsMeasured: true } } });
+  const searched = data(await recipeSearch.handler({ query: saved.title, semantic: false } as never, context()));
+  expect(searched.recipes.some((row: { id: string }) => row.id === saved.id)).toBe(true);
+  const authority = fetched.recipe.authority;
+  const rows = () => fixture.db.adminSql`SELECT receipt.id::text,success,reused,execution_trace
+    FROM harness_shared.code_recipe_runs AS receipt WHERE recipe_id=${saved.id} ORDER BY receipt.id`;
+  const replay = async (value: unknown, expected: 'success' | 'unsafe' | 'authority') => {
+    const before = await rows();
+    const counters = (await getRecipe(fixture.db.adminSql, saved.id))!;
+    const count = dispatches.length;
+    const result = data(await recipeRun.handler({ id: saved.id, authority,
+      bindings: { values: { value } } } as never, context())).results[0];
+    const after = await rows();
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.slice(0, -1)).toEqual(before);
+    expect(after.at(-1)).toMatchObject({ success: expected === 'success', reused: true });
+    if (expected === 'success') {
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { summary: { value } } });
+      expect(dispatches.slice(count)).toEqual([
+        { name: 'discovery:pots', args: { value } }, { name: 'lexicon:active_pack', args: { value } },
+      ]);
+    } else {
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: false, phase: 'preflight', executed: false,
+        error: expected === 'unsafe' ? 'binding_invalid' : 'capability_denied' });
+      expect(dispatches).toHaveLength(count);
+      expect((await getRecipe(fixture.db.adminSql, saved.id))!.runCount).toBe(counters.runCount);
+      expect(after.at(-1)?.execution_trace).toMatchObject({ usage: { outcome: 'refused', settled: true },
+        runEvidence: { executed: false } });
+    }
+  };
+  await replay("'; printf INJECTED; # $(printf EXTRA)", 'success');
+  await replay({ script: 'unexpected executable input' }, 'unsafe');
+  callerPermitted = false;
+  await replay('safe typed value', 'authority');
+  callerPermitted = true;
+  await replay('restored typed value', 'success');
+}, 120_000);
+
 for (const family of ['sql', 'shell'] as const) {
-  it(`P007 ${family}: warm production search/get/list/review renew source access, scope, expiry and key`, async () => {
+  it(`P007 ${family}: actual typed replay and warm discovery renew source access, scope, expiry and key with immutable receipts`, async () => {
     const tool = family === 'sql' ? 'dev:pg_query' : 'capability:bash';
     const id = await fixture.seed();
     const at = new Date().toISOString();
@@ -92,6 +181,40 @@ for (const family of ['sql', 'shell'] as const) {
     const profile = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
     await fixture.db.adminSql`UPDATE harness_shared.code_recipes SET embedding=${`[${embedding.join(',')}]`}::vector,
       embedding_mode='gemma', embedding_profile=${profile.profileId} WHERE id=${saved.id}`;
+    const authority = data(await recipeGet.handler({ id: saved.id } as never, context())).results[0].recipe.authority;
+    const hostile = "'; printf INJECTED; # $(printf EXTRA)";
+    const replay = async (ctx = context(), value: unknown = hostile) => {
+      const before = await fixture.db.adminSql`SELECT id::text,success,reused,execution_trace
+        FROM harness_shared.code_recipe_runs AS receipt WHERE recipe_id=${saved.id} ORDER BY receipt.id`;
+      const recipeBefore = (await getRecipe(fixture.db.adminSql, saved.id))!;
+      const count = dispatches.length;
+      const result = data(await recipeRun.handler({ id: saved.id, authority,
+        bindings: { values: { value0: value } } } as never, ctx)).results[0];
+      const after = await fixture.db.adminSql`SELECT id::text,success,reused,execution_trace
+        FROM harness_shared.code_recipe_runs AS receipt WHERE recipe_id=${saved.id} ORDER BY receipt.id`;
+      expect(after).toHaveLength(before.length + 1);
+      expect(after.slice(0, -1)).toEqual(before);
+      expect(after.at(-1)).toMatchObject({ success: result.ok === true, reused: true });
+      if (result.ok) {
+        expect(dispatches).toHaveLength(count + 1);
+        if (family === 'sql') {
+          expect(dispatches.at(-1)).toEqual({ name: tool, args: {
+            sql: sourceArgs.sql, parameters: [hostile],
+          } });
+          expect(result.result.summary).toEqual({ rows: [{ private_column: hostile }] });
+        } else {
+          expect(dispatches.at(-1)?.args.cwd).toBe('/tmp');
+          expect(result.result.summary).toEqual({ output: hostile, exit_code: 0 });
+        }
+      } else {
+        expect(dispatches).toHaveLength(count);
+        expect(result, JSON.stringify(result)).toMatchObject({ phase: 'preflight', executed: false });
+        expect(JSON.stringify(result)).not.toContain('PRIVATE_');
+        expect((await getRecipe(fixture.db.adminSql, saved.id))!.runCount).toBe(recipeBefore.runCount);
+      }
+      return result.ok === true;
+    };
+    expect(await replay(context(), { command: 'printf UNSAFE' })).toBe(false);
     const visible = async (ctx = context()) => {
       const searched = data(await recipeSearch.handler({ query: saved.title, semantic: false, limit: 50 } as never, ctx));
       const fetched = data(await recipeGet.handler({ id: saved.id } as never, ctx));
@@ -112,10 +235,11 @@ for (const family of ['sql', 'shell'] as const) {
         list: listed.recipes.some((row: { id: string }) => row.id === saved.id),
         review: reviewed.signals.some(row => row.id === saved.id),
         brief: brief?.id === saved.id,
+        run: await replay(ctx),
       };
     };
-    const allowed = { search: true, get: true, list: true, review: true, brief: true };
-    const denied = { search: false, get: false, list: false, review: false, brief: false };
+    const allowed = { search: true, get: true, list: true, review: true, brief: true, run: true };
+    const denied = { search: false, get: false, list: false, review: false, brief: false, run: false };
     expect(await visible()).toEqual(allowed);
     callerPermitted = false; expect(await visible()).toEqual(denied);
     callerPermitted = true; expect(await visible()).toEqual(allowed);

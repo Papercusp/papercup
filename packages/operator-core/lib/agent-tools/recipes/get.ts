@@ -22,6 +22,7 @@ import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 import { deriveStoredRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata } from '../../recipe-authority';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { validateRecipeBindings } from '../../recipe-contract';
 
 export default defineTool({
   name: 'recipes:get',
@@ -30,18 +31,19 @@ export default defineTool({
     'what they do before recipes:run-ning them, including entity bindings and the current revision. Pass `id` for one or `ids` for several. Returns ' +
     '{ ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a ' +
     'missing id comes back as that item\'s { ok:false } without failing the rest. Read-only. Recipes are ' +
-    'global/fleet-wide; this tool accepts only `id`/`ids` and does not accept a `harness` argument.',
+    'global/fleet-wide; pass optional `bindings` to resolve authority for that exact invocation. ' +
+    'It does not accept a top-level `harness` argument.',
   guidance: {
     when:
       'When you have one or more recipe ids (from recipes:list / recipes:search / a code:run result\'s ' +
       'similarRecipes) and want to read their script + metadata before reusing. Recipes are global/fleet-wide; ' +
-      'pass only `id` or `ids` (not `harness`).',
+      'pass `id` or `ids` (not `harness`), with the same invocation bindings you will pass to recipes:run.',
     notWhen:
       'To EXECUTE the recipe — use recipes:run (it runs the script under YOUR role-scoped envelope). ' +
       'To discover recipes by intent — recipes:search.',
     chaining:
       'recipes:search / recipes:list → recipes:get { ids:[…] } (inspect) → recipes:run { id } (reuse). ' +
-      'Recipes are global, so omit `harness`; this tool accepts only `id`/`ids`. Bulk: single | ids[] → ' +
+      'Recipes are global, so omit `harness`; for a bound template supply the same `bindings` to get and run. Bulk: single | ids[] → ' +
       '{ ok, results, counts }; correlate by id not position; one failure never fails the rest.',
     argRedirects: {
       harness: 'recipes:get is a global recipe read; omit `harness` and pass only `id` or `ids`.',
@@ -62,6 +64,8 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('a single recipe id / kebab slug (n=1 shorthand for ids:[id])'),
       ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('recipe ids to fetch (1–100)'),
+      bindings: z.object({ values: z.record(z.string(), z.unknown()) }).strict().optional()
+        .describe('Invocation bindings validated against each stored recipe contract before deriving its exact authority. Pass the same bindings to recipes:run; omission retains the generic authority descriptor.'),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
@@ -77,7 +81,14 @@ export default defineTool({
         if (!recipe) {
           return { ok: false as const, id, error: 'not_found' };
         }
+        const bindings = args.bindings ? validateRecipeBindings({
+          schema: recipe.bindingSchema ?? undefined, bindings: args.bindings, lifecycle: 'foreground',
+        }) : undefined;
+        if (bindings && !bindings.ok) {
+          return { ok: false as const, id, error: bindings.error.code, diagnostic: bindings.error };
+        }
         const authority = await deriveStoredRecipeAuthority({ ...recipe,
+          ...(bindings?.ok ? { validatedInputs: bindings.value.inputs } : {}),
           context: { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx), catalog } });
         if (!authority) return { ok: false as const, id, error: 'not_found' };
         const updatedAt = recipe.updatedAt ?? recipe.createdAt ?? '';
