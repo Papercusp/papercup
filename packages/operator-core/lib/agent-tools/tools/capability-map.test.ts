@@ -39,6 +39,18 @@ describe('capabilityMapText', () => {
     expect(capabilityMapText()).toBe(capabilityMapText());
   });
 
+  it('keeps discovery separate from authorization and limits example duplication', () => {
+    const map = capabilityMapText();
+    expect(map).toContain('catalog presence is not a grant');
+    expect(map).toContain('same role, mode and scope limits');
+    expect(map).not.toContain('call ANY tool');
+    expect(map).not.toContain('callable RIGHT NOW');
+    for (const row of map.split('\n').filter(line => line.startsWith('- **'))) {
+      const examples = row.split(': ')[1]!.split(' …')[0]!.split(', ');
+      expect(examples.length).toBeLessThanOrEqual(2);
+    }
+  });
+
   it('stays compact — a capability MAP, not the full descriptions (well under the ~165k it replaces)', () => {
     // Rough token proxy: chars/4. The whole point is ~1-2k tokens, not 165k.
     const approxTokens = capabilityMapText().length / 4;

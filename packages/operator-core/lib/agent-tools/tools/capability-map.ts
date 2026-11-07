@@ -18,7 +18,7 @@ import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { categoryOf } from '../../cupboard/tools-search';
 
 /** Example tool names shown per category before eliding into "…(+N)". */
-const PER_CATEGORY = 6;
+const PER_CATEGORY = 2;
 
 let _cached: string | null = null;
 let _cachedSize = -1;
@@ -57,19 +57,12 @@ export function capabilityMapText(): string {
   _cached = [
     `## Your tool surface is DYNAMIC — the whole ${total}-tool catalog is reachable on demand`,
     ``,
-    `Your loaded tool list is usually a small CORE set (the default). Any tool NOT in it is still`,
-    `reachable — you do not need everything loaded up front:`,
-    `- **\`tools:find("<what you want to do>")\`** — intent search; matched tools are activated so you can call them directly next.`,
-    `- **\`tools:invoke({ name, args })\`** — call ANY tool by exact name without loading it (the universal fallback).`,
-    `When you need a capability that isn't in your loaded set, SEARCH for it — don't assume it doesn't exist.`,
-    `⚠ Your CLIENT's own tool search (Claude Code ToolSearch, OMP search_tool_bm25) indexes ONLY this`,
-    `advertised subset — a zero-hit search THERE does NOT mean the tool doesn't exist (EI-9011: agents`,
-    `hit this and degraded to polling). Any tool name you read in an error message, hook text, doc, or`,
-    `peer message is callable RIGHT NOW via \`tools:invoke { name, args }\`, and \`tools:find\` searches the`,
-    `FULL server-side catalog regardless of what your client advertises.`,
-    `If a found tool still errors "not found" when called directly, run it via \`tools:invoke\` — never guess alternative names.`,
+    `Search unloaded capabilities with tools:find { query }; read the returned argument schema.`,
+    `Call a loaded wrapper, or tools:invoke { name, args } when that wrapper is unavailable.`,
+    `Client-local search may index only loaded tools; its empty result is not a catalog census.`,
+    `Discovery and invocation enforce the same role, mode and scope limits; catalog presence is not a grant.`,
     ``,
-    `Capability map — the categories that exist (use \`tools:find\` within any):`,
+    `Capability map — catalog categories and examples; search within your authorized scope:`,
     ...rows,
   ].join('\n');
   _cachedSize = total;

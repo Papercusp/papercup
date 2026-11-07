@@ -241,7 +241,7 @@ import {
   summaryGuidanceDescription,
   type ResultDoorSkipReason,
 } from '@papercusp/tooldef';
-import { MCP_SERVER_CAPABILITIES } from './mcp-contract';
+import { MCP_SERVER_CAPABILITIES, mcpBootstrapInstructions } from './mcp-contract';
 import { withMcpDiagnosticWarnings, type McpCallResult } from './mcp-diagnostic-warnings';
 import { parseMcpToolText } from './mcp-result-text';
 import { loadOperatorToolCatalogue } from '../../../agent-tools/operator-tool-catalogue';
@@ -3270,104 +3270,6 @@ async function buildMcpToolContext(
 /* ─── MCP handler ────────────────────────────────────────────────────── */
 
 /**
- * Static MCP `initialize.instructions` field — surfaced to LLM clients
- * (Claude Code, OMP) at session start as additional system-prompt
- * context.
- *
- * Plan: papercusp-su-memory-2026-05-25 (Phase 1, P-003).
- *
- * Nudges agents toward the three-layer memory pattern. This is the STATIC
- * base; per-session dynamic enrichment (mem0 fan-out + insights index via
- * `buildMcpPrelude`) is wired in the setup callback below by DELEGATING to
- * the SDK's own initialize handler and appending to its `instructions` —
- * see `_mcp-initialize-enrich.ts`
- * (memory-delivery-unification-2026-07-12 P-001; the old "SDK doesn't
- * expose a clean hook" deferral is closed).
- *
- * Disabled via PAPERCUSP_SU_MEMORY_INJECTION=off when needed.
- */
-const PAPERCUSP_MCP_INSTRUCTIONS = `Get oriented ONCE per session-with-context (a user task you have
-not seen this run) — by whichever of these two routes your host gave you:
-
-  **ROLE-SCOPED OVERRIDE:** The routes below assume a role permitted to use coordination
-  writes. The evidence-only judge role is intentionally excluded from coordination-write
-  tools, so it must not call coord:declare-intent, claim plan lanes, or pass intent to
-  coord:orient (that causes an internal declaration attempt). Judges may call coord:orient
-  {} without intent for omitted read context, then work only the item already routed to
-  them. This omits memory recall and intent declaration by design.
-
-  **ROUTE A — an \`## Orientation\` block already arrived in this turn.** Your held
-  work-items, unanswered directed messages, and whether a wake source (armed loop)
-  exists came WITH it: the server read them for you. Do NOT spend a
-  \`coord:orient\` round-trip re-fetching them — you are oriented. Claim your lane
-  with \`coord:declare-intent { intent, items }\`, and reach for
-  \`coord:orient\` only for what that block deliberately EXCLUDES: the claimable
-  backlog, full inbox bodies, a mem0 recall. Judge by PRESENCE ONLY — the block is
-  emitted just when that state CHANGES, and only to hosts that inject it, so its
-  ABSENCE never means "you are oriented".
-
-  **ROUTE B — no such block.** Bootstrap in ONE call:
-  **\`coord:orient { intent }\`** — pass your one-line intent for the
-  task. In a SINGLE round-trip it returns your current assignments
-  (+ lane + load), the claimable backlog, your unread inbox summary,
-  the recent plan-events delta, AND a mem0 recall for \`intent\` — and
-  it DECLARES \`intent\` to peers so they see what you're working on.
-  After a SUCCESSFUL orient, do NOT separately call \`coord:plan-events\`,
-  \`memory:search\`, \`coord:inbox\`, or \`coord:declare-intent\` — orient's
-  result ALREADY contains them (plan-events delta + inbox summary + a mem0
-  recall) and ALREADY declared your intent; re-calling them just re-pays the
-  round-trip orient collapsed. Reach for one individually only for a detail
-  orient deliberately bounds (full inbox bodies, or a mem0 query OTHER than
-  your intent).
-
-  - **Claim your lane.** When the work is plan items, pass them:
-    \`coord:orient { intent, planSlug, planItems: ['P-001', …] }\` CLAIMS
-    those items for you (and releases ones you've moved off). An unclaimed
-    lane is invisible to the Mug and peers, so work gets double-placed.
-    (Flipping an item \`wip\` via \`plans:set-status\` also auto-claims;
-    \`done\` releases. A \`claim_conflict\` means a live peer holds it —
-    coordinate with the holder, don't take it.)
-  - **mem0 (what you know).** orient's recall uses \`intent\` as the query;
-    pass \`harness\` for project-specific facts. Each mem0 hit carries an
-    \`id\` — if the user later contradicts something, \`memory:forget\`
-    that id. Use \`memoryQuery\` for a different query, or call
-    \`memory:search\` directly. A recall hit is BINDING context, not flavor:
-    if a recalled fact prescribes a behavior for THIS task, follow it — or
-    explicitly say why you're not.
-  - **insights (how things work).** When you hit a confusing failure,
-    \`docs:search\` the \`agent-insights/\` section before grepping code —
-    many "weird bugs" already have a written runbook.
-  - **State answers NOW; only the append-only log answers EVER.** \`coord:presence\` /
-    \`fleet:assignments\` are LIVE-STATE — who is alive, who holds what RIGHT NOW; an ended
-    agent loses its fleet_slug and its presence row is TTL-reaped, so they CANNOT answer an
-    *ever / was / missed / history* question. Route those to \`coord:catch-up { audience }\`
-    (as a member of the fleet/topic) or \`coord:feed { audience }\` (the firehose) instead —
-    never a state tool. Full map:
-    \`docs:search\` \`agent-insights/presence-vs-history-who-is-on-what\`.
-
-Right layer for READS and WRITES — the memory↔docs boundary:
-  - **HOW IT WORKS** (a runbook, a failure mode, why-something-is, a hard-won gotcha):
-    READ via \`docs:search\` the \`agent-insights/\` section; WRITE a new/updated MDX under
-    \`apps/operator-docs/src/content/docs/agent-insights/\` with a \`documents:\` frontmatter
-    anchor to the code it describes. This is the RIGHT place — a doc is code-ANCHORED,
-    drift-TRACKED (the freshness sweep) and AUTO-HEALED (the doc-steward); a mem0 vector cannot
-    be anchored/swept/auto-rewritten, so how-it-works left only in mem0 silently rots. Do NOT
-    park a runbook in mem0.
-  - **WHY a subsystem/decision is the way it is** (the rationale behind a design, not how it works):
-    READ via \`rationale:feed { topic }\` — a topic-keyed projection over the relevant
-    plan-decisions + work-items + insights, kept fresh by the event engine (\`topics:list\` for the
-    topic, then \`plans:get\`/\`docs:get\` on an entry's \`ref\` for the full text). The discoverable
-    "why" layer — reach for it before grepping plans/decisions by hand.
-  - **A durable PERSONAL/PREFERENCE fact** (who the user is, a convention, an owner pref):
-    READ via \`memory:search\`; WRITE via \`memory:remember\`. Keep mem0 entries SHORT, and when
-    the why already lives in a doc/plan store only the non-derivable fact + a POINTER
-    (\`[[<plan-slug>]]\`, \`/internal/docs/agent-insights/<slug>\`), never a copied paragraph.
-  - **In-flight state** → coord; **derivable session state** (X shipped, migration N, N tests)
-    → the plan / work-item, never memory.
-See the plans \`papercusp-su-memory-2026-05-25\` and
-\`tool-call-batching-wrappers-2026-06-21\`.`;
-
-/**
  * Wall-clock cap on the per-session initialize enrichment (P-001). Session
  * establishment must stay snappy: past this, the enrichment resolves null
  * and the client gets the static instructions. buildMemoryContextBlock has
@@ -3386,13 +3288,14 @@ const INITIALIZE_STAGE_SLOW_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 2_500;
 })();
 
+/** Static connection guidance; per-session enrichment remains SDK-owned below. */
 function mcpInstructionsForServer(): string | undefined {
   // dynamic-tool-surface D-011: append the compact CAPABILITY MAP so a trimmed session (the
   // default now) knows WHAT exists to search for — discoverability at ~1-2k instead of the
   // ~165k of full descriptions. Harmless for a `full`/eager session (it already sees every
   // tool). Gated off with the memory injection kill-switch for parity.
   if (process.env.PAPERCUSP_SU_MEMORY_INJECTION === 'off') return undefined;
-  return `${PAPERCUSP_MCP_INSTRUCTIONS}\n\n${capabilityMapText()}`;
+  return mcpBootstrapInstructions(capabilityMapText());
 }
 
 /**

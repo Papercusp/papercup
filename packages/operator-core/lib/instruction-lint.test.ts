@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { mcpBootstrapInstructions } from './endpoint-route/routes/transport/mcp-contract';
 import {
   blockingInstructionConflicts,
   buildInstructionPrecedenceTrace,
@@ -8,6 +9,21 @@ import {
 } from './instruction-lint';
 
 describe('lintInstructionText', () => {
+  it('context reliability: emitted bootstrap is concise coherent and capability applicable', () => {
+    const text = mcpBootstrapInstructions('Capability map — authorized catalog examples.');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(2500);
+    expect(lintInstructionText(text).clean).toBe(true);
+    expect(text).toContain('Evidence-only judges use coord:orient {} without intent');
+    expect(text).toContain('Catalog entries are discoverable capabilities, not permission grants');
+    expect(text).toContain('docs:author');
+    expect(text).toContain('generated .mdx files are projections');
+    expect(text).toContain("harness:'engineering'");
+    expect(text).toContain('Monitor only a responsibility you own or the human explicitly requested');
+    expect(text).toContain('re-fetch only when the recovery marker is absent, incomplete or differs');
+    expect(text).not.toContain('WRITE a new/updated MDX');
+    expect(text).not.toContain('callable RIGHT NOW');
+  });
+
   it('blocks wrapped unconditional post-compaction orient mandates (D-017/P-019)', () => {
     const retired = [
       'This is a stale snapshot of a live system. Before acting on any fleet claim below,',
