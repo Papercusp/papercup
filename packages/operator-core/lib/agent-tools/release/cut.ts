@@ -1392,7 +1392,27 @@ export default defineTool({
       // Ref-only operation: a completed speculative build leaves version/sidecar
       // residue in its isolated root. Do not apply the clean-build precondition
       // here; the helper still validates the exact commit and create-only lease.
-      const selected = await resolveCutRoot(args.root, undefined, { readOnly: true, sourceSha: args.sourceSha });
+      const suppliedTraceId = ctx.requestOrigin?.mcpRequestTraceId;
+      const traceId =
+        typeof suppliedTraceId === 'string' && suppliedTraceId.trim() && suppliedTraceId.length <= 128
+          ? suppliedTraceId
+          : null;
+      const logRootPhase = (event: ReleaseCutPhaseTiming) => {
+        try {
+          ctx.log?.(`[release:cut] prepare-tag root timing ${JSON.stringify({
+            traceId,
+            dryRun: !args.confirm,
+            ...event,
+          })}`);
+        } catch {
+          // Root-resolution diagnostics are path-free and cannot change tag preparation.
+        }
+      };
+      const selected = await resolveCutRoot(args.root, undefined, {
+        readOnly: true,
+        sourceSha: args.sourceSha,
+        onPhase: logRootPhase,
+      });
       const tag = desktopReleaseTag(args.version, channel);
       if (!selected.ok) {
         // An implicit auto-managed checkout is unsafe for the write, but a

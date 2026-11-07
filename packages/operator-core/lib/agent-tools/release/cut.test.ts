@@ -13,10 +13,11 @@ import * as path from 'node:path';
 import type { ExecFileOptions } from 'node:child_process';
 import type { PreflightResult, CutStatus, HandoffResult, ReleaseGate } from '../../release-cut-launch';
 
-const { auditSqlM, reclaimGatherM, reclaimRenderM } = vi.hoisted(() => ({
+const { auditSqlM, reclaimGatherM, reclaimRenderM, verifyCutSourceCloneM } = vi.hoisted(() => ({
   auditSqlM: vi.fn(),
   reclaimGatherM: vi.fn(),
   reclaimRenderM: vi.fn(),
+  verifyCutSourceCloneM: vi.fn(),
 }));
 
 // Partial-mock: keep the REAL pure helpers the handler uses (isValidVersion, buildCutArgv,
@@ -59,6 +60,10 @@ vi.mock('../../release-cut-reclaim', async (importOriginal) => ({
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
   activeWorkspaceId: () => 'test-ws',
+}));
+vi.mock('./cut-source-clone', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./cut-source-clone')>()),
+  verifyCutSourceClone: verifyCutSourceCloneM,
 }));
 vi.mock('../../resource-governor/execution', () => ({
   runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
@@ -572,7 +577,7 @@ describe('release:cut — constrained root selector', () => {
   });
 
   it('admits exact failed-bump residue for a fresh seed without a completed manifest', async () => {
-    const head = '{"name":"desktop","version":"0.0.17"}\n';
+    const head = '{\n  "name": "desktop",\n  "version": "0.0.17"\n}\n';
     const bumped = head.replace('0.0.17', '0.0.18');
     const deps = {
       loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
@@ -989,6 +994,48 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
     expect(execFileM).not.toHaveBeenCalled();
   });
 
+  it('logs path-free root-resolution phases and child failure details', async () => {
+    const privateRoot = '/tmp/private-candidate-root';
+    const privateSource = '/tmp/private-registered-source';
+    registryM.mockResolvedValue({ projects: [{ slug: 'source', path: privateSource }] } as never);
+    mockExecFile((command, argv) => {
+      if (command === 'git' && argv[2] === 'worktree') return '';
+      throw new Error(`unexpected command: ${command} ${argv.join(' ')}`);
+    });
+    verifyCutSourceCloneM.mockImplementationOnce(async (_root, _projects, _sha, options) => {
+      options?.onPhase?.({
+        phase: 'source-clone-git-command',
+        stage: 'finish',
+        gitCommand: 'ls-tree',
+        elapsedMs: 38,
+        outcome: 'rejected',
+        errorCode: 73,
+        errorSignal: null,
+      });
+      return { ok: false, reason: 'root_clone_admission_failed — fixture child process failure' };
+    });
+    const logs: string[] = [];
+
+    const result = body(await tool.handler(
+      { ...args, root: privateRoot } as never,
+      { role: 'operator', log: (line: string) => logs.push(line) } as never,
+    ));
+
+    expect(result).toMatchObject({ ok: false, op: 'prepare-tag', refused: true });
+    expect(verifyCutSourceCloneM).toHaveBeenCalledWith(
+      privateRoot,
+      [{ slug: 'source', path: privateSource }],
+      sourceSha,
+      expect.objectContaining({ readOnly: true, sourceSha, onPhase: expect.any(Function) }),
+    );
+    expect(logs.join('\n')).toContain('"phase":"registered-worktree-discovery"');
+    expect(logs.join('\n')).toContain('"phase":"source-clone-git-command"');
+    expect(logs.join('\n')).toContain('"errorCode":73');
+    expect(logs.join('\n')).toContain('"errorSignal":null');
+    expect(logs.join('\n')).not.toContain(privateRoot);
+    expect(logs.join('\n')).not.toContain(privateSource);
+  });
+
   it('role-gates the confirmed remote write', async () => {
     const b = body(await tool.handler({ ...args, confirm: true } as never, { role: 'cup' } as never));
 
@@ -1039,7 +1086,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
     const run = body(await tool.handler({ op: 'run', version: args.version, channel: args.channel, sourceSha,
       root: 'isolated', ownerName: 'Avi', deferTag: true, confirm: true } as never, { role: 'operator' } as never));
     expect(run).toMatchObject({ ok: false, refused: true });
-    expect(run.reason).toMatch(/root_not_clean/);
+    expect(run.reason).toMatch(/root_resume_residue_invalid/);
     expect(launchM).not.toHaveBeenCalled();
   });
 
