@@ -936,7 +936,11 @@ export interface GeneratedDeclarationsGeneratorResult {
   stderr: string;
 }
 
-export type RunGeneratedDeclarationsGenerator = (repoPath: string, dependencies?: GitSyncTsxDependencies) => Promise<GeneratedDeclarationsGeneratorResult>;
+export type RunGeneratedDeclarationsGenerator = (
+  repoPath: string,
+  dependencies?: GitSyncTsxDependencies,
+  requestedInputs?: readonly string[],
+) => Promise<GeneratedDeclarationsGeneratorResult>;
 
 export type GeneratedDeclarationsRepairResult =
   | { status: 'not-needed'; atomicPaths: string[] }
@@ -960,11 +964,21 @@ export type GeneratedDeclarationsRegenerator = (
  * failure defers the declaration surface: committing the source without its
  * generated declaration is the exact torn-snapshot class this seam closes.
  */
-export const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerator = (repoPath, dependencies) =>
-  runGitSyncUnderInstallBoundary(repoPath, () =>
-    new Promise<GeneratedDeclarationsGeneratorResult>((resolve) => {
+export const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerator = (repoPath, dependencies, requestedInputs) =>
+  runGitSyncUnderInstallBoundary(repoPath, async () => {
+    let selection: readonly string[] | undefined;
+    if (requestedInputs?.length) {
+      const config = JSON.parse((await readFile(join(repoPath, DECLARATIONS_CONFIG_PATH), 'utf8'))
+        .replace(/^\s*\/\/.*$/gm, '')) as { files?: string[] };
+      // Tracked hand-written siblings are not necessarily generator-enrolled.
+      // Preserve the existing full emit for those instead of rejecting --files.
+      if (requestedInputs.every((path) => config.files?.includes(path))) selection = requestedInputs;
+    }
+    return new Promise<GeneratedDeclarationsGeneratorResult>((resolve) => {
     const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_DECLARATIONS_TIMEOUT_MS', 120_000);
-    const child = (dependencies?.spawnChild ?? spawn)(join(repoPath, 'node_modules', '.bin', 'tsx'), [DECLARATIONS_GENERATOR_PATH], {
+    const args = [DECLARATIONS_GENERATOR_PATH];
+    if (selection) args.push(`--files=${selection.join(',')}`, '--include-importers');
+    const child = (dependencies?.spawnChild ?? spawn)(join(repoPath, 'node_modules', '.bin', 'tsx'), args, {
       cwd: repoPath,
       env: process.env,
     });
@@ -996,7 +1010,8 @@ export const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsG
       finish(-1);
     });
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
-    }),
+    });
+    },
     dependencies?.acquire).then((result) => result.status === 'launched'
     ? result.value
     : gitSyncInstallBoundaryRefusal(result.lease, 'declaration regeneration'));
@@ -1186,12 +1201,16 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
     // A failed lookup is fail-SOFT: it only means this pass behaves as it did before
     // the graph trigger existed, and the gate's gen:declarations:check still detects.
     let graphLookup: Promise<string[]> | undefined;
+    let graphLookupUnavailable = false;
     const graphMembers = (): Promise<string[]> => {
       graphLookup ??= (async () => {
         if (graphCandidates.length === 0) return [];
         try {
-          return (await listGraphMembers(repoPath, graphCandidates)) ?? [];
+          const members = await listGraphMembers(repoPath, graphCandidates);
+          if (members === null) graphLookupUnavailable = true;
+          return members ?? [];
         } catch (error) {
+          graphLookupUnavailable = true;
           log(
             `[git-sync] ${repoPath}: declarations program-graph lookup failed (${String(error).slice(0, 300)}) — ` +
               'dirty sources outside the enrolled declaration inputs are not compiled this pass',
@@ -1230,19 +1249,22 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
       .map(generatedDeclarationPair)
       .filter((pair): pair is DeclarationPair => pair !== null && isTrackedPair(pair));
     let graphInputCount = 0;
-    if (!hasMetaInput && affectedPairs.length === 0) {
+    if (!hasMetaInput) {
       // Enrolled pairs are already handled above; a graph source is anything else.
       const graphInputs = (await graphMembers()).filter((path) => {
         const pair = generatedDeclarationPair(path);
         return !(pair && isTrackedPair(pair));
       });
-      if (graphInputs.length === 0) return { status: 'not-needed', atomicPaths: [] };
+      if (affectedPairs.length === 0 && graphInputs.length === 0) return { status: 'not-needed', atomicPaths: [] };
       graphInputCount = graphInputs.length;
     }
 
     let result: GeneratedDeclarationsGeneratorResult;
     try {
-      result = await runGenerator(repoPath);
+      const selection = !hasMetaInput && graphInputCount === 0 && !graphLookupUnavailable
+        ? [...new Set(affectedPairs.map((pair) => pair.source))].sort()
+        : undefined;
+      result = await runGenerator(repoPath, undefined, selection);
     } catch (error) {
       result = { code: -1, stdout: '', stderr: String(error) };
     }
