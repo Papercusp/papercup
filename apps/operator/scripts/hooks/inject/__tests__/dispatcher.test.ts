@@ -156,6 +156,51 @@ describe('standalone installed dispatcher', () => {
     }
   });
 
+  it('preserves scoped evidence reads and refuses native writes with installed authority unavailable', async () => {
+    const env = {
+      PAPERCUSP_SID: 'sid-installed-evidence',
+      PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9',
+      PAPERCUSP_MCP_PROXY_PORT: '9',
+    };
+    const heredoc = (header: string, args: unknown) =>
+      [header + " <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
+    const scopedFind = [
+      'ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")',
+      'if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]; then',
+      '  ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")',
+      'fi',
+      heredoc('ptool tools:find --json - "${ptool_scope[@]}"', { query: 'work_items:get' }),
+    ].join('\n');
+    for (const cmd of [
+      scopedFind,
+      heredoc('ptool work_items:get --workspace=papercusp-workspace --harness=papercusp --json -', { id: 'WI-123' }),
+      heredoc('ptool work_items:get --json - --workspace=papercusp-workspace --harness=papercusp', { id: 'WI-123' }),
+    ]) {
+      const result = await runCli(['--client=codex', '--event=PreToolUse'],
+        JSON.stringify({ tool_name: 'exec_command', tool_input: { cmd } }), env);
+      expect(result.code).toBe(0);
+      expect(result.stdout, cmd).toBe('');
+    }
+    for (const event of [
+      { tool_name: 'exec_command', tool_input: { cmd: heredoc(
+        'ptool work_items:complete --workspace=papercusp-workspace --json -', { id: 'WI-123', state: 'done' }),
+      } },
+      { tool_name: 'exec_command', tool_input: { cmd: scopedFind + '\ntouch source.ts' } },
+      { tool_name: 'apply_patch', tool_input: { patch:
+        '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
+      } },
+    ]) {
+      const result = await runCli(['--client=codex', '--event=PreToolUse'], JSON.stringify(event), env);
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).hookSpecificOutput).toMatchObject({
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+      });
+    }
+  });
+
   it('executes the copied current guard for local anchor repair and denies remote destinations', async () => {
     const payload = { slug: 'optional-evaluations', itemId: 'P-002', anchors: [{
       path: 'source.ts', change: { action: 'investigate', summary: 'Inspect source', reason: 'Evaluation only' },
