@@ -31,6 +31,9 @@
  */
 
 import type { Principal, PrincipalKind, PrincipalTrust, PrincipalRequirements } from '@papercusp/agent-mcp';
+// Keep the pre-auth purpose check on the existing leaf; the agent-mcp barrel
+// also imports operator routes and must not become this resolver's runtime edge.
+import { hasLegacyBootstrapAuthorization } from '@papercusp/agent-mcp/auth';
 import { principalFromCookie } from './principal/from-cookie';
 import { principalFromDeviceJwt } from './principal/from-device-jwt';
 import { principalFromSuperuserToken } from './principal/from-superuser-token';
@@ -55,6 +58,14 @@ export class PrincipalCheckError extends Error {
   }
 }
 
+/** Generic auth is never an admission transport for root-scoped possession.
+ * Run before any cookie/public/loopback resolver, including on revoked tokens. */
+export function refuseLegacyBootstrapPrincipal(headers: Headers): void {
+  if (hasLegacyBootstrapAuthorization(headers.get('authorization'))) {
+    throw new PrincipalCheckError(403, 'legacy bootstrap credential requires root-bound admission transport');
+  }
+}
+
 /**
  * Resolve the principal from a request. Throws `PrincipalCheckError` when
  * the request fails auth or the resolved principal fails the requirements
@@ -69,6 +80,7 @@ export async function requirePrincipal(
   headers: Headers,
   reqs: PrincipalRequirements = {},
 ): Promise<Principal> {
+  refuseLegacyBootstrapPrincipal(headers);
   const cookiePrincipal = await principalFromCookie(headers);
   const appKey = cookiePrincipal ? null : await resolveAppKeyPrincipal(headers);
   if (appKey && !appKey.ok) {
@@ -163,6 +175,7 @@ export async function retainRequestPrincipal(
  * which resolver fires without setting up the error boundary.
  */
 export async function tryResolvePrincipal(headers: Headers): Promise<Principal | null> {
+  if (hasLegacyBootstrapAuthorization(headers.get('authorization'))) return null;
   const cookiePrincipal = await principalFromCookie(headers);
   if (cookiePrincipal) return cookiePrincipal;
   // A presented app key decides the outcome on its own — see requirePrincipal.

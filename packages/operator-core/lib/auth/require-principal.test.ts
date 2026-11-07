@@ -107,6 +107,24 @@ describe('retained host request principal', () => {
 });
 
 describe('requirePrincipal — resolver order', () => {
+  it.each(['Bearer pcpi.legacy.42.secret', 'bearer pcpi.legacy.deleted',
+    'Bearer pcpi.legacy.', 'Bearer ordinary, Bearer pcpi.legacy.revoked'])
+  ('bootstrap possession cannot acquire cookie, device, superuser or loopback authority: %s', async authorization => {
+    vi.mocked(getSessionUser).mockResolvedValue({ id: 'human', username: 'human', display_name: 'Human',
+      has_password: true, workspace_id: 'ws-active', capabilities: ['*'] });
+    vi.mocked(isLoopbackRequest).mockReturnValue(true);
+    vi.mocked(isValidSuperuserBearer).mockReturnValue(true);
+    const headers = h({ authorization, cookie: 'papercusp_session=valid' });
+    await expect(requirePrincipal(headers)).rejects.toMatchObject({ status: 403,
+      reason: 'legacy bootstrap credential requires root-bound admission transport' });
+    expect(await tryResolvePrincipal(headers)).toBeNull();
+    expect(await retainRequestPrincipal(headers, 'ws-active')).toBeUndefined();
+    expect(getSessionUser).not.toHaveBeenCalled();
+    expect(verifyDeviceToken).not.toHaveBeenCalled();
+    expect(isLoopbackRequest).not.toHaveBeenCalled();
+    expect(isValidSuperuserBearer).not.toHaveBeenCalled();
+  });
+
   it('cookie wins over mobile JWT when both are present', async () => {
     vi.mocked(getSessionUser).mockResolvedValue({
       id: 'user_1',

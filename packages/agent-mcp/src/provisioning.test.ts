@@ -15,7 +15,10 @@ vi.mock('@papercusp/db-org', async (orig) => ({
     return callback(tx);
   },
 }));
-vi.mock('./auth', () => ({ PRINCIPAL_INVALIDATE_CHANNEL: 'agent_mcp_principal_invalidate' }));
+vi.mock('./auth', async (orig) => ({
+  ...(await orig<typeof import('./auth')>()),
+  PRINCIPAL_INVALIDATE_CHANNEL: 'agent_mcp_principal_invalidate',
+}));
 
 import { createHash } from 'node:crypto';
 import type { Principal } from '@papercusp/tooldef';
@@ -99,6 +102,34 @@ describe('native runtime supplemental possession', () => {
 });
 
 describe('startPiSession', () => {
+  const confined = () => ({ workspaceId: 'ws-customer', sessionId: 'predeclared-bootstrap',
+    capabilities: [], allowedTools: [], expiresAt: new Date(Date.now() + 60_000),
+    legacyBootstrapRootId: 42 });
+
+  it('marks the root-bound possession purpose and persists explicit empty scopes in the existing issuer', async () => {
+    const input = confined();
+    const result = await startPiSession(input);
+    expect(result.sessionId).toBe(input.sessionId);
+    expect(result.bearer).toMatch(/^pcpi\.legacy\.42\.[A-Za-z0-9_-]{43}$/);
+    const insert = pgMock.queries[0]!;
+    expect(insert.values).toEqual([input.workspaceId, input.sessionId,
+      createHash('sha256').update(result.bearer).digest('hex'), '[]', '[]', input.expiresAt]);
+    expect(pgMock.queries[1]?.values).toEqual([
+      result.bearer, `pi:${input.sessionId}`, input.workspaceId]);
+  });
+
+  it.each([
+    { legacyBootstrapRootId: 0 }, { legacyBootstrapRootId: 1.5 },
+    { legacyBootstrapRootId: Number.MAX_SAFE_INTEGER + 1 },
+    { capabilities: undefined }, { capabilities: ['*'] },
+    { allowedTools: [''] }, { allowedTools: ['coord:whoami'] },
+    { expiresAt: undefined }, { workspaceId: '*' }, { sessionId: ' ' },
+  ])('refuses broadened or implicit bootstrap scope before any issuer write: %j', async (change) => {
+    await expect(startPiSession({ ...confined(), ...change }))
+      .rejects.toThrow('pi_legacy_bootstrap_scope_invalid');
+    expect(pgMock.queries).toHaveLength(0);
+  });
+
   it('persists exact tool names and a durable expiry with the bearer hash', async () => {
     const expiresAt = new Date(Date.now() + 60_000);
     const result = await startPiSession({

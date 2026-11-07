@@ -20,7 +20,7 @@ import type { ZodTypeAny } from 'zod';
 import type { Principal } from '@papercusp/agent-mcp';
 // RouteDiagnostics lives in tooldef and agent-mcp does not re-export it.
 import type { RouteDiagnostics } from '@papercusp/tooldef';
-import { PrincipalCheckError, requirePrincipal } from '../auth/require-principal';
+import { PrincipalCheckError, requirePrincipal, refuseLegacyBootstrapPrincipal } from '../auth/require-principal';
 import { AgentIdentityRequiredError } from '../auth/identity-required-error';
 import { principalFromCookie } from '../auth/principal/from-cookie';
 import type { RouteDefinition } from './define-route';
@@ -455,6 +455,16 @@ async function enforceRemoteAuth(exec: RouteExecution): Promise<{ remote: boolea
 const authStep: RouteStep = {
   name: 'auth',
   async run(exec) {
+    // Possession-only purpose is terminal even on public/loopback routes and
+    // when a stronger browser cookie accompanies the bearer. No root admission
+    // route is opened by generic principal resolution.
+    try {
+      refuseLegacyBootstrapPrincipal(authHeaders(exec));
+    } catch (error) {
+      if (!(error instanceof PrincipalCheckError)) throw error;
+      exec.status = 'forbidden';
+      return errorResponse(error.status, 'forbidden', error.reason);
+    }
     const remote = await enforceRemoteAuth(exec);
     if (remote.denial) {
       exec.status = remote.denial.status === 401 ? 'unauthorized' : 'forbidden';

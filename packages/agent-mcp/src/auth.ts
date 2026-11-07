@@ -45,6 +45,18 @@ function rolesForPrincipal(kind: 'system' | 'pi', slug: string): ReadonlySet<str
  */
 export const PRINCIPAL_INVALIDATE_CHANNEL = 'agent_mcp_principal_invalidate';
 
+/** Reserved possession-only PI purpose. The marker survives index deletion,
+ * expiry and malformed credentials so no transport can turn refusal into a
+ * cookie/loopback principal. It identifies a purpose, never authenticates it.
+ * Root-bound admission must separately verify the live issuer and custody. */
+export const LEGACY_BOOTSTRAP_BEARER_PREFIX = 'pcpi.legacy.';
+export function isLegacyBootstrapBearer(bearer: string): boolean {
+  return bearer.toLowerCase().startsWith(LEGACY_BOOTSTRAP_BEARER_PREFIX);
+}
+export function hasLegacyBootstrapAuthorization(authorization: string | null): boolean {
+  return authorization !== null && authorization.split(/[\s,]+/).some(isLegacyBootstrapBearer);
+}
+
 /** Positive entries: revocation lag is bounded by this even if LISTEN is down. */
 const CACHE_TTL_MS = 60_000;
 /** Negative entries (ended session / missing row / hash mismatch): short, so a
@@ -241,7 +253,9 @@ async function resolveTokenIdentity(
 }
 
 export async function resolveBearer(bearer: string): Promise<Principal | null> {
-  if (!bearer) return null;
+  // This credential never becomes a generic MCP/HTTP principal, even if a
+  // cached or corrupted issuer row offers broader capabilities.
+  if (!bearer || isLegacyBootstrapBearer(bearer)) return null;
 
   // bearer → token_index identity, served from a per-bearer-hash cache (the
   // identity is immutable for a live token — see TOKEN_INDEX_CACHE). The hash is

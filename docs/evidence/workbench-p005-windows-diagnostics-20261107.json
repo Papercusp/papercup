@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench Windows retained diagnostic controls and Inbox resident lifecycle",
+  "framework": "operational",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase fixture-diagnostics",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase lifecycle -Interactive"
+  ],
+  "startedAt": "2026-11-07T09:48:24.341489+00:00",
+  "finishedAt": "2026-11-07T09:49:45.410786+00:00",
+  "exitCode": 0,
+  "summary": "55 maintained native Windows assertions passed: 15 injected failure/timeout diagnostic controls and 40 resident install/settings lifecycle checks after the Inbox migration. Current-build fixture evidence; independent installed three-OS acceptance remains pending.",
+  "workItem": "WI-6554700010044411",
+  "bug": "EI-28121438173695706",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "runs": [
+    {
+      "startedAt": "2026-11-07T09:48:24.341489+00:00",
+      "phase": "fixture-diagnostics",
+      "sourceSha256": {
+        "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "5033e3280d9e460daedeac11e27294133ad22887afad5255dfc4a9bed48212e7",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "7e7379288d5017c36d00fc4e2c763a1e89e1a11c04bc835ed5e534cbcce52e3f",
+        "papercusp-desktop/native/windows/PuiReadBridge.cs": "a4594b4a517f24fa7114758db084f71a1958fa8c5b2c742683fe45619a2a9708",
+        "papercusp-desktop/native/windows/workbench.ps1": "5690faaeb9354fe79c1212f16735ec8939daca54c23a5f005f371c86d4206134",
+        "papercusp-desktop/native/windows/WorkbenchHost.cs": "14164bef47b52995798192327926d5af063822fd990099c85eab115d3523e096",
+        "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "904486300409ae1616f64c647b59e97e6020d810c246d463d3e1945d43e0d0bc",
+        "papercusp-desktop/native/windows/WorkbenchModel.cs": "7cd3a7c87acf47ef2ac83596763bdf1f23d5a63a75c1f3784dd0e892709fe519"
+      },
+      "finishedAt": "2026-11-07T09:49:02.843085+00:00",
+      "exitCode": 0,
+      "result": {
+        "phase": "fixture-diagnostics",
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "fixture-failure rejects the injected failure",
+          "fixture-failure returns retained evidence location",
+          "fixture-failure records failed phase",
+          "fixture-failure retains child stdout",
+          "fixture-failure retains child stderr",
+          "fixture-failure leaves no owned child",
+          "fixture-failure unregisters its task",
+          "fixture-timeout rejects the injected failure",
+          "fixture-timeout returns retained evidence location",
+          "fixture-timeout records failed phase",
+          "fixture-timeout retains child stdout",
+          "fixture-timeout retains child stderr",
+          "fixture-timeout leaves no owned child",
+          "fixture-timeout unregisters its task",
+          "timeout cleanup verifies and terminates the owned child tree"
+        ],
+        "count": 15
+      },
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json",
+      "stderr": "/tmp/wb-p005-windows-diagnostics-20261107-v4.err"
+    },
+    {
+      "startedAt": "2026-11-07T09:49:02.843761+00:00",
+      "phase": "lifecycle",
+      "sourceSha256": {
+        "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "5033e3280d9e460daedeac11e27294133ad22887afad5255dfc4a9bed48212e7",
+        "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "7e7379288d5017c36d00fc4e2c763a1e89e1a11c04bc835ed5e534cbcce52e3f",
+        "papercusp-desktop/native/windows/PuiReadBridge.cs": "a4594b4a517f24fa7114758db084f71a1958fa8c5b2c742683fe45619a2a9708",
+        "papercusp-desktop/native/windows/workbench.ps1": "5690faaeb9354fe79c1212f16735ec8939daca54c23a5f005f371c86d4206134",
+        "papercusp-desktop/native/windows/WorkbenchHost.cs": "14164bef47b52995798192327926d5af063822fd990099c85eab115d3523e096",
+        "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "904486300409ae1616f64c647b59e97e6020d810c246d463d3e1945d43e0d0bc",
+        "papercusp-desktop/native/windows/WorkbenchModel.cs": "7cd3a7c87acf47ef2ac83596763bdf1f23d5a63a75c1f3784dd0e892709fe519"
+      },
+      "finishedAt": "2026-11-07T09:49:45.410786+00:00",
+      "exitCode": 0,
+      "result": {
+        "resident": true,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "first install enables the Accounts shortcut",
+          "first install enables Inbox on Ctrl Alt B",
+          "Inbox migration chooses a free accelerator without resetting existing panels",
+          "installer persists the migrated Inbox shortcut",
+          "upgrade preserves explicitly disabled Inbox",
+          "adding Accounts preserves legacy disable and shortcut choices",
+          "Accounts migration avoids existing Quick Access and Inbox shortcuts",
+          "preserve-existing installer persists the missing Accounts binding",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts",
+          "resident fixture refuses to overwrite an existing Workbench login registration",
+          "actual controller starts the resident in the signed-in desktop and acknowledges native readiness",
+          "unchanged desktop preparation preserves the same resident process",
+          "settings command reaches the resident native WPF dialog through its account event",
+          "saving native disable releases the resident and removes login registration",
+          "native settings persist explicit disable",
+          "login invocation respects the saved disabled choice",
+          "explicit enable restarts the same configured native host",
+          "explicit disable waits for resident shutdown",
+          "controller uninstall leaves no owned login entry and retains account choices"
+        ],
+        "count": 40
+      },
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json",
+      "stderr": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.err"
+    }
+  ],
+  "processExitProbe": {
+    "withoutRedirect": [
+      {
+        "retainedHandle": false,
+        "exitCode": 7
+      },
+      {
+        "retainedHandle": true,
+        "exitCode": 7
+      }
+    ],
+    "withRedirect": [
+      {
+        "retainedHandle": false,
+        "exitCode": null
+      },
+      {
+        "retainedHandle": true,
+        "exitCode": 7
+      }
+    ],
+    "interpretation": "Only redirected Start-Process without retained native Handle loses ExitCode after WaitForExit; retaining Handle before waiting preserves exit7. Both redirected fixture sites now retain Handle. The maintained failure phase asserts exact exit1."
+  },
+  "preflight": "Every run checked all seven current source SHA-256 values against native Get-FileHash and parsed the two PowerShell fixtures before launching. Signed-in Session1 verified. Original deadline35 seconds preserved.",
+  "timingEvidence": "Invocation metadata uses control-host UTC; native progress log uses VM UTC. Clock offsets are not used as causal evidence.",
+  "originalFailure": {
+    "exitCode": 1,
+    "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v1.err",
+    "observation": "No terminal receipt before deadline. Original child logs were deleted by the old wrapper, so originating cause is unconfirmed. Current source passes40; no claim that this proves the cause of the earlier timeout."
+  },
+  "localNode": {
+    "evidence": "/tmp/wb-p005-windows-diagnostics-node-20261107-v4.log",
+    "passCount": 1,
+    "failCount": 0,
+    "skipCount": 13,
+    "scope": "packaging assertion only; skipped tests are not native proof"
+  },
+  "limitations": [
+    "Isolated helper and test account state only; no real Inbox actions or account controls.",
+    "No actual canonical Inbox write journey or installed-artifact acceptance claimed.",
+    "No AppKit/three-OS independent certificate or shipment claim."
+  ]
+}

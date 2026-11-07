@@ -68,6 +68,7 @@ import {
   _stopInvalidationListenerForTests,
   _authCacheTuning,
   PRINCIPAL_INVALIDATE_CHANNEL,
+  hasLegacyBootstrapAuthorization,
 } from './auth';
 
 const hashOf = (bearer: string) => createHash('sha256').update(bearer).digest('hex');
@@ -91,6 +92,29 @@ afterEach(() => {
 });
 
 describe('resolveBearer', () => {
+  it.each(['pcpi.legacy.42.' + 'x'.repeat(43), 'pcpi.legacy.',
+    'PCPI.LEGACY.42.invalid', 'pcpi.legacy.0.invalid'])
+  ('refuses root-bootstrap purpose before cached/index authorization: %s', async (bearer) => {
+    tokenIndexRows = [{ token: bearer, kind: 'pi', harness_slug: 'pi:bootstrap', workspace_id: 'ws1' }];
+    principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'], allowed_tools: ['coord:whoami'],
+      ended_at: null, expires_at: new Date(Date.now() + 60_000) }];
+    expect(await resolveBearer(bearer)).toBeNull();
+    expect(await resolveBearer(bearer)).toBeNull();
+    expect(sqlCalls).toBe(0);
+    expect(withWorkspaceCalls).toBe(0);
+  });
+
+  it.each(['Bearer pcpi.legacy.42.secret', 'bearer pcpi.legacy.invalid',
+    'pcpi.legacy.', 'Bearer unrelated, Bearer pcpi.legacy.deleted'])
+  ('recognizes bootstrap purpose without authenticating it: %s', authorization => {
+    expect(hasLegacyBootstrapAuthorization(authorization)).toBe(true);
+  });
+
+  it.each([null, '', 'Bearer ordinary', 'Bearer pcapp_normal'])
+  ('leaves unrelated authorization unchanged: %s', authorization => {
+    expect(hasLegacyBootstrapAuthorization(authorization)).toBe(false);
+  });
+
   it('waits for and unlistens a subscription that finishes after teardown starts', async () => {
     const bearer = 'system-bearer-token-pending-listener';
     tokenIndexRows = [

@@ -11,10 +11,11 @@ const selfOwnedLoopTurn = fileURLToPath(new URL(
 ));
 const databaseTest = fileURLToPath(new URL('./work-items-corroboration.integration.test.ts', import.meta.url));
 const selectionCanary = fileURLToPath(new URL('./integration-substrate-selection.integration.test.ts', import.meta.url));
+const lifecycleCandidate = fileURLToPath(new URL('./harness/git-sync/lifecycle-candidate.integration.test.ts', import.meta.url));
 const project = { name: 'fixture-project' };
 
 describe('operator-core integration substrate selection (EI-26266395178004133)', () => {
-  it.each([privateTransport, selfOwnedLoopTurn, selectionCanary])('omits PostgreSQL for the exact selected private suite %s', async path => {
+  it.each([privateTransport, selfOwnedLoopTurn, selectionCanary, lifecycleCandidate])('omits PostgreSQL for the exact selected private suite %s', async path => {
     const loaders = { baseline: vi.fn(), org: vi.fn() };
     await setupIntegrationSubstrate(project, [path], loaders);
     expect(loaders.baseline).not.toHaveBeenCalled();

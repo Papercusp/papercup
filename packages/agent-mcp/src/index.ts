@@ -144,7 +144,8 @@ export {
   renderSlashPrompt,
 } from '@papercusp/tooldef';
 export type { SlashPromptListing } from '@papercusp/tooldef';
-export { resolveBearer, lookupSystemPrincipalCapabilitiesByRole } from './auth';
+export { resolveBearer, lookupSystemPrincipalCapabilitiesByRole,
+  hasLegacyBootstrapAuthorization } from './auth';
 export {
   sanitizeToolSchema,
   sanitizeToolSchemaCached,

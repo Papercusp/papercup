@@ -17,7 +17,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { Principal } from '@papercusp/tooldef';
 import { withWorkspace } from '@papercusp/db-org';
-import { PRINCIPAL_INVALIDATE_CHANNEL } from './auth';
+import { LEGACY_BOOTSTRAP_BEARER_PREFIX, PRINCIPAL_INVALIDATE_CHANNEL } from './auth';
 
 /**
  * Tell every live auth cache (auth.ts LISTEN) that this principal's
@@ -172,6 +172,9 @@ export interface StartPiSessionArgs {
   allowedTools: string[];
   /** Absolute durable expiry. Defaults to one day for non-interactive PI sessions. */
   expiresAt?: Date;
+  /** Possession-only bootstrap purpose; never resolves as a generic principal.
+   * The committed root/receipt must bind this predeclared session separately. */
+  legacyBootstrapRootId?: number;
 }
 
 export interface PiSessionResult {
@@ -196,11 +199,18 @@ export async function startPiSession(
   const caps = args.capabilities === undefined ? DEFAULT_PI_CAPABILITIES : args.capabilities;
   const allowedTools = [...new Set(args.allowedTools.map((name) => name.trim()).filter(Boolean))];
   const expiresAt = args.expiresAt ?? new Date(Date.now() + DEFAULT_PI_SESSION_TTL_MS);
+  if (args.legacyBootstrapRootId !== undefined && (
+    !Number.isSafeInteger(args.legacyBootstrapRootId) || args.legacyBootstrapRootId <= 0
+    || !workspaceId || workspaceId === '*' || !sessionId.trim()
+    || args.capabilities === undefined || args.capabilities.length !== 0
+    || args.allowedTools.length !== 0 || args.expiresAt === undefined
+  )) throw new TypeError('pi_legacy_bootstrap_scope_invalid');
   if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
     throw new TypeError('pi_session_expiry_must_be_in_the_future');
   }
   return withWorkspace(workspaceId, async (tx) => {
-    const bearer = genBearer();
+    const bearer = args.legacyBootstrapRootId === undefined ? genBearer()
+      : `${LEGACY_BOOTSTRAP_BEARER_PREFIX}${args.legacyBootstrapRootId}.${genBearer()}`;
     const bearerHash = hash(bearer);
     await tx`
       INSERT INTO harness_shared.pi_sessions

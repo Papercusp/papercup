@@ -214,6 +214,51 @@ describe('failureFingerprint never fingerprints passing test lines', () => {
   });
 });
 
+describe('failureFingerprint reads owned database cleanup receipts', () => {
+  const cleanup = (overrides: Record<string, unknown> = {}) =>
+    '[with-test-pg] owned database cleanup ' + JSON.stringify({
+      complete: true,
+      databases: [{ name: 'org_197d482d9c75', outcome: 'dropped' }],
+      errorCount: 0,
+      errors: [],
+      ...overrides,
+    });
+
+  it.each([{}, { databases: [] }])('keeps distinct failures ahead of successful cleanup: %j', receipt => {
+    const fingerprint = (failure: string) => failureFingerprint({
+      exitCode: 1, logTail: `${failure}\n${cleanup(receipt)}`,
+    });
+    const build = fingerprint('Error: build attribution source identity mismatch');
+    const connection = fingerprint('Error: write CONNECT_TIMEOUT localhost:32769');
+    expect(build.label).toContain('build attribution source identity mismatch');
+    expect(connection.label).toContain('CONNECT_TIMEOUT');
+    expect(build.fingerprint).not.toBe(connection.fingerprint);
+  });
+
+  it('falls through to exit evidence when only successful cleanup remains', () => {
+    expect(failureFingerprint({ exitCode: 1, exitReason: 'exited', logTail: cleanup() }).source).toBe('exit');
+  });
+
+  it.each([
+    { complete: false },
+    { errorCount: 1 },
+    { errors: ['drop failed'] },
+    { databases: [{ name: 'org_197d482d9c75', outcome: 'unconfirmed' }] },
+    { databases: null },
+    { complete: 'true' },
+  ])('retains cleanup that does not prove success: %j', receipt => {
+    const result = failureFingerprint({ exitCode: 1, logTail: `Error: earlier failure\n${cleanup(receipt)}` });
+    expect(result.label).toContain('owned database cleanup');
+  });
+
+  it('retains malformed receipts and errors quoting a successful receipt', () => {
+    for (const line of [cleanup().slice(0, -1), `Error: wrapper failed after ${cleanup()}`]) {
+      expect(failureFingerprint({ exitCode: 1, logTail: `Error: earlier failure\n${line}` }).label)
+        .toContain('owned database cleanup');
+    }
+  });
+});
+
 describe('failureFingerprint binds typecheck aggregates to their verdict', () => {
   const summary = 'TSC operator-core: 107 type errors across 78 file(s) (baseline total 224) [--files]';
   const start = 'LINT_TSC_RUN_STAMP label=operator-core at=2026-10-23T04:51:18Z head=db6e2a889b scope=files files=3';

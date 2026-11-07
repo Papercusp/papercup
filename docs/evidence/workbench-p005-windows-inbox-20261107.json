@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 Windows Inbox current-build WPF and shortcut migration",
+  "framework": "operational",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9 -Phase inbox -Interactive",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-lifecycle.ps1 -SourceDirectory C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9"
+  ],
+  "startedAt": "2026-11-07T09:25:07+00:00",
+  "finishedAt": "2026-11-07T09:26:16.681261+00:00",
+  "exitCode": 0,
+  "summary": "67 maintained assertions passed: Inbox model and actual WPF in signed-in Session1 (37), per-account lifecycle and Inbox shortcut migration (30). Isolated helper data only. Installed three-OS independent acceptance and shipment remain pending.",
+  "workItem": "WI-6554700010044411",
+  "parentWorkItem": "WI-6554700010044395",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "sourceSha256": {
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "f0b399a7afa5116200f913cee8a869493ccef897d48d02c2902386a6fa4d8199",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-lifecycle.ps1": "4569652b13bf83cf444309bff632bd024b09d7e02e96bd9de1dbf58ccf85b690",
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "a4594b4a517f24fa7114758db084f71a1958fa8c5b2c742683fe45619a2a9708",
+    "papercusp-desktop/native/windows/workbench.ps1": "5690faaeb9354fe79c1212f16735ec8939daca54c23a5f005f371c86d4206134",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "14164bef47b52995798192327926d5af063822fd990099c85eab115d3523e096",
+    "papercusp-desktop/native/windows/WorkbenchLifecycle.psm1": "904486300409ae1616f64c647b59e97e6020d810c246d463d3e1945d43e0d0bc",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "7cd3a7c87acf47ef2ac83596763bdf1f23d5a63a75c1f3784dd0e892709fe519"
+  },
+  "nativeSourceCustody": [
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\native-workbench-windows-host.ps1",
+      "Hash": "F0B399A7AFA5116200F913CEE8A869493CCEF897D48D02C2902386A6FA4D8199"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\native-workbench-windows-lifecycle.ps1",
+      "Hash": "4569652B13BF83CF444309BFF632BD024B09D7E02E96BD9DE1DBF58CCF85B690"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\PuiReadBridge.cs",
+      "Hash": "A4594B4A517F24FA7114758DB084F71A1958FA8C5B2C742683FE45619A2A9708"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\workbench.ps1",
+      "Hash": "5690FAAEB9354FE79C1212F16735EC8939DACA54C23A5F005F371C86D4206134"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchHost.cs",
+      "Hash": "14164BEF47B52995798192327926D5AF063822FD990099C85EAB115D3523E096"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchLifecycle.psm1",
+      "Hash": "904486300409AE1616F64C647B59E97E6020D810C246D463D3E1945D43E0D0BC"
+    },
+    {
+      "Path": "C:\\Users\\user\\AppData\\Local\\Temp\\workbench-p005-host-20261106-b3cf9\\WorkbenchModel.cs",
+      "Hash": "7CD3A7C87ACF47EF2AC83596763BDF1F23D5A63A75C1F3784DD0E892709FE519"
+    }
+  ],
+  "runs": [
+    {
+      "phase": "inbox",
+      "exitCode": 0,
+      "startedAt": "2026-11-07T09:25:07+00:00",
+      "finishedAt": "2026-11-07T09:25:28.057481+00:00",
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json",
+      "stderr": "/tmp/wb-p005-windows-inbox-20261107-v1.err",
+      "result": {
+        "ok": true,
+        "platform": "windows",
+        "phase": "inbox",
+        "cases": [
+          "Inbox reads and filters canonical attention groups",
+          "visible batch freezes nested references before confirmation",
+          "context uses exact question identity and offered escalation option",
+          "late context generation is rejected",
+          "changed reference cannot resolve a recycled question identity",
+          "manual resolution refuses unoffered actions",
+          "pending action suppresses duplicate invocation",
+          "unrecorded terminal effect is surfaced for reconciliation",
+          "confirmed terminal effect cannot repeat when bookkeeping fails",
+          "locally confirmed question cannot be applied twice",
+          "owner action stays outside Apply selected",
+          "partial delivery uses persisted total as the progress denominator",
+          "Apply freezes the edited draft and saved run identity",
+          "owner-only row cannot enter a bulk apply request",
+          "action receipt from another workspace is rejected",
+          "live saved run refresh cannot overwrite a pending action",
+          "live refresh cannot replace the selected saved run",
+          "duplicate bulk identities fail closed",
+          "resume submits only retryable saved item identities",
+          "stop refuses a terminal run",
+          "stop targets the exact active saved run",
+          "active saved run prevents a second batch",
+          "filtering out a question dismisses context and fences its late response",
+          "incomplete canonical run blocks actions",
+          "conflicting attention identities are surfaced instead of silently merged",
+          "native Inbox renders canonical attention and selected environment",
+          "native visible batch waits for explicit confirmation without writes",
+          "query edit cancels a frozen batch confirmation",
+          "native question context exposes offered actions and answer control",
+          "manual offered action also waits for confirmation",
+          "confirmed batch submits exactly the one filtered visible question",
+          "saved run polling renders authoritative review progress",
+          "saved run refresh preserves the live draft control and edited text",
+          "selected recommendation is never auto-applied",
+          "native Apply sends the exact selected identity and edited Unicode draft",
+          "Inbox pins alongside independent panels within separate native slots",
+          "native Inbox retains its resident HWND and query across toggles"
+        ],
+        "count": 37,
+        "processSessionId": 1,
+        "interactiveDesktop": true,
+        "scope": "native-inbox-fixture"
+      }
+    },
+    {
+      "phase": "lifecycle",
+      "exitCode": 0,
+      "startedAt": "2026-11-07T09:26:11+00:00",
+      "finishedAt": "2026-11-07T09:26:16.681261+00:00",
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json",
+      "stderr": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.err",
+      "result": {
+        "resident": false,
+        "ok": true,
+        "platform": "windows",
+        "cases": [
+          "first install enables native panels with distinct default shortcuts",
+          "first install enables the Accounts shortcut",
+          "first install enables Inbox on Ctrl Alt B",
+          "Inbox migration chooses a free accelerator without resetting existing panels",
+          "installer persists the migrated Inbox shortcut",
+          "upgrade preserves explicitly disabled Inbox",
+          "adding Accounts preserves legacy disable and shortcut choices",
+          "Accounts migration avoids existing Quick Access and Inbox shortcuts",
+          "preserve-existing installer persists the missing Accounts binding",
+          "login registration uses the exact installed controller and fixed argv",
+          "Workbench registration preserves unrelated login applications",
+          "native login command preserves spaces apostrophes and literal dollar signs",
+          "upgrade preserves account shortcuts and individual panel disable",
+          "upgrade refreshes the registered installation without resetting choices",
+          "disable removes this accounts Workbench login value",
+          "reinstall does not re-enable an explicitly disabled account",
+          "explicit enable restores login registration",
+          "duplicate enabled shortcuts are refused before writing",
+          "reserved F12 remains invalid even for a disabled panel",
+          "invalid native modifier bits are refused",
+          "invalid settings leave both persistence and login state unchanged",
+          "concurrent settings writer cannot bypass the per-account lock",
+          "registry failure is surfaced instead of accepting a partial settings update",
+          "registry failure restores the previous settings",
+          "missing resident is reported without starting a service or touching another account",
+          "settings wake targets the exact account and state-directory identity",
+          "uninstalling another role preserves the current roles login entry",
+          "uninstall removes owned login registration and retains account preferences",
+          "retained preferences survive uninstall and reinstall",
+          "corrupt preferences fail visibly instead of silently resetting shortcuts"
+        ],
+        "count": 30
+      }
+    }
+  ],
+  "scope": "current-build-native-fixture",
+  "timingEvidence": "Shell redirection file birth and final modification bracket each SSH fixture invocation; source hashes match native Get-FileHash after both runs.",
+  "localNode": {
+    "passCount": 1,
+    "failCount": 0,
+    "skipCount": 12,
+    "evidence": "/tmp/wb-p005-windows-inbox-node-20261107-v1.log",
+    "scope": "packaging only; skips are not native proof"
+  },
+  "limitations": [
+    "No real Inbox actions or account steering performed.",
+    "No installed artifact, AppKit, full three-OS acceptance, independent certificate or shipment claim.",
+    "Resident installer and native settings UI40 checks not rerun yet."
+  ]
+}

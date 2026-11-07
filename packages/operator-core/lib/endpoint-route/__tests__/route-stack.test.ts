@@ -114,6 +114,31 @@ describe('route diagnostics', () => {
 });
 
 describe('auth step', () => {
+  it.each(['public', 'loopback', 'principal', 'query', 'remote'] as const)
+  ('rejects bootstrap purpose before %s fallback and handler input', async mode => {
+    const handler = vi.fn(() => Response.json({ ok: true }));
+    vi.mocked(principalFromCookie).mockResolvedValue({ kind: 'user', slug: 'human', workspaceId: 'ws',
+      trust: 'verified', authMethod: 'cookie-session', capabilities: new Set(['*']) });
+    const auth = mode === 'public' || mode === 'loopback' ? mode
+      : mode === 'query' ? { tokenIn: ['query' as const], trust: ['verified' as const] }
+        : { trust: ['verified' as const] };
+    const app = freshApp();
+    registerRoute(app, defineTool({ method: 'POST', path: '/bootstrap-purpose', auth,
+      input: z.object({ value: z.string() }), handler }));
+    const response = await app.request(mode === 'remote'
+      ? 'https://remote.invalid/bootstrap-purpose'
+      : mode === 'query' ? '/bootstrap-purpose?token=pcpi.legacy.deleted' : '/bootstrap-purpose', {
+      method: 'POST', headers: { ...(mode === 'query' ? {} : { authorization: 'Bearer pcpi.legacy.revoked' }),
+        cookie: 'papercusp_session=valid', 'content-type': 'application/json' }, body: 'invalid-json',
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: {
+      message: 'legacy bootstrap credential requires root-bound admission transport' } });
+    expect(requirePrincipal).not.toHaveBeenCalled();
+    expect(principalFromCookie).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('public route skips requirePrincipal and runs the handler', async () => {
     const app = freshApp();
     registerRoute(app, defineTool({

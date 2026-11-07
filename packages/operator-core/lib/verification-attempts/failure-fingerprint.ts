@@ -74,6 +74,25 @@ const PASSING_TEST_LINE_RE = /^(?:[✔✓]|ok\s+\d+\b)/i;
 /** Router recaps and informational annotations describe a run, not its cause. */
 const NON_FAILURE_SUMMARY_RE = /^(?:ⓘ\s|TEST_FILE_(?:GROUP_)?RESULT\b)/;
 
+/** scripts/with-test-pg.mjs emits an errors array even on success. Match its
+ * receipt contract, rather than hiding arbitrary JSON that mentions errors. */
+function successfulOwnedDatabaseCleanup(line: string): boolean {
+  const prefix = '[with-test-pg] owned database cleanup ';
+  if (!line.startsWith(prefix)) return false;
+  try {
+    const receipt: unknown = JSON.parse(line.slice(prefix.length));
+    if (!receipt || typeof receipt !== 'object') return false;
+    return 'complete' in receipt && receipt.complete === true &&
+      'errorCount' in receipt && receipt.errorCount === 0 &&
+      'errors' in receipt && Array.isArray(receipt.errors) && receipt.errors.length === 0 &&
+      'databases' in receipt && Array.isArray(receipt.databases) &&
+      receipt.databases.every(database => database && typeof database === 'object' &&
+        'outcome' in database && database.outcome === 'dropped');
+  } catch {
+    return false;
+  }
+}
+
 /** A scoped tsc pass can print the whole project's existing error count. Bind
  * only its nearest aggregate to the matching canonical success receipt. Keep
  * actual diagnostics and failed, incomplete or differently labelled runs. */
@@ -183,7 +202,8 @@ export function failureFingerprint(input: FailureFingerprintInput): FailureFinge
   const successfulTsc = successfulTscSummaryLines(lines);
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!;
-    if (successfulTsc.has(i) || NON_FAILURE_SUMMARY_RE.test(line) || PASSING_TEST_LINE_RE.test(line) ||
+    if (successfulTsc.has(i) || successfulOwnedDatabaseCleanup(line) ||
+        NON_FAILURE_SUMMARY_RE.test(line) || PASSING_TEST_LINE_RE.test(line) ||
         !ERRORISH_RE.test(line) || ZERO_FAILURE_RE.test(line)) continue;
     const label = normalizeFailureText(line);
     if (label) return { fingerprint: hashKey('log', label), label, source: 'log', structured: null };
