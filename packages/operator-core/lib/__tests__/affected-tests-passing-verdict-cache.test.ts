@@ -1556,11 +1556,17 @@ describe('capability:bash seam markers are outside the cross-run identity', () =
   const stampedEnvIdentifiers = (src: string): string[] =>
     [...new Set([...src.matchAll(/\[([A-Za-z0-9_]+_ENV)\]\s*(?::|=[^=])/g)].map((m) => m[1]))].sort();
 
-  // Stamped, but deliberately NOT cache-identity names. The runner consumes and deletes both
-  // fields before spawning the workload (bash-jobs.ts:1451-1463), so they never reach a test
-  // task and cannot be a defeater. Listed rather than pattern-skipped so a third one has to be
-  // reasoned about here instead of slipping through.
-  const RUNNER_CONTROL_SEAM = ['SYSTEMD_RUNNER_OUTPUT_PATH_ENV', 'SYSTEMD_RUNNER_REDACTIONS_ENV'];
+  // Stamped, but deliberately NOT cache-identity names. The systemd runner consumes and deletes
+  // all six fields before spawning the workload, so they never reach a test task and cannot be a
+  // defeater. List them rather than pattern-skipping so every new marker has to be reviewed here.
+  const RUNNER_CONTROL_SEAM = [
+    'SYSTEMD_RUNNER_OUTPUT_PATH_ENV',
+    'SYSTEMD_RUNNER_REDACTIONS_ENV',
+    'SYSTEMD_RUNNER_TASK_ID_ENV',
+    'SYSTEMD_RUNNER_BASH_JOB_ID_ENV',
+    'SYSTEMD_RUNNER_SCOPE_UNIT_ENV',
+    'SYSTEMD_RUNNER_MARKER_SECRET_ENV',
+  ];
 
   // CALIBRATION. Without this every guard below passes vacuously whenever a parser breaks or the
   // seam is restructured — an empty derived set is a subset of anything and reads exactly like

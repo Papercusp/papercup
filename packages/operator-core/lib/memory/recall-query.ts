@@ -85,6 +85,8 @@ export interface AgentSignals {
 
 /** A recall query, with the human part and the agent part kept separate. */
 export interface RecallQuery {
+  /** Fingerprint of the normalized structured signal, independent of transport spelling. */
+  fingerprint?: string;
   /**
    * What the human said — the ONLY thing that reached retrieval before Phase 11.
    * On the turn-start push path this is the raw submitted prompt, envelope and

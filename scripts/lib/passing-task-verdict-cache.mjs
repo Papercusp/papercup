@@ -1115,13 +1115,13 @@ export function capturePassingTaskRuntimeIdentity({ root, cwd = root, environmen
  * byte for byte.
  */
 const PLAIN_SCRIPT_ARGS = "(?:\\s+[^'\"`$;&|<>()\\r\\n\\\\]+)*";
-const VITEST_RUN_SCRIPT = new RegExp(`^vitest\\s+run${PLAIN_SCRIPT_ARGS}$`);
+const VITEST_SCRIPT = new RegExp(`^vitest(?:\\s+run)?${PLAIN_SCRIPT_ARGS}$`);
 const PURE_LANE_SCRIPT = new RegExp(`^node\\s+(\\S+)${PLAIN_SCRIPT_ARGS}$`);
 const MEASURED_LANE_ASSIGNMENT = /^PC_TEST_LANE=[A-Za-z0-9_.-]*\s+/;
 
 function unwrapNpmTestScript({ root, workspaceRoot, scriptText }) {
   const original = scriptText ?? "";
-  if (VITEST_RUN_SCRIPT.test(original)) return { launcherDigests: null };
+  if (VITEST_SCRIPT.test(original)) return { launcherDigests: null };
   let rest = original.trim();
   const lane = MEASURED_LANE_ASSIGNMENT.exec(rest);
   if (lane) rest = rest.slice(lane[0].length);
@@ -1133,7 +1133,7 @@ function unwrapNpmTestScript({ root, workspaceRoot, scriptText }) {
     digest("scripts/pc-heavy.sh");
     rest = rest.slice(heavy[0].length);
   }
-  if (VITEST_RUN_SCRIPT.test(rest)) return { launcherDigests };
+  if (VITEST_SCRIPT.test(rest)) return { launcherDigests };
   const pure = PURE_LANE_SCRIPT.exec(rest);
   if (pure && repoFile(pure[1], "scripts/run-vitest-pure-lane.mjs")) {
     digest("scripts/run-vitest-pure-lane.mjs");

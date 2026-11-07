@@ -1,8 +1,7 @@
 {
   "schemaVersion": 1,
   "rubricRef": "acceptance-bg-host-committed-generation-2026-10-24",
-  "revision": 10,
-  "criteriaHash": "4c72c9360ac99aa3526bfe17925d10894f38408acd23521b4df1ef5f15d67835",
+  "revision": 14,
   "criterionKey": "r-1",
   "cases": [
     {
@@ -164,6 +163,122 @@
       "rowId": "bg-r1-compiler-immutable-input-positive-control",
       "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
       "testName": "bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes"
+    },
+    {
+      "rowId": "bg-r1-partition-extra-consumed-positive-control",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-extra-consumed-positive-control qualifies real compilation with additional frozen committed sources"
+    },
+    {
+      "rowId": "bg-r1-partition-protected-source-unconsumed",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-protected-source-unconsumed rejects a protected historical source omitted from real compiler consumption"
+    },
+    {
+      "rowId": "bg-r1-partition-consumption-added",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-consumption-added rejects added in the sealed complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-artifact-added",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-artifact-added rejects added between the new artifact source map and complete compiler consumption"
+    },
+    {
+      "rowId": "bg-r1-partition-consumption-omitted",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-consumption-omitted rejects omitted in the sealed complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-artifact-omitted",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-artifact-omitted rejects omitted between the new artifact source map and complete compiler consumption"
+    },
+    {
+      "rowId": "bg-r1-partition-consumption-hash-drift",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-consumption-hash-drift rejects hash-drift in the sealed complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-artifact-hash-drift",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-artifact-hash-drift rejects hash-drift between the new artifact source map and complete compiler consumption"
+    },
+    {
+      "rowId": "bg-r1-partition-uncensused-source",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-uncensused-source rejects compiler consumption outside the original frozen source census"
+    },
+    {
+      "rowId": "bg-r1-partition-uncensused-dependency",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-uncensused-dependency rejects compiler consumption outside the original frozen dependency census"
+    },
+    {
+      "rowId": "bg-r1-partition-virtual-consumption",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-virtual-consumption rejects a virtual compiler input without original physical custody"
+    },
+    {
+      "rowId": "bg-r1-partition-receipt-transaction-substitution",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-receipt-transaction-substitution rejects transaction substitution on the complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-receipt-entry-substitution",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-receipt-entry-substitution rejects entry substitution on the complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-receipt-argv-substitution",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-receipt-argv-substitution rejects argv substitution on the complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-receipt-compiler-toolchain-substitution",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-receipt-compiler-toolchain-substitution rejects compiler-toolchain substitution on the complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-receipt-source-generation-substitution",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-receipt-source-generation-substitution rejects source-generation substitution on the complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-receipt-dependency-generation-substitution",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-receipt-dependency-generation-substitution rejects dependency-generation substitution on the complete compiler consumption receipt"
+    },
+    {
+      "rowId": "bg-r1-partition-full-parent-census-mismatch",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r1-partition-full-parent-census-mismatch rejects extra output members when independent authority is a complete parent output census"
+    },
+    {
+      "rowId": "bg-r1-partition-new-boot-positive-control",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-partition-new-boot-positive-control qualifies the actual new service boot against its exact full new artifact authority"
+    },
+    {
+      "rowId": "bg-r1-partition-new-boot-source-only-substitution",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-partition-new-boot-source-only-substitution rejects historical source-only authority substituted for the full new artifact authority at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-partition-new-boot-member-added",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-partition-new-boot-member-added rejects added full new artifact authority members at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-partition-new-boot-member-omitted",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-partition-new-boot-member-omitted rejects omitted full new artifact authority members at actual service boot"
+    },
+    {
+      "rowId": "bg-r1-partition-new-boot-member-changed",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "bg-r1-partition-new-boot-member-changed rejects changed full new artifact authority members at actual service boot"
     }
-  ]
+  ],
+  "barHash": "3f3d18b6bb38b394ea2780a530a3468d2c380104a412f4d6f334aa25fc985b38"
 }
