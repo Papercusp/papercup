@@ -126,6 +126,14 @@ const h = vi.hoisted(() => {
     /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
     scopedClampFlag: { value: false },
     projectWorkScope: null as null | { mode: 'enforce'; allowHarnesses: string[] },
+    modeRead: vi.fn(async (_workspaceId: string, _ownerId: string) => ({
+      modes: [], sessionState: 'live', live: true,
+    })),
+    factVersions: vi.fn(async (_args: Record<string, unknown>) => []),
+    setFlag: vi.fn(),
+    setFlagOverride: vi.fn(),
+    publishFlagChange: vi.fn(),
+    fleetSpawn: vi.fn(() => { throw new Error('The transport matrix must not launch agents'); }),
     /** Hive-tier resolver seam: maps a harness → its hive home slug (null = no hive). */
     potHomeSlugForHarness: vi.fn(
       async (_ws: string, harness: string): Promise<string | null> =>
@@ -542,12 +550,31 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
+    setFlag: h.setFlag,
+    setFlagOverride: h.setFlagOverride,
     getFlag: async (key: string, scope?: string) =>
       key === 'papercusp-scoped-superuser-clamp'
         ? h.scopedClampFlag.value
         : (actual.getFlag as (k: string, s?: string) => Promise<boolean>)(key, scope),
   };
 });
+vi.mock('../../flag-bus', async importOriginal => ({
+  ...await importOriginal<typeof import('../../flag-bus')>(),
+  publishFlagChange: h.publishFlagChange,
+}));
+vi.mock('../../modes/liveness', async importOriginal => ({
+  ...await importOriginal<typeof import('../../modes/liveness')>(),
+  getModesWithLiveness: h.modeRead,
+}));
+vi.mock('../../agent-facts/store', async importOriginal => ({
+  ...await importOriginal<typeof import('../../agent-facts/store')>(),
+  factVersions: h.factVersions,
+}));
+vi.mock('../../console-spawn', async importOriginal => ({
+  ...await importOriginal<typeof import('../../console-spawn')>(),
+  spawnConsole: h.fleetSpawn,
+  spawnHeadless: h.fleetSpawn,
+}));
 vi.mock('../../hive-federation', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, potHomeSlugForHarness: h.potHomeSlugForHarness };
@@ -662,6 +689,8 @@ vi.mock('../../agent-tools/operator-tool-catalogue', () => ({
       import('../../agent-tools/scheduler/get_next'),
       import('../../agent-tools/locks/queue'),
       import('../../agent-tools/flags/set'),
+      import('../../agent-tools/mode/get'),
+      import('../../agent-tools/facts/list'),
       import('../../agent-tools/fleet_registry/status'),
       import('../../agent-tools/fleet_registry/create'),
       import('../../agent-tools/fleet_registry/launch-on-plan'),
@@ -6211,6 +6240,67 @@ describe('SU workspace project authorization through real MCP handlers', () => {
       seen.length = 0;
       expect((await invoke('gatingtest:crossworkspace', {})).isError).toBe(true);
       expect(seen).toHaveLength(0);
+    });
+
+    it('keeps targetless mode:get on the caller workspace and identity before and after a sibling call', async () => {
+      const extra = superuserExtra('&workspace=ws-test&harness=hiveA-home&client=su-default-compat');
+      for (const harness of [undefined, 'hiveB-home', undefined]) {
+        if (harness) expect((await invoke('gatingtest:scoped', { harness }, extra)).isError).not.toBe(true);
+        const result = await invoke('mode:get', {}, extra);
+        expect(result.isError).not.toBe(true);
+        expect(textOf(result)).toContain('su-default-compat');
+      }
+      expect(h.modeRead.mock.calls).toEqual([
+        ['ws-test', 'su-default-compat'],
+        ['ws-test', 'su-default-compat'],
+        ['ws-test', 'su-default-compat'],
+      ]);
+      expect((await invoke('gatingtest:scoped', {}, extra)).isError).not.toBe(true);
+      expect(seen.map(call => call.ctx.harnessSlug)).toEqual(['hiveB-home', 'hiveA-home']);
+      expect(h.withWorkspaceCalls.every(workspace => workspace === 'ws-test')).toBe(true);
+    });
+
+    it('keeps facts:list exact-key harness defaults A after an explicit scopeRef B', async () => {
+      for (const scopeRef of [undefined, 'hiveB-home', undefined]) {
+        const result = await invoke('facts:list', {
+          scope: 'harness', key: 'guard-rail:gating-default',
+          ...(scopeRef === undefined ? {} : { scopeRef }),
+        });
+        expect(result.isError).not.toBe(true);
+        expect(textOf(result)).toContain('guard-rail:gating-default');
+      }
+      expect(h.factVersions.mock.calls).toEqual(['hiveA-home', 'hiveB-home', 'hiveA-home'].map(scopeRef => [{
+        scope: 'harness', scopeRef, key: 'guard-rail:gating-default', limit: 1,
+      }]));
+      expect((await dispatch({})).isError).not.toBe(true);
+      expect(seen).toHaveLength(1);
+      expect(seen[0].ctx.harnessSlug).toBe('hiveA-home');
+      expect(h.withWorkspaceCalls.every(workspace => workspace === 'ws-test')).toBe(true);
+    });
+
+    it('preserves the global flags:set exception without writing an unknown key', async () => {
+      const result = await invoke('flags:set', {
+        key: 'gating-matrix-unknown-flag', enabled: true, reason: 'Verify global flag exception without a write',
+      });
+      expect(textOf(result)).toContain('Unknown flag key');
+      expect(textOf(result)).not.toContain('workspace_forbidden');
+      expect(h.setFlag).not.toHaveBeenCalled();
+      expect(h.setFlagOverride).not.toHaveBeenCalled();
+      expect(h.publishFlagChange).not.toHaveBeenCalled();
+      expect(h.scopedClampFlag.value).toBe(true);
+      expect((await dispatch({})).isError).not.toBe(true);
+      expect(seen).toHaveLength(1);
+      expect(seen[0].ctx.harnessSlug).toBe('hiveA-home');
+    });
+
+    it('lets a no-selected-project fleet omission reach missing-harness validation without launching', async () => {
+      const result = await invoke('fleet:launch-on-plan', {
+        name: 'gating-matrix-missing-harness', plan: 'gating-matrix-plan',
+      }, superuserExtra('&workspace=ws-test&client=su-default-compat'));
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('No harness for the plan');
+      expect(textOf(result)).not.toContain('harness_forbidden');
+      expect(h.fleetSpawn).not.toHaveBeenCalled();
     });
 
     it('cannot promote an authenticated non-SU role through authority arguments', async () => {

@@ -2455,6 +2455,21 @@ describe('owner directives in the brief (EI-11484)', () => {
 });
 
 describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)', () => {
+  it('carries canonical blocker guidance independently of checkpoint text across serialization', async () => {
+    const held = await readHeldWorkItems('su-abc', 'ws-test', {
+      sql: fakeIssuesSql([{ issue_id: 'WI-1', title: 't', body: 'b', scope: 'harness:papercusp',
+        taken_by: 'su-abc', workspace_id: 'ws-test', status: 'blocked', payload: {} }]),
+      getWorkItemCheckpointFn: async () => 'An old note with no blocker decision.',
+    });
+    expect(held[0].blockerResolution).toMatchObject({ status: 'unproven' });
+    const brief = await buildCarryBrief('su-abc', fullOpts({ readHeldWorkItemsFn: async () => held }));
+    const rendered = renderCarryBriefText(JSON.parse(JSON.stringify(brief)) as CarryBrief);
+    expect(rendered).toContain('blocker decision:');
+    expect(rendered).toContain('Investigate the blocker');
+    expect(rendered).toContain('preserve custody');
+    expect(rendered).toContain('results[].workItem.payload.blockerResolution');
+  });
+
   it.each(['rejected', 'in-band'] as const)('preserves checkpoint uncertainty for a successor (%s)', async (failure) => {
     const held = await readHeldWorkItems('su-abc', 'ws-test', {
       sql: fakeIssuesSql([

@@ -71,6 +71,10 @@ export function compileSourceOperation(source: Pick<RecipeOperationSource, 'tool
   } else if (source.tool === 'capability:bash') {
     if (typeof args.command !== 'string' || !args.command || args.command.length > 64_000
       || typeof args.cwd !== 'string' || !args.cwd.startsWith('/') || args.run_in_background === true
+      // An environment-bearing source requires an adapter that models that
+      // environment. Dropping it would certify a different execution context;
+      // encrypted integration-key mappings must never become recipe bindings.
+      || args.integration_env !== undefined || args.environment !== undefined || args.env !== undefined
       || /[\r\n`]|\$[({]/.test(args.command)) return null;
     let tokens: unknown[];
     try { tokens = shell.parse(args.command, () => '\0EXPANSION'); } catch { return null; }

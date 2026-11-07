@@ -117,6 +117,7 @@ const ROWS: SeedRow[] = [
     expectedCostCents: 500,
     payload: {
       tags: ['p2p-release', 'infra'],
+      fleet_slug: 'fixed-wave',
       paths: ['libs/generic/a.ts'],
       plan_item: { plan_slug: PLAN, item_id: 'P-001' },
       risk_tier: 'high',
@@ -149,6 +150,7 @@ const ROWS: SeedRow[] = [
     createdTs: 3000,
     payload: {
       tags: ['infra'],
+      fleet_slug: 'other-wave',
       paths: ['libs/generic/b.ts'],
       plan_item: { plan_slug: PLAN, item_id: 'P-002' },
       risk_tier: 'low',
@@ -280,6 +282,7 @@ const LEAF_SPECS: Array<{ field: FilterLeaf['field']; ops: FilterLeaf['op'][]; v
   { field: 'summary', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'federation', inValue: ['federation'] },
   { field: 'kind', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'feature', inValue: ['feature', 'bug'] },
   { field: 'plan', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: PLAN, inValue: [PLAN] },
+  { field: 'fleet', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'fixed-wave', inValue: ['fixed-wave'] },
   { field: 'risk_tier', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'high', inValue: ['high', 'low'] },
   { field: 'assignee', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'agent-1', inValue: ['agent-1'] },
   { field: 'goal', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'G-1', inValue: ['G-1'] },

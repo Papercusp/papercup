@@ -11,6 +11,7 @@
  * item (D-007).
  */
 import { z } from 'zod';
+import { projectBlockerResolution } from '../../blocker-resolution-decision';
 import { createReuseBriefIdentity } from '../../code-intelligence/reuse-brief-providers';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
@@ -1051,12 +1052,14 @@ async function claimOne(
     // bug-queue-legitimacy D-006: the same validation-only label scheduler:get_next
     // emits, derived from the claimed row, ahead of the bulky workItem echo.
     const reproductionValidation = reproductionValidationBrief(workItem);
+    const blockerResolution = projectBlockerResolution(workItem.payload, workItem);
     return hint
       ? {
           ok: true,
           id: it.id,
           ...(reproductionValidation ? { reproductionValidation } : {}),
           workItem,
+          ...(blockerResolution ? { blockerResolution } : {}),
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
           // A cross-plan affects warning is execution authority. Keep the shared
@@ -1115,6 +1118,7 @@ async function claimOne(
           id: it.id,
           ...(reproductionValidation ? { reproductionValidation } : {}),
           workItem,
+          ...(blockerResolution ? { blockerResolution } : {}),
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
           ...(directiveBindWarning ? { directiveBindWarning } : {}),

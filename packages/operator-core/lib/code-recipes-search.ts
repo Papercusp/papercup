@@ -237,7 +237,12 @@ export async function buildRecipeMatchingEvidence(input: {
   const current = checkScript(source.script, source.tools, source.allowed);
   const candidate = checkScript(input.candidate.script, source.tools, source.allowed);
   evidence.compiler = {
-    status: current.ok && candidate.ok && !current.hasParseErrors && !candidate.hasParseErrors ? 'measured' : 'partial',
+    // checkScript resolves known tool calls; ok:true is not a completeness
+    // claim about arbitrary computed/indirect calls. Unaccounted AST calls
+    // (including ordinary JS helpers) conservatively retain partial coverage.
+    status: current.ok && candidate.ok && !current.hasParseErrors && !candidate.hasParseErrors
+      && current.calls.length === evidence.clone.sourceCalls.left
+      && candidate.calls.length === evidence.clone.sourceCalls.right ? 'measured' : 'partial',
     currentTools: [...new Set(current.calls.map(call => call.tool))].sort(),
     candidateTools: [...new Set(candidate.calls.map(call => call.tool))].sort(),
   };

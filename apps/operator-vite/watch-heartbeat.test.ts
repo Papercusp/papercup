@@ -74,7 +74,7 @@ describe('one-shot build progress (EI-28171117618903276)', () => {
     run.call('buildStart');
     run.call('buildEnd');
     run.call('renderStart');
-    vi.advanceTimersByTime(60_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     const progress = run.rows().filter(row => row.event === 'progress');
     expect(progress).toHaveLength(2);
     expect(progress.map(row => row.phase)).toEqual(['render-start', 'render-start']);

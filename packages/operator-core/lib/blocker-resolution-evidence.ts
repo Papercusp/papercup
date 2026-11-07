@@ -44,6 +44,8 @@ export async function preflightBlockerDecision(
   input: unknown,
   context: BlockerBoundaryContext,
   options: { effect: unknown; enteringDeferral?: boolean; requireResolution?: boolean;
+    /** Host-only: paired dropped plan-line/receipt/dependency admission. */
+    allowAbsorption?: boolean;
     /** Host-validated proposed conditions, checked before their first write. */
     additionalBlockers?: readonly ExternalBlockerRecord[];
     /** Canonical prospective dependency identities from the relation writer. */
@@ -54,7 +56,11 @@ export async function preflightBlockerDecision(
     prepared = prepareBlockerDecision(item.payload, input, { ownerId: context.ownerId,
       sessionId: context.sessionId, workItemId: item.id, custodianId: item.assignee }, { effect: options.effect });
     if (!prepared.ok || prepared.replayed) return prepared;
-    if (options.requireResolution && prepared.record.decision.disposition !== 'self_resolve') {
+    if (prepared.record.decision.disposition === 'absorb' && !options.allowAbsorption) {
+      return boundaryProblem(['absorption requires the canonical plan drop and graph transaction']);
+    }
+    if (options.requireResolution && prepared.record.decision.disposition !== 'self_resolve' &&
+        !(options.allowAbsorption && prepared.record.decision.disposition === 'absorb')) {
       return boundaryProblem(['measured self-resolution before a terminal transition; deferral retains the unresolved work']);
     }
   }
@@ -73,18 +79,37 @@ export async function preflightBlockerDecision(
     if (!prepared.ok) return prepared;
     const { activeExternalBlockers } = await import('./external-blockers');
     const blockers = [...activeExternalBlockers(item.payload), ...(options.additionalBlockers ?? [])];
+    const absorbing = prepared.record.decision.disposition === 'absorb';
+    if (absorbing && blockers.some(blocker => blocker.kind !== 'runtime' ||
+        !blocker.ref.startsWith('plan-lane:') || blocker.createdBy !== 'system:plan-item-lane-sync')) {
+      return boundaryProblem(['absorption cannot bypass active holds or external conditions']);
+    }
     // Issue edges use a bare global id; evidence may name its actual harness.
     // Resolve through the canonical work reader instead of assuming the blocked
     // item's harness or comparing two valid spellings as unrelated conditions.
     const { getWorkItem } = await import('./work-items');
-    const obligationRefs: BlockerEvidenceRef[] = await Promise.all(
-      [...dependencies.map(dep => dep.ref), ...(options.additionalDependencyRefs ?? [])].map(async ref => {
+    const dependencyRefs = (refs: readonly string[]): Promise<BlockerEvidenceRef[]> => Promise.all(
+      refs.map(async ref => {
         if (ref.includes('#')) return { kind: 'work-item' as const, ref };
         const dependency = await getWorkItem(ref);
         if (!dependency?.harness) throw new Error('canonical dependency harness is unavailable');
         return { kind: 'work-item' as const, ref: `${dependency.harness}#${dependency.id}` };
       }));
+    const obligationRefs = await dependencyRefs([
+      ...dependencies.map(dep => dep.ref), ...(options.additionalDependencyRefs ?? []),
+    ]);
+    // Completed endpoints disappear from the unresolved reporting set while
+    // their canonical edges still explain why this item was blocked. Retain
+    // those actual edges as verification relevance, never as clearance of a
+    // different pending obligation or as grounds for a deferral.
+    let relatedConditionRefs: BlockerEvidenceRef[] = [];
+    if (prepared.record.decision.disposition === 'self_resolve') {
+      const related = await readUnresolvedDepBlockers(item.id, item.harness ?? undefined, { includeSatisfied: true });
+      if (related.length >= 25) return boundaryProblem(['complete dependency census (related reporting page reached its limit)']);
+      relatedConditionRefs = await dependencyRefs(related.map(dep => dep.ref));
+    }
     for (const blocker of blockers) {
+      if (absorbing) continue; // exact source gate is fenced again in the graph transaction
       if (blocker.kind === 'human' || blocker.kind === 'hold') obligationRefs.push({ kind: 'authority', ref: blocker.ref });
       else if (blocker.kind === 'runtime' && blocker.runtimeConditionBinding !== undefined) obligationRefs.push({ kind: 'runtime', ref: blocker.ref });
       else if (blocker.kind === 'runtime' && blocker.ref.startsWith('state:')) obligationRefs.push({ kind: 'state', ref: blocker.ref });
@@ -97,7 +122,8 @@ export async function preflightBlockerDecision(
     const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
       workItemId: item.id, blockers });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
-      ownerId: context.ownerId, workItemId: item.id, obligationRefs, readEvidence,
+      ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs,
+      allowAbsorption: options.allowAbsorption, readEvidence,
     });
     return checked.ok ? prepared : checked;
   } catch {

@@ -26,6 +26,7 @@ import { evaluateSessionConfinement, type SessionToolConfinement } from '../capa
 import { runManagedPreCompact } from '../../../../apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 import { mockResolvedTyped } from '../testing/typed-mock';
+import { BENCH_PRIVATE_FIXTURE_TOOL, benchFixtureAllocationSha256, type BenchFixtureAllocation } from './private-fixture-reads';
 import type { TaskRow } from '../task-manager/types';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
@@ -2436,17 +2437,32 @@ describe('current benchmark restart and live binding', () => {
     expect(f.ports.killTask).not.toHaveBeenCalled();
   });
   it.each([[undefined, 'off', 'off', undefined], ['on', 'off', 'off', 'off'], ['off', 'off', 'off', 'off'], ['on', 'on', 'off', 'off'],
-    ['off', 'on', 'off', 'off'], ['on', 'off', 'on', 'off'], ['off', 'off', 'on', 'off'], ['off', 'off', 'off', 'on']] as const)
-    ('binds native ledger exposure %s planning %s memory %s carry %s while retaining authenticated observer ownership', async (ledger, planning, memory, carry) => {
+    ['off', 'on', 'off', 'off'], ['on', 'off', 'on', 'off'], ['off', 'off', 'on', 'off'], ['off', 'off', 'off', 'on'],
+    ['on', 'off', 'off', 'off', true]] as const)
+    ('binds native ledger exposure %s planning %s memory %s carry %s while retaining authenticated observer ownership', async (ledger, planning, memory, carry, privateReads) => {
     const f = fixture();
     const archivedBefore = native.archivePlans.mock.calls.length;
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
     const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
+    const taskId = privateReads ? 'LATENCY-M1:T01' : 't1';
+    protocol.taskIds = [taskId];
+    protocol.sampling.taskRepositories = { [taskId]: 'fixture-repo', 'withheld-1': 'withheld-repo' };
+    const readSources: BenchFixtureAllocation | undefined = privateReads ? {
+      'LATENCY-M1:T01': { A: { issueId: 'EI-fixture-a' }, B: { issueId: 'EI-fixture-b' } },
+      'LATENCY-M1:T02': {
+        A: { issueId: 'EI-fixture-a', rubricRef: 'private-rubric', subjectRef: 'private-subject', comparisonTime: '2026-11-06T00:00:00Z' },
+        B: { issueId: 'EI-fixture-b', rubricRef: 'private-rubric', subjectRef: 'private-subject', comparisonTime: '2026-11-06T00:00:00Z' } },
+      'LATENCY-M1:T03': {
+        A: { harness: 'private-fixture', slug: 'history-a', revision: 1, specAsOf: '2026-11-06T00:00:00Z' },
+        B: { harness: 'private-fixture', slug: 'history-b', revision: 2, specAsOf: '2026-11-06T00:00:00Z' } },
+    } : undefined;
     if (ledger) {
       protocol.arms[0].control = { topology: 'solo', solverGroup: 'ledger-control',
         compactionLimit: 20_000,
         solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger, planning, 'memory-recall': memory,
           'carry-respawn': carry ?? 'off' } };
+      if (readSources) protocol.arms[0].control.fixtureReads = {
+        kind: 'latency-m1-v1', sha256: benchFixtureAllocationSha256(readSources) };
       protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-control',
         solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
     }
@@ -2458,23 +2474,24 @@ describe('current benchmark restart and live binding', () => {
       corpusHash: createHash('sha256').update(snapshot).digest('hex'), memoryHash: createHash('sha256').update(snapshot).digest('hex') };
     const restoredHandle = { ...handle, worktreePath: checkout };
     const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId: 'private-host-loop',
-      token: 'b'.repeat(64), preregHash, protocol, armId: 'papercusp', taskId: 't1', seed: 1,
+      token: 'b'.repeat(64), preregHash, protocol, armId: 'papercusp', taskId, seed: 1,
       resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
         wallClockMs: 1000, wallClockMsPerArm: 100,
-        armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) },
+        armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, taskId, 1)) },
       authenticateProvider: async () => null });
     const stop = vi.fn(async () => {});
     const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32101, stop } as never));
     const opts = { ...options, preregistration: { preregHash, config: protocol, repoRoot: snapshotRoot } };
-    const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted }, opts);
+    const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted,
+      ...(readSources ? { fixtureReads: readSources } : {}) }, opts);
     if (ledger) {
-      expect(ports.verifyGenerationBudget!(protocol.arms[0].generationBudget, 't1'))
+      expect(ports.verifyGenerationBudget!(protocol.arms[0].generationBudget, taskId))
         .toEqual({ frozenBudget: protocol.arms[0].generationBudget, topology: 'solo',
           capabilityControl: currentBenchSoloCapabilityControl(protocol.arms[0]) });
-      expect(() => ports.verifyGenerationBudget!({ ...protocol.arms[0].generationBudget, maxUsd: 99 }, 't1')).toThrow(/budget/);
+      expect(() => ports.verifyGenerationBudget!({ ...protocol.arms[0].generationBudget, maxUsd: 99 }, taskId)).toThrow(/budget/);
       expect(() => ports.verifyGenerationBudget!(protocol.arms[0].generationBudget, 'foreign')).toThrow(/assignment/);
     }
-    const context = await ports.restoreContext(restoredHandle, 't1');
+    const context = await ports.restoreContext(restoredHandle, taskId);
     const args = currentBenchLaunchRequest(opts, restoredHandle, 'issue', context);
     try { await ports.launch(args);
     const forwarded = native.launch.mock.calls.at(-1)![1];
@@ -2502,6 +2519,16 @@ describe('current benchmark restart and live binding', () => {
     expect(launched.brief.includes('work_items:complete')).toBe(ledger !== 'off');
     expect(launched.brief).toContain(context.contextText);
     const confinement = forwarded[Symbol.for('benchmark-test-server-ceiling')] as SessionToolConfinement;
+    expect(evaluateSessionConfinement({ toolName: BENCH_PRIVATE_FIXTURE_TOOL,
+      args: { operation: 'card', case: 'A' }, confinement }).allowed).toBe(!!privateReads);
+    expect(evaluateSessionConfinement({ toolName: 'scorecards:get', args: { issueId: 'EI-fixture-a' }, confinement }).allowed).toBe(false);
+    if (readSources) {
+      expect(confinement.denyBenchmarkReadsOutside).toMatchObject({ workspaceId: ctx.workspaceId,
+        runId: protocol.runId, preregHash, taskId, armId: 'papercusp', seed: 1,
+        assignmentId: hosted.nativeAccountingBinding.assignmentId,
+        fixtureSha256: benchFixtureAllocationSha256(readSources), cases: readSources['LATENCY-M1:T01'] });
+      expect(args.brief).toContain('For frozen inputs A/B, use benchmark:read-private-fixture');
+    } else expect(confinement.denyBenchmarkReadsOutside).toBeUndefined();
     const memoryArgs = { query: 'Frozen', harness_slug: restoredHandle.slug, harnessOnly: true };
     expect(evaluateSessionConfinement({ toolName: 'memory:search', args: memoryArgs, confinement }).allowed).toBe(memory === 'on');
     if (memory === 'on') {

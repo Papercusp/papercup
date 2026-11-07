@@ -48,6 +48,7 @@ import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { validProductReadBoundary, validScratchPlanBoundary, validWorkItemBoundary, validFrozenMemoryBoundary, validFrozenCarryBoundary, type SessionToolConfinement } from './session-confinement';
 import { setSessionConfinementResolver } from './session-confinement-port';
+import { validBenchFixtureReadBoundary } from '../external-bench/private-fixture-reads';
 
 type ConfinementPhases = NonNullable<UnifiedToolContext['phases']>;
 
@@ -116,6 +117,12 @@ async function readStoredSessionConfinement(ownerId: string | null | undefined,
         row.confinement.denyOutside !== undefined && (!Array.isArray(row.confinement.denyOutside) ||
           row.confinement.denyOutside.some(name => typeof name !== 'string')) ||
         row.confinement.denyAmbientContext !== undefined && row.confinement.denyAmbientContext !== true ||
+        row.confinement.denyBenchmarkReadsOutside !== undefined &&
+          (!validBenchFixtureReadBoundary(row.confinement.denyBenchmarkReadsOutside) ||
+           row.confinement.denyBenchmarkReadsOutside.workspaceId !== workspaceId ||
+           !validWorkItemBoundary(row.confinement.denyWorkItemsOutside) ||
+           row.confinement.denyOutside === undefined || row.confinement.denyAmbientContext !== true ||
+           row.confinement.imposedBy !== `benchmark-host ${row.confinement.denyBenchmarkReadsOutside.assignmentId}`) ||
         row.confinement.denyWorkItemsOutside !== undefined &&
           (row.confinement.denyOutside === undefined || !validWorkItemBoundary(row.confinement.denyWorkItemsOutside)) ||
         row.confinement.denyProductReadsOutside !== undefined &&
@@ -250,11 +257,20 @@ export async function declareSessionConfinement(args: {
   if (args.confinement.denyProductReadsOutside !== undefined &&
       !validProductReadBoundary(args.confinement.denyProductReadsOutside))
     return { ok: false, reason: 'confinement requires a valid product read boundary' };
+  if (args.confinement.denyBenchmarkReadsOutside !== undefined &&
+      (!validBenchFixtureReadBoundary(args.confinement.denyBenchmarkReadsOutside) ||
+       args.confinement.denyBenchmarkReadsOutside.workspaceId !== args.workspaceId ||
+       !validWorkItemBoundary(args.confinement.denyWorkItemsOutside) || args.confinement.denyAmbientContext !== true ||
+       args.confinement.denyOutside === undefined ||
+       args.confinement.imposedBy !== `benchmark-host ${args.confinement.denyBenchmarkReadsOutside.assignmentId}`))
+    return { ok: false, reason: 'confinement requires a workspace-bound private benchmark allocation' };
   if (args.confinement.denyPlansOutside !== undefined &&
       !validScratchPlanBoundary(args.confinement.denyPlansOutside))
     return { ok: false, reason: 'confinement requires a valid scratch plan boundary' };
 
   const confinement = { ...args.confinement, denyTools: [...args.confinement.denyTools],
+    ...(args.confinement.denyBenchmarkReadsOutside === undefined ? {} : {
+      denyBenchmarkReadsOutside: structuredClone(args.confinement.denyBenchmarkReadsOutside) }),
     ...(args.confinement.denyOutside === undefined ? {} : { denyOutside: [...args.confinement.denyOutside] }),
     ...(args.confinement.denyProductReadsOutside === undefined ? {} : { denyProductReadsOutside: {
       ...args.confinement.denyProductReadsOutside,

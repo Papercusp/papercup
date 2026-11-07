@@ -136,6 +136,26 @@ describe('canonical blocker boundary preflight', () => {
       context, { effect })).toMatchObject({ ok: true, replayed: false });
   });
 
+  it('keeps absorption exclusive to the coupled plan-drop boundary and retains abandonment checks', async () => {
+    const { verification: _verification, ...base } = decision;
+    const input = { ...base, disposition: 'absorb' as const, absorption: {
+      rationale: 'Duplicate covered by producer', decisionId: 'D-006', decisionHash: '0'.repeat(64),
+      survivors: [{ harness: 'harness-a', id: 'WI-2', responsibleParty: 'su-b' }],
+    } };
+    mocks.deps.mockResolvedValue([]);
+    mocks.cell.mockResolvedValue({ status: 'value', value: { ready: false } });
+    expect(await preflightBlockerDecision(item, input, context, { effect, requireResolution: true }))
+      .toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision(item, input, context, { effect, requireResolution: true, allowAbsorption: true }))
+      .toMatchObject({ ok: true });
+    expect(await preflightBlockerDecision({ ...item, state: 'blocked' }, undefined, context, { effect, requireResolution: true }))
+      .toMatchObject({ ok: false });
+    const held = { ...item, payload: { externalBlockers: [{ kind: 'hold', ref: 'owner:hold', status: 'active',
+      createdBy: 'su-b', summary: 'Do not dispose', createdAt: '2026-11-07T02:00:00Z', updatedAt: '2026-11-07T02:00:00Z' }] } };
+    expect(await preflightBlockerDecision(held, input, context, { effect, requireResolution: true, allowAbsorption: true }))
+      .toMatchObject({ ok: false });
+  });
+
   it('fails closed on an unreadable or potentially truncated canonical dependency census', async () => {
     mocks.deps.mockRejectedValueOnce(new Error('unavailable'));
     expect(await preflightBlockerDecision(item, undefined, context, { effect })).toMatchObject({ ok: false });

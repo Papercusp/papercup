@@ -4,6 +4,7 @@ import {
   hasUnresolvedBlockerObligation,
   prepareBlockerDecision,
   readBlockerResolution,
+  projectBlockerResolution,
   validateBlockerDecisionEvidence,
   type BlockerEvidenceMeasurement,
   type BlockerDecisionInput,
@@ -19,6 +20,53 @@ const defer = (): BlockerDecisionInput => ({
   attempts: [], evidenceRefs: [ref],
   deferral: { reason: 'active-peer', responsibleParty: 'su-b', nextAction: 'Repair owner verifies the endpoint',
     reasonEvidenceRefs: [ref], recheckRef: { kind: 'event', ref: 'dependency:repaired:WI-2' } },
+});
+
+describe('canonical blocker decision views', () => {
+  it('distinguishes blocker-free, unproven and unreadable histories without inventing evidence', () => {
+    expect(projectBlockerResolution({}, { id: 'WI-1', state: 'open' })).toBeUndefined();
+    expect(projectBlockerResolution({}, { id: 'WI-1', state: 'blocked' }))
+      .toMatchObject({ status: 'unproven', nudge: expect.stringContaining('Investigate') });
+    expect(projectBlockerResolution({ blockerResolution: { schemaVersion: 99 } }, { id: 'WI-1' }))
+      .toMatchObject({ status: 'invalid', nudge: expect.stringContaining('unknown metadata') });
+  });
+
+  it('preserves canonical identity, provenance and accountable action without nagging a recorded deferral', () => {
+    const first = prepareBlockerDecision({}, defer(), actor, options);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('fixture refused');
+    const revised = prepareBlockerDecision(first.patch, { ...defer(), idempotencyKey: 'key-2', priorRevision: 1 }, actor, options);
+    if (!revised.ok) throw new Error('revision refused');
+    const view = projectBlockerResolution(revised.patch, { id: 'WI-1', harness: 'papercusp' });
+    expect(view).toMatchObject({
+      status: 'recorded', current: { id: 'decision-1', revision: 2, authorId: 'su-a',
+        sessionId: 'session-a', recordedAt: '2026-11-07T02:00:00.000Z',
+        deferral: { responsibleParty: 'su-b', nextAction: 'Repair owner verifies the endpoint' } },
+      history: { total: 2, prior: [{ id: 'decision-1', revision: 1, disposition: 'defer' }], omitted: 0 },
+      investigation: { rows: defer().investigation, omitted: 0 },
+    });
+    expect(view).not.toHaveProperty('nudge');
+    expect(view?.readRef.args).toMatchObject({ id: 'WI-1', harness: 'papercusp', payloadTier: 'full',
+      projection: { pick: ['results[].workItem.payload.blockerResolution'] } });
+  });
+
+  it('bounds large histories using whole-record omissions and an exact recovery reference', () => {
+    const input = defer();
+    input.symptom = 's'.repeat(4000);
+    input.investigation = Array.from({ length: 16 }, () => ({ ...input.investigation[0], outcome: 'x'.repeat(4000) }));
+    input.attempts = input.investigation;
+    if (input.disposition !== 'defer') throw new Error('fixture is a deferral');
+    input.deferral.nextAction = 'a'.repeat(2000);
+    const prepared = prepareBlockerDecision({}, input, actor, options);
+    if (!prepared.ok) throw new Error('fixture refused');
+    const view = projectBlockerResolution(prepared.patch, { id: 'WI-1', harness: 'papercusp' });
+    expect(JSON.stringify(view).length).toBeLessThanOrEqual(2200);
+    expect(view).toMatchObject({ status: 'recorded', current: { id: 'decision-1' },
+      omittedFields: ['current.deferral', 'current.symptom'],
+      investigation: { rows: [], omitted: 16 }, attempts: { rows: [], omitted: 16 } });
+    expect(view?.readRef.args.id).toBe('WI-1');
+    expect(JSON.stringify(view)).not.toContain('TRUNCATED');
+  });
 });
 
 describe('canonical blocker decision evidence', () => {
@@ -86,6 +134,42 @@ describe('canonical blocker decision evidence', () => {
     expect((await validateBlockerDecisionEvidence(input, context(async () => satisfied))).ok).toBe(false);
     expect((await validateBlockerDecisionEvidence(input, context(async (r) => r.kind === 'test'
       ? { ...satisfied, subjectWorkItemId: 'WI-1' } : pending))).ok).toBe(false);
+  });
+  it('accepts a completed related condition only with measured canonical identity', async () => {
+    const input = resolve() as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>;
+    const witness = { kind: 'work-item' as const, ref: 'harness-b#WI-2' };
+    const edge = { kind: 'work-item' as const, ref: 'WI-2' };
+    input.verification.evidenceRefs = [witness];
+    const identity = JSON.stringify(['work-item', 'workspace-a', 'harness-b', 'WI-2']);
+    const scoped = { ...context(async () => ({ status: 'available' as const,
+      condition: 'satisfied' as const, conditionIdentity: identity })),
+      obligationRefs: [], relatedConditionRefs: [edge] };
+    expect(await validateBlockerDecisionEvidence(input, scoped)).toEqual({ ok: true });
+    expect((await validateBlockerDecisionEvidence(input, { ...scoped,
+      readEvidence: async r => ({ status: 'available', condition: 'satisfied',
+        conditionIdentity: r.ref === edge.ref ? identity
+          : JSON.stringify(['work-item', 'workspace-a', 'harness-c', 'WI-2']) }) })).ok).toBe(false);
+    for (const readEvidence of [async () => ({ status: 'unknown' as const, detail: 'unmeasured' }),
+      async () => ({ status: 'available' as const, condition: 'pending' as const,
+        conditionIdentity: identity })]) {
+      expect((await validateBlockerDecisionEvidence(input, { ...scoped, readEvidence })).ok).toBe(false);
+    }
+  });
+  it('keeps every unresolved obligation when accepting a related completed witness', async () => {
+    const input = resolve() as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>;
+    const witness = { kind: 'work-item' as const, ref: 'harness-b#WI-2' };
+    input.verification.evidenceRefs = [witness];
+    const result = await validateBlockerDecisionEvidence(input, {
+      ...context(async r => r.ref === witness.ref
+        ? { status: 'available', condition: 'satisfied' } : pending), relatedConditionRefs: [witness],
+    });
+    expect(result).toMatchObject({ ok: false, missing: [expect.stringContaining('unresolved canonical condition')] });
+  });
+  it('does not use verification-only related conditions to justify a deferral', async () => {
+    const result = await validateBlockerDecisionEvidence(defer(), {
+      ...context(async () => pending), obligationRefs: [], relatedConditionRefs: [ref],
+    });
+    expect(result.ok).toBe(false);
   });
   it('checks measured authority human and external reasons without widening authority', async () => {
     for (const [reason, fact] of [

@@ -63,6 +63,8 @@
  */
 import { CHANGE_KINDS } from '../change-kind-catalog';
 import { matchesAny } from './policy';
+import { BENCH_PRIVATE_FIXTURE_TOOL, benchFixtureProductCall, validBenchFixtureReadBoundary,
+  type BenchFixtureReadBoundary } from '../external-bench/private-fixture-reads';
 
 /**
  * A denial declared by whatever launched the session, travelling WITH the session.
@@ -73,6 +75,8 @@ import { matchesAny } from './policy';
  * which is the behaviour the directed pair actually wants.
  */
 export interface SessionToolConfinement {
+  /** Host-pinned source reads for one native benchmark assignment. */
+  readonly denyBenchmarkReadsOutside?: BenchFixtureReadBoundary;
   /** Tool-name globs this session may never invoke, at any privilege level. */
   readonly denyTools: readonly string[];
   /** Additional exact canonical ceiling: deny EVERY name outside this set.
@@ -456,6 +460,18 @@ export function evaluateSessionConfinement(args: {
       (!Array.isArray(confinement.denyOutside) || !confinement.denyOutside.includes(toolName.trim()))) {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-ceiling',
       reason: `tool "${toolName.trim()}" is outside the launch-declared ceiling imposed by ${confinement.imposedBy}: ${confinement.reason}` };
+  }
+  if (confinement.denyBenchmarkReadsOutside !== undefined) {
+    let valid = validBenchFixtureReadBoundary(confinement.denyBenchmarkReadsOutside) &&
+      confinement.denyOutside !== undefined && validWorkItemBoundary(confinement.denyWorkItemsOutside) &&
+      confinement.denyAmbientContext === true &&
+      confinement.imposedBy === `benchmark-host ${confinement.denyBenchmarkReadsOutside.assignmentId}`;
+    if (valid && args.purpose !== 'listing' && toolName.trim() === BENCH_PRIVATE_FIXTURE_TOOL) {
+      try { benchFixtureProductCall(confinement.denyBenchmarkReadsOutside, args.args); }
+      catch { valid = false; }
+    }
+    if (!valid) return { allowed: false, applied: true, matchedGlob: 'outside-private-benchmark-read',
+      reason: 'Private benchmark reads require an exact host allocation and a declared task operation.' };
   }
   if (confinement.denyWorkItemsOutside !== undefined &&
       (!validWorkItemBoundary(confinement.denyWorkItemsOutside) ||

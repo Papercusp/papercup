@@ -1116,6 +1116,8 @@ import './scorecards/list';
 // scorecards:get — evidence-first single-card projection for grading-integrity
 // auditors; unlike list, it never hands the result door a full history row.
 import './scorecards/get';
+// Confined native benchmark source reads reuse the maintained product readers.
+import './benchmark/read-private-fixture';
 // scorecards:freshness — the emission-freshness check (P-014b): has the Overwatch emitted a
 // COMPLETE scorecard since the last wake, or silently skipped (stale) / truncated (partial-only)?
 import './scorecards/freshness';

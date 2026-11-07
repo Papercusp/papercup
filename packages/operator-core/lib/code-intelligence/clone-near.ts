@@ -75,13 +75,17 @@ export function measureCloneNearSources(left: string, right: string) {
   const parse = (source: string) => {
     const tree = ts.createSourceFile('recipe.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     if ((tree as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) return null;
-    let count = 0;
-    const visit = (node: ts.Node) => { if (++count <= 384) ts.forEachChild(node, visit); };
+    let count = 0, calls = 0;
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node)) calls++;
+      if (++count <= 384) ts.forEachChild(node, visit);
+    };
     visit(tree);
-    return count <= 384 ? tree : null;
+    return count <= 384 ? { tree, calls } : null;
   };
   const a = parse(left), b = parse(right);
   if (!a || !b) return unknown('syntax-or-node-budget');
   return { status: 'measured' as const, candidateOnly: true as const,
-    ...compareCloneNear(fingerprintCloneNear(a), fingerprintCloneNear(b)), reason: null, provenance };
+    ...compareCloneNear(fingerprintCloneNear(a.tree), fingerprintCloneNear(b.tree)),
+    sourceCalls: { left: a.calls, right: b.calls }, reason: null, provenance };
 }

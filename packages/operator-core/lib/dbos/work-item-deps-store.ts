@@ -33,6 +33,7 @@ import {
 } from '../scheduler/dependency-performance-budget';
 import { TERMINAL_STATUSES } from './frontier-readiness';
 import { isCompletionSettled, type CompletionAuthorityFrom } from '../work-item-completion-authority';
+import { expandAbsorbedDependenciesInTransaction } from '../plan-duplicate-absorption';
 
 import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 /** The polymorphic endpoints accepted by work_item_deps (issue/feature today). */
@@ -624,7 +625,8 @@ export async function mutateWorkItemDependenciesInTransaction(
   const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
   await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
   const current = await loadStoredDependencyEdges(tx, input.workspaceId);
-  const candidate = applyDependencyMutations(current, input.mutations);
+  const candidate = await expandAbsorbedDependenciesInTransaction(tx, itemWorkspaceId,
+    applyDependencyMutations(current, input.mutations));
   const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
     ...current,
     ...candidate,

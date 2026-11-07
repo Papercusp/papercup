@@ -41,6 +41,18 @@ export const blockerDecisionInputSchema = z.discriminatedUnion('disposition', [
       recheckRef: blockerEvidenceRefSchema,
     }).strict(),
   }).strict(),
+  z.object({
+    ...common,
+    disposition: z.literal('absorb'),
+    absorption: z.object({
+      rationale: text(4000),
+      decisionId: z.string().regex(/^D-\d+$/),
+      decisionHash: z.string().regex(/^[a-f0-9]{64}$/),
+      survivors: z.array(z.object({
+        harness: text(120), id: text(200), responsibleParty: text(200),
+      }).strict()).min(1).max(16),
+    }).strict(),
+  }).strict(),
 ]);
 export type BlockerDecisionInput = z.infer<typeof blockerDecisionInputSchema>;
 export type BlockerEvidenceRef = z.infer<typeof blockerEvidenceRefSchema>;
@@ -54,6 +66,14 @@ const recordSchema = z.object({
   recordedAt: z.string().datetime(),
   requestHash: z.string().regex(/^[a-f0-9]{64}$/),
   decision: blockerDecisionInputSchema,
+  /** Host-produced dependency witness, bound in the lifecycle transaction. */
+  absorptionGraph: z.object({
+    survivors: z.array(z.object({ kind: z.enum(['feature', 'issue']), ref: text(2000) }).strict()).min(1).max(16),
+    obligations: z.array(z.object({
+      blocker: z.object({ kind: z.enum(['feature', 'issue']), ref: text(2000) }).strict(),
+      satisfaction: z.enum(['settled', 'success']),
+    }).strict()).max(128),
+  }).strict().optional(),
 }).strict();
 export type BlockerDecisionRecord = z.infer<typeof recordSchema>;
 const stateSchema = z.object({ schemaVersion: z.literal(1), history: z.array(recordSchema).min(1) }).strict();
@@ -76,6 +96,71 @@ export function readBlockerResolution(payload: unknown): BlockerResolutionRead {
   if (!parsed.success) return { status: 'invalid', state: null, current: null };
   return { status: 'recorded', state: parsed.data, current: parsed.data.history.at(-1)! };
 }
+
+/** Shared canonical read view. Preserve whole actions and disclose omitted
+ * evidence; recorded history grants no current authority or monitoring mission. */
+export function projectBlockerResolution(
+  payload: unknown,
+  subject: { id: string; harness?: string | null; state?: string | null },
+) {
+  const read = readBlockerResolution(payload);
+  if (read.status === 'unproven' && !hasUnresolvedBlockerObligation(payload, subject.state ?? undefined)) return undefined;
+  const readRef = { tool: 'work_items:get', args: {
+    id: subject.id, ...(subject.harness ? { harness: subject.harness } : {}), payloadTier: 'full',
+    projection: { pick: ['results[].workItem.payload.blockerResolution'] },
+  } };
+  if (read.status !== 'recorded') return {
+    status: read.status, readRef,
+    nudge: read.status === 'invalid'
+      ? 'Read and repair the canonical decision history; preserve custody and unknown metadata.'
+      : 'Investigate the blocker, verify a safe authorized remedy, or record an evidenced deferral with responsible party, next action and reachable recheck; preserve custody.',
+  };
+  const { current, state } = read;
+  const decision = current.decision;
+  const view = {
+    status: 'recorded' as const,
+    current: {
+      id: current.id, revision: current.revision, authorId: current.authorId,
+      sessionId: current.sessionId, recordedAt: current.recordedAt, disposition: decision.disposition,
+      symptom: undefined as string | undefined,
+      deferral: undefined as Extract<BlockerDecisionInput, { disposition: 'defer' }>['deferral'] | undefined,
+      verification: undefined as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>['verification'] | undefined,
+      absorption: undefined as Extract<BlockerDecisionInput, { disposition: 'absorb' }>['absorption'] | undefined,
+    },
+    investigation: { rows: [] as BlockerDecisionInput['investigation'], omitted: decision.investigation.length },
+    attempts: { rows: [] as BlockerDecisionInput['attempts'], omitted: decision.attempts.length },
+    evidenceRefs: { rows: [] as BlockerEvidenceRef[], omitted: decision.evidenceRefs.length },
+    history: { total: state.history.length, prior: [] as Array<{ id: string; revision: number; disposition: BlockerDecisionInput['disposition'] }>, omitted: state.history.length - 1 },
+    omittedFields: [] as string[], readRef,
+  };
+  const budget = 2_200;
+  const field = <K extends 'symptom' | 'deferral' | 'verification' | 'absorption'>(key: K, value: typeof view.current[K]) => {
+    view.current[key] = value;
+    if (JSON.stringify(view).length > budget) {
+      view.current[key] = undefined;
+      view.omittedFields.push('current.' + key);
+    }
+  };
+  if (decision.disposition === 'defer') field('deferral', decision.deferral);
+  else if (decision.disposition === 'self_resolve') field('verification', decision.verification);
+  else field('absorption', decision.absorption);
+  field('symptom', decision.symptom);
+  const append = <T>(target: { rows: T[]; omitted: number }, row: T) => {
+    target.rows.push(row); target.omitted -= 1;
+    if (JSON.stringify(view).length > budget) { target.rows.pop(); target.omitted += 1; }
+  };
+  for (const row of decision.investigation) append(view.investigation, row);
+  for (const row of decision.attempts) append(view.attempts, row);
+  for (const row of decision.evidenceRefs) append(view.evidenceRefs, row);
+  for (const row of state.history.slice(0, -1).reverse()) {
+    view.history.prior.push({ id: row.id, revision: row.revision, disposition: row.decision.disposition });
+    view.history.omitted -= 1;
+    if (JSON.stringify(view).length > budget) { view.history.prior.pop(); view.history.omitted += 1; }
+  }
+  return view;
+}
+
+export type BlockerResolutionView = NonNullable<ReturnType<typeof projectBlockerResolution>>;
 
 /** Ordering of object keys is not a payload change; ordering of evidence or
  * investigation steps is. Hash the normalized schema output, including the CAS. */
@@ -189,7 +274,7 @@ export function hasUnresolvedBlockerObligation(payload: unknown, state?: string)
   const row = object(payload);
   const read = readBlockerResolution(payload);
   return read.status === 'invalid'
-    || (read.status === 'recorded' && read.current.decision.disposition === 'defer')
+    || (read.status === 'recorded' && read.current.decision.disposition !== 'self_resolve')
     || ['blocked', 'needs-human'].includes(state ?? '')
     || (Array.isArray(row.externalBlockers) && row.externalBlockers.some((blocker) => object(blocker).status === 'active'));
 }
@@ -228,17 +313,23 @@ export async function validateBlockerDecisionEvidence(
     ownerId: string;
     workItemId: string;
     obligationRefs: readonly BlockerEvidenceRef[];
+    /** Host-read canonical relationships, for self-resolution relevance only.
+     * Each endpoint is measured below; these never replace required conditions. */
+    relatedConditionRefs?: readonly BlockerEvidenceRef[];
+    allowAbsorption?: boolean;
     readEvidence: (ref: BlockerEvidenceRef) => Promise<BlockerEvidenceMeasurement>;
   },
 ): Promise<{ ok: true } | BlockerDecisionProblem> {
+  const relatedRefs = input.disposition === 'self_resolve' ? (context.relatedConditionRefs ?? []) : [];
   const refs = [
     ...context.obligationRefs,
+    ...relatedRefs,
     ...input.evidenceRefs,
     ...input.investigation.flatMap((step) => step.evidenceRefs),
     ...input.attempts.flatMap((step) => step.evidenceRefs),
     ...(input.disposition === 'defer'
       ? [...input.deferral.reasonEvidenceRefs, input.deferral.recheckRef]
-      : input.verification.evidenceRefs),
+      : input.disposition === 'self_resolve' ? input.verification.evidenceRefs : []),
   ];
   const unique = new Map(refs.map((ref) => [evidenceKey(ref), ref]));
   const refuse = (missing: string[]) => problem('blocker_decision_evidence', missing,
@@ -267,12 +358,19 @@ export async function validateBlockerDecisionEvidence(
     (Boolean(value(ref).conditionIdentity) && conditionIdentities.has(value(ref).conditionIdentity)) ||
     value(ref).subjectWorkItemId === context.workItemId;
   if (input.disposition === 'self_resolve') {
-    if (!input.verification.evidenceRefs.some((ref) => relevant(ref) && value(ref).condition === 'satisfied')) {
+    const satisfiedRelated = relatedRefs.filter(ref => value(ref).condition === 'satisfied');
+    const relatedKeys = new Set(satisfiedRelated.map(evidenceKey));
+    const relatedIdentities = new Set(satisfiedRelated.map(ref => value(ref).conditionIdentity).filter(Boolean));
+    if (!input.verification.evidenceRefs.some((ref) => value(ref).condition === 'satisfied' &&
+      (relevant(ref) || relatedKeys.has(evidenceKey(ref)) ||
+        (Boolean(value(ref).conditionIdentity) && relatedIdentities.has(value(ref).conditionIdentity))))) {
       missing.push('measured verification bound to this work item or its canonical blocker condition');
     }
     for (const ref of context.obligationRefs) {
       if (value(ref).condition !== 'satisfied') missing.push(`unresolved canonical condition ${ref.kind}:${ref.ref}`);
     }
+  } else if (input.disposition === 'absorb') {
+    if (!context.allowAbsorption) missing.push('absorption requires the canonical plan drop and graph transaction');
   } else {
     const { reason, reasonEvidenceRefs, responsibleParty, recheckRef } = input.deferral;
     const facts = reasonEvidenceRefs.filter(relevant).map(value);

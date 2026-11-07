@@ -106,6 +106,11 @@ const releaseRequest = vi.hoisted(() => ({
   resolveWorkItemReleaseRequest: vi.fn(async () => null as unknown),
 }));
 vi.mock('../../work-items-release-request', () => releaseRequest);
+const checkpointHint = vi.hoisted(() => ({ get: vi.fn(async (): Promise<unknown> => null) }));
+vi.mock('../../work-item-checkpoint', async (original) => ({
+  ...(await original<typeof import('../../work-item-checkpoint')>()),
+  getClaimTimeCheckpointHint: checkpointHint.get,
+}));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
@@ -228,6 +233,7 @@ beforeEach(() => {
   commentM.mockResolvedValue({ id: 'post-1' } as never);
   explainFloorsM.mockResolvedValue([] as never);
   releaseRequest.readWorkItemReleaseRequest.mockReturnValue(null);
+  checkpointHint.get.mockReset().mockResolvedValue(null);
   releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
   premisePort.get.mockReset().mockResolvedValue(null);
   pilotReceipts.persistBinding.mockReset();
@@ -311,6 +317,16 @@ describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)',
 });
 
 describe('work_items:claim handler (keyed-array)', () => {
+  it.each([false, true])('returns canonical blocker guidance on claim with checkpoint hint=%s', async (hasHint) => {
+    if (hasHint) checkpointHint.get.mockResolvedValue({ checkpoint: 'Prior holder context', checkpointAgeMs: 1000 });
+    getM.mockResolvedValue(issueItem({ state: 'blocked', payload: {} }));
+    const b = await body({ id: 'WI-1' });
+    expect(b.results[0]).toMatchObject({ ok: true, blockerResolution: {
+      status: 'unproven', nudge: expect.stringContaining('Investigate'),
+      readRef: { args: { id: 'WI-1', payloadTier: 'full' } },
+    } });
+  });
+
   it('lets an evidence judge self-claim one pullable review-consult task', async () => {
     getM.mockResolvedValue(issueItem({
       id: 'WI-REVIEW',

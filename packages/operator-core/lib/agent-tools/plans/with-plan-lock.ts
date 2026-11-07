@@ -410,7 +410,7 @@ export interface WithPlanLockOpts<T = unknown> {
     tx: TransactionSql,
     scope: { workspaceId: string; harnessSlug: string },
     value: T,
-  ) => Promise<void>;
+  ) => Promise<void | readonly import('../../dbos/work-item-deps-store').WorkItemDependencyMutation[]>;
 }
 
 /**
@@ -1057,7 +1057,7 @@ export async function withPlanLock<T>(
         idx,
       );
 
-      await opts.beforeGraphWriteInTransaction?.(
+      const coupledDependencies = await opts.beforeGraphWriteInTransaction?.(
         tx as unknown as TransactionSql, { workspaceId, harnessSlug }, value,
       );
       const dependencyMutations = await writePlanLineNodes(
@@ -1067,6 +1067,7 @@ export async function withPlanLock<T>(
         // this exception from the locked preimage, never from caller options.
         { allowDraftStatusProjection: cur?.status === 'draft' && idx.status === 'draft' && !cur.op_status },
       );
+      if (coupledDependencies) dependencyMutations.push(...coupledDependencies);
       if (dependencyMutations.length > 0) {
         // A coupled graph write needs the canonical isolation boundary. Abort
         // this READ COMMITTED attempt before hooks, then replay the RMW under

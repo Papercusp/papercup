@@ -218,7 +218,9 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     paths: Array.isArray(payload.paths) ? payload.paths.filter((p): p is string => typeof p === 'string') : [],
     plan: spec.targetPlanItem?.slug ?? null,
     planItem: spec.targetPlanItem ? [spec.targetPlanItem.itemId] : [],
-    fleet: null,
+    // Match the stored-item subject and SQL fleet predicate before persistence.
+    // The stamp is filter input, not a grant: the existing full spec still gates assignment.
+    fleet: typeof payload.fleet_slug === 'string' && payload.fleet_slug ? payload.fleet_slug : null,
     triageGate: null,
     // P-005: a Scout-authored create (payload.sourceRole 'Scout') is ideation at birth too.
     itemClass: itemClassOfPayload(payload),

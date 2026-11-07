@@ -46,6 +46,7 @@ import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../.
 import { readAssumptionFlags, renderFlagLine } from "../../agent-facts/retraction-cascade";
 import { shapeWorkItemsGet } from "./get-shape";
 import { readWorkItemResume } from './resume';
+import { projectBlockerResolution } from '../../blocker-resolution-decision';
 import { readWorkItemTouchHistory } from '../../work-item-touch-history';
 import {
   CARRY_NOTE_MAX_CHECKS,
@@ -589,6 +590,9 @@ export function workItemsGetSourceReadOptions(
       continue;
     }
     if (path === 'workItem') return undefined;
+    // This derived view reads both canonical decision history and unresolved
+    // blocker metadata. A bodyless/payload-free read would invent absence.
+    if (path === 'blockerResolution' || path.startsWith('blockerResolution.')) return undefined;
     if (
       path === 'workItem.terminalCompletionEvidence' ||
       path.startsWith('workItem.terminalCompletionEvidence.')
@@ -1841,6 +1845,8 @@ export default defineTool({
           id,
           availability: 'available' as const,
           workItem,
+          ...(sourceSelectionWants(sourceSelection, 'blockerResolution')
+            ? { blockerResolution: projectBlockerResolution(workItem.payload, workItem) } : {}),
           ...(touchHistory ? { touchHistory } : {}),
           ...(decorated?.holder ? { holder: decorated.holder } : {}),
           ...(corroboration ? { corroboration } : {}),

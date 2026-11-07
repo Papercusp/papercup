@@ -73,6 +73,7 @@ import type { RegisteredOrientationClass } from './orientation-class-registry';
 import type { FactContestMark } from './agent-tools/facts/contested-fold';
 import { capPreservingOperative } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
+import { projectBlockerResolution, type BlockerResolutionView } from './blocker-resolution-decision';
 import {
   checkCarriedFactsStaleness,
   renderFactsStalenessWarning,
@@ -106,6 +107,8 @@ export interface CarryBriefHeldItem {
   checkpointUpdatedAtMs?: number | null;
   /** The checkpoint store was unavailable; never render this as confirmed-empty. */
   checkpointReadFailed?: boolean;
+  /** Canonical decision projection, independent of checkpoint prose. */
+  blockerResolution?: BlockerResolutionView;
   /** Epoch ms of the work-item's last real progress (`work_items.last_progress_at`).
    *  Unlike checkpoint age, this is item-scoped evidence that work happened after
    *  the checkpoint. Optional for legacy/injected carry readers that did not load
@@ -595,6 +598,8 @@ export async function readHeldWorkItems(
     source_plan_slug: string | null;
     source_plan_item_ids: string[] | null;
     last_progress_at?: string | number | Date | null;
+    payload?: unknown;
+    status?: string;
   }>>`
     SELECT feature_id AS issue_id,
            title,
@@ -602,6 +607,10 @@ export async function readHeldWorkItems(
            taken_by,
            workspace_id,
            last_progress_at,
+           status,
+           (CASE WHEN payload ? 'blockerResolution'
+             THEN jsonb_build_object('blockerResolution', payload -> 'blockerResolution')
+             ELSE '{}'::jsonb END) || jsonb_build_object('externalBlockers', payload -> 'externalBlockers') AS payload,
            CASE
              WHEN harness_slug LIKE 'operator:%' OR harness_slug = '' OR harness_slug IS NULL THEN 'operator'
              ELSE 'harness:' || harness_slug
@@ -680,6 +689,7 @@ export async function readHeldWorkItems(
       harness,
       checkpoint,
       checkpointUpdatedAtMs,
+      blockerResolution: projectBlockerResolution(h.payload, { id: h.issue_id, harness, state: h.status }),
       ...(checkpointReadFailed ? { checkpointReadFailed: true } : {}),
       ...(h.last_progress_at !== undefined ? { lastProgressAtMs: epochMs(h.last_progress_at) } : {}),
       ...(holderProof ? { holderProof } : {}),
@@ -2408,7 +2418,8 @@ export function renderCarryBriefColdExtras(
             `${excerptCheckpoint(h)}`
           : `\n    checkpoint: ${excerptCheckpoint(h)}`;
       }
-      return `  • ${h.id}${title}${lane}${pathScope}${ckpt}`;
+      const decision = h.blockerResolution ? `\n    blocker decision: ${JSON.stringify(h.blockerResolution)}` : '';
+      return `  • ${h.id}${title}${lane}${pathScope}${decision}${ckpt}`;
     });
     sections.push(
       `You HELD these work-items as of just before this respawn (the full checkpoint re-injects on the item's next invocation; refresh it before ending). ` +

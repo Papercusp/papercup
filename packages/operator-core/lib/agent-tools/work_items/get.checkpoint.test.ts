@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 
 const getWorkItem = vi.fn();
 const readReportAttachmentEvidence = vi.fn();
@@ -539,6 +540,31 @@ describe('work_items:get — checkpoint field', () => {
       includeBody: false,
       payloadProjection: 'none',
     });
+  });
+
+  it('loads canonical decision history for a projected blocker view instead of inventing an unproven decision', async () => {
+    const ref = { kind: 'state' as const, ref: 'state:dependency.health' };
+    const prepared = prepareBlockerDecision({}, {
+      schemaVersion: 1, idempotencyKey: 'read-view', disposition: 'defer', symptom: 'Dependency pending',
+      investigation: [{ action: 'Read canonical state', outcome: 'Peer owns repair', evidenceRefs: [ref] }],
+      attempts: [], evidenceRefs: [ref],
+      deferral: { reason: 'active-peer', responsibleParty: 'su-peer', nextAction: 'Peer verifies repair',
+        reasonEvidenceRefs: [ref], recheckRef: ref },
+    }, { ownerId: 'su-me', sessionId: 'session-me', workItemId: 'WI-decision', custodianId: 'su-me' });
+    if (!prepared.ok) throw new Error('fixture refused');
+    getWorkItem.mockImplementation(async (_id, _harness, options) => ({
+      id: 'WI-decision', harness: 'papercusp', family: 'issue', kind: 'task',
+      title: 'Decision view', summary: '', state: 'blocked',
+      payload: options?.payloadProjection === 'none' ? {} : prepared.patch,
+    }));
+    for (const pick of ['results[].blockerResolution', 'results[0].blockerResolution.current']) {
+      expect(workItemsGetSourceReadOptions({ pick: [pick] }, false)).toBeUndefined();
+      const result = await get.handler({ id: 'WI-decision' } as never,
+        { ...ctxFields, sourceProjection: { pick: [pick] } } as never) as Out;
+      expect(result.data.results[0].blockerResolution).toMatchObject({ status: 'recorded',
+        current: { id: prepared.record.id, deferral: { responsibleParty: 'su-peer', nextAction: 'Peer verifies repair' } } });
+      expect(result.data.results[0].blockerResolution).not.toHaveProperty('nudge');
+    }
   });
 
   it('includes the issue body when a result projection requests the subject fingerprint', () => {

@@ -4,6 +4,7 @@ import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness, type Wor
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, listSpecEvidence } from '../plans/spec-evidence-store';
 import { compactTaskBrief, getClaimTimeTaskBrief, type TaskBrief } from '../../code-intelligence/task-brief';
 import { admissionActionability } from '../../work-items-admission';
+import { projectBlockerResolution } from '../../blocker-resolution-decision';
 
 export const RESUME_PACKET_BUDGET = 5_000;
 const EVIDENCE_READ_LIMIT = 9;
@@ -63,6 +64,7 @@ export function buildWorkItemResume(input: {
     taskBrief: undefined as TaskBrief | { status: 'omitted'; recover: TaskBrief['recover'] } | undefined,
     claim: { id: item.id, assignee: item.assignee ?? null, state: item.state ?? null },
     plan,
+    blockerResolution: projectBlockerResolution(item.payload, item),
     nextAction: admissionBlocker
       ? { status: 'blocked', text: null, reason: admissionBlocker }
       : {

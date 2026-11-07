@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
-  admit: vi.fn(async () => fleetAdmission.decision),
+  admit: vi.fn(async (_args: { subject: ClaimSpecSubject }) => fleetAdmission.decision),
   notify: vi.fn(),
   remedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
@@ -66,6 +66,8 @@ vi.mock('../coordination/presence', () => ({
 import { createOneWorkItem, type CreateOneWorkItemResult } from './_create-core';
 import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import type { WorkItem } from '../../work-items';
+import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter, type ClaimSpecSubject } from '../../scheduler/claim-spec-match';
+import type { FilterNode } from '../../scheduler/claim-spec';
 import { assessIssueAdmissionPressure } from '../../issue-occurrence-ledger';
 const createM = vi.mocked(createOneWorkItem);
 
@@ -603,6 +605,33 @@ describe('work_items:create handler (keyed-array)', () => {
       reason: 'new item is outside fixed cohort',
       scope: { fleetSlug: 'fixed-wave', ownerId: 'bee-7', fleetRole: 'member', record: { spec: { specId: 'fixed', revision: 7 } } },
     };
+
+    it.each([
+      { kind: 'task' as const, payload: { fleet_slug: 'fixed-wave' }, assigned: true },
+      { kind: 'bug' as const, payload: { fleet_slug: 'fixed-wave' }, assigned: true },
+      { kind: 'task' as const, payload: { fleet_slug: 'other-wave' }, assigned: false },
+      { kind: 'task' as const, payload: {}, assigned: false },
+      { kind: 'task' as const, payload: { fleet_slug: '' }, assigned: false },
+      { kind: 'feature' as const, payload: { fleet_slug: 'fixed-wave' }, assigned: false },
+    ])('matches create+assign and stored-item fleet admission: $kind $payload', async ({ kind, payload, assigned }) => {
+      const filter: FilterNode = { all: [
+        { any: [{ field: 'plan', op: 'in', value: ['portfolio-plan'] },
+          { field: 'fleet', op: '=', value: 'fixed-wave' }] },
+        { field: 'kind', op: 'in', value: ['task', 'change', 'bug'] },
+      ] };
+      // Keep the real evaluator. A canned allow would miss the create-time
+      // fleet:null projection even though persisted-item admission was correct.
+      fleetAdmission.admit.mockImplementationOnce(async ({ subject }) =>
+        matchesClaimSpecFilter(filter, subject)
+          ? { allowed: true, scoped: false } : { ...outOfScope });
+      await body({ kind, payload, title: 'fleet readiness', assign_to: 'bee-7' });
+      expect(createM.mock.calls[0][0].assign_to).toBe(assigned ? 'bee-7' : undefined);
+      const storedSubject = claimSpecSubjectFromWorkItem(aWorkItem({ kind, payload }));
+      expect(matchesClaimSpecFilter(filter, storedSubject)).toBe(assigned);
+      // Distinguish the actual defect from a bad fleet predicate: the same
+      // eligible item fails if its create-time projection drops only the stamp.
+      if (assigned) expect(matchesClaimSpecFilter(filter, { ...storedSubject, fleet: null })).toBe(false);
+    });
 
     it('FILES the item unassigned rather than refusing the create', async () => {
       fleetAdmission.decision = { ...outOfScope };

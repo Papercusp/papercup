@@ -8091,7 +8091,13 @@ export interface HeldDependencyEscapeContext {
  * case for a concrete reason: that warning ASSERTED "no checkpoint was ever written", so its
  * swallowed error became a false positive claim; this one asserts nothing when it says nothing.
  */
-export async function readUnresolvedDepBlockers(id: string, harness?: string): Promise<UnresolvedDepBlocker[]> {
+export async function readUnresolvedDepBlockers(
+  id: string,
+  harness?: string,
+  /** Evidence consumers may retain actual settled edges for relevance only;
+   * the default reporting read and every dependency floor remain unresolved-only. */
+  options: { includeSatisfied?: boolean } = {},
+): Promise<UnresolvedDepBlocker[]> {
   const { sql } = getOrgPg();
   const rows = await sql<{ blocker_ref: string; blocker_kind: string; satisfaction: 'settled' | 'success' }[]>`
     SELECT DISTINCT d.blocker_ref, d.blocker_kind, d.satisfaction
@@ -8106,7 +8112,7 @@ export async function readUnresolvedDepBlockers(id: string, harness?: string): P
      WHERE wi.feature_id = ${id}
        AND wi.workspace_id = ${activeWorkspaceId()}
        AND ${harness ? sql`wi.harness_slug = ${harness}` : sql`TRUE`}
-       AND ${unsatisfiedBlockerSql(sql)}
+       AND ${options.includeSatisfied ? sql`TRUE` : unsatisfiedBlockerSql(sql)}
      ORDER BY d.blocker_ref
      LIMIT 25`;
   return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind, satisfaction: r.satisfaction }));

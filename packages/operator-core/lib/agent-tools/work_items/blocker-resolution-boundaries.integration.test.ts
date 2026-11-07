@@ -194,6 +194,62 @@ async function expectPairedMutationTransaction(id: string) {
 }
 
 describe('public blocker resolution boundaries', () => {
+  async function completedDependency(kind: 'task' | 'feature' = 'feature') {
+    const id = await seed('feature', false);
+    const dependency = await seed(kind, false);
+    const dependencyRef = kind === 'task' ? dependency : `${HARNESS}#${dependency}`;
+    await db.sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      VALUES ('default', 'feature', ${`${HARNESS}#${id}`}, ${kind === 'task' ? 'issue' : 'feature'}, ${dependencyRef}, 'blocks')`;
+    await db.sql`UPDATE harness_shared.work_items SET status='done'
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${dependency}`;
+    await db.sql`UPDATE harness_shared.work_items SET status='blocked'
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+    const witness = { kind: 'work-item' as const, ref: `${HARNESS}#${dependency}` };
+    const decision: BlockerDecisionInput = { schemaVersion: 1, idempotencyKey: `completed-${kind}`,
+      disposition: 'self_resolve', symptom: 'The original dependency finished while this item was blocked',
+      investigation: [{ action: 'Read the canonical dependency edge and endpoint',
+        outcome: 'The related endpoint completed', evidenceRefs: [witness] }],
+      attempts: [], evidenceRefs: [witness],
+      verification: { outcome: 'The original dependency is terminal', evidenceRefs: [witness] } };
+    return { id, dependency, witness, decision };
+  }
+
+  it.each(['task', 'feature'] as const)('resumes after its completed %s dependency leaves the unresolved set', async kind => {
+    const { id, dependency, decision } = await completedDependency(kind);
+    expect(await wi.readUnresolvedDepBlockers(id, HARNESS)).toEqual([]);
+    expect(await call(setState, { id, harness: HARNESS, state: 'wip', blockerDecision: decision }))
+      .toMatchObject({ ok: true });
+    expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ state: 'wip', assignee: OWNER });
+    expect(await wi.getWorkItem(dependency, HARNESS)).toMatchObject({ state: 'done' });
+    expect(readBlockerResolution((await wi.getWorkItem(id, HARNESS))?.payload).status).toBe('recorded');
+  });
+
+  it('refuses an unrelated completed witness when the original dependency has settled', async () => {
+    const { id, decision } = await completedDependency();
+    const unrelated = await seed('task', false);
+    await db.sql`UPDATE harness_shared.work_items SET status='done'
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${unrelated}`;
+    const witness = { kind: 'work-item' as const, ref: `${HARNESS}#${unrelated}` };
+    const before = await snapshot(id);
+    expect(await call(setState, { id, harness: HARNESS, state: 'wip', blockerDecision: {
+      ...decision, verification: { outcome: 'An unrelated repair completed', evidenceRefs: [witness] },
+    } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
+  it('does not let a completed dependency witness clear a second pending dependency', async () => {
+    const { id, decision } = await completedDependency();
+    const pending = await seed('task', false);
+    await db.sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      VALUES ('default', 'feature', ${`${HARNESS}#${id}`}, 'issue', ${pending}, 'blocks')`;
+    const before = await snapshot(id);
+    expect(await call(setState, { id, harness: HARNESS, state: 'wip', blockerDecision: decision }))
+      .toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
   it('guards all public deferral boundaries before mutation', async () => {
     for (const kind of ['task', 'feature'] as const) {
       const id = await seed(kind);

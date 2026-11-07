@@ -1090,7 +1090,8 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           onlyIfBlockAttributedTo: it.onlyIfBlockAttributedTo ?? null };
         const checked = await preflightBlockerDecision(blockerSubject, it.blockerDecision,
           await blockerBoundaryContext(sctx, agentId.ownerId, scope.harnessSlug),
-          { effect, enteringDeferral: PLAN_BLOCKED_STATUSES.has(it.status), requireResolution: isTerminalStatus(it.status) });
+          { effect, enteringDeferral: PLAN_BLOCKED_STATUSES.has(it.status), requireResolution: isTerminalStatus(it.status),
+            allowAbsorption: it.status === 'dropped' && blockerSubject.viaPlanLineNode === true });
         if (!checked.ok) return { ...checked, slug: it.slug, itemId: it.itemId, error: checked.code };
         if (!('ordinary' in checked)) {
           if (checked.replayed) return { ok: true, slug: it.slug, itemId: it.itemId,
@@ -1508,8 +1509,18 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         if (blockerSubject.viaPlanLineNode
           ? nodes.length !== 1 || nodes[0].feature_id !== blockerSubject.id
           : nodes.length !== 0) throw new BlockerDecisionMutationConflict();
+        let absorptionDependencies: import('../../dbos/work-item-deps-store').WorkItemDependencyMutation[] | undefined;
+        if (blockerMutation.prepared.record.decision.disposition === 'absorb') {
+          const { bindPlanAbsorptionInTransaction } = await import('../../plan-duplicate-absorption');
+          const bound = await bindPlanAbsorptionInTransaction(tx as never, {
+            ...scope, planSlug: it.slug, itemId: it.itemId,
+          }, blockerMutation.prepared);
+          blockerMutation = { ...blockerMutation, prepared: bound.prepared };
+          absorptionDependencies = bound.mutations;
+        }
         await applyBlockerDecisionMutation(tx, { workspace: scope.workspaceId,
           harness: scope.harnessSlug, id: blockerSubject.id }, blockerMutation);
+        return absorptionDependencies;
       },
       inTransaction: async (tx, _writtenBody, scope, value) => {
         if (value.ok && carryRequired) {

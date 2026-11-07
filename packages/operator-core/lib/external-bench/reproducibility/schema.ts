@@ -83,6 +83,8 @@ const armControl = z.object({
   /** Reuse the maintained native launch threshold. A solver group freezes one
    * value across on/off arms; omission preserves historical protocols. */
   compactionLimit: z.number().int().safe().min(MIN_COMPACTION_LIMIT_TOKENS).optional(),
+  /** Exact host-private source allocation, identical across matched cache arms. */
+  fixtureReads: z.object({ kind: z.literal('latency-m1-v1'), sha256: digest }).strict().optional(),
   /** A single-capability ablation: identical to `of` except `treatment` is switched off. */
   ablation: z.object({ of: pin, treatment: z.enum(BENCHMARK_CAPABILITIES) }).strict().optional(),
   ensemble: z.object({
@@ -129,6 +131,7 @@ function frozenSolverSettings(arm: ProtocolArm) {
     ...(arm.runtime.proximus ? { proximus: arm.runtime.proximus } : {}),
     solverToolsHash: arm.control?.solverToolsHash,
     ...(arm.control?.compactionLimit !== undefined ? { compactionLimit: arm.control.compactionLimit } : {}),
+    ...(arm.control?.fixtureReads ? { fixtureReads: arm.control.fixtureReads } : {}),
   });
 }
 
@@ -146,6 +149,8 @@ function armControlIssues(arms: ReadonlyArray<ProtocolArm>): Array<{ path: (stri
   arms.forEach((arm, index) => {
     const control = arm.control!;
     const path = ['arms', index, 'control'];
+    if (control.fixtureReads && (control.topology !== 'solo' || arm.agent !== 'codex'))
+      issues.push({ path, message: 'Private fixture reads require the maintained Codex solo host.' });
     const settings = frozenSolverSettings(arm);
     const peer = groupSettings.get(control.solverGroup);
     if (peer === undefined) groupSettings.set(control.solverGroup, settings);

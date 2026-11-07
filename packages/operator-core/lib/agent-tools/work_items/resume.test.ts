@@ -3,6 +3,7 @@ import { readCarryLatestUpdate, renderCarryNote, shortCarryHash } from '../../ca
 import { shapeWorkItemsGet } from './get-shape';
 import { buildWorkItemResume, readWorkItemResume, RESUME_PACKET_BUDGET } from './resume';
 import type { TaskBrief } from '../../code-intelligence/task-brief';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 
 const item = { id: 'WI-resume', harness: 'h1', assignee: 'su-current', state: 'open',
   payload: { plan_item: { plan_slug: 'resume-plan', item_id: 'P-001' } } };
@@ -13,6 +14,39 @@ const build = (overrides: Partial<Parameters<typeof buildWorkItemResume>[0]> = {
 });
 
 describe('bounded work-item resume', () => {
+  it('recovers a recorded deferral without stale-checkpoint nagging and budgets a long next action', () => {
+    const ref = { kind: 'state' as const, ref: 'state:dependency.health' };
+    const prepared = prepareBlockerDecision({}, {
+      schemaVersion: 1, idempotencyKey: 'resume', disposition: 'defer', symptom: 'Peer dependency pending',
+      investigation: [{ action: 'Read dependency state', outcome: 'Peer owns repair', evidenceRefs: [ref] }],
+      attempts: [], evidenceRefs: [ref],
+      deferral: { reason: 'active-peer', responsibleParty: 'su-peer', nextAction: 'Peer verifies repair',
+        reasonEvidenceRefs: [ref], recheckRef: ref },
+    }, { ownerId: 'su-current', sessionId: 'session-current', workItemId: item.id, custodianId: 'su-current' });
+    if (!prepared.ok) throw new Error('fixture refused');
+    for (const checkpoint of [{ checkpoint: null, updatedAtMs: null },
+      { checkpoint: renderCarryNote({ did: 'Old prose says to investigate again', next: 'Independent work. '.repeat(250) }), updatedAtMs: 1 }]) {
+      const packet = build({ item: { ...item, payload: { ...item.payload, ...prepared.patch } }, checkpoint });
+      expect(packet.blockerResolution).toMatchObject({ status: 'recorded',
+        current: { id: prepared.record.id, authorId: 'su-current',
+          deferral: { responsibleParty: 'su-peer', nextAction: 'Peer verifies repair' } } });
+      expect(packet.blockerResolution).not.toHaveProperty('nudge');
+      expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+    }
+  });
+
+  it('carries actionable canonical blocker guidance independently of absent or stale checkpoint prose', () => {
+    const blocked = { ...item, state: 'blocked' };
+    for (const checkpoint of [{ checkpoint: null, updatedAtMs: null },
+      { checkpoint: 'Old prose says there is no blocker.', updatedAtMs: 1 }]) {
+      const packet = build({ item: blocked, checkpoint });
+      expect(packet.blockerResolution).toMatchObject({ status: 'unproven',
+        nudge: expect.stringContaining('preserve custody'),
+        readRef: { args: { id: item.id, harness: 'h1' } } });
+      expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+    }
+  });
+
   it('preserves the complete next action beyond a long historical prefix through the real payload shaper', () => {
     const legacy = shapeWorkItemsGet({ ok: true, results: [{ ok: true, id: item.id, workItem: item,
       checkpoint: checkpoint.checkpoint }], counts: { ok: 1, failed: 0 } }, 'trimmed');

@@ -176,7 +176,9 @@ function tool(name: string, args: Json): Json {
   });
   const result = JSON.parse(raw);
   requireProof(result.ok !== false && !result.error && result.state !== 'incomplete' && !result._shapeNote &&
-    !result.summaryNotice?.truncated && (!Array.isArray(result.results) || result.results.every((row: Json) => row.ok !== false)),
+    !result._partial && !result._projection?.truncated && !result.summaryNotice?.truncated &&
+    (!Array.isArray(result.results) || result.results.every((row: Json) => row.ok !== false && !row._stub &&
+      !row._partial && row.availability !== 'unavailable')),
   name + ' refused or returned partial evidence');
   return result;
 }
@@ -390,10 +392,19 @@ async function collectCensus(fixture: Fixture, started: string): Promise<Census>
       AND audit_kind='completion' ORDER BY audit_seq DESC LIMIT 1`);
   requireProof(audit && fullSha.test(audit.audited_sha), 'recorded completion audit is missing');
   const linked = query<Json[]>(linkedCensusSql('papercusp-workspace', 'papercusp', plan));
-  const parentRead = tool('work_items:get', { id: parent, harness: 'papercusp', threadLimit: 0 });
-  const parentItem = parentRead.results?.[0]?.workItem;
+  // A census needs identity, not the parent's large checkpoint. Select it at the
+  // producer so a bounded response cannot replace it with a delivery receipt.
+  const parentRead = tool('work_items:get', { id: parent, harness: 'papercusp', threadLimit: 0,
+    projection: { pick: ['results[].id', 'results[].ok', 'results[].availability',
+      'results[].workItem.id', 'results[].workItem.assignee', 'results[].workItem.createdAt'] } });
+  const parentRow = parentRead.results?.find((row: Json) => row.id === parent);
+  const parentItem = parentRow?.workItem;
   requireProof(linked.some(row => row.id === parent) && parentItem?.assignee && parentItem.createdAt,
-    'parent must have a real plan link and identifiable native-edit owner');
+    'parent must have a real plan link and identifiable native-edit owner: ' + JSON.stringify({
+      parent, linked: linked.some(row => row.id === parent), resultKeys: Object.keys(parentRead),
+      rowKeys: Object.keys(parentRow ?? {}), availability: parentRow?.availability,
+      assignee: parentItem?.assignee ?? null, createdAt: parentItem?.createdAt ?? null,
+    }));
   const native = query<Json[]>(`SELECT COALESCE(json_agg(x),'[]') FROM (SELECT id::text,agent,session_id,detail FROM harness_shared.agent_activity
     WHERE workspace_id='papercusp-workspace' AND owner_id=${literal(parentItem.assignee)}
       AND (harness_slug IS NULL OR harness_slug='papercusp') AND phase='post' AND (status IS NULL OR status IN ('ok','success'))

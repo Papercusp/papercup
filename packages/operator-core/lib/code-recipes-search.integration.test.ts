@@ -78,6 +78,10 @@ describe('code_recipes hybrid search (real PG)', () => {
       candidate: { script }, rankers: [], score: 0 });
     expect(incomplete.compiler.status).toBe('partial');
     expect(incomplete.domain.verdict).toBe('unknown');
+    const mixed = await buildRecipeMatchingEvidence({ source: { script: script + '\nawait tools.dynamic[inputs.name]({});', tools },
+      candidate: { script }, rankers: [], score: 0 });
+    expect(mixed.compiler).toMatchObject({ status: 'partial', currentTools: ['state:read'] });
+    expect(mixed.domain.verdict).toBe('unknown');
   });
 
   it('cannot certify private SQL/shell wrapper clones or contract changes from retrieval evidence', async () => {

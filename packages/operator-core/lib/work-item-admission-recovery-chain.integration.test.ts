@@ -32,6 +32,14 @@ vi.mock('./superuser-token', async (orig) => ({
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...await orig<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }),
+  // withWorkspace closes over connection.ts's app pool; replacing the exported
+  // getOrgPg alone cannot redirect nested claim-brief persistence. Keep a real
+  // transaction and workspace GUC, using the same private database as the claim.
+  withWorkspace: async <T>(workspace: string, fn: (tx: Sql) => Promise<T>) =>
+    h.sql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+      return fn(tx as unknown as Sql);
+    }),
 }));
 vi.mock('./workspace-registry', async (orig) => ({
   ...await orig<typeof import('./workspace-registry')>(), activeWorkspaceId: () => 'default',
@@ -157,6 +165,16 @@ const scope = { workspaceId: 'default', harnessSlug: 'papercusp' };
 beforeAll(async () => {
   db = await createFreshPgDb('admission_recovery_chain');
   h.sql = db.sql;
+  // Fail before any fixture writes/cases if a nested persistence route escapes.
+  // The integration live-target guard remains the independent backstop.
+  const { getOrgPg, withWorkspace } = await import('@papercusp/db-org');
+  const expectedDatabase = decodeURIComponent(new URL(db.url).pathname.slice(1));
+  for (const client of [db.sql, getOrgPg().sql]) {
+    expect(await client`SELECT current_database() AS database`).toEqual([{ database: expectedDatabase }]);
+  }
+  expect(await withWorkspace(scope.workspaceId, tx => tx`
+    SELECT current_database() AS database, current_setting('app.workspace_id') AS workspace`))
+    .toEqual([{ database: expectedDatabase, workspace: scope.workspaceId }]);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL);
@@ -164,6 +182,12 @@ beforeAll(async () => {
     '../../../libs/papercusp/libs/db/sql/944-work-queue-admission-dedup.sql'));
   // The supported snapshot reader also projects occurrence/readiness stock.
   for (const migration of ['831-issue-occurrence-ledger.sql', '1294-work-item-readiness-payload-projections.sql']) {
+    await applyMigrationForTest(db.sql, resolve(import.meta.dirname, '../../../libs/papercusp/libs/db/sql', migration));
+  }
+  // The real claim handler records even a skipped advisory brief. Its nested
+  // transaction must persist here, rather than using the host's org-app pool.
+  for (const migration of ['581-memory-session-surfaced-ledger.sql', '1251-identity-hook-turns.sql',
+    '1519-code-intel-pushes.sql']) {
     await applyMigrationForTest(db.sql, resolve(import.meta.dirname, '../../../libs/papercusp/libs/db/sql', migration));
   }
   await db.sql.unsafe(`
@@ -237,7 +261,8 @@ beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs, harness_shared.routines,
     harness_shared.system_principals, harness_shared.fleet_assignment, harness_shared.fleet_membership_events,
-    harness_shared.audit_log`;
+    harness_shared.audit_log, harness_shared.identity_hook_turns,
+    harness_shared.memory_session_epochs, harness_shared.code_intel_pushes`;
   await db.sql`INSERT INTO harness_shared.system_principals VALUES
     ('default', 'reviewer', '["coord:write","work_items:read","work_items:write"]')`;
   await db.sql`INSERT INTO harness_shared.routines
@@ -658,7 +683,8 @@ describe('original authority context fidelity', () => {
         { itemId: original.id, stage: 'recheck', reason: 'selected' },
       ] },
     });
-    expect(ordinary).toMatchObject({ promoted: 1, merged: 0 });
+    expect(ordinary, JSON.stringify({ ordinary, runs: snapshot.runs,
+      modelCalls: h.model.mock.calls })).toMatchObject({ promoted: 1, merged: 0 });
     expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
     expect((await row(original.id)).payload._admissionRecovery).toEqual(heldRecovery);
     expect(await row(parked.id)).toEqual(parkedBefore);
@@ -1368,6 +1394,27 @@ async function pickup(id: string, role: UnifiedToolContext['role'] = 'reviewer')
 }
 
 describe('canonical original-item recovery chain (fresh PG; controlled external I/O)', () => {
+  it('persists nested claim briefs in the private claim database with workspace context', async () => {
+    const { withWorkspace } = await import('@papercusp/db-org');
+    const direct = await db.sql`SELECT current_database() AS database`;
+    const routed = await withWorkspace(scope.workspaceId, tx => tx`
+      SELECT current_database() AS database, current_setting('app.workspace_id') AS workspace`);
+    expect(routed).toEqual([{ ...direct[0], workspace: scope.workspaceId }]);
+    const original = await create();
+    await request(original.id);
+    expect(await tick()).toMatchObject({ promoted: 1 });
+    expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true });
+    // Query the private ledger, not a mocked writer result. A missing/wrong
+    // transaction port, swallowed write failure or disabled writer fails here.
+    const briefs = await db.sql`SELECT workspace_id, owner_id, subject::jsonb AS subject
+      FROM harness_shared.code_intel_pushes WHERE leg = 'claim-brief'`;
+    expect(briefs).toEqual([expect.objectContaining({
+      workspace_id: scope.workspaceId, owner_id: reviewerOwnerId,
+      subject: expect.objectContaining({ schema: 'claim-brief-v1', workItem: original.id }),
+    })]);
+    expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+  });
+
   it('requires authenticated binding instead of synthesizing a role from presence', async () => {
     const original = await create();
     await expect(requestAdmissionRecovery({

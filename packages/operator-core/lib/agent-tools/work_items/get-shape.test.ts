@@ -15,6 +15,15 @@ import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
 import { RESULT_DOOR_TOKENS } from "../../result-door";
 import { applyResultProjection, parseProjection } from "../../result-projection";
 import { COMPLETION_EMITTED_AT_ROW, shapeWorkItemsGet } from "./get-shape";
+import { projectBlockerResolution } from "../../blocker-resolution-decision";
+
+it.each(['trimmed', 'standard'] as const)('preserves canonical blocker guidance when opaque payload is dropped (%s)', tier => {
+  const blockerResolution = projectBlockerResolution({}, { id: 'WI-1', state: 'blocked', harness: 'h1' });
+  const out = shapeWorkItemsGet({ ok: true, results: [row({ blockerResolution })],
+    counts: { ok: 1, failed: 0 } }, tier) as Envelope;
+  expect(out.results[0].blockerResolution).toEqual(blockerResolution);
+  expect((out.results[0].workItem as Record<string, unknown>).payload).toBeUndefined();
+});
 
 type Envelope = {
   ok: boolean;
@@ -35,6 +44,19 @@ type Envelope = {
     singleItemFloor?: string;
   };
 };
+
+it.each(['trimmed', 'standard'] as const)('discloses omitted blocker views when a bulk read degrades to stubs (%s)', tier => {
+  const rows = Array.from({ length: 100 }, (_, index) => row({ id: 'WI-' + index,
+    blockerResolution: projectBlockerResolution({}, { id: 'WI-' + index, state: 'blocked' }),
+    checkpoint: 'large checkpoint '.repeat(1000),
+  }));
+  const out = shapeWorkItemsGet(envelope(rows), tier) as Envelope;
+  expect(out.results).toHaveLength(100);
+  expect(out.results.some(result => result._stub === true)).toBe(true);
+  expect(out._shapeNote?.dropped).toContain('blockerResolution');
+  expect(out._shapeNote?.next).toContain('full');
+  expect(JSON.stringify(out).length).toBeLessThanOrEqual(6000);
+});
 
 function row(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {

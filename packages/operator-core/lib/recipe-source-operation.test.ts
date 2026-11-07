@@ -78,6 +78,9 @@ describe('private SQL/shell recipe source contract', () => {
     ['capability:bash', { command: 'rm -rf /tmp/private-output', cwd: '/tmp' }],
     ['capability:bash', { command: 'echo $PRIVATE', cwd: '/tmp' }],
     ['capability:bash', { command: 'echo a', cwd: '/tmp', run_in_background: true }],
+    ['capability:bash', { command: 'echo a', cwd: '/tmp', integration_env: { MODE: 'PRIVATE_KEY_REF' } }],
+    ['capability:bash', { command: 'echo a', cwd: '/tmp', environment: { MODE: 'different' } }],
+    ['capability:bash', { command: 'echo a', cwd: '/tmp', env: { MODE: 'different' } }],
   ])('keeps unsupported %s syntax opaque', (tool, args) => {
     expect(compileSourceOperation({ tool: tool as string, args }, scope)).toBeNull();
   });
