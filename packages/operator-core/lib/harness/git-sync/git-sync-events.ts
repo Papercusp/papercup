@@ -123,12 +123,14 @@ function failSoft(scope: string, e: unknown): void {
 /**
  * Fire-and-forget proof that an exclusive named-resource row was actually
  * released. This is deliberately emitted by the release path, never at the
- * refusal boundary, so a waiter cannot wake into the same held_exclusive state.
+ * refusal boundary. Deferred notifications retain the producer's release time
+ * so a waiter can reject releases older than its current blocking lease.
  */
 export function emitResourceReleasedEvent(
   resource: string,
   workspaceId: string | null | undefined,
   emit: typeof emitAwaitedEvent = emitAwaitedEvent,
+  releasedAtMs: number = Date.now(),
 ): void {
   void Promise.resolve()
     .then(() =>
@@ -138,7 +140,7 @@ export function emitResourceReleasedEvent(
         payload: {
           resource,
           ...(workspaceId ? { workspaceId } : {}),
-          releasedAtMs: Date.now(),
+          releasedAtMs,
         },
         source: 'resource-locks',
         ...(workspaceId ? { workspaceId } : {}),

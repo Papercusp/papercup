@@ -410,6 +410,7 @@ export default defineTool({
 
     const before = repoDir ? await headSha(repoDir) : null;
 
+    const syncRequestedAtMs = Date.now();
     const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(
       () => fireGitSyncNow(slug, workspaceId, repoDir),
       {
@@ -474,6 +475,16 @@ export default defineTool({
     const releaseEventResource = outcome?.status === 'skipped'
       ? outcome.blockedOn ?? ''
       : '';
+    // An earlier fire may flush its release notification after a replacement
+    // lease has been acquired. Only a producer release at/after the blocking
+    // lease can satisfy this continuation. Without a measured holder timestamp,
+    // use the request boundary so a release during the fire is still eligible.
+    const holderAcquiredAtMs = outcome?.status === 'skipped'
+      ? (outcome.holders ?? []).map((holder) => Date.parse(holder.acquired_ts)).filter(Number.isFinite)
+      : [];
+    const releaseNotBeforeMs = holderAcquiredAtMs.length > 0
+      ? Math.max(...holderAcquiredAtMs)
+      : syncRequestedAtMs;
     // A timeout means the fire was accepted but its promise is still running in the
     // background. Keep that state explicitly non-terminal and hand the caller the
     // existing commit event + durable routine fields that settle/prove it, rather than
@@ -527,6 +538,7 @@ export default defineTool({
                             resource: { equals: releaseEventResource },
                           },
                           { workspaceId: { equals: workspaceId } },
+                          { releasedAtMs: { gte: releaseNotBeforeMs } },
                         ],
                       },
                     },

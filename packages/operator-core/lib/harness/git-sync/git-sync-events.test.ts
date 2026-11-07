@@ -274,6 +274,34 @@ describe('emitGitSyncLockRetryEvent (EI-20271766491179856)', () => {
 });
 
 describe('emitResourceReleasedEvent (EI-22726196301284168)', () => {
+  it('EI-281444: captures release time before the notification microtask runs', async () => {
+    const emit = typedEmit();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    try {
+      emitResourceReleasedEvent('git-sync:harness-a', 'workspace-a', emit);
+      now.mockReturnValue(30_000);
+      await Promise.resolve();
+      expect(emit.mock.calls[0][0].payload).toMatchObject({ releasedAtMs: 10_000 });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('EI-281444: a deferred old release cannot look newer than a successor lease', async () => {
+    const emit = typedEmit();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(30_000);
+    try {
+      emitResourceReleasedEvent('git-sync:harness-a', 'workspace-a', emit, 10_000);
+      await Promise.resolve();
+      const payload = emit.mock.calls[0][0].payload;
+      expect(payload).toMatchObject({ releasedAtMs: 10_000 });
+      expect(payloadMatchesFilter({ releasedAtMs: { gte: 20_000 } }, payload)).toBe(false);
+      expect(payloadMatchesFilter({ releasedAtMs: { gte: 5_000 } }, payload)).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('emits one exact resource key at the release boundary with scope and release time', async () => {
     const emit = typedEmit();
     emitResourceReleasedEvent('git-sync:harness-a', 'workspace-a', emit);

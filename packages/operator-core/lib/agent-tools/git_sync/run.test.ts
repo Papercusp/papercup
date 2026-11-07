@@ -6,6 +6,12 @@
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promisify } from 'node:util';
+import { payloadMatchesFilter } from '../../events/await/pattern';
+
+// This suite checks returned event descriptors and the real payload matcher.
+// Notification delivery is outside that boundary; importing its engine also
+// imports the live coordination/DB graph inside each timed dynamic tool import.
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 
 const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
   ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides }) as never;
@@ -639,6 +645,27 @@ describe('git-sync:run', () => {
   // lock-retry key, whose emitter deliberately excludes this refusal class. The
   // release path emits an exact resource key at the release boundary. The event
   // is only a notification; it does not reserve the resource for the retry.
+  it.each([
+    { holders: [{ ...SKIP_HOLDERS[0], acquired_ts: new Date(20_000).toISOString() }] },
+    { holders: [] },
+    { holders: [{ ...SKIP_HOLDERS[0], acquired_ts: 'unavailable' }] },
+  ])('EI-281444: rejects a deferred old release for current holders $holders', async ({ holders }) => {
+    const result = await mockSkippedFire({
+      status: 'skipped', reason: 'held_exclusive', blockedOn: 'git-sync:papercusp', holders,
+    });
+    const { continuation } = result as {
+      continuation: { completion_event: { payload_filter: Record<string, unknown> } };
+    };
+    const filter = continuation.completion_event.payload_filter;
+    const release = { resource: 'git-sync:papercusp', workspaceId: 'default' };
+    expect(payloadMatchesFilter(filter, { ...release, releasedAtMs: 10_000 })).toBe(false);
+    expect(payloadMatchesFilter(filter, { ...release, releasedAtMs: Date.now() + 1_000 })).toBe(true);
+    expect(payloadMatchesFilter(filter, release)).toBe(false);
+    if (holders[0]?.acquired_ts === new Date(20_000).toISOString()) {
+      expect(payloadMatchesFilter(filter, { ...release, releasedAtMs: 20_000 })).toBe(true);
+    }
+  });
+
   it('advertises the exact resource release event for a held_exclusive skip', async () => {
     const outcome = {
       status: 'skipped' as const,
@@ -664,6 +691,7 @@ describe('git-sync:run', () => {
             all: [
               { resource: { equals: 'git-sync:papercusp' } },
               { workspaceId: { equals: 'default' } },
+              { releasedAtMs: { gte: Date.parse(SKIP_HOLDERS[0].acquired_ts) } },
             ],
           },
         },
@@ -725,6 +753,7 @@ describe('git-sync:run', () => {
           all: [
             { resource: { equals: 'git-sync:papercusp' } },
             { workspaceId: { equals: 'default' } },
+            { releasedAtMs: { gte: Date.parse('2026-09-05T13:42:29.066Z') } },
           ],
         },
       },
@@ -756,6 +785,7 @@ describe('git-sync:run', () => {
             all: [
               { resource: { equals: 'git-sync' } },
               { workspaceId: { equals: 'default' } },
+              { releasedAtMs: { gte: expect.any(Number) } },
             ],
           },
         },

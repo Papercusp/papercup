@@ -3904,14 +3904,16 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // activity marker remains active until every post-leg settles. Keep the
   // exact resource wake pending across that gap so a waiter cannot restart the
   // host while `safe_to_restart` is still false.
-  const deferredResourceReleaseEvents = new Set<string>();
+  const deferredResourceReleaseEvents = new Map<string, number>();
   const deferResourceReleaseEvent = (resource: string): void => {
-    deferredResourceReleaseEvents.add(resource);
+    // Preserve the release boundary, not the later post-leg completion time:
+    // another fire can acquire the same resource before this wake is flushed.
+    if (!deferredResourceReleaseEvents.has(resource)) deferredResourceReleaseEvents.set(resource, Date.now());
     if (terminalActivityDurable) flushDeferredResourceReleaseEvents();
   };
   const flushDeferredResourceReleaseEvents = (): void => {
-    for (const resource of deferredResourceReleaseEvents) {
-      emitResourceReleasedEvent(resource, workspaceId || null);
+    for (const [resource, releasedAtMs] of deferredResourceReleaseEvents) {
+      emitResourceReleasedEvent(resource, workspaceId || null, undefined, releasedAtMs);
     }
     deferredResourceReleaseEvents.clear();
   };
