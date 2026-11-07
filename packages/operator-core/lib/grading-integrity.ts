@@ -98,6 +98,11 @@ export type GenerationAncestryProbe = (root: string, ancestor: string, descendan
 
 const GENERATION_SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
 
+/** The same build-identity requirement applies when stamping and auditing a card. */
+export function isGradingGenerationSha(sha: unknown): sha is string {
+  return typeof sha === 'string' && GENERATION_SHA_PATTERN.test(sha.trim());
+}
+
 /**
  * Require a grading auditor to run on the same or a descendant source-card
  * generation. Missing identities and failed ancestry probes are unknown, so
@@ -110,12 +115,7 @@ export function assessGenerationAncestry(
   root: string,
   probe: GenerationAncestryProbe,
 ): { ok: true } | { ok: false; reason: string } {
-  if (
-    typeof gradedSha !== 'string' ||
-    !GENERATION_SHA_PATTERN.test(gradedSha.trim()) ||
-    typeof auditorSha !== 'string' ||
-    !GENERATION_SHA_PATTERN.test(auditorSha.trim())
-  ) {
+  if (!isGradingGenerationSha(gradedSha) || !isGradingGenerationSha(auditorSha)) {
     return { ok: false, reason: 'generation-sha-missing-or-invalid' };
   }
   const graded = gradedSha.trim().toLowerCase();

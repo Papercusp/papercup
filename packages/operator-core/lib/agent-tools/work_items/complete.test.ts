@@ -1453,9 +1453,9 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
       expect(validation).toMatchObject({
         ok: true,
         validationOnly: true,
-        // The unrelated no-change terminal criterion remains measurable under
-        // both switch states, independently of repository content identity.
-        completionAuthority: enforced ? 'proposed' : 'committed',
+        // Durable-change is advisory without an explicit declaration. Neither
+        // switch state invents a requirement shortfall from a no-work sentinel.
+        completionAuthority: 'committed',
       });
       expect(validation.requirementShortfallWarning).toBeUndefined();
       expect(validation.completionEvidenceFindings).toBeUndefined();
@@ -5452,6 +5452,48 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    it.each([true, false])('fences the exact work definition validated for successful completion (declared=%s)', async (declared) => {
+      const item = declared ? declaredVerificationItem : { ...verificationItem, payload: {} };
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'resolved' }));
+      const r = await one({
+        id: item.id,
+        state: 'resolved',
+        completion: {
+          ...universalCompletion,
+          coverage: { population: requestedCriteria, checked: requestedCriteria, residue: [] },
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      const options = setWorkItemStateWithAliasInfo.mock.calls[0][2];
+      expect(Object.hasOwn(options, 'expectedWorkDefinition')).toBe(true);
+      expect(options.expectedWorkDefinition).toEqual(declared ? declaredVerificationItem.payload.workDefinition : undefined);
+    });
+
+    it('refuses a work definition changed at terminal write without recording partial completion', async () => {
+      getWorkItem.mockResolvedValue(declaredVerificationItem);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(Object.assign(new Error('Definition changed after validation'), {
+        code: 'work_definition_changed',
+      }));
+      const r = await one({
+        id: declaredVerificationItem.id,
+        state: 'resolved',
+        completion: {
+          ...universalCompletion,
+          coverage: { population: requestedCriteria, checked: requestedCriteria, residue: [] },
+        },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toBe('work_definition_changed');
+      expect(r.retryable).toBe(true);
+      expect(r).not.toHaveProperty('completion');
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+    });
+
     it('allows explicit bounded acceptance criteria while broader artifact sampling remains unexercised', async () => {
       const boundedItem = {
         ...verificationItem,
@@ -5494,24 +5536,85 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
-    it('preserves evidence-backed duplicate disposition with declared acceptance criteria', async () => {
-      getWorkItem.mockResolvedValue(declaredVerificationItem);
-      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'resolved' }));
+    it.each(
+      (['omitted', 'notChecked', 'notApplicable'] as const).flatMap((bucket) =>
+        [false, true].map((validateOnly) => ({ bucket, validateOnly }))),
+    )('refuses a successful duplicate with unfinished declared acceptance criteria: $bucket (validateOnly=$validateOnly)', async ({ bucket, validateOnly }) => {
+      getWorkItem.mockResolvedValue(lunaAssessment);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...lunaAssessment, state: 'resolved' }));
       resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: 'papercup#EI-20252354779271625' });
-      const r = await one({
+      const r = await oneRaw({
         id: 'WI-verify',
         state: 'resolved',
+        assumptions: 'none',
+        validateOnly,
+        completion: {
+          summary: 'A survivor tracks the same requested work; this report records one measured criterion and 25 unknown.',
+          duplicateOf: 'EI-20252354779271625',
+          verifiedHow: 'manual',
+          testsRun: 'source comparison',
+          testResult: 'The partial report and artifact integrity were accepted.',
+          verification: {
+            coverage: bucket === 'omitted'
+              ? { population: lunaAcceptedArtifacts, checked: lunaAcceptedArtifacts, residue: [] }
+              : {
+                population: [...lunaRequestedCriteria, ...lunaAcceptedArtifacts],
+                checked: [...lunaMeasuredCriteria, ...lunaAcceptedArtifacts],
+                [bucket]: lunaUnknownCriteria,
+                residue: [],
+              },
+          },
+        },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.verificationCoverageError).toContain(
+        bucket === 'omitted' ? 'omits workDefinition.acceptanceCriteria' : 'unchecked acceptance criteria',
+      );
+      const missing = bucket === 'omitted' ? lunaRequestedCriteria : lunaUnknownCriteria;
+      for (const criterion of missing) expect(r.verificationCoverageError).toContain(criterion);
+      expect(r).not.toHaveProperty('completion');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('allows a successful duplicate with fully checked declared acceptance criteria (validateOnly=%s)', async (validateOnly) => {
+      getWorkItem.mockResolvedValue(lunaAssessment);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...lunaAssessment, state: 'resolved' }));
+      resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: 'papercup#EI-20252354779271625' });
+      const r = await oneRaw({
+        id: 'WI-verify',
+        state: 'resolved',
+        assumptions: 'none',
+        validateOnly,
         completion: {
           ...universalCompletion,
           duplicateOf: 'EI-20252354779271625',
-          testsRun: 'source comparison',
-          testResult: 'same requested work tracked by survivor',
+          testsRun: 'source comparison and full criterion verification',
+          testResult: 'All 26 requested criteria checked.',
+          verification: { coverage: { population: lunaRequestedCriteria, checked: lunaRequestedCriteria, residue: [] } },
         },
       });
 
       expect(r.ok).toBe(true);
       expect(r.verificationCoverageError).toBeUndefined();
-      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(validateOnly ? 0 : 1);
+    });
+
+    it('preserves a record-only duplicate note with unfinished declared acceptance criteria', async () => {
+      getWorkItem.mockResolvedValue(lunaAssessment);
+      resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: 'papercup#EI-20252354779271625' });
+      const r = await oneRaw({
+        id: 'WI-verify',
+        recordOnly: true,
+        completion: { summary: 'Investigating a possible duplicate; requested measurements remain open.', duplicateOf: 'EI-20252354779271625' },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.workItem.state).toBe('open');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
     it('rejects a universal verification close without enumerated coverage', async () => {

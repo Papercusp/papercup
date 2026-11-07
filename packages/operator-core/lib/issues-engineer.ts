@@ -20,6 +20,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { isDeepStrictEqual } from 'node:util';
+import { assertWorkItemDefinitionUnchanged } from './work-item-definition';
 import type { OrgSql } from './work-items';
 import { admittedWhereSql, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
@@ -3781,6 +3782,8 @@ export async function setIssueState(
     harnessSlug?: string | null;
     /** Internal lifecycle restore guard: only transition from this persisted state. */
     expectedCurrentState?: string;
+    /** Internal raw definition fence; checked under the canonical lifecycle row lock. */
+    expectedWorkDefinition?: unknown;
     /** Internal system-disposition compare-and-set; never an agent tool arg. */
     unclaimedSnapshotTs?: number;
     /** Internal lifecycle restore guard: require no active typed external blocker under the row lock. */
@@ -3938,6 +3941,9 @@ export async function setIssueState(
         FOR UPDATE`;
     const priorRow = prior[0];
     if (!priorRow) return [] as IssueRowDb[];
+    if (Object.hasOwn(opts, 'expectedWorkDefinition')) {
+      assertWorkItemDefinitionUnchanged(priorRow.payload, opts.expectedWorkDefinition);
+    }
     if (opts.expectedCurrentState !== undefined && priorRow.status !== opts.expectedCurrentState) {
       return [] as IssueRowDb[];
     }

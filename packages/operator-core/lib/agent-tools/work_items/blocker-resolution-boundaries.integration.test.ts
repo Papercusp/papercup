@@ -11,8 +11,10 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL,
   applyClaimPathReadDeps } from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import type { BlockerDecisionInput } from '../../blocker-resolution-decision';
-import { activeExternalBlockers } from '../../external-blockers';
+import { activeExternalBlockers, updateExternalBlockerHistory } from '../../external-blockers';
 import { createBlockerEvidenceReader, preflightBlockerDecision } from '../../blocker-resolution-evidence';
+import { planLaneBlockerRef, syncLinkedWorkItemsToPlanLane } from '../../plan-items/reconcile-linked-work-items';
+import { readPlanLineNodes } from '../plans/plan-line-graph';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -181,7 +183,7 @@ describe('public blocker resolution boundaries', () => {
         [release, { id }],
         [release, { id, claimHold: true }],
         [park, { id, checkpoint: 'Must not overwrite original', reason: 'Dependency remains' }],
-        [link, { src: source, dst: id, rel: 'blocks' }],
+        [link, { id: source, target_id: id, target_harness: HARNESS, rel: 'blocks' }],
       ] as const;
       for (const [tool, args] of requests) {
         const result = await call(tool, { ...args, harness: HARNESS });
@@ -271,7 +273,16 @@ describe('public blocker resolution boundaries', () => {
       ...peerDecision, deferral: { ...peerDecision.deferral, responsibleParty: 'absent-peer' },
     } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
     expect(await snapshot(id)).toEqual(before);
-    expect(await call(setState, { id, harness: HARNESS, state: 'needs-human', blockerDecision: peerDecision })).toMatchObject({ ok: true });
+    // A peer dependency never becomes a human ask. Preserve the existing
+    // lifecycle authority gate as well as the validated peer decision.
+    expect(await call(setState, { id, harness: HARNESS, state: 'needs-human', blockerDecision: peerDecision }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('no answerable owner ask') });
+    expect(await snapshot(id)).toEqual(before);
+    expect(await call(setState, { id, harness: HARNESS, state: 'blocked', blockerDecision: peerDecision }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('no active typed blocker') });
+    expect(await snapshot(id)).toEqual(before);
+    expect(await call(link, { id: peer, harness: HARNESS, rel: 'blocks', target_id: id,
+      blockerDecision: peerDecision })).toMatchObject({ ok: true });
     expect(await wi.getWorkItem(peer, HARNESS)).toMatchObject({ state: 'wip', assignee: 'agent-repair' });
     expect(await wi.getWorkItem(id, HARNESS)).toMatchObject({ assignee: OWNER });
     expect((await snapshot(id)).edges).toEqual(before.edges);
@@ -280,6 +291,8 @@ describe('public blocker resolution boundaries', () => {
     const authority = { kind: 'authority' as const, ref: 'fixture:device-action' };
     const humanBlocker = { kind: 'human', capability: 'physical-device', ref: authority.ref,
       summary: 'Device holder must press the physical confirmation', status: 'active',
+      nextVerb: 'Device holder presses the physical confirmation',
+      defaultIfUnanswered: 'Keep the work parked until physical acceptance',
       createdBy: OWNER, createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z' };
     await db.sql`UPDATE harness_shared.work_items SET payload=jsonb_set(payload, '{externalBlockers}',
       (payload->'externalBlockers') || ${db.sql.json([humanBlocker])})
@@ -297,6 +310,79 @@ describe('public blocker resolution boundaries', () => {
     const external = await seed();
     expect(await state(external, 'external-custody')).toMatchObject({ ok: true });
     expect(await wi.getWorkItem(external, HARNESS)).toMatchObject({ state: 'blocked', assignee: OWNER });
+  });
+
+  const PLAN = 'blocker-boundary-lane';
+  const lane = { planSlug: PLAN, itemId: 'P-001', harnessSlug: HARNESS };
+  async function planNode(status: string, harness = HARNESS) {
+    const item = await wi.createWorkItem({ kind: 'task', title: 'Canonical plan lane', harness, createdBy: OWNER });
+    await db.sql`UPDATE harness_shared.work_items SET status=${status}, plan_slug=${PLAN},
+      plan_line_id='P-001', plan_seq=1, plan_line_text='Canonical plan lane', payload='{}'::jsonb
+      WHERE workspace_id='default' AND harness_slug=${harness} AND feature_id=${item.id}`;
+    expect(await readPlanLineNodes(db.sql, { workspaceId: 'default', harnessSlug: harness, slug: PLAN }))
+      .toMatchObject([{ featureId: item.id, id: 'P-001' }]);
+    return item.id;
+  }
+  async function legacyChild() {
+    const child = await seed('feature', false);
+    await db.sql`UPDATE harness_shared.work_items SET status='open', taken_by=NULL,
+      payload=payload || ${db.sql.json({ plan_item: { plan_slug: PLAN, item_id: 'P-001' } })}
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${child}`;
+    return child;
+  }
+  it('mutates only the scoped canonical plan-line row over legacy execution children', async () => {
+    const node = await planNode('open');
+    const child = await legacyChild();
+    const other = await planNode('open', `${HARNESS}-other`);
+    const beforeChild = await snapshot(child);
+    const otherBefore = await wi.getWorkItem(other, `${HARNESS}-other`);
+    const result = await syncLinkedWorkItemsToPlanLane(lane, 'blocked');
+    expect(result).toMatchObject({ gated: [node], skippedDuplicates: [child] });
+    expect(result.failures).toBeUndefined();
+    expect(await wi.getWorkItem(node, HARNESS)).toMatchObject({ state: 'blocked' });
+    expect((await snapshot(child)).row).toEqual(beforeChild.row);
+    expect(await wi.getWorkItem(other, `${HARNESS}-other`)).toEqual(otherBefore);
+    expect(readBlockerResolution((await wi.getWorkItem(node, HARNESS))?.payload).status).toBe('unproven');
+  });
+  it('terminal canonical plan-line identity prevents legacy child mutation', async () => {
+    const node = await planNode('done');
+    const child = await legacyChild();
+    const before = await snapshot(child);
+    const terminal = await snapshot(node);
+    const result = await syncLinkedWorkItemsToPlanLane(lane, 'blocked');
+    expect(result).toMatchObject({ gated: [], skippedAlreadyTerminal: [node], skippedDuplicates: [child] });
+    expect(result.failures).toBeUndefined();
+    expect(await snapshot(child)).toEqual(before);
+    expect(await snapshot(node)).toEqual(terminal);
+  });
+  it('partial lane ungate preserves independent blockers state holds and dispatch custody', async () => {
+    const node = await planNode('blocked');
+    const laneRef = planLaneBlockerRef(PLAN, 'P-001');
+    const laneBlocker = updateExternalBlockerHistory({}, { kind: 'gate', capability: 'live-dependency',
+      ref: laneRef, summary: 'Plan prerequisite pending' }, 'system:plan-item-lane-sync');
+    const blockers = updateExternalBlockerHistory({ externalBlockers: laneBlocker.blockers }, {
+      kind: 'human', capability: 'physical-device', ref: 'fixture:physical-acceptance',
+      summary: 'Device holder must accept' }, OWNER).blockers;
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=${OWNER}, taken_at=now(),
+      payload=${db.sql.json({ externalBlockers: blockers, planLaneParkedFrom: 'open',
+        _claimHold: true, claim_hold_by: OWNER, claim_hold_reason: 'Independent physical acceptance',
+        held_open_by: 'system:plan-item-lane-sync', keep: 'original' })}
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${node}`;
+    const before = await snapshot(node);
+    const result = await syncLinkedWorkItemsToPlanLane(lane, 'actionable');
+    expect(result).toMatchObject({ ungated: [node] });
+    expect(result.failures).toBeUndefined();
+    const after = await snapshot(node);
+    expect(after.row).toMatchObject({ status: 'blocked', taken_by: OWNER, taken_at: before.row.taken_at,
+      payload: { _claimHold: true, claim_hold_by: OWNER, claim_hold_reason: 'Independent physical acceptance',
+        held_open_by: 'system:plan-item-lane-sync', planLaneParkedFrom: 'open', keep: 'original' } });
+    expect(activeExternalBlockers(after.row.payload)).toEqual(blockers.filter(blocker => blocker.ref !== laneRef));
+    expect(after.row.payload.externalBlockers.find((blocker: { ref: string }) => blocker.ref === laneRef))
+      .toMatchObject({ status: 'cleared', clearedBy: 'system:plan-item-lane-sync' });
+    expect(after.checkpoint).toEqual(before.checkpoint);
+    expect(after.edges).toEqual(before.edges);
+    expect(await db.sql`SELECT * FROM harness_shared.plan_item_assignments`).toHaveLength(0);
+    expect(after.events).toEqual(before.events);
   });
 
   for (const [family, kind] of [['issue', 'task'], ['feature', 'feature']] as const) {

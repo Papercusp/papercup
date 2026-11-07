@@ -1,4 +1,7 @@
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,6 +34,8 @@ import {
 } from './grading-integrity';
 import { _closeGradingAuditSubjectMutexForTests, isCurrentSourceAuditResponder } from './scorecards';
 import { closeTask, getTask, listTasks, markSpawned, registerTask } from './task-manager/store';
+import { ensureGradingAuditRuntime, type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './release/grading-audit-runtime';
+import { writeGradingAuditSourcePin } from './release/grading-audit-source-pin';
 
 const workspaceId = 'default';
 const taskLedgerMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/696-task-ledger.sql', import.meta.url));
@@ -303,6 +308,108 @@ it('atomically rebinds a recovered evaluator and rolls it back when auditor inde
     .toMatchObject({ state: 'failed', reason: 'retained auditor independence is not proven' });
   expect((await getTask(task.taskId, db.sql))?.detail.gradingAuditRuntimeBinding).toEqual(runtime);
   expect(wake).toHaveBeenCalledTimes(1);
+});
+
+it('recovers the exact evaluator route before persisting and waking its retained auditor', async () => {
+  const ownerId = 'su-retained-recovery-auditor';
+  const issueReservation = { key: `grading-audit:${issueId}`, reservedAt: new Date().toISOString() };
+  const evaluatorBuild = { sha: 'exact123456', version: '1.2.3' };
+  const scratchRoot = mkdtempSync(join(tmpdir(), 'grading-audit-retained-recovery-'));
+  const sourceRoot = join(scratchRoot, '.candidate-runtime-recovery', 'checkout');
+  const bundlePath = join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  const bundle = 'exact retained evaluator recovery fixture';
+  mkdirSync(dirname(bundlePath), { recursive: true });
+  writeFileSync(bundlePath, bundle);
+  const bundleSha256 = createHash('sha256').update(bundle).digest('hex');
+  const ownerRef = 'grading-audit-runtime:' + createHash('sha256')
+    .update(JSON.stringify([workspaceId, evaluatorBuild.sha, evaluatorBuild.version])).digest('hex');
+  const nowSec = Math.floor(Date.now() / 1000);
+  const locator: GradingAuditRuntimeLocator = {
+    schemaVersion: 1, sourceRoot, bundlePath, ownerRef, evaluatorBuild, bundleSha256,
+    expiresAtSec: nowSec + 3600, baseUrl: 'http://127.0.0.1:43123', issueIds: [issueId],
+  };
+  const taskIds: string[] = [];
+  try {
+    writeGradingAuditSourcePin(locator, nowSec);
+    const lostRuntimeTask = await registerTask({
+      class: 'sidecar', title: ownerRef, argv: [], launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+      detail: { label: ownerRef, gradingAuditRuntime: locator },
+    }, { workspaceId }, db.sql);
+    taskIds.push(lostRuntimeTask.taskId);
+    await markSpawned(lostRuntimeTask.taskId, {}, db.sql);
+    const staleBinding = { taskId: lostRuntimeTask.taskId, baseUrl: locator.baseUrl,
+      evaluatorBuild, bundleSha256, expiresAtSec: locator.expiresAtSec };
+    const auditorTask = await registerTask({
+      class: 'agent-session', title: 'retained independent grading auditor', argv: [],
+      launchedBy: GRADING_AUDIT_DISPATCH_ACTOR, harnessSlug: 'papercusp', workItemId: issueId,
+      detail: { label: issueReservation.key, coordOwnerId: ownerId, gradingAuditRuntimeBinding: staleBinding },
+    }, { workspaceId }, db.sql);
+    taskIds.push(auditorTask.taskId);
+    await markSpawned(auditorTask.taskId, {}, db.sql);
+    await closeTask(lostRuntimeTask.taskId,
+      { state: 'killed', exitReason: 'fixture evaluator process lost' }, db.sql, { emitTerminal: async () => {} });
+    const lostRuntimeRow = await getTask(lostRuntimeTask.taskId, db.sql);
+    expect(lostRuntimeRow?.state).toBe('killed');
+
+    let recoveredRuntimeTaskId = '';
+    const runtimeDeps: GradingAuditRuntimeDeps = {
+      now: () => nowSec * 1000,
+      list: async () => lostRuntimeRow ? [lostRuntimeRow] : [],
+      currentSource: () => { throw new Error('recovery must use the retained exact source pin'); },
+      mutex: async (_workspace, _key, run) => run(),
+      taskState: async taskId => (await getTask(taskId, db.sql))?.state ?? null,
+      spawn: async (taskWorkspace, recoveredLocator) => {
+        const task = await registerTask({
+          class: 'sidecar', title: recoveredLocator.ownerRef, argv: [],
+          launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+          detail: { label: recoveredLocator.ownerRef, gradingAuditRuntime: recoveredLocator },
+        }, { workspaceId: taskWorkspace }, db.sql);
+        taskIds.push(task.taskId);
+        recoveredRuntimeTaskId = task.taskId;
+        await markSpawned(task.taskId, {}, db.sql);
+        return task.taskId;
+      },
+      probe: async () => ({ status: 'ready', build: evaluatorBuild }),
+    };
+    const recovered = await ensureGradingAuditRuntime({
+      workspaceId, issueId, evaluatorBuild, allowSeed: false,
+    }, runtimeDeps);
+    expect(recovered.taskId).toBe(recoveredRuntimeTaskId);
+    expect(recovered.taskId).not.toBe(lostRuntimeTask.taskId);
+    expect(recovered).toMatchObject({ baseUrl: locator.baseUrl, evaluatorBuild, bundleSha256 });
+
+    const target = { issueId, createdBy: 'fixture-evaluator', rubricRef: 'standard-rubric',
+      evidenceFingerprint: 'fixture-evidence' } as ScorecardRow;
+    const { PgCoordLog, ensureCoordEventLogTable } = await import('@papercusp/coordination/event-log');
+    await ensureCoordEventLogTable(db.sql);
+    const log = new PgCoordLog({ getSql: () => db.sql, workspaceId, ensureSchema: async () => {} });
+    type RenewalDeps = NonNullable<Parameters<typeof notifyRetainedGradingAuditor>[1]>;
+    const send = vi.fn<NonNullable<RenewalDeps['send']>>(async (identity, options) =>
+      options.persistEnvelope!({ msg_id: options.msgId!, from: identity.ownerId, to: options.to,
+        kind: 'message', ts: now.toISOString(), summary: options.summary, body: options.body }));
+    const wake = vi.fn<NonNullable<RenewalDeps['wake']>>().mockResolvedValue({
+      targets: [ownerId], keys: [], woken: 1, queued: 1, pickupConfirmed: false,
+    } as unknown as Awaited<ReturnType<NonNullable<RenewalDeps['wake']>>>);
+    const resolveParties: NonNullable<RenewalDeps['resolveParties']> = async ids =>
+      new Map(ids.map(id => [id, id]));
+    const auditor = await getTask(auditorTask.taskId, db.sql);
+    expect(auditor?.state).toBe('running');
+    const notice = await notifyRetainedGradingAuditor({
+      card: target, task: auditor!, reservation: issueReservation, workspaceId, harness: 'papercusp', runtime: recovered,
+    }, { append: log.appendLineIfAbsent.bind(log), send, wake, resolveParties,
+      confirmReservation: async () => true, mutex: async (_workspace, _issueId, run) => run() });
+    expect(notice).toMatchObject({ state: 'delivered', ownerId, queued: 1, pickupConfirmed: false });
+    expect(send.mock.calls[0]![1].body).toContain(recovered.baseUrl);
+    expect(send.mock.calls[0]![1].body).toContain(recovered.taskId);
+    expect((await getTask(auditorTask.taskId, db.sql))?.detail.gradingAuditRuntimeBinding).toEqual(recovered);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0]![0]).toEqual([ownerId]);
+    expect(wake.mock.calls[0]![1].payload).toMatchObject({ gradingAuditRuntimeBinding: recovered });
+  } finally {
+    for (const taskId of taskIds) await closeTask(taskId,
+      { state: 'killed', exitReason: 'fixture cleanup' }, db.sql, { emitTerminal: async () => {} });
+    rmSync(scratchRoot, { recursive: true, force: true });
+  }
 });
 
 it('binds a no-consult direct fallback lease to the live grading task owner', async () => {

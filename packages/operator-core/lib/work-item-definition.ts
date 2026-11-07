@@ -1,5 +1,6 @@
 /** P-022: declared work, separate from completion evidence and body prose. */
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { CompletionVerifiedHowSchema } from './coord-lifecycle/records';
 
 const text = z.string().trim().min(1).max(4000);
@@ -19,6 +20,22 @@ export const WorkItemDefinitionSchema = z.object({
 
 export type WorkItemDefinition = z.infer<typeof WorkItemDefinitionSchema>;
 export const WORK_ITEM_DEFINITION_KEY = 'workDefinition';
+
+export class WorkItemDefinitionChangedError extends Error {
+  readonly code = 'work_definition_changed';
+
+  constructor() {
+    super('The work definition changed after completion validation. Re-read it and verify the current criteria before closing. No completion record or state transition was written.');
+    this.name = 'WorkItemDefinitionChangedError';
+  }
+}
+
+/** Compare raw JSON, including an absent legacy definition, while the caller holds its write fence. */
+export function assertWorkItemDefinitionUnchanged(payload: unknown, expected: unknown): void {
+  const actual = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)[WORK_ITEM_DEFINITION_KEY] : undefined;
+  if (!isDeepStrictEqual(actual ?? null, expected ?? null)) throw new WorkItemDefinitionChangedError();
+}
 
 /** No fallback to headings: legacy prose is converted explicitly by P-019. */
 export function readWorkItemDefinition(payload: unknown): WorkItemDefinition | null {

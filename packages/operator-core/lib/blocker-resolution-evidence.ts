@@ -73,8 +73,17 @@ export async function preflightBlockerDecision(
     if (!prepared.ok) return prepared;
     const { activeExternalBlockers } = await import('./external-blockers');
     const blockers = [...activeExternalBlockers(item.payload), ...(options.additionalBlockers ?? [])];
-    const obligationRefs: BlockerEvidenceRef[] = dependencies.map((dep) => ({ kind: 'work-item', ref: dep.ref }));
-    for (const ref of options.additionalDependencyRefs ?? []) obligationRefs.push({ kind: 'work-item', ref });
+    // Issue edges use a bare global id; evidence may name its actual harness.
+    // Resolve through the canonical work reader instead of assuming the blocked
+    // item's harness or comparing two valid spellings as unrelated conditions.
+    const { getWorkItem } = await import('./work-items');
+    const obligationRefs: BlockerEvidenceRef[] = await Promise.all(
+      [...dependencies.map(dep => dep.ref), ...(options.additionalDependencyRefs ?? [])].map(async ref => {
+        if (ref.includes('#')) return { kind: 'work-item' as const, ref };
+        const dependency = await getWorkItem(ref);
+        if (!dependency?.harness) throw new Error('canonical dependency harness is unavailable');
+        return { kind: 'work-item' as const, ref: `${dependency.harness}#${dependency.id}` };
+      }));
     for (const blocker of blockers) {
       if (blocker.kind === 'human' || blocker.kind === 'hold') obligationRefs.push({ kind: 'authority', ref: blocker.ref });
       else if (blocker.kind === 'runtime' && blocker.ref.startsWith('state:')) obligationRefs.push({ kind: 'state', ref: blocker.ref });
@@ -137,6 +146,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
       if (presence && !presence.stale && presence.workspaceId === context.workspaceId) liveOwnerId = item.assignee;
     }
     return { status: 'available', condition: settled ? 'satisfied' : 'pending', reachable: true,
+      conditionIdentity: JSON.stringify(['work-item', context.workspaceId, harness, item.id]),
       ...(item.assignee ? { responsibleParty: item.assignee } : {}), ...(liveOwnerId ? { liveOwnerId } : {}) };
   }
 

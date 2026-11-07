@@ -29,7 +29,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { readWorkItemDefinition, type WorkItemDefinition } from './work-item-definition';
+import { assertWorkItemDefinitionUnchanged, readWorkItemDefinition, WorkItemDefinitionChangedError, type WorkItemDefinition } from './work-item-definition';
 import { createPlanSearchSource } from './agent-tools/search/knowledge-sources';
 import { observeFallback } from './degradation/fallback-observations';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
@@ -4055,6 +4055,8 @@ export async function setWorkItemState(
     };
     /** Internal issue lifecycle compare-and-set guard; not exposed by the tool surface. */
     expectedCurrentState?: string;
+    /** Raw definition validated by completion; fenced again at the atomic terminal write. */
+    expectedWorkDefinition?: unknown;
     /** Trusted system disposition: compare the read epoch and require no holder
      * in the terminal writer, so a concurrent claim or progress wins. */
     unclaimedSnapshotTs?: number;
@@ -4142,6 +4144,9 @@ export async function setWorkItemState(
     ? await getFeatureWorkItemOnly(id, opts.harness)
     : await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  if (Object.hasOwn(opts, 'expectedWorkDefinition')) {
+    assertWorkItemDefinitionUnchanged(wi.payload, opts.expectedWorkDefinition);
+  }
   let blockerMutation: BlockerDecisionMutation | undefined;
   if (opts.blockerEvidenceContext && !opts.blockerDecision) {
     const checked = await preflightBlockerDecision(wi, undefined, opts.blockerEvidenceContext, {
@@ -4748,6 +4753,7 @@ export async function setWorkItemState(
       terminalReason: requestedTerminalReason,
       harnessSlug: issueSlug,
       expectedCurrentState: opts.expectedCurrentState,
+      ...(Object.hasOwn(opts, 'expectedWorkDefinition') ? { expectedWorkDefinition: opts.expectedWorkDefinition } : {}),
       unclaimedSnapshotTs: opts.unclaimedSnapshotTs,
       requireNoActiveExternalBlockers: opts.requireNoActiveExternalBlockers,
       blockerDecisionMutation: blockerMutation,
@@ -4916,6 +4922,8 @@ export async function setWorkItemState(
                                  )
                        END
        WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND (${!Object.hasOwn(opts, 'expectedWorkDefinition')}
+           OR COALESCE(payload->'workDefinition', 'null'::jsonb) = ${JSON.stringify(opts.expectedWorkDefinition ?? null)}::text::jsonb)
          AND ${opts.unclaimedSnapshotTs !== undefined
            ? tx`taken_by IS NULL AND updated_ts = ${opts.unclaimedSnapshotTs}` : tx`TRUE`}
          AND ${opts.deferredOperationCompletion ? tx`
@@ -4952,6 +4960,9 @@ export async function setWorkItemState(
                payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
              }) : tx`TRUE`}
       RETURNING ${tx.unsafe(FEATURE_COLS)}`;
+      if (isTerminal && Object.hasOwn(opts, 'expectedWorkDefinition') && !updated.length) {
+        throw new WorkItemDefinitionChangedError();
+      }
       if (blockerMutation && !updated.length) throw new BlockerDecisionMutationConflict();
       return updated;
     });

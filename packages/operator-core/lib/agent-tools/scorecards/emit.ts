@@ -122,6 +122,7 @@ import {
   dispatchPendingGradingAudits,
   GRADING_INTEGRITY_RUBRIC_REF,
   gradingAuditGateEnabled,
+  isGradingGenerationSha,
   needsGradingAudit,
   readGradingAuditDispatchSuppression,
   type GenerationAncestryProbe,
@@ -4233,6 +4234,18 @@ export async function emitScorecard(
     }
 
     const gradedGeneration = await readCurrentGeneration();
+    // A partial stamp can be useful telemetry but cannot bind an independent
+    // audit. Refuse before capture rather than filing a permanently pending card.
+    if (gradingAudit && !isGradingGenerationSha(gradedGeneration?.deployedSha)) {
+      return {
+        ok: false as const,
+        code: 'grading_audit_generation_unavailable' as const,
+        error:
+          'An audit-required scorecard needs a valid evaluator build SHA (gradedGeneration.deployedSha). ' +
+          'Use a serving generation with a provable build identity and gather the evidence there. ' +
+          'No scorecard was persisted.',
+      };
+    }
     // WI-10003539 / goal-agent-behavior-feedback-2026-09-06 R-1: a graded AGENT RUN
     // carries a server-derived evidence record (goal, holder, window, launch
     // generation, instruction exposure). Derived from durable records only, never

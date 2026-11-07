@@ -4551,18 +4551,16 @@ async function completeOneTracked(
   // still built + returned below (EI-24: the narrative is never lost), it just
   // cannot land the CLOSE. This is a deliberate, narrow exception to this file's
   // usual record-and-warn discipline — see isBackedLiveDroveUiClaim's doc comment.
-  // A structured duplicate close is an administrative disposition: its claim is that
-  // this item is superseded by the named survivor, not that the verifier covered every
-  // member of a population. Keep the universal-verification gate for ordinary closes,
-  // and for malformed self-duplicate claims, but do not make a valid non-self
-  // `completion.duplicateOf` carry an unrelated population partition.
+  // A structured duplicate close need not carry an unrelated artifact population.
+  // It still cannot turn unfinished declared acceptance criteria into successful
+  // completion merely by naming a survivor; those criteria remain required below.
   // EI-28017561467711444: a caller's report/artifact population cannot replace
   // the requested acceptance criteria. Apply this to every successful declared
   // task, including honest partial summaries without universal wording. Progress
-  // records and administrative dispositions keep their existing contracts.
+  // records and unsuccessful administrative dispositions keep their existing contracts.
   const acceptanceCriteria = workDefinition?.acceptanceCriteria ?? [];
   const declaredCriteriaCoverageApplicable =
-    closeIntentRequested && successfulClose && !duplicateCloseCoverageException && acceptanceCriteria.length > 0;
+    closeIntentRequested && successfulClose && acceptanceCriteria.length > 0;
   const verificationCoverageApplicable =
     declaredCriteriaCoverageApplicable ||
     (closeIntentRequested &&
@@ -5892,6 +5890,10 @@ async function completeOneTracked(
             // so it lands durably on the row's `_completionEvidence`, not just in this
             // call's return value.
             completionEvidence: completionEvidenceToPersist,
+            ...(successfulClose ? { expectedWorkDefinition:
+              existing.payload && typeof existing.payload === 'object'
+                ? (existing.payload as Record<string, unknown>)[WORK_ITEM_DEFINITION_KEY] : undefined,
+            } : {}),
             outputPayload: it.outputPayload,
             ...(recoveredAttempt ? { deferredOperationCompletion: recoveredAttempt } : {}),
             // P-008 (d): the resolved declaration, persisted under
@@ -5912,6 +5914,13 @@ async function completeOneTracked(
       requestedState = res.requestedState;
       appliedState = res.appliedState;
     } catch (e) {
+      // A definition race invalidates the checked coverage itself. Preserve the
+      // same no-record refusal as the earlier coverage preflight rather than
+      // falling through to the ordinary record-and-warn state-error path.
+      if (e && typeof e === 'object' && 'code' in e && e.code === 'work_definition_changed') {
+        return { ok: false, id: it.id, error: 'work_definition_changed', retryable: true,
+          message: e instanceof Error ? e.message : 'The work definition changed after completion validation.' };
+      }
       stateError = e instanceof Error ? e.message : String(e);
       const operationCompletion = await import('../../blueprint/operation-service');
       if (e instanceof operationCompletion.OperationModelEvidenceError && e.pending) {
