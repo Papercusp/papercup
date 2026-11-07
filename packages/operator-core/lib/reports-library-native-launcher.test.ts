@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,6 +56,34 @@ describe('DAO native wrapper scope preflight', () => {
 });
 
 describe('Reports native launcher at the Vitest temp-directory boundary', () => {
+  it('runs the prepared Reports bundle as its entrypoint while keeping imports inert', async () => {
+    const { build } = await import('esbuild');
+    const { spawnSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+    const bundleRoot = mkdtempSync(join(tmpdir(), 'reports-native-entry-'));
+    try {
+      symlinkSync(join(repoRoot, 'node_modules'), join(bundleRoot, 'node_modules'), 'dir');
+      const bundle = join(bundleRoot, 'native-tauri-surface-verify-reports.mjs');
+      await build({ entryPoints: [join(repoRoot, 'scripts/tauri-surface-verify-reports.mts')],
+        outfile: bundle, bundle: true, platform: 'node', format: 'esm', packages: 'external',
+        define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' }, logLevel: 'silent' });
+      const env = { ...process.env, PAPERCUSP_TEST_RUN_GROUP: '' };
+      const imported = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+        `await import(${JSON.stringify(bundle)}); console.log('NATIVE_BUNDLE_IMPORT_OK');`],
+      { cwd: repoRoot, env, encoding: 'utf8', timeout: 30_000 });
+      expect(imported.error).toBeUndefined();
+      expect(imported.status, imported.stderr).toBe(0);
+      expect(imported.stdout.trim()).toBe('NATIVE_BUNDLE_IMPORT_OK');
+      // This preflight fails before any database or desktop effects. A bundle
+      // that exits zero silently has never entered the native journey.
+      const executed = spawnSync(process.execPath, ['--import', 'tsx', bundle, '--check-ledger'],
+        { cwd: repoRoot, env, encoding: 'utf8', timeout: 30_000 });
+      expect(executed.error).toBeUndefined();
+      expect(executed.status, executed.stdout + executed.stderr).toBe(1);
+      expect(executed.stderr).toContain('Use PAPERCUSP_TEST_RUN_GROUP');
+    } finally { rmSync(bundleRoot, { recursive: true, force: true }); }
+  }, 75_000);
+
   it('loads the production launcher and compatibility source API through the actual Node TS runtime', async () => {
     const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
     const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
@@ -168,7 +196,18 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(seams.execute).toHaveBeenCalledTimes(1);
   });
 
-  it.each([null, 'connect', 'query', 'close'])('executes the ledger child and retains failure stage %s', async failure => {
+  it.each([
+    { failure: null, code: 'E_LEDGER_FIXTURE', errorClass: 'unknown' },
+    ...['connect', 'query', 'close'].map(failure => ({ failure, code: 'E_LEDGER_FIXTURE', errorClass: 'unknown' })),
+    { failure: 'connect', code: null, message: 'timeout expired sensitive-fixture-credential', errorClass: 'timeout' },
+    { failure: 'connect', code: 'ECONNREFUSED', errorClass: 'connection-refused' },
+    { failure: 'connect', code: 'EAI_AGAIN', errorClass: 'dns' },
+    { failure: 'connect', code: '28P01', errorClass: 'authentication' },
+    { failure: 'connect', code: '08P01', errorClass: 'protocol' },
+    { failure: 'connect', code: 'ERR_TLS_CERT_ALTNAME_INVALID', errorClass: 'tls' },
+    { failure: 'connect', code: 'sensitive-fixture-credential', errorClass: 'unknown' },
+    { failure: 'connect', code: null, nestedCode: 'ECONNREFUSED', errorClass: 'connection-refused' },
+  ])('executes the ledger child: $failure / $errorClass / $code', async ({ failure, code, errorClass, ...detail }) => {
     const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
     const trace = join(root, 'ledger-calls');
     mkdirSync(join(sourceRoot, 'scripts/lib'), { recursive: true });
@@ -178,15 +217,18 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       const call = stage => {
         appendFileSync(${JSON.stringify(trace)}, stage + '\\n');
         if (stage === ${JSON.stringify(failure)})
-          throw Object.assign(new Error('sensitive-fixture-credential'), { code: 'E_LEDGER_FIXTURE' });
+          throw Object.assign(new Error(${JSON.stringify('message' in detail ? detail.message : 'sensitive-fixture-credential')}),
+            { code: ${JSON.stringify(code)}, errors: [{ code: ${JSON.stringify('nestedCode' in detail ? detail.nestedCode : null)} }] });
       };
-      export async function connectExecutedMapPg({ env, timeoutMs }) {
-        assert.equal(env.PAPERCUSP_TEST_RUNS_DB_URL, 'postgresql://fixture@localhost:5432/ledger');
+      export async function connectExecutedMapPg({ env, timeoutMs, onProgress }) {
+        assert.equal(env.PAPERCUSP_TEST_RUNS_DB_URL, 'postgresql://fixture:secret-password@localhost:5432/private-db?application_name=private-query');
         assert.equal(env.HARNESS_ADMIN_DATABASE_URL, env.PAPERCUSP_TEST_RUNS_DB_URL);
         assert.equal(env.DATABASE_URL, env.PAPERCUSP_TEST_RUNS_DB_URL);
         assert.equal(env.PAPERCUSP_PGBOUNCER, '0');
         assert.equal(env.PAPERCUSP_PG_PORT, undefined);
         assert.equal(timeoutMs, 5000);
+        onProgress('connect');
+        onProgress('authenticationSASL');
         call('connect');
         return { query: async sql => { assert.equal(sql, 'SELECT 1'); call('query'); },
           end: async () => call('close') };
@@ -199,20 +241,27 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       catch (error) { childError = error as typeof childError; throw error; }
     });
     const check = () => checkNativeLedger(sourceRoot, { ...process.env,
-      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://fixture@localhost:5432/ledger' });
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://fixture:secret-password@localhost:5432/private-db?application_name=private-query' });
     if (failure) {
       expect(check).toThrow();
       expect(childError?.status).toBe(1);
-      expect(childError?.stderr).toContain('E_LEDGER_FIXTURE');
       expect(childError?.stderr).not.toContain('sensitive-fixture-credential');
       // Query failures still close the connection; report the original stage.
       const failed = JSON.parse(childError!.stderr.trim().replace('NATIVE_LEDGER_PREFLIGHT ', ''));
-      expect(failed).toMatchObject({ stage: failure, status: 'failed' });
+      expect(failed).toMatchObject({ stage: failure, status: 'failed', errorClass,
+        protocolStage: 'authenticationSASL', endpoint: { host: 'localhost', port: 5432, protocol: 'postgres', pooled: false } });
+      expect(failed.codes).toEqual(code === 'sensitive-fixture-credential' ? []
+        : 'nestedCode' in detail ? [detail.nestedCode] : code ? [code] : []);
+      expect(failed.activeResources).toEqual(expect.any(Object));
       expect(childError?.stdout).not.toContain('"stage":"complete"');
     } else {
       expect(check).not.toThrow();
       expect(output).toContain('"stage":"complete"');
     }
+    expect((childError?.stdout ?? output)).toContain('NATIVE_LEDGER_PROTOCOL');
+    const diagnostics = (childError?.stdout ?? output) + (childError?.stderr ?? '');
+    for (const privateField of ['secret-password', 'private-db', 'private-query', 'sensitive-fixture-credential'])
+      expect(diagnostics).not.toContain(privateField);
     expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(
       failure === 'connect' ? ['connect'] : ['connect', 'query', 'close']);
     expect(seams.authenticate).not.toHaveBeenCalled();

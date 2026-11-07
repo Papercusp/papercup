@@ -166,21 +166,62 @@ export function checkNativeLedger(sourceRoot = process.cwd(), env = process.env)
   execFileSync(process.execPath, ['--input-type=module', '-e', `
     const started = performance.now();
     let stage;
+    let protocolStage = 'not-connected';
+    const address = new URL(process.env.PAPERCUSP_TEST_RUNS_DB_URL);
+    // Whitelist fields: credentials, database path and query stay private.
+    const endpoint = { host: address.hostname, port: Number(address.port) || 5432,
+      protocol: 'postgres', pooled: process.env.PAPERCUSP_PGBOUNCER === '1' };
+    const context = () => ({ endpoint, protocolStage,
+      activeResources: process.getActiveResourcesInfo().reduce((counts, kind) => {
+        counts[kind] = (counts[kind] || 0) + 1;
+        return counts;
+      }, {}) });
     const mark = next => {
       stage = next;
       console.log('NATIVE_LEDGER_PREFLIGHT ' + JSON.stringify({ stage,
         elapsedMs: Math.round(performance.now() - started) }));
     };
+    const classify = error => {
+      const codes = [];
+      const visit = (value, depth = 0) => {
+        if (!value || depth > 3) return;
+        if (typeof value.code === 'string' && /^(?:E[A-Z0-9_]{2,36}|[0-9A-Z]{5})$/.test(value.code))
+          codes.push(value.code);
+        visit(value.cause, depth + 1);
+        if (Array.isArray(value.errors)) value.errors.slice(0, 8).forEach(child => visit(child, depth + 1));
+      };
+      visit(error);
+      const unique = [...new Set(codes)];
+      const message = typeof error?.message === 'string' ? error.message : '';
+      const errorClass = unique.some(code => ['ETIMEDOUT', 'ESOCKETTIMEDOUT'].includes(code))
+        || /timeout expired|connection terminated due to connection timeout/i.test(message) ? 'timeout'
+        : unique.includes('ECONNREFUSED') ? 'connection-refused'
+        : unique.some(code => ['ENOTFOUND', 'EAI_AGAIN'].includes(code)) ? 'dns'
+        : unique.some(code => code.startsWith('28')) ? 'authentication'
+        : unique.includes('08P01') ? 'protocol'
+        : unique.some(code => code.startsWith('ERR_TLS') || code.startsWith('CERT_')) ? 'tls'
+        : 'unknown';
+      return { code: unique[0] ?? null, codes: unique, errorClass };
+    };
     const fail = error => {
       console.error('NATIVE_LEDGER_PREFLIGHT ' + JSON.stringify({ stage, status: 'failed',
-        elapsedMs: Math.round(performance.now() - started), code: error?.code ?? null }));
+        elapsedMs: Math.round(performance.now() - started), ...classify(error), ...context() }));
       process.exitCode = 1;
     };
+    // Observe retained resources before the existing outer 10s deadline. An
+    // unref'd timer cannot extend a successful or failed child's lifetime.
+    setTimeout(() => console.error('NATIVE_LEDGER_PREFLIGHT ' + JSON.stringify({ stage,
+      status: 'deadline-near', elapsedMs: Math.round(performance.now() - started), ...context() })), 9_000).unref();
     try {
       mark('import');
       const { connectExecutedMapPg } = await import('./scripts/lib/executed-source-map.mjs');
       mark('connect');
-      const client = await connectExecutedMapPg({ env: process.env, timeoutMs: 5_000 });
+      const client = await connectExecutedMapPg({ env: process.env, timeoutMs: 5_000,
+        onProgress: event => {
+          protocolStage = event;
+          console.log('NATIVE_LEDGER_PROTOCOL ' + JSON.stringify({ event,
+            elapsedMs: Math.round(performance.now() - started) }));
+        } });
       try {
         mark('query');
         await client.query('SELECT 1');
