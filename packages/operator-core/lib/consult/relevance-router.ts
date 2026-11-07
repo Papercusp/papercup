@@ -655,6 +655,14 @@ function subjectEvidenceTargets(query: string): string[] {
 export const SUBJECT_EVIDENCE_CONTRAST_LIMIT = 3;
 export interface SubjectContract { name: string; description: string }
 
+// A startup update can resemble a long technical question more than any tool
+// description does. Compare that procedural intent explicitly too; these are
+// competing explanations, not a tense/keyword filter on transcript evidence.
+export const NATURAL_SUBJECT_INTENT_CONTRASTS = [
+  "What is this agent's current status and what does it plan to do next?",
+  'What generic setup, identity checks, or workflow steps is this agent planning?',
+] as const;
+
 /** Reuse tool discovery to nominate contrasting systems, never to establish
  * expertise. Nominate the same primary action that the crossencoder scores:
  * operational notes otherwise crowd real competing systems out of the cap. */
@@ -744,7 +752,7 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
     return phase('inference', () => scorer(query, texts, { deadline }));
   }
   const targets = TOOL_SUBJECT_PATTERN.test(subject) ? [query] : subjectEvidenceTargets(query);
-  // At most 24 passages × (2 targets + 3 contrasts), all on the same 4s deadline.
+  // At most 24 passages × (2 targets + 3 actions + 2 intents), on the same 4s deadline.
   // Reverse retrieval asks which contract explains THIS passage, avoiding the
   // procedural vocabulary that made broad tool descriptions and natural
   // questions false friends. For a natural question the full query is retained.
@@ -754,18 +762,19 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
       const contrasts = subjectContrasts(subject, text, contracts);
       if (!contrasts.length) { report({ reason: 'no-contrasts' }); return null; }
       if (Date.now() >= deadline) { report({ reason: 'deadline' }); return null; }
-      const scores = await scorer(text, [...targets, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
+      const alternatives = [...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!),
+        ...(TOOL_SUBJECT_PATTERN.test(subject) ? [] : NATURAL_SUBJECT_INTENT_CONTRASTS)];
+      const scores = await scorer(text, [...targets, ...alternatives], { deadline })
         .catch(error => {
           report({ reason: 'scorer-error', errorCode: routingErrorCode(error) });
           return null;
         });
       if (scores === null) return null;
-      if (scores.length !== contrasts.length + targets.length) { report({ reason: 'score-shape' }); return null; }
+      if (scores.length !== alternatives.length + targets.length) { report({ reason: 'score-shape' }); return null; }
       if (scores.some(score => score === null || !Number.isFinite(score) || score < 0 || score > 1)) {
         report({ reason: 'invalid-score' });
       }
-      const alternatives = scores.slice(targets.length);
-      const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, alternatives));
+      const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, scores.slice(targets.length)));
       result = qualified.some(score => score === null) ? null : Math.min(...qualified as number[]);
       return result;
     } finally {

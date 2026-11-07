@@ -46,6 +46,9 @@ export const NATURAL_QUESTION_SUBJECT_CASES = [
     { id: 'native-binding-reviewer', text: 'Exact tracking requires the evidence native UUID to match the current binding native id. isExactTrackedResumeTarget in consult-dispatch.ts decides it: binding.coordOwnerId must equal ownerId and binding.sessionId must equal the evidence native session id. planDispatchOperation forks Claude to Claude only when the source is not historical. child_launch_session_id is not read by routing. Across cold /clear rotation, reanchorAdvSessionNativeId overwrites adv_sessions.session_id without predecessor history. Earlier evidence mismatches the current binding and converts instead of forking. consult-dispatch.test.ts constructs the current-binding versus historical-evidence-id mismatch and asserts convert with --resume=7.' },
     { id: 'startup-acceptance-hold', text: 'I’ll verify the session identity, then read the current acceptance state. I’ll preserve the test and runtime hold until explicit clearance arrives.' },
   ] },
+  { id: 'native-binding-future-tense', subject: nativeBindingQuestion, relevant: ['binding-review-plan'], passages: [
+    { id: 'binding-review-plan', text: 'I’ll trace isExactTrackedResumeTarget in consult-dispatch.ts: exact tracking requires binding.coordOwnerId to equal ownerId and binding.sessionId to equal the evidence native UUID. I’ll check that child_launch_session_id is not a routing input, and that planDispatchOperation forks a same-backend Claude source only when it is not historical. I’ll inspect reanchorAdvSessionNativeId because cold /clear rotation replaces adv_sessions.session_id without predecessor history. I’ll verify consult-dispatch.test.ts covers old evidence versus the new binding and expects conversion with --resume=7.' },
+  ] },
 ] as const;
 
 /** One result per declared case. Unknown scores stay unknown in the aggregate;

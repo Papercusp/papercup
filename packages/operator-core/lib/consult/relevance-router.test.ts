@@ -29,6 +29,7 @@ import {
   contrastedSubjectScore,
   subjectContrasts,
   scoreSubjectEvidence,
+  NATURAL_SUBJECT_INTENT_CONTRASTS,
   meetsRoutingFloors,
   SUBJECT_EVIDENCE_MIN_SCORE,
   FRESHNESS_BASE,
@@ -113,14 +114,14 @@ describe('problem-specific expertise qualification', () => {
 
   it('scores a natural question with punctuation without requiring a named tool contract', async () => {
     const question = 'Which lease writer caused the before/after change? Note: preserve the native cleanup receipt.';
-    const scorer = vi.fn(async () => [0.9, 0.1]);
+    const scorer = vi.fn(async (_passage: string, queries: string[]) => queries.map((_, i) => i ? 0.1 : 0.9));
     const contracts = [{ name: 'session:request-compaction', description: 'Recover a generic continuation.' }];
     const primary = 'Which lease writer caused the before/after change?';
     expect(subjectEvidenceQuery(question)).toBe(primary);
     expect(await scoreSubjectEvidence(question, ['lease actor audit with generic continuation'],
       Date.now() + 4000, { scorer, contracts })).toEqual([0.9]);
     expect(scorer).toHaveBeenCalledWith('lease actor audit with generic continuation',
-      [primary, 'session:request-compaction\nRecover a generic continuation.'], expect.any(Object));
+      [primary, 'session:request-compaction\nRecover a generic continuation.', ...NATURAL_SUBJECT_INTENT_CONTRASTS], expect.any(Object));
     expect(subjectEvidenceQuery('Context: the native child kept a receipt. Which lease actor changed it? Preserve the log.'))
       .toBe('Context: the native child kept a receipt. Which lease actor changed it?');
     expect(subjectEvidenceQuery('Diagnose native lease actors and preserve the original receipt'))
@@ -130,14 +131,15 @@ describe('problem-specific expertise qualification', () => {
   it('rejects natural-question procedural overlap when another primary action explains the passage better', async () => {
     const question = 'Which native lease actor changed the source?';
     const contracts = [{ name: 'session:request-compaction', description: 'Recover a generic continuation.' }];
-    const scorer = vi.fn(async (passage: string, _texts: string[]) => passage.startsWith('lease') ? [0.92, 0.2] : [0.78, 0.95]);
+    const scorer = vi.fn(async (passage: string, queries: string[]) => queries.map((_, i) =>
+      passage.startsWith('lease') ? i ? 0.2 : 0.92 : i ? 0.95 : 0.78));
     const deadline = Date.now() + 4000;
     const scores = await scoreSubjectEvidence(question,
       ['lease actor with generic continuation', 'generic continuation before/after recovery'], deadline, { scorer, contracts });
     expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
     expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
     for (const call of scorer.mock.calls) expect(call[1]).toEqual([
-      question, 'session:request-compaction\nRecover a generic continuation.',
+      question, 'session:request-compaction\nRecover a generic continuation.', ...NATURAL_SUBJECT_INTENT_CONTRASTS,
     ]);
     expect(await scoreSubjectEvidence(question, ['generic continuation'], deadline,
       { scorer, contracts: [] })).toEqual([null]);
@@ -159,7 +161,40 @@ describe('problem-specific expertise qualification', () => {
       Date.now() + 4000, { scorer, contracts });
     expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
     expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
-    expect(scorer.mock.calls[0][1]).toEqual([primary, issue, 'request:deliver\nDeliver a distributed request.']);
+    expect(scorer.mock.calls[0][1]).toEqual([primary, issue, 'request:deliver\nDeliver a distributed request.',
+      ...NATURAL_SUBJECT_INTENT_CONTRASTS]);
+  });
+
+  it('rejects a startup update that beats registered actions but loses the issue comparison to procedural intent', async () => {
+    const question = 'For a hosted source with a rotating native id, what makes its current binding exactly tracked?';
+    const issue = 'what makes its current binding exactly tracked?';
+    const contracts = [{ name: 'session:read', description: 'Read session identity and state.' }];
+    const deadline = Date.now() + 4000;
+    const scorer = vi.fn(async (passage: string, queries: string[], _opts?: { deadline?: number }) => queries.map(query => {
+      const technical = passage.includes('binding.sessionId');
+      if (query === question) return technical ? 0.9241938677800977 : 0.7348062569935382;
+      if (query === issue) return technical ? 0.930707312489698 : 0.7191469952352921;
+      if (query === NATURAL_SUBJECT_INTENT_CONTRASTS[0]) return technical ? 0.5806126012737929 : 0.656263114845514;
+      if (query === NATURAL_SUBJECT_INTENT_CONTRASTS[1]) return technical ? 0.6678369999398993 : 0.7209185227566113;
+      return 0.6965579111670935;
+    }));
+    const scores = await scoreSubjectEvidence(question, [
+      'I’ll read session identity and state, preserving the runtime hold.',
+      'I’ll read session identity and state, then verify binding.sessionId equals the evidence native UUID.',
+    ], deadline, { scorer, contracts });
+    expect(scores[0]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scores[1]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scorer.mock.calls.every(call => call[1].includes(NATURAL_SUBJECT_INTENT_CONTRASTS[1]))).toBe(true);
+    for (const call of scorer.mock.calls) expect(call[2]).toEqual({ deadline });
+  });
+
+  it.each([null, NaN, -0.1, 1.1])('keeps an invalid procedural-intent score unknown: %s', async invalid => {
+    const question = 'Which writer changed the lease?';
+    const contracts = [{ name: 'session:read', description: 'Read session state.' }];
+    const scorer = async (_passage: string, queries: string[]) => queries.map(query =>
+      query === question ? 0.9 : query === NATURAL_SUBJECT_INTENT_CONTRASTS[1] ? invalid : 0.2) as number[];
+    expect(await scoreSubjectEvidence(question, ['read session state and audit the lease writer'],
+      Date.now() + 4000, { scorer, contracts })).toEqual([null]);
   });
 
   it('reports bounded scoring causes without exposing provider errors or changing unknown scores', async () => {
