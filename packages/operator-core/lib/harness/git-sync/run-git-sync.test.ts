@@ -743,9 +743,10 @@ describe('EI-21444216858331991 generated declarations pre-commit regeneration', 
     const result = await regenerateGeneratedDeclarationsBeforeCommit(
       { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
       runGenerator,
+      async () => [source],
     );
 
-    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(runGenerator).toHaveBeenCalledExactlyOnceWith('/fake', undefined, [source]);
     expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
     expect(logs.join('\n')).toMatch(/regenerated tracked declarations before commit/);
   });
@@ -922,7 +923,7 @@ describe('WI-6554700010011061 declarations program-graph sources trigger the com
     );
 
     expect(listGraphMembers).toHaveBeenCalledExactlyOnceWith('/fake', [inGraph]);
-    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(runGenerator).toHaveBeenCalledExactlyOnceWith('/fake', undefined, undefined);
     // The source is not forced into the catch-all: no projection changed here.
     expect(result).toEqual({ status: 'regenerated', atomicPaths: [] });
     expect(logs.join('\n')).toMatch(/0 dirty pair\(s\), 1 dirty program-graph source\(s\)/);
@@ -1014,9 +1015,31 @@ describe('WI-6554700010011061 declarations program-graph sources trigger the com
       runGenerator,
       async () => null,
     );
-    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(runGenerator).toHaveBeenCalledExactlyOnceWith('/fake', undefined, undefined);
     expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
   });
+
+  it('keeps the full emit when a dirty graph source accompanies an enrolled pair', async () => {
+    const { runGit } = declarationGit([source, inGraph], [source, artifact, inGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} }, runGenerator, async () => [source, inGraph],
+    );
+    expect(runGenerator).toHaveBeenCalledExactlyOnceWith('/fake', undefined, undefined);
+  });
+
+  it.each(['scripts/gen-declarations.ts', 'tsconfig.declarations.json', 'package.json', 'package-lock.json'])(
+    'keeps the full emit when shared input %s changes', async (meta) => {
+      const { runGit } = declarationGit([source, meta], [source, artifact, meta]);
+      const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+      const lookup = vi.fn(async () => [source]);
+      await regenerateGeneratedDeclarationsBeforeCommit(
+        { runGit, repoPath: '/fake', log: () => {} }, runGenerator, lookup,
+      );
+      expect(runGenerator).toHaveBeenCalledExactlyOnceWith('/fake', undefined, undefined);
+      expect(lookup).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('EI-20428405431869483 generated tool-routing pre-commit check', () => {
