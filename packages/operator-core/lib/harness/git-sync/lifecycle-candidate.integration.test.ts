@@ -1,10 +1,14 @@
-/** Real-Git P002 capture contracts; registered by the maintained integration router. */
+/** Real-Git capture and frozen-publication contracts in the maintained integration router. */
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureGitSyncCandidate, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
+import { captureGitSyncCandidate, publishGitSyncCandidate, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
+import { createGitSyncLeaseFence } from './git-sync-lease-fence';
+import { runWithGitSyncPerInstallLease } from './git-sync-action';
+import { startDedicatedNativePg } from '@papercusp/test-config/pg';
+import { configureLocks, locksHost, _resetForTests as resetLocks, getTxPool } from '../../agent-tools/locks/su-lock-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -73,6 +77,236 @@ function unmerge(f: ReturnType<typeof fixture>) {
     input: `100644 ${one} 1\ta.txt\n100644 ${two} 2\ta.txt\n100644 ${one} 3\ta.txt\n`, encoding: 'utf8' });
   expect(staged.status).toBe(0);
 }
+
+const publicationStates = ['staged', 'unstaged', 'split', 'deletion', 'executable', 'symlink', 'intent-to-add'] as const;
+function laterState(f: ReturnType<typeof fixture>, state: typeof publicationStates[number]) {
+  writeFileSync(join(f.repo, 'a.txt'), 'B1 later\n');
+  if (state === 'staged' || state === 'split') f.git('add', '--', 'a.txt');
+  if (state === 'split') writeFileSync(join(f.repo, 'a.txt'), 'B2 unstaged\n');
+  if (state === 'deletion') f.git('rm', '-f', '--', 'a.txt');
+  if (state === 'executable') { chmodSync(join(f.repo, 'a.txt'), 0o755); f.git('add', '--', 'a.txt'); }
+  if (state === 'symlink') {
+    rmSync(join(f.repo, 'a.txt')); symlinkSync('B1-link', join(f.repo, 'a.txt')); f.git('add', '--', 'a.txt');
+  }
+  if (state === 'intent-to-add') { writeFileSync(join(f.repo, 'new.txt'), 'B1 new\n'); f.git('add', '-N', '--', 'new.txt'); }
+}
+function unpublishedState(f: ReturnType<typeof fixture>) {
+  const { head: _head, ...state } = candidateState(f);
+  return state;
+}
+// Dedicated fixture repositories have no shared platform writer. Production
+// callers must supply the existing git-sync lease's assertHeld method.
+const pilotChecks = { assertHeld: () => {}, beforePublish: async () => ({ ok: true as const }) };
+
+describe('lifecycle P003 frozen publication', () => {
+  it.each(publicationStates)('publishes A1 preserving the real %s index and later working state', async state => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'A1 frozen\n');
+    const request = { requestId: 'publish', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    if (!captured.ok) throw new Error(captured.error);
+    laterState(f, state);
+    const before = unpublishedState(f);
+    const result = await publishGitSyncCandidate(f.runGit, f.repo, request, pilotChecks);
+    expect(result).toMatchObject({ status: 'committed', tree: captured.candidate.tree });
+    expect(f.git('show', 'HEAD:a.txt')).toBe('A1 frozen');
+    expect(unpublishedState(f)).toEqual(before);
+    const published = f.git('rev-parse', 'HEAD');
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, pilotChecks))
+      .toMatchObject({ status: 'already-published', commit: published });
+    // A duplicate after another writer's descendant must never rewind HEAD.
+    const descendant = f.git('commit-tree', captured.candidate.tree, '-p', published, '-m', 'later commit');
+    f.git('update-ref', 'HEAD', descendant, published);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, pilotChecks))
+      .toMatchObject({ status: 'already-published', commit: published });
+    expect(f.git('rev-parse', 'HEAD')).toBe(descendant);
+    expect(unpublishedState(f)).toEqual(before);
+  });
+
+  it.each(publicationStates.flatMap(state => ['pin', 'before-cas', 'after-cas'].map(point => ({ state, point }))))(
+    'recovers $state after a stop at $point with the original commit and B1 intact', async ({ state, point }) => {
+      const f = fixture();
+      writeFileSync(join(f.repo, 'a.txt'), 'A1 frozen\n');
+      const request = { requestId: 'crash', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+      expect(await captureGitSyncCandidate(f.runGit, f.repo, request)).toMatchObject({ ok: true });
+      laterState(f, state);
+      const before = unpublishedState(f);
+      let stopped = false;
+      const interrupted: RunGit = async (args, cwd, options) => {
+        const headCas = args[0] === 'update-ref' && args.includes('HEAD');
+        if (!stopped && point === 'before-cas' && headCas) { stopped = true; throw new Error('stop'); }
+        const result = await f.runGit(args, cwd, options);
+        if (!stopped && ((point === 'after-cas' && headCas) ||
+            (point === 'pin' && args[0] === 'update-ref' && args[1].endsWith('-publication')))) {
+          stopped = true; throw new Error('stop');
+        }
+        return result;
+      };
+      expect(await publishGitSyncCandidate(interrupted, f.repo, request, pilotChecks)).toMatchObject({ status: 'error' });
+      expect(stopped).toBe(true);
+      expect(unpublishedState(f)).toEqual(before);
+      const ref = f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX).split('\n')
+        .find(path => path.endsWith('-publication'))!;
+      const pinned = f.git('rev-parse', ref);
+      expect(await publishGitSyncCandidate(f.runGit, f.repo, request, pilotChecks))
+        .toMatchObject({ status: point === 'after-cas' ? 'already-published' : 'committed', commit: pinned });
+      expect(f.git('rev-parse', 'HEAD')).toBe(pinned);
+      expect(f.git('show', 'HEAD:a.txt')).toBe('A1 frozen');
+      expect(unpublishedState(f)).toEqual(before);
+    },
+  );
+
+  it('refuses missing capture, failed checks and an unresolved candidate without changing caller state', async () => {
+    const f = fixture();
+    const request = { requestId: 'refuse', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    const before = candidateState(f);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, pilotChecks))
+      .toEqual({ status: 'error', error: 'source-custody-refused:candidate-not-captured' });
+    expect(candidateState(f)).toEqual(before);
+    writeFileSync(join(f.repo, 'a.txt'), 'A1\n');
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, request)).toMatchObject({ ok: true });
+    laterState(f, 'split');
+    const later = candidateState(f);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, {
+      ...pilotChecks, beforePublish: async () => ({ ok: false, error: 'candidate checks failed' }),
+    })).toEqual({ status: 'error', error: 'candidate checks failed' });
+    expect(candidateState(f)).toEqual(later);
+    unmerge(f);
+    const conflicted = candidateState(f);
+    const unresolved = { ...request, requestId: 'conflict' };
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, unresolved))
+      .toEqual({ ok: false, error: 'source-custody-refused:candidate-unmerged-index' });
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, unresolved, pilotChecks))
+      .toMatchObject({ status: 'error' });
+    expect(candidateState(f)).toEqual(conflicted);
+  });
+
+  it.each(publicationStates)('refuses a competing HEAD change at CAS without overwriting it or %s B1', async state => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'A1\n');
+    const request = { requestId: 'cas', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, request)).toMatchObject({ ok: true });
+    laterState(f, state);
+    const before = unpublishedState(f);
+    const competitor = f.git('commit-tree', request.base + '^{tree}', '-p', request.base, '-m', 'other writer');
+    const raced = await publishGitSyncCandidate(f.runGit, f.repo, request, {
+      ...pilotChecks, beforePublish: async () => { f.git('update-ref', 'HEAD', competitor, request.base); return { ok: true }; },
+    });
+    expect(raced).toMatchObject({ status: 'cas-refused' });
+    expect(f.git('rev-parse', 'HEAD')).toBe(competitor);
+    expect(unpublishedState(f)).toEqual(before);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, pilotChecks))
+      .toEqual({ status: 'cas-refused', detail: 'candidate-publication-base-moved' });
+    expect(unpublishedState(f)).toEqual(before);
+  });
+});
+
+describe('lifecycle P003 common writer', () => {
+  it('serializes competing fires through the production per-install lease and releases it', async () => {
+    const pg = await startDedicatedNativePg();
+    const previousHost = locksHost();
+    const slug = 'lifecycle-p003-fixture';
+    const workspace = 'lifecycle-p003-private';
+    try {
+      await resetLocks();
+      configureLocks({ getAdminBaseUrl: () => pg.getConnectionUri() });
+      const f = fixture();
+      writeFileSync(join(f.repo, 'a.txt'), 'A1 frozen\n');
+      const request = { requestId: 'common-writer', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+      expect(await captureGitSyncCandidate(f.runGit, f.repo, request)).toMatchObject({ ok: true });
+      laterState(f, 'split');
+      const before = unpublishedState(f);
+      let competingWrites = 0;
+      const quietRelease = { onExclusiveResourceReleased: () => {} };
+      const first = await runWithGitSyncPerInstallLease(slug, workspace, async lease => {
+        const held = await getTxPool()`SELECT owner FROM agent_resource_locks
+          WHERE coordination_domain = ${workspace} AND resource = ${'git-sync:' + slug} AND status = 'held'`;
+        expect(held).toHaveLength(1);
+        return publishGitSyncCandidate(f.runGit, f.repo, request, {
+          assertHeld: lease.assertHeld,
+          beforePublish: async () => {
+            const competing = await runWithGitSyncPerInstallLease(slug, workspace, async () => {
+              competingWrites++;
+              return 'must not run';
+            }, undefined, quietRelease);
+            expect(competing).toMatchObject({ state: 'skipped', reason: 'held_exclusive', blockedOn: 'git-sync:' + slug });
+            expect(competingWrites).toBe(0);
+            expect(unpublishedState(f)).toEqual(before);
+            expect(f.git('rev-parse', 'HEAD')).toBe(request.base);
+            return { ok: true };
+          },
+        });
+      }, undefined, quietRelease);
+      expect(first).toMatchObject({ state: 'ran', value: { status: 'committed' } });
+      const published = f.git('rev-parse', 'HEAD');
+      const second = await runWithGitSyncPerInstallLease(slug, workspace,
+        lease => publishGitSyncCandidate(f.runGit, f.repo, request, { ...pilotChecks, assertHeld: lease.assertHeld }),
+        undefined, quietRelease);
+      expect(second).toMatchObject({ state: 'ran', value: { status: 'already-published', commit: published } });
+      expect(f.git('rev-list', '--count', request.base + '..HEAD')).toBe('1');
+      expect(f.git('show', 'HEAD:a.txt')).toBe('A1 frozen');
+      expect(unpublishedState(f)).toEqual(before);
+      expect(await getTxPool()`SELECT owner FROM agent_resource_locks WHERE coordination_domain = ${workspace}`).toHaveLength(0);
+    } finally {
+      try { await resetLocks(); }
+      finally { configureLocks(previousHost); await pg.stop(); }
+    }
+  }, 180_000);
+});
+
+describe('lifecycle P003 refusal boundaries', () => {
+  it.each(['before-checks', 'after-checks'] as const)('stops on lease loss %s before any further Git command', async point => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'A1\n');
+    const request = { requestId: 'lease-loss', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, request)).toMatchObject({ ok: true });
+    laterState(f, 'split');
+    const before = candidateState(f);
+    const fence = createGitSyncLeaseFence({ slug: 'fixture', acquiredAt: Date.now(), unconfirmedLimitMs: 60_000 });
+    const commandsAfterLoss: string[][] = [];
+    const observed: RunGit = async (args, cwd, options) => {
+      if (fence.lost) commandsAfterLoss.push(args);
+      return f.runGit(args, cwd, options);
+    };
+    if (point === 'before-checks') fence.markLost('refused', 'other writer acquired the lease');
+    expect(await publishGitSyncCandidate(observed, f.repo, request, {
+      assertHeld: () => fence.assertHeld(),
+      beforePublish: async () => { fence.markLost('refused', 'refresh refused during checks'); return { ok: true }; },
+    })).toMatchObject({ status: 'error' });
+    expect(commandsAfterLoss).toEqual([]);
+    expect(candidateState(f)).toEqual(before);
+    expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).not.toContain('-publication');
+  });
+
+  it.each(['tree', 'parent'] as const)('refuses a publication pin with the wrong %s', async changed => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'A1\n');
+    const request = { requestId: 'pin-mismatch', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, request);
+    if (!captured.ok) throw new Error(captured.error);
+    const tree = changed === 'tree' ? f.git('rev-parse', 'HEAD^{tree}') : captured.candidate.tree;
+    const pin = f.git('commit-tree', tree, ...(changed === 'tree' ? ['-p', request.base] : []), '-m', 'invalid pin');
+    f.git('update-ref', captured.ref + '-publication', pin);
+    laterState(f, 'split');
+    const before = candidateState(f);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, pilotChecks))
+      .toEqual({ status: 'error', error: 'candidate-publication-pin-mismatch' });
+    expect(candidateState(f)).toEqual(before);
+    expect(f.git('rev-parse', captured.ref + '-publication')).toBe(pin);
+  });
+
+  it('refuses changed publication inputs under the same captured generation', async () => {
+    const f = fixture();
+    writeFileSync(join(f.repo, 'a.txt'), 'A1\n');
+    const request = { requestId: 'publish-inputs', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
+    expect(await captureGitSyncCandidate(f.runGit, f.repo, request)).toMatchObject({ ok: true });
+    laterState(f, 'split');
+    const before = candidateState(f);
+    expect(await publishGitSyncCandidate(f.runGit, f.repo, { ...request, paths: ['b.txt'] }, pilotChecks))
+      .toEqual({ status: 'error', error: 'source-custody-refused:candidate-input-mismatch' });
+    expect(candidateState(f)).toEqual(before);
+  });
+});
 
 describe('lifecycle P002 immutable candidate custody', () => {
   it.each(['staged', 'unstaged', 'split', 'deletion', 'executable', 'symlink', 'intent-to-add'] as const)(

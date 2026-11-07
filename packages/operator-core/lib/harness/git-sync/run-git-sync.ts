@@ -5360,6 +5360,8 @@ async function publishPrivateIndexCommit(
     label: string;
     reflogMessage: string;
     messageArgs: () => Promise<string[]>;
+    /** A previously pinned, validated commit retained across publication retries. */
+    materializedCommit?: string;
     beforePublish?: (commit: string, tree: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     onPublished?: (sha: string) => void;
     log?: (message: string) => void;
@@ -5382,7 +5384,9 @@ async function publishPrivateIndexCommit(
     ...(p.base ? ['-p', p.base] : []),
     ...(await p.messageArgs()),
   ];
-  const c = await runGit(commitArgs, repoPath);
+  const c = p.materializedCommit
+    ? { code: 0, stdout: p.materializedCommit, stderr: '' }
+    : await runGit(commitArgs, repoPath);
   const commit = c.stdout.trim();
   if (c.code !== 0 || !commit) return { status: 'error', error: `${p.label} failed: ${gitFailureDetail(c)}` };
   if (p.beforePublish) {
@@ -5565,6 +5569,7 @@ export async function captureGitSyncCandidate(
   runGit: RunGit,
   repoPath: string,
   request: GitSyncCandidateRequest,
+  options: { existingOnly?: boolean } = {},
 ): Promise<GitSyncCandidateCaptureResult> {
   const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
   const paths = [...new Set(request.paths)].sort();
@@ -5614,6 +5619,7 @@ export async function captureGitSyncCandidate(
     const existing = await sharedGit(['show-ref', '--verify', '--quiet', ref], repoPath);
     if (existing.code === 0) return await readCapture();
     if (existing.code !== 1) return custodyRefused('candidate-ref-read');
+    if (options.existingOnly) return custodyRefused('candidate-not-captured');
     const conflicts = await sharedGit(['ls-files', '--unmerged', '-z', '--', ...paths], repoPath);
     if (conflicts.code !== 0 || conflicts.stdout) return custodyRefused('candidate-unmerged-index');
     // A canonical Git blob may differ from acknowledged working bytes. Until
@@ -5691,6 +5697,88 @@ export async function captureGitSyncCandidate(
     }
   } catch {
     return custodyRefused('candidate-capture-exception');
+  }
+}
+
+export type GitSyncCandidatePublicationResult =
+  | { status: 'committed' | 'already-published'; commit: string; tree: string }
+  | { status: 'nothing' }
+  | { status: 'cas-refused'; detail: string }
+  | { status: 'error'; error: string };
+
+/**
+ * Publish retained objects through the common private-index/CAS writer. The
+ * caller supplies its existing git-sync lease fence and candidate-bound checks;
+ * this primitive neither starts a worker nor certifies final acceptance. Extend
+ * the custody namespace with a commit pin so a stop immediately after HEAD CAS
+ * can recover the exact commit without rereading B1 or rewinding later history.
+ */
+export async function publishGitSyncCandidate(
+  runGit: RunGit,
+  repoPath: string,
+  request: GitSyncCandidateRequest,
+  options: {
+    assertHeld: () => void;
+    beforePublish: (candidate: GitSyncCandidateCapture) => Promise<{ ok: true } | { ok: false; error: string }>;
+  },
+): Promise<GitSyncCandidatePublicationResult> {
+  const fencedGit: RunGit = (args, cwd, opts) => {
+    options.assertHeld();
+    return runGit(args, cwd, { ...opts,
+      env: { ...opts?.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' } });
+  };
+  let indexFile: string | undefined;
+  try {
+    // Publication must never manufacture a missing A1 from current working B1.
+    const captured = await captureGitSyncCandidate(fencedGit, repoPath, request, { existingOnly: true });
+    if (!captured.ok) return { status: 'error', error: captured.error };
+    const { candidate, ref } = captured;
+    const commitRef = ref + '-publication';
+    const pinned = await fencedGit(['rev-parse', '--verify', '--quiet', commitRef], repoPath);
+    if (pinned.code !== 0 && pinned.code !== 1) return { status: 'error', error: 'candidate-publication-pin-read' };
+    const materializedCommit = pinned.code === 0 ? pinned.stdout.trim() : undefined;
+    const head = await fencedGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], repoPath);
+    const current = head.code === 0 ? head.stdout.trim() : null;
+    if (materializedCommit) {
+      const tree = await fencedGit(['rev-parse', '--verify', `${materializedCommit}^{tree}`], repoPath);
+      const parents = await fencedGit(['rev-list', '--parents', '-n', '1', materializedCommit], repoPath);
+      const expected = [materializedCommit, ...(candidate.base ? [candidate.base] : [])].join(' ');
+      if (tree.code !== 0 || tree.stdout.trim() !== candidate.tree ||
+          parents.code !== 0 || parents.stdout.trim() !== expected) {
+        return { status: 'error', error: 'candidate-publication-pin-mismatch' };
+      }
+      if (current) {
+        const ancestor = await fencedGit(['merge-base', '--is-ancestor', materializedCommit, current], repoPath);
+        if (ancestor.code === 0) return { status: 'already-published', commit: materializedCommit, tree: candidate.tree };
+        if (ancestor.code !== 1) return { status: 'error', error: 'candidate-publication-history-read' };
+      }
+    }
+    if (current !== candidate.base) return { status: 'cas-refused', detail: 'candidate-publication-base-moved' };
+    const opened = await openPrivateIndexSite(fencedGit, repoPath, 'candidate publication', 'candidate-publication');
+    if (!opened.ok) return { status: 'error', error: opened.error };
+    indexFile = opened.site.newIndexFile();
+    const privateGit = opened.site.bindIndex(indexFile);
+    const seeded = await privateGit(['read-tree', candidate.tree], repoPath);
+    if (seeded.code !== 0) return { status: 'error', error: 'candidate-publication-tree-read' };
+    return await publishPrivateIndexCommit(fencedGit, privateGit, repoPath, {
+      base: candidate.base, baseTree: candidate.baseTree, materializedCommit,
+      label: 'candidate publication', reflogMessage: 'git-sync: frozen candidate',
+      messageArgs: async () => ['-m', 'sync: publish frozen candidate', '-m', `Papercusp-Candidate: ${ref}`],
+      beforePublish: async commit => {
+        const ready = await options.beforePublish(candidate);
+        if (!ready.ok) return ready;
+        const pin = await fencedGit(['update-ref', commitRef, commit, materializedCommit ?? '0'.repeat(commit.length)], repoPath);
+        if (pin.code !== 0) return { ok: false, error: 'candidate-publication-pin-cas' };
+        return { ok: true };
+      },
+    });
+  } catch {
+    return { status: 'error', error: 'candidate-publication-interrupted' };
+  } finally {
+    if (indexFile) {
+      await rm(indexFile, { force: true }).catch(() => {});
+      await rm(indexFile + '.lock', { force: true }).catch(() => {});
+    }
   }
 }
 
