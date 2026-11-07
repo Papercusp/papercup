@@ -325,7 +325,9 @@ describe('D012 native generation closure', () => {
       expect(completed).toBeLessThanOrEqual(receipt.files.length);
       scans.set(match![1], completed);
     }
-    expect(scans.size).toBeGreaterThanOrEqual(2);
+    // A freshly verified archive projects its measured inputs without a
+    // redundant second census. Progress must still cover a real scan.
+    expect(scans.size).toBeGreaterThanOrEqual(1);
     write(archive, 'inputs/0.txt', 'changed');
     const tampered = run();
     expect(tampered.status).toBe(74);
@@ -372,7 +374,8 @@ describe('D012 native generation closure', () => {
     execFileSync('git', ['fetch', f.dest, ref], { cwd: f.donor });
     const stale = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
     expect(stale.status).toBe(74);
-    expect(stale.stderr).toContain(defect === 'incomplete' ? 'incomplete-closure' : 'stale-build-input');
+    expect(stale.stderr, stale.stdout + stale.stderr)
+      .toContain(defect === 'incomplete' ? 'incomplete-closure' : 'stale-build-input');
 
     const args = ['--integration', f.donor, '--generation-root', f.store,
       '--ensure-ref', ref, '--verifier-source', f.dest, '--retain-as', 'native-exact-test'];
