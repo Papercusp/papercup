@@ -70,9 +70,11 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
         scopeAvailable: true, spawnOptions: { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'ignore' } });
       await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 3000 });
       const { pid } = JSON.parse(readFileSync(ready, 'utf8')) as { pid: number };
+      const pidIdentity = checkpointPidIdentity(pid);
+      if (!pidIdentity) throw new Error('blocked controller process identity unavailable');
       const nowMs = Date.now(), startedAtMs = nowMs - QUALIFICATION_PROGRESS_STALE_MS - 1000;
       const owner = { attemptId: 'blocked-durable-attempt', candidate: 'blocked-durable-candidate',
-        runnerId: 'blocked-durable-runner', runId: 'blocked-durable-run', pid, pidIdentity: checkpointPidIdentity(pid),
+        runnerId: 'blocked-durable-runner', runId: 'blocked-durable-run', pid, pidIdentity,
         unit, nowMs: startedAtMs, leaseDurationMs: 1000, started: true };
       const tx = reserveQualificationRunner(beginQualificationTransaction(null, owner).transaction, owner).transaction;
       tx.currentPhysicalRunner = { ...tx.currentPhysicalRunner!, phase: 'suite', phaseEnteredAtMs: startedAtMs,

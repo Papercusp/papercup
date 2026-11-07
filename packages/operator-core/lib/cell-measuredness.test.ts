@@ -52,6 +52,8 @@ const MEASURED_EMPTY = {
     candidateFailures: {
       candidateSha: 'd165d7537d20',
       repairHeadSha: '424436e78826',
+      candidateRunGroupId: 'run-candidate',
+      repairHeadRunGroupId: 'run-repair',
       stillBrokenCount: 0,
       // EI-22260078732220798: the qualifier the `repairs-outstanding` prose tells the reader
       // to compare against `stillBrokenCount`. Declared evidence now, so it has to be in the
@@ -125,8 +127,17 @@ describe('P-012: classification — what counts as a count or a list', () => {
   it('hoistedPaths is headline + evidence + unknownHoist, deduplicated', () => {
     expect(hoistedPaths(CF)).toEqual([
       'gate.candidateFailures.stillBrokenCount',
-      ...CF.assessment!.evidence,
+      'gate.candidateFailures.candidateRunGroupId',
+      'gate.candidateFailures.repairHeadRunGroupId',
+      // Also the unknownHoist: it must occur only once in this literal oracle.
       'gate.candidateFailures.unavailable',
+      'gate.candidateFailures.stillBrokenNeedsRunCount',
+      'gate.candidateFailures.distinctFailingFiles',
+      'gate.candidateFailures.filesJudged',
+      'gate.candidateFailures.scope',
+      'gate.candidateFailures.nonTestLegsMeasured',
+      'gate.candidateFailures.nonTestLegs.perLeg',
+      'gate.candidateFailures.nonTestLegs.outstanding',
     ]);
   });
 });

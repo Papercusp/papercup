@@ -10,6 +10,7 @@
  * the settled outcome. DURABLE_CRASH_REVOKE removes one tool from the caller's CURRENT role
  * allowlist at recovery time.
  */
+import dns from 'node:dns';
 import postgres from 'postgres';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import type { ProjectedTool, ToolResult, UnifiedToolContext } from '@papercusp/tooldef';
@@ -28,6 +29,26 @@ if (!dsn || !runKey || !script || !['crash', 'recover', 'code'].includes(mode ??
 }
 
 const sql = postgres(dsn, { max: 2, onnotice: () => {} });
+
+// Keep startup failures separate from workflow/recovery failures. In particular,
+// pg's connection deadline includes hostname lookup, before any TCP handshake.
+// Report phases without emitting the private database URL or credentials.
+const originalLookup = dns.lookup;
+let lookupSequence = 0;
+dns.lookup = ((hostname: string, ...args: unknown[]) => {
+  const callback = args.pop() as (...values: unknown[]) => void;
+  const sequence = ++lookupSequence;
+  const startedAt = performance.now();
+  const report = (phase: string, error?: unknown) => process.stderr.write('DURABLE_DBOS_STARTUP ' + JSON.stringify({
+    phase, sequence, elapsedMs: Math.round(performance.now() - startedAt),
+    loopback: hostname === 'localhost', error: error instanceof Error ? error.message : null,
+  }) + '\n');
+  report('lookup-start');
+  return Reflect.apply(originalLookup, dns, [hostname, ...args, (...values: unknown[]) => {
+    report('lookup-end', values[0]);
+    callback(...values);
+  }]);
+}) as typeof dns.lookup;
 
 function probeTool(name: string, effect: 'read' | 'write', idempotent: boolean): ProjectedTool {
   return {
@@ -110,7 +131,16 @@ workflow.configureDurableOrchestrationRuntime({
   inner: (_tool, _name, _args, ctx, next) => next(ctx),
 });
 
-await DBOS.launch();
+const launchStartedAt = performance.now();
+try {
+  await DBOS.launch();
+  process.stderr.write('DURABLE_DBOS_STARTUP ' + JSON.stringify({ phase: 'launch-complete',
+    elapsedMs: Math.round(performance.now() - launchStartedAt), lookups: lookupSequence }) + '\n');
+} catch (error) {
+  process.stderr.write('DURABLE_DBOS_STARTUP ' + JSON.stringify({ phase: 'launch-failed',
+    elapsedMs: Math.round(performance.now() - launchStartedAt), lookups: lookupSequence }) + '\n');
+  throw error;
+}
 (globalThis as { __papercuspDbosStarted?: boolean }).__papercuspDbosStarted = true;
 
 const input = {
