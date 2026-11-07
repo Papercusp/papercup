@@ -75,6 +75,10 @@ vi.mock('../../plan-items/reconcile-linked-work-items', async (orig) => ({
   ...(await orig<typeof import('../../plan-items/reconcile-linked-work-items')>()),
   findAllLinkedWorkItems: reconcileMocks.findAllLinkedWorkItems,
   reconcileLinkedWorkItemsForPlanItem: reconcileMocks.reconcileLinkedWorkItemsForPlanItem,
+  // Lane resynchronization has its own integration coverage. This unit fixture
+  // deliberately has no live plan reader or dependency graph.
+  resyncPlanItemLaneNow: vi.fn<typeof import('../../plan-items/reconcile-linked-work-items').resyncPlanItemLaneNow>(async () => null),
+  resyncDependentPlanItemLanesNow: vi.fn<typeof import('../../plan-items/reconcile-linked-work-items').resyncDependentPlanItemLanesNow>(async () => []),
 }));
 vi.mock('../../plan-items/convert', async (orig) => ({
   ...(await orig<typeof import('../../plan-items/convert')>()),

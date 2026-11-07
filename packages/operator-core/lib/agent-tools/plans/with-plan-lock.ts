@@ -403,6 +403,14 @@ export interface WithPlanLockOpts<T = unknown> {
     scope: { workspaceId: string; harnessSlug: string },
     value: T,
   ) => Promise<void>;
+  /** Fence a coupled work-item before the graph writer changes its lifecycle.
+   * Runs after admission, inside the same transaction as body/index/graph writes.
+   * Throwing rolls back the complete mutation, including this hook's writes. */
+  beforeGraphWriteInTransaction?: (
+    tx: TransactionSql,
+    scope: { workspaceId: string; harnessSlug: string },
+    value: T,
+  ) => Promise<void>;
 }
 
 /**
@@ -1049,6 +1057,9 @@ export async function withPlanLock<T>(
         idx,
       );
 
+      await opts.beforeGraphWriteInTransaction?.(
+        tx as unknown as TransactionSql, { workspaceId, harnessSlug }, value,
+      );
       const dependencyMutations = await writePlanLineNodes(
         tx, { workspaceId, harnessSlug, slug }, lineNodes, idx.items,
         // Drafts can describe proposed or historical progress. Once execution

@@ -19,6 +19,8 @@ import { hashPlanContent } from './content-hash';
 import { writePlanLineNodes, readPlanLineNodes } from './plan-line-graph';
 import { writePlanIndexRows } from './plan-index-rows';
 import { withPlanLock } from './with-plan-lock';
+import { prepareBlockerDecision } from '../../blocker-resolution-decision';
+import { applyBlockerDecisionMutation, type BlockerDecisionMutation } from '../../blocker-resolution-persistence';
 import { checkPlanStartable } from './plan-start-gate';
 import * as lifecycle from '../../acceptance-bar-lifecycle-evaluator';
 import * as admission from './plan-admission-gate';
@@ -449,6 +451,97 @@ describe('plan item anchors through the real plan tools', () => {
     const afterPlan = await fx.admin`SELECT content,version FROM harness_shared.harness_plans
       WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
     expect(afterPlan.map(row => [row.content, row.version])).toEqual(beforePlan.map(row => [row.content, row.version]));
+  });
+  describe('atomic blocker decision before graph lifecycle writes', () => {
+    async function prepare() {
+      const [node] = await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG });
+      await fx.admin`UPDATE harness_shared.work_items SET taken_by='agent-anchor-test'
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node.featureId}`;
+      const [{ payload }] = await fx.admin`SELECT payload FROM harness_shared.work_items
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node.featureId}`;
+      const ref = { kind: 'state' as const, ref: 'state:dependency.health' };
+      const prepared = prepareBlockerDecision(payload, {
+        schemaVersion: 1, idempotencyKey: 'plan-atomic-decision', disposition: 'self_resolve',
+        symptom: 'Dependency endpoint was unavailable',
+        investigation: [{ action: 'Read dependency health', outcome: 'Endpoint recovered', evidenceRefs: [ref] }],
+        attempts: [], evidenceRefs: [ref], verification: { outcome: 'Recovery verified', evidenceRefs: [ref] },
+      }, { ownerId: 'agent-anchor-test', custodianId: 'agent-anchor-test',
+        sessionId: 'authenticated-plan-session', workItemId: node.featureId });
+      if (!prepared.ok) throw new Error(JSON.stringify(prepared));
+      const mutation: BlockerDecisionMutation = { prepared, expectedState: 'open',
+        expectedCustodianId: 'agent-anchor-test', expectedExternalBlockers: undefined, payloadPatch: {}, unset: [] };
+      const proposed = body().replace('`todo`', '`wip`');
+      const apply = (tx: Parameters<typeof applyBlockerDecisionMutation>[0]) =>
+        applyBlockerDecisionMutation(tx, { workspace: WS, harness: HARNESS, id: node.featureId }, mutation);
+      const read = async () => ({
+        plan: [...await fx.admin`SELECT content,content_hash,version,items FROM harness_shared.harness_plans
+          WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`],
+        index: [...await fx.admin`SELECT * FROM harness_shared.plan_items
+          WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`],
+        node: [...await fx.admin`SELECT * FROM harness_shared.work_items
+          WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node.featureId}`],
+        revisions: [...await fx.admin`SELECT * FROM harness_shared.plan_revisions
+          WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG} ORDER BY seq`],
+      });
+      return { node, mutation, proposed, apply, read };
+    }
+    it('commits decision, graph lifecycle, body and index in the same transaction', async () => {
+      const test = await prepare();
+      const before = await test.read();
+      const result = await withPlanLock(null, {
+        workspaceId: WS, harnessSlug: HARNESS, slug: SLUG, intent: 'atomic blocker decision regression',
+        beforeGraphWriteInTransaction: tx => test.apply(tx),
+      }, async () => ({ newBody: test.proposed, value: { ok: true } }));
+      expect(result.kind).toBe('applied');
+      const after = await test.read();
+      expect(Number(after.plan[0].version)).toBe(Number(before.plan[0].version) + 1);
+      expect(after.plan[0].content).toBe(test.proposed);
+      expect(after.index[0].status).toBe('wip');
+      expect(after.node[0]).toMatchObject({ status: 'wip', taken_by: 'agent-anchor-test',
+        payload: { blockerResolution: { history: [{ authorId: 'agent-anchor-test', sessionId: 'authenticated-plan-session' }] } } });
+    });
+    it('rolls back body and index when the old canonical custody fence rejects the decision', async () => {
+      const test = await prepare();
+      test.mutation.expectedCustodianId = 'another-agent';
+      const before = await test.read();
+      await expect(withPlanLock(null, {
+        workspaceId: WS, harnessSlug: HARNESS, slug: SLUG, intent: 'atomic blocker CAS regression',
+        beforeGraphWriteInTransaction: tx => test.apply(tx),
+      }, async () => ({ newBody: test.proposed, value: { ok: true } })))
+        .rejects.toMatchObject({ code: 'blocker_decision_revision_conflict' });
+      expect(await test.read()).toEqual(before);
+    });
+    it('rolls back the decision when the later graph lifecycle write fails', async () => {
+      const test = await prepare();
+      const before = await test.read();
+      await fx.admin.unsafe(`CREATE FUNCTION harness_shared.reject_blocker_plan_graph() RETURNS trigger LANGUAGE plpgsql AS $fn$
+        BEGIN IF NEW.payload ? 'blockerResolution' AND NEW.status='wip' THEN
+          RAISE EXCEPTION 'injected plan graph failure'; END IF; RETURN NEW; END $fn$;
+        CREATE TRIGGER reject_blocker_plan_graph BEFORE UPDATE ON harness_shared.work_items
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_blocker_plan_graph()`);
+      try {
+        await expect(withPlanLock(null, {
+          workspaceId: WS, harnessSlug: HARNESS, slug: SLUG, intent: 'atomic blocker graph rollback regression',
+          beforeGraphWriteInTransaction: tx => test.apply(tx),
+        }, async () => ({ newBody: test.proposed, value: { ok: true } })))
+          .rejects.toThrow('injected plan graph failure');
+        expect(await test.read()).toEqual(before);
+      } finally {
+        await fx.admin.unsafe(`DROP TRIGGER reject_blocker_plan_graph ON harness_shared.work_items;
+          DROP FUNCTION harness_shared.reject_blocker_plan_graph()`);
+      }
+    });
+    it('rolls back decision and lifecycle when a later transaction hook rejects', async () => {
+      const test = await prepare();
+      const before = await test.read();
+      await expect(withPlanLock(null, {
+        workspaceId: WS, harnessSlug: HARNESS, slug: SLUG, intent: 'atomic blocker late rollback regression',
+        beforeGraphWriteInTransaction: tx => test.apply(tx),
+        inTransaction: async () => { throw new Error('injected late plan failure'); },
+      }, async () => ({ newBody: test.proposed, value: { ok: true } })))
+        .rejects.toThrow('injected late plan failure');
+      expect(await test.read()).toEqual(before);
+    });
   });
   it('pasted generated link lines do not become plan content or a stale receipt hash', async () => {
     const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, old_string: 'Existing item',

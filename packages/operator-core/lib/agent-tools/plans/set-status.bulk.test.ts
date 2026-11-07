@@ -15,6 +15,25 @@
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+import type { TransactionSql } from 'postgres';
+import type { LinkedWorkItem } from '../../plan-items/reconcile-linked-work-items';
+import { prepareBlockerDecision, type BlockerDecisionInput } from '../../blocker-resolution-decision';
+
+const blockerMocks = vi.hoisted(() => ({
+  linked: vi.fn<typeof import('../../plan-items/reconcile-linked-work-items').findAllLinkedWorkItems>(async () => []),
+  preflight: vi.fn<typeof import('../../blocker-resolution-evidence').preflightBlockerDecision>(async () => ({ ok: true, ordinary: true })),
+  apply: vi.fn<typeof import('../../blocker-resolution-persistence').applyBlockerDecisionMutation>(async () => {}),
+}));
+vi.mock('../../blocker-resolution-evidence', () => ({
+  preflightBlockerDecision: blockerMocks.preflight,
+  blockerBoundaryContext: vi.fn(async (_ctx, ownerId, harnessSlug) => ({
+    ownerId, sessionId: ownerId, harnessSlug, workspaceId: 'default', role: 'su', root: null,
+  })),
+}));
+vi.mock('../../blocker-resolution-persistence', async (orig) => ({
+  ...(await orig<typeof import('../../blocker-resolution-persistence')>()),
+  applyBlockerDecisionMutation: blockerMocks.apply,
+}));
 
 afterAll(() => {
   const rail = readRealPgRailBlocks();
@@ -113,7 +132,8 @@ vi.mock('./plan-drain-transition', () => ({
   planDrainTransitionMutationGated: planDrainMocks.planDrainTransitionMutationGated,
 }));
 vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
-  findAllLinkedWorkItems: vi.fn(async () => []),
+  findAllLinkedWorkItems: blockerMocks.linked,
+  selectCanonicalLinkedWorkItem: (rows: LinkedWorkItem[]) => ({ canonical: rows[0] ?? null, duplicates: [] }),
   reconcileLinkedWorkItemsForPlanItem: laneSync.terminal,
   resyncPlanItemLaneNow: laneSync.item,
   resyncDependentPlanItemLanesNow: laneSync.dependents,
@@ -129,8 +149,83 @@ const body = async (args: Record<string, unknown>, ctx: Record<string, unknown> 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  blockerMocks.linked.mockReset().mockResolvedValue([]);
+  blockerMocks.preflight.mockReset().mockResolvedValue({ ok: true, ordinary: true });
   callerMocks.identity.mockImplementation(() => {
     throw new Error('no identity in this test');
+  });
+});
+
+describe('plans:set-status blocker resolution boundary', () => {
+  const subject = (patch: Partial<LinkedWorkItem> = {}): LinkedWorkItem => ({
+    id: 'WI-plan-node', kind: 'feature', family: 'feature', harness: 'papercup',
+    title: 'canonical lane', summary: 'canonical lane', state: 'wip', assignee: 'su-reader',
+    takenAt: null, lastProgressAt: null, assignedBy: null, createdBy: null, severity: null, goalId: null,
+    parent: null, payload: {}, origin: 'local', auditVerdict: null, verifiedAuthorGithubUserId: null,
+    rank: null, rankWriter: null, rankUpdatedAt: null, priority: null, terminalOwner: null,
+    terminalCompletionRef: null, terminalCompletionEvidence: null, completionAuthority: null,
+    createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z', closedAt: null,
+    viaImplementsEdge: false, viaPlanLineNode: true, ...patch,
+  });
+  const decision: BlockerDecisionInput = {
+    schemaVersion: 1, idempotencyKey: 'plan-status-1', disposition: 'self_resolve',
+    symptom: 'Dependency endpoint failed', investigation: [{ action: 'Read health', outcome: 'Repaired',
+      evidenceRefs: [{ kind: 'state', ref: 'state:health' }] }], attempts: [],
+    evidenceRefs: [{ kind: 'state', ref: 'state:health' }],
+    verification: { outcome: 'Recovered', evidenceRefs: [{ kind: 'state', ref: 'state:health' }] },
+  };
+  function actor() {
+    callerMocks.identity.mockReturnValue({ ownerId: 'su-reader', ownerLabel: 'reader', source: 'omp-hook-session' });
+  }
+  it('preserves custody and plan state on missing evidence before a wip claim', async () => {
+    actor(); blockerMocks.linked.mockResolvedValue([subject()]);
+    blockerMocks.preflight.mockResolvedValue({ ok: false, code: 'blocker_decision_evidence',
+      missing: ['measured remedy'], nextAction: 'Investigate and keep custody' });
+    const result = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
+    expect(result.results[0]).toMatchObject({ ok: false, error: 'blocker_decision_evidence', missing: ['measured remedy'] });
+    expect(callerMocks.claimForWork).not.toHaveBeenCalled(); expect(lockM).not.toHaveBeenCalled();
+  });
+  it('replays the terminal canonical identity before live gates or any mutation', async () => {
+    actor(); const node = subject({ state: 'done', assignee: 'successor' });
+    blockerMocks.linked.mockResolvedValue([subject({ id: 'WI-legacy', viaPlanLineNode: false }), node]);
+    const prepared = prepareBlockerDecision({}, decision, { ownerId: 'su-reader', sessionId: 'su-reader',
+      workItemId: node.id, custodianId: 'su-reader' });
+    if (!prepared.ok) throw new Error('invalid test decision');
+    blockerMocks.preflight.mockResolvedValue({ ...prepared, replayed: true });
+    const result = await body({ slug: 'plan-a', item: 'P-001', status: 'todo', blockerDecision: decision });
+    expect(result.results[0]).toMatchObject({ ok: true, blockerDecision: { replayed: true, record: { workItemId: node.id } } });
+    expect(blockerMocks.preflight).toHaveBeenCalledWith(node, decision, expect.anything(), expect.objectContaining({ effect: expect.objectContaining({ status: 'todo' }) }));
+    expect(lockM).not.toHaveBeenCalled(); expect(callerMocks.releaseOwnClaim).not.toHaveBeenCalled();
+  });
+  it('fences and pairs the decision inside the plan graph transaction', async () => {
+    actor(); const node = subject(); blockerMocks.linked.mockResolvedValue([node]);
+    const prepared = prepareBlockerDecision({}, decision, { ownerId: 'su-reader', sessionId: 'su-reader', workItemId: node.id, custodianId: 'su-reader' });
+    if (!prepared.ok) throw new Error('invalid test decision');
+    blockerMocks.preflight.mockResolvedValue(prepared);
+    lockReturnsMutatorValue(new Set(['P-001']));
+    const result = await body({ slug: 'plan-a', item: 'P-001', status: 'todo', blockerDecision: decision });
+    expect(result.results[0]).toMatchObject({ ok: true, blockerDecision: { replayed: false } });
+    const hook = lockM.mock.calls[0]![1].beforeGraphWriteInTransaction;
+    // Only the tagged-query surface is exercised by this hook unit. Real SQL
+    // rollback needs separate maintained integration coverage.
+    const query = vi.fn(async () => [{ feature_id: node.id }]);
+    const tx = query as unknown as TransactionSql;
+    await hook?.(tx, { workspaceId: 'default', harnessSlug: 'papercup' }, { ok: true });
+    expect(blockerMocks.apply).toHaveBeenCalledWith(tx, { workspace: 'default', harness: 'papercup', id: node.id }, expect.objectContaining({ expectedState: 'wip', expectedCustodianId: 'su-reader' }));
+    query.mockResolvedValue([{ feature_id: 'WI-replacement' }]);
+    await expect(hook?.(tx, { workspaceId: 'default', harnessSlug: 'papercup' }, { ok: true })).rejects.toThrow(/changed/);
+    expect(blockerMocks.apply).toHaveBeenCalledTimes(1);
+  });
+  it('refuses an entering deferral without a scoped canonical subject', async () => {
+    actor();
+    const result = await body({ slug: 'plan-a', item: 'P-001', status: 'blocked' });
+    expect(result.results[0]).toMatchObject({ ok: false, error: 'blocker_decision_evidence' });
+    expect(lockM).not.toHaveBeenCalled();
+  });
+  it('refuses an unauthenticated decision instead of returning an unsaved success', async () => {
+    const result = await body({ slug: 'plan-a', item: 'P-001', status: 'todo', blockerDecision: decision });
+    expect(result.results[0]).toMatchObject({ ok: false, error: 'blocker_decision_authority' });
+    expect(lockM).not.toHaveBeenCalled();
   });
 });
 

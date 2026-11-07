@@ -86,6 +86,9 @@ import { reevaluateBarReadinessOnScopeWrite, type BarReadinessResult } from './p
 import { defaultBarReadinessDeps } from './plan-scope-cascade-deps';
 import { attestLandedPlanItemStatus } from './plan-item-consumer-view';
 import { planItemConsumerReaderFor } from './plan-item-consumer-read';
+import { blockerDecisionInputSchema, type BlockerDecisionInput } from '../../blocker-resolution-decision';
+import { blockerBoundaryContext, preflightBlockerDecision } from '../../blocker-resolution-evidence';
+import { applyBlockerDecisionMutation, BlockerDecisionMutationConflict, type BlockerDecisionMutation } from '../../blocker-resolution-persistence';
 
 // Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
 // real backstop. Was [...SU_ROLES, 'bee'].
@@ -131,6 +134,7 @@ const itemSpec = z.object({
   onlyIfBlockAttributedTo: z.string().min(1).optional(),
   expectedStatus: STATUS.optional(),
   verification: TYPE_EVIDENCE.optional(),
+  blockerDecision: blockerDecisionInputSchema.optional(),
 });
 
 const argsSchema = z
@@ -203,6 +207,7 @@ const argsSchema = z
       'Compare-and-set: FAIL (`ok:false, code:"expected_status_mismatch"`) if the item is not on this status when the lock is taken. For applying a RECORDED observation whose `from` may have gone stale; unlike the `onlyIf*` guards this is an error, not a skip.',
     ),
     verification: TYPE_EVIDENCE.optional(),
+    blockerDecision: blockerDecisionInputSchema.optional(),
   })
   .refine(
     (a) =>
@@ -271,6 +276,7 @@ interface StatusItem {
   expectedStatus?: string;
   /** Structured proof accompanying a direct →done flip. Advisory only. */
   verification?: CompletionVerificationEvidence;
+  blockerDecision?: BlockerDecisionInput;
 }
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -1048,6 +1054,59 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // Caller-DX (P-006): truncate an over-long inline note instead of rejecting.
   const { note: inlineNote, truncated: noteTruncated } = truncateInlineNote(it.note);
 
+  // Resolve the authenticated actor before any claim, draft gate or write. An
+  // exact receipt must survive changes to those live preconditions.
+  let agentId: AgentIdentity | null = null;
+  try { agentId = resolveAgentIdentity(ctx); } catch { /* owner/in-process caller */ }
+  if (agentId?.source === 'principal') agentId = null;
+  let blockerSubject: Awaited<ReturnType<typeof findAllLinkedWorkItems>>[number] | undefined;
+  let blockerMutation: BlockerDecisionMutation | undefined;
+  if (it.blockerDecision !== undefined && (!agentId || agentId.ownerId.startsWith('system:'))) {
+    return { ok: false, slug: it.slug, itemId: it.itemId, error: 'blocker_decision_authority',
+      hint: 'A blocker decision requires the authenticated agent custodian.' };
+  }
+  if (agentId && !agentId.ownerId.startsWith('system:') && !isEphemeralMcpCallIdentity(agentId.ownerId)) {
+    try {
+      const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const linked = (await findAllLinkedWorkItems(it.slug, it.itemId, scope))
+        .filter(wi => wi.harness === scope.harnessSlug);
+      if (linked.length) {
+        const { selectCanonicalLinkedWorkItem } = await import('../../plan-items/reconcile-linked-work-items');
+        // A terminal current node remains the receipt identity. Never fall back
+        // to a legacy execution child merely because the node is terminal.
+        blockerSubject = linked.find(wi => wi.viaPlanLineNode) ?? selectCanonicalLinkedWorkItem(linked).canonical ?? undefined;
+      }
+      if (!blockerSubject && (it.blockerDecision !== undefined || PLAN_BLOCKED_STATUSES.has(it.status))) {
+        return { ok: false, slug: it.slug, itemId: it.itemId, error: 'blocker_decision_evidence',
+          hint: 'Read or materialize the scoped canonical plan-line work-item before recording a blocker decision.' };
+      }
+      if (blockerSubject) {
+        const effect = { plan: it.slug, itemId: it.itemId, status: it.status, note: it.note ?? null,
+          noteKind: it.noteKind ?? null, rationale: it.rationale ?? null, expectedStatus: it.expectedStatus ?? null,
+          verification: it.verification ?? null, onlyIfNotTerminal: it.onlyIfNotTerminal === true,
+          onlyIfNotBlocked: it.onlyIfNotBlocked === true, onlyIfNotCompleted: it.onlyIfNotCompleted === true,
+          onlyIfNoOtherOpenCoverage: it.onlyIfNoOtherOpenCoverage === true,
+          onlyIfNoOtherInFlightCoverage: it.onlyIfNoOtherInFlightCoverage === true,
+          onlyIfBlockAttributedTo: it.onlyIfBlockAttributedTo ?? null };
+        const checked = await preflightBlockerDecision(blockerSubject, it.blockerDecision,
+          await blockerBoundaryContext(sctx, agentId.ownerId, scope.harnessSlug),
+          { effect, enteringDeferral: PLAN_BLOCKED_STATUSES.has(it.status), requireResolution: isTerminalStatus(it.status) });
+        if (!checked.ok) return { ...checked, slug: it.slug, itemId: it.itemId, error: checked.code };
+        if (!('ordinary' in checked)) {
+          if (checked.replayed) return { ok: true, slug: it.slug, itemId: it.itemId,
+            blockerDecision: { record: checked.record, replayed: true } };
+          blockerMutation = { prepared: checked, expectedState: blockerSubject.state,
+            expectedCustodianId: agentId.ownerId,
+            expectedExternalBlockers: (blockerSubject.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+            payloadPatch: {}, unset: [] };
+        }
+      }
+    } catch {
+      return { ok: false, slug: it.slug, itemId: it.itemId, error: 'blocker_decision_evidence',
+        hint: 'Canonical plan-lane blocker evidence is unavailable. Keep custody and retry the evidence read.' };
+    }
+  }
+
   // WI-10008137: an item may not START on a draft plan that has no activation audit.
   // Checked before the claim side effects below, so a refusal changes nothing.
   // Items already in progress (wip, or covered by an open work-item) pass.
@@ -1078,13 +1137,6 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // decision). Humans are exempt: a caller with no attributable agent
   // identity OR a `principal` one (the kanban drag / in-process UI path)
   // skips the discipline entirely — it binds agents, not the owner.
-  let agentId: AgentIdentity | null = null;
-  try {
-    agentId = resolveAgentIdentity(ctx);
-  } catch {
-    agentId = null;
-  }
-  if (agentId?.source === 'principal') agentId = null;
   // EI-8509: a →wip flip auto-claims the item under the CALLER's own identity — refuse
   // it outright when the caller is scripts/mcp-call.mjs's auto-generated fallback
   // identity (`mcp-call-<pid>`), a one-shot stateless process with no liveness behind
@@ -1447,6 +1499,18 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       // plan-drain reconciler.
       allowAwaitingAcceptanceRestore: true,
       afterWrite: rev.afterWrite,
+      beforeGraphWriteInTransaction: async (tx, scope, value) => {
+        if (!value.ok || !blockerMutation || !blockerSubject) return;
+        const nodes = await tx<{ feature_id: string }[]>`
+          SELECT feature_id FROM harness_shared.work_items
+          WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+            AND plan_slug = ${it.slug} AND plan_line_id = ${it.itemId} FOR UPDATE`;
+        if (blockerSubject.viaPlanLineNode
+          ? nodes.length !== 1 || nodes[0].feature_id !== blockerSubject.id
+          : nodes.length !== 0) throw new BlockerDecisionMutationConflict();
+        await applyBlockerDecisionMutation(tx, { workspace: scope.workspaceId,
+          harness: scope.harnessSlug, id: blockerSubject.id }, blockerMutation);
+      },
       inTransaction: async (tx, _writtenBody, scope, value) => {
         if (value.ok && carryRequired) {
           const carry = await ensureAcceptanceDrainCarryInTransaction(tx, {
@@ -1875,7 +1939,11 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     if (isBlockEdge || isUnblockEdge) {
       try {
         const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
-        const linked = await findConvertedWorkItemByStamp(it.slug, it.itemId, scope.harnessSlug, scope.workspaceId);
+        const rows = (await findAllLinkedWorkItems(it.slug, it.itemId, scope))
+          .filter(wi => wi.harness === scope.harnessSlug);
+        const linked = rows.length
+          ? (await import('../../plan-items/reconcile-linked-work-items')).selectCanonicalLinkedWorkItem(rows).canonical
+          : null;
         if (linked && !TERMINAL_WORK_ITEM_STATES.has(linked.state)) {
           const target = planSyncWorkItemState(result.value.oldStatus, it.status, linked.state);
           if (target && target !== linked.state) {
@@ -2183,6 +2251,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   return {
     slug: it.slug,
     ...result.value,
+    ...(blockerMutation ? { blockerDecision: { record: blockerMutation.prepared.record, replayed: false } } : {}),
     ...(cascadeActivationAudit ? { activationAudit: cascadeActivationAudit } : {}),
     filePath: result.filePath,
     revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
@@ -2262,6 +2331,7 @@ export default defineTool({
           onlyIfNotCompleted: it.onlyIfNotCompleted ?? args.onlyIfNotCompleted,
           expectedStatus: it.expectedStatus ?? args.expectedStatus,
           verification: it.verification ?? args.verification,
+          blockerDecision: it.blockerDecision ?? args.blockerDecision,
         }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({
@@ -2279,6 +2349,7 @@ export default defineTool({
             onlyIfNotCompleted: args.onlyIfNotCompleted,
             expectedStatus: args.expectedStatus,
             verification: args.verification,
+            blockerDecision: args.blockerDecision,
           }))
         : [
             {
@@ -2296,6 +2367,7 @@ export default defineTool({
               onlyIfNotCompleted: args.onlyIfNotCompleted,
               expectedStatus: args.expectedStatus,
               verification: args.verification,
+              blockerDecision: args.blockerDecision,
             },
           ];
     const env = await runBulk(list, (it) => setStatusOne(it, ctx), {
