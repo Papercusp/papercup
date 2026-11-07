@@ -12,6 +12,10 @@
  *   - CACHE_LAYER OFF ⇒ bypass (the aggregation runs every call)
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
+import { latencyAttentionFixtures, latencyFixtureDigest } from '../../../test/_latency-acceptance';
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
@@ -25,7 +29,13 @@ const M = vi.hoisted(() => ({
   inboxByWorkspace: new Map<string, unknown[]>(),
   ackedByWorkspace: new Map<string, Set<string>>(),
   seenInboxWs: [] as Array<string | undefined>,
+  isolateDarkFlags: false,
 }));
+
+vi.mock('@papercusp/flags', async orig => {
+  const actual = await orig<typeof import('@papercusp/flags')>();
+  return { ...actual, get DARK_FLAGS() { return M.isolateDarkFlags ? new Map() : actual.DARK_FLAGS; } };
+});
 
 vi.mock("../../attention/group", async (orig) => {
   const actual = await orig<typeof import("../../attention/group")>();
@@ -114,6 +124,7 @@ import {
   getOperatorCache,
   resetOperatorCacheForTests,
   resetCachedReadStatsForTests,
+  snapshotCachedReadStats,
   __setCachedReadEnabledForTests,
 } from "../../cache";
 import { _refreshCacheLayerForTests } from "../../cache/instance";
@@ -163,6 +174,7 @@ beforeEach(async () => {
   M.inboxByWorkspace.clear();
   M.ackedByWorkspace.clear();
   M.seenInboxWs.length = 0;
+  M.isolateDarkFlags = false;
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -177,6 +189,91 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  it('calibrates frozen T06 contents and retains actual cache generations and source-build observations', async () => {
+    const fixture = latencyAttentionFixtures();
+    // This frozen fixture declares inbox sources only. Pin the static registry
+    // source to empty as well; don't silently filter extra attention rows.
+    M.isolateDarkFlags = true;
+    const artifactRoot = process.env.PAPERCUSP_TEST_ARTIFACT_DIR ?? defaultEvidenceRoot('latency-attention');
+    mkdirSync(artifactRoot, { recursive: true });
+    const evidenceDir = mkdtempSync(join(artifactRoot, 't06-'));
+    const path = join(evidenceDir, 'attention-observations.json');
+    console.info('LATENCY_ATTENTION_PREPARATION_START ' + JSON.stringify({ evidenceDir }));
+    const { bridgeTriggerEvent } = await import('../../sync-sse');
+    const { registerCacheTagEcaRule, _refreshCacheEcaForTests } = await import('../../events/cache-eca-rule');
+    setFlagOverridesForTest({ [CACHE_LAYER]: true, 'papercusp-cache-tag-eca': true });
+    await _refreshCacheEcaForTests();
+    registerCacheTagEcaRule();
+    M.inboxByWorkspace.set(fixture.workspace, [...fixture.seedMessages]);
+    const cache = getOperatorCache();
+    const calls = vi.spyOn(cache, 'getOrSet');
+    const observations: Array<Record<string, unknown>> = [];
+    const read = async (label: string, workspace = fixture.workspace) => {
+      const before = M.seenInboxWs.filter(ws => ws === workspace).length;
+      const startedAtMs = performance.now();
+      const data = await run({}, ctx(workspace));
+      const completedAtMs = performance.now();
+      const invocation = calls.mock.calls.at(-1)!;
+      expect(invocation[0]).toBe(workspace);
+      const options = invocation[3]!;
+      const ids = deriveAttentionRefs(data.groups).map(row => row.id).sort();
+      const sourceBuilds = M.seenInboxWs.filter(ws => ws === workspace).length;
+      const snapshot = { label, workspace, key: invocation[1], ids, startedAtMs, completedAtMs,
+        durationMs: completedAtMs - startedAtMs, sourceBuilds,
+        buildsDuringRead: sourceBuilds - before,
+        generations: cache.generationSnapshot(workspace, options.tags ?? []),
+        effectiveCacheConfiguration: { tags: options.tags, softTtlMs: options.softTtlMs,
+          hardTtlMs: options.hardTtlMs },
+        missReasons: snapshotCachedReadStats()['plans:attention'] };
+      observations.push(snapshot);
+      appendFileSync(join(evidenceDir, 'attention-observations.ndjson'), JSON.stringify(snapshot) + '\n');
+      return snapshot;
+    };
+    const initial = await read('before');
+    expect(initial.ids).toEqual(fixture.reference.before);
+    // This diagnostic must retain a known baseline freshness violation. Observe
+    // through the loaded TTL backstop; keep the separate 250ms BAR unchanged.
+    const settleTimeout = Math.max(1_000, initial.effectiveCacheConfiguration.softTtlMs ?? 0) + 5_000;
+    const initialBuilds = M.seenInboxWs.filter(ws => ws === fixture.workspace).length;
+    for (const message of fixture.unrelatedMessages) {
+      // readInbox's maintained seam returns the human's messages. The unrelated
+      // source event still traverses the actual table-change invalidation path.
+      bridgeTriggerEvent('harness_shared.coord_event_log.changed', {
+        workspace_id: fixture.workspace, op: 'INSERT', id: message.msg_id, body: message,
+      });
+      expect((await read('unrelated:' + message.msg_id)).ids).toEqual(fixture.reference.afterUnrelated);
+    }
+    const afterUnrelatedBuilds = M.seenInboxWs.filter(ws => ws === fixture.workspace).length;
+    M.inboxByWorkspace.set(fixture.workspace, [...fixture.seedMessages, fixture.relevantMessage]);
+    const relevantEventAtMs = performance.now();
+    bridgeTriggerEvent('harness_shared.coord_event_log.changed', {
+      workspace_id: fixture.workspace, op: 'INSERT', id: fixture.relevantMessage.msg_id, body: fixture.relevantMessage,
+    });
+    await expect.poll(async () => (await read('after-relevant')).ids, { timeout: settleTimeout })
+      .toEqual(fixture.reference.afterRelevant);
+    const relevantFreshnessMs = performance.now() - relevantEventAtMs;
+    M.ackedByWorkspace.set(fixture.workspace, new Set([fixture.acknowledgment.msgId]));
+    const acknowledgmentEventAtMs = performance.now();
+    bridgeTriggerEvent('harness_shared.coord_event_log.changed', {
+      workspace_id: fixture.workspace, op: 'INSERT', id: 'latency-attention-ack',
+      body: { kind: 'ack', acker: fixture.acknowledgment.acker, msg_id: fixture.acknowledgment.msgId },
+    });
+    await expect.poll(async () => (await read('after-acknowledgment')).ids, { timeout: settleTimeout })
+      .toEqual(fixture.reference.afterAcknowledgment);
+    const acknowledgmentFreshnessMs = performance.now() - acknowledgmentEventAtMs;
+    expect((await read('other-workspace', fixture.otherWorkspace)).ids).toEqual(fixture.reference.otherWorkspace);
+    const receipt = { phase: 'preparation-only', actualTaskAttempts: 0,
+      sourcePlane: 'real handler/cache/ECA with maintained mocked source and PG seams',
+      fixtureSha256: latencyFixtureDigest(fixture), observations,
+      relevantFreshnessMs, acknowledgmentFreshnessMs,
+      violations: { unrelatedRebuilds: afterUnrelatedBuilds - initialBuilds,
+        relevantFreshnessAbove250ms: relevantFreshnessMs > 250,
+        acknowledgmentFreshnessAbove250ms: acknowledgmentFreshnessMs > 250 } };
+    writeFileSync(path, JSON.stringify(receipt), { flag: 'wx' });
+    console.info('LATENCY_ATTENTION_PREPARATION ' + JSON.stringify({ path,
+      fixtureSha256: receipt.fixtureSha256, violations: receipt.violations }));
+  }, 60_000);
+
   it.each(['coord_open_escalations', 'coord_conversations'])(
     'refreshes a second owner question on its %s source write',
     async (table) => {

@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../../../libs/generic/hash-chain/src/canonical-json';
+import type { BenchTask } from '../lib/external-bench/types';
 
 export const LATENCY_M1_TASKS = Object.freeze(Array.from({ length: 10 }, (_, i) =>
   `T${String(i + 1).padStart(2, '0')}`));
@@ -32,6 +33,51 @@ export function latencyAttemptSchedule(): LatencyAttemptKey[] {
 
 export function latencyFixtureDigest(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+}
+
+interface LatencyTaskCase {
+  id: string;
+  purpose: string;
+  inputA: string;
+  inputB: string;
+  qualityOracle: { kind: string; required: readonly string[] };
+}
+
+/** Normalize the frozen cohort for the maintained native benchmark driver.
+ * This prepares assignments only: no launch, admission, cache setup or proof is
+ * implied. The independent grader receives the oracle; the solver receives the
+ * task and both source inputs. Pair identity and task bytes match across arms.
+ */
+export function latencyBenchAssignments(manifest: {
+  id: string;
+  pairedTasks: { cases: readonly LatencyTaskCase[] };
+}): Array<{ key: LatencyAttemptKey; task: BenchTask }> {
+  const cases = manifest.pairedTasks.cases;
+  if (manifest.id !== 'LATENCY-M1' || cases.length !== LATENCY_M1_TASKS.length ||
+      cases.some((row, i) => row.id !== LATENCY_M1_TASKS[i] ||
+        ![row.purpose, row.inputA, row.inputB, row.qualityOracle?.kind]
+          .every(value => typeof value === 'string' && value.trim().length > 0) ||
+        !Array.isArray(row.qualityOracle.required) || !row.qualityOracle.required.length ||
+        row.qualityOracle.required.some(value => typeof value !== 'string' || !value.trim()))) {
+    throw new Error('LATENCY-M1 benchmark assignments require the complete frozen T01–T10 case order and oracles');
+  }
+  const manifestSha256 = latencyFixtureDigest(manifest);
+  return latencyAttemptSchedule().map(key => {
+    const row = cases[LATENCY_M1_TASKS.indexOf(key.task)]!;
+    return { key, task: {
+      benchmark: 'harness-bench',
+      instanceId: `LATENCY-M1:${key.task}:${key.stratum}:${key.repetition}`,
+      problemStatement: [
+        row.purpose,
+        `Frozen input A: ${JSON.stringify(row.inputA)}`,
+        `Frozen input B: ${JSON.stringify(row.inputB)}`,
+        'Use the frozen source fixtures supplied in the assignment context. Return the complete requested output for both inputs with exact source identities and explicit evidence gaps. Do not edit product source or execute a saved rerun recipe.',
+      ].join('\n'),
+      graderMeta: { latencyM1: { manifestSha256, taskId: key.task,
+        stratum: key.stratum, repetition: key.repetition,
+        qualityOracle: structuredClone(row.qualityOracle) } },
+    } };
+  });
 }
 
 /** Frozen LATENCY-M1 seed, independent of the wall clock and the measured arm.
@@ -204,6 +250,101 @@ export function latencyRetrievalFixtures(budgetMs: number) {
         expected: { embeddingAccepted: false, fallback: 'latency-lexical-001', cancellation: null } },
     ],
   };
+}
+
+/** Execute a frozen injected provider schedule through the real search engine.
+ * Real monotonic clocks and timers are retained, including late acceptance.
+ * This is preparation/calibration; a caller must separately register a task attempt. */
+export async function observeLatencyRetrievalSchedule(
+  schedule: ReturnType<typeof latencyRetrievalFixtures>['cases'][number],
+) {
+  const { runHybridSearch } = await import('@papercusp/search');
+  const anchor = performance.now();
+  const at = () => performance.now() - anchor;
+  const marks: Record<string, number | null> = { callEntryMs: 0, embedderEntryMs: null,
+    synchronousReturnMs: null, queuedAtMs: null, networkAtMs: null, resultAtMs: null,
+    timerCallbackMs: null, cancellationAtMs: null, terminalMs: null };
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const caller = new AbortController();
+  let cancellation: 'queued' | 'network' | null = null;
+  let safetyDeadlineFired = false;
+  const later = (relativeMs: number, fn: () => void) => {
+    const timer = setTimeout(fn, Math.max(0, anchor + relativeMs - performance.now()));
+    timers.push(timer);
+  };
+  const blockUntil = (relativeMs: number) => {
+    const remaining = anchor + relativeMs - performance.now();
+    if (remaining > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, remaining);
+  };
+  const hit = (id: string) => ({ source: 'latency-fixture', source_id: id,
+    excerpt: id, highlight: id, score: 1, rankers: ['latency-fixture'] });
+  const listing = (id: string) => [{ key: id, score: 1, row: hit(id) }];
+  const source = { name: 'latency-fixture', lexical: async () => listing(schedule.lexicalFallbackId),
+    embedding: async () => listing('latency-vector-001') };
+  const embedder = schedule.id === 'lexical-fallback' ? null : (_query: string, signal?: AbortSignal) => {
+    marks.embedderEntryMs = at();
+    if (schedule.queuedAtMs !== null) marks.queuedAtMs = at();
+    signal?.addEventListener('abort', () => {
+      marks.cancellationAtMs = at();
+      cancellation = marks.networkAtMs === null ? 'queued' : 'network';
+      if (!caller.signal.aborted) marks.timerCallbackMs = at();
+    }, { once: true });
+    if (schedule.id === 'synchronous-entry-block') {
+      blockUntil(schedule.synchronousReturnMs);
+      marks.synchronousReturnMs = at();
+      marks.resultAtMs = at();
+      return Promise.resolve([1, 0]);
+    }
+    const promise = new Promise<number[]>((resolve, reject) => {
+      if (schedule.networkAtMs !== null) later(schedule.networkAtMs, () => { marks.networkAtMs = at(); });
+      if (schedule.id === 'late-timer') {
+        // Complete in the callback that blocks the deadline's timer. Its promise
+        // continuation can run before the overdue timer, exposing a late accept.
+        later(schedule.budgetMs - 1, () => {
+          blockUntil(schedule.budgetMs + 2);
+          marks.resultAtMs = at();
+          resolve([1, 0]);
+        });
+      } else if (schedule.resultAtMs !== null) later(schedule.resultAtMs, () => {
+        marks.resultAtMs = at();
+        resolve([1, 0]);
+      });
+      // Late-success deliberately models a provider that ignores cancellation;
+      // retain its late completion instead of mistaking a signal for pickup.
+      if (schedule.id !== 'late-success') signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    marks.synchronousReturnMs = at();
+    return promise;
+  };
+  const abortAt = 'abortAtMs' in schedule ? schedule.abortAtMs : null;
+  if (abortAt !== null) later(abortAt, () => caller.abort(new Error('latency-fixture-caller-abort')));
+  later(schedule.budgetMs + 1_000, () => {
+    safetyDeadlineFired = true;
+    caller.abort(new Error('latency-fixture-safety-deadline'));
+  });
+  let result: Awaited<ReturnType<typeof runHybridSearch>> | undefined;
+  let error: string | null = null;
+  try {
+    result = await runHybridSearch([source], { sql: {} as never, query: 'latency-fixture',
+      workspaceId: 'latency-acceptance-fixture', scopeFilter: null, limit: 4, mode: 'hybrid',
+      embedder, embedTimeoutMs: schedule.budgetMs, signal: caller.signal,
+      caller: 'LATENCY-M1-calibration', minScore: false, recency: false, lexicalCascade: false });
+  } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+  finally { marks.terminalMs = at(); }
+  // Observe a provider's original scheduled terminal even if the engine already
+  // returned, so an uncancelled request cannot disappear from the receipt.
+  if (schedule.id === 'late-success') await new Promise<void>(resolve => later(schedule.resultAtMs! + 5, resolve));
+  for (const timer of timers) clearTimeout(timer);
+  const embeddingAccepted = result?.embedderAvailable ?? false;
+  const ids = result?.results.map(row => row.source_id) ?? [];
+  const lateAccepted = embeddingAccepted && marks.resultAtMs !== null && marks.resultAtMs > schedule.deadlineMs;
+  return { id: schedule.id, budgetMs: schedule.budgetMs, deadlineMs: schedule.deadlineMs,
+    clock: 'performance.now', marks, embeddingAccepted, ids,
+    fallback: !embeddingAccepted && ids.includes(schedule.lexicalFallbackId) ? schedule.lexicalFallbackId : null,
+    cancellation, callerAborted: caller.signal.aborted && abortAt !== null, error,
+    safetyDeadlineFired, violations: { lateAccepted,
+      requestCompletedAfterCancellation: marks.resultAtMs !== null && marks.cancellationAtMs !== null
+        && marks.resultAtMs > marks.cancellationAtMs } };
 }
 
 export interface LatencyCardReference {

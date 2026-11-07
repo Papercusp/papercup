@@ -33,7 +33,7 @@ async function seedLatencyPgFixture(db: OrgTestDb, fixture: ReturnType<typeof la
       FROM jsonb_to_recordset(${JSON.stringify(fixture.coverageEdges)}::jsonb) AS r(
         workspace_id text, src_kind text, src_ref text, dst_kind text, dst_ref text, rel text, created_at timestamptz)`;
     await tx`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, ts)
-      SELECT ${fixture.workspace}, 'coord', body->>'from', body->>'msg_id', body, (body->>'ts')::timestamptz
+      SELECT ${fixture.workspace}, 'messages', body->>'from', body->>'msg_id', body, (body->>'ts')::timestamptz
       FROM jsonb_array_elements(${JSON.stringify(fixture.conditionEnvelopes)}::jsonb) AS r(body)`;
   });
 }

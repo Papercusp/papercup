@@ -4,6 +4,7 @@ import {
   latencyAttemptId, latencyAttemptSchedule, latencyDistribution, latencyFixtureDigest,
   latencyRecipeCriterionCompatibility, pinLatencyCardFixture, latencyDataFixtures,
   latencyIntervalReference, pinLatencySiblingFixture, latencyAttentionFixtures, latencyRetrievalFixtures,
+  latencyBenchAssignments, LATENCY_M1_TASKS,
   type LatencyReferenceInterval,
   type LatencyAttempt, type LatencyCardReference, type LatencyCardSnapshot,
 } from '../../../test/_latency-acceptance';
@@ -22,6 +23,52 @@ function calibrationSamples(): LatencyAttempt[] {
 }
 
 describe('LATENCY-M1 frozen experiment preparation', () => {
+  const taskManifest = () => ({ id: 'LATENCY-M1', pairedTasks: { cases: LATENCY_M1_TASKS.map(id => ({
+    id, purpose: `Read the complete ${id} fixture`, inputA: `${id}-A`, inputB: `${id}-B`,
+    qualityOracle: { kind: 'frozen-output', required: [`grader-only-reference-${id}`] },
+  })) } });
+
+  it('feeds the existing benchmark contract with identical paired task bytes, fixed phase order and private grading references', () => {
+    const manifest = taskManifest();
+    const before = structuredClone(manifest);
+    const assignments = latencyBenchAssignments(manifest);
+    expect(assignments.map(row => row.key)).toEqual(latencyAttemptSchedule());
+    const baseline = assignments.slice(0, 60), candidate = assignments.slice(60);
+    expect(new Set(baseline.map(row => row.task.instanceId)).size).toBe(60);
+    expect(baseline.map(row => row.task)).toEqual(candidate.map(row => row.task));
+    for (const { key, task } of assignments) {
+      expect(task.benchmark).toBe('harness-bench');
+      expect(task.instanceId).toBe(`LATENCY-M1:${key.task}:${key.stratum}:${key.repetition}`);
+      expect(task.problemStatement).toContain(`Frozen input A: "${key.task}-A"`);
+      expect(task.problemStatement).toContain(`Frozen input B: "${key.task}-B"`);
+      expect(task.problemStatement).not.toContain('grader-only-reference');
+      expect(task.graderMeta.latencyM1).toMatchObject({ manifestSha256: latencyFixtureDigest(manifest),
+        qualityOracle: { required: [`grader-only-reference-${key.task}`] } });
+    }
+    const meta = baseline[0]!.task.graderMeta.latencyM1 as { qualityOracle: { required: string[] } };
+    meta.qualityOracle.required.push('mutated');
+    expect(manifest).toEqual(before);
+    expect(candidate[0]!.task.graderMeta).not.toEqual(baseline[0]!.task.graderMeta);
+  });
+
+  it('refuses missing, reordered, duplicate or substituted cases and incomplete oracle definitions before assignment', () => {
+    const invalid = [
+      (m: ReturnType<typeof taskManifest>) => { m.id = 'replacement'; },
+      (m: ReturnType<typeof taskManifest>) => { m.pairedTasks.cases.pop(); },
+      (m: ReturnType<typeof taskManifest>) => { m.pairedTasks.cases.reverse(); },
+      (m: ReturnType<typeof taskManifest>) => { m.pairedTasks.cases[1]!.id = 'T01'; },
+      (m: ReturnType<typeof taskManifest>) => { m.pairedTasks.cases[1]!.id = 'T11'; },
+      (m: ReturnType<typeof taskManifest>) => { m.pairedTasks.cases[0]!.inputB = ' '; },
+      (m: ReturnType<typeof taskManifest>) => { m.pairedTasks.cases[0]!.qualityOracle.required = []; },
+      (m: ReturnType<typeof taskManifest>) => { m.pairedTasks.cases[0]!.qualityOracle.required = ['']; },
+    ];
+    for (const mutate of invalid) {
+      const manifest = taskManifest();
+      mutate(manifest);
+      expect(() => latencyBenchAssignments(manifest)).toThrow(/complete frozen T01/);
+    }
+  });
+
   it('calibrates an independent attention reference against lost acknowledgment, missing content and authorization controls', () => {
     const fixture = latencyAttentionFixtures();
     expect(latencyFixtureDigest(fixture)).toBe(latencyFixtureDigest(latencyAttentionFixtures()));
