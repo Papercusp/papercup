@@ -8,6 +8,7 @@ import { captureGitSyncCandidate, publishGitSyncCandidate, SOURCE_CUSTODY_REF_PR
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
+import { getOrgPg, _resetForTests as resetOrgPg } from '@papercusp/db-org';
 import { configureLocks, locksHost, _resetForTests as resetLocks, getTxPool } from '../../agent-tools/locks/su-lock-store';
 
 const roots: string[] = [];
@@ -205,11 +206,26 @@ describe('lifecycle P003 common writer', () => {
   it('serializes competing fires through the production per-install lease and releases it', async () => {
     const pg = await startDedicatedNativePg();
     const previousHost = locksHost();
+    const dbEnvKeys = ['DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL',
+      'PAPERCUSP_SKIP_PG_DISCOVERY', 'PAPERCUSP_PGBOUNCER'] as const;
+    const previousDbEnv = Object.fromEntries(dbEnvKeys.map(key => [key, process.env[key]]));
+    const privateUrl = pg.getConnectionUri();
     const slug = 'lifecycle-p003-fixture';
     const workspace = 'lifecycle-p003-private';
     try {
+      // Contention also consults the real session-liveness reader. Route its
+      // org pool to the owned cluster along with the separate locks database.
+      process.env.DATABASE_URL = privateUrl;
+      process.env.HARNESS_ADMIN_DATABASE_URL = privateUrl;
+      process.env.HARNESS_DATABASE_URL = privateUrl;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      await resetOrgPg();
       await resetLocks();
-      configureLocks({ getAdminBaseUrl: () => pg.getConnectionUri() });
+      configureLocks({ getAdminBaseUrl: () => privateUrl });
+      const target = new URL(privateUrl);
+      const [orgTarget] = await getOrgPg().sql`SELECT current_database() AS database, inet_server_port() AS port`;
+      expect(orgTarget).toEqual({ database: decodeURIComponent(target.pathname.slice(1)), port: Number(target.port) });
       const f = fixture();
       writeFileSync(join(f.repo, 'a.txt'), 'A1 frozen\n');
       const request = { requestId: 'common-writer', generation: 1, base: f.git('rev-parse', 'HEAD'), paths: ['a.txt'] };
@@ -249,7 +265,17 @@ describe('lifecycle P003 common writer', () => {
       expect(await getTxPool()`SELECT owner FROM agent_resource_locks WHERE coordination_domain = ${workspace}`).toHaveLength(0);
     } finally {
       try { await resetLocks(); }
-      finally { configureLocks(previousHost); await pg.stop(); }
+      finally {
+        try { await resetOrgPg(); }
+        finally {
+          configureLocks(previousHost);
+          for (const key of dbEnvKeys) {
+            if (previousDbEnv[key] === undefined) delete process.env[key];
+            else process.env[key] = previousDbEnv[key];
+          }
+          await pg.stop();
+        }
+      }
     }
   }, 180_000);
 });
