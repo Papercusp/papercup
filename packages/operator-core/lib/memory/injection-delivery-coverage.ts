@@ -51,6 +51,73 @@
 import { readRecallSignals } from '../../../../apps/operator/scripts/hooks/inject/recall-query.mjs';
 
 export const DELIVERY_MATRIX_CLIENTS = ['codex', 'claude', 'omp'] as const;
+export const OPERATIVE_UNIT_CONDITIONS = ['late-negation', 'approval', 'exception', 'expiry', 'supersession'] as const;
+export const OPERATIVE_UNIT_BOUNDARIES = ['entry', 'aggregate'] as const;
+export type OperativeUnitCell = {
+  client: typeof DELIVERY_MATRIX_CLIENTS[number];
+  condition: typeof OPERATIVE_UNIT_CONDITIONS[number];
+  boundary: typeof OPERATIVE_UNIT_BOUNDARIES[number];
+  source: 'memory' | 'corpus'; mode: 'fits' | 'limited';
+  selector: string; evidenceRefs: string[]; inputHash: string;
+  returnedText: string; offeredHashes: string[]; committedHashes: string[];
+  verdict: 'passed' | 'failed' | 'UNKNOWN';
+};
+export type OperativeUnitArtifact = {
+  schemaVersion: 'operative-unit-v1'; identity: DeliveryMatrixManifest['identity']; cells: OperativeUnitCell[];
+};
+
+/** R-4 uses the existing delivery evidence surface. The caller supplies the
+ * separately retained execution oracle; a self-declared pass is insufficient. */
+export function validateOperativeUnitArtifact(value: unknown, expected: {
+  identity: OperativeUnitArtifact['identity']; cells: OperativeUnitCell[];
+}): { valid: boolean; closed: boolean; errors: string[] } {
+  const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const hash = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const key = (cell: Record<string, unknown> | OperativeUnitCell) =>
+    [cell.client, cell.condition, cell.boundary, cell.source, cell.mode].join('/');
+  const population = DELIVERY_MATRIX_CLIENTS.flatMap(client => OPERATIVE_UNIT_CONDITIONS.flatMap(condition =>
+    OPERATIVE_UNIT_BOUNDARIES.flatMap(boundary => ['memory', 'corpus'].flatMap(source =>
+      ['fits', 'limited'].map(mode => [client, condition, boundary, source, mode].join('/'))))));
+  const errors: string[] = [], seen = new Set<string>();
+  const artifact = record(value) ? value : {};
+  if (artifact.schemaVersion !== 'operative-unit-v1') errors.push('schema-version');
+  const identity = record(artifact.identity) ? artifact.identity : {};
+  for (const field of ['planHash', 'rubricHash', 'barHash', 'specHash', 'sourceHash', 'testHash'] as const)
+    if (!hash(identity[field]) || identity[field] !== expected.identity[field]) errors.push(`identity:${field}`);
+  for (const field of ['planRevision', 'rubricRevision'] as const)
+    if (!Number.isSafeInteger(identity[field]) || Number(identity[field]) <= 0 || identity[field] !== expected.identity[field]) errors.push(`identity:${field}`);
+  if (typeof identity.runtimeGeneration !== 'string' || !identity.runtimeGeneration.trim() ||
+      identity.runtimeGeneration !== expected.identity.runtimeGeneration) errors.push('identity:runtimeGeneration');
+  const oracles = new Map(expected.cells.map(cell => [key(cell), cell]));
+  if (expected.cells.length !== population.length || oracles.size !== population.length ||
+      population.some(id => !oracles.has(id))) errors.push('oracle-population');
+  const cells = Array.isArray(artifact.cells) ? artifact.cells : [];
+  for (const cell of cells) {
+    if (!record(cell)) { errors.push('invalid-cell'); continue; }
+    const id = key(cell), oracle = oracles.get(id);
+    if (seen.has(id) || !oracle || !population.includes(id)) errors.push(`population:${id}`);
+    seen.add(id);
+    if (!oracle) continue;
+    if (!hash(cell.inputHash) || cell.inputHash !== oracle.inputHash) errors.push(`${id}:input`);
+    if (cell.verdict !== 'passed' || cell.selector !== `context reliability R-4: ${cell.condition} ${cell.boundary}` ||
+        !Array.isArray(cell.evidenceRefs) || !cell.evidenceRefs.length ||
+        !cell.evidenceRefs.every(ref => typeof ref === 'string' && !!ref.trim())) errors.push(`${id}:execution-evidence`);
+    if (typeof cell.returnedText !== 'string' || cell.returnedText !== oracle.returnedText) errors.push(`${id}:returned-text`);
+    for (const field of ['offeredHashes', 'committedHashes'] as const) {
+      const hashes = cell[field];
+      if (!Array.isArray(hashes) || !hashes.every(hash) || new Set(hashes).size !== hashes.length ||
+          JSON.stringify(hashes) !== JSON.stringify(oracle[field])) errors.push(`${id}:${field}`);
+    }
+    // The negative arm must never suppress a pointer or omitted instruction.
+    if (cell.mode === 'limited' && (JSON.stringify(cell.offeredHashes) !== '[]' ||
+        JSON.stringify(cell.committedHashes) !== '[]')) errors.push(`${id}:abstention-commit`);
+    if (cell.mode === 'fits' && (!Array.isArray(cell.offeredHashes) || cell.offeredHashes.length !== 1 ||
+        JSON.stringify(cell.offeredHashes) !== JSON.stringify(cell.committedHashes))) errors.push(`${id}:complete-commit`);
+  }
+  const closed = cells.length === population.length && seen.size === population.length && population.every(id => seen.has(id));
+  return { valid: closed && !errors.length, closed, errors };
+}
+
 export const GROUNDED_QUERY_CASES = ['task', 'symbol', 'path', 'search', 'error', 'exact-id',
   'shell-negative', 'javascript-negative', 'heredoc-negative', 'serialized-json-negative',
   'truncated-json-negative', 'lexical-only'] as const;
