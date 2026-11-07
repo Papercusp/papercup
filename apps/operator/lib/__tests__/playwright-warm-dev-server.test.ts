@@ -9,7 +9,8 @@ const rig = vi.hoisted(() => {
   };
   const browser = { newPage: vi.fn(() => page), close: vi.fn() };
   const api = { get: vi.fn(), dispose: vi.fn() };
-  return { page, browser, waitFor, api, newContext: vi.fn(), launch: vi.fn(() => browser) };
+  return { page, browser, waitFor, api, newContext: vi.fn(), launch: vi.fn(() => browser),
+    readFile: vi.fn(), readReport: vi.fn(), configureReport: vi.fn() };
 });
 
 vi.mock('@playwright/test', () => ({
@@ -17,6 +18,10 @@ vi.mock('@playwright/test', () => ({
 }));
 vi.mock('@papercusp/test-config/admin-test-runs-reporter', () => ({
   resolveTestRunWorkspaceId: () => 'real workspace',
+}));
+vi.mock('node:fs/promises', () => ({ readFile: rig.readFile }));
+vi.mock('../../e2e/_reports-proof', () => ({
+  readPublishedReportProof: rig.readReport, configurePublishedReportSession: rig.configureReport,
 }));
 
 import warmDevServer, { WARMUP_PATHS } from '../../e2e/_warm-dev-server';
@@ -33,7 +38,13 @@ describe('Playwright view preparation', () => {
     rig.page.waitForFunction.mockResolvedValue(undefined);
     rig.page.waitForLoadState.mockResolvedValue(undefined);
     vi.stubEnv('OPERATOR_E2E_SKIP_WARMUP', '0');
+    vi.stubEnv('OPERATOR_REPORT_PROOF_JSON', '');
+    vi.stubEnv('PAPERCUSP_SID', 'warmup-reader');
+    vi.stubEnv('PAPERCUSP_HOME', '/test/operator');
     vi.stubEnv('PAPERCUSP_ONGOING_ACCEPTANCE_SHA', '0123456789');
+    rig.readFile.mockResolvedValue(' warm-token\n');
+    rig.readReport.mockResolvedValue({ report_id: 'selected/report', workspace_id: 'report-workspace' });
+    rig.configureReport.mockResolvedValue(undefined);
     rig.newContext.mockResolvedValue(rig.api);
     rig.api.get.mockResolvedValue({
       ok: () => true, status: () => 200, json: async () => ({ sha: '0123456789' }),
@@ -67,6 +78,55 @@ describe('Playwright view preparation', () => {
     expect(rig.waitFor).toHaveBeenCalledWith({ state: 'visible', timeout: 120_000 });
     expect(rig.page.waitForFunction).not.toHaveBeenCalled();
     expect(rig.browser.close).toHaveBeenCalledOnce();
+  });
+
+  it('prepares the authenticated receipt-selected report without visiting unrelated default routes', async () => {
+    vi.stubEnv('OPERATOR_REPORT_PROOF_JSON', '/proof/report.json');
+    await warmDevServer(config);
+    expect(rig.readReport).toHaveBeenCalledWith('/proof/report.json');
+    expect(rig.readFile).toHaveBeenCalledWith('/test/operator/superuser-token', 'utf8');
+    expect(rig.configureReport).toHaveBeenCalledWith(rig.page, {
+      origin: 'http://localhost:3427', token: 'warm-token', workspaceId: 'report-workspace', clientId: 'warmup-reader',
+    });
+    expect(rig.page.goto).toHaveBeenCalledOnce();
+    expect(rig.page.goto.mock.calls[0][0]).toBe('http://localhost:3427/reports?sel=selected%2Freport');
+    expect(rig.configureReport.mock.invocationCallOrder[0]).toBeLessThan(rig.page.goto.mock.invocationCallOrder[0]);
+    expect(rig.page.locator).toHaveBeenCalledWith('.reports-article-main');
+    expect(rig.page.waitForFunction).not.toHaveBeenCalled();
+    expect(rig.browser.close).toHaveBeenCalledOnce();
+  });
+
+  it('refuses receipt-selected preparation when the report cannot be read', async () => {
+    vi.stubEnv('OPERATOR_REPORT_PROOF_JSON', '/proof/report.json');
+    rig.readReport.mockRejectedValueOnce(new Error('Incomplete report receipt'));
+    await expect(warmDevServer(config)).rejects.toThrow('Incomplete report receipt');
+    expect(rig.configureReport).not.toHaveBeenCalled();
+    expect(rig.page.goto).not.toHaveBeenCalled();
+    expect(rig.browser.close).toHaveBeenCalledOnce();
+  });
+
+  it('refuses receipt-selected preparation when its browser cannot launch', async () => {
+    vi.stubEnv('OPERATOR_REPORT_PROOF_JSON', '/proof/report.json');
+    rig.launch.mockRejectedValueOnce(new Error('Browser unavailable'));
+    await expect(warmDevServer(config)).rejects.toThrow('Browser unavailable');
+    expect(rig.readReport).not.toHaveBeenCalled();
+    expect(rig.page.goto).not.toHaveBeenCalled();
+  });
+
+  it('refuses receipt-selected preparation when its authenticated view does not mount', async () => {
+    vi.stubEnv('OPERATOR_REPORT_PROOF_JSON', '/proof/report.json');
+    rig.waitFor.mockRejectedValueOnce(new Error('Report never mounted'));
+    await expect(warmDevServer(config)).rejects.toThrow('Report never mounted');
+    expect(rig.page.goto).toHaveBeenCalledOnce();
+    expect(rig.browser.close).toHaveBeenCalledOnce();
+  });
+
+  it('preserves an explicit profile route when a report receipt is also present', async () => {
+    vi.stubEnv('OPERATOR_REPORT_PROOF_JSON', '/proof/report.json');
+    await warmDevServer(config, { paths: ['/chosen'], readySelector: '.chosen', strict: true });
+    expect(rig.readReport).not.toHaveBeenCalled();
+    expect(rig.page.goto.mock.calls[0][0]).toBe('http://localhost:3427/chosen');
+    expect(rig.page.locator).toHaveBeenCalledWith('.chosen');
   });
 
   it.each([

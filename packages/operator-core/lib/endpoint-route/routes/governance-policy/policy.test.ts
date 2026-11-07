@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+vi.mock('../../../governance-policy/sensitive-action', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../governance-policy/sensitive-action')>(),
+  getSensitiveAction: vi.fn(),
+}));
+vi.mock('../../../blind-review-continuation-custody', () => ({
+  decideLegacyAdoption: vi.fn(), reserveLegacyAdoption: vi.fn(),
+  retainLegacyAdoptionHuman: vi.fn(), validateLegacyAdoptionRequest: vi.fn(),
+}));
 vi.mock('../../../governance-policy/control', async (importOriginal) => {
   // Keep the real schemas and request parser; only the operations are replaced.
   const original = await importOriginal<typeof import('../../../governance-policy/control')>();
@@ -31,7 +39,10 @@ import {
   setGovernancePolicyLayer,
   simulateGovernancePolicy,
 } from '../../../governance-policy/control';
-import type { SensitiveActionErrorCode } from '../../../governance-policy/sensitive-action';
+import { getSensitiveAction, LEGACY_ADOPTION_ACTION, SensitiveActionError,
+  type SensitiveActionErrorCode } from '../../../governance-policy/sensitive-action';
+import { decideLegacyAdoption, reserveLegacyAdoption, retainLegacyAdoptionHuman,
+  validateLegacyAdoptionRequest } from '../../../blind-review-continuation-custody';
 import routes, { GOVERNANCE_POLICY_CHANGE_STATUS } from './policy';
 
 const [explainRoute, simulateRoute, setRoute, addExceptionRoute, prepareRoute, decideRoute, applyRoute, delegateRoute, revokeRoute, authorityRoute] =
@@ -47,8 +58,9 @@ function ctxFor(input: Record<string, unknown>, slug: string | null = 'tester') 
   return { input, principal: slug ? { slug } : null } as never;
 }
 
-async function call(route: (typeof routes)[number], input: Record<string, unknown>, slug?: string | null) {
-  const res = (await route.handler(new Request('http://127.0.0.1/api/governance-policy'), ctxFor(input, slug))) as Response;
+async function call(route: (typeof routes)[number], input: Record<string, unknown>, slug?: string | null,
+  headers?: HeadersInit) {
+  const res = (await route.handler(new Request('http://127.0.0.1/api/governance-policy', { headers }), ctxFor(input, slug))) as Response;
   return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 }
 
@@ -62,10 +74,107 @@ const LAYER = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getSensitiveAction).mockResolvedValue({ requestId: 'sar-1', actionKind: 'governance-policy-change' } as never);
   vi.mocked(explainGovernancePolicy).mockReset();
   vi.mocked(simulateGovernancePolicy).mockReset();
   vi.mocked(setGovernancePolicyLayer).mockReset();
   vi.mocked(addGovernancePolicyException).mockReset();
+});
+
+describe('D011 HTTP stored adoption dispatch', () => {
+  const stored = { requestId: 'adopt-1', actionKind: LEGACY_ADOPTION_ACTION,
+    workspaceId: 'ws-active', payloadHash: 'a'.repeat(64) };
+
+  beforeEach(() => {
+    vi.mocked(getSensitiveAction).mockResolvedValue(stored as never);
+    vi.mocked(validateLegacyAdoptionRequest).mockReturnValue({ bindingId: 7 } as never);
+    vi.mocked(retainLegacyAdoptionHuman).mockReset();
+  });
+
+  it('decide sends actual request headers and stored workspace to the adoption operation', async () => {
+    vi.mocked(decideLegacyAdoption).mockResolvedValue(stored as never);
+    const decision = { requestId: 'adopt-1', decision: 'approve', reason: 'reviewed' };
+    const out = await call(decideRoute, decision, 'forged-admin', { cookie: 'actual-session=1' });
+    expect(out).toMatchObject({ status: 200, body: { ok: true, op: 'decide' } });
+    const [input, headers] = vi.mocked(decideLegacyAdoption).mock.calls[0]!;
+    expect(input).toEqual({ ...decision, workspaceId: 'ws-active' });
+    expect(headers.get('cookie')).toBe('actual-session=1');
+    expect(decideGovernancePolicyChange).not.toHaveBeenCalled();
+  });
+
+  it('apply derives binding from stored payload and retains request credentials rather than the admin label', async () => {
+    const principal = vi.fn();
+    vi.mocked(retainLegacyAdoptionHuman).mockResolvedValue(principal);
+    vi.mocked(reserveLegacyAdoption).mockResolvedValue({ rootId: 9 } as never);
+    const out = await call(applyRoute, { requestId: 'adopt-1', bindingId: 999,
+      workspaceId: 'forged', actor: 'user:forged' }, 'forged-admin', { cookie: 'actual-session=2' });
+    expect(out).toMatchObject({ status: 200, body: { ok: true, adoption: { rootId: 9 } } });
+    expect(validateLegacyAdoptionRequest).toHaveBeenCalledWith(stored);
+    const [headers, workspace] = vi.mocked(retainLegacyAdoptionHuman).mock.calls[0]!;
+    expect(headers.get('cookie')).toBe('actual-session=2');
+    expect(workspace).toBe('ws-active');
+    expect(reserveLegacyAdoption).toHaveBeenCalledWith({ workspaceId: 'ws-active', bindingId: 7,
+      requestId: 'adopt-1', expectedPayloadHash: stored.payloadHash }, principal);
+    expect(applyGovernancePolicyChange).not.toHaveBeenCalled();
+  });
+
+  it('passes an explicit expected hash through the locked adoption fence', async () => {
+    vi.mocked(retainLegacyAdoptionHuman).mockResolvedValue(vi.fn());
+    vi.mocked(reserveLegacyAdoption).mockRejectedValue(new SensitiveActionError('payload-mismatch', 'changed'));
+    expect(await call(applyRoute, { requestId: 'adopt-1', expectedPayloadHash: 'b'.repeat(64) }))
+      .toMatchObject({ status: 409, body: { ok: false, code: 'payload-mismatch' } });
+    expect(vi.mocked(reserveLegacyAdoption).mock.calls[0]![0].expectedPayloadHash).toBe('b'.repeat(64));
+  });
+
+  it('refuses a bearer/loopback/admin assertion without retained human credentials', async () => {
+    vi.mocked(retainLegacyAdoptionHuman).mockRejectedValue(new SensitiveActionError('forbidden', 'cookie required'));
+    expect(await call(applyRoute, { requestId: 'adopt-1' }, 'user:forged', { authorization: 'Bearer fixture' }))
+      .toMatchObject({ status: 403, body: { ok: false, code: 'forbidden', refusal: expect.any(Object) } });
+    expect(reserveLegacyAdoption).not.toHaveBeenCalled();
+    expect(applyGovernancePolicyChange).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a refused adoption decision through the generic admin operation', async () => {
+    vi.mocked(decideLegacyAdoption).mockRejectedValue(new SensitiveActionError('forbidden', 'cookie required'));
+    expect(await call(decideRoute, { requestId: 'adopt-1', decision: 'approve', reason: 'r' }, 'forged-admin'))
+      .toMatchObject({ status: 403, body: { ok: false, code: 'forbidden' } });
+    expect(decideGovernancePolicyChange).not.toHaveBeenCalled();
+  });
+
+  it('a caller-supplied adoption discriminator cannot select the adoption executor', async () => {
+    vi.mocked(getSensitiveAction).mockResolvedValue({ ...stored, actionKind: 'governance-policy-change' } as never);
+    vi.mocked(applyGovernancePolicyChange).mockResolvedValue({ ok: true, request: {} as never,
+      layer: { layerId: 'policy', version: 1 }, revision: 'policy@v1' });
+    expect((await call(applyRoute, { requestId: 'adopt-1', actionKind: LEGACY_ADOPTION_ACTION })).status).toBe(200);
+    expect(applyGovernancePolicyChange).toHaveBeenCalledOnce();
+    expect(retainLegacyAdoptionHuman).not.toHaveBeenCalled();
+    expect(reserveLegacyAdoption).not.toHaveBeenCalled();
+  });
+
+  it('an unavailable stored discriminator refuses without choosing an executor', async () => {
+    vi.mocked(getSensitiveAction).mockRejectedValue(new Error('storage unavailable'));
+    expect(await call(applyRoute, { requestId: 'adopt-1' }))
+      .toMatchObject({ status: 503, body: { ok: false, code: 'unavailable' } });
+    expect(applyGovernancePolicyChange).not.toHaveBeenCalled();
+    expect(retainLegacyAdoptionHuman).not.toHaveBeenCalled();
+    expect(reserveLegacyAdoption).not.toHaveBeenCalled();
+  });
+
+  it.each([decideRoute, applyRoute])('refuses a foreign-workspace adoption before authenticating or effecting it', async route => {
+    vi.mocked(getSensitiveAction).mockResolvedValue({ ...stored, workspaceId: 'foreign' } as never);
+    expect((await call(route, { requestId: 'adopt-1', decision: 'approve', reason: 'r' })).status).toBe(403);
+    expect(decideLegacyAdoption).not.toHaveBeenCalled();
+    expect(retainLegacyAdoptionHuman).not.toHaveBeenCalled();
+    expect(reserveLegacyAdoption).not.toHaveBeenCalled();
+  });
+
+  it.each([decideRoute, applyRoute])('refuses an absent stored request without generic fallback', async route => {
+    vi.mocked(getSensitiveAction).mockResolvedValue(null);
+    expect((await call(route, { requestId: 'missing', decision: 'approve', reason: 'r' })).status).toBe(404);
+    expect(decideGovernancePolicyChange).not.toHaveBeenCalled();
+    expect(applyGovernancePolicyChange).not.toHaveBeenCalled();
+    expect(reserveLegacyAdoption).not.toHaveBeenCalled();
+  });
 });
 
 describe('/api/governance-policy/* — the admin pane doors (P-005)', () => {

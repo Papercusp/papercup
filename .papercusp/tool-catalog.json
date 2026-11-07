@@ -29120,7 +29120,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many reusable code:run RECIPEs by id — including the full script — so you can inspect what they do before recipes:run-ning them, including entity bindings and the current revision. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. Read-only. Recipes are global/fleet-wide; this tool accepts only `id`/`ids` and does not accept a `harness` argument.",
+      "description": "Fetch one OR many reusable code:run RECIPEs by id — including the full script — so you can inspect what they do before recipes:run-ning them, including entity bindings and the current revision. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. Read-only. Recipes are global/fleet-wide; pass optional `bindings` to resolve authority for that exact invocation. It does not accept a top-level `harness` argument.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -29181,9 +29181,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "When you have one or more recipe ids (from recipes:list / recipes:search / a code:run result's similarRecipes) and want to read their script + metadata before reusing. Recipes are global/fleet-wide; pass only `id` or `ids` (not `harness`).",
+        "when": "When you have one or more recipe ids (from recipes:list / recipes:search / a code:run result's similarRecipes) and want to read their script + metadata before reusing. Recipes are global/fleet-wide; pass `id` or `ids` (not `harness`), with the same invocation bindings you will pass to recipes:run.",
         "notWhen": "To EXECUTE the recipe — use recipes:run (it runs the script under YOUR role-scoped envelope). To discover recipes by intent — recipes:search.",
-        "chaining": "recipes:search / recipes:list → recipes:get { ids:[…] } (inspect) → recipes:run { id } (reuse). Recipes are global, so omit `harness`; this tool accepts only `id`/`ids`. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
+        "chaining": "recipes:search / recipes:list → recipes:get { ids:[…] } (inspect) → recipes:run { id } (reuse). Recipes are global, so omit `harness`; for a bound template supply the same `bindings` to get and run. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
     {
@@ -37713,11 +37713,6 @@
         "when": "As the resolver behind state:read { cell:\"workspace.workScope\" }, or when you only need to READ whether the workspace is confined to an allow-list of harnesses.",
         "notWhen": "To set or clear the policy — that is workspace:work_scope { op:\"set\"|\"clear\" }.",
         "chaining": "state:read { cell:\"workspace.workScope\" } is the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
-      }
-    }
-  ]
-}
-s the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
       }
     }
   ]

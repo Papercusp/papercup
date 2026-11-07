@@ -30,6 +30,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   addGovernancePolicyException,
   applyGovernancePolicyChange,
+  changeFailure,
   decideGovernancePolicyChange,
   delegateGovernanceAuthority,
   explainGovernancePolicy,
@@ -55,6 +56,9 @@ import {
   type GovernancePolicyWriteResult,
   type ProposedLayer,
 } from '../../../governance-policy/control';
+import { getSensitiveAction, LEGACY_ADOPTION_ACTION, SensitiveActionError } from '../../../governance-policy/sensitive-action';
+import { decideLegacyAdoption, reserveLegacyAdoption, retainLegacyAdoptionHuman,
+  validateLegacyAdoptionRequest } from '../../../blind-review-continuation-custody';
 import type { GovernedRequest, PolicyException } from '../../../governance-policy/inherited-policy';
 
 export const GOVERNANCE_POLICY_WRITE_STATUS: Record<GovernancePolicyWriteCode, number> = {
@@ -193,8 +197,19 @@ const decide = defineTool({
   path: '/governance-policy/decide',
   auth: 'loopback',
   input: governancePolicyDecideSchema,
-  async handler(_req, ctx) {
-    return changeResponse('decide', await decideGovernancePolicyChange(ctx.input, governancePolicyActor(ctx)));
+  async handler(req, ctx) {
+    try {
+      // The stored discriminator selects the executor. Neither body fields nor
+      // the loopback/admin actor can select the authenticated adoption seam.
+      const stored = await getSensitiveAction(ctx.input.requestId);
+      if (!stored) throw new SensitiveActionError('not-found', 'sensitive action not found');
+      if (stored.actionKind !== LEGACY_ADOPTION_ACTION)
+        return changeResponse('decide', await decideGovernancePolicyChange(ctx.input, governancePolicyActor(ctx)));
+      if (stored.workspaceId !== activeWorkspaceId())
+        throw new SensitiveActionError('forbidden', 'adoption request belongs to another workspace');
+      const request = await decideLegacyAdoption({ ...ctx.input, workspaceId: stored.workspaceId }, req.headers);
+      return changeResponse('decide', { ok: true, request });
+    } catch (error) { return changeResponse('decide', changeFailure(error)); }
   },
 });
 
@@ -203,8 +218,21 @@ const apply = defineTool({
   path: '/governance-policy/apply',
   auth: 'loopback',
   input: governancePolicyApplySchema,
-  async handler(_req, ctx) {
-    return changeResponse('apply', await applyGovernancePolicyChange(ctx.input, governancePolicyActor(ctx)));
+  async handler(req, ctx) {
+    try {
+      const stored = await getSensitiveAction(ctx.input.requestId);
+      if (!stored) throw new SensitiveActionError('not-found', 'sensitive action not found');
+      if (stored.actionKind !== LEGACY_ADOPTION_ACTION)
+        return changeResponse('apply', await applyGovernancePolicyChange(ctx.input, governancePolicyActor(ctx)));
+      if (stored.workspaceId !== activeWorkspaceId())
+        throw new SensitiveActionError('forbidden', 'adoption request belongs to another workspace');
+      const payload = validateLegacyAdoptionRequest(stored);
+      const principal = await retainLegacyAdoptionHuman(req.headers, stored.workspaceId);
+      const adoption = await reserveLegacyAdoption({ workspaceId: stored.workspaceId,
+        bindingId: payload.bindingId, requestId: stored.requestId,
+        expectedPayloadHash: ctx.input.expectedPayloadHash ?? stored.payloadHash }, principal);
+      return changeResponse('apply', { ok: true, adoption });
+    } catch (error) { return changeResponse('apply', changeFailure(error)); }
   },
 });
 

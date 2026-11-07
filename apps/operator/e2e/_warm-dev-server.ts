@@ -19,6 +19,9 @@
  * report their own failures. OPERATOR_E2E_SKIP_WARMUP=1 skips it.
  */
 import { chromium, type Browser, type FullConfig } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 /** Routes whose lazy chunks pull most of the dependency graph. */
 export const WARMUP_PATHS = ['/adv', '/settings/agent', '/cupboard', '/admin/plans'] as const;
@@ -49,6 +52,8 @@ export default async function warmDevServer(config: FullConfig, options: WarmDev
 
   const started = Date.now();
   let browser: Browser | undefined;
+  const reportReceipt = !options.paths && process.env.OPERATOR_REPORT_PROOF_JSON;
+  const strict = options.strict || Boolean(reportReceipt);
   try {
     const use = config.projects[0]?.use;
     browser = await chromium.launch({
@@ -61,14 +66,30 @@ export default async function warmDevServer(config: FullConfig, options: WarmDev
     await page.route('**/*', (route) =>
       isLocalUrl(route.request().url()) ? route.continue() : route.abort(),
     );
-    for (const path of options.paths ?? WARMUP_PATHS) {
+    let paths: readonly string[] = options.paths ?? WARMUP_PATHS;
+    let readySelector = options.readySelector;
+    if (reportReceipt) {
+      // A receipt-selected journey needs its actual authenticated view. The
+      // unrelated default routes may never mount on this shared operator.
+      const { readPublishedReportProof, configurePublishedReportSession } = await import('./_reports-proof');
+      const report = await readPublishedReportProof(reportReceipt);
+      const clientId = process.env.PAPERCUSP_SID;
+      if (!clientId) throw new Error('Published report preparation requires PAPERCUSP_SID');
+      const token = (await readFile(join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token'), 'utf8')).trim();
+      await configurePublishedReportSession(page, {
+        origin: new URL(baseURL).origin, token, workspaceId: report.workspace_id, clientId,
+      });
+      paths = ['/reports?sel=' + encodeURIComponent(report.report_id)];
+      readySelector = '.reports-article-main';
+    }
+    for (const path of paths) {
       const url = new URL(path, baseURL).toString();
       try {
         await page.goto(url, { waitUntil: 'load', timeout: WARMUP_NAV_TIMEOUT_MS });
-        if (options.readySelector) {
+        if (readySelector) {
           // A profile's lazy view must mount before its test worker starts.
           // Shell children alone also appear while Suspense is still loading.
-          await page.locator(options.readySelector).waitFor({
+          await page.locator(readySelector).waitFor({
             state: 'visible', timeout: WARMUP_MOUNT_TIMEOUT_MS,
           });
         } else {
@@ -80,18 +101,18 @@ export default async function warmDevServer(config: FullConfig, options: WarmDev
         }
         await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined);
       } catch (err) {
-        if (options.strict) throw err;
+        if (strict) throw err;
         console.warn(`[e2e warm-up] ${path} did not settle: ${(err as Error).message.split('\n')[0]}`);
       }
     }
   } catch (err) {
-    if (options.strict) throw err;
+    if (strict) throw err;
     console.warn(`[e2e warm-up] skipped after error: ${(err as Error).message.split('\n')[0]}`);
   } finally {
     try {
       await browser?.close();
     } catch (err) {
-      if (options.strict) throw err;
+      if (strict) throw err;
       console.warn(`[e2e warm-up] browser cleanup failed: ${(err as Error).message.split('\n')[0]}`);
     }
   }

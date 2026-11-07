@@ -690,7 +690,7 @@ export type GovernancePolicyApplyResult =
   | GovernancePolicyFailure;
 export type GovernanceDelegationResult = { ok: true; delegation: GovernanceDelegation } | GovernancePolicyFailure;
 
-function changeFailure(err: unknown): GovernancePolicyFailure {
+export function changeFailure(err: unknown): GovernancePolicyFailure {
   if (err instanceof SensitiveActionError) return policyFailure(err.code, err.message);
   if (err instanceof GovernanceAuthorityError) return governanceAuthorityFailure(err);
   if (err instanceof GovernancePolicyWriteError) return policyFailure(err.code, err.message);

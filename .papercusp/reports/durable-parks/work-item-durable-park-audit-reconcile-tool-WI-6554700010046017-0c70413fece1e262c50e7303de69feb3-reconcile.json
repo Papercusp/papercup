@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046017:0c70413fece1e262c50e7303de69feb3",
+  "inputSha256": "0c70413fece1e262c50e7303de69feb313b83bfb4eb6256bd212043d5598af88",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-07T08:50:05.728Z",
+  "actor": "su-07e4aca6-d95c-4e50-972a-be582ae8b56e",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046017",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "observedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "reasonCode": "operator-directed",
+      "evidence": "Exact operator-directed scoped migration park reconciliation authorized by lifecycle-driven-git-sync-2026-11-06#D-013 under Avi's registered AUTO scope mode-instructions:auto. Same worker holds temporary P008 control WI-6554700010030915 (claim 2026-11-07T08:49:06.725Z). Target only WI-6554700010046017 conversion-owned park; P002 is canonically done. Preserve every other park, lease, claim, canonical node, DAG and BAR; no global P008 completion.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046017-0c70413fece1e262c50e7303de69feb3-reconcile.json"
+}
