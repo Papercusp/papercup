@@ -25,6 +25,11 @@ export async function compileDeclarationsIncrementally(
   }: { cacheRoot?: string; budgetMs?: number; cancellationToken?: ts.CancellationToken;
     onProgress?: (checked: number) => void } = {},
 ): Promise<void> {
+  // Admission and compiler work consume the SAME existing slice. A separate
+  // one-second lock timeout can reject an uncontended filesystem operation;
+  // starting the compiler clock after admission instead grants queued work a
+  // fresh slice beyond the caller's deadline.
+  const deadline = Date.now() + budgetMs;
   const parsed = ts.getParsedCommandLineOfConfigFile(resolve(repoRoot, config), {}, {
     ...ts.sys,
     onUnRecoverableConfigFileDiagnostic(diagnostic) {
@@ -40,10 +45,13 @@ export async function compileDeclarationsIncrementally(
   })).digest('hex');
   const cache = join(cacheRoot, key);
   await withFsMutex(`declaration-compiler-${key}`, async () => {
-    const started = Date.now();
-    const token: ts.CancellationToken = cancellationToken ?? {
-      isCancellationRequested: () => Date.now() - started >= budgetMs,
+    if (Date.now() >= deadline) {
+      throw new Error('declaration compiler slice incomplete; deadline elapsed before compilation');
+    }
+    const token: ts.CancellationToken = {
+      isCancellationRequested: () => Date.now() >= deadline || cancellationToken?.isCancellationRequested() === true,
       throwIfCancellationRequested() {
+        cancellationToken?.throwIfCancellationRequested();
         if (this.isCancellationRequested()) throw new ts.OperationCanceledException();
       },
     };
@@ -111,7 +119,13 @@ export async function compileDeclarationsIncrementally(
     } finally {
       checkpoint.call(builder);
     }
-  }, { timeoutMs: 1000, lockRootDir: join(cacheRoot, 'locks') });
+  }, {
+    timeoutMs: Math.max(1, deadline - Date.now()),
+    lockRootDir: join(cacheRoot, 'locks'),
+    // Opt into the primitive's existing subphase measurements. They are attached
+    // to a timeout error, so the CLI can distinguish setup from an observed hold.
+    onTimedOut() {},
+  });
 }
 
 const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
