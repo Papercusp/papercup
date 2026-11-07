@@ -48,6 +48,10 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 import { upsertRoutine } from '@papercusp/db-org';
 import { getRubric } from './rubrics';
 import { maximumStartGapMs } from './harness/routines/schedule-next';
+import { fillRatingsFromLedger, judgeLedgerRow, ledgerCheckBindings } from './scorecard-ledger-fill';
+import { projectScorecardLedgerDiagnostics } from './scorecards';
+import { retainMeasurementProvenance } from './measurement-provenance';
+import type { Rubric } from './rubrics';
 import { getPlanRow, setPlanSchedule, type PlanRow } from './agent-tools/plans/source';
 import { mockResolvedTyped } from './testing/typed-mock';
 import { catalogEntry, buildKey, keyMatchesCatalog } from './events/await/catalog';
@@ -349,7 +353,7 @@ describe('grading schedule freshness policy', () => {
       input: { rubricRef: RUBRIC, maxRuntimeMs: 40, maxSchedulingDelayMs: 10 } },
   };
 
-  it('grading schedule accepts freshness budget equality and rejects one millisecond over', () => {
+  it('grading system rejects cadence incompatible with evidence freshness', () => {
     expect(() => validateRescoreCadence(schedule, [live])).not.toThrow();
     expect(() => validateRescoreCadence({ ...schedule, action: { ...schedule.action,
       input: { ...schedule.action.input, maxRuntimeMs: 41 } } }, [live])).toThrow('exceeds maxAgeMs');
@@ -401,7 +405,35 @@ describe('grading schedule freshness policy', () => {
     expect(setPlanSchedule).not.toHaveBeenCalled();
   });
 
-  it('grading schedule revalidates a changed rubric at arm and fire before writes or measurement', async () => {
+  it('grading cadence validates equality jitter current revision and artifact invalidation', async () => {
+    expect(() => validateRescoreCadence(schedule, [live])).not.toThrow();
+    expect(() => validateRescoreCadence({ ...schedule, action: { ...schedule.action,
+      input: { ...schedule.action.input, maxSchedulingDelayMs: 11 } } }, [live])).toThrow('exceeds maxAgeMs');
+    const clock = '2026-10-13T00:00:00.000Z';
+    const measured = row('artifact', 1, 5);
+    const criterion = probeCriterion('artifact');
+    measured.check.subject = { kind: 'artifact', ref: 'build:A/input:A' };
+    measured.check.provenance = retainMeasurementProvenance({ procedure: criterion.check,
+      result: { value: 1 }, startedAt: clock, finishedAt: clock });
+    measured.provenanceStatus = 'retained';
+    const latest = ledger([measured]);
+    const filled = fillRatingsFromLedger({ criteria: [criterion], callerRatings: undefined, latest, nowMs: Date.parse(clock) });
+    if (!filled.ok) throw new Error('artifact fixture must fill');
+    const observation = { rubricRef: RUBRIC, subject: measured.check.subject, ratings: filled.ratings };
+    const before = JSON.stringify({ measured, observation });
+    const rubric = { rubricId: RUBRIC, criteria: [criterion] } as Rubric;
+    expect(projectScorecardLedgerDiagnostics({ observation, rubric, comparisonTime: clock, latest })
+      .supportByKey.artifact?.support).toBe('current');
+    const changedArtifact = projectScorecardLedgerDiagnostics({ observation: { ...observation,
+      subject: { kind: 'artifact', ref: 'build:B/input:A' } }, rubric, comparisonTime: clock, latest });
+    const changedInput = projectScorecardLedgerDiagnostics({ observation: { ...observation,
+      subject: { kind: 'artifact', ref: 'build:A/input:B' } }, rubric, comparisonTime: clock, latest });
+    expect(changedArtifact.findingsByKey.artifact?.[0]?.reason).toBe('identity-mismatch');
+    expect(changedInput.findingsByKey.artifact?.[0]?.reason).toBe('identity-mismatch');
+    expect(changedArtifact.supportByKey.artifact).toBeUndefined();
+    expect(JSON.stringify({ measured, observation })).toBe(before);
+    const binding = ledgerCheckBindings(live)![0]!;
+    expect(judgeLedgerRow(binding, measured, Date.parse(clock) - 1)).toBe('error');
     const changed = { ...live, check: { ...live.check, maxAgeMs: 60_049 } };
     vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [changed] } as never);
     mockResolvedTyped(vi.mocked(getPlanRow), { workspaceId: 'ws-test', harnessSlug: 'papercusp',

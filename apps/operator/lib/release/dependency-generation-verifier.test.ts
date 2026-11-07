@@ -187,6 +187,54 @@ describe('bounded independent verifier copy', () => {
 });
 
 describe('D012 native generation closure', () => {
+  it.each(['available', 'missing', 'incompatible', 'corrupt'])('prefers an immutable %s donor when native ref inputs match live inputs', async donorState => {
+    const workspace = 'packages/omp-plugin';
+    const f = fixture(workspace);
+    const previous = f.publish();
+    const input = f.shell(f.generationScript, ['--integration', f.donor, '--fingerprint-ref', 'HEAD'])
+      .stdout.match(/\binput=([a-f0-9]{64})/)![1]!;
+    const selector = join(f.store, '.inputs', input);
+    if (donorState === 'missing') rmSync(selector);
+    if (donorState === 'corrupt')
+      writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
+    const lock = JSON.parse(readFileSync(join(f.donor, 'package-lock.json'), 'utf8'));
+    lock.packages[''] = { dependencies: { pkg: donorState === 'incompatible' ? '2.0.0' : '1.0.0' } };
+    if (donorState === 'incompatible') {
+      lock.packages['node_modules/pkg'].version = '2.0.0';
+      write(f.donor, 'node_modules/pkg/package.json', '{"name":"pkg","version":"2.0.0"}');
+    }
+    write(f.donor, 'package-lock.json', JSON.stringify(lock));
+    execFileSync('git', ['add', 'package-lock.json'], { cwd: f.donor });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'equivalent exact inputs with mutable live output'], { cwd: f.donor });
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    const archive = join(f.root, 'immutable-donor-source'), pin = join(f.root, 'immutable-donor.json');
+    const receipt = await prepareVerifierSource({ repo: f.donor, ref, dest: archive,
+      inputs: [workspace + '/src/cli.cjs'] });
+    writeFileSync(pin, JSON.stringify(receipt));
+    write(f.donor, 'node_modules/pkg/index.js', 'mutable live dependency');
+    const result = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', archive, '--retain-as', 'immutable-donor-test'], {
+      VERIFY_TAURI_SOURCE_RECEIPT: pin, VERIFY_TAURI_SOURCE_REF: ref,
+    });
+    if (donorState === 'corrupt') {
+      expect(result.status, result.stdout + result.stderr).not.toBe(0);
+      expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    } else {
+      expect(result.status, result.stderr.slice(-12000)).toBe(0);
+      const generation = result.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+      expect(readFileSync(join(generation, 'tree/node_modules/pkg/index.js'), 'utf8'))
+        .toBe(donorState === 'available' ? 'published dependency' : 'mutable live dependency');
+      expect(result.stderr.includes('install-equivalent prewarmed generation')).toBe(donorState === 'available');
+    }
+    expect(readFileSync(join(previous, 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('published dependency');
+    expect(readFileSync(join(f.donor, 'node_modules/pkg/index.js'), 'utf8')).toBe('mutable live dependency');
+    expect(existsSync(join(archive, 'node_modules'))).toBe(false);
+    const scratch = join(f.donor, '.papercusp/dependency-exact-ref');
+    expect(existsSync(scratch) ? readdirSync(scratch) : []).toEqual([]);
+    expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+  }, 120_000);
+
   it('rebuilds and reuses native closure from an independently pinned archive with tracked runtime output removed', async () => {
     const workspace = 'packages/omp-plugin';
     const f = fixture(workspace);
