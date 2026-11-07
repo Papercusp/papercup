@@ -6,6 +6,18 @@ import type {} from '../test/_integration-substrate.globalSetup';
 // Exercises the real integration config/globalSetup selection. If the baseline
 // database is selected alongside this canary, its baseline must still be ready.
 describe('integration selection without a PostgreSQL dependency', () => {
+  it('keeps native MCP export integration independent of shared PG while preserving mixed selection setup', async () => {
+    const fixture = fileURLToPath(new URL('./memory/native-mcp-export.integration.test.ts', import.meta.url));
+    const canary = fileURLToPath(new URL('./integration-substrate-selection.integration.test.ts', import.meta.url));
+    const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
+    const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });
+    await setupIntegrationSubstrate({}, [fixture, canary], { baseline, org });
+    expect(baseline).not.toHaveBeenCalled();
+    expect(org).not.toHaveBeenCalled();
+    expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
+    expect(integrationNeedsPostgres([])).toBe(true);
+  });
+
   it('runs CPU profiler subprocesses without shared PG and preserves mixed selection setup', async () => {
     const fixture = fileURLToPath(new URL('./event-loop-cpu-recorder.integration.test.ts', import.meta.url));
     const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
