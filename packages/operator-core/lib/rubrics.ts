@@ -6597,7 +6597,27 @@ export async function resolveAcceptanceBarApproverScreen(input: {
         ownerId,
         roles,
         { workspaceId: subjectScope.workspaceId },
-        async (candidate, identity) => (await closureOf(identity)).has(candidate),
+        async (candidate, identity) => {
+          try {
+            return (await closureOf(identity)).has(candidate);
+          } catch (cause) {
+            // Keep the cached read fail-closed, with context for THIS candidate
+            // rather than the first candidate to await the shared promise.
+            const detail = cause instanceof Error ? cause.message : String(cause);
+            const code = cause && typeof cause === 'object' && 'code' in cause
+              ? String(cause.code) : 'unknown';
+            throw new Error(
+              `acceptance_bar_approver_check_lineage_read_failed: ` +
+              `rubric=${clipRefusalText(rubric.rubricId, 180)}; ` +
+              `subjectPlan=${clipRefusalText(subjectPlan, 180)}; ` +
+              `candidate=${clipRefusalText(candidate, 180)}; ` +
+              `populationIdentity=${clipRefusalText(identity, 180)}; ` +
+              `via=${roles.get(identity)}; query=acceptanceLineageClosure; ` +
+              `code=${clipRefusalText(code, 40)}; ${clipRefusalText(detail, 240)}`,
+              { cause },
+            );
+          }
+        },
       );
       const reason: AcceptanceBarApproverEligibilityReason = eligibility.eligible
         ? 'eligible'

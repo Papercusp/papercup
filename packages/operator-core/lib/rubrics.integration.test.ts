@@ -5589,6 +5589,40 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
   });
 
+  it('attributes a failed shared screening query to each candidate and refuses routing', async () => {
+    const seeded = await seedBarContract('approver-screen-query-failure');
+    const screen = await rubrics.resolveAcceptanceBarApproverScreen({ rubricId: seeded.rubricSlug });
+    const timeout = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    const identity = await import('./acceptance-author-identity');
+    const closure = vi.spyOn(identity, 'acceptanceLineageClosure').mockRejectedValue(timeout);
+    const { filterAmendmentReviewRoute } = await import('./consult/acceptance-bar-amendment-review');
+    try {
+      for (const ownerId of ['su-screen-candidate-first', 'su-screen-candidate-second']) {
+        const sources = [{ ownerId, score: 0.9 }];
+        const refusal = await filterAmendmentReviewRoute(
+          { qualified: sources, snapshot: { candidates: sources } } as never,
+          screen.check,
+        ).catch(error => error);
+        expect(refusal).toBeInstanceOf(Error);
+        expect(refusal.cause).toBe(timeout);
+        expect(refusal.message).toContain('acceptance_bar_approver_check_lineage_read_failed');
+        expect(refusal.message).toContain(`rubric=${seeded.rubricSlug}`);
+        expect(refusal.message).toContain(`subjectPlan=${seeded.subject}`);
+        expect(refusal.message).toContain(`candidate=${ownerId}`);
+        expect(refusal.message).toContain(`populationIdentity=${closure.mock.calls[0]![0]}`);
+        expect(refusal.message).toContain('query=acceptanceLineageClosure; code=57014');
+      }
+      // Failure is shared, never retried once for every routed candidate.
+      expect(closure).toHaveBeenCalledTimes(1);
+    } finally {
+      closure.mockRestore();
+    }
+    expect(await rubrics.checkAcceptanceBarApproverEligibility({
+      rubricId: seeded.rubricSlug,
+      ownerId: 'su-screen-candidate-recovered',
+    })).toMatchObject({ eligible: true, reason: 'eligible' });
+  });
+
   it('METHOD review screens related sources and freshly reserved answerers with the same canonical lineage rule', async () => {
     const seeded = await seedBarContract('method-review-native-independence');
     const target = { rubricId: seeded.rubricSlug, applierId: 'amendment-actor' };
