@@ -779,6 +779,10 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "  appendFileSync(process.env.MCP_CALL_FETCH_LOG, JSON.stringify(request) + '\\n');",
     '  const mode = process.env.MCP_CALL_FETCH_MODE;',
     '  const url = new URL(request.url);',
+    "  if (mode === 'configured-loopback-origin') {",
+    "    if (url.origin !== process.env.MCP_CALL_EXPECTED_ORIGIN) throw new DOMException('wrong loopback origin', 'TimeoutError');",
+    "    if (url.pathname === '/api/health') return new Response(JSON.stringify({ ok: true, sha: process.env.MCP_CALL_EXPECTED_BUILD_SHA, version: '1.2.3' }), { status: 200 });",
+    '  }',
     "  if ((mode === 'build-identity-recycle' || mode === 'build-identity-recycle-mismatch') && url.pathname === '/api/health') {",
     "    const refusedAttempts = mode === 'build-identity-recycle' ? 3 : 1;",
     '    if (fetchCount <= refusedAttempts) {',
@@ -889,6 +893,26 @@ async function readMcpCallFetchLog(path: string): Promise<Array<{ url: string; a
 }
 
 describe('mcp-call evaluator build identity pin', () => {
+  it.each(['http://127.0.0.1:41001/api/mcp', 'http://[::1]:41001'])('preserves the configured loopback origin for identity and MCP: %s', async (operatorUrl) => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const origin = new URL(operatorUrl).origin;
+      const run = await runMcpCallWithFetchFixture(fixture, ['--port', '41001', '--transport', 'http'], {
+        PAPERCUSP_OPERATOR_URL: operatorUrl,
+        PAPERCUSP_MCP_EXPECTED_BUILD_SHA: '1147c15c86',
+        MCP_CALL_EXPECTED_BUILD_SHA: '1147c15c86',
+        MCP_CALL_EXPECTED_ORIGIN: origin,
+        MCP_CALL_FETCH_MODE: 'configured-loopback-origin',
+      });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ ok: true });
+      expect(requests.map((request) => new URL(request.url).pathname)).toEqual(['/api/health', '/api/mcp']);
+      expect(requests.every((request) => new URL(request.url).origin === origin)).toBe(true);
+    });
+  });
+
   it.each([
     { mode: 'build-identity-recycle', healthAttempts: 4, code: 0, mcpCalls: 1 },
     { mode: 'build-identity-recycle-mismatch', healthAttempts: 2, code: 4, mcpCalls: 0 },
@@ -896,6 +920,7 @@ describe('mcp-call evaluator build identity pin', () => {
     await withMcpCallFetchFixture(async (fixture) => {
       await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
       const run = await runMcpCallWithFetchFixture(fixture, ['--port', '41001', '--transport', 'http'], {
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:41001',
         PAPERCUSP_MCP_EXPECTED_BUILD_SHA: '1147c15c86',
         MCP_CALL_EXPECTED_BUILD_SHA: '1147c15c86',
         MCP_CALL_FETCH_MODE: mode,
@@ -906,6 +931,7 @@ describe('mcp-call evaluator build identity pin', () => {
       expect(requests.filter((request) => new URL(request.url).pathname === '/api/health')).toHaveLength(healthAttempts);
       expect(requests.filter((request) => new URL(request.url).pathname === '/api/mcp')).toHaveLength(mcpCalls);
       expect(requests.every((request) => new URL(request.url).port === '41001')).toBe(true);
+      expect(requests.every((request) => new URL(request.url).hostname === '127.0.0.1')).toBe(true);
       if (mcpCalls) expect(JSON.parse(run.stdout)).toEqual({ ok: true });
       else expect(run.stderr).toContain('wrong-build');
     });
@@ -920,6 +946,7 @@ describe('mcp-call evaluator build identity pin', () => {
         ['--transport', 'auto'],
         {
           PAPERCUSP_HONO_PORT: '41001',
+          PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:41001',
           PAPERCUSP_MCP_EXPECTED_BUILD_SHA: expectedSha,
           MCP_CALL_FETCH_MODE: 'build-identity-fallback',
           MCP_CALL_EXPECTED_BUILD_SHA: expectedSha,
@@ -939,6 +966,8 @@ describe('mcp-call evaluator build identity pin', () => {
       expect(JSON.parse(run.stdout)).toEqual({ ok: true });
       expect(healthPorts).toEqual(['41001', '3070', '9071']);
       expect(mcpPorts).toEqual(['9071']);
+      expect(requests.map((request) => new URL(request.url).hostname))
+        .toEqual(['127.0.0.1', 'localhost', 'localhost', 'localhost']);
     });
   });
 

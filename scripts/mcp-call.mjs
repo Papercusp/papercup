@@ -521,8 +521,8 @@ export function superuserTokenPath(env = process.env, home = homedir()) {
   return superuserTokenPaths(env, home)[0];
 }
 
-/** Resolve the local operator port from the configured bare base URL. */
-export function resolveOperatorUrlPort(env = process.env) {
+/** Validate the configured local operator URL without losing its loopback host. */
+function resolveConfiguredOperatorUrl(env = process.env) {
   const configuredUrl = typeof env.PAPERCUSP_OPERATOR_URL === 'string'
     ? env.PAPERCUSP_OPERATOR_URL.trim()
     : '';
@@ -548,7 +548,21 @@ export function resolveOperatorUrlPort(env = process.env) {
     );
   }
 
-  return parsed.port || '80';
+  return parsed;
+}
+
+/** Resolve the local operator port from the configured bare base URL. */
+export function resolveOperatorUrlPort(env = process.env) {
+  const parsed = resolveConfiguredOperatorUrl(env);
+  return parsed ? parsed.port || '80' : null;
+}
+
+/** Preserve an explicit origin only for its candidate; recovery ports stay local. */
+function resolveOperatorBaseUrl(port, env = process.env) {
+  const parsed = resolveConfiguredOperatorUrl(env);
+  return parsed && Number(parsed.port || '80') === Number(port)
+    ? parsed.origin
+    : 'http://localhost:' + port;
 }
 
 /** Resolve the local resilient MCP proxy port using the same default as ptool. */
@@ -595,7 +609,7 @@ async function probeMcpBuildIdentity(port, expectedSha, { pinned = false } = {})
     // A retained evaluator can recycle after the audit starts. Its identity
     // preflight must honor the same explicit-pin recovery policy as the MCP
     // request; otherwise it exits before that existing recovery can run.
-    response = await fetchWithConnectionRecovery('http://localhost:' + port + '/api/health', {}, {
+    response = await fetchWithConnectionRecovery(resolveOperatorBaseUrl(port) + '/api/health', {}, {
       retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
       // Each attempt owns its timeout. Reusing one signal would abort the
       // recovery window after two seconds, including time spent between probes.
@@ -1212,7 +1226,7 @@ async function main() {
     for (let admissionAttempt = 1; ; admissionAttempt += 1) {
       stampRequestSent();
       const candidateRes = await fetchWithConnectionRecovery(
-        'http://localhost:' + port + '/api/mcp?' + query,
+        resolveOperatorBaseUrl(port) + '/api/mcp?' + query,
         initForToken(token, requestInit),
         {
           // An explicit pin means the caller deliberately chose this operator
