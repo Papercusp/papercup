@@ -34,11 +34,15 @@ describe('LATENCY-M1 frozen experiment preparation', () => {
     const assignments = latencyBenchAssignments(manifest);
     expect(assignments.map(row => row.key)).toEqual(latencyAttemptSchedule());
     const baseline = assignments.slice(0, 60), candidate = assignments.slice(60);
-    expect(new Set(baseline.map(row => row.task.instanceId)).size).toBe(60);
+    expect(new Set(baseline.map(row => row.task.instanceId)).size).toBe(10);
+    expect(new Set(baseline.map(row => row.nativeAssignment.pairId)).size).toBe(60);
     expect(baseline.map(row => row.task)).toEqual(candidate.map(row => row.task));
-    for (const { key, task } of assignments) {
+    expect(baseline.map(row => row.nativeAssignment)).toEqual(candidate.map(row => row.nativeAssignment));
+    for (const { key, nativeAssignment, task } of assignments) {
       expect(task.benchmark).toBe('harness-bench');
-      expect(task.instanceId).toBe(`LATENCY-M1:${key.task}:${key.stratum}:${key.repetition}`);
+      expect(task.instanceId).toBe(`LATENCY-M1:${key.task}`);
+      expect(nativeAssignment).toEqual({ taskId: task.instanceId, armId: key.stratum,
+        seed: key.repetition, pairId: `LATENCY-M1:${key.task}:${key.stratum}:${key.repetition}` });
       expect(task.problemStatement).toContain(`Frozen input A: "${key.task}-A"`);
       expect(task.problemStatement).toContain(`Frozen input B: "${key.task}-B"`);
       expect(task.problemStatement).not.toContain('grader-only-reference');
@@ -49,6 +53,21 @@ describe('LATENCY-M1 frozen experiment preparation', () => {
     meta.qualityOracle.required.push('mutated');
     expect(manifest).toEqual(before);
     expect(candidate[0]!.task.graderMeta).not.toEqual(baseline[0]!.task.graderMeta);
+  });
+
+  it('covers the native task/cache-arm/seed Cartesian population exactly once in each separately pinned phase', () => {
+    const assignments = latencyBenchAssignments(taskManifest());
+    const expected = LATENCY_M1_TASKS.flatMap(task => ['cold', 'warm'].flatMap(arm =>
+      [1, 2, 3].map(seed => JSON.stringify([`LATENCY-M1:${task}`, arm, seed]))));
+    for (const phase of ['baseline', 'candidate']) {
+      const rows = assignments.filter(row => row.key.arm === phase);
+      const observed = rows.map(({ task, nativeAssignment }) =>
+        JSON.stringify([task.instanceId, nativeAssignment.armId, nativeAssignment.seed]));
+      expect(observed).toEqual(expected);
+      expect(new Set(observed).size).toBe(60);
+      expect(rows.map(row => row.nativeAssignment.pairId)).toEqual(rows.map(row =>
+        `LATENCY-M1:${latencyAttemptId(row.key).replace(`:${phase}`, '')}`));
+    }
   });
 
   it('refuses missing, reordered, duplicate or substituted cases and incomplete oracle definitions before assignment', () => {
