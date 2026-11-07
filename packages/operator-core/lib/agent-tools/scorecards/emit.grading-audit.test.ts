@@ -397,7 +397,7 @@ beforeEach(() => {
   guardResource.mockReset().mockImplementation(async (_spec: unknown, run: () => Promise<unknown>) => ({
     acquired: true, result: await run(),
   }));
-  readRunningGeneration.mockReset().mockResolvedValue(null);
+  readRunningGeneration.mockReset().mockResolvedValue(runningGeneration('a'.repeat(40)));
   replaySpecTestAdequacyForHistoricalAudit.mockReset().mockResolvedValue(historicalTargetReplay('pass'));
 });
 
@@ -578,6 +578,42 @@ describe('CRM canonical producer independence (P-012)', () => {
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
+  it.each([
+    ['missing generation', null],
+    ['partial generation', { ...runningGeneration('a'.repeat(40)), deployedSha: null, bootHeadSha: 'b'.repeat(40), staleHost: null }],
+    ['invalid emitter build', { ...runningGeneration('not-a-source-sha'), bootHeadSha: 'b'.repeat(40) }],
+  ])('refuses an audit-required card with %s before persistence', async (_label, generation) => {
+    readRunningGeneration.mockResolvedValue(generation);
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({ ok: false, code: 'grading_audit_generation_unavailable' });
+    expect((result as { error?: string }).error).toContain('No scorecard was persisted');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
+  });
+
+  it('preserves the attributable emitter build on an audit-required card', async () => {
+    const generation = { ...runningGeneration('a'.repeat(40)), bootHeadSha: 'b'.repeat(40), staleHost: true };
+    readRunningGeneration.mockResolvedValue(generation);
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledWith(expect.objectContaining({
+      payloadExtra: expect.objectContaining({ observation: expect.objectContaining({
+        gradedGeneration: generation,
+        gradingAudit: expect.objectContaining({ state: 'pending' }),
+      }) }),
+    }));
+  });
+
   it('returns a retryable no-write envelope for a bounded PG statement timeout', async () => {
     captureImprovement.mockRejectedValueOnce(new OrgTxnTimeoutError('57014', new Error('statement timeout')));
 
@@ -798,8 +834,30 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     });
   });
 
+  it('a provisional card can persist without an attributable generation', async () => {
+    const rubric = mkRubric('goal-mode-e2e', 'standard');
+    getRubric.mockResolvedValue({
+      ...rubric,
+      criteria: rubric.criteria.map(criterion => ({ ...criterion, criterionClass: 'violatable' })),
+    });
+    readRunningGeneration.mockResolvedValue(null);
+
+    const res = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: false },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledOnce();
+    const observation = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+    expect(observation.provisional).toMatchObject({ violatableKeys: ['c1'] });
+    expect(observation.gradingAudit).toBeUndefined();
+    expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
+  });
+
   it('control (kill-switch): flag OFF stamps nothing', async () => {
     gateEnabled.mockResolvedValue(false);
+    readRunningGeneration.mockResolvedValue(null);
     const res = await emitScorecard(
       { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
       { createdBy: 'su-grader', ctxHarness: 'papercusp' },
