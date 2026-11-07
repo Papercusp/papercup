@@ -2620,11 +2620,13 @@ impl OperatorClient {
         if matches!(request.name, crate::native_panel::ReadModel::Environment) {
             return Ok(serde_json::json!({"rows":[self.backend_identity().await?]}));
         }
-        if let Some(expected) = &request.environment {
-            anyhow::ensure!(expected.same_rendezvous(&self.backend_identity().await?),
+        let environment = if let Some(expected) = &request.environment {
+            let current = self.backend_identity().await?;
+            anyhow::ensure!(expected.same_rendezvous(&current),
                 "selected environment changed; refresh the native panel");
-        }
-        let payload = self
+            Some(current)
+        } else { None };
+        let mut payload = self
             .get_json(&format!(
                 "/api/zero-harness/rest-query?name={}&args={}",
                 urlencode(request.name.as_str()),
@@ -2638,6 +2640,12 @@ impl OperatorClient {
         }
         if !payload.get("rows").is_some_and(serde_json::Value::is_array) {
             anyhow::bail!("Native model {} returned no row envelope", request.name.as_str());
+        }
+        // Sync queries return rows/version metadata, not a native rendezvous
+        // stamp. Bind scoped reads to the actual identity verified above so
+        // native consumers can reject cross-environment results consistently.
+        if let Some(environment) = environment {
+            payload["environment"] = serde_json::to_value(environment)?;
         }
         Ok(payload)
     }
@@ -4449,6 +4457,55 @@ mod tests {
         let offline = client.native_panel_read(&request("plans.attentionBulkRun")).await.unwrap_err().to_string();
         assert!(offline.contains("503"), "{offline}");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_panel_scoped_read_stamps_actual_identity_and_rejects_changed_workspace() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for changed in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let identity = json!({"schemaVersion":1,"workspaceId":"selected","store":{"id":"fixture","target":"test","source":"test"},
+                "build":{"version":"current","sha":null},"agentChat":{"scope":"workspace:selected","route":"test"},"capabilities":{}});
+            let mut expected = identity.clone(); expected["endpoint"] = json!(base);
+            expected["selectionSource"] = json!("test"); expected["transport"] = json!("http");
+            // A build refresh preserves the rendezvous, but the returned stamp
+            // must describe the actual read, not echo this older request.
+            expected["build"]["version"] = json!("older");
+            if changed { expected["workspaceId"] = json!("other"); }
+            let server = tokio::spawn(async move {
+                let mut steps = vec![("/api/tui/identity", identity)];
+                if !changed { steps.push(("/api/zero-harness/rest-query", json!({"rows":[],"version":"saved-version","partial":true}))); }
+                for (path, payload) in steps {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut bytes = Vec::new();
+                    loop {
+                        let mut buffer = [0;2048]; let n = socket.read(&mut buffer).await.unwrap(); assert!(n > 0);
+                        bytes.extend_from_slice(&buffer[..n]);
+                        if bytes.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                    }
+                    let head = String::from_utf8(bytes).unwrap();
+                    assert!(head.to_lowercase().contains("authorization: bearer scoped-native-fixture"));
+                    let target = head.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                    assert_eq!(reqwest::Url::parse(&format!("http://fixture{target}")).unwrap().path(), path);
+                    let body = payload.to_string();
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                }
+            });
+            let client = OperatorClient {transport:Transport::Http(HttpClient::new(base.clone(),Some("scoped-native-fixture".into()))),endpoint:base,selection_source:"test".into()};
+            let request = serde_json::from_value(json!({"name":"plans.attention","args":{},"environment":expected})).unwrap();
+            let result = client.native_panel_read(&request).await;
+            if changed { assert!(result.unwrap_err().to_string().contains("selected environment changed")); }
+            else {
+                let payload = result.unwrap();
+                assert_eq!(payload["environment"]["workspaceId"], "selected");
+                assert_eq!(payload["environment"]["build"]["version"], "current");
+                assert_eq!(payload["rows"], json!([])); assert_eq!(payload["version"], "saved-version"); assert_eq!(payload["partial"], true);
+            }
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
