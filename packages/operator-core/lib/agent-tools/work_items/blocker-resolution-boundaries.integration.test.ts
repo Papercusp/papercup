@@ -255,6 +255,17 @@ describe('public blocker resolution boundaries', () => {
       investigation: [{ action: 'Read canonical peer work', outcome: 'Live repair owner retains custody', evidenceRefs: [peerRef] }],
       deferral: { reason: 'active-peer', responsibleParty: 'agent-repair', reasonEvidenceRefs: [peerRef],
         nextAction: 'Resume when the owned dependency settles', recheckRef: peerRef } };
+    const peerMeasurement = await createBlockerEvidenceReader({ ownerId: OWNER, sessionId: OWNER,
+      workspaceId: 'default', harnessSlug: HARNESS, role: 'su', root: null,
+      workItemId: id, blockers: [] })(peerRef);
+    expect(peerMeasurement, JSON.stringify(peerMeasurement)).toMatchObject({ status: 'available',
+      condition: 'pending', responsibleParty: 'agent-repair', liveOwnerId: 'agent-repair' });
+    const dependencies = await wi.readUnresolvedDepBlockers(id, HARNESS);
+    expect(dependencies, JSON.stringify(dependencies)).toHaveLength(1);
+    expect(await preflightBlockerDecision((await wi.getWorkItem(id, HARNESS))!, peerDecision,
+      { ownerId: OWNER, sessionId: OWNER, workspaceId: 'default', harnessSlug: HARNESS,
+        role: 'su', root: null }, { effect: { fixture: 'peer' }, enteringDeferral: true }),
+    JSON.stringify({ peerMeasurement, dependencies })).toMatchObject({ ok: true });
     const before = await snapshot(id);
     expect(await call(setState, { id, harness: HARNESS, state: 'needs-human', blockerDecision: {
       ...peerDecision, deferral: { ...peerDecision.deferral, responsibleParty: 'absent-peer' },

@@ -1418,7 +1418,8 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
   });
 
-  it('does not treat the deferred no-work sentinel as an omitted requirement disposition', async () => {
+  it.each([false, true])('does not treat the deferred no-work sentinel as an omitted requirement disposition (terminal enforcement=%s)', async (enforced) => {
+    getFlag.mockResolvedValue(enforced);
     const sentinels = ['none', ' N/A ', 'NA', '-', 'Nothing', 'NOTHING DEFERRED'];
     for (const [index, deferred] of sentinels.entries()) {
       const closeItem = {
@@ -1442,7 +1443,9 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
           summary: 'implemented the change',
           verifiedHow: 'unit',
           testResult: 'focused test passed',
-          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+          // This is a sentinel parser control. A real source path would make
+          // authority depend on whether git-sync has committed that file yet.
+          filesChanged: [],
           deferred,
         },
       });
@@ -1450,9 +1453,9 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
       expect(validation).toMatchObject({
         ok: true,
         validationOnly: true,
-        // This fixture omits the post-cutover change-kind proof, so it may remain proposed;
-        // the assertion below isolates whether a no-work sentinel creates a false shortfall.
-        completionAuthority: 'proposed',
+        // The unrelated no-change terminal criterion remains measurable under
+        // both switch states, independently of repository content identity.
+        completionAuthority: enforced ? 'proposed' : 'committed',
       });
       expect(validation.requirementShortfallWarning).toBeUndefined();
       expect(validation.completionEvidenceFindings).toBeUndefined();
