@@ -204,6 +204,62 @@ describe('work_items:set_blocker decision boundary', () => {
     });
 });
 
+describe('work_items:set_blocker audited runtime binding', () => {
+  const blocker = { kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit',
+    ref: 'staging-operator', summary: 'Accepted source and public schema must be loaded', status: 'active',
+    createdAt: '2026-11-07T01:00:00Z', updatedAt: '2026-11-07T01:00:00Z', createdBy: 'su-a' };
+  const item = { id: 'WI-1', harness: 'papercusp', family: 'issue', state: 'blocked', assignee: 'su-a',
+    payload: { keep: true, externalBlockers: [blocker] } };
+  const binding = { schemaVersion: 1, host: 'port-3170',
+    sourceBlobs: { 'packages/operator-core/lib/agent-tools/improvements/agent-review.ts': 'a'.repeat(40) },
+    toolSchema: { tool: 'improvements:agent-review', sha256: 'b'.repeat(64) },
+    reason: 'Explicitly bind the original missing-schema condition', reasonRef: 'EI-parent#comment:123' };
+  const request = { id: item.id, harness: item.harness, ref: blocker.ref, bindRuntimeCondition: binding };
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: { ...item.payload, ...patch } }));
+  });
+  it('records a binding with host-authored provenance without clearing, changing custody or running resolution', async () => {
+    const result = await one(request);
+    expect(result).toMatchObject({ ok: true, changed: true, workItem: { state: 'blocked', assignee: 'su-a',
+      payload: { externalBlockers: [{ ...blocker, runtimeConditionBinding: { ...binding, boundBy: 'su-a', boundAt: expect.any(String) } }] } } });
+    expect(mergeWorkItemPayload).toHaveBeenCalledWith(item.id, { externalBlockers: [expect.objectContaining({
+      ref: blocker.ref, status: 'active', runtimeConditionBinding: expect.objectContaining({ boundBy: 'su-a' }),
+    })] }, expect.objectContaining({ harness: item.harness, expectedCustodianId: 'su-a', requireNonTerminal: true,
+      expectedExternalBlockers: item.payload.externalBlockers }));
+    expect(preflightBlockerDecision).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(ownerAskRun).not.toHaveBeenCalled();
+  });
+  it.each([{ assignee: 'su-b' }, { state: 'done' },
+    { payload: { externalBlockers: [{ ...blocker, kind: 'human', capability: 'credential' }] } }])(
+    'refuses foreign custody, terminal state and non-runtime targets without any write: %j', async change => {
+      getWorkItem.mockResolvedValue({ ...item, ...change });
+      expect(await one(request)).toMatchObject({ ok: false });
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+  it.each([{ clear: true }, { kind: 'runtime' }, { summary: 'replace old meaning' },
+    { blockerDecision: {} }, { bindRuntimeCondition: { ...binding, boundBy: 'forged' } }])(
+    'rejects mixed lifecycle intent or forged binding provenance: %j', change => {
+      expect(() => parse({ ...request, ...change })).toThrow();
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    });
+  it('retries the same binding without rewriting history and refuses a different binding', async () => {
+    const bound = { ...blocker, runtimeConditionBinding: { ...binding, boundBy: 'su-a', boundAt: '2026-11-07T02:00:00Z' } };
+    getWorkItem.mockResolvedValue({ ...item, payload: { ...item.payload, externalBlockers: [bound] } });
+    expect(await one(request)).toMatchObject({ ok: true, changed: false });
+    expect(await one({ ...request, bindRuntimeCondition: { ...binding, host: 'port-3070' } })).toMatchObject({ ok: false });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+  it('reports a concurrent custody/history conflict without a lifecycle write', async () => {
+    mergeWorkItemPayload.mockResolvedValueOnce(null);
+    expect(await one(request)).toMatchObject({ ok: false, code: 'runtime_binding_conflict' });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+});
+
 describe('work_items:set_blocker', () => {
   // These fixtures predate P-006 (event-wait-settlement-2026-10-20) and name their condition by
   // a free-text or uncatalogued key. Since P-006 such a NEW wait is refused unless a producer
