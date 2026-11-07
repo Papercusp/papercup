@@ -12,10 +12,7 @@
  * security model the rest of `/admin/*` + the public rest-query endpoint
  * already rely on.
  */
-import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent-mcp';
-// Side-effect: register operator-side first-party tools (defineTool calls),
-// including all plans:* tools. Same import the agent-tools catch-all uses.
-import '../index';
+import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/tooldef-http';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { currentRequestWorkspaceId } from '../../workspace-als';
 
@@ -54,11 +51,32 @@ export interface PlansReadOpts {
   uiProjection?: boolean;
 }
 
+/** Reuse each canonical handler without initializing unrelated tool families. */
+async function registerPlanReadTool(verb: string): Promise<void> {
+  switch (verb) {
+    case 'list': await import('./list'); break;
+    case 'get': await import('./get'); break;
+    case 'items': await import('./items'); break;
+    case 'attention': await import('./attention'); break;
+    case 'search': await import('./search'); break;
+    case 'lint': await import('./lint'); break;
+    case 'revisions': await import('./revisions-list'); break;
+    case 'revision-diff': await import('./revision-diff'); break;
+    case 'revision-transcript': await import('./revision-transcript'); break;
+    case 'runs': await import('./runs-list'); break;
+    case 'run-transcript': await import('./run-transcript'); break;
+    case 'get-input-schema': await import('./get-input-schema'); break;
+  }
+}
+
 export async function callPlansReadRaw(
   verb: string,
   body: Record<string, unknown>,
   opts?: PlansReadOpts,
 ): Promise<PlansReadResult> {
+  // The sync resolver's 10s budget includes this cold path. Importing the
+  // entire operator catalog here can exhaust it before a read handler starts.
+  await registerPlanReadTool(verb);
   const sp = new URLSearchParams();
   sp.set('superuser', '1');
   sp.set('client', ADMIN_UI_CLIENT_ID);

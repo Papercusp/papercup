@@ -186,7 +186,7 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     expect(M.listPendingGates).toHaveBeenCalledTimes(1);
   });
 
-  it('identifies a pending plan read before the other source reads start', async () => {
+  it('starts independent sources while the plan read is still pending', async () => {
     let release!: () => void;
     M.readAllPlans.mockImplementationOnce(() => new Promise(resolve => {
       release = () => resolve([]);
@@ -197,7 +197,12 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
         await vi.waitFor(() => expect(namedQueryStageTimings()?.stages).toContainEqual({
           stage: 'attention-plans', outcome: 'pending', elapsedMs: expect.any(Number),
         }));
-        expect(M.readInbox).not.toHaveBeenCalled();
+        await vi.waitFor(() => {
+          expect(M.readInbox).toHaveBeenCalled();
+          expect(namedQueryStageTimings()?.stages).toContainEqual({
+            stage: 'attention-questions', outcome: 'fulfilled', elapsedMs: expect.any(Number),
+          });
+        });
       } finally {
         release();
         await read;
@@ -207,6 +212,52 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
       });
     });
     expect(namedQueryStageTimings()).toBeNull();
+  });
+
+  it('waits for plan-derived harness attribution after escalation and message reads finish', async () => {
+    let release!: () => void;
+    M.readAllPlans.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve([]);
+    }));
+    M.planItemsToAttention.mockReturnValue([{
+      id: 'plan-fixture', kind: 'plan-item', planSlug: 'shared-plan', harnessSlug: 'papercusp',
+      title: 'Plan fixture', body: '', importance: 'low', tier: 'alert', needsHuman: false, actions: [],
+    }]);
+    M.listEscalations.mockResolvedValue([{
+      msg_id: 'esc-plan', severity: 'blocker', summary: 'Escalation', plan_slug: 'shared-plan',
+    }]);
+    M.readInbox.mockResolvedValue([{
+      msg_id: 'msg-plan', kind: 'message', summary: 'Message', from: 'su-sender',
+      to: ['human'], plan_slug: 'shared-plan',
+    }]);
+    let settled = false;
+    const read = run().then(result => { settled = true; return result; });
+    try {
+      await vi.waitFor(() => {
+        expect(M.listEscalations).toHaveBeenCalled();
+        expect(M.readInbox).toHaveBeenCalled();
+      });
+      expect(settled).toBe(false);
+    } finally {
+      release();
+    }
+    const items = allItems(await read);
+    for (const kind of ['coord-escalation', 'coord-message']) {
+      expect(items).toContainEqual(expect.objectContaining({
+        kind, planSlug: 'shared-plan', harnessSlug: 'papercusp',
+      }));
+    }
+  });
+
+  it('retains independent source items when the overlapping plan read rejects', async () => {
+    M.readAllPlans.mockRejectedValueOnce(new Error('plan source unavailable'));
+    M.listConversations.mockResolvedValue([{
+      id: 'conv-plan-failure', title: 'Question', body: null, asker_id: null,
+      harness_slug: null, accepted_answer: null,
+    }]);
+    expect(allItems(await run())).toContainEqual(expect.objectContaining({
+      kind: 'conversation', id: expect.stringContaining('conv-plan-failure'),
+    }));
   });
 
   it('identifies the pending message source while independent sources finish', async () => {

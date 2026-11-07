@@ -127,15 +127,36 @@ describe('execFileResult', () => {
     expect(missing.status).toBeNull();
     expect(missing.error).toMatchObject({ code: 'ENOENT', signal: null, killed: false });
     expect(missing.failureRoute).toBe('local');
+    expect(missing.timing).toMatchObject({ childPid: null, spawnEventMs: null, firstOutputMs: null, exitMs: null });
+    expect(missing.timing!.callbackMs).toBeGreaterThanOrEqual(missing.timing!.spawnReturnedMs!);
 
     const timed = await execFileResult(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 100 });
     expect(timed.status).toBeNull();
     expect(timed.error).toMatchObject({ code: null, signal: 'SIGTERM', killed: true });
     expect(timed.failureRoute).toBe('local');
+    expect(timed.timing!.spawnEventMs).toBeTypeOf('number');
+    expect(timed.timing!.exitMs).toBeGreaterThanOrEqual(timed.timing!.spawnEventMs!);
+    expect(timed.timing!.callbackMs).toBeGreaterThanOrEqual(timed.timing!.exitMs!);
 
     const exited = await execFileResult(process.execPath, ['-e', 'process.exit(3)']);
     expect(exited.status).toBe(3);
     expect(exited.error).toMatchObject({ code: 3, signal: null, killed: false });
+  });
+
+  it('distinguishes child output and exit from time spent starting the child', async () => {
+    const failed = await execFileResult(process.execPath, ['-e',
+      'process.stdout.write("started"); setTimeout(() => process.exit(7), 25)',
+    ]);
+    expect(failed).toMatchObject({ status: 7, stdout: 'started' });
+    const timing = failed.timing!;
+    expect(timing.startedAtUnixMs).toBeGreaterThan(0);
+    expect(timing.parentPid).toBe(process.pid);
+    expect(timing.childPid).toBeGreaterThan(0);
+    expect(timing.spawnReturnedMs).toBeGreaterThanOrEqual(0);
+    expect(timing.spawnEventMs).toBeGreaterThanOrEqual(timing.spawnReturnedMs!);
+    expect(timing.firstOutputMs).toBeGreaterThanOrEqual(timing.spawnEventMs!);
+    expect(timing.exitMs).toBeGreaterThanOrEqual(timing.firstOutputMs!);
+    expect(timing.callbackMs).toBeGreaterThanOrEqual(timing.exitMs!);
   });
 });
 

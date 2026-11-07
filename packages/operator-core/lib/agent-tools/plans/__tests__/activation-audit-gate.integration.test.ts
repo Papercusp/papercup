@@ -49,6 +49,8 @@ const DISCOVERY_SECTION = '\n## Discovery\n\n```discovery\n' + JSON.stringify({
 }) + '\n```\n';
 const DRAFT = DRAFT_WITHOUT_DECLARATIONS + DECLARATION_SECTIONS + DISCOVERY_SECTION;
 
+import { checkDraftItemStartGate } from '../draft-item-start-gate';
+
 let fx: PlanPgFixture;
 const currentDiscovery = discoveryAudits.withCurrentDiscovery;
 const discoveryContext: NonNullable<Parameters<typeof discoveryAudits.recordCurrentDiscoveryAudit>[1]>['context'] =
@@ -170,6 +172,28 @@ const COSMETIC_CHANGE_TAXONOMY = [
 ] as const;
 
 describe('conversation activation audit gate', () => {
+  it('DISCOVERY-R5 activation and start share discovery readiness', async () => {
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
+    const input = { workspaceId: fx.workspaceId, harnessSlug: HARNESS, planSlug: SLUG, createdBy: 'su-test' };
+    const start = () => checkDraftItemStartGate({ slug: SLUG, itemId: 'P-001', toStatus: 'wip',
+      readPlanContent: async () => DRAFT,
+      evaluateDiscovery: async () => {
+        const result = await currentDiscovery(input, async () => undefined, { context: discoveryContext });
+        return result.ok ? { ok: true as const } : { ok: false as const, error: result.error };
+      },
+      evaluateGate: () => evaluateConversationActivationGate(fx.admin as never, input),
+      hasCoveringWorkItem: async () => false });
+    const activate = () => withPlanLock({}, { slug: SLUG, ...input, intent: 'test shared discovery admission' },
+      async () => ({ newBody: flipReady(DRAFT), value: { ok: true } }));
+    expect(await start()).toMatchObject({ error: 'discovery_not_ready' });
+    expect(await activate()).toMatchObject({ kind: 'refused', value: { code: 'discovery_not_ready' } });
+    await finalizeDiscovery();
+    expect(await start()).toMatchObject({ error: 'activation_audit_required' });
+    await activationAudit(fx.admin);
+    expect(await start()).toBeNull();
+    expect(await activate()).toMatchObject({ kind: 'applied' });
+  });
+
   it('grandfathers an already-ready plan with no audit, but not a stored draft', async () => {
     // The missing AUDIT is grandfathered; the declaration sections are not
     // (plan-reuse-and-library-declarations-2026-10-20 D-004 #1, EI-26528805324626265).

@@ -13,6 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
+  loaded: [] as string[],
   calls: [] as Array<{ pathname: string; body: Record<string, unknown>; headers: Record<string, string> }>,
   /** When set, the mock returns this JSON as the tool's text envelope for the
    *  next call (else the default `{ ok: true }`). */
@@ -20,8 +21,8 @@ const H = vi.hoisted(() => ({
   nextHttpFailure: null as { status: number; body: unknown } | null,
 }));
 
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+vi.mock('@papercusp/tooldef-http', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/tooldef-http')>()),
   handleHttpToolRequest: vi.fn(async (req: { pathname: string; body: Record<string, unknown>; headers: Record<string, string> }) => {
     H.calls.push({ pathname: req.pathname, body: req.body, headers: req.headers });
     if (H.nextHttpFailure) {
@@ -37,9 +38,21 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
     };
   }),
 }));
-// The real module side-effect-imports the whole first-party tool catalog —
-// irrelevant to this contract and heavy; stub it.
-vi.mock('../index', () => ({}));
+// A cold UI read must never evaluate the full catalog. This intentionally
+// throws instead of hiding the expensive import behind an empty mock.
+vi.mock('../index', () => { throw new Error('plans read initialized the whole tool catalog'); });
+vi.mock('./list', () => { H.loaded.push('list'); return {}; });
+vi.mock('./get', () => { H.loaded.push('get'); return {}; });
+vi.mock('./items', () => { H.loaded.push('items'); return {}; });
+vi.mock('./attention', () => { H.loaded.push('attention'); return {}; });
+vi.mock('./search', () => { H.loaded.push('search'); return {}; });
+vi.mock('./lint', () => { H.loaded.push('lint'); return {}; });
+vi.mock('./revisions-list', () => { H.loaded.push('revisions'); return {}; });
+vi.mock('./revision-diff', () => { H.loaded.push('revision-diff'); return {}; });
+vi.mock('./revision-transcript', () => { H.loaded.push('revision-transcript'); return {}; });
+vi.mock('./runs-list', () => { H.loaded.push('runs'); return {}; });
+vi.mock('./run-transcript', () => { H.loaded.push('run-transcript'); return {}; });
+vi.mock('./get-input-schema', () => { H.loaded.push('get-input-schema'); return {}; });
 vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 
 import { callPlansRead, callPlansReadRaw } from './read-dispatch';
@@ -49,6 +62,23 @@ beforeEach(() => {
   H.calls = [];
   H.nextResult = null;
   H.nextHttpFailure = null;
+});
+
+describe('cold plans read registration', () => {
+  it('loads only requested canonical handlers and reuses their module registrations', async () => {
+    expect(H.loaded).toEqual([]);
+    await callPlansReadRaw('attention', {});
+    expect(H.loaded).toEqual(['attention']);
+    await callPlansReadRaw('attention', {});
+    expect(H.loaded).toEqual(['attention']);
+    const otherReads = ['list', 'get', 'items', 'search', 'lint', 'revisions',
+      'revision-diff', 'revision-transcript', 'runs', 'run-transcript', 'get-input-schema'];
+    for (const verb of otherReads) await callPlansReadRaw(verb, {});
+    expect(H.loaded).toEqual(['attention', ...otherReads]);
+    expect(H.calls.map(call => call.pathname)).toEqual(
+      ['attention', 'attention', ...otherReads].map(verb => `/api/agent-tools/plans/${verb}`),
+    );
+  });
 });
 
 describe('nested UI workspace context', () => {

@@ -147,8 +147,24 @@ export function clauseSemanticHash(clause: BarCritiqueClause): string {
     mutationRequired: Boolean(clause.mutationRequired),
     exemption: clause.exemption ?? null,
     evidencePlane: clause.sourceBar?.evidencePlane ?? null,
+    // The canonical BAR hash already binds scope, shared constraints, checks,
+    // model, runtime and production configuration. A clause's prose alone does
+    // not describe those dependencies. Set/revision metadata remains excluded
+    // so changes to another BAR do not discard this clause's eligible critique.
+    sourceBar: clause.sourceBar ? {
+      rubricSlug: clause.sourceBar.rubricSlug,
+      barKey: clause.sourceBar.barKey,
+      barHash: clause.sourceBar.barHash,
+    } : null,
   };
   return createHash('sha256').update(JSON.stringify(canonical(payload))).digest('hex');
+}
+
+function hasVerifiableCritiqueDependencies(clause: BarCritiqueClause): boolean {
+  const pin = clause.sourceBar;
+  return pin === null || Boolean(pin && pin.rubricSlug?.trim() && pin.barKey?.trim() &&
+    /^[a-f0-9]{64}$/.test(pin.barHash) && /^[a-f0-9]{64}$/.test(pin.barSetHash) &&
+    ['tree', 'deployed', 'live'].includes(pin.evidencePlane));
 }
 
 export function isLiveBarCritiqueClause(clause: Pick<BarCritiqueClause, 'lifecycleStatus'>): boolean {
@@ -202,6 +218,7 @@ export function buildBarCritiqueRecord(input: {
     answeredAt: input.answeredAt,
     barSetHash: barSetHashOf(live),
     pins: live
+      .filter(hasVerifiableCritiqueDependencies)
       .map((c) => ({ specId: c.specId, revision: c.revision, semanticHash: clauseSemanticHash(c) }))
       .sort((a, b) => a.specId.localeCompare(b.specId)),
     dispositionRevisions,
@@ -219,6 +236,10 @@ export function evaluateBarCritiqueGate(input: BarCritiqueGateInput): BarCritiqu
   const clauseShortfalls: BarCritiqueShortfall[] = [];
 
   for (const clause of live) {
+    if (!hasVerifiableCritiqueDependencies(clause)) {
+      clauseShortfalls.push({ specId: clause.specId, revision: clause.revision, coveredBy: 0, reason: 'stale' });
+      continue;
+    }
     const hash = clauseSemanticHash(clause);
     const parties = new Set<string>();
     let pinnedOtherHash = false;
@@ -406,6 +427,8 @@ export interface PlanStartBarCritiqueOutcome {
   verdict: BarCritiqueGateVerdict;
   /** One real review selected by a verified owner; never represented as consults. */
   ownerSelectedReview?: import('./plan-start-owner-review').OwnerSelectedReviewResult;
+  /** The ordinary critique threshold was not independently satisfied. */
+  requiresOwnerSelectedReview?: boolean;
 }
 
 /**
@@ -466,6 +489,7 @@ export async function evaluatePlanStartBarCritique(
   });
   const { loadOwnerSelectedReview } = await import('./plan-start-owner-review');
   const ownerSelectedReview = await loadOwnerSelectedReview(scope, authorIds, sql);
+  const requiresOwnerSelectedReview = !verdict.satisfied;
   if (ownerSelectedReview?.ok) {
     // Preserve the ordinary threshold, critic identities and shortfalls for audit.
     // The explicit selection satisfies only this pre-implementation requirement.
@@ -483,6 +507,6 @@ export async function evaluatePlanStartBarCritique(
     mandatoryOutcomeBarCount,
     nonDroppedItemCount: input.nonDroppedItemCount,
     verdict,
-    ...(ownerSelectedReview ? { ownerSelectedReview } : {}),
+    ...(ownerSelectedReview ? { ownerSelectedReview, requiresOwnerSelectedReview } : {}),
   };
 }

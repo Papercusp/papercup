@@ -21,6 +21,7 @@
  *      everything anyway. Hence an explicit per-verb assertion.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { ReportBodyTooLargeError, ReportRequestConflictError, REPORT_BODY_MAX_BYTES } from '../../report-library';
 import { goalOwnerReportFixture } from '../../../test/fixtures/goal-owner-report';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
@@ -45,6 +46,7 @@ const {
   operationMatchM,
   getWorkItemM,
   readScorecardEvidenceM,
+  readDurableSuSessionM,
 } = vi.hoisted(() => ({
   publishReportM: vi.fn(),
   getReportM: vi.fn(),
@@ -61,6 +63,7 @@ const {
   operationMatchM: vi.fn(),
   getWorkItemM: vi.fn(),
   readScorecardEvidenceM: vi.fn(),
+  readDurableSuSessionM: vi.fn(),
 }));
 
 // Partial mock: the real enums + the real error CLASS are kept, because the tool
@@ -97,6 +100,10 @@ vi.mock('../../blueprint/operation-worker-binding', () => ({
 }));
 vi.mock('../../work-items', () => ({ getWorkItem: getWorkItemM }));
 vi.mock('../../scorecards', () => ({ readScorecardEvidence: readScorecardEvidenceM }));
+vi.mock('../../su-session-persistence', async (importActual) => ({
+  ...(await importActual<typeof import('../../su-session-persistence')>()),
+  readDurableSuSession: readDurableSuSessionM,
+}));
 
 const publishTool = (await import('./publish')).default;
 const getTool = (await import('./get')).default;
@@ -180,6 +187,7 @@ const record = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   reportExistsM.mockReset().mockResolvedValue(false);
   vi.clearAllMocks();
+  readDurableSuSessionM.mockReset().mockResolvedValue(null);
   getFlagM.mockResolvedValue(true);
   indexReportM.mockResolvedValue({ chunks: 1, embedded: 1 });
   publishReportM.mockResolvedValue(record());
@@ -216,6 +224,41 @@ describe('reportsLibrary kill-switch (P-004)', () => {
 });
 
 describe('reports:publish — origin is server-stamped (R-2)', () => {
+  const nativeSessionId = 'native-review-transcript';
+  const verifiedNative = {
+    carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 42,
+    valueFingerprint: createHash('sha256').update(nativeSessionId).digest('hex'),
+  };
+  const nativeCtx = { ...CTX, advSessionId: 42, requestOrigin: { transport: 'mcp', nativeSession: verifiedNative } };
+  const nativeRow = { advSessionId: 42, workspaceId: 'ws1', ownerId: 'su-author', nativeSessionId };
+
+  it('stamps the verified native transcript consistently across different publication calls', async () => {
+    readDurableSuSessionM.mockResolvedValue(nativeRow);
+    for (const runId of ['publish-call-1', 'publish-call-2']) {
+      await publishTool.handler({ title: 'Review' } as never, { ...nativeCtx, runId } as never);
+    }
+    expect(readDurableSuSessionM).toHaveBeenCalledWith({ advSessionId: 42, workspaceId: 'ws1' });
+    for (const call of publishReportM.mock.calls) {
+      expect(call[2]).toMatchObject({ authorOwnerId: 'su-author', authorSessionRef: nativeSessionId });
+    }
+  });
+
+  it.each([
+    ['unbound carrier', { ...nativeCtx, requestOrigin: { transport: 'mcp', nativeSession: { ...verifiedNative, binding: 'unbound' } } }, nativeRow],
+    ['different launch row', { ...nativeCtx, advSessionId: 43 }, nativeRow],
+    ['missing verified launch', { ...nativeCtx, advSessionId: undefined }, nativeRow],
+    ['malformed fingerprint', { ...nativeCtx, requestOrigin: { transport: 'mcp', nativeSession: { ...verifiedNative, valueFingerprint: 'unverified' } } }, nativeRow],
+    ['foreign owner', nativeCtx, { ...nativeRow, ownerId: 'su-other' }],
+    ['foreign workspace', nativeCtx, { ...nativeRow, workspaceId: 'ws-other' }],
+    ['carry successor', nativeCtx, { ...nativeRow, nativeSessionId: 'successor-transcript' }],
+    ['missing native transcript', nativeCtx, { ...nativeRow, nativeSessionId: null }],
+    ['unavailable binding', nativeCtx, null],
+  ])('retains diagnostic provenance without borrowing an implicit selection from a %s', async (_label, context, row) => {
+    readDurableSuSessionM.mockResolvedValue(row);
+    await publishTool.handler({ title: 'Review' } as never, context as never);
+    expect(publishReportM.mock.calls[0][2]).toMatchObject({ authorOwnerId: 'su-author', authorSessionRef: 'run-abc' });
+  });
+
   it('SPEC-P-003-origin-ctx-stamped: origin comes from ctx, as publishReport\'s separate 3rd argument', async () => {
     await publishTool.handler({ title: 'A' } as never, CTX as never);
     const [, input, origin] = publishReportM.mock.calls[0];
@@ -232,7 +275,7 @@ describe('reports:publish — origin is server-stamped (R-2)', () => {
   it('the args schema REFUSES caller-supplied provenance rather than silently dropping it', () => {
     const schema = publishTool.args as { safeParse: (v: unknown) => { success: boolean } };
     expect(schema.safeParse({ title: 'A' }).success).toBe(true);
-    for (const forged of ['origin', 'author_owner_id', 'authorOwnerId', 'origin_harness_slug', 'requestScope', 'request_scope']) {
+    for (const forged of ['origin', 'author_owner_id', 'authorOwnerId', 'origin_harness_slug', 'requestScope', 'request_scope', 'advSessionId', 'requestOrigin']) {
       expect(schema.safeParse({ title: 'A', [forged]: 'su-someone-else' }).success).toBe(false);
     }
   });

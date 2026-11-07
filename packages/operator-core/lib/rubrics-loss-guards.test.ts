@@ -35,6 +35,8 @@ import {
   rubricTemplateDataAuthoringSchema,
 } from './agent-tools/plans/rubric-template';
 import { classifyToolError } from './harness/improvements/tool-error-classifier';
+import { buildBarCritiqueRecord, evaluateBarCritiqueGate, type BarCritiqueClause }
+  from './agent-tools/plans/plan-start-critique-gate';
 
 const LONG_DRILL =
   `${REPLICATION_DRILL_MARKER} — full end-to-end procedure: create two SYNTHETIC work items, ` +
@@ -518,6 +520,34 @@ describe('canonical acceptance BAR metadata (requirements-with-teeth P-001)', ()
         bar: 'Different alias text.',
       }),
     ).toThrow(/conflicting model and bar text.*model.*canonical/i);
+  });
+});
+
+describe('canonical BAR dependencies through critique reuse (P-004)', () => {
+  it.each<[string, Partial<ProposeRubricCriterion>]>([
+    ['model', { model: 'Require a different measured model' }],
+    ['runtime', { evidenceRuntime: 'bg-host' }],
+    ['shared policy', { intent: { request: 'Review the contract', constraints: ['New shared approval policy'] } }],
+    ['scope', { requiredScope: ['all-workspaces'] }],
+    ['evidence dependency', { check: { kind: 'tests', files: ['different.test.ts'] } }],
+    ['production configuration', { productionConfiguration: { flags: { approvals: false } } }],
+  ])('invalidates the dependent critique when the canonical BAR changes its %s', (_name, change) => {
+    const original: ProposeRubricCriterion = { key: 'R-1', title: 'Reviewed outcome', model: 'Review the contract',
+      method: 'Run the guard', driftMarkers: 'Unreviewed contract accepted', evidenceRuntime: 'staging-operator',
+      requiredScope: ['this-workspace'], intent: { request: 'Review the contract', constraints: ['Original shared policy'] },
+      check: { kind: 'tests', files: ['original.test.ts'] }, productionConfiguration: { flags: { approvals: true } } };
+    const before: BarCritiqueClause = { specId: 'R-1', revision: 1, behavior: 'Review the contract',
+      behaviorClass: 'authorization', requiredEvidence: ['tree'], requiredTestLayers: ['unit'], mutationRequired: false,
+      exemption: null, falsifier: { observation: 'Unreviewed contract accepted' }, lifecycleStatus: 'active',
+      createdAt: '2026-11-01T00:00:00.000Z', sourceBar: { barKey: 'R-1', rubricSlug: 'review-contract',
+        rubricRevision: 1, evidencePlane: 'tree', barSetHash: 'a'.repeat(64), barHash: computeAcceptanceBarHash(original) } };
+    const record = buildBarCritiqueRecord({ planSlug: 'reuse-plan', closedAt: '2026-11-02T00:00:00.000Z',
+      answeredAt: null, clausesAsOfClose: [before], history: [before] });
+    const current = { ...before, sourceBar: { ...before.sourceBar!, barHash: computeAcceptanceBarHash({ ...original, ...change }) } };
+    expect(evaluateBarCritiqueGate({ planSlug: 'reuse-plan', currentClauses: [current],
+      critiques: [{ consultId: 'prior', criticId: 'party-a', partyKey: 'party-a', record }],
+      authorPartyKeys: new Set(), threshold: 1 }))
+      .toMatchObject({ satisfied: false, clauseShortfalls: [{ specId: 'R-1', reason: 'stale' }] });
   });
 });
 

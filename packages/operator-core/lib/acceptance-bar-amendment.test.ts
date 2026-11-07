@@ -23,6 +23,7 @@ import {
 } from './acceptance-bar-amendment';
 import { AcceptanceBarCandidateError } from './acceptance-bar-projection';
 import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
+import * as specStore from './agent-tools/plans/spec-clauses-store';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import {
@@ -72,6 +73,42 @@ ${overrides.map ?? '| R-1 | P-001 | tree |'}
 }
 
 describe('acceptance BAR amendment transaction contract', () => {
+  it('preserves explicit tree and live obligations in new and existing projections', async () => {
+    const seeded = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: subjectPlan(), actorId: 'author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 2, planStatus: 'active', rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+    });
+    if (!seeded.ok) throw new Error('fixture seed failed');
+    const prior = rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
+    const criterion = normalizeAcceptanceBarCriterion({ ...prior.criteria[0]!, evidencePlane: 'live',
+      requiredEvidencePlanes: ['tree', 'live'], requiredTestLayers: ['unit'],
+      model: 'The writer stores the current verdict.' });
+    const next = { ...prior, criteria: [criterion], barSetHash: computeAcceptanceBarSetHash([criterion]) };
+    const observe = vi.spyOn(specStore, 'specClauseWriteIssues');
+    try {
+      for (const existing of [false, true]) {
+        observe.mockClear();
+        const row = { spec_id: 'AUTO-BAR-R-1-P-001', source_val_id: null, current_revision: 1,
+          source_bar_key: 'R-1', source_bar_hash: prior.criteria[0]!.barHash, plan_item_id: 'P-001',
+          behavior: 'The writer stores one BAR.', behavior_class: 'happy-path',
+          falsifier: { observation: 'The stored BAR is incorrect.' }, required_evidence: ['tree', 'unit'],
+          required_test_layers: ['unit'], mutation_required: true, lifecycle_status: 'active',
+          supersedes_spec_id: null, supersedes_revision: null, exemption: null };
+        const sql = vi.fn(async (parts: TemplateStringsArray) => parts.join(' ').includes('SELECT plan_slug, content')
+          ? [{ plan_slug: 'subject-plan', content: subjectPlan() }] : existing ? [row] : []);
+        await expect(validateAcceptanceBarRevisionProjectionPreview(sql as never, {
+          workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: 'acceptance-subject-plan',
+          rubricRevision: 5, templateData: next, previousTemplateData: prior,
+        })).resolves.toMatchObject({ generatedSpecCount: 1 });
+        const write = observe.mock.calls[0]![0];
+        expect([...write.requiredEvidence].sort()).toEqual(existing ? ['live', 'tree', 'unit'] : ['live', 'tree']);
+        expect(write.requiredTestLayers).toEqual(['unit']);
+        if (existing) expect(write.mutationRequired).toBe(true);
+      }
+    } finally { observe.mockRestore(); }
+  });
+
   function fieldValidationFixture() {
     const seeded = buildAcceptanceBarSeed({
       planSlug: 'subject-plan', planContent: subjectPlan(), actorId: 'author',

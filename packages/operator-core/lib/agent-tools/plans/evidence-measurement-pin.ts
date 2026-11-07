@@ -114,6 +114,7 @@ export const defaultGitRunner: GitRunner = async (cwd, args) => {
     cause: { gitExecution: { timeoutMs: GIT_TIMEOUT_MS,
       ...(result.failureRoute ? { route: result.failureRoute } : {}),
       ...(result.error ? { code: result.error.code, signal: result.error.signal, killed: result.error.killed } : {}),
+      ...(result.timing ? { timing: result.timing } : {}),
     } },
   });
 };

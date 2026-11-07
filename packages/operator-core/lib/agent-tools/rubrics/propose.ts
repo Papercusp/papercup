@@ -89,6 +89,7 @@ const criterionFields = {
   evidencePlane: acceptanceEvidencePlaneSchema
     .optional()
     .describe('acceptance BAR required proof plane: tree, deployed, or live; preserved through METHOD-only updates'),
+  requiredEvidencePlanes: requirementAcceptanceSchema.shape.requiredEvidencePlanes,
   passRatings: acceptancePassRatingsSchema,
   coversBarKeys: z
     .array(z.string().min(1))
@@ -311,6 +312,7 @@ export const rubricsProposeArgs = refineEvenWithShapeIssues(
         criterion.verification,
         criterion.requiredTestLayers,
         criterion.evidencePlane,
+        criterion.requiredEvidencePlanes,
         criterion.bar,
         criterion.barKey,
         criterion.barHash,

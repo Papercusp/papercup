@@ -14,6 +14,7 @@ export interface RequirementAcceptance {
   falsifier: string;
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
+  requiredEvidencePlanes?: Array<'tree' | 'deployed' | 'live'>;
   /** WHICH runtime a deployed/live promise is measured on (acceptance-runtime-plane P-002). */
   evidenceRuntime?: EvidenceRuntimeId;
   /** Required depth of outcome proof; changing this changes the promise. */
@@ -47,6 +48,7 @@ export interface RequirementSectionInput {
   driftMarkers?: string;
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
+  requiredEvidencePlanes?: Array<'tree' | 'deployed' | 'live'>;
   evidenceRuntime?: EvidenceRuntimeId;
   requiredTestLayers?: string[];
   passRatings?: string[];
@@ -88,7 +90,7 @@ export function normalizeRequirementSections<T extends RequirementSectionInput>(
     }
     assign('model', acceptance.condition);
     assign('driftMarkers', acceptance.falsifier);
-    for (const key of ['requiredScope', 'evidencePlane', 'evidenceRuntime', 'requiredTestLayers', 'passRatings', 'mandatory', 'role', 'coversBarKeys'] as const) {
+    for (const key of ['requiredScope', 'evidencePlane', 'requiredEvidencePlanes', 'evidenceRuntime', 'requiredTestLayers', 'passRatings', 'mandatory', 'role', 'coversBarKeys'] as const) {
       assign(key, acceptance[key]);
     }
   }
@@ -110,6 +112,7 @@ export function requirementSections(input: RequirementSectionInput) {
       falsifier: input.driftMarkers ?? '',
       requiredScope: input.requiredScope ?? [],
       evidencePlane: input.evidencePlane ?? null,
+      ...(input.requiredEvidencePlanes ? { requiredEvidencePlanes: input.requiredEvidencePlanes } : {}),
       evidenceRuntime: input.evidenceRuntime ?? null,
       requiredTestLayers: input.requiredTestLayers ?? [],
       passRatings: input.passRatings ?? [],

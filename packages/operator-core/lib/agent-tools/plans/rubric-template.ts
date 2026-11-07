@@ -561,6 +561,7 @@ export const requirementAcceptanceSchema = z
       ),
     requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
     evidencePlane: acceptanceEvidencePlaneSchema.optional(),
+    requiredEvidencePlanes: z.array(acceptanceEvidencePlaneSchema).min(1).max(50).optional(),
     evidenceRuntime: acceptanceEvidenceRuntimeSchema
       .optional()
       .describe(
@@ -684,6 +685,8 @@ const rubricCriterionObjectSchema = z
     evidencePlane: acceptanceEvidencePlaneSchema
       .optional()
       .describe('acceptance-kind only: where this BAR must be evidenced (tree, deployed, or live)'),
+    requiredEvidencePlanes: requirementAcceptanceSchema.shape.requiredEvidencePlanes
+      .describe('acceptance-kind only: independently required planes, in addition to the primary evidencePlane'),
     evidenceRuntime: acceptanceEvidenceRuntimeSchema
       .optional()
       .describe(
@@ -1250,6 +1253,7 @@ export const rubricTemplateDataSchema = z
           'mandatory',
           'requiredScope',
           'evidencePlane',
+          'requiredEvidencePlanes',
           'evidenceRuntime',
           'requiredTestLayers',
           'passRatings',
@@ -1434,6 +1438,7 @@ const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.supe
       criterion.mandatory !== undefined ||
       criterion.requiredScope !== undefined ||
       criterion.evidencePlane !== undefined ||
+      criterion.requiredEvidencePlanes !== undefined ||
       criterion.evidenceRuntime !== undefined ||
       criterion.requiredTestLayers !== undefined ||
       criterion.passRatings !== undefined ||

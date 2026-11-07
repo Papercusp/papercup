@@ -524,7 +524,9 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       // one parked account per retry — a failure that surfaces only as accounts
       // mysteriously going cold under load.
       const next = opts.pool.onExhausted(current, resolveResetAt(context));
-      const selected = opts.selectRotation ? opts.selectRotation(triedAccounts) : next;
+      // A null pool result forbids immediate rotation; health ranking must not
+      // resurrect a sibling the pool deliberately declined.
+      const selected = next && opts.selectRotation ? opts.selectRotation(triedAccounts) : next;
       const rotateDelay = rotateDelayFor(kind, context.lastResponse?.status ?? null);
       if (selected && !triedAccounts.has(selected.accountId)) {
         triedAccounts.add(selected.accountId);

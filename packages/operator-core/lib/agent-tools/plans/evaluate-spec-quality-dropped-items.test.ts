@@ -121,6 +121,18 @@ describe('plans:evaluate-spec-quality and dropped plan items (WI-10006208)', () 
     expect(reads.planReads).toBe(0);
   });
 
+  it('DISCOVERY-R4 spec quality waits for reconciliation', async () => {
+    reads.items = [{ id: 'P-001', storedStatus: 'todo' }];
+    reads.discoveryReady = false;
+    expect(await evaluate()).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    expect(reads.planReads).toBe(0);
+    reads.discoveryReady = true;
+    const result = await evaluate();
+    expect(result.ok).toBe(true);
+    expect(result).toHaveProperty('scorecardDraft');
+    expect(reads.planReads).toBeGreaterThan(0);
+  });
+
   it('does not require a contract for a dropped item', async () => {
     reads.items = [
       { id: 'P-001', storedStatus: 'todo' },

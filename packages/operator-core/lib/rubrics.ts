@@ -227,6 +227,8 @@ export interface RubricCriterion {
   requiredScope?: string[];
   /** Structural evidence plane; tree proof cannot satisfy deployed/live promises. */
   evidencePlane?: AcceptanceEvidencePlane;
+  /** Independently required planes, alongside the primary plane. Absence preserves legacy projection semantics. */
+  requiredEvidencePlanes?: AcceptanceEvidencePlane[];
   /** deployed/live BARs: the runtime whose build the evidence must be measured on
    * (acceptance-runtime-plane P-002). Absent ⇒ inferred + flagged, never :3070 by default. */
   evidenceRuntime?: EvidenceRuntimeId;
@@ -662,6 +664,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         ...(barFields.mandatory !== undefined ? { mandatory: barFields.mandatory } : {}),
         ...(barFields.requiredScope ? { requiredScope: barFields.requiredScope } : {}),
         ...(barFields.evidencePlane ? { evidencePlane: barFields.evidencePlane } : {}),
+        ...(c.requiredEvidencePlanes ? { requiredEvidencePlanes: c.requiredEvidencePlanes } : {}),
         ...(barFields.evidenceRuntime ? { evidenceRuntime: barFields.evidenceRuntime } : {}),
         ...(c.requiredTestLayers ? { requiredTestLayers: c.requiredTestLayers } : {}),
         ...(barFields.passRatings ? { passRatings: barFields.passRatings } : {}),
@@ -1912,6 +1915,7 @@ export type AcceptanceBarHashInput = Pick<
   | 'driftMarkers'
   | 'requiredScope'
   | 'evidencePlane'
+  | 'requiredEvidencePlanes'
   | 'evidenceRuntime'
   | 'requiredTestLayers'
   | 'check'
@@ -1984,6 +1988,9 @@ function acceptanceBarHashMaterial(criterion: AcceptanceBarHashInput): readonly 
     ['falsifier', normalizedBarText(criterion.driftMarkers)],
     ['requiredScope', normalizedBarSet(criterion.requiredScope)],
     ...(criterion.evidencePlane ? ([['evidencePlane', criterion.evidencePlane]] as const) : []),
+    // Conditional so undeclared legacy BAR hashes remain byte-for-byte stable.
+    ...(criterion.requiredEvidencePlanes
+      ? [['requiredEvidencePlanes', normalizedBarSet(criterion.requiredEvidencePlanes)]] : []),
     // Conditional like evidencePlane: every BAR hashed before evidenceRuntime existed keeps
     // its hash byte-for-byte, while declaring a runtime IS a meaning change (it moves where
     // the promise must be proven) and so re-hashes.
@@ -2114,6 +2121,7 @@ export function acceptanceCanonicalUnchangedIgnoringLegacyChecks(
     'mandatory',
     'requiredScope',
     'evidencePlane',
+    'requiredEvidencePlanes',
     'evidenceRuntime',
     'requiredTestLayers',
     'passRatings',
@@ -2176,6 +2184,7 @@ function carriesAcceptanceBarContractFields(criterion: ProposeRubricCriterion): 
     criterion.mandatory !== undefined ||
     criterion.requiredScope !== undefined ||
     criterion.evidencePlane !== undefined ||
+    criterion.requiredEvidencePlanes !== undefined ||
     criterion.evidenceRuntime !== undefined ||
     criterion.requiredTestLayers !== undefined ||
     criterion.passRatings !== undefined ||
@@ -2222,6 +2231,8 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     ...(model || alias ? { model: model || alias } : {}),
     ...(criterion.barKey?.trim() ? { barKey: criterion.barKey.trim() } : {}),
     ...(criterion.requiredScope ? { requiredScope: normalizedBarSet(criterion.requiredScope) } : {}),
+    ...(criterion.requiredEvidencePlanes
+      ? { requiredEvidencePlanes: normalizedBarSet(criterion.requiredEvidencePlanes) as AcceptanceEvidencePlane[] } : {}),
     ...(criterion.requiredTestLayers
       ? { requiredTestLayers: normalizedBarSet(criterion.requiredTestLayers, true) }
       : {}),

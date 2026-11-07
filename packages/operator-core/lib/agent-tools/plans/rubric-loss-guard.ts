@@ -298,6 +298,7 @@ export const ACCEPTANCE_BAR_MEANING_FIELDS = [
   'mandatory',
   'requiredScope',
   'evidencePlane',
+  'requiredEvidencePlanes',
   'requiredTestLayers',
   'check',
   'passRatings',

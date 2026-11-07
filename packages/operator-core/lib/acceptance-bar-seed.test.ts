@@ -15,6 +15,25 @@ import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template'
 import type { ItemTypeBar } from './plan-types/item-type-contract';
 import { specBehaviorNonAtomicReason } from './agent-tools/plans/spec-clause-compiler';
 
+it('seeds all explicit evidence planes alongside the primary plane', () => {
+  const requirement = {
+    intent: { request: 'Require source and live proof.' },
+    acceptance: { condition: 'The service exposes the current verdict.', falsifier: 'The verdict is absent.',
+      evidencePlane: 'live', requiredEvidencePlanes: ['tree', 'live'], requiredTestLayers: ['unit'],
+      role: 'outcome', mandatory: true, passRatings: ['healthy'], requiredScope: ['verdict'] },
+    verification: { method: 'Run the verdict probe and compare the result with the committed fixture.',
+      check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] } },
+  };
+  const seeded = buildAcceptanceBarSeed({ planSlug: 'seed-target',
+    planContent: plan({ requirements: `**R-1 — Current verdict.**\n\n\`\`\`requirement\n${JSON.stringify(requirement)}\n\`\`\``,
+      map: '| R-1 | P-001 | live |' }), actorId: 'author', declaredAt: '2026-11-07T00:00:00.000Z',
+    cohort: 'post-epoch', adoptionEpoch: 1, subjectPlanRevision: 1, planStatus: 'draft',
+    rubricSlug: 'acceptance-seed-target', rubricRevision: 1 });
+  expect(seeded.ok).toBe(true);
+  if (!seeded.ok) throw new Error(seeded.message);
+  expect(seeded.projections[0]!.requiredEvidence).toEqual(['live', 'tree']);
+});
+
 function plan(opts: { requirements?: string; map?: string } = {}): string {
   return `---
 title: Seed target

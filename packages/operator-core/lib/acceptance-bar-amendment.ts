@@ -700,7 +700,7 @@ async function acceptanceBarClauseWrite(args: {
     ...common, specId: `AUTO-BAR-${barKey}-${args.planItemId}`, expectedRevision: 0,
     behavior: acceptanceBarProjectedBehavior(criterion),
     behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane!, criterion.requiredTestLayers, criterion.check),
-    requiredEvidence: [criterion.evidencePlane!],
+    requiredEvidence: [...new Set([criterion.evidencePlane!, ...(criterion.requiredEvidencePlanes ?? [])])].sort(),
     ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
     lifecycleStatus: 'draft', falsifier: { observation: criterion.driftMarkers! },
   };
@@ -709,9 +709,24 @@ async function acceptanceBarClauseWrite(args: {
   const layersOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
     computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check })
       === clause.source_bar_hash;
-  const preserveRefinements = unchangedBar || layersOnly;
+  const proofOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
+    computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check,
+      evidencePlane: prior.evidencePlane, requiredEvidencePlanes: prior.requiredEvidencePlanes })
+      === clause.source_bar_hash;
+  const preserveRefinements = unchangedBar || proofOnly;
   // Keep atomic-only proof layers; remove a parent's explicitly dropped layers.
   const projectedFromPrior = prior !== undefined && prior.barHash === clause.source_bar_hash;
+  // Only the prior BAR's known contribution can be removed. Preserve independent
+  // atomic requirements (including non-plane proof tokens such as `unit`).
+  const priorPlanes = new Set(projectedFromPrior
+    ? [prior.evidencePlane, ...(prior.requiredEvidencePlanes ?? [])] : []);
+  const requiredEvidence = criterion.requiredEvidencePlanes
+    ? [...new Set([
+        ...clause.required_evidence.filter((value) => !priorPlanes.has(value as ProjectionCriterion['evidencePlane'])),
+        criterion.evidencePlane!, ...criterion.requiredEvidencePlanes,
+      ])].sort()
+    : unchangedBar || layersOnly ? clause.required_evidence
+      : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value);
   const requiredTestLayers = unchangedBar ? clause.required_test_layers : projectedFromPrior
     ? [...new Set([
         ...clause.required_test_layers.filter((layer) => !prior!.requiredTestLayers?.includes(layer)),
@@ -730,8 +745,7 @@ async function acceptanceBarClauseWrite(args: {
       ? clause.behavior_class
       : clause.mutation_required ? 'happy-path'
         : acceptanceBarBehaviorClass(criterion.evidencePlane!, requiredTestLayers, criterion.check),
-    requiredEvidence: preserveRefinements ? clause.required_evidence
-      : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
+    requiredEvidence,
     requiredTestLayers, mutationRequired: clause.mutation_required,
     lifecycleStatus: clause.lifecycle_status === 'superseded' || clause.lifecycle_status === 'retired'
       ? 'draft' : clause.lifecycle_status,

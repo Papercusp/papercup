@@ -7,6 +7,7 @@ import { planExecutionMeaning } from './plan-execution-meaning';
 import { checkPlanExecutionReadiness, type ExecutionPlanBinding } from './plan-execution-guard';
 import { readPlanLineItems } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
+import { revalidateOwnerSelectedReviewForStart } from './plan-start-owner-review';
 export { preservePlanExecutionProgress } from './plan-execution-progress';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
@@ -70,13 +71,18 @@ export async function recordPlanExecutionStart(scope: ExecutionStartScope, ident
   // Readiness uses independent connections and may perform slow policy reads.
   // Finish it before opening the write transaction: an otherwise idle transaction
   // can expire while those readers run. The locked, full-snapshot comparison below
-  // fences changes made during readiness before any immutable authority is issued.
-  const blockers = await checkPlanExecutionReadiness({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug }, scope.workspaceId);
+  // fences plan changes made during readiness. Selected external evidence is
+  // separately fenced and revalidated on the write transaction below.
+  let requiresOwnerSelectedReview = true;
+  const blockers = await checkPlanExecutionReadiness({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug },
+    scope.workspaceId, undefined, 'start', required => { requiresOwnerSelectedReview = required; });
   if (blockers.length) throw new Error(`plan_start_proof_refused:${blockers.join(',')}`);
   return withWorkspace(scope.workspaceId, async tx => {
     await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(scope.workspaceId, scope.harnessSlug, scope.planSlug));
     const row = await readExecutionSnapshot(tx, scope, true);
     if (!row || !isDeepStrictEqual(row, expected)) throw new Error('plan_changed_before_start_proof');
+    if (requiresOwnerSelectedReview) await revalidateOwnerSelectedReviewForStart(tx, scope,
+      [row.owner, row.acceptance_bar_seeded_by].filter((id): id is string => typeof id === 'string'));
     const revision = await recordPlanRevisionInTransaction(tx, {
       ...scope, identity, contentHash: row.content_hash,
       content: JSON.stringify({ schema: 'plan-execution-start-v1', scope, body: row.rendered_content, inputs: executionPlanInputs(row) }),

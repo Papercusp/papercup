@@ -3938,6 +3938,10 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
   });
 
   it('counts a structured answer on an archive-served wrapper as one critique from the source responder', async () => {
+    const answer = { answer: 'The release evidence criterion still needs a live-pin check.', confidence: 0.9 };
+    await seedConsult('conv-archive-source', 'closed_answered', [['su-reviewer', 'answer']]);
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json(answer)}
+      WHERE workspace_id = ${WSV} AND conversation_id = 'conv-archive-source'`;
     await rootSql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question, outcome)
@@ -3949,7 +3953,7 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
             source: 'archive',
             source_conversation_id: 'conv-archive-source',
             source_responder_id: 'su-reviewer',
-            answer: { answer: 'The release evidence criterion still needs a live-pin check.', confidence: 0.9 },
+            answer,
           })}
         )
     `;
@@ -3961,7 +3965,91 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
       critiquePosts: 1,
       declinePosts: 0,
       critics: ['su-reviewer'],
+      originConsultId: 'conv-archive-source',
     });
+  });
+
+  async function seedReuse(prefix: string) {
+    const source = `${prefix}-source`;
+    const wrapper = `${prefix}-wrapper`;
+    const answer = { answer: 'Verified acceptance-rubric-alpha hash: aaaaaaa with its complete source.', confidence: 0.9 };
+    const question = 'Critique acceptance-rubric-alpha hash: aaaaaaa model: model-a runtime: runtime-a policy: policy-a';
+    await seedConsult(source, 'closed_answered', [['su-origin-reviewer', 'answer']], question);
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json(answer)}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${source}`;
+    const outcome = { source: 'archive', source_conversation_id: source,
+      source_responder_id: 'su-copied-identity', answer };
+    await seedConsult(wrapper, 'closed_answered', [], question);
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json(outcome)}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${wrapper}`;
+    return { source, wrapper, answer, question, outcome };
+  }
+
+  it('verifies reused sources and counts the original author instead of a copied responder identity', async () => {
+    const { wrapper, source } = await seedReuse('verified-reuse');
+    expect(await readVettingConsultCritique(rootSql, WSV, wrapper, REQUESTER, ['acceptance-rubric-alpha']))
+      .toMatchObject({ critiquePosts: 1, critics: ['su-origin-reviewer'], originConsultId: source,
+        relevance: { matched: true, matchedRefs: ['acceptance-rubric-alpha'] } });
+  });
+
+  it.each(['closed_cant_help', 'declined', 'expired'])('refuses a reused origin whose disposition became %s', async state => {
+    const { source, wrapper } = await seedReuse(`disposition-${state}`);
+    await rootSql`UPDATE harness_shared.consult_state SET state = ${state}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${source}`;
+    expect(await readVettingConsultCritique(rootSql, WSV, wrapper, REQUESTER))
+      .toMatchObject({ exists: true, critiquePosts: 0, critics: [] });
+  });
+
+  it.each(['missing', 'truncated', 'altered'])('refuses %s immutable origin material', async fault => {
+    const { source, wrapper, answer } = await seedReuse(`source-${fault}`);
+    if (fault === 'missing') {
+      await rootSql`DELETE FROM harness_shared.consult_state WHERE workspace_id = ${WSV} AND conversation_id = ${source}`;
+    } else {
+      const changed = { ...answer, answer: fault === 'truncated' ? answer.answer.slice(0, 12) : 'Different answer' };
+      await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json(changed)}
+        WHERE workspace_id = ${WSV} AND conversation_id = ${source}`;
+    }
+    expect(await readVettingConsultCritique(rootSql, WSV, wrapper, REQUESTER))
+      .toMatchObject({ critiquePosts: 0, critics: [] });
+  });
+
+  it.each(['hash: aaaaaaa', 'model: model-a', 'runtime: runtime-a', 'policy: policy-a'])
+    ('refuses changed relevant request identity %s', async dependency => {
+      const { wrapper, question } = await seedReuse(`dependency-${dependency.split(':')[0]}`);
+      await rootSql`UPDATE harness_shared.consult_state SET question = ${question.replace(dependency, `${dependency}-changed`)}
+        WHERE workspace_id = ${WSV} AND conversation_id = ${wrapper}`;
+      expect(await readVettingConsultCritique(rootSql, WSV, wrapper, REQUESTER)).toMatchObject({ critiquePosts: 0 });
+    });
+
+  it('preserves a reused origin across whitespace presentation changes', async () => {
+    const { wrapper, question } = await seedReuse('presentation-reuse');
+    await rootSql`UPDATE harness_shared.consult_state SET question = ${`  ${question.replace(/ /g, '\n  ')}  `}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${wrapper}`;
+    expect(await readVettingConsultCritique(rootSql, WSV, wrapper, REQUESTER)).toMatchObject({ critiquePosts: 1 });
+  });
+
+  it('resolves transitive reuse to its verified organic origin and deduplicates its critic', async () => {
+    const { source, wrapper, outcome, question } = await seedReuse('transitive-reuse');
+    const second = 'transitive-reuse-second';
+    await seedConsult(second, 'closed_answered', [], question);
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json({ source: 'archive',
+      source_conversation_id: wrapper, answer: outcome })} WHERE workspace_id = ${WSV} AND conversation_id = ${second}`;
+    const receipts = await Promise.all([wrapper, second].map(id => readVettingConsultCritique(rootSql, WSV, id, REQUESTER)));
+    expect(receipts.map(r => r.originConsultId)).toEqual([source, source]);
+    expect([...new Set(receipts.flatMap(r => r.critics))]).toEqual(['su-origin-reviewer']);
+    await rootSql`UPDATE harness_shared.consult_state SET state = 'closed_cant_help'
+      WHERE workspace_id = ${WSV} AND conversation_id = ${source}`;
+    expect(await readVettingConsultCritique(rootSql, WSV, second, REQUESTER)).toMatchObject({ critiquePosts: 0 });
+  });
+
+  it.each(['self', 'pair'])('refuses %s cycles without treating wrapper posts as origin proof', async cycle => {
+    const { source, wrapper, outcome } = await seedReuse(`cycle-${cycle}`);
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json({ ...outcome,
+      source_conversation_id: cycle === 'self' ? wrapper : source })}
+      WHERE workspace_id = ${WSV} AND conversation_id = ${wrapper}`;
+    if (cycle === 'pair') await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json({ ...outcome,
+      source_conversation_id: wrapper })} WHERE workspace_id = ${WSV} AND conversation_id = ${source}`;
+    expect(await readVettingConsultCritique(rootSql, WSV, wrapper, REQUESTER)).toMatchObject({ critiquePosts: 0 });
   });
 
   it('does not treat archive provenance or confidence without answer text as critique', async () => {

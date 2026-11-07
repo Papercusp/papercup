@@ -931,7 +931,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
         planItemId,
         behavior: acceptanceBarProjectedBehavior(criterion),
         behaviorClass: acceptanceBarBehaviorClass(evidencePlane, criterion.requiredTestLayers, criterion.check),
-        requiredEvidence: [evidencePlane],
+        requiredEvidence: [...new Set([evidencePlane, ...(criterion.requiredEvidencePlanes ?? [])])].sort(),
         ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
         lifecycleStatus: 'draft',
         falsifier: { observation: criterion.driftMarkers ?? '' },
@@ -1235,7 +1235,7 @@ export async function seedAcceptanceBarsInTransaction(
     preserveExistingBars: input.dryRun && input.preserveExistingBars,
     requireContractCompleteness: input.requireContractCompleteness,
   });
-  if (!built.ok) return built;
+  if (built.ok === false) return built;
 
   // P-004/D-009: this activation seeder is a direct SQL writer, so it must
   // cross the same started-BAR guard as withPlanLock. A post-start meaning
@@ -1326,7 +1326,7 @@ export async function seedAcceptanceBarsInTransaction(
       preserveExistingBars: input.dryRun && input.preserveExistingBars,
       requireContractCompleteness: input.requireContractCompleteness,
     });
-    if (!built.ok) return built;
+    if (built.ok === false) return built;
   }
 
   // All seed paths (including previews) share this pre-write guard. Do not run

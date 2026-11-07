@@ -187,6 +187,40 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     expect(template.barSetHash).not.toBe(OLD_SET_HASH);
   });
 
+  it.each([
+    { priorPlanes: undefined, nextPlanes: ['tree', 'live'], primary: 'live', expected: ['live', 'tree', 'unit'] },
+    { priorPlanes: ['tree', 'live'], nextPlanes: ['deployed'], primary: 'deployed', expected: ['deployed', 'unit'] },
+    { priorPlanes: undefined, nextPlanes: undefined, primary: 'live', expected: ['live', 'unit'] },
+  ] as const)('amends declared evidence planes without losing atomic proof or changing siblings: %j', async (test) => {
+    const priorCriteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const prior = { ...criterion, requiredTestLayers: ['unit'],
+        ...(test.priorPlanes ? { requiredEvidencePlanes: [...test.priorPlanes] } : {}) };
+      return { ...prior, barHash: computeAcceptanceBarHash(prior as never) };
+    });
+    const nextCriteria = priorCriteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const next = { ...criterion, evidencePlane: test.primary,
+        ...(test.nextPlanes ? { requiredEvidencePlanes: [...test.nextPlanes] } : {}),
+        model: 'The writer stores the current verdict.' };
+      return { ...next, barHash: computeAcceptanceBarHash(next as never) };
+    });
+    const prior = { ...template, criteria: priorCriteria, barSetHash: computeAcceptanceBarSetHash(priorCriteria) };
+    const next = { ...template, criteria: nextCriteria, barSetHash: computeAcceptanceBarSetHash(nextCriteria) };
+    const row = { ...storedClause('R-1', 'P-001', { barHash: priorCriteria[0]!.barHash,
+      mutationRequired: true, requiredTestLayers: ['unit', 'integration'] }),
+      required_evidence: [...(test.priorPlanes ?? ['tree']), 'unit'] };
+    const sibling = storedClause('R-2', 'P-002');
+    await synchronizeAcceptanceBarRevision(sqlStub([row, sibling]) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: next, previousTemplateData: prior, actorId: 'amender',
+    });
+    expect(writtenSpecIds()).toEqual([row.spec_id]);
+    const write = h.setSpecClause.mock.calls[0]![0];
+    expect([...write.requiredEvidence].sort()).toEqual([...test.expected]);
+    expect(write).toMatchObject({ mutationRequired: true, requiredTestLayers: ['integration', 'unit'] });
+  });
+
   it('repairs an existing neutral class when its unchanged tree BAR is explicitly manual', async () => {
     const criteria = template.criteria.map((criterion) => {
       if (criterion.barKey !== 'R-1') return criterion;

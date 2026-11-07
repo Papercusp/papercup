@@ -79,6 +79,23 @@ async function settle(p: Promise<unknown>): Promise<{ value?: unknown; thrown?: 
 }
 
 describe('getFeedbackCore bar-critique origin guard (SPEC-P-007-CRITIQUE-REF, unit)', () => {
+  it('DISCOVERY-R4 bar critique dispatch waits for reconciliation', async () => {
+    const { deps, touched } = planValidationDeps([
+      { workspaceId: 'ws-unit', harnessSlug: 'papercusp', planSlug: 'some-real-plan' },
+    ]);
+    let ready = false;
+    deps.withCurrentDiscovery = (async (_input: unknown, accept: () => Promise<unknown>) => ready
+      ? { ok: true, result: await accept() } : { ok: false, error: 'discovery_not_ready' }) as NonNullable<GetFeedbackDeps['withCurrentDiscovery']>;
+    const req = request({ policy: BAR_CRITIQUE_POLICY, originTaskRef: 'some-real-plan', harnessSlug: 'papercusp' });
+    expect(await getFeedbackCore(req, deps)).toMatchObject({ error: 'discovery_not_ready' });
+    expect(touched).toEqual(['plan-lookup']);
+    ready = true;
+    const accepted = await settle(getFeedbackCore(req, deps));
+    expect(accepted.thrown).toContain(TOUCHED);
+    expect(touched).toContain('route');
+    expect(touched).not.toContain('open');
+  });
+
   it.each(['accept', 'dispatch'])('refuses stale discovery before any %s effects', async mode => {
     const { deps, touched } = planValidationDeps([
       { workspaceId: 'ws-unit', harnessSlug: 'papercusp', planSlug: 'some-real-plan' },

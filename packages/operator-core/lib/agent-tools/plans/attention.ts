@@ -356,17 +356,21 @@ export default defineTool({
         // coord:escalate/coord:send began recording the originating harness).
         const planHarness = new Map<string, string>();
 
-        // 1. Plan items — non-terminal (todo/wip/blocked/needs-human).
-        try {
-          const plans = await traceNamedQueryStage('attention-plans', () => readAllPlans({ includeArchived, ...opts }));
-          const planItems = planItemsToAttention(plans, harnessFilter);
-          for (const it of planItems) {
-            if (it.planSlug && it.harnessSlug) planHarness.set(it.planSlug, it.harnessSlug);
+        // 1. Plan items — non-terminal (todo/wip/blocked/needs-human). Only
+        // escalation/message attribution needs this map. Start the read now;
+        // independent sources must not queue behind the full plan population.
+        const plansReady = (async () => {
+          try {
+            const plans = await traceNamedQueryStage('attention-plans', () => readAllPlans({ includeArchived, ...opts }));
+            const planItems = planItemsToAttention(plans, harnessFilter);
+            for (const it of planItems) {
+              if (it.planSlug && it.harnessSlug) planHarness.set(it.planSlug, it.harnessSlug);
+            }
+            items.push(...planItems);
+          } catch {
+            /* best-effort */
           }
-          items.push(...planItems);
-        } catch {
-          /* best-effort */
-        }
+        })();
 
         // Resolve an attention item's harness: its own recorded harnessSlug (now
         // stamped by coord:escalate / coord:send for harness-scoped agents), else
@@ -378,8 +382,9 @@ export default defineTool({
         };
 
         // 2–10 (infra-perf-robustness-audit-2026-06-18 P-005): these source reads are
-        // mutually independent — each reads the already-populated `planHarness` +
-        // `harnessFilter` (both finalized above) and appends to `items`. They ran
+        // mutually independent. Escalations/messages await plansReady only when
+        // mapping their fetched rows; other sources need only harnessFilter.
+        // Each appends to `items`. They ran
         // SEQUENTIALLY (plans:attention p50 ~2s, ~19k calls/6h — the audit's P2). Run them
         // CONCURRENTLY: output order is irrelevant — buildAttentionGroups re-groups and
         // deterministically re-sorts by importance (ties broken by key), so interleaved
@@ -397,6 +402,7 @@ export default defineTool({
         // path (see needs-human-work-items-source.ts) over another getOrgPg call.
         const dbOrgImportP = import('@papercusp/db-org');
         await Promise.all([
+          plansReady,
           // 2. Open coord escalations (workspace-level).
           traceNamedQueryStage('attention-escalations', async () => {
             if (!ownerSourceEnabled('open-owner-escalations')) return;
@@ -413,6 +419,7 @@ export default defineTool({
               // workspace and every isolated workspace's Overview/Working "NEEDS
               // YOU" panel shows every OTHER workspace's open escalations.
               const escs = await runWithWorkspace(conversationsWorkspace, () => listEscalations({ status: 'open' }));
+              await plansReady;
               for (const e of escs) {
                 items.push({
                   ...coordEscalationToAttention({
@@ -493,6 +500,7 @@ export default defineTool({
                     )
                     .catch(() => new Map<string, Record<string, unknown>>())
                 : new Map<string, Record<string, unknown>>();
+              await plansReady;
               for (const raw of page) {
                 const content = opened.get(raw.msg_id);
                 const m = content ? mergeUnsealed(raw, content) : raw;

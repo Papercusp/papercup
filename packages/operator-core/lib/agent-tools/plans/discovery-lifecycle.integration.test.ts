@@ -19,6 +19,7 @@ import { withPlanLock } from './with-plan-lock';
 import { persistResearchBatch, researchSubjects, suggestResearchAnchors } from '../../code-intelligence/research-trail';
 import { acceptFeedbackRequestCore, getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from '../../consult/get-feedback-core';
 import { BAR_CRITIQUE_POLICY } from '../../consult/selection-policies';
+import { evaluateBarCritiqueGate, type BarCritiqueClause } from './plan-start-critique-gate';
 
 // Exact quoted owner text, including indentation and line breaks. The later
 // plan revision is a different fixture and cannot stand in for this source.
@@ -124,6 +125,101 @@ beforeEach(async () => {
 });
 
 describe('original proof-warming discovery before review and implementation', () => {
+  it('DISCOVERY-R4 current reconciled discovery permits amended full BAR review while a new start waits for current independent clearance', async () => {
+    const review = reviewDeps();
+    expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });
+    await revision(plan(revisedFindings(), true));
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    await expect(review.attempt()).rejects.toThrow('REVIEW_ROUTING_ADMITTED');
+    expect(review.route).toHaveBeenCalledOnce();
+    // Reconciliation authorizes asking for review; it cannot stand in for an
+    // independent answer about the amended contract at the production start gate.
+    const clause: BarCritiqueClause = { specId: 'DISCOVERY-REVIEW', revision: 2,
+      behavior: 'Reuse the existing cache at the reconciled caller.', behaviorClass: 'happy-path',
+      requiredEvidence: ['tree'], requiredTestLayers: ['integration'], mutationRequired: false,
+      exemption: null, falsifier: { observation: 'The caller starts against an unreviewed contract.' },
+      lifecycleStatus: 'active', createdAt: new Date().toISOString(), sourceBar: null };
+    expect(evaluateBarCritiqueGate({ planSlug: slug, currentClauses: [clause], critiques: [],
+      authorPartyKeys: new Set([OWNER]), threshold: 1 }))
+      .toMatchObject({ satisfied: false, code: 'critique_missing', critics: [] });
+    expect(await current()).toMatchObject({ ok: true });
+  });
+
+  it('DISCOVERY-R8 persisted draft-to-review journey retains evidence', async () => {
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: false } } });
+    const review = reviewDeps();
+    expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });
+    await revision(plan(revisedFindings(), true));
+    const reconciled = await finalized();
+    expect(reconciled).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    if (!reconciled.ok) throw new Error('reconciliation failed');
+    const [stored] = await fx.admin`SELECT discovery, audited_plan_content_hash AS content_hash FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}
+        AND audit_kind='discovery' ORDER BY audit_seq DESC LIMIT 1`;
+    expect(stored.discovery.evidence).toEqual(reconciled.discovery.evidence);
+    expect(stored.content_hash).toBe(createHash('sha256').update(content).digest('hex'));
+    // A restarted consumer reads the retained assessment, then a relevant source
+    // delta must close admission without erasing that earlier observation.
+    expect(await current()).toMatchObject({ ok: true });
+    await expect(review.attempt()).rejects.toThrow('REVIEW_ROUTING_ADMITTED');
+    await writeFile(join(root, 'proof-cache.ts'), 'export const retainedProofCache = null;\n');
+    expect(await current()).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });
+    expect(review.route).toHaveBeenCalledOnce();
+    const [retained] = await fx.admin`SELECT discovery FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}
+        AND audit_kind='discovery' ORDER BY audit_seq DESC LIMIT 1`;
+    expect(retained.discovery).toEqual(stored.discovery);
+  });
+
+  it('DISCOVERY-R9 proof warming is reconciled before review', async () => {
+    expect(content).toContain(ORIGINAL_CENSUS);
+    const review = reviewDeps();
+    expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });
+    expect(await startAttempt()).toMatchObject({ error: 'discovery_not_ready' });
+    expect(review.route).not.toHaveBeenCalled();
+    const declaration = revisedFindings();
+    await revision(plan(declaration, true));
+    expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    const accepted = await withCurrentDiscovery(input(), async (_tx, subject) => subject.content, { context: resolver });
+    expect(accepted).toMatchObject({ ok: true, result: content });
+    expect(content).not.toContain(ORIGINAL_CENSUS);
+    expect(content).toContain('Reuse the existing keyed cache at the missing child-consumption caller');
+    await expect(review.attempt()).rejects.toThrow('REVIEW_ROUTING_ADMITTED');
+    expect(review.route).toHaveBeenCalledOnce();
+    expect(review.open).not.toHaveBeenCalled();
+    expect(await startAttempt('P-002')).toBeNull();
+  });
+
+  it('DISCOVERY-R10 derives discovery facts and finalizes first delta batch and retry paths without redundant authored confirmations', async () => {
+    const declaration = revisedFindings();
+    const finding = declaration.findings[0]!;
+    declaration.findings = [{ ...finding, dispositions: [finding.dispositions[0]!] },
+      { ...finding, id: 'F-2', dispositions: [finding.dispositions[1]!] }];
+    await revision(plan(declaration, true));
+    const first = await finalized();
+    expect(first).toMatchObject({ ok: true, reused: false, discovery: { readiness: { ready: true } } });
+    expect(await finalized()).toMatchObject({ ok: true, reused: true });
+    await writeFile(join(root, 'proof-cache.ts'), 'export const retainedProofCache = new Map<string, unknown>();\n');
+    expect(await current()).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    // The agent supplies the changed judgment, not source hashes, revision ids,
+    // readiness attestations or another account of facts the server can derive.
+    declaration.findings = declaration.findings.map(row => ({ ...row,
+      conclusion: row.conclusion + ' The changed cache now accepts string keys; keep the caller key as a string.' }));
+    await revision(plan(declaration, true));
+    const delta = await finalized();
+    expect(delta).toMatchObject({ ok: true, reused: false, discovery: { readiness: { ready: true } } });
+    if (!first.ok || !delta.ok) throw new Error('batch finalization failed');
+    expect(delta.discovery.evidence).not.toEqual(first.discovery.evidence);
+    expect(await finalized()).toMatchObject({ ok: true, reused: true });
+    await revision(content + '\n## Now\nBookkeeping only.\n');
+    expect(await finalized()).toMatchObject({ ok: true, reused: true });
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug} AND audit_kind='discovery'`;
+    expect(count).toBe(2);
+  });
+
   it('pins the exact motivating owner quote and source before exercising its correction', () => {
     expect(ORIGINAL_CENSUS_SOURCE_REF).toBe('session_turn:codex:01a1ad43-3ec6-7ce2-aa28-c27483998798:15');
     expect(createHash('sha256').update(ORIGINAL_CENSUS_QUOTE).digest('hex'))

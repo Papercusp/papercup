@@ -332,7 +332,8 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
 
 /** Current policy is required both when issuing authority and on every use. */
 export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding, workspaceId: string,
-  observe?: PlanExecutionTimingObserver, discoveryAdmission: 'start' | 'continuation' = 'start'): Promise<string[]> {
+  observe?: PlanExecutionTimingObserver, discoveryAdmission: 'start' | 'continuation' = 'start',
+  onSelectedReviewRequired?: (required: boolean) => void): Promise<string[]> {
   return runWithWorkspace(workspaceId, async () => {
     const { sql } = getOrgPg();
     // A known harness already scopes the canonical rendered read. Start it with
@@ -440,7 +441,11 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     const current = await measurePlanStage('recheck', observe, () => sql<Array<{ content_hash: string }>>`
       SELECT content_hash FROM harness_shared.harness_plans
        WHERE workspace_id=${workspaceId} AND harness_slug=${row.harness_slug} AND plan_slug=${binding.planSlug}`);
-    return current.length === 1 && current[0]!.content_hash === row.content_hash ? [] : ['plan_revision_changed'];
+    if (current.length !== 1 || current[0]!.content_hash !== row.content_hash) return ['plan_revision_changed'];
+    // Tell canonical issuance which evidence this successful check relied on.
+    // A revoked historical selection cannot veto sufficient ordinary critiques.
+    onSelectedReviewRequired?.(critique?.mode === 'enforced' && critique.requiresOwnerSelectedReview !== false);
+    return [];
   });
 }
 

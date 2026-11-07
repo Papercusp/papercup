@@ -18,6 +18,29 @@ const requirement = {
 };
 
 describe('unified requirement contract', () => {
+  it('round-trips explicit evidence planes as hashed acceptance meaning', () => {
+    const declared = { ...requirement, acceptance: { ...requirement.acceptance,
+      requiredEvidencePlanes: ['live', 'tree', 'live'] as Array<'tree' | 'live'> } };
+    const canonical = normalizeAcceptanceBarCriterion(declared);
+    expect(canonical.requiredEvidencePlanes).toEqual(['live', 'tree']);
+    expect(normalizeAcceptanceBarCriterion({ ...declared, acceptance: { ...declared.acceptance,
+      requiredEvidencePlanes: ['tree', 'live'] } }).barHash).toBe(canonical.barHash);
+    expect(canonical.barHash).not.toBe(normalizeAcceptanceBarCriterion(requirement).barHash);
+    expect(requirementSections(canonical).acceptance.requiredEvidencePlanes).toEqual(['live', 'tree']);
+    expect(acceptanceRubricCriterionSchema.parse(canonical).requiredEvidencePlanes).toEqual(['live', 'tree']);
+    expect(() => normalizeRequirementSections({ ...declared, requiredEvidencePlanes: ['live'] }))
+      .toThrow('requirement_alias_conflict');
+    for (const requiredEvidencePlanes of [[], ['unknown']]) {
+      expect(acceptanceRubricCriterionSchema.safeParse({ ...canonical, requiredEvidencePlanes }).success).toBe(false);
+    }
+    const stored = { rubricId: 'export', kind: 'acceptance', status: 'active', criteria: [canonical],
+      ratingScale: ['healthy', 'broken', 'unknown'] } as Rubric;
+    const amended = applyRubricAmendment(stored, { rubricId: 'export',
+      requirement: { key: 'export', acceptance: { requiredEvidencePlanes: ['live'] } } });
+    expect(amended.criteria[0]!.requiredEvidencePlanes).toEqual(['live']);
+    expect(normalizeAcceptanceBarCriterion(amended.criteria[0]!).barHash).not.toBe(canonical.barHash);
+  });
+
   it('authors one promise and method, with no separately persisted aliases', () => {
     const canonical = normalizeAcceptanceBarCriterion(requirement);
     expect(canonical.model).toBe(requirement.acceptance.condition);

@@ -11,12 +11,15 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { parseGoalOwnerReportSnapshot, type GoalOwnerReportSnapshotV1 } from '@papercusp/chat-protocol';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { trackDetached } from '../../detached-imports';
+import { readDurableSuSession } from '../../su-session-persistence';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import {
@@ -99,6 +102,8 @@ export interface ReportsCtx {
   ownerId?: string | null;
   runId?: string | null;
   uiClientId?: string | null;
+  advSessionId?: UnifiedToolContext['advSessionId'];
+  requestOrigin?: UnifiedToolContext['requestOrigin'];
   principal?: { workspaceId?: string | null } | null;
 }
 
@@ -144,7 +149,23 @@ export function resolveOwnerId(ctx: ReportsCtx): string | null {
  * caller able to name its own author id could forge exactly the field that makes
  * the report trustworthy.
  */
-export function stampOrigin(ctx: ReportsCtx): ReportOrigin {
+export async function stampOrigin(ctx: ReportsCtx): Promise<ReportOrigin> {
+  const ownerId = resolveOwnerId(ctx);
+  const workspaceId = resolveWorkspaceId(ctx);
+  let authorSessionRef = ctx.runId ?? ctx.uiClientId ?? null;
+  const native = ctx.requestOrigin?.nativeSession;
+  // runId is a per-call diagnostic, whereas owner directives name the native
+  // transcript. Reuse the host's verified launch binding, never the latest row
+  // for this owner: a carry successor must not stamp its predecessor's report.
+  if (ownerId && native?.binding === 'bound' && Number.isSafeInteger(ctx.advSessionId)
+    && ctx.advSessionId! > 0 && native.candidateAdvSessionId === ctx.advSessionId
+    && /^[a-f0-9]{64}$/.test(native.valueFingerprint)) {
+    const session = await readDurableSuSession({ advSessionId: ctx.advSessionId, workspaceId });
+    if (session?.workspaceId === workspaceId && session.ownerId === ownerId && session.nativeSessionId
+      && createHash('sha256').update(session.nativeSessionId).digest('hex') === native.valueFingerprint) {
+      authorSessionRef = session.nativeSessionId;
+    }
+  }
   return {
     // NOT `ctx.harnessSlug ?? null`: under operator/superuser scope that field is
     // the `'*'` wildcard, which is TRUTHY but is not a registered harness — so the
@@ -154,8 +175,8 @@ export function stampOrigin(ctx: ReportsCtx): ReportOrigin {
     // returns null for the wildcard, so a non-harness-scoped publish is honestly
     // unattributed rather than attributed to a phantom.
     harnessSlug: resolveConcreteHarnessSlug(null, ctx),
-    authorOwnerId: resolveOwnerId(ctx),
-    authorSessionRef: ctx.runId ?? ctx.uiClientId ?? null,
+    authorOwnerId: ownerId,
+    authorSessionRef,
   };
 }
 

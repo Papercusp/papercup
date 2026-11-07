@@ -117,6 +117,7 @@ vi.mock('../../scorecards', async (orig) => ({
 
 import {
   CitationGitReadError,
+  assessDiscovery,
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
@@ -195,6 +196,56 @@ const ctx = {
 } as never;
 
 describe('non-activating discovery finalization', () => {
+  const scoped = () => {
+    const declaration = { questions: [], notApplicable: 'Two bounded callers reuse existing measured helpers.',
+      findings: [1, 2].map(id => ({ id: `F-${id}`, questions: [], conclusion: `Reuse helper ${id} at its caller.`,
+        evidenceRefs: [`source:helper-${id}.ts`], dispositions: [{ target: `P-00${id}`, decision: 'reuse',
+          reason: 'The current helper supports this caller.' }] })) };
+    return { declaration, body: '# Fixture\n## Build\n- **P-001** `todo` Wire first caller\n- **P-002** `todo` Wire second caller\n'
+      + '\n## Discovery\n```discovery\n' + JSON.stringify(declaration) + '\n```\n',
+    context: { targets: [{ ref: 'P-001', change: 'proposed' as const }, { ref: 'P-002', change: 'proposed' as const }],
+      evidence: [1, 2].map(id => ({ ref: `source:helper-${id}.ts`, state: 'current' as const,
+        usable: true, fingerprint: String(id).repeat(64) })) } };
+  };
+
+  it('DISCOVERY-R2 readiness requires reconciled findings', async () => {
+    const fixture = scoped();
+    const unresolved = fixture.body.replace(JSON.stringify(fixture.declaration), JSON.stringify({
+      ...fixture.declaration, findings: [] }));
+    const blocked = assessDiscovery(unresolved, fixture.context);
+    expect(blocked.readiness.ready).toBe(false);
+    mockRecordDiscovery.mockResolvedValueOnce({ ok: true, audit: { auditSeq: 1 }, discovery: blocked } as never);
+    const refusal = await tool.handler(tool.args.parse({ slug: 'draft', harness: 'papercusp', phase: 'discovery' }), ctx);
+    expect('data' in refusal && refusal.data).toMatchObject({ readiness: { ready: false }, workflow: { stage: 'discovery' } });
+    const reconciled = assessDiscovery(fixture.body, fixture.context);
+    expect(reconciled.readiness.ready).toBe(true);
+    mockRecordDiscovery.mockResolvedValueOnce({ ok: true, audit: { auditSeq: 2 }, discovery: reconciled } as never);
+    const reply = await tool.handler(tool.args.parse({ slug: 'draft', harness: 'papercusp', phase: 'discovery' }), ctx);
+    expect('data' in reply && reply.data).toMatchObject({ readiness: { ready: true },
+      workflow: { stage: 'implementation-review', evidenceRefs: ['source:helper-1.ts', 'source:helper-2.ts'] } });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('DISCOVERY-R3 relevant changes reopen only affected findings', () => {
+    const fixture = scoped();
+    const first = assessDiscovery(fixture.body, fixture.context);
+    expect(first.readiness.ready).toBe(true);
+    const cosmetic = assessDiscovery(fixture.body + '\n## Now\nUnrelated bookkeeping.\n', fixture.context, first);
+    expect(cosmetic.requestKey).toBe(first.requestKey);
+    fixture.context.evidence[0]!.fingerprint = 'changed'.repeat(10);
+    const changed = assessDiscovery(fixture.body, fixture.context, first);
+    expect(changed.readiness).toMatchObject({ ready: false,
+      blockers: [expect.objectContaining({ path: 'findings.F-1' })] });
+    expect(changed.findings?.['F-2']).toEqual(first.findings?.['F-2']);
+    expect(changed.findings?.['F-1']).toEqual(first.findings?.['F-1']);
+    const retry = assessDiscovery(fixture.body, fixture.context, changed);
+    expect(retry.readiness.ready).toBe(false);
+    const declaration = { ...fixture.declaration, findings: fixture.declaration.findings.map((finding, index) =>
+      index ? finding : { ...finding, conclusion: 'The changed first helper still supports the same caller with its new contract.' }) };
+    expect(assessDiscovery(fixture.body.replace(JSON.stringify(fixture.declaration), JSON.stringify(declaration)),
+      fixture.context, changed).readiness.ready).toBe(true);
+  });
+
   it('refuses activation before repair, audit, clause, or event effects when discovery is stale', async () => {
     vi.mocked(withCurrentDiscovery).mockResolvedValueOnce({ ok: false, error: 'discovery_not_ready',
       nextAction: 'Reconcile the changed finding.' } as never);

@@ -5,16 +5,35 @@ import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { hashPlanContent } from './content-hash';
 
 const gates = vi.hoisted(() => ({ blocker: '', unavailable: false,
+  selectedReview: false, ordinaryCritiques: false, omitFinalReviewFence: false,
   beforeReadiness: null as (() => Promise<void>) | null, startGate: vi.fn() }));
-const connection = vi.hoisted(() => ({ sql: null as unknown, idleTimeout: '0', timeZone: 'UTC' }));
+const connection = vi.hoisted(() => ({ sql: null as unknown, idleTimeout: '0', timeZone: 'UTC',
+  beforeFinalPlanLock: null as (() => Promise<void>) | null,
+  beforeRevisionInsert: null as (() => Promise<void>) | null }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: connection.sql }),
-  withWorkspace: async (_workspace: string, fn: (tx: unknown) => Promise<unknown>) => db.sql.begin(async tx => {
-    await tx`SELECT set_config('idle_in_transaction_session_timeout', ${connection.idleTimeout}, true)`;
-    await tx`SELECT set_config('TimeZone', ${connection.timeZone}, true)`;
-    return fn(tx);
-  }),
+  withWorkspace: async (_workspace: string, fn: (tx: unknown) => Promise<unknown>) => {
+    return db.sql.begin(async tx => {
+      await tx`SELECT set_config('idle_in_transaction_session_timeout', ${connection.idleTimeout}, true)`;
+      await tx`SELECT set_config('TimeZone', ${connection.timeZone}, true)`;
+      // A transport barrier only: the production readers, locks and SQL still run.
+      return fn(new Proxy(tx, { apply(target, thisArg, args) {
+        const text = Array.isArray(args[0]) ? args[0].join('') : '';
+        const planBarrier = connection.beforeFinalPlanLock;
+        if (planBarrier && text.includes('pg_advisory_xact_lock') && args[1] === 'harness_plans') {
+          connection.beforeFinalPlanLock = null;
+          return planBarrier().then(() => Reflect.apply(target, thisArg, args));
+        }
+        const barrier = connection.beforeRevisionInsert;
+        if (barrier && text.includes('INSERT INTO harness_shared.plan_revisions')) {
+          connection.beforeRevisionInsert = null;
+          return barrier().then(() => Reflect.apply(target, thisArg, args));
+        }
+        return Reflect.apply(target, thisArg, args);
+      } }));
+    });
+  },
 }));
 // Policy readers have their own maintained suites. Control their verdicts here;
 // the canonical writer, scoped SQL, revision insert, trigger, native guard and GC
@@ -34,10 +53,20 @@ vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async (...args: unknow
 vi.mock('./plan-spec-quality-gate', () => ({ evaluatePlanSpecQualityGate: async () => ({
   satisfied: gates.blocker !== 'spec_quality_not_current', applicable: true, mode: 'enforced', code: 'spec_quality_not_current',
 }) }));
-vi.mock('./plan-start-critique-gate', () => ({ isPlanStartBarCritiqueInCohort: () => true,
-  evaluatePlanStartBarCritique: async () => ({
-  mode: 'enforced', verdict: { satisfied: gates.blocker !== 'critique_missing', code: 'critique_missing' },
-}) }));
+vi.mock('./plan-start-critique-gate', async original => ({
+  ...(await original<typeof import('./plan-start-critique-gate')>()),
+  isPlanStartBarCritiqueInCohort: () => true,
+  evaluatePlanStartBarCritique: async () => {
+    const selected = gates.selectedReview
+      ? await (await import('./plan-start-owner-review')).loadOwnerSelectedReview(scope, [], db.sql) : null;
+    return { mode: 'enforced', verdict: {
+      satisfied: gates.blocker !== 'critique_missing'
+        && (!gates.selectedReview || gates.ordinaryCritiques || selected?.ok === true),
+      code: 'critique_missing',
+    }, requiresOwnerSelectedReview: gates.selectedReview && !gates.ordinaryCritiques,
+    ...(selected ? { ownerSelectedReview: selected } : {}) };
+  },
+}));
 vi.mock('../../acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: async () => ({
   satisfied: gates.blocker !== 'bar_contract_not_ready', codes: ['bar_contract_not_ready'],
 }) }));
@@ -58,6 +87,14 @@ vi.mock('./source', async original => ({
       template: null, templateData: null, inputSchema: null, items };
   },
 }));
+// Deliberate recurrence control: reproduce omission of only the final fence.
+// The selected source resolver and every evidence writer remain production code.
+vi.mock('./plan-start-owner-review', async original => {
+  const actual = await original<typeof import('./plan-start-owner-review')>();
+  return { ...actual, revalidateOwnerSelectedReviewForStart:
+    (...args: Parameters<typeof actual.revalidateOwnerSelectedReviewForStart>) => gates.omitFinalReviewFence
+      ? Promise.resolve() : actual.revalidateOwnerSelectedReviewForStart(...args) };
+});
 
 import { preservePlanExecutionProgress, readExecutionPlanRow, readPlanExecutionStart,
   recordPlanExecutionStart } from './plan-execution-authority';
@@ -68,6 +105,11 @@ import {
   readExecutionPlanBindings,
 } from './plan-execution-guard';
 import { gcOldPlanRevisions } from './revisions-gc';
+import { publishReport, retireReport, type ReportRecord } from '../../report-library';
+import { dispositionOwnerDirective } from '../../owner-directives';
+import { registerOwnerSelectedReview } from './plan-start-owner-review';
+import { listSpecClauses, setSpecClause, type SpecClauseSql } from './spec-clauses-store';
+import { computeSpecSetHash } from './spec-clause-compiler';
 
 let db: FreshPgDb;
 const scope = { workspaceId: 'execution-ws', harnessSlug: 'project', planSlug: 'feature' };
@@ -128,6 +170,36 @@ beforeAll(async () => {
       plan_phase text,plan_decision_refs text[],plan_deliverable text,plan_owner_gate_marker text,plan_seq integer,
       title text,summary text,closed_ts bigint,updated_ts bigint,origin text);
     CREATE TABLE harness_shared.work_item_deps (workspace_id text,dep_type text,blocked_kind text,blocked_ref text,blocker_kind text,blocker_ref text);
+    ALTER TABLE harness_shared.plan_audits ADD COLUMN created_by text;
+    ALTER TABLE harness_shared.adv_sessions ADD COLUMN launch_parent_owner text;
+    CREATE TABLE harness_shared.consult_state (workspace_id text,routing jsonb);
+    CREATE TABLE harness_shared.task_ledger (workspace_id text,detail jsonb);
+    CREATE TABLE harness_shared.tool_invocations
+      (workspace_id text,tool_name text,status text,args_json jsonb,coord_owner_id text);
+    CREATE TABLE harness_shared.spawned_agents
+      (workspace_id text,parent_spawn_id text,spawn_id text,session_owner text);
+    CREATE TABLE harness_shared.owner_directives (id bigint PRIMARY KEY,workspace_id text,owner_id text,
+      session_ref text,source_turn_ref text,verbatim_text text,recorded_by text,captured_by_hook boolean,
+      created_at timestamptz DEFAULT now(),dispositioned_at timestamptz,disposition_status text,
+      disposition_note text,dispositioned_by text);
+    CREATE TABLE harness_shared.report_library (workspace_id text,report_id text,title text,summary text,
+      body_md text,kind text,subject_kind text,subject_ref text,subject_label text,origin_harness_slug text,
+      author_owner_id text,author_session_ref text,visibility text,supersedes_report_id text,lineage_id text,
+      source text,tags text[],published_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now(),
+      retired_at timestamptz,goal_owner_report jsonb,request_key text,request_scope text,
+      PRIMARY KEY(workspace_id,report_id));
+    CREATE TABLE harness_shared.plan_spec_clauses (workspace_id text,harness_slug text,plan_slug text,
+      spec_id text,source_val_id text,current_revision integer,created_by text,updated_at timestamptz,
+      PRIMARY KEY(workspace_id,harness_slug,plan_slug,spec_id));
+    CREATE TABLE harness_shared.plan_spec_clause_revisions (workspace_id text,harness_slug text,plan_slug text,
+      spec_id text,revision integer,plan_item_id text DEFAULT 'P-001',behavior text,
+      behavior_class text DEFAULT 'happy-path',required_evidence text[] DEFAULT '{}',
+      required_test_layers text[] DEFAULT '{}',mutation_required boolean DEFAULT false,
+      lifecycle_status text DEFAULT 'active',supersedes_spec_id text,supersedes_revision integer,
+      exemption jsonb,falsifier jsonb,content_hash text DEFAULT 'fixture',created_by text DEFAULT 'su-execution',
+      created_at timestamptz DEFAULT now(),accepted_by text,accepted_at timestamptz,
+      acceptance_ref text,source_bar_key text,source_bar_hash text,source_bar_set_hash text,
+      source_rubric_slug text,source_rubric_revision integer,evidence_plane text);
   `);
   await db.sql.unsafe(await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql', import.meta.url), 'utf8'));
   const invalidationMigration = await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1620-plan-execution-invalidation-reasons.sql', import.meta.url), 'utf8');
@@ -148,13 +220,148 @@ beforeAll(async () => {
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
   gates.blocker = ''; gates.unavailable = false;
-  gates.beforeReadiness = null; connection.idleTimeout = '0'; connection.timeZone = 'UTC';
+  gates.selectedReview = false; gates.ordinaryCritiques = false; gates.omitFinalReviewFence = false;
+  gates.beforeReadiness = null;
+  connection.beforeFinalPlanLock = null; connection.beforeRevisionInsert = null;
+  connection.idleTimeout = '0'; connection.timeZone = 'UTC';
   await db.sql.unsafe('TRUNCATE harness_shared.harness_plans,harness_shared.plan_revisions,harness_shared.plan_audits,harness_shared.session_briefs,harness_shared.work_items,harness_shared.work_item_deps RESTART IDENTITY');
+  await db.sql.unsafe('TRUNCATE harness_shared.owner_directives,harness_shared.report_library,harness_shared.plan_spec_clauses,harness_shared.plan_spec_clause_revisions,harness_shared.plan_items');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,status)
     VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${body},${hashPlanContent(body)},'ready')`;
 });
 
 describe('canonical successful-start revision authority (real PG)', () => {
+  const reviewOrigin = { harnessSlug: scope.harnessSlug, authorOwnerId: 'independent-reviewer',
+    authorSessionRef: 'owner-review-session' };
+  async function seedSelectedReview() {
+    const barSetHash = 'b'.repeat(64);
+    await db.sql`INSERT INTO harness_shared.plan_items (workspace_id,harness_slug,plan_slug,item_id)
+      VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},'P-001')`;
+    await db.sql`INSERT INTO harness_shared.plan_spec_clauses
+      (workspace_id,harness_slug,plan_slug,spec_id,source_val_id,current_revision) VALUES
+      (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},'S-1',NULL,1)`;
+    await db.sql`INSERT INTO harness_shared.plan_spec_clause_revisions
+      (workspace_id,harness_slug,plan_slug,spec_id,revision,behavior,source_bar_key,source_bar_hash,
+       source_bar_set_hash,source_rubric_slug,source_rubric_revision,evidence_plane,created_at)
+      VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},'S-1',1,'Preserve signed bytes',
+        'R-1',${'a'.repeat(64)},${barSetHash},'fixture-rubric',1,'tree','2020-01-01T00:00:00Z')`;
+    const clauses = await listSpecClauses(scope, { ...scope, executor: db.sql as unknown as SpecClauseSql });
+    const specSetHash = computeSpecSetHash(clauses);
+    const reviewConclusion = 'APPROVE this exact implementation contract.';
+    const report = await publishReport(db.sql, { workspaceId: scope.workspaceId, title: 'Independent review',
+      bodyMd: `${reviewConclusion}\nBAR ${barSetHash}\nSpec ${specSetHash}`, kind: 'review',
+      subject: { kind: 'plan', ref: scope.planSlug }, visibility: 'workspace' }, reviewOrigin);
+    const selectionText = 'Accept your review as adequate.';
+    await db.sql`INSERT INTO harness_shared.owner_directives
+      (id,workspace_id,owner_id,session_ref,source_turn_ref,verbatim_text,recorded_by,captured_by_hook)
+      VALUES (42,${scope.workspaceId},'fixture-human',${reviewOrigin.authorSessionRef},
+        'session_turn:codex:fixture:1',${selectionText},${reviewOrigin.authorOwnerId},true)`;
+    expect(await registerOwnerSelectedReview(scope, { directiveId: 42, reportId: report.reportId,
+      bodySha256: report.bodySha256, barSetHash, specSetHash, selectionText, reviewConclusion,
+      dispositions: 'Preserve separate final product acceptance.' }, identity)).toMatchObject({ ok: true });
+    gates.selectedReview = true;
+    expect(await checkPlanExecutionReadiness(binding, scope.workspaceId)).toEqual([]);
+    return report;
+  }
+  function barrier() {
+    let reached!: () => void; let release!: () => void;
+    const ready = new Promise<void>(resolve => { reached = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    return { ready, release, wait: async () => { reached(); await resume; } };
+  }
+  const reviewChanges = ['supersede', 'retire', 'decline', 'clause-phantom'] as const;
+  async function changeReview(kind: typeof reviewChanges[number], report: ReportRecord, sql = db.sql) {
+    if (kind === 'supersede') await publishReport(sql, { workspaceId: scope.workspaceId, title: 'Withdraw approval',
+      bodyMd: 'The earlier review is withdrawn.', kind: 'review', subject: { kind: 'plan', ref: scope.planSlug },
+      visibility: 'owner', supersedes: report.reportId }, reviewOrigin);
+    else if (kind === 'retire') await retireReport(sql, scope.workspaceId, report.reportId);
+    else if (kind === 'clause-phantom') await sql.begin(async tx => {
+      expect(await setSpecClause({ planSlug: scope.planSlug, specId: 'S-2', expectedRevision: 0,
+        planItemId: 'P-001', behavior: 'A newly added obligation', behaviorClass: 'boundary',
+        lifecycleStatus: 'draft', actorId: 'new-clause-author' },
+      { ...scope, executor: tx as unknown as SpecClauseSql })).toMatchObject({ status: 'created' });
+    });
+    else expect(await dispositionOwnerDirective({ id: 42, status: 'declined',
+      note: 'Withdraw this selection.', dispositionedBy: reviewOrigin.authorOwnerId }, sql)).toMatchObject({ ok: true });
+  }
+
+  it('issues authority from a real current selected review', async () => {
+    await seedSelectedReview();
+    expect(await issue()).toMatchObject({ seq: 2 });
+    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
+  });
+
+  it('allows sufficient ordinary critiques despite an invalid historical selected review', async () => {
+    const report = await seedSelectedReview();
+    await changeReview('retire', report);
+    gates.ordinaryCritiques = true; // Producer truth has its own maintained critique-gate cases.
+    expect(await issue()).toMatchObject({ seq: 2 });
+    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
+  });
+
+  it.each(reviewChanges)('refuses %s committed after readiness and before the final grant lock', async kind => {
+    const report = await seedSelectedReview();
+    const pause = barrier();
+    connection.beforeFinalPlanLock = pause.wait;
+    const granting = issue().then(() => null, error => error as Error);
+    try {
+      await Promise.race([pause.ready, granting.then(() => { throw new Error('Grant settled before final-plan lock barrier'); })]);
+      await changeReview(kind, report);
+    } finally { connection.beforeFinalPlanLock = null; pause.release(); }
+    expect(await granting).toBeInstanceOf(Error);
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBeNull();
+    const revisions = await db.sql<{ rationale: string }[]>`SELECT rationale FROM harness_shared.plan_revisions`;
+    expect(revisions).toHaveLength(1); // Original review binding only; no grant or partial revision.
+    expect(revisions[0]!.rationale).toBe('plans:start owner-selected pre-implementation review');
+  });
+
+  it.each(['supersede', 'decline', 'clause-phantom'] as const)(
+    'distinguishes omitted final revalidation for a committed %s', async kind => {
+      const report = await seedSelectedReview();
+      const pause = barrier();
+      gates.omitFinalReviewFence = true;
+      connection.beforeFinalPlanLock = pause.wait;
+      const granting = issue().then(value => ({ value, error: null }), error => ({ value: null, error }));
+      try {
+        await Promise.race([pause.ready, granting.then(() => { throw new Error('Grant settled before final-plan lock barrier'); })]);
+        await changeReview(kind, report);
+      } finally { connection.beforeFinalPlanLock = null; pause.release(); }
+      expect(await granting).toMatchObject({ value: { seq: 2 }, error: null });
+      gates.omitFinalReviewFence = false;
+      expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual(['critique_missing']);
+    },
+  );
+
+  it.each(reviewChanges)('serializes the actual %s writer until the final grant commits', async kind => {
+    const report = await seedSelectedReview();
+    const pause = barrier();
+    connection.beforeRevisionInsert = pause.wait;
+    const granting = issue().then(value => ({ value, error: null }), error => ({ value: null, error }));
+    const applicationName = `owner-review-${kind}`;
+    const writer = postgres(db.url, { max: 1, prepare: false, connection: { application_name: applicationName } });
+    let writing: Promise<void> | undefined;
+    try {
+      await Promise.race([pause.ready, granting.then(() => { throw new Error('Grant settled before revision barrier'); })]);
+      writing = changeReview(kind, report, writer);
+      await vi.waitFor(async () => {
+        const blocked = await db.sql`SELECT 1 FROM pg_stat_activity
+          WHERE application_name=${applicationName} AND wait_event_type='Lock'`;
+        expect(blocked).toHaveLength(1);
+      }, { timeout: 5000, interval: 20 });
+      pause.release();
+      expect(await granting).toMatchObject({ value: { seq: 2 }, error: null });
+      await writing;
+      // The later revocation need not rewrite the plan row: every guarded use
+      // resolves the real selected evidence again and refuses it.
+      expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual(['critique_missing']);
+    } finally {
+      pause.release();
+      await granting;
+      await writing?.catch(() => {});
+      await writer.end();
+    }
+  });
+
   it('uses new-start discovery for issuance and continuation only after a matching immutable receipt', async () => {
     gates.startGate.mockClear();
     expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual(['plan_not_started']);

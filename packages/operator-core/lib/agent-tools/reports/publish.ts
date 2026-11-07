@@ -95,7 +95,7 @@ export default defineTool({
 
     let publication;
     try {
-      const origin = stampOrigin(ctx);
+      const origin = await stampOrigin(ctx);
       if (args.request_key !== undefined && origin.authorOwnerId) {
         const active = await readActiveOperationWorkerClaimBinding(workspaceId, origin.authorOwnerId);
         if (active.status === 'unavailable') {

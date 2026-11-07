@@ -33,6 +33,7 @@
  */
 import type { Sql } from 'postgres';
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { withIterativeScan, type PgHandle } from '@papercusp/search';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
@@ -1024,6 +1025,8 @@ export interface VettingConsultCritique {
   declinePosts: number;
   /** Distinct authors of the critique posts, so the stamp can name the critics. */
   critics: string[];
+  /** Verified organic origin; copied receipts cannot create another independent party. */
+  originConsultId?: string;
   /** Present only when the emitter is the persisted rubric-vetting answerer and authored a non-decline critique post. */
   routedVettingCritic?: string;
   /**
@@ -1093,7 +1096,7 @@ function isRoutedRubricVettingAnswerer(routing: unknown, emitterId: string): boo
  * as one attributed critique rather than treating the empty wrapper thread as
  * unanswered.
  */
-function archivedVettingCritic(outcome: unknown): string | null {
+function archivedVettingSource(outcome: unknown): { id: string; answer: Record<string, unknown> } | null {
   if (outcome == null || typeof outcome !== 'object' || Array.isArray(outcome)) return null;
   const archive = outcome as Record<string, unknown>;
   if (archive.source !== 'archive' || typeof archive.source_conversation_id !== 'string') return null;
@@ -1101,14 +1104,7 @@ function archivedVettingCritic(outcome: unknown): string | null {
 
   const answer = archive.answer;
   if (answer == null || typeof answer !== 'object' || Array.isArray(answer)) return null;
-  const answerText = (answer as Record<string, unknown>).answer;
-  if (typeof answerText !== 'string' || answerText.trim() === '') return null;
-
-  const responderId =
-    typeof archive.source_responder_id === 'string' && archive.source_responder_id.trim() !== ''
-      ? archive.source_responder_id
-      : null;
-  return responderId;
+  return { id: archive.source_conversation_id, answer: answer as Record<string, unknown> };
 }
 
 export async function readVettingConsultCritique(
@@ -1118,6 +1114,26 @@ export async function readVettingConsultCritique(
   emitterId: string,
   relevanceRefs: readonly string[] = [],
 ): Promise<VettingConsultCritique> {
+  return readVettingConsultCritiqueOrigin(sql, workspaceId, conversationId, emitterId, relevanceRefs, new Set());
+}
+
+async function readVettingConsultCritiqueOrigin(
+  sql: Sql,
+  workspaceId: string,
+  conversationId: string,
+  emitterId: string,
+  relevanceRefs: readonly string[],
+  visited: ReadonlySet<string>,
+  expected?: { outcome: Record<string, unknown>; question: string },
+): Promise<VettingConsultCritique> {
+  const empty = (state: string | null): VettingConsultCritique => ({
+    exists: state !== null, state, critiquePosts: 0, declinePosts: 0, critics: [],
+    ...(relevanceRefs.length ? { relevance: vettingConsultRelevance(relevanceRefs, [])! } : {}),
+  });
+  // This is provenance traversal, not fresh recruitment. Unknown or cyclic origins
+  // cannot be repaired by accepting the wrapper's copied responder assertion.
+  if (visited.has(conversationId) || visited.size >= 16) return empty(null);
+  const nextVisited = new Set([...visited, conversationId]);
   const stateRows = (await sql`
     SELECT state, requester_id, responder_id, question, outcome, routing
       FROM harness_shared.consult_state
@@ -1145,32 +1161,30 @@ export async function readVettingConsultCritique(
     };
   }
 
-  // Archive-served wrappers are closed_answered consult_state rows with an
-  // empty wrapper thread by design (P-006). Count their copied structured
-  // answer once, attributed to the original responder, while preserving the
-  // same self/requester exclusions as real posts. A provenance-only or
-  // malformed archive payload remains zero critique and keeps the gate honest.
-  const archivedCriticFromOutcome = archivedVettingCritic(stateRow.outcome);
-  const archivedCritic = stateRow.responder_id ?? archivedCriticFromOutcome;
-  const isArchiveAnswer = archivedCriticFromOutcome !== null;
-  if (isArchiveAnswer && archivedCritic && archivedCritic !== emitterId && archivedCritic !== stateRow.requester_id) {
-    const archiveAnswer = (stateRow.outcome as { answer?: { answer?: unknown } }).answer?.answer;
+  const normalizedQuestion = (question: string) => question.replace(/\s+/g, ' ').trim();
+  if (expected && (stateRow.state !== 'closed_answered' ||
+      !isDeepStrictEqual(stateRow.outcome, expected.outcome) ||
+      normalizedQuestion(stateRow.question) !== normalizedQuestion(expected.question))) return empty(stateRow.state);
+
+  // Read and compare the actual source, including its current disposition and
+  // complete retained answer. A copied outcome is not its own proof of origin.
+  if (stateRow.outcome && typeof stateRow.outcome === 'object' &&
+      (stateRow.outcome as Record<string, unknown>).source === 'archive') {
+    const source = archivedVettingSource(stateRow.outcome);
+    if (stateRow.state !== 'closed_answered' || !source) return empty(stateRow.state);
+    const origin = await readVettingConsultCritiqueOrigin(sql, workspaceId, source.id, emitterId,
+      relevanceRefs, nextVisited, { outcome: source.answer, question: stateRow.question });
+    const critics = origin.critics.filter(id => id !== emitterId && id !== stateRow.requester_id);
+    if (!origin.exists || origin.critiquePosts === 0 || critics.length === 0) return empty(stateRow.state);
     return {
-      exists: true,
-      state: stateRow.state,
-      critiquePosts: 1,
-      declinePosts: 0,
-      critics: [archivedCritic],
-      ...(relevanceRefs.length > 0
-        ? {
-            relevance: vettingConsultRelevance(relevanceRefs, [
-              { via: 'question', text: stateRow.question },
-              { via: 'archive-answer', text: archiveAnswer },
-            ])!,
-          }
-        : {}),
+      exists: true, state: stateRow.state, critiquePosts: 1, declinePosts: 0, critics,
+      originConsultId: origin.originConsultId ?? source.id,
+      ...(origin.relevance ? { relevance: origin.relevance } : {}),
     };
   }
+  if (expected && (stateRow.outcome === null || typeof stateRow.outcome !== 'object' ||
+      typeof (stateRow.outcome as Record<string, unknown>).answer !== 'string' ||
+      !(stateRow.outcome as { answer: string }).answer.trim())) return empty(stateRow.state);
 
   const emitterIsRoutedVettingAnswerer =
     emitterId !== stateRow.requester_id && isRoutedRubricVettingAnswerer(stateRow.routing, emitterId);

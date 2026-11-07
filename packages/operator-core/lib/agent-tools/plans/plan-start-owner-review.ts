@@ -9,7 +9,8 @@ import { getOwnerDirective, type OwnerDirectiveRow } from '../../owner-directive
 import { getReport, type ReportRecord } from '../../report-library';
 import { lineagePartyKeys } from '../../acceptance-author-identity';
 import type { AgentIdentity } from '../coordination/identity';
-import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisions';
+import { acquirePlanRevisionAdvisoryLock, recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisions';
+import { PLAN_ADVISORY_LOCK_BUDGET_MS } from './plan-lock-key';
 import { computeSpecSetHash } from './spec-clause-compiler';
 import { listSpecClauses, type SpecClauseRevision, type SpecClauseSql } from './spec-clauses-store';
 import { barSetHashOf, clauseSemanticHash, isLiveBarCritiqueClause } from './plan-start-critique-gate';
@@ -155,7 +156,8 @@ export async function registerOwnerSelectedReview(scope: OwnerReviewScope, reque
 }
 
 /** Newest registration wins, even if revoked/stale; never resurrect an older selection. */
-export async function loadOwnerSelectedReview(scope: OwnerReviewScope, authorIds: readonly string[], sql: Sql) {
+export async function loadOwnerSelectedReview(scope: OwnerReviewScope, authorIds: readonly string[], sql: Sql,
+  inTransaction = false) {
   const [row] = await sql<{ content_snapshot: string }[]>`
     SELECT content_snapshot FROM harness_shared.plan_revisions
      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}
@@ -166,7 +168,7 @@ export async function loadOwnerSelectedReview(scope: OwnerReviewScope, authorIds
     if (saved.schema !== 'plan-owner-selected-review-v2' || !isDeepStrictEqual(saved.scope, scope)
       || !saved.requestedBy) return { ok: false as const, reason: 'review_receipt_invalid' };
     const request = ownerSelectedReviewSchema.parse(saved.request);
-    const resolved = await resolveOwnerSelectedReview(scope, request, saved.requestedBy, authorIds, sql);
+    const resolved = await resolveOwnerSelectedReview(scope, request, saved.requestedBy, authorIds, sql, inTransaction);
     if (resolved.ok && !isDeepStrictEqual(resolved.receipt, saved))
       return { ok: false as const, reason: 'review_receipt_changed' };
     return resolved;
@@ -176,4 +178,34 @@ export async function loadOwnerSelectedReview(scope: OwnerReviewScope, authorIds
       return { ok: false as const, reason: 'review_receipt_invalid' };
     throw error;
   }
+}
+
+/** Final issuance fence, called with the plan lock and row already held.
+ * The revision lock prevents a concurrent selection from replacing the receipt.
+ * SHARE table locks also cover successor reports and newly inserted clauses:
+ * locking only the existing rows would leave those predicate reads unfenced.
+ * These are short database-only reads, after the slow policy checks. Ordinary
+ * starts with no selected review acquire no evidence-table locks. */
+export async function revalidateOwnerSelectedReviewForStart(sql: PlanRevisionSql, scope: OwnerReviewScope,
+  planAuthorIds: readonly string[]): Promise<void> {
+  const [settings] = await sql<{ lock_timeout: string }[]>`SELECT current_setting('lock_timeout') AS lock_timeout`;
+  await sql`SELECT set_config('lock_timeout', ${String(PLAN_ADVISORY_LOCK_BUDGET_MS)}, true)`;
+  await acquirePlanRevisionAdvisoryLock(sql, scope.workspaceId, scope.harnessSlug, scope.planSlug);
+  const saved = await sql`
+    SELECT 1 FROM harness_shared.plan_revisions
+     WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}
+       AND rationale=${REVISION_REASON} LIMIT 1`;
+  if (saved.length) {
+    await sql`LOCK TABLE harness_shared.report_library, harness_shared.owner_directives,
+      harness_shared.plan_spec_clauses, harness_shared.plan_spec_clause_revisions IN SHARE MODE`;
+    const audits = await sql<{ created_by: string | null }[]>`
+      SELECT created_by FROM harness_shared.plan_audits
+       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}
+         AND audit_kind='activation'`;
+    const authorIds = [...planAuthorIds, ...audits.map(row => row.created_by)]
+      .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()));
+    const review = await loadOwnerSelectedReview(scope, authorIds, sql as Sql, true);
+    if (!review?.ok) throw new Error(`plan_start_proof_refused:${review?.reason ?? 'review_receipt_missing'}`);
+  }
+  await sql`SELECT set_config('lock_timeout', ${settings!.lock_timeout}, true)`;
 }

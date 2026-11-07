@@ -24,6 +24,18 @@ import { execFile, type ExecSyncOptions } from 'node:child_process';
 
 import { pinModuleState } from '@papercusp/module-singleton';
 
+/** Monotonic offsets from the call boundary, retained when a child fails. */
+export interface ExecFileTiming {
+  startedAtUnixMs: number;
+  parentPid: number;
+  childPid: number | null;
+  spawnReturnedMs: number | null;
+  spawnEventMs: number | null;
+  firstOutputMs: number | null;
+  exitMs: number | null;
+  callbackMs: number;
+}
+
 export interface ExecResult {
   status: number | null;
   stdout: string;
@@ -36,6 +48,8 @@ export interface ExecResult {
     signal: string | null;
     killed: boolean;
   };
+  /** Observations, not a timeout diagnosis: killed can also mean a buffer limit. */
+  timing?: ExecFileTiming;
 }
 
 /** Structurally identical to release-checkpoint-launch's `ExecSyncLike`. */
@@ -108,22 +122,40 @@ export function execFileResult(
   options: { timeout?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
-    execFile(
+    const startedAt = performance.now();
+    const elapsed = () => Math.max(0, performance.now() - startedAt);
+    const timing: ExecFileTiming = {
+      startedAtUnixMs: Date.now(), parentPid: process.pid, childPid: null,
+      spawnReturnedMs: null, spawnEventMs: null,
+      firstOutputMs: null, exitMs: null, callbackMs: 0,
+    };
+    const child = execFile(
       cmd,
       args,
       { encoding: 'utf8', timeout: options.timeout, maxBuffer: 16 * 1024 * 1024, env: options.env },
       (err, stdout, stderr) => {
         if (!err) return resolve({ status: 0, stdout, stderr });
         const code = err.code;
+        timing.callbackMs = elapsed();
         resolve({
           status: typeof code === 'number' ? code : null,
           stdout: stdout ?? '',
           stderr: stderr ?? '',
           failureRoute: 'local',
           error: { code: code ?? null, signal: err.signal ?? null, killed: err.killed === true },
+          timing,
         });
       },
     );
+    timing.spawnReturnedMs = elapsed();
+    timing.childPid = child.pid ?? null;
+    child.once('spawn', () => { timing.spawnEventMs = elapsed(); });
+    const firstOutput = (chunk: string | Buffer) => {
+      if (chunk.length > 0 && timing.firstOutputMs === null) timing.firstOutputMs = elapsed();
+    };
+    child.stdout?.on('data', firstOutput);
+    child.stderr?.on('data', firstOutput);
+    child.once('exit', () => { timing.exitMs = elapsed(); });
   });
 }
 

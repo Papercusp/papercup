@@ -39,7 +39,7 @@ function clause(specId: string, over: Partial<BarCritiqueClause> = {}): BarCriti
 
 function bar(specId: string, barSetHash: string, rubricRevision: number, over: Partial<BarCritiqueClause> = {}) {
   return clause(specId, {
-    sourceBar: { barKey: specId, barHash: 'h', barSetHash, rubricSlug: 'r', rubricRevision, evidencePlane: 'tree' },
+    sourceBar: { barKey: specId, barHash: 'c'.repeat(64), barSetHash, rubricSlug: 'r', rubricRevision, evidencePlane: 'tree' },
     ...over,
   });
 }
@@ -72,12 +72,32 @@ describe('selected review orchestration', () => {
     const result = await evaluatePlanStartBarCritique(input, deps);
     expect(result).toMatchObject({ mode: 'enforced', verdict: { satisfied: true, threshold: 2,
       consultIds: [], critics: [], clauseShortfalls: [{ coveredBy: 0 }] },
+      requiresOwnerSelectedReview: true,
       ownerSelectedReview: { ok: true, receipt: { reviewerId: 'real-reviewer' } } });
   });
   it('retains the ordinary threshold when the recorded selection is unverified', async () => {
     selectedReviewLoader.mockResolvedValueOnce({ ok: false, reason: 'owner_selection_unverified' });
     expect(await evaluatePlanStartBarCritique(input, deps))
       .toMatchObject({ verdict: { satisfied: false, threshold: 2, code: 'critique_missing' } });
+  });
+  it.each([true, false])('ordinary critiques remain sufficient when historical selection validity is %s', async valid => {
+    selectedReviewLoader.mockResolvedValueOnce(valid
+      ? { ok: true, receipt: { reviewerId: 'real-reviewer' } }
+      : { ok: false, reason: 'review_source_wrong_scope_or_superseded' });
+    const ordinarySql = ((strings: TemplateStringsArray) => {
+      const query = strings.join('');
+      if (query.includes('FROM harness_shared.harness_plans'))
+        return Promise.resolve([{ owner: 'su-author', acceptance_bar_seeded_by: null, created_at: '2026-10-23T00:00:00Z' }]);
+      if (query.includes('FROM harness_shared.consult_state')) return Promise.resolve(['critic-a', 'critic-b'].map(id => ({
+        conversation_id: id, author_id: id, responder_id: id,
+        closed_at: '2026-10-03T00:00:00Z', answered_at: '2026-10-02T00:00:00Z',
+      })));
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    const result = await evaluatePlanStartBarCritique(input, { ...deps, sql: ordinarySql });
+    expect(result).toMatchObject({ requiresOwnerSelectedReview: false,
+      verdict: { satisfied: true, threshold: 2, consultIds: ['critic-a', 'critic-b'] } });
+    expect(result?.ownerSelectedReview?.ok).toBe(valid);
   });
 });
 
@@ -211,6 +231,43 @@ describe('plan-start bar-critique gate (P-007)', () => {
     expect(record.dispositionRevisions).toEqual([{ specId: 'S-1', revision: 2, createdAt: '2026-10-02T12:00:00.000Z' }]);
     expect(record.pins).toEqual([{ specId: 'S-1', revision: 2, semanticHash: clauseSemanticHash(disposed) }]);
   });
+
+  it('invalidates changed BAR dependencies while retaining unaffected clause critiques and the broad-review floor', () => {
+    const before = [bar('R-1', BAR_SET_A, 1), bar('R-2', BAR_SET_A, 1)];
+    const current = before.map((item, index) => ({ ...item, revision: 2,
+      sourceBar: { ...item.sourceBar!, rubricRevision: 2, barSetHash: BAR_SET_B,
+        barHash: index === 0 ? 'd'.repeat(64) : item.sourceBar!.barHash } }));
+    const old = critique('reused', 'party-a', before);
+    const evaluate = (critiques: BarCritiqueEvidence[]) => evaluateBarCritiqueGate({
+      planSlug: PLAN, currentClauses: current, critiques, authorPartyKeys: NO_AUTHOR, threshold: 2 });
+    const fresh = critique('fresh', 'party-b', current);
+    const mixed = evaluate([old, fresh]);
+    expect(mixed.satisfied).toBe(false);
+    expect(mixed.clauseShortfalls).toEqual([{ specId: 'R-1', revision: 2, coveredBy: 1, reason: 'stale' }]);
+    expect(mixed.barSetShortfall).toEqual({ coveredBy: 1, reason: 'stale' });
+    expect(evaluate([old, fresh, critique('duplicate-origin', 'party-b', current)]).satisfied).toBe(false);
+    expect(evaluate([old, fresh, critique('second-fresh', 'party-c', current)]).satisfied).toBe(true);
+  });
+
+  it.each(['barHash', 'barSetHash', 'rubricSlug', 'barKey'] as const)(
+    'refuses reuse when BAR dependency coverage is unreadable: %s', field => {
+      const current = bar('R-1', BAR_SET_A, 1);
+      current.sourceBar = { ...current.sourceBar!, [field]: '' };
+      const recorded = critique('old', 'party-a', [current]);
+      expect(recorded.record.pins).toEqual([]);
+      expect(evaluateBarCritiqueGate({ planSlug: PLAN, currentClauses: [current], critiques: [recorded],
+        authorPartyKeys: NO_AUTHOR, threshold: 1 })).toMatchObject({
+        satisfied: false, clauseShortfalls: [{ specId: 'R-1', coveredBy: 0, reason: 'stale' }] });
+    });
+
+  it('preserves a BAR critique through presentation, revision and activation metadata changes', () => {
+    const before = bar('R-1', BAR_SET_A, 1);
+    const after = { ...before, revision: 2, lifecycleStatus: 'active' as const,
+      createdAt: '2026-10-04T00:00:00.000Z', sourceBar: { ...before.sourceBar!, rubricRevision: 2 } };
+    expect(evaluateBarCritiqueGate({ planSlug: PLAN, currentClauses: [after],
+      critiques: [critique('old', 'party-a', [before])], authorPartyKeys: NO_AUTHOR, threshold: 1 }).satisfied).toBe(true);
+  });
+
 
   it('D-003 threshold: two critiques above 8 items or 3 mandatory outcome bars', () => {
     expect(barCritiqueThreshold({ nonDroppedItemCount: 8, mandatoryOutcomeBarCount: 3 })).toBe(1);

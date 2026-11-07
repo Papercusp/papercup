@@ -88,8 +88,9 @@ describe('defaultGitRunner (EI-24852529885337741)', () => {
     try {
       const failure = await defaultGitRunner(root, ['ls-tree', '0'.repeat(40), '--', 'missing.ts'])
         .catch(error => error);
-      expect(failure.cause).toEqual({ gitExecution: {
+      expect(failure.cause).toMatchObject({ gitExecution: {
         timeoutMs: 5_000, route: 'local', code: 'ENOENT', signal: null, killed: false,
+        timing: { spawnEventMs: null, firstOutputMs: null, exitMs: null, callbackMs: expect.any(Number) },
       } });
       await expect(defaultGitRunner(root, ['ls-tree', '0'.repeat(40), '--', 'missing.ts'])).rejects.toThrow(
         /^Command failed \([^\n]*code=ENOENT[^\n]*signal=none[^\n]*killed=false[^\n]*\): git /,
