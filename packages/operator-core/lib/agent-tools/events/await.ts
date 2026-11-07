@@ -47,6 +47,7 @@ import {
   cancelAwait,
   cancelAwaitsForSubscribersOnKeys,
   FLEET_BENCH_NOTE_PREFIX,
+  getKeyFireLatch,
   probeKeyFireEvidence,
   probePatternMatchScope,
   type AwaitGenerationState,
@@ -603,12 +604,14 @@ export default defineTool({
       : null;
     const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget ?? coordReceiptTarget ?? scorecardAuditTarget;
     if (monotonicLatchTarget) {
-      const probe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
+      // Only this key can satisfy a monotonic wait. Family history is diagnostic
+      // and can exceed this deadline even when the exact latch already exists.
+      const probe = await withBoundedTimeout(getKeyFireLatch(eventKey), {
         fallback: null,
         timeoutMs: 1_000,
         label: 'events-await:monotonicExactLatch',
       });
-      if (probe.value?.exact && probe.value.fires > 0) {
+      if (probe.value && probe.value.fireCount > 0) {
         return {
           content: [
             {
@@ -1447,12 +1450,12 @@ export default defineTool({
     // the preflight read is visible here. Cancel only through the row-level pending
     // guard: if the emitter already claimed this row, its durable delivery wins.
     if (monotonicLatchTarget) {
-      const postRegisterProbe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
+      const postRegisterProbe = await withBoundedTimeout(getKeyFireLatch(eventKey), {
         fallback: null,
         timeoutMs: 1_000,
         label: 'events-await:monotonicExactLatchAfterRegister',
       });
-      if (postRegisterProbe.value?.exact && postRegisterProbe.value.fires > 0) {
+      if (postRegisterProbe.value && postRegisterProbe.value.fireCount > 0) {
         let retired = false;
         try {
           retired = await cancelAwait({ awaitId: row.id, subscriberId: identity.ownerId });

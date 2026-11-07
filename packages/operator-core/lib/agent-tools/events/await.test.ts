@@ -47,6 +47,7 @@ vi.mock('../../events/await/store', () => ({
   // per-test below to exercise the supersede path.
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
   FLEET_BENCH_NOTE_PREFIX: '[fleet:bench] ',
+  getKeyFireLatch: vi.fn(async () => null),
   // EI-18676056143796303: the orphan guard now asks the fire latch whether this key
   // (or a sibling in its family) has ever ACTUALLY fired before claiming no emitter
   // exists. Defaults to "no evidence", so every pre-existing case above still warns
@@ -156,8 +157,8 @@ vi.mock('../../scheduler/get-next', () => ({
 
 import awaitTool from './await';
 import { getClaimSpecRecord, type ClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
-import type { AwaitRow } from '../../events/await/types';
+import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys, getKeyFireLatch, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
+import type { AwaitRow, KeyFireRow } from '../../events/await/types';
 // Namespace view of the SAME mocked module — the coverage guard at the bottom of this
 // file checks its key set against production's import list.
 import * as storeMock from '../../events/await/store';
@@ -184,6 +185,10 @@ import { hasActiveMonitorForOwnerPredicate } from '../../harness/routines/monito
 import { mainWaitAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
+const firedLatch = (eventKey: string, firedAt: string): KeyFireRow => ({
+  workspaceId: 'default', eventKey, firstFiredAt: firedAt, lastFiredAt: firedAt,
+  lastFiredBy: 'test', lastPayload: null, fireCount: 1,
+});
 const call = async (args: Record<string, unknown>) => {
   const res = (await awaitTool.handler(args as never, ctx)) as { content: Array<{ text: string }> };
   return JSON.parse(res.content[0].text);
@@ -191,6 +196,7 @@ const call = async (args: Record<string, unknown>) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getKeyFireLatch).mockReset().mockResolvedValue(null);
   vi.mocked(hasActiveMonitorForOwnerPredicate).mockResolvedValue(false);
 });
 
@@ -2220,13 +2226,7 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
   const egressKey = `git-sync:egressed:${'a'.repeat(40)}`;
 
   it('answers already_fired for an exact SHA whose egress fire is already latched', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
-      prefix: 'git-sync:egressed',
-      exact: true,
-      distinctKeys: 1,
-      fires: 1,
-      lastFiredAt: '2026-08-21T22:13:00.000Z',
-    });
+    vi.mocked(getKeyFireLatch).mockResolvedValueOnce(firedLatch(egressKey, '2026-08-21T22:13:00.000Z'));
 
     const out = await call({ event: egressKey });
 
@@ -2238,27 +2238,23 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
     });
     expect(out.advice).toMatch(/origin\/staging has already contained this commit/);
     expect(registerAwait).not.toHaveBeenCalled();
-    expect(probeKeyFireEvidence).toHaveBeenCalledWith(egressKey);
+    expect(getKeyFireLatch).toHaveBeenCalledWith(egressKey);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
   });
 
   it('does not treat a sibling SHA fire as satisfaction for this exact key', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
-      prefix: 'git-sync:egressed',
-      exact: false,
-      distinctKeys: 2,
-      fires: 2,
-      lastFiredAt: '2026-08-21T22:13:00.000Z',
-    });
+    vi.mocked(getKeyFireLatch).mockResolvedValue(null);
 
     const out = await call({ event: egressKey });
 
     expect(out.already_fired).toBeUndefined();
     expect(out.await_id).toBe(99);
     expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(getKeyFireLatch).toHaveBeenCalledWith(egressKey);
   });
 
   it('does not apply the exact-key latch to the recurring global egress stream', async () => {
-    vi.mocked(probeKeyFireEvidence).mockClear();
+    vi.mocked(getKeyFireLatch).mockClear();
 
     // An explicit scope: a harness-less bare global git-sync wait is refused
     // (EI-24719187042784648), which is not the property this test pins.
@@ -2266,25 +2262,13 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
 
     expect(out.already_fired).toBeUndefined();
     expect(registerAwait).toHaveBeenCalledTimes(1);
-    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(getKeyFireLatch).not.toHaveBeenCalled();
   });
 
   it('reconciles a fire that lands after the preflight probe while the new row is still pending', async () => {
-    vi.mocked(probeKeyFireEvidence)
-      .mockResolvedValueOnce({
-        prefix: 'git-sync:egressed',
-        exact: false,
-        distinctKeys: 0,
-        fires: 0,
-        lastFiredAt: null,
-      })
-      .mockResolvedValueOnce({
-        prefix: 'git-sync:egressed',
-        exact: true,
-        distinctKeys: 1,
-        fires: 1,
-        lastFiredAt: '2026-08-23T02:14:00.000Z',
-      });
+    vi.mocked(getKeyFireLatch)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(firedLatch(egressKey, '2026-08-23T02:14:00.000Z'));
     vi.mocked(cancelAwait).mockResolvedValueOnce(true);
 
     const out = await call({ event: egressKey });
@@ -2299,26 +2283,14 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
     expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
     expect(registerAwait).toHaveBeenCalledTimes(1);
     const registerOrder = vi.mocked(registerAwait).mock.invocationCallOrder[0];
-    const probeOrders = vi.mocked(probeKeyFireEvidence).mock.invocationCallOrder;
+    const probeOrders = vi.mocked(getKeyFireLatch).mock.invocationCallOrder;
     expect(registerOrder).toBeLessThan(probeOrders[probeOrders.length - 1]);
   });
 
   it('leaves a row alone when the event already claimed it before reconciliation', async () => {
-    vi.mocked(probeKeyFireEvidence)
-      .mockResolvedValueOnce({
-        prefix: 'git-sync:egressed',
-        exact: false,
-        distinctKeys: 0,
-        fires: 0,
-        lastFiredAt: null,
-      })
-      .mockResolvedValueOnce({
-        prefix: 'git-sync:egressed',
-        exact: true,
-        distinctKeys: 1,
-        fires: 1,
-        lastFiredAt: '2026-08-23T02:15:00.000Z',
-      });
+    vi.mocked(getKeyFireLatch)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(firedLatch(egressKey, '2026-08-23T02:15:00.000Z'));
 
     const out = await call({ event: egressKey });
 
@@ -2331,20 +2303,16 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
 describe('EI-25418020058852136 — coordination receipt exact-key latch', () => {
   const receiptKey = 'coord:receipt:coord-send-read-once';
   const firedAt = '2026-10-08T13:13:40.328Z';
-  const noFire = {
-    prefix: 'coord:receipt', exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null,
-  };
-  const exactFire = {
-    prefix: 'coord:receipt', exact: true, distinctKeys: 1, fires: 1, lastFiredAt: firedAt,
-  };
+  const noFire = null;
+  const exactFire = firedLatch(receiptKey, firedAt);
 
   beforeEach(() => {
-    vi.mocked(probeKeyFireEvidence).mockReset().mockResolvedValue(noFire);
+    vi.mocked(getKeyFireLatch).mockReset().mockResolvedValue(noFire);
     vi.mocked(cancelAwait).mockReset().mockResolvedValue(false);
   });
 
   it('returns the prior receipt instead of waiting for a second receipt edge', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValue(exactFire);
+    vi.mocked(getKeyFireLatch).mockResolvedValue(exactFire);
 
     const out = await call({ event: receiptKey });
 
@@ -2355,7 +2323,7 @@ describe('EI-25418020058852136 — coordination receipt exact-key latch', () => 
   });
 
   it('does not accept a receipt for a different message', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValue({ ...exactFire, exact: false });
+    vi.mocked(getKeyFireLatch).mockResolvedValue(null);
 
     const out = await call({ event: receiptKey });
 
@@ -2365,7 +2333,7 @@ describe('EI-25418020058852136 — coordination receipt exact-key latch', () => 
   });
 
   it('retires the pending wait when the receipt fires during registration', async () => {
-    vi.mocked(probeKeyFireEvidence)
+    vi.mocked(getKeyFireLatch)
       .mockResolvedValueOnce(noFire)
       .mockResolvedValueOnce(exactFire);
     vi.mocked(cancelAwait).mockResolvedValueOnce(true);
@@ -2379,7 +2347,7 @@ describe('EI-25418020058852136 — coordination receipt exact-key latch', () => 
   });
 
   it('preserves the delivery when the emitter already claimed the registered wait', async () => {
-    vi.mocked(probeKeyFireEvidence)
+    vi.mocked(getKeyFireLatch)
       .mockResolvedValueOnce(noFire)
       .mockResolvedValueOnce(exactFire);
 
@@ -2395,11 +2363,11 @@ describe('EI-25418020058852136 — coordination receipt exact-key latch', () => 
     await call({ event: 'coord:receipt:*' });
 
     expect(registerAwait).toHaveBeenCalledTimes(2);
-    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(getKeyFireLatch).not.toHaveBeenCalled();
   });
 
   it('does not use an unqualified fire to satisfy a payload-filtered receipt wait', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValue(exactFire);
+    vi.mocked(getKeyFireLatch).mockResolvedValue(exactFire);
 
     const out = await call({ event: receiptKey, payload_filter: { read: true } });
 
@@ -2411,14 +2379,25 @@ describe('EI-25418020058852136 — coordination receipt exact-key latch', () => 
 describe('EI-23156083757639548 — task terminal exact-key latch', () => {
   const terminalKey = 'task:terminal:0mtzw7ug42uhzvubiux';
 
+  it('consumes the terminal latch even when family-history diagnostics cannot finish (EI-28115811287150155)', async () => {
+    const familyProbe = vi.mocked(probeKeyFireEvidence);
+    const previous = familyProbe.getMockImplementation();
+    familyProbe.mockImplementation(() => new Promise(() => {}));
+    vi.mocked(getKeyFireLatch).mockResolvedValue(firedLatch(terminalKey, '2026-11-07T18:14:03.367Z'));
+    try {
+      const out = await call({ event: terminalKey });
+
+      expect(out).toMatchObject({ ok: true, already_fired: true, event: terminalKey });
+      expect(registerAwait).not.toHaveBeenCalled();
+      expect(familyProbe).not.toHaveBeenCalled();
+    } finally {
+      familyProbe.mockReset();
+      if (previous) familyProbe.mockImplementation(previous);
+    }
+  });
+
   it('answers already_fired when one concrete task reached terminal state before registration', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
-      prefix: 'task:terminal',
-      exact: true,
-      distinctKeys: 1,
-      fires: 1,
-      lastFiredAt: '2026-09-13T14:13:22.614Z',
-    });
+    vi.mocked(getKeyFireLatch).mockResolvedValueOnce(firedLatch(terminalKey, '2026-09-13T14:13:22.614Z'));
 
     const out = await call({ event: terminalKey });
 
@@ -2430,25 +2409,14 @@ describe('EI-23156083757639548 — task terminal exact-key latch', () => {
     });
     expect(out.advice).toMatch(/first authoritative terminal ledger state/);
     expect(registerAwait).not.toHaveBeenCalled();
-    expect(probeKeyFireEvidence).toHaveBeenCalledWith(terminalKey);
+    expect(getKeyFireLatch).toHaveBeenCalledWith(terminalKey);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
   });
 
   it('reconciles a task terminal fire that lands during registration', async () => {
-    vi.mocked(probeKeyFireEvidence)
-      .mockResolvedValueOnce({
-        prefix: 'task:terminal',
-        exact: false,
-        distinctKeys: 0,
-        fires: 0,
-        lastFiredAt: null,
-      })
-      .mockResolvedValueOnce({
-        prefix: 'task:terminal',
-        exact: true,
-        distinctKeys: 1,
-        fires: 1,
-        lastFiredAt: '2026-09-13T14:13:22.614Z',
-      });
+    vi.mocked(getKeyFireLatch)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(firedLatch(terminalKey, '2026-09-13T14:13:22.614Z'));
     vi.mocked(cancelAwait).mockResolvedValueOnce(true);
 
     const out = await call({ event: terminalKey });
@@ -2462,6 +2430,8 @@ describe('EI-23156083757639548 — task terminal exact-key latch', () => {
     expect(out.advice).toMatch(/fired during registration/);
     expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
     expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(getKeyFireLatch).toHaveBeenCalledTimes(2);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
   });
 
   it('keeps bare and pattern task-terminal streams edge-triggered', async () => {
@@ -2469,33 +2439,29 @@ describe('EI-23156083757639548 — task terminal exact-key latch', () => {
     await call({ event: 'task:terminal:*' });
 
     expect(registerAwait).toHaveBeenCalledTimes(2);
-    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(getKeyFireLatch).not.toHaveBeenCalled();
   });
 });
 
 describe('EI-27662039712481868 — scorecard grading-audit exact-key latch', () => {
   const auditKey = 'scorecard:grading-audit:EI-audited-card';
   const firedAt = '2026-11-02T07:45:53.061Z';
-  const noFire = {
-    prefix: 'scorecard:grading-audit', exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null,
-  };
-  const exactFire = {
-    prefix: 'scorecard:grading-audit', exact: true, distinctKeys: 1, fires: 1, lastFiredAt: firedAt,
-  };
+  const noFire = null;
+  const exactFire = firedLatch(auditKey, firedAt);
 
   it('answers already_fired when the grading audit settled before registration', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce(exactFire);
+    vi.mocked(getKeyFireLatch).mockResolvedValueOnce(exactFire);
 
     const out = await call({ event: auditKey });
 
     expect(out).toMatchObject({ ok: true, already_fired: true, event: auditKey, fired_at: firedAt });
     expect(out.advice).toMatch(/scorecards:get.*EI-audited-card/);
     expect(registerAwait).not.toHaveBeenCalled();
-    expect(probeKeyFireEvidence).toHaveBeenCalledWith(auditKey);
+    expect(getKeyFireLatch).toHaveBeenCalledWith(auditKey);
   });
 
   it('retires a still-pending await when the grading audit fires during registration', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce(noFire).mockResolvedValueOnce(exactFire);
+    vi.mocked(getKeyFireLatch).mockResolvedValueOnce(noFire).mockResolvedValueOnce(exactFire);
     vi.mocked(cancelAwait).mockResolvedValueOnce(true);
 
     const out = await call({ event: auditKey });
@@ -2507,13 +2473,13 @@ describe('EI-27662039712481868 — scorecard grading-audit exact-key latch', () 
   });
 
   it('does not satisfy a payload-filtered grading-audit wait from an unqualified fire', async () => {
-    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce(exactFire);
+    vi.mocked(getKeyFireLatch).mockResolvedValueOnce(exactFire);
 
     const out = await call({ event: auditKey, payload_filter: { state: 'passed' } });
 
     expect(out.already_fired).toBeUndefined();
     expect(registerAwait).toHaveBeenCalledTimes(1);
-    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(getKeyFireLatch).not.toHaveBeenCalled();
   });
 });
 

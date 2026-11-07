@@ -17,11 +17,19 @@ CAPABILITY_PACK="${PAPERCUSP_WITNESS_CAPABILITY_PACK:-}"
 }
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-p2p-witness.XXXXXX")"
-cleanup() { rm -rf "$STAGE"; }
+cleanup() {
+  local status=$?
+  if [[ "$status" != 0 ]]; then
+    echo "ERROR: witness build failed; retained staging directory: $STAGE" >&2
+  else
+    rm -rf "$STAGE"
+  fi
+}
 trap cleanup EXIT
 mkdir -p "$STAGE/packs"
 
 source "$ROOT/apps/operator/bin/bundle-host-common.sh"
+BUNDLE_HOST_STEP_LOG="$STAGE/build-steps.jsonl"
 HOST_EXTERNALS=(
   "${HOST_COMMON_EXTERNALS[@]}"
   --external:@embedded-postgres/darwin-arm64
@@ -60,8 +68,8 @@ _seen="|"
 source "$ROOT/papercusp-desktop/bin/lib/transformers-models.sh"
 source "$ROOT/papercusp-desktop/bin/lib/host-runtime-closure.sh"
 mkdir -p "$STAGE/node_modules"
-copy_host_external_closures
-assert_runtime_dependency_closure "$STAGE"
+bundle_host_run_step runtime-closure copy_host_external_closures
+bundle_host_run_step runtime-closure-check assert_runtime_dependency_closure "$STAGE"
 [[ "$nat_missing" == 0 ]] || { echo "ERROR: witness runtime dependencies are incomplete" >&2; exit 1; }
 
 if [[ -n "$MODEL_PACK" ]]; then

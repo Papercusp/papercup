@@ -1,0 +1,308 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P012 exact published Reports reader receipts and non-final current-build evidence",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "cell-identity-context-delta-integration-2026-11-02",
+  "workItem": "WI-6554700010045132",
+  "executionWorkItem": "WI-6554700010046239",
+  "observer": "su-d990b197-6745-4723-abd6-977d9686780c",
+  "exitCode": 0,
+  "scope": "Retained real publish/get and three-case Playwright journey. Current-build item evidence; final deployed-artifact acceptance remains P014. This record does not assert that the historical serving process is still running.",
+  "publishReceipt": {
+    "ok": true,
+    "report_id": "rpt_d992958c-52e0-4465-b070-20d44c7282d6",
+    "request_key": "icd-p012-d990-20261107-reader-proof-v1",
+    "workspace_id": "papercusp-workspace",
+    "title": "P-012 isolated Reports selector proof — 2026-11-07",
+    "summary": "A uniquely marked internal report used for the approved P-012 live browser acceptance journey.",
+    "kind": "other",
+    "subject": {
+      "kind": "work_item",
+      "ref": "WI-6554700010045132",
+      "label": "P-012 Reports selector acceptance"
+    },
+    "origin": {
+      "harness_slug": "papercusp",
+      "author_owner_id": "su-d990b197-6745-4723-abd6-977d9686780c",
+      "author_session_ref": "c26e87d8-b4ba-4550-9eb3-83e07c542432"
+    },
+    "visibility": "workspace",
+    "supersedes_report_id": null,
+    "lineage_id": "rpt_d992958c-52e0-4465-b070-20d44c7282d6",
+    "source": "agent",
+    "tags": [
+      "acceptance-test",
+      "icd-p012"
+    ],
+    "published_at": "2026-11-07T01:53:54.708Z",
+    "updated_at": "2026-11-07T01:53:54.708Z",
+    "retired_at": null,
+    "path": "/reports?sel=rpt_d992958c-52e0-4465-b070-20d44c7282d6",
+    "body_bytes": 398,
+    "body_sha256": "53bc9bc47adcabbc82ac3e25ea53c7226ded30112e2a4b59cffd09792d663763",
+    "goal_owner_report": null,
+    "event_emitted": true
+  },
+  "currentStoredReadback": {
+    "reportId": "rpt_d992958c-52e0-4465-b070-20d44c7282d6",
+    "visibility": "workspace",
+    "bodyMd": "## Selected report proof\n\nStored marker: ICD-P012-D990-20261107-READER-7f314a89.\n\nThis internal report is test data for the approved identity/context/delta plan. The browser must select this exact report and reproduce its complete stored Markdown.\n\n## Evidence boundary\n\nPublication alone does not establish acceptance or shipment. The owning work-item records the browser result and serving build.",
+    "bodySha256": "53bc9bc47adcabbc82ac3e25ea53c7226ded30112e2a4b59cffd09792d663763",
+    "reportPath": "/reports?sel=rpt_d992958c-52e0-4465-b070-20d44c7282d6",
+    "observedAtMs": 1794077505899
+  },
+  "journey": {
+    "input": {
+      "origin": "http://127.0.0.1:3170",
+      "buildSha": "15e04a8c1a",
+      "outputDir": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live",
+      "reportId": "rpt_d992958c-52e0-4465-b070-20d44c7282d6",
+      "bodyHash": "53bc9bc47adcabbc82ac3e25ea53c7226ded30112e2a4b59cffd09792d663763",
+      "selector": "/reports?sel=rpt_d992958c-52e0-4465-b070-20d44c7282d6"
+    },
+    "sourceCommit": "fbf68a62c49f0a8af6b54864ef1b9f2dfb42a3fa",
+    "testRunId": "23546778",
+    "runGroupId": "c33085e2-c342-41f6-8f22-988674666802",
+    "before": {
+      "origin": "http://127.0.0.1:3170",
+      "sha": "15e04a8c1a",
+      "generation": "serving-generation-v1:e9fc67c9f3d56ef20ab5c54df82c305008cb7bba49fefd59a63a6efb8f5f225c",
+      "asset": "/assets/index-5cffcf73.js",
+      "assetSha256": "8ad641ef7bb9cc2f90f23412f495c6375a5d80d30355d8c987f3c8641af00177"
+    },
+    "after": {
+      "origin": "http://127.0.0.1:3170",
+      "sha": "15e04a8c1a",
+      "generation": "serving-generation-v1:e9fc67c9f3d56ef20ab5c54df82c305008cb7bba49fefd59a63a6efb8f5f225c",
+      "asset": "/assets/index-5cffcf73.js",
+      "assetSha256": "8ad641ef7bb9cc2f90f23412f495c6375a5d80d30355d8c987f3c8641af00177"
+    },
+    "reportPath": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live/fa968ad8-8794-43b6-8bbe-54a139ea4605/playwright.json",
+    "ledgerPath": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live/fa968ad8-8794-43b6-8bbe-54a139ea4605/test-runs.jsonl"
+  },
+  "playwrightStats": {
+    "startTime": "2026-11-07T09:16:26.432Z",
+    "duration": 58125.776,
+    "expected": 3,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "publishedReportProofs": [
+    {
+      "reportId": "rpt_d992958c-52e0-4465-b070-20d44c7282d6",
+      "title": "P-012 isolated Reports selector proof — 2026-11-07",
+      "headings": [
+        "Selected report proof",
+        "Evidence boundary"
+      ],
+      "sourceMarkdownSha256": "53bc9bc47adcabbc82ac3e25ea53c7226ded30112e2a4b59cffd09792d663763",
+      "renderedTextSha256": "15ce9379ad0d4324de6c7bd6216842a86df28cd077940ba596ad210667f35025",
+      "exportSha256": "336b7b26d8b366d41fedec38d48133115f8a5f736b8cf38c8fa98523ab00959b",
+      "exportPath": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live/fa968ad8-8794-43b6-8bbe-54a139ea4605/browser/reports-reader-published-r-ddc85-ndalone-HTML-stay-identical-chromium/published-report.html",
+      "externalRequests": [],
+      "scope": "Selected reader, exact Copy as Markdown, outline, and offline title/headings/rendered text parity only."
+    }
+  ],
+  "generationControls": {
+    "at": "2026-11-07T02:03:04.996Z",
+    "origin": "http://127.0.0.1:3170",
+    "generation": "serving-generation-v1:323239dc5c9dfb19e82119e40b1355066fb1901848f446eaa4c8a3468be77dcc",
+    "stale": {
+      "error": "McpError: MCP error -32603: stale_tool_contract: caller generation differs from its listed catalog"
+    },
+    "fresh": {
+      "count": 1,
+      "servingGeneration": "serving-generation-v1:323239dc5c9dfb19e82119e40b1355066fb1901848f446eaa4c8a3468be77dcc",
+      "hits": [
+        "reports:get"
+      ]
+    },
+    "boundary": "Installed current ptool stdio bridge refused stale metadata before upstream dispatch; current metadata was admitted. Read-only controls."
+  },
+  "missingSourceControl": {
+    "path": "packages/operator-core/lib/agent-tools/reports/__icd_p012_absent_source_control__.ts",
+    "positions": {
+      "committedLocal": false,
+      "onStaging": false,
+      "inMain": false,
+      "deployed": false
+    },
+    "servingRuntimes": [
+      {
+        "runtime": "release-operator",
+        "role": "owner",
+        "buildSha": "d740fc3802",
+        "buildShaSource": "health",
+        "containsChange": null,
+        "method": null,
+        "instances": null,
+        "unknownReason": {
+          "code": "resolver-failed",
+          "detail": "Could not read 'packages/operator-core/lib/agent-tools/reports/__icd_p012_absent_source_control__.ts' from the working tree (deleted, or outside this repo) — …[truncated +16 chars]"
+        }
+      },
+      {
+        "runtime": "staging-operator",
+        "role": "owner",
+        "buildSha": "93b6fcdbbc",
+        "buildShaSource": "health",
+        "containsChange": null,
+        "method": null,
+        "instances": null,
+        "unknownReason": {
+          "code": "resolver-failed",
+          "detail": "Could not read 'packages/operator-core/lib/agent-tools/reports/__icd_p012_absent_source_control__.ts' from the working tree (deleted, or outside this repo) — …[truncated +16 chars]"
+        }
+      },
+      {
+        "runtime": "bg-host",
+        "role": "shared",
+        "buildSha": null,
+        "buildShaSource": null,
+        "containsChange": null,
+        "method": null,
+        "instances": null,
+        "unknownReason": {
+          "code": "resolver-failed",
+          "detail": "bg-host (routines, sweeps, watchdogs; canonical tree) could not report its bundle identity, so process start cannot prove which bytes it loaded."
+        }
+      },
+      {
+        "runtime": "gateway",
+        "role": "shared",
+        "buildSha": "49eb4a56cc",
+        "buildShaSource": "runtime-vintage",
+        "containsChange": null,
+        "method": null,
+        "instances": null,
+        "unknownReason": {
+          "code": "insufficient-data",
+          "detail": "inference gateway :8788 (canonical tree): no matching blob at its reported build and no start-time/mtime pair to decide whether it loaded the working-tree file."
+        }
+      }
+    ]
+  },
+  "population": {
+    "reports": [
+      "rpt_d992958c-52e0-4465-b070-20d44c7282d6"
+    ],
+    "canonicalOuterTestRunIds": [
+      23546779
+    ],
+    "canonicalInnerPlaywrightTestRunIds": [
+      23546778
+    ],
+    "expectedCases": [
+      "published report text and standalone HTML stay identical",
+      "published report session keeps credentials off a redirected foreign origin",
+      "report proof rejects a successful HTTP response with an unrelated route"
+    ]
+  },
+  "sourceExecution": {
+    "commitSha": "fbf68a62c49f0a8af6b54864ef1b9f2dfb42a3fa",
+    "worktreeDirty": false,
+    "sourceCommitBasis": "Canonical retained binding78064 and test_runs23546779; currentness separately remeasured by server.",
+    "sourcePaths": [
+      "apps/operator-vite/src/components/reports/ReportsRoute.tsx",
+      "apps/operator/e2e/_reports-proof.ts",
+      "apps/operator/e2e/_warm-dev-server.ts",
+      "apps/operator/e2e/reports-reader.spec.ts",
+      "packages/operator-core/lib/reports-reader-live.e2e.test.ts",
+      "packages/operator-core/lib/reports-reader-live.ts"
+    ],
+    "configPaths": [
+      "apps/operator/playwright.config.mts"
+    ]
+  },
+  "currentness": {
+    "existingBindings": [
+      78063,
+      78064
+    ],
+    "lastServerMeasurement": "/tmp/d990-p012-bindings-current.json",
+    "existingTreeProof": "current",
+    "environment": "Historical pre/post origin/build/generation/entry-asset are identical in the retained journey; no equivalence to a later serving build is asserted."
+  },
+  "rawEvidence": [
+    {
+      "path": "/mnt/data/tmp/icd-p012-live-96057ad0-a9d8-47c8-95a2-32c4138f0091/publish.json",
+      "sha256": "a138cd616d7a4b9579913d4466e035fc434b539278c1cb0ff59eb859fcf0a3d3",
+      "bytes": 1076
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p012-live-96057ad0-a9d8-47c8-95a2-32c4138f0091/get.json",
+      "sha256": "ac83a3143ef3f6c7d596373be09545c47501de7093f50875478803323b56358f",
+      "bytes": 1586
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p012-live-96057ad0-a9d8-47c8-95a2-32c4138f0091/serving-generation-controls.json",
+      "sha256": "06732f92d13eea2d3037dd990e61c18908995ca68e6af67c2ea743cd6bf5c1a6",
+      "bytes": 656
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p012-live-96057ad0-a9d8-47c8-95a2-32c4138f0091/missing-source-control.json",
+      "sha256": "6f1ee0f602c47d729f87a3cfe42091bca350c9e8dbd690b9cf7b9e448cce7504",
+      "bytes": 35609
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/preflight.json",
+      "sha256": "75e6ba4c82ee28bc1e10bc8e9e7d49d7086b288df251e2323b3297c7077ae102",
+      "bytes": 1355
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/terminal.json",
+      "sha256": "d80949e6271b8e7e55aaf63fe48b6b38ee9fe5553481ae961b51b80b456dd7ba",
+      "bytes": 152
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live/fa968ad8-8794-43b6-8bbe-54a139ea4605/terminal.json",
+      "sha256": "77b392bf6fca774d6653c8dd8e1a29f6f7243ce5beff7183ee32661dcad65055",
+      "bytes": 1431
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live/fa968ad8-8794-43b6-8bbe-54a139ea4605/playwright.json",
+      "sha256": "0179df1b172965e71d7392e317128b7b72fe3a662fc8d0e0993e85a0d6cb5d6f",
+      "bytes": 37569
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live/fa968ad8-8794-43b6-8bbe-54a139ea4605/test-runs.jsonl",
+      "sha256": "2bcc6e6e320395485ac521a159cd85caf535c267850e29a2698d20aad6508c0b",
+      "bytes": 537
+    },
+    {
+      "path": "/mnt/data/tmp/icd-p005-p012-current-d990-20261107-0918/live/fa968ad8-8794-43b6-8bbe-54a139ea4605/browser/reports-reader-published-r-ddc85-ndalone-HTML-stay-identical-chromium/published-report-proof.json",
+      "sha256": "6bf4bd68eac372cda0a904158579896f8b0332529724c24ff6a51b725f7cf9e3",
+      "bytes": 833
+    }
+  ],
+  "assertions": [
+    {
+      "id": "exact-stored-body",
+      "passed": true,
+      "evidence": "Current reports:get complete Markdown hashes to the exact retained publish and browser expected body."
+    },
+    {
+      "id": "actual-playwright-terminal",
+      "passed": true,
+      "evidence": "Maintained outer owning e2e case23546779 invoked Playwright; inner23546778 covers three non-skipped cases with terminal exit0."
+    },
+    {
+      "id": "stable-executing-runtime",
+      "passed": true,
+      "evidence": "Retained before and after snapshots have identical origin/build/generation/SPA asset digest."
+    },
+    {
+      "id": "negative-controls-distinct",
+      "passed": true,
+      "evidence": "Retained browser foreign-origin redirect and unrelated-route rejection controls pass; separate current/stale catalog controls distinguish stale_tool_contract and missing source."
+    }
+  ],
+  "notProven": [
+    "Final R14 deployed artifact shipment.",
+    "Equivalence between the historical journey serving process and any later runtime generation."
+  ]
+}

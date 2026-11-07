@@ -226,7 +226,8 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
           monotonicAtMs: sequence * 1000, telemetryHealthy: true }).transaction;
       };
       sample(1); sample(2);
-      expect(tx.progressObservation?.semantic).toBe('unchanged');
+      expect(tx.progressObservation).toMatchObject({ semantic: 'unknown', completedUnits: [],
+        lastUsefulProgressMonotonicMs: null });
       writeFileSync(trigger, 'complete declared subtask');
       await vi.waitFor(() => expect(existsSync(receipt)).toBe(true), { timeout: 1000 });
       const result = JSON.parse(readFileSync(receipt, 'utf8'));

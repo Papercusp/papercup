@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -8,6 +9,12 @@ import { launchManagedTestProcess } from '../../lib/agent-tools/testing/run';
 // the launcher's platform clients and exits only after checking the real task.
 async function verifyConfinedCleanup(): Promise<void> {
   const root = resolve(import.meta.dirname, '../../../..');
+  const admissionCommand = join(root, 'scripts/testing-run-probe-overlay.sh');
+  const sourceProof = {
+    admissionCommand,
+    admissionShellSha256: createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'),
+    fixtureSha256: createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex'),
+  };
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-pg-confined-cleanup-'));
   const registry = join(evidenceDir, 'owned-databases');
   const outputPath = join(evidenceDir, 'wrapper.log');
@@ -33,11 +40,14 @@ async function verifyConfinedCleanup(): Promise<void> {
   });
   void closed.catch(() => {});
   const launched = await launchManagedTestProcess({
-    command: process.execPath,
-    args: [join(root, 'scripts/with-test-pg.mjs'), '--', process.execPath,
+    // Exercise the production admission shell too: targeting the PG owner
+    // directly cannot detect a shell/flock ancestor that drops cooperative TERM.
+    command: admissionCommand,
+    args: [root, '--', process.execPath, join(root, 'scripts/with-test-pg.mjs'), '--', process.execPath,
       '--import', 'tsx', '--input-type=module', '-e', childSource],
     cwd: root,
     env: { ...process.env, PAPERCUSP_TEST_OWNED_DB_DIR: registry,
+      PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT: join(evidenceDir, 'admission'),
       PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(deadline) },
     timeoutMs: 180_000, cooperativeTermination: true,
     runGroup: 'private-pg-confined-cleanup-regression',
@@ -88,7 +98,9 @@ async function verifyConfinedCleanup(): Promise<void> {
     // Failed evidence remains available for diagnosis.
     if (verified) rmSync(evidenceDir, { recursive: true, force: true });
   }
-  console.log('CONFINED_PG_CLEANUP_VERIFIED');
+  assert.equal(createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'),
+    sourceProof.admissionShellSha256, 'admission shell changed during the proof');
+  console.log('CONFINED_PG_CLEANUP_VERIFIED ' + JSON.stringify(sourceProof));
 }
 
 // Platform notification clients are deliberately scoped to this fixture

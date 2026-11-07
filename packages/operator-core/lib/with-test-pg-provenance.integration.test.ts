@@ -1,4 +1,5 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { basename, dirname, resolve, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -13,13 +14,33 @@ const root = resolve(import.meta.dirname, '../../..');
 
 describe('ordinary PostgreSQL endpoint isolation', () => {
   it('settles a deferred database during current-source confined wrapper cancellation', async () => {
+    const fixturePath = 'packages/operator-core/test/fixtures/private-pg-confined-cleanup.ts';
+    if (process.env.NODE_OPTIONS?.includes('committed-source-loader.mjs')) {
+      // Refuse before PG allocation if an inherited loader would run an older
+      // fixture or launcher. A passing direct-wrapper fixture misses admission.
+      for (const path of [fixturePath, 'packages/operator-core/lib/agent-tools/testing/run.ts',
+        'scripts/with-test-pg.mjs']) {
+        expect(readFileSync(join(root, path)), `publish current ${path} before private PG verification`)
+          .toEqual(execFileSync('git', ['show', 'HEAD:' + path], { cwd: root }));
+      }
+    }
+    const admissionCommand = join(root, 'scripts/testing-run-probe-overlay.sh');
+    const proof = {
+      admissionCommand,
+      admissionShellSha256: createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'),
+      fixtureSha256: createHash('sha256').update(readFileSync(join(root, fixturePath))).digest('hex'),
+    };
     // The real launcher owns platform subscriptions. Keep those in a bounded
     // fixture process so they cannot prevent the Vitest worker from settling.
     const { stdout } = await run(process.execPath, ['--import', 'tsx',
       join(root, 'packages/operator-core/test/fixtures/private-pg-confined-cleanup.ts')], {
       cwd: root, env: process.env, timeout: 195_000, maxBuffer: 8 * 1024 * 1024,
     });
-    expect(stdout).toContain('CONFINED_PG_CLEANUP_VERIFIED');
+    const receipt = stdout.split('\n').find(line => line.startsWith('CONFINED_PG_CLEANUP_VERIFIED '));
+    expect(receipt, stdout.slice(-6000)).toBeDefined();
+    expect(JSON.parse(receipt!.slice('CONFINED_PG_CLEANUP_VERIFIED '.length))).toEqual(proof);
+    expect(createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'))
+      .toBe(proof.admissionShellSha256);
   }, 200_000);
 
   it('settles a deferred registered database before the wrapper stops its private server', async () => {

@@ -18,7 +18,7 @@ async function fixture(missingDependency = false) {
     await writeFile(path, content);
   }
   await file(join(repo, "apps/operator/bin/bundle-host-common.sh"),
-    "HOST_COMMON_EXTERNALS=(--external:witness-runtime)\nNATIVE_PKGS=()\nHOST_BANNER=''\nHOST_BANNER_DEFINES=()\n");
+    "HOST_COMMON_EXTERNALS=(--external:witness-runtime)\nNATIVE_PKGS=()\nHOST_BANNER=''\nHOST_BANNER_DEFINES=()\nbundle_host_run_step() { shift; \"$@\"; }\n");
   await file(join(repo, "package-lock.json"), '{"lockfileVersion":3}');
   await file(join(repo, "libs/papercusp/libs/db/sql/001.sql"), "select 1;");
   await file(join(repo, "libs/papercusp/packages/embedded-postgres-server/bin/build-seed.mjs"), "export {};\n");
@@ -56,7 +56,7 @@ describe("P2P witness runtime closure", () => {
     const f = await fixture();
     const built = spawnSync("bash", [join(repository, "scripts/build-p2p-witness.sh")], {
       encoding: "utf8", timeout: 30_000,
-      env: { ...process.env, PATH: `${f.commands}:${process.env.PATH}`, PAPERCUSP_REPO_ROOT: f.repo, PAPERCUSP_WITNESS_OUT: f.output },
+      env: { ...process.env, TMPDIR: f.root, PATH: `${f.commands}:${process.env.PATH}`, PAPERCUSP_REPO_ROOT: f.repo, PAPERCUSP_WITNESS_OUT: f.output },
     });
     expect(built.status, built.stdout + built.stderr).toBe(0);
     await rm(f.repo, { recursive: true, force: true });
@@ -72,10 +72,11 @@ describe("P2P witness runtime closure", () => {
     const f = await fixture(true);
     const built = spawnSync("bash", [join(repository, "scripts/build-p2p-witness.sh")], {
       encoding: "utf8", timeout: 30_000,
-      env: { ...process.env, PATH: `${f.commands}:${process.env.PATH}`, PAPERCUSP_REPO_ROOT: f.repo, PAPERCUSP_WITNESS_OUT: f.output },
+      env: { ...process.env, TMPDIR: f.root, PATH: `${f.commands}:${process.env.PATH}`, PAPERCUSP_REPO_ROOT: f.repo, PAPERCUSP_WITNESS_OUT: f.output },
     });
     expect(built.status).not.toBe(0);
     expect(built.stdout + built.stderr).toContain("witness-child");
+    expect(built.stderr).toContain("retained staging directory:");
     await expect(readFile(join(f.output, "witness-manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
