@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-005 Windows installer native closure and Windows Rust integration",
+  "framework": "shell",
+  "command": [
+    "CARGO_TARGET_DIR=/mnt/data/offload/xwin-target-check timeout 480 bin/check-windows-cfg.sh --locked --offline",
+    "PAPERCUSP_TEST_REAL_INNO=1 PAPERCUSP_INNOEXTRACT=$HOME/.papercusp/toolchains/innoextract-376a13e7c41cc5528b6088d0dd16ec1b323a8d37-verification-c320bea0c232/bin/innoextract node bin/run-node-test-suite.mjs --test-global-setup=test/monorepo-host-preflight.mjs --test-name-pattern='real Inno|Windows Workbench packaging' test/native-workbench-windows.test.mjs"
+  ],
+  "identityRedaction": "The local account home in command[1] is represented as the literal $HOME placeholder. This is a redacted command record; measured results, source hashes and log references are unchanged.",
+  "startedAt": "2026-11-06T20:37:08.989331Z",
+  "finishedAt": "2026-11-06T20:42:09.659409Z",
+  "exitCode": 0,
+  "summary": "Windows-target Rust cfg check passed in 36 seconds (metadata compilation, no runnable artifact). Maintained real Inno compiler/extractor and stage closure tests passed 2/2, no skips/failures. Installer resources matched all five native source files byte-for-byte; removing WorkbenchLifecycle.psm1 made ISCC fail. Full installed-artifact and three-OS journey acceptance remain pending.",
+  "workItem": "WI-6554700010044411",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "sourceSha256After": {
+    "papercusp-desktop/src-tauri/windows/inno/papercusp.iss": "5daa5e3882a132e97a6b648a806d8cc9bebb98b8957e88a9cf6ff5623bb77a33",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "ab48d1d533f6d3d1de6297a456986ad49aaf39d5b29d0d89b7a16b1bc487c4eb",
+    "papercusp-desktop/bin/package-native-workbench.mjs": "0147de3351be0c02a192f0670bc0e903777db22ceae3c97bc11fac0950a24a35",
+    "papercusp-desktop/src-tauri/build.rs": "aeac580915dda4a772ea68ee5376ee3621aa3a575230768f5263ac342442bc5d",
+    "papercusp-desktop/src-tauri/src/native_workbench.rs": "e19b8627856e7180ee7e08355fba8cd340af9f814231579718784ccb78317bae"
+  },
+  "logs": {
+    "inno": "\u2714 real Inno preserves every native Workbench resource and rejects an incomplete bundle (43433.308205ms)\n\u2714 Windows Workbench packaging stages the complete native source closure and refuses missing inputs (21.684036ms)\n\u2139 tests 2\n\u2139 suites 0\n\u2139 pass 2\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 49766.225716\nTEST_FILE_LEDGER runner=node:test rows=1 reason=\"worktree_dirty: 31 porcelain line(s) before the run: M apps/operator/scripts/__tests__/systemd-start-limit-section.test.ts |  M apps/operator/scripts/systemd/README.md |  M apps/operator/scripts/systemd/papercusp-mac-vm-gateway-tunnel.service |  M apps/slack-asana-bug-drill |  M libs/papercusp\"\n"
+  },
+  "cfgLog": "/tmp/wb-p005-windows-cfg-20261106.log",
+  "assertions": [
+    {
+      "id": "Windows-only Rust integration compiles",
+      "passed": true,
+      "evidence": "check-windows-cfg exit0; Finished dev profile in35.06s, wrapperPASS36s; /tmp/wb-p005-windows-cfg-20261106.log."
+    },
+    {
+      "id": "real Inno preserves every native Workbench resource and rejects an incomplete bundle",
+      "passed": true,
+      "evidence": "Maintained Node:test case PASS43433.308205ms; native ISCC compilation, extraction, five exact byte comparisons, missing-module refusal."
+    },
+    {
+      "id": "Windows Workbench packaging stages the complete native source closure and refuses missing inputs",
+      "passed": true,
+      "evidence": "Maintained Node:test case PASS21.684036ms; suite2/2pass,0fail/skip; exec83794 terminalexit0."
+    }
+  ]
+}

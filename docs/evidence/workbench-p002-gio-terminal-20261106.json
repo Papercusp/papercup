@@ -30,7 +30,8 @@
     "buildExitCode": 0,
     "selectedOperator": "http://127.0.0.1:3170",
     "rosterRead": "Actual native-read advRoster.list returned the canonical row envelope with empty stderr and exit 0.",
-    "missingSelection": "Actual PTY workbench resume 9007199254740991 main-server-Precision-7865-Tower exited 1 with selected session unavailable or ambiguous before Zellij.",
+    "missingSelection": "Actual PTY workbench resume 9007199254740991 <selected-host-redacted> exited 1 with selected session unavailable or ambiguous before Zellij.",
+    "identityRedaction": "The machine hostname in missingSelection is represented as <selected-host-redacted>; the measured result, binary SHA-256 and original log reference are unchanged.",
     "missingSelectionLog": "/tmp/wb-native-resume-canonical-missing-20261106.log",
     "authorizationControl": "An invalid bearer returned the same roster on localhost. The route writer packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.ts declares auth: loopback. This is not ACL-refusal proof."
   },

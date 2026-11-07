@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "workItem": "WI-6554700010029572",
+  "parentWorkItem": "WI-6554700010044395",
+  "plane": "Linux current-build actual PUI and Zellij; private operator and test-owned psu fixture",
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PUI_BIN=/mnt/data/cargo-target/debug/pui PUI_WORKBENCH_RESUME_EVIDENCE_DIR=/tmp/wb-actual-pui-resume-20261106-v5 npm run test:file -- packages/operator-core/lib/pui-e2e/workbench-resume-pty.integration.test.ts",
+  "result": {"exitCode": 0, "passedTests": 6, "failedTests": 0, "skippedTests": 0},
+  "ledger": {
+    "table": "harness_shared.test_runs",
+    "id": "23492410",
+    "status": "pass",
+    "harness": "papercusp",
+    "commit": "90aa400fca186de57b85f286ea8b13e1a9e5e5bd",
+    "startedAt": "2026-11-06T16:09:58.628Z",
+    "finishedAt": "2026-11-06T16:10:13.561Z",
+    "verification": "Read the persisted row after the test process completed. The runner reported six passing cases and clean named test-file provenance before and after execution."
+  },
+  "runtime": {
+    "puiSource": "/mnt/data/cargo-target/debug/pui",
+    "puiSha256": "e88893380ba6333f3676a6867d56c22b2814d3034e21f6893d5c842edca85fa1",
+    "zellijSource": "$HOME/.cargo/bin/zellij",
+    "identityRedaction": "The local account home in zellijSource is represented as the literal $HOME placeholder; the measured binary SHA-256 and original evidence references are unchanged.",
+    "zellijSha256": "9e0f413b9d1738135ab81e1dcee5e5af8b6db12e8d104f38d2df8d1c1ee3d252",
+    "isolation": "Immutable executable snapshots; private HTTP server, HOME, XDG directories, socket namespace, temporary directory and PTY. Cleanup addresses only the test's exact Zellij session."
+  },
+  "sourceSha256": {
+    "packages/operator-core/lib/pui-e2e/workbench-resume-pty.integration.test.ts": "01c2154e264bc09ca4f472d503d700f8285751b5589ba2c6e0d456c9dcafc624",
+    "packages/operator-core/test/_integration-substrate.globalSetup.ts": "069da62c1d2b78bff819cd0c92ab415f79727be0271471ccee3ac3879b2af352"
+  },
+  "evidenceSha256": {
+    "/tmp/wb-actual-pui-resume-20261106-v5.log": "651e063d61bcf70a2212da943772b68cc96a6b18ff54750811e85d6946132e80",
+    "/tmp/wb-actual-pui-resume-20261106-v5/pui-resume-contract-PsNTPl.json": "78f06e76fb141f1c56124ee90a4852899e4737fd982e3f95b87c01db2a5e8101",
+    "/tmp/wb-actual-pui-resume-20261106-v5/pui-resume-contract-4Mj3o9.json": "6656775c6cbf39cf96b16b0e211ce0722d1d00e24044e7dcaba2226b01e72aab",
+    "/tmp/wb-actual-pui-resume-20261106-v5/pui-resume-contract-2UYh0E.json": "1f47e46b0c2042600fdd15c4c55f7f616b1197502db56734962e582fd35cf44d",
+    "/tmp/wb-actual-pui-resume-20261106-v5/pui-resume-contract-licyqO.json": "e2d9b4e20c4daf8f85ca0c9f5d980dba6fdb723c3e003d136fb7a438b43ff96b",
+    "/tmp/wb-actual-pui-resume-20261106-v5/pui-resume-contract-PAPO7X.json": "e6f795a157d32e81592515f27a2fc2c8d1eb80b791ce438aad4a3cc83d3109e8",
+    "/tmp/wb-actual-pui-resume-20261106-v5/pui-resume-contract-Lq4jDY.json": "be99f829f7884b473a80836a27ceda5222996608c22d2cbae5e65b4a6fe56a1d"
+  },
+  "verifiedBehavior": [
+    "Exact selection reaches the real Zellij command pane with --resume 4241, the selected working directory, stdin/stdout TTYs and both selected operator variables.",
+    "Real PTY keyboard input reaches the focused command.",
+    "Orders, Activity, Turns and Fleet render and request all four owner-scoped canonical wire views from the private selected operator.",
+    "The actual PUI materialized KDL binds the four sidebar commands to the selected launch.",
+    "Ctrl-q exits successfully, removes the session and removes its temporary layout files.",
+    "Denied, replaced, running and malformed selections fail before command launch; the private operator's unauthorized credential control also fails before roster access."
+  ],
+  "fixtureCorrection": "The previous attempt called unsupported zellij action quit. The maintained test now sends Ctrl-q through the real PTY, matching the installed Zellij Quit binding.",
+  "limits": [
+    "The operator and psu command are private test fixtures. This is not canonical operator ACL or vendor CLI proof.",
+    "No macOS or Windows native desktop acceptance is claimed.",
+    "Exact installed-artifact fresh-install, upgrade, login and independent three-OS acceptance remain required.",
+    "No shipment or release claim."
+  ]
+}
