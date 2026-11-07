@@ -9,6 +9,7 @@ import { publishReport } from '../../../packages/operator-core/lib/report-librar
 import { assertNativeRuntimeLiveness } from '../../../packages/operator-core/lib/testing-native-runtime';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 import { recordNativeCollectionJourney } from './_ongoing-work-native-fixture';
+import { nativeAgentLinkSelectorExpression, nativeAgentLinksReportFixture } from './_agent-links-native-fixture';
 
 const exec = promisify(execFile);
 const TEST_PATH = 'apps/operator/e2e/agent-links.native.spec.mts';
@@ -75,8 +76,16 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
   async function noExternalization() {
     expect(await evaluate('window.__agentLinksExternal')).toEqual([]);
   }
+  async function referenceSelector(scope: string, href: string) {
+    let selector: unknown;
+    await expect.poll(async () => {
+      selector = await evaluate(nativeAgentLinkSelectorExpression(scope, href));
+      return typeof selector === 'string';
+    }, { timeout: 60_000 }).toBe(true);
+    return selector as string;
+  }
   async function select(href: string, reportId: string, marker: string, scenario: string) {
-    await native('click', `[data-turn="${turnId}"] a[href=${JSON.stringify(href)}]`);
+    await native('click', await referenceSelector(`[data-turn="${turnId}"]`, href));
     const target = new URL(href, 'https://native.invalid');
     await wait(`location.pathname === '/reports'
       && new URLSearchParams(location.search).get('sel') === ${JSON.stringify(reportId)}
@@ -114,16 +123,15 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
         await sql.unsafe(`INSERT INTO harness_shared.operator_conversations
           (id,workspace_id,status,started_at,subject_kind) VALUES ($1,$2,'active',$3,'global')`,
         [conversationId, workspace, Date.now() + 10_000]);
-        const reportCard = { title: 'Agent links report lines', plans: [{ title: 'Native reference check',
-          items: [{ text: `Report card route ${href}`, status: 'done' }] }] };
+        const reportFixture = nativeAgentLinksReportFixture(href);
         await sql.unsafe(`INSERT INTO harness_shared.operator_turns
           (id,conversation_id,workspace_id,seq,role,text,source,created_at,chat_state)
           VALUES ($1,$2,$3,0,'assistant',$4,'text_typed',$5,$6::jsonb)`,
         [turnId, conversationId, workspace, text, Date.now(), sql.json({ schemaVersion: 1, results })]);
         await sql.unsafe(`INSERT INTO harness_shared.operator_turns
           (id,conversation_id,workspace_id,seq,role,text,source,created_at,report)
-          VALUES ($1,$2,$3,1,'assistant','Report card fixture','text_typed',$4,$5::jsonb)`,
-        [reportTurnId, conversationId, workspace, Date.now() + 1, sql.json(reportCard)]);
+          VALUES ($1,$2,$3,1,'assistant','Report card fixture',$4,$5,$6::jsonb)`,
+        [reportTurnId, conversationId, workspace, reportFixture.source, Date.now() + 1, sql.json(reportFixture.report)]);
         const fixture = await sql.unsafe(`SELECT id,workspace_id,text,chat_state,current_database() AS database,
           inet_server_port() AS port FROM harness_shared.operator_turns WHERE id=$1`, [turnId]);
         expect(fixture).toMatchObject([{ id: turnId, workspace_id: workspace, text }]);
@@ -146,14 +154,14 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
           };
           return true;
         })()`);
-        await wait(`!!document.querySelector(${JSON.stringify(`[data-turn="${turnId}"] a[href=${JSON.stringify(href)}]`)})`);
+        await referenceSelector(`[data-turn="${turnId}"]`, href);
+        await referenceSelector(`[data-turn="${turnId}"]`, secondHref);
         const routes = await evaluate(`Array.from(document.querySelectorAll('[data-turn="${turnId}"] a')).map(a => a.getAttribute('href'))`);
-        expect(routes).toContain(href); expect(routes).toContain(secondHref);
         expect(routes.some((route: string) => route?.startsWith('/api/') || route?.includes('%2e'))).toBe(false);
         await select(`/reports?sel=${first.reportId}`, first.reportId, 'Exact native report A marker.', 'native-chat');
         await chat();
         await wait(`!!document.querySelector('[data-turn="${reportTurnId}"] .pc-chat__report')`);
-        await native('click', `[data-turn="${reportTurnId}"] .pc-chat__report a[href=${JSON.stringify(href)}]`);
+        await native('click', await referenceSelector(`[data-turn="${reportTurnId}"] .pc-chat__report`, href));
         await wait(`location.pathname === '/reports' && location.hash === '#details'
           && new URLSearchParams(location.search).get('sel') === ${JSON.stringify(first.reportId)}
           && new URLSearchParams(location.search).get('view') === 'all'
@@ -166,7 +174,7 @@ test('native agent links select exact reports from chat, cards and wrapped PTY o
         await noExternalization(); await capture('native-report-card');
         await chat(); await select(secondHref, second.reportId, 'Exact native report B marker.', 'app-reference-route-map');
         await chat();
-        await native('click', `[data-turn="${turnId}"] a[href=${JSON.stringify(`/reports?sel=${missing}`)}]`);
+        await native('click', await referenceSelector(`[data-turn="${turnId}"]`, `/reports?sel=${missing}`));
         await wait(`location.pathname === '/reports' && new URLSearchParams(location.search).get('sel') === ${JSON.stringify(missing)}
           && /unavailable|not found|no report/i.test(document.querySelector('.reports-reader')?.textContent ?? '')`);
         await noExternalization(); await capture('unavailable-reader-policy');

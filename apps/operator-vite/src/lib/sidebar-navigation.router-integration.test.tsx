@@ -11,6 +11,11 @@ import {
 } from '@tanstack/react-router';
 import { parseAsBoolean, parseAsString, useQueryStates } from 'nuqs';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import type { ReactNode } from 'react';
+import { ChatLink } from '@papercusp/operator-ui/papercup-chat';
+import { configureOperatorUi, operatorUi } from '@papercusp/operator-ui/seam';
+import { ReportBlockCard } from '../../../operator/app/_components/chat/ReportBlockCard';
+import { nativeAgentLinkSelectorExpression, nativeAgentLinksReportFixture } from '../../../operator/e2e/_agent-links-native-fixture';
 import { afterEach, describe, expect, it } from 'vitest';
 import Link from '@/lib/router-compat/link';
 import { useRouter } from '@/lib/router-compat/navigation';
@@ -50,14 +55,14 @@ function SidebarControls() {
   );
 }
 
-async function mountAt(url = '/first') {
+async function mountAt(url = '/first', extra?: ReactNode) {
   // nuqs has a module-global throttle queue; clear it between independent routers.
   render(<NuqsTestingAdapter>{null}</NuqsTestingAdapter>).unmount();
   const root = createRootRoute({
     search: { middlewares: [sidebarSearchMiddleware] },
-    component: () => <NuqsAdapter><SidebarControls /><Outlet /></NuqsAdapter>,
+    component: () => <NuqsAdapter><SidebarControls />{extra}<Outlet /></NuqsAdapter>,
   });
-  const children = ['/first', '/second', '/support'].map((path) =>
+  const children = ['/first', '/second', '/support', '/reports'].map((path) =>
     createRoute({ getParentRoute: () => root, path, component: () => null }),
   );
   const router = createRouter({
@@ -77,6 +82,38 @@ function layout() {
 afterEach(cleanup);
 
 describe('sidebar layout across page navigation', () => {
+  it('native agent-links selectors resolve real chat and report anchors with retained shell state', async () => {
+    const href = '/reports?sel=rpt_c88d62fe-2d3d-4d6b-84fe-217f1a29d6a2&view=all#details';
+    const previousLink = operatorUi().Link;
+    const previousHref = location.href;
+    configureOperatorUi({ Link: ({ to, ...props }) => <Link href={to} {...props} /> });
+    history.replaceState(null, '', '/first?chat=true');
+    try {
+      const fixture = nativeAgentLinksReportFixture(href);
+      const router = await mountAt('/first?chat=true', <>
+        <div id="native-chat-reference"><ChatLink href={href} isOwner>Native report</ChatLink></div>
+        <div id="native-report-reference"><ReportBlockCard report={fixture.report} /></div>
+      </>);
+      for (const scope of ['#native-chat-reference', '#native-report-reference']) {
+        let selector: string | null = null;
+        await waitFor(() => {
+          selector = new Function(`return ${nativeAgentLinkSelectorExpression(scope, href)}`)();
+          expect(selector).not.toBeNull();
+        });
+        const link = document.querySelector<HTMLAnchorElement>(selector!)!;
+        expect(new URL(link.href).searchParams.get('chat')).toBe('true');
+        fireEvent.click(link);
+        await waitFor(() => expect(router.state.location.pathname).toBe('/reports'));
+        expect(router.state.location.search).toEqual({ sel: 'rpt_c88d62fe-2d3d-4d6b-84fe-217f1a29d6a2', view: 'all', chat: true });
+        expect(router.state.location.hash).toBe('details');
+      }
+    } finally {
+      cleanup();
+      configureOperatorUi({ Link: previousLink });
+      history.replaceState(null, '', previousHref);
+    }
+  });
+
   it('keeps both sidebars collapsed through compatibility and native links', async () => {
     const router = await mountAt('/first?lst=pulse&opcv=fleet&filter=old&popup=old');
     fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebars' }));

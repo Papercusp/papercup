@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useSyncExternalStore } from "react";
+import { nativeAgentLinksReportFixture } from "../../e2e/_agent-links-native-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const EMPTY_SYNC_DATA: unknown[] = [];
@@ -106,6 +107,7 @@ function Probe() {
             data-seq={typeof message.seq === "number" ? message.seq : "none"}
             data-ts={message.ts ?? "none"}
             data-results={JSON.stringify(message.results ?? [])}
+            data-report={JSON.stringify(message.report ?? null)}
           >
             {message.content}
           </div>
@@ -310,6 +312,17 @@ describe("OperatorConversationProvider streamed say projection", () => {
     expect(screen.getByTestId("error").textContent).toBe("");
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
       .map(([, init]) => JSON.parse(String(init?.body))).filter(body => body.role === "assistant")).toEqual([]);
+  });
+
+  it.each(["system", "text_typed"])("native report fixture follows the persisted %s projection", async source => {
+    const fixture = nativeAgentLinksReportFixture("/reports?sel=rpt_c88d62fe-2d3d-4d6b-84fe-217f1a29d6a2");
+    SYNC.turnPage = { turns: [{ id: "native-report-turn", conversationId: "saved-conversation", seq: 4,
+      role: "assistant", text: "Report card fixture", createdAt: 1000, ...fixture, source }], hasMoreEarlier: false };
+    render(<OperatorConversationProvider target={{ kind: "work-item", conversationId: "saved-conversation" }}><Probe /></OperatorConversationProvider>);
+    await waitFor(() => {
+      const row = screen.getByText("Report card fixture");
+      expect(JSON.parse(row.getAttribute("data-report")!)).toEqual(source === fixture.source ? fixture.report : null);
+    });
   });
 
   it("P010 history hydration preserves the durable structured result view", async () => {
