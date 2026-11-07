@@ -2,7 +2,7 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 import { visibleTo, type ReportViewer } from '../../report-library';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 import { reportsLibraryDisabled } from '../reports/_shared';
-import { boundedSource, sectionExcerpt, type KnowledgeAudience } from './knowledge-sources';
+import { boundedSource, completeContextUnit, sectionExcerpt, type KnowledgeAudience } from './knowledge-sources';
 import { lastMarkdownHeading } from '../plans/semantic-leg';
 import { headlineTsQuery, lexicalLeg } from '../../search/lexical/rank';
 
@@ -20,6 +20,7 @@ function hits(rows: HitRow[], ranker: string): Listing {
     ts: r.published_at, excerpt: `${r.title}${section ? ` › ${section}` : ''}\n${content || r.summary}`.slice(0, 1500),
     highlight: ranker === 'embeddings' ? content : r.highlight,
     score: Number(r.rank), rankers: [ranker], meta: {
+      contextUnit: r.body_md == null ? null : completeContextUnit(r.body_md),
       path: `/reports?sel=${encodeURIComponent(r.report_id)}`, section, title: r.title,
       currentness: 'dated-evidence', lineageId: r.lineage_id ?? null,
     },

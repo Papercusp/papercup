@@ -51,8 +51,15 @@ export function verifyCommittedWorkRoot(workRoot: any, expectedSha: any, require
 };
 /** Write a short-lived witness that this fresh, prepared clone is at the checked-out commit. */
 export function writePreparedWorkRootReceipt(workRoot: any, expectedSha: any, receiptPath: any): string;
-/** A shadow install is a source reader, not a physical dependency donor. */
-export function committedWorkRootDependencyDonor(workRoot: any): string;
+/**
+ * A shadow install is a source reader, not a physical dependency donor.
+ * Independent dependency copies still borrow Git objects from their original
+ * source, so Git clones must follow that provenance past the private install.
+ * @param {{ sourceObjects?: boolean }} [options]
+ */
+export function committedWorkRootDependencyDonor(workRoot: any, { sourceObjects }?: {
+    sourceObjects?: boolean | undefined;
+}): string;
 /**
  * Prefer an exact-input immutable generation, leased across materialization.
  * This permits independent CoW snapshots on the temporary filesystem even when
@@ -121,7 +128,7 @@ export function classifyWorkRoot({ inUse, dependentArtifactPresent, marker, owne
  * see every process), 'private' (a child PID namespace such as a bwrap sandbox: host pids
  * are invisible or alias other processes), or 'none' (no /proc, so no PID namespaces).
  */
-export function pidNamespaceView(readLink?: typeof readlinkSync): "none" | "initial" | "private";
+export function pidNamespaceView(readLink?: typeof readlinkSync): "initial" | "private" | "none";
 /**
  * Whether a marker's owner pid (a HOST pid) is alive; null when this process cannot tell.
  * WI-6554700010019046: from a private PID namespace kill(2) answers about that namespace,

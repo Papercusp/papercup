@@ -25,7 +25,7 @@
 // the coverage structural instead of another thing to remember.
 import '../../search/configure-search-defaults';
 import { createReportSearchSource } from './report-source';
-import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { completeContextUnit, createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import { HEADLINE_OPTS } from './headline-options';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 export { HEADLINE_OPTS } from './headline-options';
@@ -931,7 +931,7 @@ const workItem: SearchSource = {
           ts: r.updated_at,
           rankers: ['lexical'],
           // See WORK_ITEM_LANE_NOTE.
-          meta: { lane: r.lane },
+          meta: { lane: r.lane, contextUnit: completeContextUnit(body) },
         },
       };
     });
@@ -1016,7 +1016,7 @@ const workItem: SearchSource = {
           ts: r.updated_at,
           rankers: ['embeddings'],
           // Mirrors the lexical leg — see WORK_ITEM_LANE_NOTE.
-          meta: { lane: r.lane },
+          meta: { lane: r.lane, contextUnit: completeContextUnit(body) },
         },
       };
     });
@@ -1354,6 +1354,7 @@ const sessionTurn: SearchSource = {
         // (RecencyRank.getTime defaults to hit.ts) can bias by freshness.
         ts: r.ts,
         rankers: ['lexical'],
+        meta: { contextUnit: completeContextUnit(r.text) },
       },
     }));
   },
@@ -1446,6 +1447,7 @@ const sessionTurn: SearchSource = {
         // Expose the turn timestamp for the engine's optional recency re-rank.
         ts: r.ts,
         rankers: ['embeddings'],
+        meta: { contextUnit: completeContextUnit(r.text) },
       },
     }));
   },

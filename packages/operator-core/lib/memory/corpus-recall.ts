@@ -521,8 +521,8 @@ function inHarnessScope(hit: CorpusHit, harnessSlugs: readonly string[]): boolea
  *  surface, noise in a prompt. PURE. */
 const unmark = (s: string): string => s.replace(/<\/?mark>/g, '');
 
-/** The text a hit is JUDGED and TEASED on: the highlighted match fragment when
- *  the source produced one, else the body lead. PURE. */
+/** Search fragments establish relevance only. They cannot establish that all
+ * conditions governing a recalled instruction survived source extraction. */
 export function hitText(hit: CorpusHit): string {
   // Knowledge adapters already return the matching section with nearby prerequisites.
   if (['plan','doc','report'].includes(hit.source) && hit.excerpt) return unmark(hit.excerpt);
@@ -817,8 +817,9 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
         : kind === 'session' ? `session ${ref}`
         : `${kind} ${ref}${hit.meta?.section ? ` › ${hit.meta.section}` : ''}${kind === 'report' ? ' · dated evidence' : ''}`;
     const knowledge = kind === 'plan' || kind === 'doc' || kind === 'report';
-    const unit = renderContextSourceUnit(hitText(hit), { kind, ref, link: handle.resolve },
-      knowledge ? 700 : CORPUS_TEASER_MAX_CHARS);
+    const complete = hit.meta?.contextUnit;
+    const unit = renderContextSourceUnit(complete ?? hitText(hit), { kind, ref, link: handle.resolve },
+      knowledge ? 700 : CORPUS_TEASER_MAX_CHARS, !complete);
     const citation = knowledge ? ` — ${handle.resolve}` : '';
     const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${unit.text}${citation}`;
     // WI-6870: no first-entry exemption — the teaser already caps hitText, but the

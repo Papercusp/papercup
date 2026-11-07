@@ -27,6 +27,7 @@ const turn = (over: Partial<CorpusHit> = {}): CorpusHit => ({
   score: 0.03,
   ts: '2026-07-31T10:00:00.000Z',
   rankers: ['bm25'],
+  meta: { contextUnit: over.excerpt ?? 'the endpoint_ipc docstring records the http2 transport decision' },
   ...over,
 });
 
@@ -38,6 +39,7 @@ const wi = (over: Partial<CorpusHit> = {}): CorpusHit => ({
   score: 0.03,
   ts: null,
   rankers: ['bm25'],
+  meta: { contextUnit: over.excerpt ?? '[bug/open/major] http2 transport regression on the sse endpoint' },
   ...over,
 });
 
@@ -74,6 +76,7 @@ describe('complete knowledge context', () => {
   it('retains the known Report when broad plan matches would consume its budget', () => {
     const report: CorpusHit = { source: 'report',sourceId: 'warm-report',scope: 'papercusp',
       excerpt: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.',
+      meta: { contextUnit: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.' },
       score: .04,rankers: ['lexical'] };
     const broadPlans: CorpusHit[] = ['amber','cobalt','jade','zephyr'].map(token => ({
       source: 'plan',sourceId: `papercusp:${token}`,scope: 'harness:papercusp',
@@ -92,7 +95,8 @@ describe('complete knowledge context', () => {
       { source: 'plan',sourceId: 'papercusp:repair',scope: 'harness:papercusp',excerpt: 'http2 transport repair',score: .03 },
       { source: 'doc',sourceId: 'harness:papercusp:repair',scope: 'harness:papercusp',
         excerpt: 'Prerequisite: retain the snapshot. Apply the http2 transport recovery.',
-        highlight: 'http2 transport',score: .03,meta: { section: 'Recovery' } },
+        highlight: 'http2 transport',score: .03,meta: { section: 'Recovery',
+          contextUnit: 'Prerequisite: retain the snapshot. Apply the http2 transport recovery.' } },
       { source: 'report',sourceId: 'R1',scope: 'papercusp',excerpt: 'http2 transport incident evidence',score: .03 },
     ];
     const selected = selectCorpusLines({ hits,queryText: QUERY,harnessSlugs: ['papercusp'],budgetChars: 2000 });
@@ -114,7 +118,8 @@ describe('complete knowledge context', () => {
     const report: CorpusHit = { source: 'report',sourceId: 'R1',excerpt: 'http2 transport: discard the snapshot',
       score: .04,rankers: ['lexical','embeddings'] };
     const doc: CorpusHit = { source: 'doc',sourceId: 'papercusp-engineering:repair',scope: 'operator',
-      excerpt: 'http2 transport: retain the snapshot',score: .01,rankers: ['lexical'] };
+      excerpt: 'http2 transport: retain the snapshot',score: .01,rankers: ['lexical'],
+      meta: { contextUnit: 'http2 transport: retain the snapshot' } };
     const result = selectCorpusLines({ hits: [report,doc],queryText: QUERY,maxItems: 1 });
     expect(result.lines[0].handle.kind).toBe('doc');
     expect(result.lines[0].line).toContain('retain the snapshot');
@@ -680,16 +685,40 @@ describe('selectCorpusLines', () => {
   });
 });
 
-describe('teaser source — the match fragment beats the body lead', () => {
-  it('teases and JUDGES on the highlight, so a deep match is not dropped', () => {
+describe('source extraction boundaries', () => {
+  it.each(['session_turn', 'work_item', 'plan', 'doc', 'report'])('keeps an unverified %s match as provenance only', source => {
+    const hit: CorpusHit = { source, sourceId: source === 'session_turn' ? 'codex:other:1' : 'WI-999',
+      excerpt: 'Apply the http2 transport recovery.', highlight: '<mark>http2</mark> transport recovery', score: .03 };
+    const { lines } = selectCorpusLines({ hits: [hit], queryText: QUERY, budgetChars: 2000 });
+    expect(lines).toHaveLength(1);
+    expect(lines[0].operative).toBe(false);
+    expect(lines[0].line).toContain('source-pointer');
+    expect(lines[0].line).not.toContain('Apply the');
+    expect(lines[0].handle.resolve).toBeTruthy();
+  });
+
+  it.each(['Do not apply without approval.', 'Only after approval.', 'Except during rollback.',
+    'Expired: do not apply.', 'Superseded: use the replacement.'])('retains the full source condition: %s', condition => {
+    const complete = `Apply http2 transport recovery. ${condition}`;
+    const hit = wi({ excerpt: 'Apply http2 transport recovery.', highlight: '<mark>http2</mark> transport recovery',
+      meta: { contextUnit: complete } });
+    const { lines } = selectCorpusLines({ hits: [hit], queryText: QUERY });
+    expect(lines[0].operative).toBe(true);
+    expect(lines[0].line).toContain(JSON.stringify(complete));
+  });
+
+  it('judges on a deep highlight but never quotes that clipped fragment', () => {
     const deep = wi({
       // The lead says nothing about the query; the match is 3000 chars in.
       excerpt: '[bug/open/major] the :3270 dev operator churns a new pid every 30s',
       highlight: '… blocked on the <mark>http2</mark> <mark>transport</mark> cutover …',
+      meta: {},
     });
     const { lines } = selectCorpusLines({ hits: [deep], queryText: QUERY });
     expect(lines).toHaveLength(1);
-    expect(lines[0].line).toContain('http2 transport');
+    expect(lines[0].operative).toBe(false);
+    expect(lines[0].line).toContain('source-pointer');
+    expect(lines[0].line).not.toContain('blocked on');
     // ts_headline markup is web emphasis — noise in a prompt.
     expect(lines[0].line).not.toContain('<mark>');
   });

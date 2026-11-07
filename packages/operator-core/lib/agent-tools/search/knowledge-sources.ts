@@ -19,9 +19,17 @@ export interface KnowledgeAudience {
 
 type SectionRow = {
   source_id: string; title: string; content: string; highlight: string;
+  contextUnit?: string | null;
   scope: string; rank: number; section: string | null; status: string | null;
   updated_at: string | Date | null; path: string; source_key?: string;
 };
+
+/** Automatic recall may quote only a complete canonical body, never a search
+ * window. Keep the existing metadata carrier bounded; larger bodies resolve
+ * through their source handle instead. */
+export function completeContextUnit(body: string): string | null {
+  return body.trim() && body.length <= 1_500 ? body : null;
+}
 
 /** Use the existing cancellation/transaction contract on both search legs. */
 export function boundedSource(source: SearchSource): SearchSource {
@@ -67,6 +75,7 @@ function listing(rows: SectionRow[], source: 'plan' | 'doc', ranker: string): Li
     excerpt: `${r.title.slice(0,100)}${r.section ? ` › ${r.section.slice(0,100)}` : ''}\n${r.content}`.slice(0, 1500),
     highlight: r.highlight || r.content.slice(0, 1500), score: Number(r.rank), rankers: [ranker],
     meta: { title: r.title, section: r.section, status: r.status,
+      contextUnit: r.contextUnit ?? null,
       currentness: source === 'doc' ? 'maintained-procedure' : r.status === 'historical' ? 'historical' : 'plan', path: r.path,
       ...(r.source_key ? { docSourceKey: r.source_key } : {}) },
   } }));
@@ -108,6 +117,7 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
       ? lastMarkdownHeading(content) ?? (r.section_prefix ? lastMarkdownHeading(String(r.section_prefix)) : null)
       : matched.section;
     return { source_id: `${harness}:${slug}`, title: String(r.title ?? slug), content,
+      contextUnit: r.match_content == null ? completeContextUnit(String(r.content ?? '')) : null,
       highlight: String(r.highlight ?? content), scope: `harness:${harness}`, rank: Number(r.rank),
       section, status: r.archived || r.superseded_by || r.status === 'superseded' ? 'historical' : String(r.status),
       updated_at: r.updated_at as string | Date,
