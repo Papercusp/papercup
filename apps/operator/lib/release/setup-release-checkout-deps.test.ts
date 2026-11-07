@@ -62,7 +62,7 @@ const DEPENDENCY_GENERATION_SCRIPT = join(
 const REPO_ROOT = resolve(__dirname, '../../../..');
 
 describe('SPA build evidence timestamps', () => {
-  function runSpa(script: string, interrupted = false) {
+  function runSpa(script: string, interrupted = false, missingRelease = false) {
     const root = mkdtempSync(join(tmpdir(), 'spa-build-evidence-'));
     const bin = join(root, 'bin');
     mkdirSync(bin);
@@ -78,7 +78,8 @@ describe('SPA build evidence timestamps', () => {
       interrupted ? ['--kill-after=1s', '0.25s', 'bash', '-c', wrapper] : ['-c', wrapper], {
         encoding: 'utf8', timeout: 10_000,
         env: { ...process.env, PATH: bin + ':' + process.env.PATH,
-          SETUP_SCRIPT: SCRIPT_PATH, RELEASE_ROOT: root, TMPDIR: root },
+          SETUP_SCRIPT: SCRIPT_PATH, RELEASE_ROOT: missingRelease ? join(root, 'missing') : root,
+          TMPDIR: root },
       });
     const endedAt = Date.now() / 1000;
     const logs = readdirSync(root).filter(name => name.startsWith('setup-release-spa-build.'));
@@ -119,6 +120,15 @@ describe('SPA build evidence timestamps', () => {
     try {
       expect(run.result.status, run.result.stderr).toBe(0);
       expect(run.logs).toEqual([]);
+    } finally { rmSync(run.root, { recursive: true, force: true }); }
+  });
+
+  it('refuses a missing release directory before invoking npm in the caller checkout', () => {
+    const run = runSpa('printf "MUST_NOT_RUN\\n"\n', false, true);
+    try {
+      expect(run.result.status, run.result.stderr).toBe(1);
+      expect(run.evidence).not.toContain('MUST_NOT_RUN');
+      expect(run.evidence).not.toContain('phase=npm-build-start');
     } finally { rmSync(run.root, { recursive: true, force: true }); }
   });
 });

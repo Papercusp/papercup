@@ -46,12 +46,17 @@ interface LatencyTaskCase {
 /** Normalize the frozen cohort for the maintained native benchmark driver.
  * This prepares assignments only: no launch, admission, cache setup or proof is
  * implied. The independent grader receives the oracle; the solver receives the
- * task and both source inputs. Pair identity and task bytes match across arms.
+ * task and both source inputs. Native task/arm/seed are separate dimensions:
+ * a phase uses cold/warm arms over T01–T10 and seeds 1–3. Its runtime pins
+ * describe that phase only; no candidate runtime is invented before edits.
+ * Pair identity and task bytes match across phases.
  */
 export function latencyBenchAssignments(manifest: {
   id: string;
   pairedTasks: { cases: readonly LatencyTaskCase[] };
-}): Array<{ key: LatencyAttemptKey; task: BenchTask }> {
+}): Array<{ key: LatencyAttemptKey; nativeAssignment: {
+  taskId: string; armId: CacheStratum; seed: number; pairId: string;
+}; task: BenchTask }> {
   const cases = manifest.pairedTasks.cases;
   if (manifest.id !== 'LATENCY-M1' || cases.length !== LATENCY_M1_TASKS.length ||
       cases.some((row, i) => row.id !== LATENCY_M1_TASKS[i] ||
@@ -64,9 +69,11 @@ export function latencyBenchAssignments(manifest: {
   const manifestSha256 = latencyFixtureDigest(manifest);
   return latencyAttemptSchedule().map(key => {
     const row = cases[LATENCY_M1_TASKS.indexOf(key.task)]!;
-    return { key, task: {
+    const taskId = `LATENCY-M1:${key.task}`;
+    const pairId = `${taskId}:${key.stratum}:${key.repetition}`;
+    return { key, nativeAssignment: { taskId, armId: key.stratum, seed: key.repetition, pairId }, task: {
       benchmark: 'harness-bench',
-      instanceId: `LATENCY-M1:${key.task}:${key.stratum}:${key.repetition}`,
+      instanceId: taskId,
       problemStatement: [
         row.purpose,
         `Frozen input A: ${JSON.stringify(row.inputA)}`,
@@ -74,7 +81,7 @@ export function latencyBenchAssignments(manifest: {
         'Use the frozen source fixtures supplied in the assignment context. Return the complete requested output for both inputs with exact source identities and explicit evidence gaps. Do not edit product source or execute a saved rerun recipe.',
       ].join('\n'),
       graderMeta: { latencyM1: { manifestSha256, taskId: key.task,
-        stratum: key.stratum, repetition: key.repetition,
+        pairId, stratum: key.stratum, repetition: key.repetition,
         qualityOracle: structuredClone(row.qualityOracle) } },
     } };
   });
