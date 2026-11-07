@@ -3,6 +3,7 @@
  * not certify installed-client emission, a serving runtime or shipment. */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import * as codex from '../../../../apps/operator/scripts/hooks/inject/adapters/codex.mjs';
 import * as claude from '../../../../apps/operator/scripts/hooks/inject/adapters/claude.mjs';
 import * as omp from '../../../../apps/operator/scripts/hooks/inject/adapters/omp.mjs';
@@ -30,7 +31,10 @@ vi.mock('./backend', () => ({ getMemoryBackend: () => ({ name: 'query-integratio
 vi.mock('./mid-turn-admission', () => ({
   withIdentityBoundedMemoryAdmission: async (_read: unknown, run: (bounds: null) => Promise<unknown>) => ({ admitted: true, value: await run(null) }),
 }));
-vi.mock('../agent-identities/identity-recall', () => ({ readAppliedIdentityRecall: async () => null }));
+vi.mock('../agent-identities/identity-recall', async original => ({
+  ...await original<typeof import('../agent-identities/identity-recall')>(),
+  readAppliedIdentityRecall: async () => null,
+}));
 vi.mock('../agent-identities/sync-hook-rules', () => ({ evaluateHookContextSink: async () => ({ text: '', result: null }) }));
 vi.mock('../code-intelligence/push-channel', () => ({ codeIntelPushText: async () => '' }));
 vi.mock('../failure-loop-circuit-breaker', async orig => ({ ...await orig<typeof import('../failure-loop-circuit-breaker')>(),
@@ -40,9 +44,13 @@ vi.mock('./agent-signals', () => ({ resolveClaimedWorkItemIdForOwner: async () =
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'query-fixture-ws' }));
 vi.mock('../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'query-fixture-user' }) }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: async () => ({ projects: [] }) }));
-vi.mock('../blueprint/package-memory-visibility', () => ({ wearerPackageResourcesOrEmpty: async () => new Set() }));
+vi.mock('../blueprint/package-memory-visibility', async original => ({
+  ...await original<typeof import('../blueprint/package-memory-visibility')>(),
+  wearerPackageResourcesOrEmpty: async () => new Set(),
+}));
 vi.mock('./jev-settings', () => ({ JEV_MEMORY_TIMEOUT_MS: 800,
   getJevMode: async () => 'off', resolveJevMemoryInjection: async () => ({ mode: 'off', keyPresent: false, effective: 'off' }),
+  ensureJevDecisionClient: vi.fn(),
 }));
 
 const sha = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -74,7 +82,17 @@ const fixtures: Record<typeof GROUNDED_QUERY_CASES[number], Fixture> = {
 };
 const endpoint = routes[0] as unknown as { handler(req: Request): Promise<Response> };
 let sequence = 0;
-const evidence = new Map<string, GroundedQueryCell>();
+// Retain actual observations using the test framework's attachment surface.
+// These hashes identify a current-tree fixture run, never a serving build or
+// independent acceptance receipt. The runner records the invocation separately.
+const sourceSnapshot = [
+  './injection.ts', './injection-delivery-coverage.ts', './context-injection-reliability.integration.test.ts',
+  '../endpoint-route/routes/agent-mcp/mid-turn-context.ts', '../../vitest.config.ts',
+  '../../../../apps/operator/scripts/hooks/inject/core.mjs',
+  '../../../../apps/operator/scripts/hooks/inject/recall-query.mjs',
+  '../../../../apps/operator/scripts/hooks/inject/ports.mjs',
+  ...['codex', 'claude', 'omp'].map(client => `../../../../apps/operator/scripts/hooks/inject/adapters/${client}.mjs`),
+].map(path => ({ path, sha256: createHash('sha256').update(readFileSync(new URL(path, import.meta.url))).digest('hex') }));
 
 beforeEach(() => {
   vi.stubEnv('PAPERCUSP_SID', 'query-fixture-session');
@@ -106,9 +124,37 @@ function digest(client: typeof DELIVERY_MATRIX_CLIENTS[number], fixture: Fixture
     toolResults: [{ toolCallId: 'call1', toolName: fixture.tool, content: fixture.response ?? '' }] });
 }
 
-for (const scenario of GROUNDED_QUERY_CASES) it(`context reliability R-3: ${scenario}`, async () => {
+/** Each client exercises its maintained native tool vocabulary as well as its
+ * event envelope. Literal expected signals remain independent of extraction. */
+function nativeFixture(client: typeof DELIVERY_MATRIX_CLIENTS[number], scenario: typeof GROUNDED_QUERY_CASES[number]): Fixture {
   const fixture = fixtures[scenario];
+  const exec = (command: string, description?: string): Fixture => ({ ...fixture,
+    tool: client === 'codex' ? 'exec_command' : client === 'claude' ? 'Bash' : 'bash',
+    input: client === 'codex' ? { cmd: command, ...(description ? { justification: description } : {}) }
+      : { command, ...(description ? { description } : {}) } });
+  if (scenario === 'task') return exec('node -e "' + 'x'.repeat(2000) + '"', 'repair delivery receipt');
+  if (scenario === 'lexical-only') return exec('rg WI-6512', 'repair delivery receipt');
+  if (scenario === 'shell-negative') return exec('pwd && git status');
+  if (scenario === 'heredoc-negative') return exec("python3 - <<'PY'\nprint('WI-6512')\nPY");
+  if (scenario === 'javascript-negative' && client !== 'codex') return exec('node -e "const x = { query: 1 };"');
+  if (client === 'codex') {
+    if (scenario === 'symbol') return exec('rg buildMemoryContextBlock');
+    if (scenario === 'path') return exec('cat src/memory/injection.ts');
+    if (scenario === 'search') return exec("rg 'lost delivery receipt'");
+    if (scenario === 'error') return exec('cat src/memory.ts');
+    if (scenario === 'exact-id') return exec('rg WI-6512');
+    if (scenario === 'serialized-json-negative') return exec("rg '{\"query\":\"WI-6512\"}'");
+    if (scenario === 'truncated-json-negative') return { ...fixture, tool: 'exec_command', input: '{"cmd":"rg WI-6512"' };
+  }
+  if (client === 'omp') return { ...fixture, tool: fixture.tool === 'Read' ? 'read' : fixture.tool === 'Grep' ? 'grep' : fixture.tool,
+    input: fixture.tool === 'Read' ? { path: (fixture.input as { file_path: string }).file_path } : fixture.input };
+  return fixture;
+}
+
+for (const scenario of GROUNDED_QUERY_CASES) it(`context reliability R-3: ${scenario}`, async ({ annotate, task }) => {
+  const observations: GroundedQueryCell[] = [];
   for (const client of DELIVERY_MATRIX_CLIENTS) {
+    const fixture = nativeFixture(client, scenario);
     services.unavailable = fixture.unavailable ?? false;
     services.search.mockClear(); services.lexical.mockClear();
     vi.mocked(injection.prepareMemoryContextBlock).mockClear();
@@ -129,24 +175,34 @@ for (const scenario of GROUNDED_QUERY_CASES) it(`context reliability R-3: ${scen
       expect(vi.mocked(injection.prepareMemoryContextBlock).mock.calls[0]![0].queryContext).toEqual({
         userText: fixture.expected.semantic, lexicalText: fixture.expected.lexical, fingerprint: fixture.expected.fingerprint,
       });
-      expect(result.text).toContain('grounded query fixture result');
-      expect(result.text).not.toContain('below lexical relevance floor');
       const lexical = !fixture.expected.semantic || fixture.unavailable;
       expect(lexical ? services.lexical : services.search).toHaveBeenCalledWith(
         lexical ? fixture.expected.lexical : fixture.expected.semantic,
         expect.objectContaining({ scope: ['query-fixture-user', 'harness:query-fixture-harness'] }));
       expect(lexical ? services.search : services.lexical).not.toHaveBeenCalled();
+      expect(result.text).toContain('grounded query fixture result');
+      expect(result.text).not.toContain('below lexical relevance floor');
     } else {
       expect(result.text).toBe('');
       expect(services.search).not.toHaveBeenCalled(); expect(services.lexical).not.toHaveBeenCalled();
     }
-    evidence.set(`${client}/${scenario}`, { client, scenario, selector: `context reliability R-3: ${scenario}`,
+    observations.push({ client, scenario, selector: `context reliability R-3: ${scenario}`,
       evidenceRefs: [`vitest:context-injection-reliability.integration.test.ts#${client}/${scenario}`],
       inputHash: sha(fixture), signals: request.toolCalls[0]!.querySignals,
       retrievalCalls: vi.mocked(injection.prepareMemoryContextBlock).mock.calls.length,
       semanticCalls: services.search.mock.calls.length, lexicalCalls: services.lexical.mock.calls.length,
       returnedText: result.text, verdict: 'passed' });
   }
+  expect(observations.map(cell => cell.client)).toEqual([...DELIVERY_MATRIX_CLIENTS]);
+  const observation = { schemaVersion: 'grounded-query-observations-v1',
+    evidencePlane: 'current-tree-fixture', sourceSnapshot, cells: observations };
+  // JsonReporter retains task.meta; annotations are also available to blob/UI
+  // reporters. Both carry these same measured cells rather than a second oracle.
+  Object.assign(task.meta, { groundedQueryObservations: observation });
+  await annotate(`grounded-query-v1 observations: ${scenario}`, {
+    contentType: 'application/json', bodyEncoding: 'utf-8',
+    body: JSON.stringify(observation),
+  });
 });
 
 it('context reliability R-3: artifact-validator', () => {
