@@ -84,7 +84,7 @@ import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
 import { fetchUnansweredDirected, type UnansweredDirectedEntry } from "../unanswered-directed";
-import { authoredFieldsMarker } from "../message-fields";
+import { authoredFieldsMarker, senderContextMarker } from "../message-fields";
 import {
   asSevereEventEmitter,
   renderSevereEventEmitter,
@@ -471,10 +471,10 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
   entries: readonly T[],
   maxChars: number,
 ): Array<Record<string, unknown>> {
-  if (!(maxChars > 0))
-    return entries as unknown as Array<Record<string, unknown>>;
   return entries.map((e) => {
-    let out: Record<string, unknown> = e;
+    const senderContext = senderContextMarker(e);
+    let out: Record<string, unknown> = senderContext ? { ...e, sender_context: senderContext } : e;
+    if (!(maxChars > 0)) return out;
     for (const field of ["summary", "body"] as const) {
       const v = e[field];
       if (typeof v === "string" && v.length > maxChars) {
@@ -536,7 +536,7 @@ const INBOX_ENTRY_DETAIL_FIELDS = [
 const INBOX_ENTRY_CORE_FIELDS = new Set([
   "msg_id", "ts", "kind", "from", "to", "expects", "summary", "body", "audience",
   "age", "age_ms", "auto", "category", "event_key", "harness_slug", "related_msg_id",
-  "authored", "sections_text_in_body", "body_truncated", "body_full_chars",
+  "authored", "sender_context", "sections_text_in_body", "body_truncated", "body_full_chars",
   "summary_truncated", "summary_full_chars", "details_truncated", "details_full_chars",
   "details_read", "to_truncated", "to_full_count", "audience_truncated", "audience_full_count",
 ]);
@@ -619,7 +619,7 @@ export function boundInboxEntrySize<T extends Record<string, unknown>>(
   // bounded body, and discard optional fields until the contract is met.
   if (overBudget()) {
     const optional = Object.keys(out)
-      .filter((key) => !["msg_id", "ts", "kind", "from", "expects", "body", "details_truncated", "details_full_chars", "details_read", "body_truncated", "body_full_chars"].includes(key))
+      .filter((key) => !["msg_id", "ts", "kind", "from", "expects", "body", "sender_context", "details_truncated", "details_full_chars", "details_read", "body_truncated", "body_full_chars"].includes(key))
       .sort((a, b) => JSON.stringify(out[b]).length - JSON.stringify(out[a]).length);
     for (const key of optional) {
       if (!overBudget()) break;

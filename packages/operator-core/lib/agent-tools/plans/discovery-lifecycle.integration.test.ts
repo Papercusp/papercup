@@ -16,7 +16,7 @@ import { recordCurrentDiscoveryAudit, withCurrentDiscovery } from '../../plan-au
 import * as discoveryAudits from '../../plan-audits';
 import * as activationGate from './plan-activation-gate';
 import { withPlanLock } from './with-plan-lock';
-import { persistResearchBatch } from '../../code-intelligence/research-trail';
+import { persistResearchBatch, researchSubjects, suggestResearchAnchors } from '../../code-intelligence/research-trail';
 import { acceptFeedbackRequestCore, getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from '../../consult/get-feedback-core';
 import { BAR_CRITIQUE_POLICY } from '../../consult/selection-policies';
 
@@ -261,6 +261,60 @@ describe('original proof-warming discovery before review and implementation', ()
     expect(accepted).toMatchObject({ ok: true, result: content });
     // A plain replay models a restarted caller; it reads canonical state again.
     expect(await current()).toMatchObject({ ok: true });
+  });
+
+  it('consumes existing code-intelligence research results through canonical evidence and rejects unsupported tool-only output', async () => {
+    await fx.admin`DELETE FROM harness_shared.code_intel_research_trails
+      WHERE workspace_id=${fx.workspaceId} AND owner_id=${OWNER} AND harness_slug=${harness}`;
+    const capture = { workspace: fx.workspaceId, owner: OWNER, harness, client: 'codex', root,
+      calls: [{ tool: 'Read', toolInput: { file_path: join(root, 'proof-cache.ts') } }] };
+    const subjects = await researchSubjects(capture, null);
+    expect(subjects).toMatchObject([{ kind: 'path', path: 'proof-cache.ts' }]);
+    await persistResearchBatch(capture, subjects);
+    const advice = await suggestResearchAnchors(fx.workspaceId, OWNER, harness);
+    expect(advice).toMatchObject({ sourceRefs: ['source:proof-cache.ts'], manualEntry: true });
+    const declaration = revisedFindings();
+    declaration.findings[0]!.evidenceRefs = advice.sourceRefs;
+    await revision(plan(declaration, true));
+    const result = await finalized();
+    expect(result).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    if (!result.ok) throw new Error('canonical discovery finalization refused research source');
+    const fingerprint = createHash('sha256').update(await readFile(join(root, 'proof-cache.ts'))).digest('hex');
+    expect(result.discovery.evidence).toContainEqual({
+      ref: advice.sourceRefs[0], state: 'current', usable: true, fingerprint,
+    });
+    expect(result.discovery.findings?.['F-1']?.evidence).toEqual({ 'source:proof-cache.ts': fingerprint });
+    const [{ discovery: retained }] = await fx.admin`SELECT discovery FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}
+        AND audit_kind='discovery' ORDER BY audit_seq DESC LIMIT 1`;
+    expect(retained.evidence).toEqual(result.discovery.evidence);
+    expect(await current()).toMatchObject({ ok: true });
+
+    await writeFile(join(root, 'proof-cache.ts'), 'export const retainedProofCache = null;\n');
+    const review = reviewDeps();
+    expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });
+    expect(await startAttempt('P-002')).toMatchObject({ error: 'discovery_not_ready' });
+    expect(review.route).not.toHaveBeenCalled();
+    expect(review.open).not.toHaveBeenCalled();
+
+    await fx.admin`DELETE FROM harness_shared.code_intel_research_trails
+      WHERE workspace_id=${fx.workspaceId} AND owner_id=${OWNER} AND harness_slug=${harness}`;
+    expect(await suggestResearchAnchors(fx.workspaceId, OWNER, harness)).toMatchObject({
+      sourceRefs: [], reason: 'trail not captured for this client',
+    });
+    const unsupported = revisedFindings();
+    unsupported.findings[0]!.evidenceRefs = ['tool:research-trail'];
+    await revision(plan(unsupported, true));
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: false, state: 'unknown' } } });
+    expect(await review.attempt()).toMatchObject({ error: 'discovery_not_ready' });
+    expect(await startAttempt('P-002')).toMatchObject({ error: 'discovery_not_ready' });
+    expect(review.route).not.toHaveBeenCalled();
+    expect(review.open).not.toHaveBeenCalled();
+    // No capture is required when current confined source independently supports a fresh judgment.
+    const fallback = revisedFindings();
+    fallback.findings[0]!.conclusion = 'Current source now has no retained cache; reuse its existing caller seam after restoring the cache.';
+    await revision(plan(fallback, true));
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
   });
 
   it('uses current source fallback, retains provenance after trail GC, and refuses relevant source mutation', async () => {

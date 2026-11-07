@@ -906,6 +906,64 @@ describe('codex OAuth kernel adapter — model refusal fails over without parkin
 });
 
 describe('codex OAuth kernel adapter — a transient pool-wide pause holds instead of shedding (WI-6554700010042440)', () => {
+  it('keeps a transport failure as 502 when the pool fallback cannot serve and nothing recovers soon', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('connection timed out'); });
+    const { options, started } = harness(fetchImpl, {
+      accounts: [cli('pro-a'), cli('walled-b')],
+      pool: makePool([{ accountId: 'walled-b' }]),
+      extra: { selectRotation: () => null, transientRecovery: () => null },
+    });
+
+    const error = await executeGatewayRequestKernel(options).catch(error => error);
+
+    expect(error).toBeInstanceOf(GatewayRequestKernelError);
+    expect(error).toMatchObject({ code: 'upstream-error', outcome: 'upstream-error', status: 502 });
+    expect(error.message).toContain('connection timed out');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(started).toEqual([]);
+  });
+
+  it('prefers an untried serviceable sibling over both the pool fallback and waiting on the failed account', async () => {
+    const seen: string[] = [];
+    const transientRecovery = vi.fn(() => ({ accountId: 'pro-a', recoverAt: Date.now() + 100 }));
+    const { options } = harness(async (_url, init) => {
+      seen.push(init.diagnosticAccountId);
+      if (init.diagnosticAccountId === 'pro-a') throw new Error('connection timed out');
+      return upstream(200, {}, sseBody('healthy-sibling'));
+    }, {
+      accounts: [cli('pro-a'), cli('walled-b'), cli('serving-c')],
+      pool: makePool([{ accountId: 'walled-b' }]),
+      extra: { selectRotation: () => ({ accountId: 'serving-c' }), transientRecovery },
+    });
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 200, attempts: 2 });
+    expect(seen).toEqual(['pro-a', 'serving-c']);
+    expect(transientRecovery).not.toHaveBeenCalled();
+  });
+
+  it('does not turn a rejected refresh credential into the unavailable pool fallback\'s local 429', async () => {
+    const fetchImpl = vi.fn(async () => upstream(401, {}, sseBody('expired')));
+    const pool = makePool([{ accountId: 'walled-b' }]);
+    const { options, started } = harness(fetchImpl, {
+      accounts: [cli('pro-a'), cli('walled-b')], pool,
+      refreshAccessToken: async () => {
+        throw new Error('codex-oauth-proxy: token refresh failed 401; code=refresh_token_invalidated');
+      },
+      extra: { selectRotation: () => null, transientRecovery: () => null },
+    });
+
+    const error = await executeGatewayRequestKernel(options).catch(error => error);
+
+    expect(error).toBeInstanceOf(GatewayRequestKernelError);
+    expect(error).toMatchObject({ code: 'upstream-error', status: 502 });
+    expect(error.message).toContain('refresh_token_invalidated');
+    expect(pool.parkCauses).toEqual(['auth']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(started).toEqual([]);
+  });
+
   const pausedThenFree = (seen: string[]) => {
     let calls = 0;
     return (context: { route: { accountId?: string | null } }) => {

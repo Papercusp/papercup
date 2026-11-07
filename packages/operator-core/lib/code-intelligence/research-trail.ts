@@ -24,6 +24,8 @@ export interface ResearchTrail {
 
 export interface AnchorSuggestions {
   anchors: AnchorInput[];
+  /** Selectable canonical references, still requiring confined source remeasurement at finalization. */
+  sourceRefs: string[];
   reason?: ResearchTrail['reason'] | 'research trail unavailable';
   manualEntry: true;
 }
@@ -49,9 +51,10 @@ export async function suggestResearchAnchors(workspace: string, owner: string, h
   const result = await withBoundedTimeout(() => readResearchTrail(workspace, owner, harness), {
     fallback: null, timeoutMs: 500, label: 'plan-anchor-suggestions', warn: true,
   });
-  if (!result.value) return { anchors: [], reason: 'research trail unavailable', manualEntry: true };
+  if (!result.value) return { anchors: [], sourceRefs: [], reason: 'research trail unavailable', manualEntry: true };
   const anchors = rankResearchAnchors(result.value.subjects);
-  return { anchors, ...(!anchors.length ? { reason: result.value.reason ?? 'nothing recorded' as const } : {}), manualEntry: true };
+  const sourceRefs = [...new Set(anchors.flatMap(anchor => anchor.path ? [`source:${anchor.path}`] : []))];
+  return { anchors, sourceRefs, ...(!anchors.length ? { reason: result.value.reason ?? 'nothing recorded' as const } : {}), manualEntry: true };
 }
 
 /** Use the push channel's literal path and identifier parsers, excluding edits. */

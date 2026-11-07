@@ -403,7 +403,7 @@ describe('conversation activation audit gate', () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
     // Record the exact representation the production lock/read path exposes. A raw
     // seed snapshot can differ from the rendered plan body before any author edit.
-    let audited: Awaited<ReturnType<typeof appendPlanRevision>> | null = null;
+    const capture: { revision?: Awaited<ReturnType<typeof appendPlanRevision>> } = {};
     const baseline = await withPlanLock<{ ok: true }>(
       {} as never,
       {
@@ -411,11 +411,12 @@ describe('conversation activation audit gate', () => {
         harnessSlug: HARNESS,
         workspaceId: fx.workspaceId,
         intent: 'capture the persisted activation-audit baseline',
-        afterWrite: async (body) => { audited = await appendPlanRevision(fx.admin, body); },
+        afterWrite: async (body) => { capture.revision = await appendPlanRevision(fx.admin, body); },
       },
       async (current) => ({ newBody: current!, value: { ok: true } }),
     );
-    if (baseline.kind !== 'applied' || audited === null) {
+    const audited = capture.revision;
+    if (baseline.kind !== 'applied' || !audited) {
       throw new Error('failed to capture the persisted activation-audit baseline');
     }
     await activationAuditAt(fx.admin, audited);

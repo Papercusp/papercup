@@ -19,41 +19,47 @@ export const ACTIVATION_QUALITY_CAPABILITIES: CapabilityManifestV1 = {
 };
 
 export const ACTIVATION_QUALITY_PUBLICATION_SCRIPT = String.raw`
+const optional = (value, key) => value && typeof value === 'object' &&
+  Object.prototype.hasOwnProperty.call(value, key) ? value[key] : null;
 const quality = await tools.plans.evaluateSpecQuality({
   harness: inputs.harness, slug: inputs.plan, detail: 'full',
   expectedSpecSetHash: inputs.expectedSpecSetHash
 });
-const draft = quality?.scorecardDraft ?? null;
-const specSetHash = quality?.specSetHash ?? null;
-if (!quality || quality.ok !== true || quality.verdict !== 'pass' || !draft || !specSetHash ||
-    (quality.partial ?? false) || (quality._partial ?? false) || (quality._projection?.truncated ?? false) ||
+if (optional(quality, 'ok') !== true || optional(quality, 'verdict') !== 'pass') {
+  return { status: 'evaluation-refused', ready: false, evaluation: quality };
+}
+const draft = optional(quality, 'scorecardDraft');
+const specSetHash = optional(quality, 'specSetHash');
+if (!draft || !specSetHash ||
+    optional(quality, 'partial') || optional(quality, '_partial') ||
+    optional(optional(quality, '_projection'), 'truncated') ||
     (inputs.expectedSpecSetHash && specSetHash !== inputs.expectedSpecSetHash)) {
   return { status: 'evaluation-refused', ready: false, evaluation: quality };
 }
 // The evaluator owns every rating and evidence byte. targetHive is routing scope.
 const emitted = await tools.scorecards.emit({ ...draft, targetHive: inputs.harness });
-if (!emitted || emitted.ok !== true) {
+if (optional(emitted, 'ok') !== true) {
   return { status: 'emit-refused', ready: false, specSetHash, receipt: emitted };
 }
-const completion = emitted.completionReceipt ?? null;
-const issueId = emitted.issueId ?? emitted.previousIssueId ?? null;
-if (!completion || completion.status !== 'recorded' || !issueId || completion.effectRef !== issueId) {
+const completion = optional(emitted, 'completionReceipt');
+const issueId = optional(emitted, 'issueId') ?? optional(emitted, 'previousIssueId');
+if (optional(completion, 'status') !== 'recorded' || !issueId || optional(completion, 'effectRef') !== issueId) {
   return { status: 'needs-reconciliation', ready: false, specSetHash,
     receipt: emitted, nextAction: 'Reconcile this exact emission against canonical scorecards before any retry.' };
 }
 const observed = await tools.scorecards.get({ issueId });
-const card = observed?.scorecard ?? null;
-if (!observed || observed.ok !== true || !card || card.issueId !== issueId ||
-    card.rubricRef !== draft?.rubricRef ||
-    !card.subject || card.subject.ref !== draft?.subject?.ref) {
+const card = optional(observed, 'scorecard');
+if (optional(observed, 'ok') !== true || !card || optional(card, 'issueId') !== issueId ||
+    optional(card, 'rubricRef') !== optional(draft, 'rubricRef') ||
+    !optional(card, 'subject') || optional(optional(card, 'subject'), 'ref') !== optional(optional(draft, 'subject'), 'ref')) {
   return { status: 'needs-reconciliation', ready: false, specSetHash,
     receipt: emitted, observation: observed,
     nextAction: 'Resolve the exact recorded card; do not emit a replacement merely because readback is unavailable.' };
 }
-const auditState = card.gradingAudit ? card.gradingAudit.state : 'unknown';
+const auditState = optional(optional(card, 'gradingAudit'), 'state') || 'unknown';
 return { status: auditState === 'pending' ? 'emitted-pending' : 'emitted', ready: false,
-  specSetHash, subject: draft?.subject,
-  evidenceFingerprint: card.evidenceFingerprint, issueId, receipt: emitted,
-  auditState, auditCurrentness: card.gradingAuditCurrentness || null,
+  specSetHash, subject: optional(draft, 'subject'),
+  evidenceFingerprint: optional(card, 'evidenceFingerprint'), issueId, receipt: emitted,
+  auditState, auditCurrentness: optional(card, 'gradingAuditCurrentness'),
   nextAction: 'An emitted card is not plan readiness. Settle independent grading integrity, then use canonical plans:start and execution guards.' };
 `;

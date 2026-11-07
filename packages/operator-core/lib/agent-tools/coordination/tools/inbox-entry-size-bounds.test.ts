@@ -7,6 +7,39 @@ import {
 } from "./inbox";
 
 describe("boundInboxEntrySize — structured metadata", () => {
+  it("keeps sender context visible when a relay's detailed goal and waits are trimmed", () => {
+    const entry = {
+      msg_id: "coord-send-resume-relay",
+      kind: "message",
+      from: "su-coordinator",
+      to: ["su-recipient"],
+      expects: "action",
+      body: "Resume your own work with its existing holds.",
+      why: { goalRef: "WI-6554700010045405" },
+      awaiting: [{ kind: "work-item-blocker", ref: "work-item:WI-6554700010045405", blocker: "runtime:claude-pool" }],
+      sections: [{ forYouBecause: { relation: "other", note: "Original recipient" } }],
+      basedOn: [{ ref: "work-item:WI-6554700010045405", detail: "x".repeat(2_000) }],
+    };
+    const before = structuredClone(entry);
+    const row = boundInboxEntries([entry], 350)[0]!;
+    const bounded = boundInboxEntrySize(row, 350);
+    expect(bounded.sender_context).toContain("Sender context (su-coordinator): goal WI-6554700010045405; 1 registered sender wait(s).");
+    expect(bounded.sender_context).toContain("Recipient work follows explicit instructions and current claims.");
+    expect(bounded.body).toBe(entry.body);
+    expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(350 + INBOX_ENTRY_FIXED_OVERHEAD_CHARS);
+    expect(entry).toEqual(before);
+  });
+
+  it("labels a goal-only relay on an unbounded read and leaves ordinary recipient context alone", () => {
+    const relay = {
+      kind: "message", from: "su-coordinator", why: { goalRef: "WI-5405" },
+      sections: [{ forYouBecause: { relation: "other", note: "Original recipient" } }],
+    };
+    expect(boundInboxEntries([relay], 0)[0]!.sender_context).toContain("Sender context (su-coordinator): goal WI-5405.");
+    const owned = { ...relay, sections: [{ forYouBecause: { relation: "owns", ref: "WI-123" } }] };
+    expect(boundInboxEntries([owned], 0)[0]).toBe(owned);
+  });
+
   it("bounds each serialized row to max_body_chars plus fixed overhead and points to the full message", () => {
     const maxBodyChars = 1_500;
     const entry = {

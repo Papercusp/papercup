@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import postgres, { type Sql } from 'postgres';
 import { buildConnectionOptions } from '@papercusp/db-org';
 import { createFreshTestDb } from '@papercusp/test-config/pg';
+import { createOrgTestDb } from '../../test/_org-test-db';
 import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn';
 import { killScopeUnit } from '../task-manager/control';
 import { newTaskId, scopeUnitForTask } from '../task-manager/types';
@@ -13,11 +14,18 @@ import { runQualificationCommand, type QualificationCommandOptions } from './che
 import { beginQualificationTransaction, checkpointPidIdentity, observeQualificationProgress,
   probeRunnerLiveness, qualificationProgressFence, reserveQualificationRunner,
   parseCheckpointQualificationTransaction, QUALIFICATION_PROGRESS_STALE_MS, type CheckpointQualificationTransaction,
+  readStoredQualification, recordStoredQualificationWorkProgress, recordStoredQualificationProgressObservation,
+  type QualificationWorkProgressInput,
   type recordStoredQualificationChildScope } from './checkpoint-qualification-transaction';
 import { sweepLostGateRuns } from './lost-gate-run-alarm';
 
-// Persistence is a fixture; worker processes, PostgreSQL lock waits, cgroups,
-// command timers and death-aware scope cleanup execute their real paths.
+const durable = vi.hoisted(() => ({ sql: null as Sql | null }));
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: durable.sql }),
+}));
+// The combined observer witness uses the migrated private row. The other cases
+// retain their focused persistence fixtures and real process/cleanup paths.
 vi.mock('../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
 vi.mock('../task-manager/store', () => ({ registerTask: vi.fn(async () => ({})),
   markSpawned: vi.fn(async () => ({})), closeTask: vi.fn(async () => true) }));
@@ -30,6 +38,128 @@ function running(pid: number) {
 }
 
 describe.runIf(process.platform === 'linux' && userManagerBusReachable())('qualification independent stalled-process bounds', () => {
+  it('blocked-controller: external sweep observes durable declared progress and rejects repeated and stale renewal', async () => {
+    const org = await createOrgTestDb();
+    const sql = org.adminSql;
+    durable.sql = sql;
+    const dir = mkdtempSync(join(tmpdir(), 'qualification-blocked-progress-'));
+    const ready = join(dir, 'ready.json'), trigger = join(dir, 'complete'), receipt = join(dir, 'receipt.json');
+    const resumed = join(dir, 'controller-resumed');
+    const target = { workspaceId: 'blocked-durable-workspace', installSlug: 'blocked-durable-install' };
+    const id = newTaskId(), unit = scopeUnitForTask(id);
+    const producer = `const fs = require('node:fs');
+      const timer = setInterval(() => {
+        if (!fs.existsSync(${JSON.stringify(trigger)})) return;
+        fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ producerPid: process.pid,
+          controllerPid: process.ppid, unitId: 'selected', completionId: 'blocked-durable-result',
+          state: 'pass', observedAtMs: Date.now() }), { flush: true });
+        clearInterval(timer);
+      }, 10);`;
+    const script = `const fs = require('node:fs');
+      require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(producer)}], { stdio: 'ignore' });
+      setImmediate(() => fs.writeFileSync(${JSON.stringify(resumed)}, 'event loop resumed'));
+      fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }), { flush: true });
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);`;
+    let worker: Awaited<ReturnType<typeof managedSpawn>> | undefined;
+    try {
+      worker = await managedSpawn(process.execPath, ['-e', script], {
+        class: 'test-run', title: 'Blocked qualification with independent durable completion',
+        argv: [process.execPath, '-e', script], cwd: process.cwd(),
+        launchedBy: 'test:qualification-blocked-durable', runtimeMaxSec: 20,
+      }, { taskId: id, workspaceId: target.workspaceId, requireConfinement: true, requireRegistration: true,
+        scopeAvailable: true, spawnOptions: { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'ignore' } });
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 3000 });
+      const { pid } = JSON.parse(readFileSync(ready, 'utf8')) as { pid: number };
+      const nowMs = Date.now(), startedAtMs = nowMs - QUALIFICATION_PROGRESS_STALE_MS - 1000;
+      const owner = { attemptId: 'blocked-durable-attempt', candidate: 'blocked-durable-candidate',
+        runnerId: 'blocked-durable-runner', runId: 'blocked-durable-run', pid, pidIdentity: checkpointPidIdentity(pid),
+        unit, nowMs: startedAtMs, leaseDurationMs: 1000, started: true };
+      const tx = reserveQualificationRunner(beginQualificationTransaction(null, owner).transaction, owner).transaction;
+      tx.currentPhysicalRunner = { ...tx.currentPhysicalRunner!, phase: 'suite', phaseEnteredAtMs: startedAtMs,
+        heartbeatAtMs: startedAtMs, childScopeUnits: [unit], childScopeReservedAtMs: startedAtMs };
+      expect(parseCheckpointQualificationTransaction(tx)).not.toBeNull();
+      await sql`INSERT INTO harness_shared.routines
+        (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id, metadata)
+        VALUES ('rt-blocked-durable', ${target.installSlug}, 'green-checkpoint', 'cron', '{}'::jsonb,
+          'system:green-checkpoint', TRUE, ${target.workspaceId},
+          ${JSON.stringify({ qualificationTransaction: tx })}::text::jsonb)`;
+      const work: QualificationWorkProgressInput = { ...owner, nowMs, repairHead: null, root: process.cwd(),
+        taskKey: 'blocked-durable-work', runContext: 'ci', runnerIdentity: 'proof-v3 blocked-durable', retryStates: [],
+        manifest: { schemaVersion: 1, units: [
+          { id: 'selected', kind: 'test', path: 'selected.test.ts' },
+          { id: 'pending', kind: 'test', path: 'pending.test.ts' },
+        ] }, updates: [] };
+      expect(await recordStoredQualificationWorkProgress(target, work)).toMatchObject({ status: 'updated' });
+      const read = async () => {
+        const stored = await readStoredQualification(target);
+        if (stored.status !== 'present') throw new Error(`qualification row: ${stored.status}`);
+        return stored.transaction;
+      };
+      const held = structuredClone((await read()).currentPhysicalRunner);
+      const fence = qualificationProgressFence(tx, target);
+      const observations: Awaited<ReturnType<typeof recordStoredQualificationProgressObservation>>[] = [];
+      let sampledAtMs = 0, monotonicAtMs = 0;
+      const sweep = async (sequence: number, replay = false) => {
+        if (!replay) { sampledAtMs = Date.now(); monotonicAtMs = performance.now(); }
+        const result = await sweepLostGateRuns(sql, { nowMs: sampledAtMs, monotonicAtMs,
+          observerGeneration: 'blocked-durable-external', observerSequence: sequence,
+          probeQualificationRunner: runner => probeRunnerLiveness(runner),
+          recordProgressObservation: async (target, sample) => {
+            const result = await recordStoredQualificationProgressObservation(target, sample);
+            observations.push(result);
+            return result;
+          }, claim: async () => true, readHolder: async () => null, hostFleetSlug: null,
+          broadcast: async () => true, notifyOwner: async () => {}, attention: { resolve: async () => true } });
+        expect(result.failed).toEqual([]);
+        const stored = await read();
+        expect(stored.currentPhysicalRunner).toEqual(held);
+        expect(qualificationProgressFence(stored, target)).toBe(fence);
+        expect(stored.outcome).toEqual({ kind: 'pending' });
+        expect(await probeRunnerLiveness(stored.currentPhysicalRunner!)).toBe('live');
+        expect(running(pid)).toBe(true);
+        expect(existsSync(resumed)).toBe(false);
+        return stored;
+      };
+      expect((await sweep(1)).progressObservation).toMatchObject({
+        health: 'baseline', controller: 'silent', semantic: 'unknown', completedUnits: [] });
+      expect((await sweep(2)).progressObservation).toMatchObject({
+        health: 'healthy', controller: 'silent', semantic: 'unchanged', lastUsefulProgressMonotonicMs: null });
+      expect(existsSync(receipt)).toBe(false); // the manifest and baseline precede completion
+      writeFileSync(trigger, 'complete selected work');
+      await vi.waitFor(() => expect(existsSync(receipt)).toBe(true), { timeout: 3000 });
+      const { producerPid, controllerPid, ...completion } = JSON.parse(readFileSync(receipt, 'utf8'));
+      expect(controllerPid).toBe(pid);
+      expect(producerPid).not.toBe(pid);
+      const completed = { ...completion, firstAttemptVerdict: 'pass' as const, observedCount: 1, worktreeDirty: false,
+        proof: { recordedSha: owner.candidate, runContext: work.runContext, runnerIdentity: work.runnerIdentity,
+          executedModules: ['selected.test.ts'], readPaths: [], inputsCaptured: true, opaqueReasons: [] } };
+      const update = { ...work, nowMs: Date.now(), updates: [{ receipt: completed }] };
+      expect(await recordStoredQualificationWorkProgress(target, update)).toMatchObject({ status: 'updated' });
+      // A separate committed read proves the completion is durable before the external sample.
+      expect((await read()).continuation?.receipts).toEqual([completed]);
+      const advanced = await sweep(3);
+      expect(advanced.progressObservation).toMatchObject({ health: 'healthy', controller: 'silent', semantic: 'advancing',
+        completedUnits: ['selected'], lastUsefulProgressMonotonicMs: monotonicAtMs });
+      expect(await recordStoredQualificationWorkProgress(target, update)).toMatchObject({ status: 'idempotent' });
+      const repeated = await sweep(4);
+      expect(repeated.progressObservation).toMatchObject({ semantic: 'unchanged',
+        lastUsefulProgressMonotonicMs: advanced.progressObservation!.lastUsefulProgressMonotonicMs });
+      expect(await sweep(4, true)).toEqual(repeated);
+      expect(observations.at(-1)).toMatchObject({ status: 'conflict', refusalReason: 'observer-sample-replay' });
+      expect(await sweep(5, true)).toEqual(repeated);
+      expect(observations.at(-1)).toMatchObject({ status: 'conflict', refusalReason: 'observer-sample-order' });
+    } finally {
+      if (worker) {
+        markManagedSpawnTeardown(worker.child);
+        await killScopeUnit(unit, { signal: 'SIGKILL' });
+        await worker.waitForCompletion();
+      }
+      durable.sql = null;
+      await org.cleanup();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('quiet live work retains unknown custody across the stall horizon and records only declared semantic completion', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'qualification-quiet-'));
     const ready = join(dir, 'ready.json'), trigger = join(dir, 'finish-subtask'), receipt = join(dir, 'receipt.json');

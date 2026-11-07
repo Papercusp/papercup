@@ -32,11 +32,15 @@ function fixture(qualityOverride?: unknown, emissionOverride?: unknown, readOver
   }) as ProjectedTool;
   const tools = [tool('plans:evaluate-spec-quality', 'read', evaluate), tool('scorecards:emit', 'write', emit),
     tool('scorecards:get', 'read', get)];
-  const run = (plan: string, expectedSpecSetHash?: string) => runToolOrchestration(script, {
+  const run = async (plan: string, expectedSpecSetHash?: string) => {
+    const result = await runToolOrchestration(script, {
     ctx: { workspaceId: 'publication-fixture', harnessSlug: 'h', role: 'operator',
       log: vi.fn(), progress: vi.fn(), emit: vi.fn() } as unknown as UnifiedToolContext,
     deps: {}, tools, inputs: { harness: 'h', plan, ...(expectedSpecSetHash ? { expectedSpecSetHash } : {}) },
-  });
+    });
+    expect(result.fieldMisses ?? []).toEqual([]);
+    return result;
+  };
   return { run, evaluate, emit, get, draft: () => draft };
 }
 
@@ -114,6 +118,17 @@ describe('existing activation quality publication recipe', () => {
     const f = fixture(quality);
     expect((await f.run('p')).summary).toMatchObject({ status: 'evaluation-refused', ready: false });
     expect(f.emit).not.toHaveBeenCalled();
+  });
+  it('preserves a canonical Discovery refusal without reading success-only fields', async () => {
+    const refusal = { ok: false, error: 'discovery_not_ready', discovery: { status: 'stale' },
+      nextAction: 'Reconcile the changed source finding.', slug: 'p', harnessSlug: 'h' };
+    const f = fixture(refusal);
+    const result = await f.run('p');
+    expect(result.ok, result.error).toBe(true);
+    expect(result.summary).toEqual({ status: 'evaluation-refused', ready: false, evaluation: refusal });
+    expect(f.evaluate).toHaveBeenCalledOnce();
+    expect(f.emit).not.toHaveBeenCalled();
+    expect(f.get).not.toHaveBeenCalled();
   });
   it('forwards the expected spec identity and refuses drift before emission', async () => {
     const f = fixture();

@@ -241,12 +241,11 @@ export interface CodexOAuthAdapterOptions {
    */
   selectAlternate?(exclude: ReadonlySet<string>): { accountId: string } | null;
   /**
-   * WI-6554700010042440: the TRANSIENT-pause horizon for an `account-unavailable`
-   * pacing failure. Return the account that comes back soonest, and when, ONLY when
-   * no account can serve right now and that return is short (a burst 429's
-   * few-second reset). The adapter then re-routes to it behind a kernel
+   * The bounded recovery horizon once no untried account can serve. A previously
+   * attempted account may have recovered, or be under a short transport/governor
+   * cooldown. The adapter re-routes to it behind a kernel
    * `delayMs` instead of rotating onto usage-walled accounts and shedding a 429.
-   * Null ⇒ legacy rotation (a sibling can serve now, or nothing recovers soon).
+   * Null ⇒ nothing recovers soon; preserve the original failure.
    */
   transientRecovery?(): { accountId: string; recoverAt: number } | null;
   /**
@@ -257,10 +256,10 @@ export interface CodexOAuthAdapterOptions {
   transientHoldJitterMs?: number;
   random?(): number;
   /**
-   * WI-6554700010042440: pick the account to rotate an `account-unavailable` request onto —
-   * the health-best account NOT in `exclude` that can serve NOW. Null ⇒ no such account, so the
-   * request is shed at once with the pool horizon instead of walking walled accounts (each a
-   * permit-queue wait that can only fail again). Absent ⇒ legacy `pool.active()` rotation.
+   * Pick the account to rotate a retryable failure onto —
+   * the health-best account NOT in `exclude` that can serve NOW. Null uses bounded
+   * recovery or retains the original failure instead of walking walled accounts.
+   * Absent keeps the pool's legacy selection.
    */
   selectRotation?(exclude: ReadonlySet<string>): { accountId: string } | null;
   now?(): number;
@@ -697,6 +696,20 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     return now() + opts.failoverBackoffMs;
   };
 
+  const recoveryRoute = (modelMode: 'public' | 'reserve'): GatewayKernelRoute<CodexOAuthRouteValue> | null => {
+    const recovery = opts.transientRecovery?.();
+    const account = recovery && opts.accounts().find(candidate => candidate.accountId === recovery.accountId);
+    if (!recovery || !account) return null;
+    triedAccounts.add(account.accountId);
+    auth = undefined;
+    authAccount = '';
+    const jitterMs = Math.floor(Math.max(0, opts.transientHoldJitterMs ?? 0) * (opts.random ?? Math.random)());
+    return {
+      ...routeFor(account, 'rotate', modelMode),
+      delayMs: Math.max(0, recovery.recoverAt - now()) + 50 + jitterMs,
+    };
+  };
+
   return {
     noteRefreshFailure(context, error) {
       const { account, reason } = context.route.value;
@@ -785,32 +798,19 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     selectFailover(context) {
       if (context.lastError?.code === 'account-unavailable') {
         try {
-          // Every serviceable account is only briefly paused: wait out the
-          // soonest reset on that account rather than walking walled ones.
-          const recovery = opts.transientRecovery?.() ?? null;
-          if (recovery) {
-            const account = opts.accounts().find(candidate => candidate.accountId === recovery.accountId);
-            if (account) {
-              triedAccounts.add(account.accountId);
-              auth = undefined;
-              authAccount = '';
-              const route = routeFor(account, 'rotate', context.currentRoute?.value.modelMode ?? 'public');
-              // +50ms: land just after the pause lifts, not on the boundary tick. The jitter keeps
-              // every held request from re-hitting the account in the same instant.
-              const jitterMs = Math.floor(Math.max(0, opts.transientHoldJitterMs ?? 0) * (opts.random ?? Math.random)());
-              return { ...route, delayMs: Math.max(0, recovery.recoverAt - now()) + 50 + jitterMs };
-            }
-          }
+          const modelMode = context.currentRoute?.value.modelMode ?? 'public';
           if (opts.selectRotation) {
             const pick = opts.selectRotation(triedAccounts);
-            if (!pick || triedAccounts.has(pick.accountId)) return null;
+            if (!pick || triedAccounts.has(pick.accountId)) return recoveryRoute(modelMode);
             const account = opts.accounts().find(candidate => candidate.accountId === pick.accountId);
             if (!account) return null;
             triedAccounts.add(account.accountId);
             auth = undefined;
             authAccount = '';
-            return routeFor(account, 'rotate', context.currentRoute?.value.modelMode ?? 'public');
+            return routeFor(account, 'rotate', modelMode);
           }
+          const recovery = recoveryRoute(modelMode);
+          if (recovery) return recovery;
           const next = opts.pool?.active();
           if (!next || triedAccounts.has(next.accountId)) return null;
           const account = opts.accounts().find(candidate => candidate.accountId === next.accountId);
@@ -825,13 +825,17 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         const authFailure = pendingAuthFailure;
         pendingAuthFailure = null;
         const currentRoute = context.currentRoute;
-        if (!currentRoute || !authFailure.nextAccount || triedAccounts.has(authFailure.nextAccount.accountId)) {
-          return null;
+        if (!currentRoute) return null;
+        const selected = opts.selectRotation ? opts.selectRotation(triedAccounts) : authFailure.nextAccount;
+        if (!selected || triedAccounts.has(selected.accountId)) {
+          return opts.selectRotation ? recoveryRoute(currentRoute.value.modelMode) : null;
         }
-        triedAccounts.add(authFailure.nextAccount.accountId);
+        const account = opts.accounts().find(candidate => candidate.accountId === selected.accountId);
+        if (!account) return null;
+        triedAccounts.add(account.accountId);
         auth = undefined;
         authAccount = '';
-        return routeFor(authFailure.nextAccount, 'rotate', currentRoute.value.modelMode);
+        return routeFor(account, 'rotate', currentRoute.value.modelMode);
       }
       // Hard pins never reach here — the kernel declines them before consulting
       // the adapter, and that suppression is unchanged by D-011.
@@ -864,9 +868,13 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       const credentialUnavailable = !response && context.lastError?.message.includes('codex OAuth token unavailable');
       const next = opts.pool.onExhausted(current, resolveResetAt(context), undefined,
         { cause: quota ? 'quota' : credentialUnavailable ? 'auth' : 'cooldown' });
-      if (!next || next.accountId === current) return null;
-      if (triedAccounts.has(next.accountId)) return null;
-      const account = opts.accounts().find((candidate) => candidate.accountId === next.accountId);
+      // onExhausted may return an unavailable fallback solely to explain a terminal
+      // wall. Do not turn a transport failure into that fallback's local 429.
+      const selected = opts.selectRotation ? opts.selectRotation(triedAccounts) : next;
+      if (!selected || triedAccounts.has(selected.accountId)) {
+        return opts.selectRotation ? recoveryRoute(currentRoute.value.modelMode) : null;
+      }
+      const account = opts.accounts().find((candidate) => candidate.accountId === selected.accountId);
       if (!account) return null;
       triedAccounts.add(account.accountId);
       // A different account needs its own OAuth material.
