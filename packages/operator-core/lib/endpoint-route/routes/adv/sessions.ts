@@ -2128,35 +2128,29 @@ const rematerializeStatus = defineTool({
     const store = pgSessionArchiveStore();
     const statuses = await Promise.all(kinds.map(async (sourceKind) => {
       const inFlight = rematerializeInFlight.has(rematerializeJobKey(sourceKind, sessionId));
-      if (inFlight) {
-        return {
-          sourceKind,
-          state: 'pending' as const,
-          inFlight: true,
-          archived: true,
-          ready: false,
-          reason: 'in_flight' as const,
-          missing: [] as string[],
-          conflicts: [] as string[],
-        };
-      }
+      // The POST also awaits best-effort interactive config seeding after its
+      // last transcript write. Observe the archive bytes independently so that
+      // a slow seed cannot turn a completed restore into a launcher refusal.
       const readiness = await inspectArchiveReadiness({ sourceKind, sessionId }, store);
       return {
         sourceKind,
-        state: readiness.ready ? 'ready' as const : readiness.reason === 'not_archived' ? 'not_archived' as const : 'not_ready' as const,
-        inFlight: false,
+        state: readiness.ready ? 'ready' as const : inFlight ? 'pending' as const
+          : readiness.reason === 'not_archived' ? 'not_archived' as const : 'not_ready' as const,
+        inFlight,
         ...readiness,
       };
     }));
-    const pending = statuses.some((status) => status.state === 'pending');
-    const ready = statuses.some((status) => status.ready);
+    const restored = statuses.find((status) => status.ready);
+    const ready = restored !== undefined;
+    const pending = !ready && statuses.some((status) => status.state === 'pending');
     return new Response(JSON.stringify({
       ok: true,
       sessionId,
-      sourceKind: sourceKindParam,
-      state: pending ? 'pending' : ready ? 'ready' : 'not_ready',
+      sourceKind: sourceKindParam ?? restored?.sourceKind ?? null,
+      state: ready ? 'ready' : pending ? 'pending' : 'not_ready',
       pending,
       ready,
+      ...(restored?.root ? { root: restored.root } : {}),
       statuses,
     }), { status: 200, headers: JSON_HEADERS });
   },

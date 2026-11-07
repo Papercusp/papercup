@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 import { composeOmpCapabilityTools } from '@papercusp/orchestrator/managed-capability-policy';
 /**
  * psu-launcher.mjs — the `psu` command.
@@ -17567,6 +17567,28 @@ export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, record
     if (hookOwners.length === 0) return "hooks.json names no session owner";
     if (!hookOwners.every((owner) => owner === expectedOwner)) return "hooks.json names a different session owner";
     if (!lifecycleReady) return "hooks.json lacks the SessionStart/SessionEnd/Stop lifecycle hooks";
+    // EI-28073503465008167: owner/lifecycle checks alone accept older homes
+    // that cannot capture owner provenance or the turn journal. Match the
+    // canonical writer's installed-host scope and conditional enrollment;
+    // a workspace PAPERCUSP_HOME must not hide installed host hooks.
+    const installedHome = papercuspHome({}, homedir());
+    const provenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR || join(installedHome, "turn-provenance");
+    const provenancePin = "PAPERCUSP_TURN_PROVENANCE_DIR='" + provenanceDir.replaceAll("'", "'\\''") + "'";
+    for (const [event, script, marker] of [
+      ["UserPromptSubmit", "userpromptsubmit-provenance.sh", provenancePin],
+      ["Stop", "stop-turn-journal.sh", "PAPERCUSP_JOURNAL_SYNC=1"],
+    ]) {
+      if (!existsSync(join(installedHome, "hooks", "cc", script))) continue;
+      const enrolled = hooks?.hooks?.[event]?.some((group) =>
+        group?.hooks?.some((hook) => {
+          const command = String(hook?.command || "");
+          return command.includes(script) &&
+            command.includes(`PAPERCUSP_SID='${expectedOwner}'`) &&
+            command.includes("PAPERCUSP_AGENT=codex") && command.includes(marker);
+        }),
+      );
+      if (!enrolled) return `hooks.json lacks the managed ${event} ${script} enrollment`;
+    }
     return null;
   } catch (error) {
     return `the home could not be read (${error instanceof Error ? error.message : String(error)})`;

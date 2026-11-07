@@ -37,6 +37,12 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as realLauncher from './psu-launcher.mjs';
 
+const hostHome = vi.hoisted(() => ({ path: '' }));
+vi.mock('node:os', async (importActual) => ({
+  ...await importActual<typeof import('node:os')>(),
+  homedir: () => hostHome.path,
+}));
+
 // PSU_LAUNCHER_MODULE_PATH lets scripts/mutation-probe.sh (copy-out mode) point this
 // suite at a MUTATED copy of the launcher without dirtying the tracked file. It
 // defaults to the real module; an unset variable changes nothing.
@@ -65,6 +71,11 @@ const {
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'psu-codex-guard-'));
+  hostHome.path = dir;
+  mkdirSync(join(dir, '.codex'), { recursive: true });
+  writeFileSync(join(dir, '.codex', 'models_cache.json'), JSON.stringify({
+    models: [{ slug: 'gpt-5.5', multi_agent_version: 'v2' }],
+  }));
   // isCodexHomeLaunchReady requires a non-empty AGENTS.md ("this session's
   // behavioral spine", psu-launcher.mjs) and reads it with readFileSync, which
   // THROWS when the file is absent — the function's outer try/catch turns that
@@ -304,6 +315,7 @@ trust_level = "trusted"
 function managedHooks(owner: string, includeLifecycle = true) {
   return {
     hooks: {
+      UserPromptSubmit: [{ hooks: [{ command: `PAPERCUSP_SID='${owner}' PAPERCUSP_AGENT=codex PAPERCUSP_TURN_PROVENANCE_DIR='${process.env.PAPERCUSP_TURN_PROVENANCE_DIR || join(homedir(), '.papercusp', 'turn-provenance')}' userpromptsubmit-provenance.sh` }] }],
       PreToolUse: [
         {
           hooks: [
@@ -333,6 +345,7 @@ function managedHooks(owner: string, includeLifecycle = true) {
               {
                 hooks: [
                   { command: `PAPERCUSP_SID='${owner}' lifecycle-report.sh` },
+                  { command: `PAPERCUSP_SID='${owner}' PAPERCUSP_AGENT=codex PAPERCUSP_JOURNAL_SYNC=1 stop-turn-journal.sh` },
                 ],
               },
             ],
@@ -370,8 +383,11 @@ describe('Codex managed child preserves its recorded role authority', () => {
       process.env.PAPERCUSP_HOME = papercuspHome;
       process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(dir, 'role-codex-homes');
       process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(dir, 'codex-sqlite-homes');
-      mkdirSync(join(papercuspHome, 'hooks', 'cc'), { recursive: true });
-      writeFileSync(join(papercuspHome, 'hooks', 'cc', 'lifecycle-report.sh'), '#!/bin/sh\n');
+      const installedHooks = join(homedir(), '.papercusp', 'hooks', 'cc');
+      mkdirSync(installedHooks, { recursive: true });
+      for (const script of ['pretooluse-locks-acquire.sh', 'posttooluse-locks-release.sh', 'lifecycle-report.sh']) {
+        writeFileSync(join(installedHooks, script), '#!/bin/sh\n');
+      }
 
       const { writeRoleCodexHome } = await import('@papercusp/operator-core/lib/role-codex-home');
       const mcpUrl = `http://operator/api/mcp?role=judge&client=${owner}&sig=fixture-signature`;
@@ -616,6 +632,83 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
     writeFileSync(join(dir, "hooks.json"), JSON.stringify(hooks));
 
     expect(isCodexHomeLaunchReady(dir, owner)).toBe(false);
+  });
+});
+
+describe('Codex managed turn enrollment', () => {
+  const owner = 'su-turn-enrollment';
+  beforeEach(() => {
+    const hooksDir = join(homedir(), '.papercusp', 'hooks', 'cc');
+    mkdirSync(hooksDir, { recursive: true });
+    for (const script of ['userpromptsubmit-provenance.sh', 'stop-turn-journal.sh']) {
+      writeFileSync(join(hooksDir, script), '#!/bin/sh\n');
+    }
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG.replace(
+      'command = "npx"', `url = "http://operator/api/mcp?client=${owner}"`,
+    ));
+    writeFileSync(join(dir, 'papercusp-diagnostics.json'), JSON.stringify({ lockOwnerSid: owner }));
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify(managedHooks(owner)));
+    expect(codexHomeLaunchReadiness(dir, owner)).toBeNull();
+  });
+
+  it.each(['missing-provenance', 'wrong-client', 'wrong-ledger', 'missing-journal', 'async-journal', 'wrong-event'])(
+    'refuses otherwise healthy same-owner enrollment: %s', (damage) => {
+      const hooks = managedHooks(owner);
+      if (damage === 'missing-provenance') hooks.hooks.UserPromptSubmit = [];
+      if (damage === 'wrong-client') hooks.hooks.UserPromptSubmit[0].hooks[0].command =
+        hooks.hooks.UserPromptSubmit[0].hooks[0].command.replace('PAPERCUSP_AGENT=codex', 'PAPERCUSP_AGENT=claude');
+      if (damage === 'wrong-ledger') hooks.hooks.UserPromptSubmit[0].hooks[0].command =
+        hooks.hooks.UserPromptSubmit[0].hooks[0].command.replace(/PAPERCUSP_TURN_PROVENANCE_DIR='[^']*'/, "PAPERCUSP_TURN_PROVENANCE_DIR='/wrong-ledger'");
+      const journal = hooks.hooks.Stop![0].hooks.pop()!;
+      if (damage === 'async-journal') hooks.hooks.Stop![0].hooks.push({ command: journal.command.replace('PAPERCUSP_JOURNAL_SYNC=1', '') });
+      else if (damage === 'wrong-event') hooks.hooks.SessionStart![0].hooks.push(journal);
+      else if (damage !== 'missing-journal') hooks.hooks.Stop![0].hooks.push(journal);
+      writeFileSync(join(dir, 'hooks.json'), JSON.stringify(hooks));
+      const script = ['missing-provenance', 'wrong-client', 'wrong-ledger'].includes(damage)
+        ? 'userpromptsubmit-provenance.sh' : 'stop-turn-journal.sh';
+      expect(codexHomeLaunchReadiness(dir, owner)).toContain(script);
+      expect(isCodexHomeLaunchReady(dir, owner)).toBe(false);
+    },
+  );
+
+  it('requires only scripts installed on this host', () => {
+    rmSync(join(homedir(), '.papercusp', 'hooks'), { recursive: true });
+    const hooks = managedHooks(owner);
+    hooks.hooks.UserPromptSubmit = [];
+    hooks.hooks.Stop![0].hooks.pop();
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify(hooks));
+    expect(codexHomeLaunchReadiness(dir, owner)).toBeNull();
+  });
+
+  it('uses canonical same-owner repair before resuming and preserves native history', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('PAPERCUSP_SU_CODEX_HOMES_DIR', join(dir, '.papercusp', 'su-codex-homes'));
+    vi.stubEnv('PAPERCUSP_CODEX_SQLITE_HOMES_DIR', join(dir, 'sqlite-homes'));
+    const hooksDir = join(homedir(), '.papercusp', 'hooks', 'cc');
+    for (const script of ['pretooluse-locks-acquire.sh', 'posttooluse-locks-release.sh', 'lifecycle-report.sh']) {
+      writeFileSync(join(hooksDir, script), '#!/bin/sh\n');
+    }
+    try {
+      const { writeSuCodexHome, ensureSuCodexHomeConfig } = await import('@papercusp/operator-core/lib/role-codex-home');
+      const opts = { sessionKey: 42, sid: owner, promptText: '# Preserve this native session',
+        mcpUrl: `http://operator/api/mcp?superuser=1&client=${owner}`, model: 'gpt-5.5' };
+      const home = writeSuCodexHome(opts);
+      const nativeHistory = join(home.codexHome, 'history.jsonl');
+      writeFileSync(nativeHistory, 'retained native bytes\n');
+      const hooksPath = join(home.codexHome, 'hooks.json');
+      const hooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+      delete hooks.hooks.UserPromptSubmit;
+      writeFileSync(hooksPath, JSON.stringify(hooks));
+      expect(codexHomeLaunchReadiness(home.codexHome, owner)).toContain('userpromptsubmit-provenance.sh');
+      const result = await launcher.ensureCodexHomeViaOperator(owner, home.codexHome, 42, {
+        operatorUrl: 'http://operator', token: 'fixture',
+        fetchImpl: async () => ({ json: async () => ({ ok: true, ...ensureSuCodexHomeConfig(opts) }) }),
+      });
+      expect(result?.repaired).toBe(true);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('repaired this session'));
+      expect(codexHomeLaunchReadiness(home.codexHome, owner)).toBeNull();
+      expect(readFileSync(nativeHistory, 'utf8')).toBe('retained native bytes\n');
+    } finally { errorSpy.mockRestore(); vi.unstubAllEnvs(); }
   });
 });
 
