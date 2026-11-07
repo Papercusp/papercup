@@ -159,7 +159,12 @@ function sourcePaths(root, archive = archiveSource(root)) {
 }
 
 export function buildInputs(root) {
-  const archive = archiveSource(root);
+  return measuredBuildInputs(root, archiveSource(root));
+}
+
+// Private to this operation: callers must obtain a fresh, fully verified
+// archive. Never accept a stored receipt in place of a current byte census.
+function measuredBuildInputs(root, archive) {
   if (archive) {
     // This invocation just verified every archived byte, mode, link and member.
     // Project that fresh measurement instead of hashing it all a second time.
@@ -290,14 +295,14 @@ function checkInputs(root, inputs) {
   }
   progress(completed, true);
 }
-function checkWorkspace(root, entry, sourceRoot = root) {
-  checkInputs(sourceRoot, entry.inputs);
+function checkWorkspace(root, entry, sourceRoot = root, population) {
+  if (population === undefined) checkInputs(sourceRoot, entry.inputs);
+  else equal(population, entry.inputs, 'selected-source-population-mismatch:' + entry.output);
   equal(files(root, entry.output), entry.outputs, 'stale-workspace-output:' + entry.output);
 }
 
-function workspaceRequirements(root) {
+function workspaceRequirements(root, archive = archiveSource(root)) {
   const required = [];
-  const archive = archiveSource(root);
   const archived = archive ? new Set(archive.files.map(file => file.path)) : null;
   for (const path of manifests(root, archive)) {
     const pkg = JSON.parse(readFileSync(join(root, path), 'utf8'));
@@ -335,12 +340,14 @@ export function captureClosure(root) {
   root = realpathSync(root);
   const workspaces = [];
   try {
-    for (const { path, packagePath, output, targets } of workspaceRequirements(root)) {
+    const archive = archiveSource(root);
+    const requirements = workspaceRequirements(root, archive);
+    const population = requirements.length ? measuredBuildInputs(root, archive) : null;
+    for (const { path, packagePath, output, targets } of requirements) {
       const receipt = JSON.parse(readFileSync(safe(root, output + '/' + RECEIPT), 'utf8'));
       if (receipt.schema !== 1 || receipt.packagePath !== packagePath) fail('invalid-build-receipt:' + path);
       const entry = { output, inputs: receipt.inputs, outputs: receipt.outputs };
-      checkWorkspace(root, entry);
-      equal(buildInputs(root), receipt.inputs, 'build-source-population-changed:' + path);
+      checkWorkspace(root, entry, root, population);
       for (const bin of targets) {
         if (!receipt.outputs.some(file => file.path === packagePath + '/' + bin.replace(/^\.\//, '')))
           fail('missing-workspace-bin:' + path);
@@ -377,14 +384,16 @@ export function verifyClosure(generation, sourceRoot, copy = false, materialized
   const tree = join(generation, 'tree');
   // The lock/patch selector alone cannot bind a source package's new bin.
   // Check the selected requirement census even when the producer had none.
-  equal(workspaceRequirements(sourceRoot).map(row => row.output).sort(),
+  // Requirements, exact input population and every workspace receipt share
+  // this call's measurement. The next call independently rehashes the source.
+  const archive = archiveSource(sourceRoot);
+  equal(workspaceRequirements(sourceRoot, archive).map(row => row.output).sort(),
     closure.workspaces.map(row => row.output).sort(), 'workspace-requirements-mismatch');
-  const population = closure.workspaces.length ? buildInputs(sourceRoot) : null;
+  const population = closure.workspaces.length ? measuredBuildInputs(sourceRoot, archive) : null;
   for (const entry of closure.workspaces) {
     if (!entry.output.endsWith('/dist')) fail('invalid-output-path');
-    checkWorkspace(tree, entry, sourceRoot);
-    if (materialized) checkWorkspace(sourceRoot, entry);
-    equal(population, entry.inputs, 'selected-source-population-mismatch:' + entry.output);
+    checkWorkspace(tree, entry, sourceRoot, population);
+    if (materialized) checkWorkspace(sourceRoot, entry, sourceRoot, population);
   }
   const desktop = closure.desktop;
   if (existsSync(join(sourceRoot, 'papercusp-desktop/package.json'))) {
@@ -407,8 +416,9 @@ export function verifyClosure(generation, sourceRoot, copy = false, materialized
 function stageClosure(generation, sourceRoot) {
   const closure = JSON.parse(readFileSync(join(generation, CLOSURE), 'utf8'));
   if (!closure.complete) return;
+  const population = closure.workspaces.length ? buildInputs(sourceRoot) : null;
   for (const entry of closure.workspaces) {
-    checkWorkspace(sourceRoot, entry);
+    checkWorkspace(sourceRoot, entry, sourceRoot, population);
     const dest = safe(join(generation, 'tree'), entry.output);
     mkdirSync(dirname(dest), { recursive: true });
     cpSync(safe(sourceRoot, entry.output), dest, { recursive: true, dereference: false, errorOnExist: true, force: false });

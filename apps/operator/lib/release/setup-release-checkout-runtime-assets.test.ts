@@ -66,6 +66,70 @@ import { createHash } from 'node:crypto';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '../../bin/release/setup-release-checkout.sh');
 
+describe('setup-release-checkout SPA cancellation diagnostics', () => {
+  function runSpa(outcome: 'success' | 'failure' | 'interrupted') {
+    const root = mkdtempSync(join(tmpdir(), 'release-spa-diagnostics-'));
+    const release = join(root, 'release');
+    const bin = join(root, 'bin');
+    const logs = join(root, 'logs');
+    for (const path of [release, bin, logs]) mkdirSync(path);
+    const body = readFileSync(SCRIPT, 'utf8').match(/^build_release_spa\(\) \{[\s\S]*?^\}/m)?.[0];
+    expect(body, 'the production SPA build function must be exercised').toBeTruthy();
+    writeFileSync(join(bin, 'npm'), [
+      '#!/usr/bin/env bash',
+      'printf "fixture chunk-rendering diagnostic\\n"',
+      'case "$SPA_TEST_OUTCOME" in',
+      '  success) exit 0 ;;',
+      '  failure) exit 7 ;;',
+      '  interrupted) kill -TERM "$SPA_TEST_RUNNER_PID"; exit 143 ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(join(bin, 'npm'), 0o755);
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'log() { printf "%s\\n" "$*"; }',
+      'export SPA_TEST_RUNNER_PID=$$',
+      body,
+      'build_release_spa',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: logs,
+        RELEASE_ROOT: release, SPA_TEST_OUTCOME: outcome },
+      timeout: 30_000,
+    });
+    return { root, result, logPath: result.stdout.match(/SPA build output: ([^\n]+)/)?.[1] };
+  }
+
+  it('publishes a readable external child log before cancellation prevents failure reporting', () => {
+    const { root, result, logPath } = runSpa('interrupted');
+    try {
+      expect(result.signal, result.stderr).toBe('SIGTERM');
+      expect(result.stderr).not.toContain('SPA build FAILED');
+      expect(logPath).toBeTruthy();
+      rmSync(join(root, 'release'), { recursive: true, force: true });
+      expect(readFileSync(logPath!, 'utf8')).toContain('fixture chunk-rendering diagnostic');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains the diagnostic log and a failure verdict when the child exits nonzero', () => {
+    const { root, result, logPath } = runSpa('failure');
+    try {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('SPA build FAILED');
+      expect(readFileSync(logPath!, 'utf8')).toContain('fixture chunk-rendering diagnostic');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('removes the child log only after a successful build', () => {
+    const { root, result, logPath } = runSpa('success');
+    try {
+      expect(result.status, result.stderr).toBe(0);
+      expect(logPath).toBeTruthy();
+      expect(existsSync(logPath!)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 /**
  * Extract block 3b verbatim from the shipped script, so this test tracks the
  * real logic and fails loudly if the block is deleted or renamed.

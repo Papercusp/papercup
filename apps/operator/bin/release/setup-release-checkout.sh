@@ -310,6 +310,9 @@ preflight_source_clone() {
 build_release_spa() {
   log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
   local spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log"
+  # A caller deadline can terminate this shell before the failure branch runs.
+  # Publish the external log path first so cancellation retains readable proof.
+  log "SPA build output: $spa_log"
   if (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build) >"$spa_log" 2>&1; then
     rm -f "$spa_log"
   else

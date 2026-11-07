@@ -84,6 +84,82 @@ test('archive inputs and requirements each use one fresh full census and reject 
   }
 });
 
+test('multi-workspace closure verification uses one fresh census and rejects later source and output tampering', () => {
+  const root = fixture();
+  for (const name of ['one', 'two']) generatedPackage(root, 'packages/' + name);
+  write(root, 'src/probe.js', 'export default 1;\n');
+  write(root, 'src/other.js', 'export default 2;\n');
+  chmodSync(join(root, 'src/probe.js'), 0o755);
+  symlinkSync('probe.js', join(root, 'src/alias.js'));
+  for (const name of ['one', 'two']) buildWorkspace(root, 'packages/' + name, [process.execPath, '-e',
+    'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/cli.cjs","dist/cli.cjs");']);
+  rmSync(join(root, '.git'), { recursive: true });
+  const files = verifierSourceFiles(root);
+  const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: '7'.repeat(40),
+    testedInputs: [{ path: 'src/probe.js', sha256: files.find(file => file.path === 'src/probe.js').sha256 }], files };
+  const generation = mkdtempSync(join(tmpdir(), 'multi-workspace-generation-'));
+  roots.push(generation);
+  const independent = join(generation, 'source.json');
+  writeFileSync(independent, JSON.stringify(receipt));
+  writeFileSync(join(root, '.verifier-source.json'), JSON.stringify(receipt));
+  const oldReceipt = process.env.VERIFY_TAURI_SOURCE_RECEIPT, oldRef = process.env.VERIFY_TAURI_SOURCE_REF;
+  const originalOpen = fs.openSync, originalRead = fs.readFileSync;
+  let reads = 0;
+  const subject = join(root, 'src/probe.js');
+  fs.openSync = function(path, ...args) { if (path === subject) reads++; return originalOpen.call(this, path, ...args); };
+  fs.readFileSync = function(path, ...args) { if (path === subject) reads++; return originalRead.call(this, path, ...args); };
+  syncBuiltinESMExports();
+  process.env.VERIFY_TAURI_SOURCE_RECEIPT = independent;
+  process.env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
+  try {
+    const closure = captureClosure(root);
+    assert.equal(closure.complete, true, closure.reason);
+    assert.equal(closure.workspaces.length, 2);
+    assert.equal(reads, 1, 'capture must measure source once regardless of workspace count');
+    write(generation, '.verifier-closure.json', JSON.stringify(closure));
+    for (const name of ['one', 'two']) {
+      const dest = join(generation, 'tree/packages/' + name + '/dist');
+      mkdirSync(dirname(dest), { recursive: true });
+      fs.cpSync(join(root, 'packages/' + name + '/dist'), dest, { recursive: true });
+    }
+    reads = 0;
+    assert.doesNotThrow(() => verifyClosure(generation, root, false, true));
+    assert.equal(reads, 1, 'selected and materialized outputs must share this call\'s full source measurement');
+    for (const [change, restore] of [
+      [() => write(root, 'src/probe.js', 'export default 9;\n'), () => write(root, 'src/probe.js', 'export default 1;\n')],
+      [() => chmodSync(subject, 0o644), () => chmodSync(subject, 0o755)],
+      [() => { rmSync(join(root, 'src/alias.js')); symlinkSync('other.js', join(root, 'src/alias.js')); },
+        () => { rmSync(join(root, 'src/alias.js')); symlinkSync('probe.js', join(root, 'src/alias.js')); }],
+      [() => write(root, 'src/added.js', 'added'), () => rmSync(join(root, 'src/added.js'))],
+    ]) {
+      change();
+      assert.throws(() => verifyClosure(generation, root), /tampered verification source archive/);
+      assert.equal(captureClosure(root).complete, false);
+      restore();
+      assert.doesNotThrow(() => verifyClosure(generation, root));
+    }
+    const output = 'tree/packages/two/dist/cli.cjs';
+    const originalOutput = readFileSync(join(generation, output));
+    write(generation, output, 'changed');
+    assert.throws(() => verifyClosure(generation, root), /stale-workspace-output/);
+    write(generation, output, originalOutput);
+    const badClosure = structuredClone(closure);
+    badClosure.workspaces[1].inputs = badClosure.workspaces[1].inputs.filter(row => row.path !== 'src/probe.js');
+    write(generation, '.verifier-closure.json', JSON.stringify(badClosure));
+    assert.throws(() => verifyClosure(generation, root), /selected-source-population-mismatch/);
+    write(generation, '.verifier-closure.json', JSON.stringify(closure));
+    for (const name of ['one', 'two']) rmSync(join(root, 'packages/' + name + '/dist'), { recursive: true });
+    assert.doesNotThrow(() => verifyClosure(generation, root, true));
+    assert.doesNotThrow(() => verifyClosure(generation, root, false, true));
+  } finally {
+    fs.openSync = originalOpen; fs.readFileSync = originalRead;
+    syncBuiltinESMExports();
+    for (const [key, value] of [['VERIFY_TAURI_SOURCE_RECEIPT', oldReceipt], ['VERIFY_TAURI_SOURCE_REF', oldRef]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test('bounded source census preserves bytes, modes, links and membership through a producing build', () => {
   const root = fixture();
   generatedPackage(root, 'packages/cli');
