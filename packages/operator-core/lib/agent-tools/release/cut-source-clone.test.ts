@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { verifyCutSourceClone, type ReleaseCutPhaseTiming } from './cut-source-clone';
@@ -83,6 +83,59 @@ describe('independent release source clone authority', () => {
     ]));
     const gitTimings = phases.find((event) => event.phase === 'source-clone-git-command-timing' && event.stage === 'finish');
     expect(gitTimings?.metrics?.git_rev_parse_path_format_absolute_count).toBeGreaterThan(0);
+    expect(JSON.stringify(phases)).not.toContain(clone);
+    expect(JSON.stringify(phases)).not.toContain(source);
+  });
+  it.each([
+    { mode: 'exit', expected: { errorCode: 73, errorSignal: null } },
+    { mode: 'signal', expected: { errorSignal: 'SIGTERM' } },
+  ])('reports path-free child-process failure details for ls-tree ($mode)', async ({ mode, expected }) => {
+    const bin = path.join(base, 'bin');
+    mkdirSync(bin);
+    const shim = path.join(bin, 'git');
+    writeFileSync(shim, [
+      '#!/usr/bin/env node',
+      "const { spawnSync } = require('node:child_process');",
+      'const args = process.argv.slice(2);',
+      "if (args.includes('ls-tree')) {",
+      "  if (process.env.CUT_CLONE_TEST_FAILURE === 'signal') process.kill(process.pid, 'SIGTERM');",
+      '  process.exit(73);',
+      '}',
+      'const originalPath = process.env.CUT_CLONE_TEST_ORIGINAL_PATH || "";',
+      "const result = spawnSync('git', args, { stdio: 'inherit', env: { ...process.env, PATH: originalPath } });",
+      'process.exit(result.status ?? 1);',
+    ].join('\n'));
+    chmodSync(shim, 0o755);
+
+    const originalPath = process.env.PATH;
+    const originalFailure = process.env.CUT_CLONE_TEST_FAILURE;
+    const originalFallbackPath = process.env.CUT_CLONE_TEST_ORIGINAL_PATH;
+    const phases: ReleaseCutPhaseTiming[] = [];
+    try {
+      process.env.PATH = [bin, originalPath].filter(Boolean).join(path.delimiter);
+      process.env.CUT_CLONE_TEST_FAILURE = mode;
+      process.env.CUT_CLONE_TEST_ORIGINAL_PATH = originalPath ?? '';
+      await expect(
+        verifyCutSourceClone(clone, [{ path: source }], sha, { onPhase: (event) => phases.push(event) }),
+      ).resolves.toMatchObject({ ok: false });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalFailure === undefined) delete process.env.CUT_CLONE_TEST_FAILURE;
+      else process.env.CUT_CLONE_TEST_FAILURE = originalFailure;
+      if (originalFallbackPath === undefined) delete process.env.CUT_CLONE_TEST_ORIGINAL_PATH;
+      else process.env.CUT_CLONE_TEST_ORIGINAL_PATH = originalFallbackPath;
+    }
+
+    expect(phases).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        phase: 'source-clone-git-command',
+        stage: 'finish',
+        gitCommand: 'ls-tree',
+        outcome: 'rejected',
+        ...expected,
+      }),
+    ]));
     expect(JSON.stringify(phases)).not.toContain(clone);
     expect(JSON.stringify(phases)).not.toContain(source);
   });

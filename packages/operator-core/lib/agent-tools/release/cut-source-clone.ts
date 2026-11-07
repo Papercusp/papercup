@@ -22,6 +22,9 @@ export interface ReleaseCutPhaseTiming {
   stage: 'start' | 'finish';
   elapsedMs?: number;
   outcome?: 'fulfilled' | 'rejected';
+  gitCommand?: string;
+  errorCode?: string | number;
+  errorSignal?: string | null;
   metrics?: Record<string, number>;
 }
 
@@ -38,6 +41,25 @@ function emitPhase(
 
 function elapsedSince(startedAt: number): number {
   return Math.round((performance.now() - startedAt) * 10) / 10;
+}
+
+function childProcessFailureDetails(
+  error: unknown,
+): Pick<ReleaseCutPhaseTiming, 'errorCode' | 'errorSignal'> {
+  if (!error || typeof error !== 'object') return {};
+  const childError = error as { code?: unknown; signal?: unknown };
+  const details: Pick<ReleaseCutPhaseTiming, 'errorCode' | 'errorSignal'> = {};
+  if (typeof childError.code === 'number' && Number.isFinite(childError.code)) {
+    details.errorCode = childError.code;
+  } else if (typeof childError.code === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(childError.code)) {
+    details.errorCode = childError.code;
+  }
+  if (childError.signal === null) {
+    details.errorSignal = null;
+  } else if (typeof childError.signal === 'string' && /^[A-Z0-9_]{1,32}$/.test(childError.signal)) {
+    details.errorSignal = childError.signal;
+  }
+  return details;
 }
 
 function within(root: string, child: string): boolean {
@@ -135,6 +157,16 @@ async function verifyCutSourceCloneAdmitted(
     const callStartedAt = performance.now();
     try {
       return await git(candidate, ...args);
+    } catch (error) {
+      emitPhase(options.onPhase, {
+        phase: 'source-clone-git-command',
+        stage: 'finish',
+        gitCommand: args[0] ?? 'unknown',
+        elapsedMs: elapsedSince(callStartedAt),
+        outcome: 'rejected',
+        ...childProcessFailureDetails(error),
+      });
+      throw error;
     } finally {
       const durationMs = elapsedSince(callStartedAt);
       const current = gitTimings.get(command) ?? { count: 0, totalMs: 0, maxMs: 0 };
