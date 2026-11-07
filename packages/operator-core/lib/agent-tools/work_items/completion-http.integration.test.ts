@@ -5,10 +5,10 @@ import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { validatePrivateCompletionRequests } from '../../../test/private-completion-http-scenario';
-import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
+import { preparePrivateOperatorApiBundle, privateMcpSourceSha } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
-const options = isolatedWorkerOptions(480_000);
+const options = isolatedWorkerOptions(480_000, process.env, 480_000, {}, 420_000);
 
 it.for(['palette HTTP', 'authenticated MCP proxy'] as const)(
   'completes a report-only work item through %s after exact report readback',
@@ -17,6 +17,7 @@ it.for(['palette HTTP', 'authenticated MCP proxy'] as const)(
   let prepared: { sha256: string; receiptSha256: string } | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/work_items/completion-http.integration.test.ts',
+    minimumFileRunTimeoutMs: transport === 'authenticated MCP proxy' ? options.testTimeoutMs : undefined,
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
       'packages/operator-core/test/private-completion-http-scenario.ts',
       'packages/operator-core/test/private-http-workspace-preflight.ts',
@@ -36,9 +37,11 @@ it.for(['palette HTTP', 'authenticated MCP proxy'] as const)(
     retainedArtifacts: ['phases/execute/completion-observation.json',
       'phases/execute/completion-readback.json',
       ...(transport === 'authenticated MCP proxy' ? ['phases/execute/completion-proxy.log',
+        'phases/execute/completion-auth-control.json',
         'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
         'phases/prepare/operator-api-preflight.json', 'phases/prepare/hono-host.mjs.build-steps.jsonl'] : [])],
     prepare: transport === 'authenticated MCP proxy' ? async evidenceDir => {
+      privateMcpSourceSha(root);
       prepared = await preparePrivateOperatorApiBundle(root, evidenceDir,
         { builder: { timeoutMs: 240_000, maxMs: 420_000 } });
     } : undefined,
@@ -80,8 +83,8 @@ it.for(['palette HTTP', 'authenticated MCP proxy'] as const)(
       ]);
       if (transport === 'authenticated MCP proxy') {
         expect(receipt).toMatchObject({ transport: 'mcp-proxy',
+          invalidBearerRejection: 'request_rejected: superuser_invalid_bearer',
           replay: { tagged: true, originalHandlerExecutions: 1 } });
-        expect([401, 403]).toContain(receipt.invalidBearerStatus);
       }
       console.info('PRIVATE_COMPLETION_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },

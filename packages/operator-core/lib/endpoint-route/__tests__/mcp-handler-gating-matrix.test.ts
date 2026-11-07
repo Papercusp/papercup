@@ -17,8 +17,8 @@
  *     and effectiveDispatchWorkspace as a unit (here: its dispatch wiring).
  *
  * Harness: `createMcpHandler` is mocked to capture the JSON-RPC request
- * handlers; the registry is the REAL one (explicitly warmed through the
- * transport's lazy loader) plus two synthetic probe tools under the 'gating-matrix-test'
+ * handlers; the registry contains the real tools exercised below (explicitly
+ * warmed through the transport's loader seam) plus synthetic probe tools under 'gating-matrix-test'
  * plugin. PG seams (db-org, spawn-signing, power-user-token, superuser
  * bearer, harness paths) are stubbed; everything between the request handler
  * and the tool fn — tryBuildSpawnContext, the profile gate, the power-user
@@ -630,6 +630,77 @@ vi.mock('../routes/transport/pgbouncer-pool-sample.mjs', async (importOriginal) 
   };
 });
 
+// Match the deadline-receipt fixture: exercise real transport/tool definitions
+// without making unrelated application initializers block test collection.
+// Loader coalescing/retry and HTTP startup diagnostics have separate suites.
+const catalogueLoads = vi.hoisted(() => vi.fn());
+vi.mock('../../agent-tools/index', () => {
+  throw new Error('The gating matrix must not import the full application catalogue');
+});
+vi.mock('../../agent-tools/operator-tool-catalogue', () => ({
+  loadOperatorToolCatalogue: async () => {
+    catalogueLoads();
+    await Promise.all([
+      import('../../agent-tools/pre-prompt-registry-config'),
+      import('../../agent-tools/delta-flag-wiring'),
+      import('../../agent-tools/ambient-args-wiring'),
+      import('../../agent-tools/tools/invoke'),
+      import('../../agent-tools/git_sync/run'),
+      import('../../agent-tools/tools/find'),
+      import('../../agent-tools/reports/get'),
+      import('../../agent-tools/capability/read'),
+      import('../../agent-tools/capability/launch-agent'),
+      import('../../agent-tools/plans/get'),
+      import('../../agent-tools/plans/list'),
+      import('../../agent-tools/plans/items'),
+      import('../../agent-tools/plans/set-status'),
+      import('../../agent-tools/plans/add-decision'),
+      import('../../agent-tools/work_items/get'),
+      import('../../agent-tools/work_items/claim'),
+      import('../../agent-tools/work_items/checkpoint'),
+      import('../../agent-tools/work_items/complete'),
+      import('../../agent-tools/scheduler/get_next'),
+      import('../../agent-tools/locks/queue'),
+      import('../../agent-tools/flags/set'),
+      import('../../agent-tools/fleet_registry/status'),
+      import('../../agent-tools/fleet_registry/create'),
+      import('../../agent-tools/fleet_registry/launch-on-plan'),
+      import('../../agent-tools/loop/arm'),
+      import('../../agent-tools/loop/checkpoint'),
+      import('../../agent-tools/routines/list'),
+      import('../../agent-tools/routines/set'),
+      import('../../agent-tools/routines/fire'),
+      import('../../agent-tools/rubrics/get'),
+      import('../../agent-tools/chat/ask_choice'),
+      import('../../agent-tools/docs/get'),
+      import('../../agent-tools/docs/search'),
+      import('../../agent-tools/docs/author'),
+      import('../../agent-tools/dev/build_status'),
+      import('../../agent-tools/memory/get'),
+      import('../../agent-tools/memory/search'),
+      import('../../agent-tools/search/fulltext'),
+      import('../../agent-tools/search/semantic'),
+      import('../../agent-tools/sessions/read'),
+      import('../../agent-tools/sessions/search'),
+      import('../../agent-tools/sessions/list'),
+      import('../../agent-tools/sessions/digest'),
+      import('../../agent-tools/sessions/timeline'),
+      import('../../agent-tools/autonomy/decide'),
+      import('../../agent-tools/autonomy/record_disposition'),
+      import('../../agent-tools/coordination/tools/declare-intent'),
+      import('../../agent-tools/coordination/tools/presence'),
+      import('../../agent-tools/coordination/tools/send'),
+      import('../../agent-tools/improvements/capture'),
+      import('../../agent-tools/discovery/pots'),
+      import('../../agent-tools/blueprint/publish'),
+      import('../../agent-tools/pot/request_work'),
+      import('../../agent-tools/pot_git/secrets_exemptions'),
+    ]);
+  },
+}));
+const { preserveProjectionRegistryBaseline } = await import('../../testing/projection-registry-baseline');
+preserveProjectionRegistryBaseline();
+
 // _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
 // schemas; under vite-node's ESM transform there is no module-scope require,
 // so provide the global fallback before the module loads.
@@ -657,6 +728,7 @@ const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuild
 process.stderr.write('MCP_MATRIX_BOOTSTRAP registry-warm-start\n');
 await mcpHandler(new Request('http://127.0.0.1/api/mcp', { headers: { host: '127.0.0.1' } }));
 process.stderr.write('MCP_MATRIX_BOOTSTRAP registry-warm-ready\n');
+const initialCatalogueLoads = catalogueLoads.mock.calls.length;
 
 /* ─── Synthetic probe tools ──────────────────────────────────────────── */
 
@@ -4993,6 +5065,18 @@ describe('scoped-superuser hive clamp', () => {
 /* ─── tools/list ─────────────────────────────────────────────────────── */
 
 describe('tools/list — strict-mode listing matrix', () => {
+  it('warms the limited real-tool catalogue once before collecting handler cases', () => {
+    expect(initialCatalogueLoads).toBe(1);
+    const required = [
+      'tools:invoke', 'tools:find', 'reports:get', 'capability:read', 'git-sync:run',
+      'work_items:get', 'work_items:claim', 'work_items:checkpoint',
+      'plans:get', 'plans:set-status', 'scheduler:get_next', 'locks:queue',
+      'chat:ask_choice', 'features:get', 'papercusp:list_workspaces',
+      'gatingtest:scoped', 'gatingtest:engineer', 'gatingtest:crossworkspace',
+    ];
+    expect(required.filter(name => !lookupByMcpName(name))).toEqual([]);
+  });
+
   it('handlers were captured for both verbs', () => {
     expect(h.handlers.has('tools/list')).toBe(true);
     expect(h.handlers.has('tools/call')).toBe(true);

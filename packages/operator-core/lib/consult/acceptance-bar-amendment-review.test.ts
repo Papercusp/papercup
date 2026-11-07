@@ -26,6 +26,75 @@ import {
 } from './acceptance-bar-amendment-review';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 import { analyzeClaudeResumeTranscript } from '../claude-resume-tool-references.mjs';
+import { acceptanceBarReviewSourceHash } from '../acceptance-bar-amendment';
+
+describe('P-003 compact immutable amendment packet', () => {
+  function packet() {
+    const before = { key: 'R-1', model: 'Persist the outcome', method: 'Old detector' };
+    const after = { ...before, method: 'New detector' };
+    const removed = { key: 'R-2', model: 'Retired outcome' };
+    const source = { schemaVersion: 1 as const,
+      rubric: { ref: 'acceptance-packet', revision: 4,
+        baseline: { requirement: 'Original requirement', criteria: [before, removed] },
+        candidate: { requirement: 'Changed requirement', criteria: [after] } },
+      subjectPlan: { slug: 'packet', harness: 'papercusp', revision: 7,
+        content: 'COMPLETE_CONTEXT_'.repeat(1000), proposedContentUnchanged: true as const },
+      reason: 'Improve the detector', mappingDelta: [{ barKey: 'R-1', prior: ['P-001'], next: ['P-002'] }] };
+    const approval = { schemaVersion: 1 as const, kind: 'acceptance-bar-amendment-approval' as const,
+      rubricRef: 'acceptance-packet', subjectPlan: 'packet', proposedPatchHash: 'b'.repeat(64),
+      reviewSourceHash: acceptanceBarReviewSourceHash(source), bars: [
+        { barKey: 'R-1', priorBarHash: 'c'.repeat(64), nextBarHash: 'd'.repeat(64) },
+        { barKey: 'R-2', priorBarHash: 'e'.repeat(64), nextBarHash: null },
+      ] };
+    return { source, input: { rubricRef: 'acceptance-packet', previewPostRef: 'thread-post:42',
+      patch: { criteria: [after] }, reason: source.reason,
+      sourceTarget: { workItemId: 'WI-42', harness: 'papercusp' },
+      preview: { approval, changes: [], reviewSource: source,
+        criterionChanges: [{ barKey: 'R-1', before, after }, { barKey: 'R-2', before: removed, after: null }],
+        candidateValidation: { candidateHash: 'a'.repeat(64), generatedSpecCount: 1 } },
+    } as unknown as Parameters<typeof buildAmendmentReviewBrief>[0] };
+  }
+
+  it('puts purpose, complete deltas, removals, dependencies, preflight and identity before support', () => {
+    const { input, source } = packet();
+    const brief = buildAmendmentReviewBrief(input);
+    const headings = ['Purpose:', 'Semantic field changes', 'Removals:', 'Dependency changes',
+      'Preflight:', 'Approval identity:', 'Supporting material'];
+    const positions = headings.map((heading) => brief.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(brief).toContain('"method":{"before":"Old detector","after":"New detector"}');
+    expect(brief).toContain('"requirement":{"before":"Original requirement","after":"Changed requirement"}');
+    expect(brief).toContain('Removals: ["R-2"]');
+    expect(brief).toContain(JSON.stringify(source.mappingDelta));
+    expect(brief).toContain(`candidate/source SHA-256 ${input.preview.approval.reviewSourceHash}`);
+    expect(brief).not.toContain('COMPLETE_CONTEXT_');
+    expect(brief.length).toBeLessThan(5000);
+  });
+
+  it('requires full paged retrieval and the same signed source hash on both review routes', () => {
+    const { input } = packet();
+    for (const answerOn of [undefined, { workItemId: 'WI-42', harness: 'papercusp' }]) {
+      const brief = buildAmendmentReviewBrief(input, answerOn);
+      expect(brief).toContain("checkpointOnly:true, sourceRef:'WI-42#comment:42', offset:0, limit:768");
+      expect(brief).toContain('checkpointPage.nextOffset');
+      expect(brief).toContain('same checkpointContentHash');
+      expect(brief).toContain(`verified-complete-source sha256:${input.preview.approval.reviewSourceHash}`);
+      expect(brief).toContain('Presentation compaction grants no weaker approval');
+    }
+  });
+
+  it('rejects missing source, altered source and missing preflight instead of recruiting from an excerpt', () => {
+    const { input } = packet();
+    expect(() => buildAmendmentReviewBrief({ ...input, preview: { ...input.preview, reviewSource: undefined } }))
+      .toThrow('acceptance_bar_review_source_mismatched');
+    const changed = structuredClone(input);
+    changed.preview.reviewSource!.reason = 'Different purpose';
+    expect(() => buildAmendmentReviewBrief(changed)).toThrow('acceptance_bar_review_source_mismatched');
+    expect(() => buildAmendmentReviewBrief({ ...input, preview: { ...input.preview, candidateValidation: undefined } }))
+      .toThrow('acceptance_bar_review_packet_incomplete');
+  });
+});
 
 // These routing tests isolate recruitment from preflight; integration tests use
 // the real validator and database, including a changed candidate after a pass.
@@ -875,7 +944,11 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     launchCtx: { ownerId: 'su-implementer', ownerLabel: 'su · impl', isSuperuser: true, workspaceId: 'ws', harnessSlug: '*' },
   } as unknown as Parameters<typeof launchFreshAmendmentReviewer>[0];
   const answerOn = { workItemId: 'WI-7', harness: 'papercusp' };
-  const launched = { data: { deduped: false, launch: { tasks: [{ taskId: 'task-1' }] } } };
+  function kickoffTask(taskId: string) {
+    return { taskId, ownerId: `judge-${taskId}`,
+      kickoffProof: { persisted: true, nativeRef: `/retained/${taskId}.native` } };
+  }
+  const launched = { data: { deduped: false, launch: { tasks: [kickoffTask('task-1')] } } };
 
   function deps<T extends Record<string, unknown>>(overrides: T = {} as T) {
     return {
@@ -896,8 +969,8 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
   }
 
   describe('a deduped reviewer that ended without answering (WI-6554700010010527)', () => {
-    const dedupedTo = (taskId: string) => ({ data: { deduped: true, launch: { tasks: [{ taskId, ownerId: `judge-${taskId}` }] } } });
-    const fresh = (taskId: string) => ({ data: { deduped: false, launch: { tasks: [{ taskId }] } } });
+    const dedupedTo = (taskId: string) => ({ data: { deduped: true, launch: { tasks: [kickoffTask(taskId)] } } });
+    const fresh = (taskId: string) => ({ data: { deduped: false, launch: { tasks: [kickoffTask(taskId)] } } });
 
     it('reuses a live deduped reviewer and launches nothing new', async () => {
       const d = deps({ launch: vi.fn().mockResolvedValue(dedupedTo('task-1')) });
@@ -1045,6 +1118,8 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       state: 'launched',
       launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
       taskId: 'task-1',
+      ownerId: 'judge-task-1',
+      nativeRef: '/retained/task-1.native',
       label: expect.stringMatching(/^bar-amendment-review:[0-9a-f]{12}$/),
       idempotencyKey: expect.stringMatching(/^acceptance-bar-amendment-review:[0-9a-f]{32}$/),
       deduped: false,
@@ -1157,6 +1232,40 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     });
   });
 
+  it.each([false, true])('retains a refused kickoff without calling it launched (deduped=%s)', async (deduped) => {
+    const result = { data: { deduped, launch: { partial: true,
+      kickoffProof: { persisted: false },
+      tasks: [{ ...kickoffTask('task-1'), logPath: '/retained/reviewer.log',
+        kickoffProof: { persisted: false, nativeRef: null, reason: 'process-exited-before-kickoff' } }] } } };
+    const d = deps({ launch: vi.fn().mockResolvedValue(result) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({
+      state: 'blocked', reason: 'kickoff-unverified', taskId: 'task-1', ownerId: 'judge-task-1',
+      nativeRef: 'unknown', logPath: '/retained/reviewer.log', deduped,
+      evidence: expect.stringContaining('process-exited-before-kickoff'),
+    });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(d.stopFailedLaunch).not.toHaveBeenCalled();
+  });
+
+  it.each(['task', 'owner', 'native', 'proof', 'negative-proof', 'partial', 'error'])
+    ('fails closed on incomplete launch custody: %s', async (missing) => {
+      const task: Record<string, unknown> = { ...kickoffTask('task-1') };
+      const launch: Record<string, unknown> = { tasks: [task] };
+      if (missing === 'task') launch.tasks = [];
+      if (missing === 'owner') delete task.ownerId;
+      if (missing === 'native') task.kickoffProof = { persisted: true };
+      if (missing === 'proof') delete task.kickoffProof;
+      if (missing === 'negative-proof') launch.kickoffProof = { persisted: false };
+      if (missing === 'partial') launch.partial = true;
+      const d = deps({ launch: vi.fn().mockResolvedValue({
+        ...(missing === 'error' ? { isError: true } : {}), data: { launch },
+      }) });
+      const result = await launchFreshAmendmentReviewer(input, d as never);
+      expect(result).toMatchObject({ state: 'blocked', reason: 'kickoff-unverified' });
+      if (missing !== 'task') expect(result).toMatchObject({ taskId: 'task-1' });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+    });
+
   function transcriptReply(text: string, synthetic = false) {
     return analyzeClaudeResumeTranscript([
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
@@ -1167,7 +1276,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
 
   function retainedLaunch(deduped = false) {
     return { data: { deduped, launch: { tasks: [{ taskId: 'task-1', ownerId: 'judge-1',
-      kickoffProof: { nativeRef: '/retained/review.jsonl' } }] } } };
+      kickoffProof: { persisted: true, nativeRef: '/retained/review.jsonl' } }] } } };
   }
 
   it.each([false, true])('reports a provider credit wall on a retained review (deduped=%s)', async (deduped) => {
@@ -1203,7 +1312,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
   it('contains a rejected reviewer by exact task, then re-recruits through the same system principal', async () => {
     let stopped = false;
     const launch = vi.fn().mockResolvedValueOnce(retainedLaunch()).mockResolvedValueOnce(retainedLaunch(true))
-      .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2' }] } } });
+      .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [kickoffTask('task-2')] } } });
     const d = deps({ launch,
       analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)),
       stopFailedLaunch: vi.fn(async () => { stopped = true; return 'stopped task task-1'; }),
@@ -1277,7 +1386,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
 
     it('replaces a retained reviewer parked after the error even though it still has a wake source', async () => {
       const launch = vi.fn().mockResolvedValueOnce(retainedLaunch(true))
-        .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2' }] } } });
+        .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [kickoffTask('task-2')] } } });
       let reads = 0;
       const readTaskState = vi.fn(async () => reads++ === 0 ? 'running' as const : 'ended_unobserved' as const);
       const stopFailedLaunch = vi.fn(async () => 'stopped task task-1');
@@ -1316,7 +1425,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       .mockResolvedValueOnce(retainedLaunch())
       .mockResolvedValueOnce(retainedLaunch(true))
       .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2', ownerId: 'judge-2',
-        kickoffProof: { nativeRef: '/retained/review-2.jsonl' } }] } } });
+        kickoffProof: { persisted: true, nativeRef: '/retained/review-2.jsonl' } }] } } });
     const d = deps({
       launch,
       resolveSteeredModel: vi.fn(async () => ({ agent: 'claude', model: 'fable' })),
@@ -1396,7 +1505,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     const launch = vi.fn()
       .mockResolvedValueOnce(retainedLaunch())
       .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2', ownerId: 'judge-2',
-        kickoffProof: { nativeRef: '/retained/review-2.jsonl' } }] } } });
+        kickoffProof: { persisted: true, nativeRef: '/retained/review-2.jsonl' } }] } } });
     const d = deps({
       launch,
       resolveSteeredModels: vi.fn(async () => [

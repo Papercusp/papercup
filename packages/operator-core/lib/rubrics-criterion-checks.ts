@@ -749,6 +749,8 @@ export type CriterionCheckRunnerResult = PortalPlaywrightResult;
 export type CriterionCheckRunner = (opts: {
   files: string[];
   root: string;
+  /** Requested case identities, for suites with an explicit artifact-targeted mode. */
+  criterionCases?: Array<{ file: string; testName: string }>;
   timeoutMs?: number;
   workspaceId?: string;
   /** Authenticated scorecard emitter, supplied by the handler rather than environment. */
@@ -786,6 +788,8 @@ export async function runCriterionCheckFiles(
     && existsSync(join(opts.root, 'scripts', 'with-test-pg.mjs'));
   const result = await (deps.runFiles ?? runTestFilesCore)({
     ...opts,
+    // A replay must not lose the criterion's requested execution mode.
+    ...(opts.criterionCases?.length ? { allowDetachedRecovery: false } : {}),
     ...(privatePg ? { privatePg: true, allowDetachedRecovery: false } : {}),
   });
   if (
@@ -1651,6 +1655,9 @@ export async function evaluateCriterionTestChecks(input: {
   const run = await runner({
     files: uniqueFiles,
     root,
+    criterionCases: planned.flatMap(check =>
+      (check.cases ?? (check.testName ? [{ file: check.files[0]!, testName: check.testName }] : []))
+        .map(selector => ({ file: resolve(root, selector.file), testName: selector.testName }))),
     ...(input.runId ? { runId: input.runId } : {}),
     ...(budget !== undefined ? { timeoutMs: budget } : {}),
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),

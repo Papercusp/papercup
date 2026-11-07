@@ -19,7 +19,7 @@ it('seeds all explicit evidence planes alongside the primary plane', () => {
   const requirement = {
     intent: { request: 'Require source and live proof.' },
     acceptance: { condition: 'The service exposes the current verdict.', falsifier: 'The verdict is absent.',
-      evidencePlane: 'live', requiredEvidencePlanes: ['tree', 'live'], requiredTestLayers: ['unit'],
+      evidencePlane: 'live', requiredEvidencePlanes: ['tree'], requiredTestLayers: ['unit'],
       role: 'outcome', mandatory: true, passRatings: ['healthy'], requiredScope: ['verdict'] },
     verification: { method: 'Run the verdict probe and compare the result with the committed fixture.',
       check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] } },

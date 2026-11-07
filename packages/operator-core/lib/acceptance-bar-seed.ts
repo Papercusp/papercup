@@ -197,7 +197,7 @@ export type AcceptanceBarSeedBuildResult =
       problems: AcceptanceBarSeedProblem[];
     };
 
-function refusal(problems: AcceptanceBarSeedProblem[]): AcceptanceBarSeedBuildResult {
+function refusal(problems: AcceptanceBarSeedProblem[]): Exclude<AcceptanceBarSeedBuildResult, { ok: true }> {
   const first = problems[0] ?? {
     code: 'bar_seed_persistence_failed' as const,
     detail: 'BAR seeding failed without a diagnostic',

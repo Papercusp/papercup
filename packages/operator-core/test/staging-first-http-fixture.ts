@@ -62,7 +62,7 @@ async function main() {
   // Filtering only hostEnv leaves test preloads on the worker's launch lineage.
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native'))
     e.NODE_OPTIONS = privateBundleRuntimeEnv(e).NODE_OPTIONS;
-  if (['report-journal', 'private-completion'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? ''))
+  if (['report-journal', 'private-completion', 'private-completion-mcp'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? ''))
     e.PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY = '1';
   const harness = `${workspace}-guard`;
   const registry = await loadHarnessRegistry(workspace, { fresh: true });
@@ -178,13 +178,16 @@ async function main() {
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
   const isSecurityCensus = e.STAGING_FIRST_HTTP_SCENARIO === 'security-census';
   const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools
-    || isSecurityCensus || e.STAGING_FIRST_HTTP_SCENARIO === 'testing-background';
+    || isSecurityCensus || ['testing-background', 'private-completion-mcp'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,
     'Selected request scenario requires its prepared pinned API');
-  const bundle = prepared ?? join(evidenceDir, 'hono-host.mjs');
-  if (!prepared) {
+  const shippedTarget = e.STAGING_FIRST_HTTP_SCENARIO === 'discovery-guidance'
+    ? await (await import('./discovery-guidance-http-scenario')).readDiscoveryShippedTarget(process.argv.slice(2)) : null;
+  assert.ok(!(shippedTarget && prepared), 'choose exactly one API artifact authority');
+  const bundle = shippedTarget?.source.entry ?? prepared ?? join(evidenceDir, 'hono-host.mjs');
+  if (!prepared && !shippedTarget) {
     console.log('STAGING_FIRST_HTTP_PHASE bundle-start');
     try {
       await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
@@ -197,6 +200,8 @@ async function main() {
   if (isCommittedReader) assert.ok(bundleBytes.includes(Buffer.from('committed-tree-reader.ts')),
     'committed reader must be in the executed bundle');
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
+  if (shippedTarget) assert.equal(bundleSha256, shippedTarget.artifact.bundleSha256,
+    'execute the already loaded shipped bundle bytes without rebuilding');
   let qualifySource: (() => ReturnType<typeof qualifyCommittedReaderSource>) | undefined;
   let loadedSourceOptions: Parameters<typeof qualifyCommittedReaderSource>[0] | undefined;
   if (isCommittedReader) {
@@ -225,7 +230,7 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
-  if (isCodexManagedTools || isOmpManagedTools || isSecurityCensus) {
+  if (isCodexManagedTools || isOmpManagedTools || isSecurityCensus || e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp') {
     const { randomBytes } = await import('node:crypto');
     const { superuserTokenPath } = await import('../lib/superuser-token');
     mkdirSync(e.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
@@ -275,7 +280,8 @@ async function main() {
     };
   }
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv,
-    requireBuildIdentity: isCurrentSuNative || isCodexManagedTools || isOmpManagedTools || isSecurityCensus });
+    requireBuildIdentity: isCurrentSuNative || isCodexManagedTools || isOmpManagedTools || isSecurityCensus
+      || e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp' });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
   if (isSecurityCensus) {
     const receipt = await (await import('./security-census-http-scenario')).measureSecurityCensusScenario({
@@ -340,21 +346,26 @@ async function main() {
     console.log(prefix + '_PRODUCTION_MCP_VERIFIED ' + JSON.stringify(receipt));
     return;
   }
-  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion') {
+  if (['private-completion', 'private-completion-mcp'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '')) {
     const receipt = await (await import('./private-completion-http-scenario')).measurePrivateCompletionScenario({
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+      transport: e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp' ? 'mcp-proxy' : 'palette',
     });
     await stopHost();
     console.log('PRIVATE_COMPLETION_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'discovery-guidance') {
+    if (shippedTarget) assert.equal(health.sha, shippedTarget.health.sha,
+      'the isolated repetition must serve the exact release build identity');
     const receipt = await (await import('./discovery-guidance-http-scenario')).measureDiscoveryGuidanceScenario({
       workspace, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
+    if (shippedTarget) await (await import('./discovery-guidance-http-scenario')).recheckDiscoveryShippedTarget(shippedTarget);
     console.log('DISCOVERY_GUIDANCE_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostStopped: true, bundleSha256, health,
+      ...(shippedTarget ? { artifactTarget: shippedTarget, rebuilt: false } : {}),
     }));
     return;
   }

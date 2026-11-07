@@ -145,6 +145,25 @@ it('validates public absolute deadlines and reserves instead of stripping them',
   }
 });
 
+it('accepts explicit integration budgets through the maintained router ceiling', () => {
+  const args = { files: ['feature.test.ts'], background: true, timeoutMs: 120 * 60_000 };
+  expect(runTool.args.parse(args)).toMatchObject(args);
+  expect(runTool.args.safeParse({ ...args, timeoutMs: args.timeoutMs + 1 }).success).toBe(false);
+});
+
+it.each([false, true])('preserves a composed integration budget and cleanup reserve (background=%s)', async background => {
+  const clock = 1_000;
+  vi.spyOn(Date, 'now').mockReturnValue(clock);
+  const anchored = vi.spyOn(runArtifacts, 'testRunDeadline');
+  phases.fence.mockResolvedValue(refusal);
+  const { result } = await invoke({ background, timeoutMs: 3_000_000,
+    taskDeadlineAtMs: clock + 3_000_000, cleanupReserveMs: 120_000 });
+  expect(anchored.mock.results[0]?.value).toEqual({ startedAtMs: clock,
+    taskDeadlineAtMs: clock + 3_000_000, childCutoffAtMs: clock + 2_880_000, cleanupReserveMs: 120_000 });
+  expect(result).toMatchObject({ error: 'mutation_probe_active' });
+  expect(phases.prepare).not.toHaveBeenCalled();
+});
+
 it('refuses an already expired caller deadline before fences or pending evidence writes', async () => {
   const { result } = await invoke({ taskDeadlineAtMs: 1, cleanupReserveMs: 5_000 });
   expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted' });

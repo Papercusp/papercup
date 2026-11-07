@@ -37,10 +37,12 @@ vi.mock('./evidence', async (original) => ({
 }));
 
 import { BashProvenanceRefusal } from '../capability/bash-task-provenance';
+import { REPO_ROOT } from '../docs/_repo-paths';
 import runTool, { testingRunAbortCompletionReceipt } from './run';
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   const directories = phases.detach.mock.calls.flatMap(([request]) =>
     (request.detachedReportArtifacts ?? []).map((artifact: { reportPath: string }) => join(artifact.reportPath, '..')));
   await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })));
@@ -58,10 +60,11 @@ async function invoke(extra: Record<string, unknown> = {}) {
   const evidence = { workItemId: 'WI-grinding', planSlug: 'gate-plan', bindings: [{
     specId: 'SPEC-001', specRevision: 1, testPath: 'feature.test.ts', sourcePaths: ['feature.ts'], testLayer: 'unit' as const,
   }] };
-  const ctx = { projectDir: root, workspaceId: 'gate-workspace', uiClientId: 'su-gate-test', isSuperuser: true } as const;
+  const metadata = vi.fn();
+  const ctx = { projectDir: root, workspaceId: 'gate-workspace', uiClientId: 'su-gate-test', isSuperuser: true, metadata } as const;
   const args = runTool.args.parse({ files: ['feature.test.ts'], harness: 'gate-harness', evidence, ...extra });
   const result = (await runTool.handler(args, ctx as never)) as { data: Record<string, unknown> };
-  return { root, result: result.data };
+  return { root, result: result.data, metadata };
 }
 
 const refusal = {
@@ -84,9 +87,13 @@ it('starts one caller-bound background core, retaining pending evidence and the 
   expect(phases.gate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ background: true, timeoutMs: 120_000 }));
   expect(phases.detach).toHaveBeenCalledTimes(1);
   const request = phases.detach.mock.calls[0]![0];
-  expect(request).toMatchObject({ command: process.execPath, cwd: root, originRunId: result.runId,
+  expect(request).toMatchObject({ command: process.execPath, cwd: REPO_ROOT, originRunId: result.runId,
     env: { PAPERCUSP_TEST_RUN_HARNESS: 'gate-harness', PAPERCUSP_WORKSPACE_ID: 'gate-workspace' } });
   const script = request.args.at(-1) as string;
+  // Platform helpers run from the host checkout; only the explicit corpus and
+  // reporter roots belong to the external fixture checkout.
+  expect(script).toContain('"root":' + JSON.stringify(root));
+  expect(request.detachedReportArtifacts).toEqual([expect.objectContaining({ root })]);
   expect(script).toContain('runTestFilesCore');
   expect(script).toContain('"allowDetachedRecovery":false');
   expect(script).toContain('"privatePg":false');
@@ -115,6 +122,68 @@ it.each(['changedPaths', 'recoverEvidence', 'remeasureEvidence', 'nativeConsult'
     expect(phases.prepare).not.toHaveBeenCalled();
     expect(phases.detach).not.toHaveBeenCalled();
   });
+
+it('records delayed background preparation and handoff without renewing the deadline', async () => {
+  const startedAt = Date.now();
+  let elapsed = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => startedAt + elapsed);
+  vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+  phases.gate.mockImplementation(async () => { elapsed += 17; return null; });
+  phases.fence.mockResolvedValue(null);
+  phases.prepare.mockImplementation(async () => { elapsed += 3_000; return [{}]; });
+  phases.detach.mockImplementation(async () => {
+    elapsed += 2_000;
+    return { snapshot: { runId: 'delayed-background', taskId: 'task-delayed' }, durable: true };
+  });
+
+  const { result, metadata } = await invoke({ background: true, timeoutMs: 120_000 });
+
+  expect(result).toMatchObject({ status: 'pending', phaseTimingsMs: {
+    admissionGateMs: 17, preparationMs: 3_017, handoffMs: 2_000,
+    totalHandlerMs: 5_017, routerExecutionMs: null,
+  } });
+  expect(result.deadline).toMatchObject({ startedAtMs: startedAt, taskDeadlineAtMs: startedAt + 120_000 });
+  expect(metadata).toHaveBeenCalledExactlyOnceWith({ testingRun: {
+    schemaVersion: 'testing-run-phase-telemetry-v1', runId: result.runId, outcome: 'pending',
+    detachedRunId: 'delayed-background', taskId: 'task-delayed', phaseTimingsMs: result.phaseTimingsMs,
+  } });
+  expect(phases.detach).toHaveBeenCalledOnce();
+});
+
+it('retires prepared evidence and starts no child when preparation exhausts the deadline', async () => {
+  const startedAt = Date.now();
+  let elapsed = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => startedAt + elapsed);
+  vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+  phases.gate.mockResolvedValue(null);
+  phases.fence.mockResolvedValue(null);
+  phases.prepare.mockImplementation(async () => { elapsed = 120_000; return [{}]; });
+  phases.retract.mockResolvedValue({ status: 'retired' });
+
+  const { result, metadata } = await invoke({ background: true, timeoutMs: 120_000 });
+
+  expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted',
+    deadline: { startedAtMs: startedAt, taskDeadlineAtMs: startedAt + 120_000 },
+    evidenceBundle: { status: 'retired' },
+    phaseTimingsMs: { preparationMs: 120_000, handoffMs: null } });
+  expect(phases.detach).not.toHaveBeenCalled();
+  expect(phases.retract).toHaveBeenCalledExactlyOnceWith([{}], result.runId,
+    expect.objectContaining({ harnessSlug: 'gate-harness', workspaceId: 'gate-workspace' }), 'deadline_exhausted');
+  expect(metadata).toHaveBeenCalledExactlyOnceWith({ testingRun: expect.objectContaining({
+    runId: result.runId, outcome: 'deadline_exhausted', phaseTimingsMs: result.phaseTimingsMs,
+  }) });
+});
+
+it('records background admission refusal without preparing evidence or handing off', async () => {
+  phases.gate.mockResolvedValue(refusal);
+  const { result, metadata } = await invoke({ background: true });
+  expect(result).toMatchObject({ ok: false, reason: 'loop_audit_required' });
+  expect(metadata).toHaveBeenCalledExactlyOnceWith({ testingRun: expect.objectContaining({
+    runId: result.runId, outcome: 'loop_audit_required', phaseTimingsMs: result.phaseTimingsMs,
+  }) });
+  expect(phases.prepare).not.toHaveBeenCalled();
+  expect(phases.detach).not.toHaveBeenCalled();
+});
 
 it('refuses a grinding item before any evidence is registered or any test process starts', async () => {
   phases.gate.mockResolvedValue(refusal);

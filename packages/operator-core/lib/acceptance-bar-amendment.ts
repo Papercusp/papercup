@@ -353,11 +353,19 @@ export function readAcceptanceBarReviewSource(body: string, expectedHash: string
   return source;
 }
 
-/** New BAR declaration times are generated when the amendment is applied.
- * Keep the signed snapshot intact; compare only this server-owned future
- * timestamp separately from the complete authored source and existing provenance.
+/** Normalize representation-only differences after verifying the signed source.
+ * New BAR declaration times are generated at apply time. Compact unchanged-plan
+ * markers represent the exact retained content, never a later live plan read.
+ * Neither normalization changes the bytes used for hashing or attestation.
  */
 function reviewSourceWithoutNewDeclarationTimes(source: AcceptanceBarReviewSource): unknown | undefined {
+  let subjectPlan = source.subjectPlan;
+  if (Object.hasOwn(subjectPlan, 'proposedContentUnchanged')) {
+    if (subjectPlan.proposedContentUnchanged !== true || Object.hasOwn(subjectPlan, 'proposedContent') ||
+        typeof subjectPlan.content !== 'string') return undefined;
+    const { proposedContentUnchanged: _unchanged, ...retained } = subjectPlan;
+    subjectPlan = { ...retained, proposedContent: subjectPlan.content };
+  }
   const baseline = source.rubric.baseline as { criteria?: unknown[] } | null;
   const candidate = source.rubric.candidate as { criteria?: unknown[] } | null;
   if (!Array.isArray(baseline?.criteria) || !Array.isArray(candidate?.criteria)) return undefined;
@@ -383,7 +391,7 @@ function reviewSourceWithoutNewDeclarationTimes(source: AcceptanceBarReviewSourc
         typeof (provenance as Record<string, unknown>).declaredAt !== 'string') return undefined;
     criteria.push(acceptanceBarCriterionWithoutDeclarationTime(criterion));
   }
-  return { ...source, rubric: { ...source.rubric, candidate: { ...candidate, criteria } } };
+  return { ...source, subjectPlan, rubric: { ...source.rubric, candidate: { ...candidate, criteria } } };
 }
 
 /** EI-22617748468342848: reviewers routinely post the approval receipt inside a

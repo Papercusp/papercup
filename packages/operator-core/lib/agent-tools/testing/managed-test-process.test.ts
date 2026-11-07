@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
+import { spawn as spawnChild, spawnSync, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -35,6 +36,89 @@ afterEach(async () => {
   mocks.spawn.mockReset();
   mocks.killScope.mockClear();
 });
+
+it.each([false, true])('delivers cooperative TERM through real admission before closing its live service (confined=%s)', async confined => {
+  const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-admission-cleanup-'));
+  directories.push(root);
+  const outputPath = join(root, 'router.log');
+  const receipt = join(root, 'cleanup.json');
+  const privateState = join(root, 'private-state');
+  const admissionRoot = join(root, 'admission');
+  const admissionLock = join(admissionRoot,
+    `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`, 'admission.lock');
+  const source = `
+    const { spawn } = require('node:child_process');
+    const { mkdirSync, writeFileSync, rmSync } = require('node:fs');
+    mkdirSync(${JSON.stringify(privateState)});
+    console.log('OWNER_STARTED');
+    const service = spawn(process.execPath, ['-e', "process.stdout.write('READY'); setInterval(() => {}, 1000)"],
+      { stdio: ['ignore', 'pipe', 'inherit'] });
+    service.stdout.once('data', () => console.log(JSON.stringify({ servicePid: service.pid })));
+    process.once('SIGTERM', () => {
+      console.log('CLEANUP_STARTED');
+      setTimeout(() => {
+        let serviceAlive = true;
+        try { process.kill(service.pid, 0); } catch { serviceAlive = false; }
+        service.once('exit', () => {
+          rmSync(${JSON.stringify(privateState)}, { recursive: true });
+          writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ serviceAlive }));
+          process.exit(0);
+        });
+        service.kill('SIGTERM');
+      }, 300);
+    });
+  `;
+  let child: ChildProcess | undefined;
+  const killScope = vi.fn(async (scopeUnit: string, options?: { signal?: NodeJS.Signals }) => {
+    // The existing kernel identity/membership checks select the admission root.
+    // Exercise the real shell/flock/payload chain after that selection.
+    child!.kill(options?.signal ?? 'SIGTERM');
+    return { ok: true as const, scopeUnit, action: 'kill' as const };
+  });
+  const running = await launchManagedTestProcess({
+    command: join(REPO_ROOT, 'scripts/testing-run-probe-overlay.sh'),
+    args: [root, '--', process.execPath, '-e', source],
+    // These inline owner/service fixtures import no product code. Inheriting the
+    // router's source-map/committed-source loaders changes their startup path.
+    cwd: REPO_ROOT, env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT: admissionRoot },
+    timeoutMs: 60_000, runGroup: 'admission-cleanup', workspaceId: 'papercusp-workspace',
+    outputPath, cooperativeTermination: true,
+  }, {
+    managedSpawnFn: async (command, args, _spec, options) => {
+      child = spawnChild(command, [...args], options?.spawnOptions ?? {});
+      return { child, taskId: 'admission-cleanup', scopeUnit: confined ? 'pc-admission-cleanup.scope' : null,
+        confined, waitForCompletion: async () => ({ status: 'recorded' as const }) };
+    },
+    killScopeUnitFn: killScope,
+  });
+  const closed = new Promise<void>((resolve, reject) => {
+    child!.once('close', () => resolve());
+    child!.once('error', reject);
+  });
+  try {
+    await vi.waitFor(async () => expect(await readFile(outputPath, 'utf8')).toContain('servicePid'), { timeout: 5_000 });
+    const servicePid = JSON.parse((await readFile(outputPath, 'utf8')).split('\n')
+      .find(line => line.startsWith('{"servicePid":'))!).servicePid as number;
+    running.terminate();
+    await vi.waitFor(async () => expect(await readFile(outputPath, 'utf8')).toContain('CLEANUP_STARTED'), { timeout: 2_000 });
+    expect(spawnSync('flock', ['-n', '-x', admissionLock, 'true']).status).toBe(1);
+    await vi.waitFor(() => expect(child!.exitCode).toBe(143), { timeout: 5_000 });
+    await closed;
+    expect(JSON.parse(await readFile(receipt, 'utf8'))).toEqual({ serviceAlive: true });
+    expect(existsSync(privateState)).toBe(false);
+    expect(() => process.kill(servicePid, 0)).toThrow();
+    expect(spawnSync('flock', ['-n', '-x', admissionLock, 'true']).status).toBe(0);
+    expect(killScope).toHaveBeenCalledTimes(confined ? 1 : 0);
+  } catch (cause) {
+    throw new Error(`admission fixture failed (exit=${child?.exitCode}, signal=${child?.signalCode}):\n`
+      + await readFile(outputPath, 'utf8'), { cause });
+  } finally {
+    if (child?.pid) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* exact owned group already gone */ }
+    }
+    await closed;
+  }
+}, 15_000);
 
 it.each(['close', 'spawn-error'] as const)('retains real child %s and original output before the ledger handoff', async event => {
   const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-real-handoff-'));

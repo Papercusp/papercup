@@ -3766,14 +3766,17 @@ async function completeOneTracked(
   // not agent work by category (record, document, event, human-audience) is refused exactly as
   // the by-id claim refuses it (D-024). Typed, no agent-passable override.
   // ctx carries the server-derived caller identity: only the owner's UI is exempt (D-038).
-  const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:complete', it.id, it.harness, ctx);
+  const notAgentWork = await track('work-category', () =>
+    refuseNonAgentWorkAtDoor('work_items:complete', it.id, it.harness, ctx));
   if (notAgentWork) return notAgentWork;
   // P-007 Phase C (D-028 §5): a completion verification task closes only with a verdict, and
   // never by its subject's closer (the D-021 conflict rule holds at this door too, not only
   // at the claim doors). Rows without a completion verification block are never affected.
   if (it.state && TERMINAL_WORK_ITEM_STATES.has(it.state.toLowerCase())) {
-    const { completionVerdictRefusal } = await import('../../harness/improvements/completion-verification');
-    const { verificationTaskConflict } = await import('../../harness/improvements/agent-review-policy');
+    const { completionVerdictRefusal } = await track('verification-policy-load', () =>
+      import('../../harness/improvements/completion-verification'));
+    const { verificationTaskConflict } = await track('verification-conflict-policy-load', () =>
+      import('../../harness/improvements/agent-review-policy'));
     const verdictRefusal = completionVerdictRefusal({ payload: existing.payload, completion: it.completion, terminal: true });
     if (verdictRefusal) return { ok: false, id: it.id, error: verdictRefusal };
     const conflict = verificationTaskConflict(existing.payload, ident.ownerId);
@@ -4976,11 +4979,11 @@ async function completeOneTracked(
   let checkpointChecksCarried: PersistedCompletionEvidence['checkpointChecksCarried'];
   let checkpointProseSnapshot: PersistedCompletionEvidence['checkpointProseSnapshot'];
   try {
-    const priorCheckpoint = await getWorkItemCheckpoint({
+    const priorCheckpoint = await track('checkpoint-readback', () => getWorkItemCheckpoint({
       harness: (it.harness as string | null | undefined) ?? null,
       workItemId: it.id,
       workspaceId: ctx.workspaceId,
-    });
+    }));
     if (priorCheckpoint) {
       const { checks } = splitCarryNoteChecks(priorCheckpoint);
       checkpointProseSnapshot = completeCheckpointProseSnapshot(priorCheckpoint);
@@ -5184,7 +5187,8 @@ async function completeOneTracked(
       );
       if (!cited.followUps.length && !cited.summaryRefs.length) return undefined;
       const cutoff = Date.parse(String(existing.takenAt ?? existing.createdAt ?? ''));
-      const found = await getWorkItemsByIds([...cited.followUps, ...cited.summaryRefs]);
+      const found = await track('residue-ownership', () =>
+        getWorkItemsByIds([...cited.followUps, ...cited.summaryRefs]));
       const refs = unownedResidueRefs(
         cited,
         found.map((w) => {
@@ -5373,7 +5377,7 @@ async function completeOneTracked(
   // P-011 / R-10 (change-provenance-and-admission-throughput-2026-10-27): name the edited files
   // no recorded test run in the claim window exercised, and whether any pass was on a clean tree.
   // WARNING ONLY — bounded, best-effort, and never able to refuse or fail the close.
-  const closeCoverageWarning = await (async () => {
+  const closeCoverageWarning = await track('coverage-warning', async () => {
     if (!effectiveState || !TERMINAL_WORK_ITEM_STATES.has(String(effectiveState).toLowerCase())) return undefined;
     const windowStartMs = Date.parse(String(existing.takenAt ?? existing.createdAt ?? ''));
     const itemId = it.id;
@@ -5395,7 +5399,7 @@ async function completeOneTracked(
     } catch {
       return undefined;
     }
-  })();
+  });
 
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
   // against. Applied to the PERSISTED object only — never to `completionEvidenceForGate`
@@ -5409,14 +5413,14 @@ async function completeOneTracked(
   // all stays `undefined` rather than gaining an `_completionEvidence` object whose one
   // key came from the server, which a later reader could mistake for caller-supplied proof.
   const treeStamp = completionEvidenceBeforeStamp
-    ? await completionTreeStampForClose(
+    ? await track('tree-stamp', () => completionTreeStampForClose(
         completionEvidenceBeforeStamp,
         registeredRepoRoots,
         completionRoot(),
         registeredRepoRoots === undefined && declaredCompletionPaths.length > 0
           ? () => completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
           : undefined,
-      )
+      ))
     : undefined;
   const completionEvidenceToPersist: PersistedCompletionEvidence | undefined = (() => {
     const base = withClaimBaseline(completionEvidenceBeforeStamp, claimVerdicts, new Date().toISOString());
@@ -5481,7 +5485,8 @@ async function completeOneTracked(
   // and deliberately so — D-003 protects the completion RECORD from an evaluator fault,
   // whereas this protects ENFORCEMENT from a flag-read fault. Neither can lose a record.
   const terminalCriteriaEnforced = terminalCriteria?.downgrade
-    ? await getFlag(FLAGS.TERMINAL_CRITERIA_ENFORCEMENT, activeWorkspaceId()).catch(() => true)
+    ? await track('terminal-criteria-policy', () =>
+        getFlag(FLAGS.TERMINAL_CRITERIA_ENFORCEMENT, activeWorkspaceId()).catch(() => true))
     : true;
   const terminalCriteriaUnmet =
     terminalCriteriaEnforced && authorityWithFindings === 'committed' && terminalCriteria?.downgrade === true;
@@ -5746,7 +5751,8 @@ async function completeOneTracked(
   // produced by the same command as a real one — so the strongest-looking evidence type
   // was the easiest to fake by accident. Deliberately fail-open: it refuses only when
   // every cited artifact is confidently bad (see verifyLiveDroveUiArtifacts).
-  const artifactVerdict = closeIntentRequested ? await verifyLiveDroveUiArtifacts(completionEvidenceToPersist) : null;
+  const artifactVerdict = closeIntentRequested
+    ? await track('live-artifacts', () => verifyLiveDroveUiArtifacts(completionEvidenceToPersist)) : null;
   const falseLiveDroveUiClose = !unbackedLiveDroveUiClose && artifactVerdict?.ok === false;
 
   // EI-18850142725126359 fix #4 — PRE-FLIGHT THE PLANE RATCHET.
@@ -5789,10 +5795,11 @@ async function completeOneTracked(
   let deferredCompletion: { eventId: string; deadlineAt: number } | undefined;
   let retainPendingModelEvidence = false;
   let assumptionsError: string | undefined;
-  if (it.assumptions !== undefined) {
+  const declaredAssumptions = it.assumptions;
+  if (declaredAssumptions !== undefined) {
     try {
-      resolvedAssumptions = await resolveDeclaredAssumptions({
-        declared: it.assumptions,
+      resolvedAssumptions = await track('assumptions', () => resolveDeclaredAssumptions({
+        declared: declaredAssumptions,
         workItemId: it.id,
         ownerId: ident.ownerId,
         // EI-18806393166489384: `it.harness` is the caller's OPTIONAL arg, so a
@@ -5800,7 +5807,7 @@ async function completeOneTracked(
         // scope at all. The resolver now derives it when absent, but pass the row
         // we already fetched above so the common path costs no extra read.
         harnessSlug: it.harness ?? existing.harness,
-      });
+      }));
     } catch (e) {
       assumptionsError = e instanceof Error ? e.message : String(e);
     }

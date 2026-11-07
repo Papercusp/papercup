@@ -68,11 +68,39 @@ case "$mode" in
       echo "mutation-probe admission: recovery marker collision" >&2
       exit 2
     }
-    if flock -s "$lock" "$0" "$root" -- --inside-admission "$recovery_marker" "$@"; then
+    # Cooperative scope termination addresses this outer shell. Keep it alive
+    # while the admitted owner stops its own services and writes cleanup proof.
+    # --no-fork makes the signalled child the payload (or its bwrap supervisor),
+    # rather than a flock waiter that exits without forwarding TERM.
+    admission_pid=''
+    pending_signal=''
+    pending_status=0
+    forward_signal() {
+      local signal="$1" status="$2"
+      if [ -z "$admission_pid" ]; then
+        pending_signal="$signal"
+        pending_status="$status"
+        return
+      fi
+      trap '' INT TERM
+      kill -s "$signal" "$admission_pid" 2>/dev/null || true
+      wait "$admission_pid" || true
+      rm -f -- "$recovery_marker"
+      exit "$status"
+    }
+    trap 'forward_signal TERM 143' TERM
+    trap 'forward_signal INT 130' INT
+    flock --no-fork -s "$lock" "$0" "$root" -- --inside-admission "$recovery_marker" "$@" &
+    admission_pid=$!
+    if [ -n "$pending_signal" ]; then
+      forward_signal "$pending_signal" "$pending_status"
+    fi
+    if wait "$admission_pid"; then
       command_status=0
     else
       command_status="$?"
     fi
+    trap - INT TERM
     if [ -e "$recovery_marker" ]; then
       rm -f -- "$recovery_marker"
       flock -x "$lock" "$0" "$root" -- --recover-orphan || exit 2

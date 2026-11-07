@@ -377,14 +377,17 @@ function buildPinnedAmendmentReviewBrief(input: AmendmentReviewBriefInput, answe
   });
   const target = answerOn ?? input.sourceTarget;
   if (!target) throw new Error('acceptance_bar_review_source_target_missing');
-  const read = target
-    ? `work_items:get { id:'${target.workItemId}'${target.harness ? `, harness:'${target.harness}'` : ''}, priorAttemptRefs:['${target.workItemId}#comment:${input.previewPostRef.slice('thread-post:'.length)}'], payloadTier:'full' }`
-    : `Read ${input.previewPostRef} on its existing work-item thread with work_items:get priorAttemptRefs (the raw ref is <work-item-id>#comment:${input.previewPostRef.slice('thread-post:'.length)}).`;
-  const signature = `approve ${input.previewPostRef}`;
+  const read = `work_items:get { id:'${target.workItemId}'${target.harness ? `, harness:'${target.harness}'` : ''}, checkpointOnly:true, sourceRef:'${target.workItemId}#comment:${input.previewPostRef.slice('thread-post:'.length)}', offset:0, limit:768 }`;
+  const signature = `approve ${input.previewPostRef}\nverified-complete-source sha256:${hash}`;
+  const priorRubric = source.rubric.baseline as Record<string, unknown>;
+  const nextRubric = source.rubric.candidate as Record<string, unknown>;
+  const rubricFields = Object.fromEntries([...new Set([...Object.keys(priorRubric), ...Object.keys(nextRubric)])]
+    .filter((key) => key !== 'criteria' && JSON.stringify(priorRubric[key]) !== JSON.stringify(nextRubric[key]))
+    .map((key) => [key, { before: priorRubric[key] ?? null, after: nextRubric[key] ?? null }]));
   return [
     `Outside-lineage PRE-APPLY review of ${input.rubricRef}.`,
     `Purpose: ${input.reason?.trim() || source.reason}.`,
-    `Semantic field changes (delta only, not a replacement patch): ${JSON.stringify(fieldDelta)}`,
+    `Semantic field changes (delta only, not a replacement patch): ${JSON.stringify({ criteria: fieldDelta, rubricFields })}`,
     `Removals: ${JSON.stringify(input.preview.approval.bars.filter((bar) => bar.nextBarHash === null).map((bar) => bar.barKey))}.`,
     `Dependency changes (Bar-to-work map): ${JSON.stringify(source.mappingDelta)}. Other source/dependency edits remain in the complete pinned plan.`,
     `Preflight: passed; normalized candidate ${input.preview.candidateValidation.candidateHash}; generated clauses ${input.preview.candidateValidation.generatedSpecCount}.`,
@@ -392,12 +395,12 @@ function buildPinnedAmendmentReviewBrief(input: AmendmentReviewBriefInput, answe
     'Supporting material — one complete immutable copy, including the entire baseline rubric, normalized candidate, complete plan and proposed source:',
     read,
     `The amendment-source JSON block on ${input.previewPostRef} must hash to ${hash} using canonical JSON and SHA-256. The approval JSON on that SAME post must name that reviewSourceHash. Later live source edits do not replace this pinned copy.`,
-    'Recover every page if a read is truncated: capability:read with its byte cursor, follow next_cursor until eof:true and next_cursor:null. An excerpt, missing source, failed retrieval or hash mismatch cannot satisfy approval. The apply guard independently verifies the complete retained source.',
+    'Follow checkpointPage.nextOffset with the same sourceRef until null; require the same checkpointContentHash on every page and concatenate checkpointPage.text in order. priorAttemptRefs is only a bounded preview. If the outer response is truncated, recover its capability:read byte cursor through eof:true and next_cursor:null first. An excerpt, missing source, failed retrieval or hash mismatch cannot satisfy approval. The apply guard independently verifies the retained source and your signed complete-source hash attestation.',
     'Judge the complete acceptance contract and surrounding context. Presentation compaction grants no weaker approval. A newly added BAR is expected to be absent from the baseline. Do not call rubrics:amend or recruit another reviewer.',
     ...(input.reviewEvidence ? [`New verification evidence ${input.reviewEvidence.postRef}: ${JSON.stringify(input.reviewEvidence.body)}`] : []),
     answerOn
-      ? `To approve after complete source verification, use work_items:comment { id:'${answerOn.workItemId}'${answerOn.harness ? `, harness:'${answerOn.harness}'` : ''}, body:'${signature}' }. Put objections on the same thread instead. Then session:end { reason:'BAR amendment review complete' }.`
-      : `To approve after complete source verification, consult:reply { conversation_id:'<this consult>', kind:'answer', body:'${signature}', evidence:[...] }; otherwise reply with the objection. Then consult:close with outcome:'answered' and session:end { reason:'BAR amendment review complete' }.`,
+      ? `To approve after complete source verification, use work_items:comment { id:'${answerOn.workItemId}'${answerOn.harness ? `, harness:'${answerOn.harness}'` : ''}, body:${JSON.stringify(signature)} }. Put objections on the same thread instead. Then session:end { reason:'BAR amendment review complete' }.`
+      : `To approve after complete source verification, consult:reply { conversation_id:'<this consult>', kind:'answer', body:${JSON.stringify(signature)}, evidence:[...] }; otherwise reply with the objection. Then consult:close with outcome:'answered' and session:end { reason:'BAR amendment review complete' }.`,
   ].join('\n');
 }
 
@@ -437,7 +440,8 @@ export type FreshAmendmentReviewerResult =
       answerOn: FreshReviewerAnswerTarget;
       ownerId?: string;
       nativeRef: string;
-      reason: 'account-walled' | 'first-turn-rejected' | 'provider-error' | 'reviewer-ended';
+      logPath?: string;
+      reason: 'account-walled' | 'first-turn-rejected' | 'provider-error' | 'reviewer-ended' | 'kickoff-unverified';
       evidence: string;
       /** A replacement is safe only after the rejected task is confirmed terminal. */
       recovery?: { state: 'stopped' | 'unverified'; evidence: string };
@@ -1025,14 +1029,14 @@ export async function launchFreshAmendmentReviewer(
     effectiveKey: string,
     effectiveLabel: string,
   ): Promise<FreshAmendmentReviewerResult> {
-  if (result?.isError) {
+  const task = result?.data?.launch?.tasks?.[0];
+  if (result?.isError && !task) {
     const text = (result.content ?? []).map((c) => c.text ?? '').join(' ').trim();
     return { state: 'not-launched', reason: `launch refused: ${clip(text || 'no detail', 400)}` };
   }
-  const task = result?.data?.launch?.tasks?.[0];
-  const taskId = task?.taskId;
-  const ownerId = typeof task?.ownerId === 'string' ? task.ownerId : undefined;
-  const nativeRef = typeof task?.kickoffProof?.nativeRef === 'string' ? task.kickoffProof.nativeRef : undefined;
+  const taskId = typeof task?.taskId === 'string' ? task.taskId.trim() : undefined;
+  const ownerId = typeof task?.ownerId === 'string' ? task.ownerId.trim() : undefined;
+  const nativeRef = typeof task?.kickoffProof?.nativeRef === 'string' ? task.kickoffProof.nativeRef.trim() : undefined;
   const retained = {
     launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
     taskId: typeof taskId === 'string' ? taskId : null,
@@ -1044,6 +1048,20 @@ export async function launchFreshAmendmentReviewer(
     ...(nativeRef ? { nativeRef } : {}),
     ...(relaunchedAfter.length > 0 ? { relaunchedAfter: [...relaunchedAfter] } : {}),
   };
+  // A terminal opening is not a submitted kickoff. launch-agent deliberately
+  // retains partial launches (and their idempotency key) so retrying cannot
+  // duplicate a child. Preserve that custody instead of promoting missing or
+  // negative native proof into a successful reviewer receipt (EI-281472).
+  if (result?.isError || result?.data?.launch?.partial === true ||
+      result?.data?.launch?.kickoffProof?.persisted === false || task?.status === 'error' ||
+      !taskId || !ownerId || !nativeRef || task?.kickoffProof?.persisted !== true) {
+    const reason = task?.kickoffProof?.reason;
+    const logPath = typeof task?.logPath === 'string' && task.logPath.trim() ? task.logPath : undefined;
+    return { state: 'blocked', ...retained, nativeRef: nativeRef || 'unknown',
+      ...(logPath ? { logPath } : {}), reason: 'kickoff-unverified',
+      evidence: `Reviewer kickoff was not verified: ${typeof reason === 'string' && reason.trim()
+        ? reason : 'launch requires a task, owner and persisted native kickoff receipt'}` };
+  }
   // A submitted kickoff is not a successful provider reply. Reuse the consult
   // transcript analyzer: synthetic billing/context/tool errors count, quoted
   // error prose and copied history do not. Re-check deduped launches too, so a
@@ -1103,10 +1121,12 @@ export async function launchFreshAmendmentReviewer(
 type LaunchResult = {
   isError?: boolean;
   content?: Array<{ text?: string }>;
-  data?: { deduped?: boolean; launch?: { tasks?: Array<{
+  data?: { deduped?: boolean; launch?: { partial?: boolean; kickoffProof?: { persisted?: unknown }; tasks?: Array<{
     taskId?: unknown;
     ownerId?: unknown;
-    kickoffProof?: { nativeRef?: unknown };
+    logPath?: unknown;
+    status?: unknown;
+    kickoffProof?: { persisted?: unknown; nativeRef?: unknown; reason?: unknown };
   }> } };
 };
 
@@ -1121,15 +1141,16 @@ async function verifyPreviewPostWithApplyResolver(args: {
   previewPostRef: string;
   approval: AcceptanceBarAmendmentPreview['approval'];
   reviewSource?: AcceptanceBarAmendmentPreview['reviewSource'];
-}): Promise<void> {
+}): Promise<void | { reviewSource?: AcceptanceBarAmendmentPreview['reviewSource'] }> {
   const [{ getOrgPg }, { resolveAcceptanceBarApproval }] = await Promise.all([
     import('@papercusp/db-org'),
     import('../acceptance-bar-amendment'),
   ]);
-  await resolveAcceptanceBarApproval(getOrgPg().sql as never, {
+  return resolveAcceptanceBarApproval(getOrgPg().sql as never, {
     workspaceId: args.workspaceId,
     approvalRef: args.previewPostRef,
     expected: args.approval,
+    purpose: 'review-recruitment',
     ...(args.reviewSource ? { expectedSource: args.reviewSource } : {}),
   });
 }
@@ -1328,14 +1349,16 @@ export async function openAcceptanceBarAmendmentReview(
   if (!PREVIEW_POST_REF.test(previewPostRef)) {
     throw new Error(`invalid_args: reviewPreviewPost must be thread-post:<id>, got '${input.previewPostRef}'`);
   }
+  let retainedSource: AcceptanceBarAmendmentPreview['reviewSource'];
   try {
     input.onPhase?.('review-preview-verification');
-    await (deps.verifyPreviewPost ?? verifyPreviewPostWithApplyResolver)({
+    const verified = await (deps.verifyPreviewPost ?? verifyPreviewPostWithApplyResolver)({
       workspaceId: input.workspaceId,
       previewPostRef,
       approval: input.preview.approval,
       ...(input.preview.reviewSource ? { reviewSource: input.preview.reviewSource } : {}),
     });
+    retainedSource = verified?.reviewSource;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -1362,10 +1385,14 @@ export async function openAcceptanceBarAmendmentReview(
     ? await (deps.resolveSourceTarget ?? resolvePreviewPostWorkItem)({ workspaceId: input.workspaceId, previewPostRef })
     : undefined;
   if (input.preview.reviewSource && !sourceTarget) throw new Error('acceptance_bar_review_source_target_missing');
+  // A regenerated declaration time may differ from the immutable preview.
+  // Recruit against the bytes actually retained, after checking their equivalence.
+  const reviewPreview = retainedSource ? { ...input.preview, reviewSource: retainedSource,
+    approval: { ...input.preview.approval, reviewSourceHash: acceptanceBarReviewSourceHash(retainedSource) } } : input.preview;
   input.onPhase?.('review-route');
   const routed = await (deps.route ?? routeAcceptanceBarAmendmentReview)({
     rubricRef: input.rubricRef,
-    brief: buildAmendmentReviewBrief({ ...input, previewPostRef, reviewEvidence, reviewSources,
+    brief: buildAmendmentReviewBrief({ ...input, preview: reviewPreview, previewPostRef, reviewEvidence, reviewSources,
       ...(sourceTarget ? { sourceTarget } : {}) }),
     identity: input.identity,
     workspaceId: input.workspaceId,
@@ -1391,7 +1418,7 @@ export async function openAcceptanceBarAmendmentReview(
     freshReviewer = await (deps.launchFresh ?? launchFreshAmendmentReviewer)({
       rubricRef: input.rubricRef,
       previewPostRef,
-      preview: input.preview,
+      preview: reviewPreview,
       reviewSources,
       ...(routed.conversationId ? { reviewConversationId: routed.conversationId } : {}),
       ...(input.reason ? { reason: input.reason } : {}),
@@ -1450,6 +1477,7 @@ export async function openAcceptanceBarAmendmentReview(
       : freshReviewer.state === 'blocked'
         ? `The retained outside-lineage reviewer is blocked (${freshReviewer.reason}): ${freshReviewer.evidence}. ` +
           `Task ${freshReviewer.taskId ?? 'unknown'}, transcript ${freshReviewer.nativeRef}. ` +
+          (freshReviewer.logPath ? `Launch log ${freshReviewer.logPath}. ` : '') +
           (freshReviewer.recovery?.state === 'stopped'
             ? `The rejected task is confirmed terminal (${freshReviewer.recovery.evidence}). Repeat the same rubrics:amend dry run with reviewPreviewPost:'${previewPostRef}' and a permitted reviewerModel with available capacity; the screened system recruiter owns replacement. ` +
               `If anything was posted on that thread after ${previewPostRef} (your own notes count), the repeat recruits nobody until you post a short evidence note there saying why the review is repeated and also pass reviewEvidencePost:'thread-post:<that note>'. `

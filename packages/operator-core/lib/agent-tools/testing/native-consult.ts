@@ -3,7 +3,13 @@ import { z } from 'zod';
 import type { AgentIdentity } from '../coordination/identity';
 import { nativeConsultConstraintsSchema } from '../../consult/native-consult';
 import { acceptFeedbackRequestProd } from '../../consult/get-feedback-prod';
-import { readHeldWorkItems } from '../../carry-brief';
+import type { readHeldWorkItems } from '../../carry-brief';
+
+// carry-brief reaches the testing registry; load it after schema initialization.
+const readHeldWorkItemsProd: typeof readHeldWorkItems = async (...args) => {
+  const { readHeldWorkItems } = await import('../../carry-brief');
+  return readHeldWorkItems(...args);
+};
 
 export const nativeConsultScenarioSchema = nativeConsultConstraintsSchema.extend({
   request_key: z.string().trim().min(1).max(160),
@@ -20,7 +26,7 @@ export type NativeConsultScenario = z.infer<typeof nativeConsultScenarioSchema>;
 export async function acceptNativeConsultScenario(input: {
   scenario: NativeConsultScenario; identity: AgentIdentity; harnessSlug: string;
   workspaceId: string; workItemId: string;
-}, deps = { readHeldWorkItems, accept: acceptFeedbackRequestProd }) {
+}, deps = { readHeldWorkItems: readHeldWorkItemsProd, accept: acceptFeedbackRequestProd }) {
   // Native agent resources require a measured hold; unreadable claims refuse.
   const held = await deps.readHeldWorkItems(input.identity.ownerId, input.workspaceId, { limit: 200 });
   if (!held.some(item => item.id === input.workItemId)) {

@@ -1424,7 +1424,7 @@ describe('testing:run (integration)', () => {
       taskId: 'testtask1234',
       scopeUnit: 'pc-testtask1234.scope',
       confined: true,
-      waitForCompletion: async () => ({ status: 'recorded' }),
+      waitForCompletion: async () => ({ status: 'recorded' as const }),
     }));
     const teardownSteps: string[] = [];
     const undoTeardown = vi.fn();
@@ -1497,7 +1497,7 @@ describe('testing:run (integration)', () => {
       const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
       const managedSpawnFn = vi.fn(async () => ({
         child, taskId: 'teardown-refusal', scopeUnit: 'pc-teardown-refusal.scope', confined: true,
-        waitForCompletion: async () => ({ status: 'recorded' }),
+        waitForCompletion: async () => ({ status: 'recorded' as const }),
       }));
       const undoTeardown = vi.fn();
       const markManagedTeardownFn = vi.fn(() => undoTeardown);
@@ -1619,6 +1619,26 @@ describe('testing:run (integration)', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it.each([false, true])('passes only this run criterion case context to a real router (selected=%s)', async selected => {
+    const root = await makeScratchTestCheckout('papercusp-testing-criterion-context-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const capture = join(root, 'criterion-context.json');
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(capture)}, process.env.PAPERCUSP_CRITERION_TEST_CASES);`,
+      "console.log('ROUTE cwd=packages/x runner=node:test\\n  requested real.test.ts\\n# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const criterionCases = [{ file: join(root, 'packages/x/real.test.ts'), testName: 'exact shipped case' }];
+    vi.stubEnv('PAPERCUSP_CRITERION_TEST_CASES', JSON.stringify([{ file: '/old.test.ts', testName: 'old context' }]));
+    try {
+      const result = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000,
+        ...(selected ? { criterionCases } : {}) });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, passed: 1, failed: 0 });
+      expect(JSON.parse(await readFile(capture, 'utf8'))).toEqual(selected ? criterionCases : []);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it('keeps reporter-stage tracing off unless the current run opts in', async () => {
@@ -2037,6 +2057,7 @@ describe('testing:run (integration)', () => {
           [collectionFile]: { passed: 0, failed: 1, collectionFailed: true },
         },
       });
+      if (!('failures' in out)) throw new Error(`expected a measured collection failure: ${JSON.stringify(out)}`);
       expect(out.failures).toContainEqual(expect.objectContaining({
         file: collectionFile,
         test: '(file failed to collect)',
@@ -2081,6 +2102,7 @@ describe('testing:run (integration)', () => {
         files: 1,
         byFile: { [file]: { passed: 0, failed: 1, collectionFailed: true } },
       });
+      if (!('failures' in out)) throw new Error(`expected a measured collection failure: ${JSON.stringify(out)}`);
       expect(out.failures?.[0]).toMatchObject({
         file,
         test: '(file failed to collect)',

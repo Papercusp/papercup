@@ -20,6 +20,7 @@ import {
   carryUnchangedBarEvidenceBindings,
   shouldCarryBarEvidence,
   validateAcceptanceBarRevisionProjectionPreview,
+  type AcceptanceBarReviewSource,
 } from './acceptance-bar-amendment';
 import { AcceptanceBarCandidateError } from './acceptance-bar-projection';
 import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
@@ -82,7 +83,7 @@ describe('acceptance BAR amendment transaction contract', () => {
     if (!seeded.ok) throw new Error('fixture seed failed');
     const prior = rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
     const criterion = normalizeAcceptanceBarCriterion({ ...prior.criteria[0]!, evidencePlane: 'live',
-      requiredEvidencePlanes: ['tree', 'live'], requiredTestLayers: ['unit'],
+      requiredEvidencePlanes: ['tree'], requiredTestLayers: ['unit'],
       model: 'The writer stores the current verdict.' });
     const next = { ...prior, criteria: [criterion], barSetHash: computeAcceptanceBarSetHash([criterion]) };
     const observe = vi.spyOn(specStore, 'specClauseWriteIssues');
@@ -102,7 +103,7 @@ describe('acceptance BAR amendment transaction contract', () => {
           rubricRevision: 5, templateData: next, previousTemplateData: prior,
         })).resolves.toMatchObject({ generatedSpecCount: 1 });
         const write = observe.mock.calls[0]![0];
-        expect([...write.requiredEvidence].sort()).toEqual(existing ? ['live', 'tree', 'unit'] : ['live', 'tree']);
+        expect(write.requiredEvidence?.slice().sort()).toEqual(existing ? ['live', 'tree', 'unit'] : ['live', 'tree']);
         expect(write.requiredTestLayers).toEqual(['unit']);
         if (existing) expect(write.mutationRequired).toBe(true);
       }
@@ -1194,16 +1195,17 @@ describe('WI-6554700010046154 approval survives apply-time new-BAR metadata', ()
       reason: 'Add the second outcome', mappingDelta: [] as unknown[] };
   }
 
-  function receipt(reviewSource: ReturnType<typeof source>) {
+  function receipt(reviewSource: AcceptanceBarReviewSource) {
     return { schemaVersion: 1 as const, kind: 'acceptance-bar-amendment-approval' as const,
       rubricRef: 'acceptance-plan', subjectPlan: 'plan', proposedPatchHash: 'c'.repeat(64),
       reviewSourceHash: acceptanceBarReviewSourceHash(reviewSource),
       bars: [{ barKey: 'R-2', priorBarHash: null, nextBarHash: 'b'.repeat(64) }] };
   }
 
-  function resolve(current: ReturnType<typeof source>, options: { omitExpectedSource?: boolean; tamperBody?: boolean;
-    attestation?: string; body?: string } = {}) {
-    const reviewed = source();
+  function resolve(current: AcceptanceBarReviewSource, options: { omitExpectedSource?: boolean; tamperBody?: boolean;
+    attestation?: string; body?: string; reviewed?: AcceptanceBarReviewSource;
+    purpose?: 'review-recruitment' } = {}) {
+    const reviewed = options.reviewed ?? source();
     const body = acceptanceBarReviewPostBody(receipt(reviewed), reviewed);
     const sql = vi.fn()
       .mockResolvedValueOnce([{ author_id: 'reviewer', body: `approve thread-post:456\n${options.attestation ?? `verified-complete-source sha256:${receipt(reviewed).reviewSourceHash}`}`, approved_at: '2026-11-06T00:01:00.000Z' }])
@@ -1211,6 +1213,7 @@ describe('WI-6554700010046154 approval survives apply-time new-BAR metadata', ()
     return resolveAcceptanceBarApproval(sql as never, {
       workspaceId: 'workspace', approvalRef: 'thread-post:123', expected: receipt(current),
       ...(options.omitExpectedSource ? {} : { expectedSource: current }),
+      ...(options.purpose ? { purpose: options.purpose } : {}),
     });
   }
 
@@ -1222,6 +1225,57 @@ describe('WI-6554700010046154 approval survives apply-time new-BAR metadata', ()
 
   it('accepts the immutable reviewed addition at a later declaration time', async () => {
     await expect(resolve(atApplyTime())).resolves.toMatchObject({ approvedBy: 'reviewer' });
+  });
+
+  function compact(value: AcceptanceBarReviewSource): AcceptanceBarReviewSource {
+    const { proposedContent: _proposed, ...subjectPlan } = value.subjectPlan;
+    return { ...value, subjectPlan: { ...subjectPlan, proposedContentUnchanged: true } };
+  }
+
+  it.each(['review-recruitment', 'apply'] as const)(
+    'accepts both legacy/compact encoding directions during %s with original signed bytes', async (purpose) => {
+      const reviewed = source();
+      const current = purpose === 'apply' ? atApplyTime() : source();
+      const options = purpose === 'review-recruitment' ? { purpose, attestation: '' } : {};
+      const signedHash = receipt(reviewed).reviewSourceHash;
+      expect(receipt(compact(reviewed)).reviewSourceHash).not.toBe(signedHash);
+      await expect(resolve(compact(current), { ...options, reviewed })).resolves.toMatchObject({ approvedBy: 'reviewer' });
+      await expect(resolve(current, { ...options, reviewed: compact(reviewed) })).resolves.toMatchObject({ approvedBy: 'reviewer' });
+      expect(receipt(reviewed).reviewSourceHash).toBe(signedHash);
+    });
+
+  it.each([
+    { proposedContentUnchanged: false },
+    { proposedContentUnchanged: 'true' },
+    { proposedContentUnchanged: null },
+    { proposedContentUnchanged: true, proposedContent: 'Plan source' },
+    { proposedContentUnchanged: true, proposedContent: 'Changed proposed source' },
+  ])('rejects malformed or conflicting compact markers: %j', async (marker) => {
+    // Retained JSON is untrusted at this boundary, even if its hash is valid.
+    const invalid = JSON.parse(JSON.stringify({ ...compact(source()), subjectPlan: {
+      ...compact(source()).subjectPlan, ...marker,
+    } })) as AcceptanceBarReviewSource;
+    await expect(resolve(invalid)).rejects.toThrow('acceptance_bar_review_source_mismatched');
+    await expect(resolve(source(), { reviewed: invalid })).rejects.toThrow('acceptance_bar_review_source_mismatched');
+  });
+
+  it('does not let compact encoding authorize changed retained content or proposed text', async () => {
+    const changed = compact(atApplyTime());
+    changed.subjectPlan.content = 'Later live plan';
+    await expect(resolve(changed)).rejects.toThrow('acceptance_bar_review_source_mismatched');
+    const proposed = atApplyTime();
+    proposed.subjectPlan.proposedContent = 'Changed proposed source';
+    await expect(resolve(proposed, { reviewed: compact(source()) }))
+      .rejects.toThrow('acceptance_bar_review_source_mismatched');
+  });
+
+  it('still rejects tampered compact source and attestations for the legacy encoding', async () => {
+    const reviewed = compact(source());
+    await expect(resolve(atApplyTime(), { reviewed, tamperBody: true }))
+      .rejects.toThrow('acceptance_bar_review_source_mismatched');
+    await expect(resolve(atApplyTime(), { reviewed,
+      attestation: `verified-complete-source sha256:${receipt(source()).reviewSourceHash}` }))
+      .rejects.toThrow('acceptance_bar_review_source_attestation_required');
   });
 
   it.each(['', `verified-complete-source sha256:${'0'.repeat(64)}`,

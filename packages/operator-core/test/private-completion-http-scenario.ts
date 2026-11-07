@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItem } from '../lib/work-items';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../lib/coord-lifecycle/records';
@@ -44,7 +45,7 @@ export async function measurePrivateCompletionScenario(o: Options) {
   let client: Awaited<ReturnType<typeof connectAgentMcp>>['client'] | undefined;
   const priorFailureLog = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
   const proxyLogs: string[] = [];
-  let invalidBearerStatus: number | undefined;
+  let invalidBearerRejection: string | undefined;
   try {
   if (transport === 'mcp-proxy') {
     const token = readSuperuserToken();
@@ -64,17 +65,20 @@ export async function measurePrivateCompletionScenario(o: Options) {
     for (const [key, value] of Object.entries({ superuser: '1', workspace: o.workspace,
       harness: o.harness, client: 'su-private-completion-' + randomUUID(), structured: '1', format: 'json' }))
       url.searchParams.set(key, value);
-    // Exercise the operator's auth boundary directly: a loopback proxy may
-    // independently attach its maintained local bearer on forwarded requests.
-    const refused = await fetch(o.base + url.pathname + url.search, { method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream',
-        authorization: 'Bearer invalid-private-completion-token' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
-        protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'private-invalid-control', version: '1' } } }),
-      signal: AbortSignal.timeout(10_000) });
-    await refused.arrayBuffer();
-    invalidBearerStatus = refused.status;
-    assert.ok([401, 403].includes(refused.status), 'invalid bearer must be refused');
+    // Initialization negotiates the protocol; the host checks authority on
+    // tool requests. Bypass proxy bearer injection for this negative control.
+    const invalid = await connectAgentMcp({ url: o.base + url.pathname + url.search,
+      mode: 'http', name: 'private-invalid-control',
+      headers: { Authorization: 'Bearer invalid-private-completion-token' } });
+    try {
+      const refused = await invalid.client.callTool({ name: 'coord:whoami',
+        arguments: {} }, undefined, { timeout: 30_000 }) as CallToolResult;
+      await writeFile(join(o.evidenceDir, 'completion-auth-control.json'), JSON.stringify(refused), { flag: 'wx' });
+      assert.equal(refused.isError, true, 'invalid bearer must not dispatch a tool');
+      invalidBearerRejection = refused.content?.filter((part: any) => part.type === 'text')
+        .map((part: any) => part.text).join('\n');
+      assert.equal(invalidBearerRejection, 'request_rejected: superuser_invalid_bearer');
+    } finally { await invalid.client.close(); }
     ({ client } = await connectAgentMcp({ url: url.href, mode: 'http',
       name: 'private-completion-proxy', headers: { Authorization: `Bearer ${token}` } }));
     await client.listTools();
@@ -197,7 +201,7 @@ export async function measurePrivateCompletionScenario(o: Options) {
     reportId: published.report_id, reportBodySha256: createHash('sha256').update(reportBody).digest('hex'),
     reportVerifiedBeforeClose: verifiedBeforeCloseAtMs <= closeStartedAtMs,
     verifiedBeforeCloseAtMs, closeStartedAtMs, closeCompletedAtMs,
-    transport, completionElapsedMs, replay, invalidBearerStatus, healthBefore, healthAfter, requests,
+    transport, completionElapsedMs, replay, invalidBearerRejection, healthBefore, healthAfter, requests,
     scope: transport === 'mcp-proxy'
       ? 'Current-build production MCP proxy and bearer-authenticated MCP host with private PostgreSQL; excludes historical shared-database pressure and native CLI launch.'
       : 'Current-build palette HTTP dispatch with private PostgreSQL; excludes original MCP proxy/native-auth queue.' };

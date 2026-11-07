@@ -57,10 +57,24 @@ const frozenDesignSelectors = [
 ] as const;
 const identities = ['attempt', 'candidate', 'repair', 'run', 'runner', 'pid', 'boot', 'scope',
   'phase', 'epoch', 'workspace', 'install'] as const;
+const milestoneAdapters = [
+  ['launching', 'candidate-checkout'], ['materializing', 'dependency-materialization'],
+  ['materializing', 'selected-setup'], ['suite', 'selected-test'], ['isolating', 'rescue'],
+  ['isolating', 'confirmation'], ['delivering', 'result-acknowledgment'],
+  ['finalizing', 'result-manifest'], ['finalizing', 'verdict'], ['delivering', 'promotion'],
+  ['delivering', 'deployment'], ['finalizing', 'notification'],
+] as const;
+const emptyFrontierPhases = ['suite', 'isolating', 'delivering', 'finalizing'] as const;
 
 it('every required qualification scenario has an exact maintained detector routed by grading', () => {
   const cases: { scenario: string; file: string; testName: string }[] = rows.map(
     ([scenario, file, testName]) => ({ scenario, file: prefix + file, testName }));
+  for (const [phase, operation] of milestoneAdapters) cases.push({ scenario: `milestone-${phase}-${operation}`,
+    file: prefix + 'release/checkpoint-qualification-runner-liveness.test.ts',
+    testName: `phase-milestone: ${phase} ${operation} accepts only a declared durable completion` });
+  for (const phase of emptyFrontierPhases) cases.push({ scenario: `empty-frontier-${phase}`,
+    file: prefix + 'release/checkpoint-qualification-runner-liveness.test.ts',
+    testName: `empty-frontier: ${phase} stays unknown before its first declared durable completion` });
   for (const identity of identities) cases.push({ scenario: `identity-${identity}`,
     file: prefix + 'release/checkpoint-qualification-runner-liveness.test.ts',
     testName: `phase-progress-fence: rejects an old ${identity} probe` });
@@ -112,7 +126,9 @@ it('every required qualification scenario has an exact maintained detector route
   const crosswalk: Record<string, { scenarios?: string[]; manualBar?: string }> = {
     'phase-progress-fence': { scenarios: identities.map(identity => `identity-${identity}`) },
     'irrelevant-counter': { scenarios: ['irrelevant-counter'] },
-    'quiet-progress': { scenarios: ['quiet-progress', 'quiet-unknown-and-declared-advance'] },
+    'quiet-progress': { scenarios: ['quiet-progress', 'quiet-unknown-and-declared-advance',
+      ...milestoneAdapters.map(([phase, operation]) => `milestone-${phase}-${operation}`),
+      ...emptyFrontierPhases.map(phase => `empty-frontier-${phase}`)] },
     'observer-partition-restart': { scenarios: ['observer-restart', 'observer-failure'] },
     'stale-sample-replay': { scenarios: ['stale-sample'] },
     'clock-rebase': { scenarios: [-60_000, 60_000, 200_000].map(offset => `clock-rebase-${offset}`) },

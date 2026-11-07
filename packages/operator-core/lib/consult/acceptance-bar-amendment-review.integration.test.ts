@@ -2,15 +2,24 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   inspectFreshAmendmentReviewer, openAcceptanceBarAmendmentReview, previewThreadHasLaterPost, resolveAmendmentReviewEvidence,
-  verifyAmendmentReviewCandidate, type OpenAmendmentReviewInput,
+  verifyAmendmentReviewCandidate, type AmendmentReviewRouteInput, type OpenAmendmentReviewInput,
 } from './acceptance-bar-amendment-review';
 import {
   acceptanceBarReviewPostBody, acceptanceBarReviewSourceHash,
+  resolveAcceptanceBarApproval,
   validateAcceptanceBarRevisionProjectionPreview,
 } from '../acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from '../acceptance-bar-seed';
 import type { AcceptanceBarAmendmentPreview } from '../rubrics';
 import { rubricTemplateDataAuthoringSchema } from '../agent-tools/plans/rubric-template';
+
+// Install before the static review imports load their work-item dependencies.
+// A doMock in beforeAll leaves those already-cached readers on another pool.
+let activeDb: OrgTestDb;
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: activeDb.adminSql }),
+}));
 
 describe('retained BAR re-review evidence custody (EI-25992283418918681)', () => {
   let db: OrgTestDb;
@@ -20,6 +29,7 @@ describe('retained BAR re-review evidence custody (EI-25992283418918681)', () =>
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    activeDb = db;
     for (const [key, author, body, thread, workspace, origin] of [
       ['before', 'applier', 'Old evidence', 'preview-thread', workspaceId, 'local'],
       ['preview', 'applier', 'Immutable approval JSON', 'preview-thread', workspaceId, 'local'],
@@ -245,13 +255,16 @@ describe('retained preview recovery across generated declaration times (EI-28093
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    vi.doMock('@papercusp/db-org', async (original) => ({
-      ...(await original<typeof import('@papercusp/db-org')>()),
-      getOrgPg: () => ({ sql: db.adminSql }),
-    }));
+    activeDb = db;
+    // The compatibility view inserts through a trigger, so an outer
+    // ON CONFLICT does not make repeated fixture inserts idempotent.
+    await db.adminSql`INSERT INTO harness_shared.engineer_issues
+      (workspace_id, issue_id, scope, title, body, state, kind, severity)
+      VALUES (${workspaceId}, 'WI-300003', 'harness:papercusp', 'Pinned review source', '', 'open', 'task', 'minor')`;
+    await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id, thread_id, parent_kind, parent_ref)
+      VALUES (${workspaceId}, 'retained-time-preview', 'issue', 'WI-300003')`;
   });
   afterAll(async () => {
-    vi.doUnmock('@papercusp/db-org');
     await db?.cleanup();
   });
 
@@ -281,13 +294,15 @@ describe('retained preview recovery across generated declaration times (EI-28093
 
   async function fixture() {
     const reviewed = source();
+    reviewed.subjectPlan.content = `Plan context ${'surrounding context 🧭 '.repeat(100)}end of complete source`;
+    reviewed.subjectPlan.proposedContent = reviewed.subjectPlan.content;
     const body = acceptanceBarReviewPostBody(preview(reviewed).approval, reviewed);
     const [post] = await db.adminSql<Array<{ id: number }>>`
       INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
       VALUES (${workspaceId}, 'retained-time-preview', 'applier', ${body}, 'local') RETURNING id`;
-    const current = source();
+    const current = structuredClone(reviewed);
     current.rubric.candidate.criteria[1]!.barProvenance.declaredAt = '2026-11-07T00:10:00.000Z';
-    const route = vi.fn(async () => ({ state: 'routed' as const, conversationId: 'retained-time-review',
+    const route = vi.fn(async (_input: AmendmentReviewRouteInput) => ({ state: 'routed' as const, conversationId: 'retained-time-review',
       responderId: 'independent-reviewer', screenedOut: [] }));
     const input = (): OpenAmendmentReviewInput => ({
       rubricRef: 'acceptance-source-time', previewPostRef: `thread-post:${post!.id}`,
@@ -298,14 +313,37 @@ describe('retained preview recovery across generated declaration times (EI-28093
     // Candidate compilation, target lookup and recruitment are outside this
     // guard. The default verifier reads the real PG post and runs the resolver.
     const deps = { route, verifyCandidate: async () => {},
-      resolveSourceTarget: async () => ({ workItemId: 'WI-preview-source-time', harness: 'papercusp' }) };
-    return { current, route, input, deps };
+      resolveSourceTarget: async () => ({ workItemId: 'WI-300003', harness: 'papercusp' }) };
+    return { current, route, input, deps, reviewed, body };
   }
 
   it('routes the original immutable preview when only a new BAR declaration time changed', async () => {
-    const { input, deps, route } = await fixture();
+    const { input, deps, route, reviewed } = await fixture();
     await expect(openAcceptanceBarAmendmentReview(input(), deps)).resolves.toMatchObject({ state: 'routed' });
     expect(route).toHaveBeenCalledOnce();
+    const brief = route.mock.calls[0]![0].brief;
+    expect(brief).toContain(`candidate/source SHA-256 ${preview(reviewed).approval.reviewSourceHash}`);
+    expect(brief).not.toContain(`candidate/source SHA-256 ${input().preview.approval.reviewSourceHash}`);
+  });
+
+  it('requires persisted reviewer attestation of the original retained source before apply', async () => {
+    const { input, current, reviewed } = await fixture();
+    const originalHash = preview(reviewed).approval.reviewSourceHash!;
+    for (const [attestation, approved] of [
+      ['', false], [`verified-complete-source sha256:${'0'.repeat(64)}`, false],
+      [`verified-complete-source sha256:${originalHash}`, true],
+    ] as const) {
+      const body = `approve ${input().previewPostRef}\n${attestation}`;
+      const [row] = await db.adminSql<Array<{ id: number }>>`
+        INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+        VALUES (${workspaceId}, 'retained-time-preview', 'independent-reviewer', ${body}, 'local') RETURNING id`;
+      const result = resolveAcceptanceBarApproval(db.adminSql as never, {
+        workspaceId, approvalRef: `thread-post:${row!.id}`, expected: preview(current).approval,
+        expectedSource: current,
+      });
+      if (approved) await expect(result).resolves.toMatchObject({ approvedBy: 'independent-reviewer' });
+      else await expect(result).rejects.toThrow('acceptance_bar_review_source_attestation_required');
+    }
   });
 
   it.each<[string, (current: ReturnType<typeof source>) => void]>([
@@ -318,5 +356,47 @@ describe('retained preview recovery across generated declaration times (EI-28093
     mutate(current);
     await expect(openAcceptanceBarAmendmentReview(input(), deps)).rejects.toThrow('acceptance_bar_review_source_mismatched');
     expect(route).not.toHaveBeenCalled();
+  });
+
+  it('retrieves every pinned source page after live candidate edits and refuses missing source refs', async () => {
+    const { input, current, reviewed, body } = await fixture();
+    current.subjectPlan.content = 'Later mutable replacement';
+    const { runWithWorkspace } = await import('../workspace-als');
+    const { getWorkItem } = await import('../work-items');
+    await expect(runWithWorkspace(workspaceId, () => getWorkItem('WI-300003', 'papercusp')))
+      .resolves.toMatchObject({ id: 'WI-300003' });
+    const { default: get } = await import('../agent-tools/work_items/get');
+    const sourceRef = `WI-300003#comment:${input().previewPostRef.slice('thread-post:'.length)}`;
+    const read = async (offset: number, ref = sourceRef) => {
+      const args = get.args.parse({ id: 'WI-300003', harness: 'papercusp',
+        checkpointOnly: true, sourceRef: ref, offset, limit: 768 });
+      const result = await runWithWorkspace(workspaceId, () =>
+        get.handler(args, { workspaceId, uiClientId: 'applier' } as never));
+      return (result as { data: { results: Array<{ ok: boolean; checkpointContentHash: string | null;
+        checkpointSourceStatus: string; checkpointPage: { text: string; nextOffset: number | null } | null }> } }).data.results[0]!;
+    };
+    let offset: number | null = 0;
+    let complete = '';
+    let hash: string | null = null;
+    let pages = 0;
+    while (offset !== null) {
+      const row = await read(offset);
+      expect(row.ok, JSON.stringify(row)).toBe(true);
+      expect(row.checkpointSourceStatus).toBe('resolved');
+      expect(row.checkpointPage).not.toBeNull();
+      if (pages > 0) expect(row.checkpointContentHash).toBe(hash);
+      hash = row.checkpointContentHash;
+      complete += row.checkpointPage!.text;
+      offset = row.checkpointPage!.nextOffset;
+      pages++;
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(complete).toBe(body);
+    expect(complete).toContain('end of complete source');
+    expect(complete).not.toContain('Later mutable replacement');
+    expect(complete).toContain(acceptanceBarReviewSourceHash(reviewed));
+    expect(await read(0, 'WI-300003#comment:999999999')).toMatchObject({
+      checkpointSourceStatus: 'unresolved', checkpointPage: null,
+    });
   });
 });

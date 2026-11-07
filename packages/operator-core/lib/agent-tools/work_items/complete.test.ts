@@ -13,6 +13,7 @@
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { join } from 'node:path';
 
 import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
@@ -1770,6 +1771,36 @@ describe('work_items:complete (keyed-array)', () => {
     expect(carried).toContain('main is at abc123');
     expect(carried).toContain('verification pass done');
     expect(carried).toContain('checkpointProseSnapshot');
+  });
+
+  it('attributes a blocked checkpoint read before attaching completion evidence', async () => {
+    getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
+    let release!: (value: null) => void;
+    let entered!: () => void;
+    const enteredCheckpoint = new Promise<void>(resolve => { entered = resolve; });
+    const checkpoint = new Promise<null>(resolve => { release = resolve; });
+    getWorkItemCheckpoint.mockImplementationOnce(() => { entered(); return checkpoint; });
+    const phases = createPhaseTracker();
+    const previousPhases = Object.getOwnPropertyDescriptor(ctxFields, 'phases');
+    Object.assign(ctxFields, { phases });
+    const attempt = one({ id: 'F-12', completion: { summary: 'shipped' } });
+    try {
+      await enteredCheckpoint;
+      expect(phases.snapshot().activePhase).toBe('completion:checkpoint-readback');
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      release(null);
+      expect(await attempt).toMatchObject({ ok: true });
+      expect(phases.snapshot().activePhases).toEqual([]);
+      expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
+    } finally {
+      release(null);
+      try { await attempt; }
+      finally {
+        if (previousPhases) Object.defineProperty(ctxFields, 'phases', previousPhases);
+        else Reflect.deleteProperty(ctxFields, 'phases');
+      }
+    }
   });
 
   it('retains complete long checkpoint prose before terminal cleanup', async () => {

@@ -20,10 +20,33 @@ import { persistResearchBatch, researchSubjects, suggestResearchAnchors } from '
 import { acceptFeedbackRequestCore, getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from '../../consult/get-feedback-core';
 import { BAR_CRITIQUE_POLICY } from '../../consult/selection-policies';
 import { evaluateBarCritiqueGate, type BarCritiqueClause } from './plan-start-critique-gate';
-import { bindSpecEvidence, listSpecEvidence, measureWorkItemsEvidenceForScope } from './spec-evidence-store';
-import { setSpecClause } from './spec-clauses-store';
-import { setWorkItemState } from '../../work-items';
+import { bindSpecEvidence, listSpecEvidence, measureWorkItemsEvidenceForScope, measureRepoFilesEvidenceAtRoot } from './spec-evidence-store';
+import { listSpecClauses, setSpecClause, type SpecClauseSql } from './spec-clauses-store';
+import { getWorkItem, setWorkItemState } from '../../work-items';
 import { runWithWorkspace } from '../../workspace-als';
+import { seedAcceptanceBarsInTransaction } from '../../acceptance-bar-seed';
+import { getRubric } from '../../rubrics';
+import { readAcceptanceBarContractSnapshot } from '../../acceptance-bar-contract-snapshot';
+import { evaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
+import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
+import { evaluateSpecTestAdequacy } from './spec-test-adequacy';
+import type { ScorecardRow } from '../../scorecards';
+import { reconcilePlanAuthoredDependenciesNow } from '../../plan-items/reconcile-linked-work-items';
+import { deployTriggerRefusalReason } from '../../release/deploy-trigger-refusal';
+import { computeDeployStatus } from '../../release-deploy-launch';
+import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
+import { assertDiscoveryShippedIdentity, type DiscoveryShippedTarget } from '../../../test/discovery-guidance-http-scenario';
+import { listRuntimeVintage, reportRuntimeVintage } from '../../runtime-vintage';
+import { measureRuntimeEnvironment } from '../../remote-runtime-identity';
+
+// Select the private repository, as the production registry selects a checkout.
+// The completion, evidence, dependency and acceptance gates remain unmocked.
+const deliveryRoot = vi.hoisted(() => ({ path: '' }));
+vi.mock('../../harness-registry', async original => ({
+  ...await original<typeof import('../../harness-registry')>(),
+  loadHarnessRegistry: async () => ({ projects: [] }),
+  resolveHarnessContentPath: () => deliveryRoot.path,
+}));
 
 // Exact quoted owner text, including indentation and line breaks. The later
 // plan revision is a different fixture and cannot stand in for this source.
@@ -117,6 +140,7 @@ beforeAll(async () => {
   await fx.admin.unsafe(await readFile(fileURLToPath(new URL(
     '../../../../../libs/papercusp/libs/db/sql/1619-plan-discovery-audits.sql', import.meta.url)), 'utf8'));
   root = await mkdtemp(join(tmpdir(), 'discovery-lifecycle-'));
+  deliveryRoot.path = root;
 }, 120_000);
 afterAll(async () => { await fx?.dispose(); if (root) await rm(root, { recursive: true, force: true }); });
 beforeEach(async () => {
@@ -128,7 +152,262 @@ beforeEach(async () => {
   await revision(plan(pending));
 });
 
+/** Synthetic receipts below are calibration inputs in a private database. They
+ * never certify this plan's live R11 or stand in for the independent HTTP run. */
+async function deliveryFixture() {
+  const testPath = 'delivery.integration.test.ts';
+  const title = 'same caller receives discovery guidance';
+  const prerequisite = `WI-710${sequence}7`;
+  const finalItem = `WI-710${sequence}8`;
+  const ordinary = 'DISCOVERY-CURRENT-BUILD';
+  const finalSpec = 'AUTO-BAR-R-11-P-008';
+  const requirement = {
+    intent: { request: 'Retain current discovery proof before independent exact release acceptance.',
+      sourceRefs: ['fixture:discovery-r11'] },
+    acceptance: { condition: 'Both current-build and independently measured exact release receipts are required.',
+      falsifier: 'An abandoned prerequisite or a different release is accepted.', requiredScope: ['same-session journey'],
+      evidencePlane: 'live', evidenceRuntime: 'release-operator', requiredTestLayers: ['integration'] },
+    verification: { method: 'Read canonical completion and exact artifact receipts.',
+      check: { kind: 'tests', files: [testPath], cases: [{ file: testPath, testName: title }] } },
+  };
+  await revision(`---\nslug: ${slug}\nstatus: active\n---\n# Discovery delivery fixture\n\n` +
+    `## Requirements\n\n**R-11 — Exact release delivery.**\n\`\`\`requirement\n${JSON.stringify(requirement)}\n\`\`\`\n\n` +
+    '## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n' +
+    '|---|---|---|\n| R-11 | P-008 | live |\n\n## Work\n\n' +
+    '- **P-007** `todo` Current-build discovery contribution\n' +
+    '- **P-008** `todo` Independent exact release acceptance (blocked-by: P-007)\n');
+  await fx.admin`UPDATE harness_shared.harness_plans SET status='active'
+    WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+  const seeded = await fx.admin.begin(tx => seedAcceptanceBarsInTransaction({ executor: tx as unknown as SpecClauseSql,
+    workspaceId: fx.workspaceId, harnessSlug: harness, planSlug: slug, planContent: content,
+    planTitle: 'Discovery delivery fixture', planStatus: 'active', planVersion: 2,
+    adoptionEpoch: 1, cohort: 'post-epoch', classRef: 'plan-class-feature-ship', actorId: OWNER, now: new Date() }));
+  expect(seeded, JSON.stringify(seeded)).toMatchObject({ ok: true });
+  const [draft] = await listSpecClauses({ harnessSlug: harness, planSlug: slug, specIds: [finalSpec] });
+  if (!draft) throw new Error('final clause not seeded');
+  await setSpecClause({ harnessSlug: harness, planSlug: slug, specId: finalSpec,
+    expectedRevision: draft.revision, planItemId: 'P-008', behavior: draft.behavior,
+    behaviorClass: draft.behaviorClass, requiredEvidence: draft.requiredEvidence,
+    requiredTestLayers: draft.requiredTestLayers, mutationRequired: draft.mutationRequired,
+    falsifier: draft.falsifier!, sourceBar: draft.sourceBar!, acceptanceRef: draft.acceptanceRef!,
+    lifecycleStatus: 'active', actorId: 'su-independent-fixture-reviewer' });
+  await setSpecClause({ harnessSlug: harness, planSlug: slug, specId: ordinary, expectedRevision: 0,
+    planItemId: 'P-007', behavior: 'The same served caller receives current-build discovery guidance.',
+    behaviorClass: 'happy-path', requiredEvidence: ['live'], requiredTestLayers: ['integration'],
+    mutationRequired: false, lifecycleStatus: 'active', actorId: OWNER });
+  await fx.admin`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,kind,title,status,taken_by,source_plan_slug,source_plan_item_ids)
+    VALUES (${fx.workspaceId},${harness},${prerequisite},'feature','current-build contribution','open',${OWNER},${slug},ARRAY['P-007']::text[]),
+           (${fx.workspaceId},${harness},${finalItem},'feature','exact release acceptance','open',${OWNER},${slug},ARRAY['P-008']::text[])`;
+  await writeFile(join(root, testPath), 'expect(discoveryGuidance).toBe(true);\n');
+  const runtimeUnits = [`discovery-private-fixture-${sequence}`];
+  await reportRuntimeVintage({ workspaceId: fx.workspaceId, unit: runtimeUnits[0]!,
+    treeSha: 'a'.repeat(40), pid: process.pid });
+  const environmentFingerprint = await measureRuntimeEnvironment(await listRuntimeVintage(fx.workspaceId), runtimeUnits);
+  expect(environmentFingerprint, 'Private live evidence needs a measured execution environment').toMatch(/^[a-f0-9]{64}$/);
+  const runtimeWitness = { schemaVersion: 1, units: runtimeUnits,
+    fingerprint: environmentFingerprint!, observedAt: new Date().toISOString() };
+  const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+    sourcePaths: ['proof-cache.ts'], testPaths: [testPath], fixturePaths: [testPath], runtimeUnits };
+  const pins = { ...await measureRepoFilesEvidenceAtRoot(root, recipe), environmentFingerprint };
+  const mutation = { schemaVersion: 1, probeInvocationId: `discovery-delivery-${sequence}`, mode: 'copy-out',
+    subjectPath: 'proof-cache.ts', mutateExpression: 's/Map/null/', againstCommit: null,
+    subjectBeforeSha256: createHash('sha256').update(await readFile(join(root, 'proof-cache.ts'))).digest('hex'),
+    subjectAfterSha256: 'f'.repeat(64), mutantDiff: '-Map\n+null\n', mutantDiffTruncated: false,
+    testCommandSha256: 'a'.repeat(64),
+    testFileSha256: createHash('sha256').update(await readFile(join(root, testPath))).digest('hex') };
+  async function execution(status: 'pass' | 'fail', leg?: 'baseline' | 'mutant') {
+    const details = { schemaVersion: 1, root, filePath: testPath, runGroupId: null,
+      workspaceId: fx.workspaceId, harnessSlug: harness, testNamePattern: null, testLayer: 'integration',
+      passed: status === 'pass' ? 1 : 0, failed: status === 'fail' ? 1 : 0, skipped: 0,
+      collectionFailed: false, mutationPhase: leg ?? null, commitSha: null, worktreeDirty: false,
+      runtimeEnvironmentBefore: runtimeWitness, runtimeEnvironmentAfter: runtimeWitness,
+      passedCaseTitles: status === 'pass' ? [title] : [], failedCaseTitles: status === 'fail' ? [title] : [],
+      ...(leg ? { mutation: { ...mutation, leg } } : {}) };
+    const [run] = await fx.admin`INSERT INTO harness_shared.test_runs
+      (workspace_id,harness_slug,file_path,framework,source,status,finished_at,worktree_dirty,execution_details)
+      VALUES (${fx.workspaceId},${harness},${testPath},'vitest',${leg ? 'mutation-probe' : 'local'},${status},
+        now(),false,${JSON.stringify(details)}::jsonb) RETURNING id`;
+    return Number(run!.id);
+  }
+  await execution('pass', 'baseline');
+  const mutant = await execution('fail', 'mutant');
+  const passed = await execution('pass');
+  async function bind(item: string, specId: string, kind: 'test' | 'counterexample',
+    receipt?: { measurement: Parameters<typeof measureWorkItemsEvidenceForScope>[2]; sourceFingerprint: string;
+      environmentFingerprint?: string | null }) {
+    const result = await bindSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
+      planSlug: slug, workItemId: item, specId, evidenceKind: kind, evidenceRef: `${kind}:${testPath}`,
+      ...(receipt ? { sourceFingerprint: receipt.sourceFingerprint,
+        environmentFingerprint: receipt.environmentFingerprint } : pins),
+      testRunId: kind === 'test' ? passed : mutant, actorId: OWNER,
+      details: { currentMeasurement: receipt?.measurement ?? recipe, evidencePlane: 'live',
+        evidenceRuntime: item === prerequisite ? 'staging-operator' : 'release-operator',
+        adequacy: { targeted: specId, fixtureCalibrated: true, falsifiable: true, testLayer: 'integration',
+          pathReachable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
+          outcome: kind === 'test' ? 'passed' : 'caught', testCases: [title], coverageRungs: { l3: true } } } });
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'created' });
+  }
+  await bind(prerequisite, ordinary, 'test');
+  await bind(prerequisite, ordinary, 'counterexample');
+  const [ordinaryClause] = await listSpecClauses({ harnessSlug: harness, planSlug: slug, specIds: [ordinary] });
+  const ordinaryEvidence = await listSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
+    planSlugs: [slug], workItemIds: [prerequisite] });
+  const evaluated = evaluateSpecTestAdequacy({ clause: ordinaryClause!, evidence: ordinaryEvidence,
+    classRef: 'plan-class-feature-ship' });
+  expect(evaluated.verdict, JSON.stringify(evaluated)).toBe('pass');
+  // Isolated independent-card inputs, not a dispatched or live acceptance grade.
+  const ordinaryCard = { issueId: `SC-${sequence}`, createdAt: new Date().toISOString(),
+    createdBy: 'su-independent-fixture-grader', subject: evaluated.scorecardDraft.subject,
+    rubricRef: 'spec-test-adequacy', ratings: evaluated.ratings, nKeys: Object.keys(evaluated.ratings).length,
+    missingKeys: [], extraKeys: [], rubricResolved: true, synthesized: false, score10: 10, linkedItems: [],
+    rerunRecipe: evaluated.scorecardDraft.rerunRecipe,
+    gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: new Date().toISOString() },
+    gradingAuditCurrentness: { state: 'current' } } as unknown as ScorecardRow;
+  await fx.admin`UPDATE harness_shared.work_items SET payload=${JSON.stringify({ fixtureCard: ordinaryCard })}::jsonb
+    WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${prerequisite}`;
+  async function completionGate(id: string) {
+    const workItem = await getWorkItem(id, harness);
+    if (!workItem) throw new Error('missing fixture work item');
+    return specTestAdequacyCompletionGate({ workItem, workspaceId: fx.workspaceId,
+      attestation: { classRef: 'plan-class-feature-ship' } }, { listCards: async () => {
+        const [stored] = await fx.admin`SELECT payload->'fixtureCard' AS card FROM harness_shared.work_items
+          WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${prerequisite}`;
+        return [stored!.card as ScorecardRow];
+      } });
+  }
+  async function closeCurrent() {
+    const gate = await completionGate(prerequisite);
+    expect(gate, JSON.stringify(gate)).toMatchObject({ ok: true, applicable: true });
+    const receipt = await setWorkItemState(prerequisite, 'done', { harness, by: OWNER, family: 'feature',
+      completionAuthority: 'committed', completionRef: `test-run:current-${sequence}`,
+      completionEvidence: { summary: 'private current-build calibration', testsRun: testPath,
+        testResult: 'passed', verifiedHow: 'isolated production gate', filesChanged: [] } });
+    expect(receipt).toMatchObject({ state: 'done', terminalCompletionRef: `test-run:current-${sequence}` });
+    await revision(content.replace('**P-007** `todo`', '**P-007** `done`'));
+    return receipt;
+  }
+  const receiptRecipe = { schemaVersion: 1 as const, kind: 'work-items' as const,
+    workItemIds: [prerequisite], successfulCompletionReceipts: true as const, runtimeUnits };
+  const target = { runtime: 'release-operator', processStartedAtMs: Date.now(),
+    source: { entry: '/release/hono-host.mjs', sha256: 'a'.repeat(64) },
+    artifact: { status: 'measured', sourceSha: 'b'.repeat(40), bundleSha256: 'a'.repeat(64) },
+    health: { sha: 'b'.repeat(10), service: 'papercusp-operator' } } as DiscoveryShippedTarget;
+  async function bindFinal(selected = target) {
+    // The existing runner's identity predicate runs before a successful exact
+    // release execution can be bound. Wrong/private candidates create no proof.
+    assertDiscoveryShippedIdentity(selected);
+    const pin = await measureWorkItemsEvidenceForScope(fx.workspaceId, harness, receiptRecipe);
+    await bind(finalItem, finalSpec, 'test', { measurement: receiptRecipe, ...pin });
+    await bind(finalItem, finalSpec, 'counterexample');
+  }
+  async function acceptance(healthy: boolean) {
+    const rubric = await getRubric(`acceptance-${slug}`);
+    if (!rubric) throw new Error('missing fixture acceptance rubric');
+    const ratings = { 'r-11': { rating: healthy ? 'healthy' : 'unknown',
+      evidence: 'Synthetic independent exact artifact calibration; never live delivery evidence.' } };
+    const base = { createdAt: new Date(Date.now() + 1000).toISOString(), rubricRef: rubric.rubricId,
+      rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash, ratings,
+      nKeys: 1, missingKeys: [], extraKeys: [], rubricResolved: true, synthesized: false,
+      score10: healthy ? 10 : null, linkedItems: [] };
+    const independent = { ...base, issueId: 'SC-INDEPENDENT', createdBy: 'su-independent-fixture-grader',
+      supersededBy: 'SC-AUTHOR' } as ScorecardRow;
+    const author = { ...base, issueId: 'SC-AUTHOR', createdBy: OWNER,
+      createdAt: new Date(Date.now() + 2000).toISOString(), supersedes: independent.issueId,
+      acceptance: { verdict: 'accept', reasoning: 'The independent fixture proof matches.' } } as ScorecardRow;
+    const snapshot = await readAcceptanceBarContractSnapshot(slug, {
+      readScorecards: async () => ({ rows: [author, independent], limit: 100, truncated: false }),
+      readVettingScorecards: async () => ({ rows: [], limit: 100, truncated: false }),
+      readCurrentCritique: async () => ({ consultId: 'fixture-full-critique', workItemId: null,
+        rubricRevision: rubric.revision!, criteriaHash: rubric.criteriaHash!,
+        createdAt: new Date().toISOString(), critics: ['su-independent-fixture-critic'] }),
+      readParties: async identities => new Map(identities.map(identity => [identity, identity])),
+      readGraderSelectionVia: async () => new Map([['su-independent-fixture-grader', 'floor' as const]]),
+    }, { harnessSlug: harness });
+    return { snapshot, verdict: evaluateAcceptanceBarLifecycle(snapshot, 'ship') };
+  }
+  return { prerequisite, finalItem, finalSpec, closeCurrent, completionGate, bindFinal, receiptRecipe,
+    acceptance, target };
+}
+
 describe('original proof-warming discovery before review and implementation', () => {
+  it('completes current-build discovery before exact-shipped acceptance without certifying final delivery', async () => {
+    await runWithWorkspace(fx.workspaceId, async () => {
+      const delivery = await deliveryFixture();
+      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
+        .toMatchObject({ resolved: [delivery.prerequisite] });
+      const receipt = await delivery.closeCurrent();
+      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
+        .toMatchObject({ resolved: [] });
+      expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
+      expect((await delivery.acceptance(false)).verdict.satisfied).toBe(false);
+      expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+      // The production green-deploy predicate consumes pipeline state, not a
+      // plan's final acceptance. No live gate is read or changed by this fixture.
+      const deploy = computeDeployStatus({ gate: { consecutiveReds: 0, stalled: false, fireStale: false,
+        lastGreenAtMs: Date.now(), verdictStale: false, flakyWorkspaces: [], failingTests: [] },
+        deploy: { ready: { sha: 'b'.repeat(40) }, deployed: { sha: 'c'.repeat(40) },
+          deployedBehindGreenPin: 1, greenPinBehindStaging: 0, deployedBehindStaging: 1,
+          greenPinAtStagingHead: true, errors: [] }, routines: {}, recent: [], activeRun: null,
+      } as unknown as GitPipelineSnapshot);
+      expect(deploy.canTriggerGreen, JSON.stringify(deploy)).toBe(true);
+      expect(deployTriggerRefusalReason(deploy)).toBeNull();
+      for (const wrong of [
+        { ...delivery.target, runtime: 'staging-operator' },
+        { ...delivery.target, health: { ...delivery.target.health, sha: 'd'.repeat(10) } },
+        { ...delivery.target, source: { ...delivery.target.source, sha256: 'e'.repeat(64) } },
+      ]) {
+        await expect(delivery.bindFinal(wrong as DiscoveryShippedTarget)).rejects.toThrow();
+        expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+        expect((await delivery.acceptance(true)).verdict.satisfied).toBe(false);
+        expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
+      }
+      await delivery.bindFinal();
+      expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: true, applicable: true });
+      const final = await delivery.acceptance(true);
+      expect(final.verdict, JSON.stringify(final.snapshot)).toMatchObject({ satisfied: true });
+      const closed = await setWorkItemState(delivery.finalItem, 'done', { harness, by: OWNER, family: 'feature',
+        completionAuthority: 'committed', completionRef: 'test-run:synthetic-exact-release',
+        completionEvidence: { summary: 'Private gate calibration only', testsRun: 'delivery fixture',
+          testResult: 'passed', verifiedHow: 'real canonical gates', filesChanged: [] } });
+      expect(closed).toMatchObject({ state: 'done' });
+      expect((await getWorkItem(delivery.prerequisite, harness))?.terminalCompletionRef)
+        .toBe(receipt.terminalCompletionRef);
+    });
+  }, 120_000);
+
+  it('refuses final discovery delivery for abandoned missing wrong or stale current-build receipts', async () => {
+    await runWithWorkspace(fx.workspaceId, async () => {
+      const delivery = await deliveryFixture();
+      // A missing successful receipt cannot be measured or admitted.
+      await expect(delivery.bindFinal()).rejects.toThrow('successful_completion_receipt_unavailable');
+      expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+      await delivery.closeCurrent();
+      await delivery.bindFinal();
+      expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: true });
+      const [pin] = await listSpecEvidence({ workspaceId: fx.workspaceId, harnessSlug: harness,
+        planSlugs: [slug], workItemIds: [delivery.finalItem], evidenceKinds: ['test'] });
+      expect(pin?.currentness.overall).toBe('current');
+      // Wrong or replaced immutable refs invalidate the SAME retained binding.
+      await fx.admin`UPDATE harness_shared.work_items SET terminal_completion_ref='test-run:wrong-current-build'
+        WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${delivery.prerequisite}`;
+      expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+      expect((await delivery.acceptance(true)).verdict.satisfied).toBe(false);
+      expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
+      // Ordinary terminal scheduling is preserved, without buying final proof.
+      await fx.admin`UPDATE harness_shared.work_items SET status='dropped'
+        WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND feature_id=${delivery.prerequisite}`;
+      await revision(content.replace('**P-007** `done`', '**P-007** `dropped`'));
+      expect(await reconcilePlanAuthoredDependenciesNow(slug, 'P-008', harness, OWNER))
+        .toMatchObject({ resolved: [] });
+      await expect(measureWorkItemsEvidenceForScope(fx.workspaceId, harness, delivery.receiptRecipe))
+        .rejects.toThrow('successful_completion_receipt_unavailable');
+      expect(await delivery.completionGate(delivery.finalItem)).toMatchObject({ ok: false });
+      expect((await delivery.acceptance(true)).verdict.satisfied).toBe(false);
+      expect((await getWorkItem(delivery.finalItem, harness))?.state).toBe('open');
+    });
+  }, 120_000);
+
   it('retains and remeasures successful prerequisite receipts through the canonical evidence store', async () => {
     await runWithWorkspace(fx.workspaceId, async () => {
     await revision(plan(revisedFindings(), true));

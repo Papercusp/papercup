@@ -281,12 +281,14 @@ export function testingRunAbortCompletionReceipt(
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
  *  makes that budget the tool's own rather than something each agent re-picks. */
 const DEFAULT_TIMEOUT_MS = 300_000;
-const MAX_TIMEOUT_MS = 900_000;
+// Explicit integration budgets share the maintained router's two-hour ceiling.
+// Its composed source/worker/cleanup phases can exceed fifteen minutes.
+const MAX_TIMEOUT_MS = 120 * 60_000;
 // The foreground transport yields below 55s, but measured integration work took 227s
 // before an adjacent unit group and startup. Give detached recovery the full bounded window.
-const DETACHED_RECOVERY_TIMEOUT_MS = MAX_TIMEOUT_MS;
+const DETACHED_RECOVERY_TIMEOUT_MS = 900_000;
 const DETACHED_RECOVERY_ROUTER_HEADROOM_MS = 30_000;
-const DETACHED_RECOVERY_ROUTER_MAX_TIMEOUT_MS = 120 * 60_000;
+const DETACHED_RECOVERY_ROUTER_MAX_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-runs-reporter.ts';
 const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
 
@@ -295,6 +297,8 @@ export interface TestingRunPhaseTimings {
   preflightMs: number | null;
   provenanceMs: number | null;
   preparationMs: number | null;
+  admissionGateMs?: number | null;
+  handoffMs?: number | null;
   admissionWaitMs: number | null;
   routerExecutionMs: number | null;
   ledgerIdReadbackMs: number | null;
@@ -307,6 +311,8 @@ function createTestingRunPhaseTimings(): TestingRunPhaseTimings {
     preflightMs: null,
     provenanceMs: null,
     preparationMs: null,
+    admissionGateMs: null,
+    handoffMs: null,
     admissionWaitMs: null,
     routerExecutionMs: null,
     ledgerIdReadbackMs: null,
@@ -3721,6 +3727,8 @@ export function groupDirectVitestRoutes(
 export interface RunTestFilesCoreOptions {
   files: string[];
   root: string;
+  /** Internal criterion context; selects execution modes, never supplies a verdict. */
+  criterionCases?: Array<{ file: string; testName: string }>;
   timeoutMs?: number;
   /** Absolute cutoff shared by recursive groups; never refreshed after admission. */
   taskDeadlineAtMs?: number;
@@ -4049,6 +4057,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      // Clear inherited context for ordinary runs. The reporter must still prove
+      // each requested identity passed; this context grants no evidence authority.
+      PAPERCUSP_CRITERION_TEST_CASES: JSON.stringify(opts.criterionCases ?? []),
       // Vitest preserves an existing NODE_ENV. The serving operator uses production,
       // which makes Vite erase builtin identities in jsdom before tests can collect.
       NODE_ENV: 'test',
@@ -4923,6 +4934,19 @@ export default defineTool({
     // receives the same scope that plans:bind-spec-evidence validates.
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     const runId = randomUUID();
+    const launchResult = (data: Record<string, unknown>) => {
+      if (!args.background) return { data };
+      setTestingRunPhaseDuration(phaseTimingsMs, 'totalHandlerMs', handlerStartedAt);
+      const timings = { ...phaseTimingsMs };
+      ctx.metadata?.({ testingRun: {
+        schemaVersion: 'testing-run-phase-telemetry-v1', runId,
+        outcome: data.error ?? data.reason ?? data.status ?? 'refused',
+        phaseTimingsMs: timings,
+        ...(data.detachedRunId ? { detachedRunId: data.detachedRunId } : {}),
+        ...(data.taskId ? { taskId: data.taskId } : {}),
+      } });
+      return { data: { ...data, runId, phaseTimingsMs: timings } };
+    };
     // EI-25203154942838341: evidence measured in a checkout other than this harness's own tree
     // must record WHICH registered checkout, or the evaluator re-measures the paths at the plan
     // root (ENOENT) and the binding's freshness is `unknown` forever. An external checkout the
@@ -4994,20 +5018,22 @@ export default defineTool({
     setTestingRunPhaseDuration(phaseTimingsMs, 'provenanceMs', provenanceStartedAt);
     const preparationStartedAt = performance.now();
     const provenanceDeadlineRefusal = deadlineRefusal();
-    if (provenanceDeadlineRefusal) return provenanceDeadlineRefusal;
+    if (provenanceDeadlineRefusal) return launchResult(provenanceDeadlineRefusal.data);
     // P-002 (WI-10004175): the loop gate capability:bash and release:cut apply. Its budget is
     // the REQUESTED one, not the foreground clamp, because the detached run keeps going past
     // the clamp; a run asked for <= SLOW_ATTEMPT_MIN_MS stays free for an audit's quick checks.
     // Checked before evidence preparation so a refusal registers no pending rows.
+    const admissionStartedAt = performance.now();
     const loopRefusal = await loopLaunchRefusal({
       workspaceId: ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : null,
       workItemId: attemptWorkItemId,
       background: args.background === true,
       timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
-    if (loopRefusal) return { data: { ...loopRefusal, runId, root: rootSelection.root } };
+    setTestingRunPhaseDuration(phaseTimingsMs, 'admissionGateMs', admissionStartedAt);
+    if (loopRefusal) return launchResult({ ...loopRefusal, runId, root: rootSelection.root });
     const admissionDeadlineRefusal = deadlineRefusal();
-    if (admissionDeadlineRefusal) return admissionDeadlineRefusal;
+    if (admissionDeadlineRefusal) return launchResult(admissionDeadlineRefusal.data);
     let prepared: Awaited<ReturnType<typeof prepareTestEvidence>> | undefined;
     if (evidenceRequest) {
       const selected = normalizeTestFilePaths(files, rootSelection.root, undefined, {
@@ -5020,20 +5046,29 @@ export default defineTool({
       const restrictedHold = await restrictedHoldRefusal(rootSelection.root, selected.ok ? selected.files : files);
       if (restrictedHold) return { data: { ok: false, runId, root: rootSelection.root, ...restrictedHold } };
       const preparationDeadlineRefusal = deadlineRefusal();
-      if (preparationDeadlineRefusal) return preparationDeadlineRefusal;
+      if (preparationDeadlineRefusal) return launchResult(preparationDeadlineRefusal.data);
       try {
         if (!selected.ok) throw new Error('evidence_test_selection_unresolved');
         prepared = await prepareTestEvidence(evidenceRequest, runId, selected.files, evidenceScope!);
       } catch (error) {
-        return { data: { ok: false, error: 'evidence_preparation_failed', message: String(error) } };
+        setTestingRunPhaseDuration(phaseTimingsMs, 'preparationMs', preparationStartedAt);
+        return launchResult({ ok: false, error: 'evidence_preparation_failed', message: String(error) });
       }
     }
     setTestingRunPhaseDuration(phaseTimingsMs, 'preparationMs', preparationStartedAt);
     if (args.background) {
+      const preparedDeadlineRefusal = deadlineRefusal();
+      if (preparedDeadlineRefusal) return launchResult({
+        ...preparedDeadlineRefusal.data,
+        ...(prepared ? { evidenceBundle: await retractRefusedTestEvidence(
+          prepared, runId, evidenceScope!, 'deadline_exhausted',
+        ).catch(error => ({ status: 'retirement-incomplete', reason: 'deadline_exhausted', message: String(error) })) } : {}),
+      });
       const selected = normalizeTestFilePaths(files, rootSelection.root, undefined, { allowSiblingCheckoutFallback });
       if (!selected.ok) return { data: { ...selected, runId, root: rootSelection.root,
         error: selected.reason ? 'managed_app_path_unresolved' : 'ambiguous_workspace_path' } };
       const groups = groupTestFilesByCheckout(selected.files, rootSelection.root);
+      const handoffStartedAt = performance.now();
       const start = await startRunDurable(buildDetachedTestRunRequest({
         root: rootSelection.root, files: selected.files, groups, deadline: deadline!, originRunId: runId,
         background: true, timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -5046,7 +5081,8 @@ export default defineTool({
         ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
         allowSiblingCheckoutFallback,
       }));
-      return { data: {
+      setTestingRunPhaseDuration(phaseTimingsMs, 'handoffMs', handoffStartedAt);
+      return launchResult({
         ok: true, mode: 'background', status: 'pending', runId, root: rootSelection.root,
         rootSource: rootSelection.source, deadline,
         detachedRunId: start.snapshot.runId, detachedDurable: start.durable,
@@ -5057,7 +5093,7 @@ export default defineTool({
           ...deferredTestEvidenceRecoveryBundle(evidenceRequest!, runId, start.snapshot.runId, evidenceScope!.harnessSlug),
           message: 'The background test run is pending. Recover evidence after its terminal test-ledger rows are available.',
         } } : {}),
-      } };
+      });
     }
     const runCore = () => runTestFilesCore({
       files,

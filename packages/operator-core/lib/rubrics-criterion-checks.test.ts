@@ -1768,6 +1768,15 @@ describe('tests check with a testName filter', () => {
     });
     expect(batch).toHaveBeenCalledOnce();
     expect(batch.mock.calls[0]![0].files).toEqual([FILE, INTEGRATION]);
+    expect(batch.mock.calls[0]![0].criterionCases).toEqual(selected().cases.map(selector => ({
+      file: join(root, selector.file), testName: selector.testName,
+    })));
+    const runFiles = vi.fn(async () => passRun([FILE, INTEGRATION])) as unknown as
+      NonNullable<Parameters<typeof runCriterionCheckFiles>[1]>['runFiles'];
+    await runCriterionCheckFiles(batch.mock.calls[0]![0], { runFiles });
+    expect(runFiles).toHaveBeenCalledWith(expect.objectContaining({
+      criterionCases: batch.mock.calls[0]![0].criterionCases, allowDetachedRecovery: false,
+    }));
     expect(seen).toEqual([FILE, INTEGRATION]);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.checkRuns.det).toMatchObject({ verdict: 'pass', passed: 2, failed: 0, matchedCases: 2, cases: selected().cases });
