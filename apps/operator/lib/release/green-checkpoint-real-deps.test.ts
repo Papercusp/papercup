@@ -542,6 +542,146 @@ const cfg: ReleaseConfig = releaseConfig({
   spaBuildWorkspace: "@example/fixture-spa",
 });
 
+describe("realCheckpointDeps repair verification phase timing", () => {
+  const head = "c".repeat(40);
+  type Phase = {
+    version: number; runId: string; ref: string; pid: number;
+    spanId: string; parentSpanId: string | null; phase: string;
+    event: "started" | "finished"; atMs: number; startedAtMs?: number;
+    elapsedMs?: number; outcome?: "returned" | "threw";
+    pass?: boolean; exitCode?: number;
+    detail?: { workspace?: string; file?: string; script?: string };
+  };
+
+  function capturePhases() {
+    const lines: string[] = [];
+    const sink = vi.spyOn(console, "log").mockImplementation((line) => lines.push(String(line)));
+    onTestFinished(() => sink.mockRestore());
+    return () => lines.flatMap((line): Phase[] => {
+      const marker = "REPAIR_VERIFICATION_PHASE ";
+      const at = line.indexOf(marker);
+      return at < 0 ? [] : [JSON.parse(line.slice(at + marker.length))];
+    });
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  function expectPaired(records: Phase[], before: number) {
+    const starts = records.filter((record) => record.event === "started");
+    const ends = records.filter((record) => record.event === "finished");
+    expect(ends).toHaveLength(starts.length);
+    expect(new Set(starts.map((record) => record.spanId)).size).toBe(starts.length);
+    for (const start of starts) {
+      expect(start).toMatchObject({ version: 1, runId: "repair-timing-fixture", ref: head, pid: process.pid });
+      expect(start.atMs).toBeGreaterThanOrEqual(before);
+      const end = ends.find((record) => record.spanId === start.spanId)!;
+      expect(end).toMatchObject({ phase: start.phase, ref: head, parentSpanId: start.parentSpanId, startedAtMs: start.atMs });
+      expect(end.atMs).toBeGreaterThanOrEqual(start.atMs);
+      expect(end.atMs).toBeLessThanOrEqual(Date.now());
+      expect(end.elapsedMs).toBeGreaterThanOrEqual(0);
+      if (start.parentSpanId !== null) {
+        const parentStart = starts.find((record) => record.spanId === start.parentSpanId)!;
+        const parentEnd = ends.find((record) => record.spanId === start.parentSpanId)!;
+        expect(parentStart.atMs).toBeLessThanOrEqual(start.atMs);
+        expect(parentEnd.atMs).toBeGreaterThanOrEqual(end.atMs);
+      }
+    }
+  }
+
+  it("writes radius/setup/selector starts while the child is pending, then pairs absolute boundaries", async () => {
+    const phases = capturePhases();
+    const setup = deferred<void>();
+    const selector = deferred<Awaited<ReturnType<CheckpointExec>>>();
+    const exec = vi.fn<CheckpointExec>(async () => selector.promise);
+    const deps = realCheckpointDeps(cfg, exec, "repair-timing-fixture");
+    deps.setupTree = vi.fn(async () => setup.promise);
+    const before = Date.now();
+    const pending = deps.affectedTestsAtRef!(head, ["src/changed.ts"]);
+    expect(phases().map((record) => [record.phase, record.event])).toEqual([
+      ["radius", "started"], ["setup", "started"],
+    ]);
+    expect(exec).not.toHaveBeenCalled();
+    setup.resolve();
+    await vi.waitFor(() => expect(exec).toHaveBeenCalledOnce());
+    expect(phases().at(-1)).toMatchObject({ phase: "selector", event: "started" });
+    expect(phases().some((record) => record.phase === "radius" && record.event === "finished")).toBe(false);
+    selector.resolve({ code: 0, stdout: "AFFECTED_DERIVATION workspaces=0 tasks=0 guards=0\nRELATED_AFFECTED_FILES status=selected workspaces=0 files=0", stderr: "" });
+    expect(await pending).toMatchObject({ files: [], gateIds: [], coverageComplete: true });
+    expect(deps.setupTree).toHaveBeenCalledExactlyOnceWith(head);
+    expect(exec.mock.calls[0]![1]).toContain("src/changed.ts");
+    expectPaired(phases(), before);
+    expect(phases().at(-1)).toMatchObject({ phase: "radius", event: "finished", outcome: "returned" });
+  });
+
+  it("records thrown selector execution and preserves the original error", async () => {
+    const phases = capturePhases();
+    const error = new Error("selector spawn failed");
+    const deps = realCheckpointDeps(cfg, async () => { throw error; }, "repair-timing-fixture");
+    deps.setupTree = async () => {};
+    const before = Date.now();
+    await expect(deps.affectedTestsAtRef!(head, ["src/a.ts"])).rejects.toBe(error);
+    expectPaired(phases(), before);
+    expect(phases().filter((record) => record.outcome === "threw").map((record) => record.phase)).toEqual(["selector", "radius"]);
+  });
+
+  it.each(["files", "gates"] as const)("records %s setup failure without claiming the child ran", async (kind) => {
+    const phases = capturePhases();
+    const exec = vi.fn<CheckpointExec>(async () => ({ code: 0, stdout: "", stderr: "" }));
+    const error = new Error("checkout unavailable");
+    const deps = realCheckpointDeps(cfg, exec, "repair-timing-fixture");
+    deps.setupTree = async () => { throw error; };
+    const before = Date.now();
+    await expect(kind === "files"
+      ? deps.runTestsAtRef!(head, [{ workspace: "@example/fixture-pkg", file: "lib/a.test.ts" }])
+      : deps.runGateAtRef!(head, ["lint:remaining"])).rejects.toBe(error);
+    expect(exec).not.toHaveBeenCalled();
+    expectPaired(phases(), before);
+    expect(phases().filter((record) => record.event === "finished").map((record) => record.outcome)).toEqual(["threw", "threw"]);
+  });
+
+  it("separates failing workspace execution from diagnostic file reruns and keeps the red verdict", async () => {
+    const phases = capturePhases();
+    const deps = realCheckpointDeps(cfg, async () => ({ code: 1, stdout: "", stderr: "test failed" }), "repair-timing-fixture");
+    deps.setupTree = async () => {};
+    const before = Date.now();
+    const result = await deps.runTestsAtRef!(head, [{ workspace: "@example/fixture-pkg", file: "lib/a.test.ts" }]);
+    expect(result).toMatchObject({ pass: false, perFile: [{ file: "lib/a.test.ts", pass: false }] });
+    expectPaired(phases(), before);
+    expect(phases().filter((record) => record.exitCode === 1).map((record) => record.phase)).toEqual(["workspace-files", "diagnostic-file"]);
+    expect(phases().find((record) => record.phase === "diagnostic-file" && record.event === "started")?.detail).toEqual({ workspace: "@example/fixture-pkg", file: "lib/a.test.ts" });
+    expect(phases().at(-1)).toMatchObject({ phase: "file-runner", outcome: "returned", pass: false });
+  });
+
+  it("attributes each targeted task, including a throw followed by a successful task", async () => {
+    const phases = capturePhases();
+    const deps = realCheckpointDeps(cfg, async (_cmd, args) => {
+      if (args.includes("lint:throws")) throw new Error("task spawn failed");
+      return { code: 0, stdout: "", stderr: "" };
+    }, "repair-timing-fixture");
+    deps.setupTree = async () => {};
+    const before = Date.now();
+    const result = await deps.runGateAtRef!(head, ["lint:throws", "lint:after"]);
+    expect(result).toMatchObject({ pass: false, perGate: [{ id: "lint:throws", status: "errored" }, { id: "lint:after", status: "pass" }] });
+    expectPaired(phases(), before);
+    expect(phases().filter((record) => record.phase === "task-execution" && record.event === "finished").map((record) => [record.detail?.script, record.outcome, record.exitCode])).toEqual([
+      ["lint:throws", "threw", undefined], ["lint:after", "returned", 0],
+    ]);
+    expect(phases().at(-1)).toMatchObject({ phase: "gate-runner", outcome: "returned", pass: false });
+  });
+
+  it("does not turn a diagnostic sink failure into a runner failure", async () => {
+    const sink = vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
+    onTestFinished(() => sink.mockRestore());
+    const deps = realCheckpointDeps(cfg, async () => ({ code: 0, stdout: "", stderr: "" }), "repair-timing-fixture");
+    deps.setupTree = async () => {};
+    await expect(deps.runGateAtRef!(head, ["lint:after"])).resolves.toMatchObject({ pass: true });
+  });
+});
+
 describe("realCheckpointDeps.broadcast — finalization replay", () => {
   it("reuses the durable delivery key after an acknowledged-result interruption", async () => {
     const messages = await import("@papercusp/operator-core/lib/agent-tools/coordination/messages");

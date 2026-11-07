@@ -7813,6 +7813,56 @@ async function settleRepairHeadRunner<T>(
   }
 }
 
+type RepairVerificationPhaseContext = {
+  log: (line: string) => void;
+  runId: string;
+  ref: string;
+  parentSpanId?: string;
+};
+
+/** Parent-written boundaries stay observable while child output is buffered. A returned
+ *  runner can still be red or unavailable: outcome describes execution, not a verdict. */
+async function traceRepairVerificationPhase<T>(
+  context: RepairVerificationPhaseContext,
+  phase: string,
+  run: (child: RepairVerificationPhaseContext) => Promise<T>,
+  detail?: Record<string, string | number>,
+): Promise<T> {
+  const spanId = randomUUID();
+  const identity = {
+    version: 1, runId: context.runId, ref: context.ref, pid: process.pid,
+    spanId, parentSpanId: context.parentSpanId ?? null, phase,
+    ...(detail ? { detail } : {}),
+  };
+  const emit = (record: Record<string, unknown>) => {
+    try {
+      context.log(`REPAIR_VERIFICATION_PHASE ${JSON.stringify({ ...identity, ...record })}`);
+    } catch {
+      // Timing is diagnostic only; a failed log sink must not change runner semantics.
+    }
+  };
+  const startedAtMs = Date.now();
+  const startedMono = performance.now();
+  emit({ event: "started", atMs: startedAtMs });
+  let result: T | undefined;
+  let outcome: "returned" | "threw" = "threw";
+  try {
+    result = await run({ ...context, parentSpanId: spanId });
+    outcome = "returned";
+    return result;
+  } finally {
+    emit({
+      event: "finished", atMs: Date.now(), startedAtMs,
+      elapsedMs: Math.max(0, performance.now() - startedMono), outcome,
+      ...(outcome === "returned" ? { resultAvailable: result != null } : {}),
+      ...(result && typeof result === "object" && "code" in result && typeof result.code === "number"
+        ? { exitCode: result.code } : {}),
+      ...(result && typeof result === "object" && "pass" in result && typeof result.pass === "boolean"
+        ? { pass: result.pass } : {}),
+    });
+  }
+}
+
 export async function verifyRepairHead(
   deps: RepairHeadVerificationDeps,
   queue: FrozenCandidateRepairQueue,
@@ -25376,6 +25426,7 @@ export function realCheckpointDeps(
       };
     },
     async runTestsAtRef(ref, files) {
+      return traceRepairVerificationPhase({ log, runId, ref }, "file-runner", async (phase) => {
       // Re-run EXACTLY the originally-failing files, at `ref`, in a throwaway checkout —
       // never the churning integration tree (a concurrent edit would poison the answer).
       // Reuse the checkpoint tree the gate already prepared: point it at `ref`, then run
@@ -25396,7 +25447,7 @@ export function realCheckpointDeps(
       // .catch(() => null) → the honest 'tip re-run unavailable' fallback below).
       // No redundant re-check needed here; kept unduplicated on purpose (the single
       // source of truth is the script, not this call site).
-      await this.setupTree(ref);
+      await traceRepairVerificationPhase(phase, "setup", () => this.setupTree(ref));
       // WI-5366: assert_checkout_landed proves the GIT state (HEAD == ref) but says
       // nothing about stale WORKING-TREE ARTIFACTS the script's clean step doesn't
       // touch (fixed alongside this: `git clean` now runs `-x`, but re-verifying the
@@ -25405,9 +25456,9 @@ export function realCheckpointDeps(
       // self-announcing instead of silently trusted the way the bare "REPRODUCE at
       // tip <sha>" verdict was before. Best-effort: a failure to resolve HEAD must
       // never block the real test run below.
-      const verifiedHead = await revParse(cfg.checkpointRoot, "HEAD").catch(
-        () => "unresolved",
-      );
+      const verifiedHead = await traceRepairVerificationPhase(phase, "verify-head", () =>
+        revParse(cfg.checkpointRoot, "HEAD"),
+      ).catch(() => "unresolved");
       const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
       const byWorkspace = new Map<string, string[]>();
       for (const f of files)
@@ -25480,12 +25531,12 @@ export function realCheckpointDeps(
                 ],
               }
             : invocation;
-          const r = await exec(command.cmd, command.args, {
+          const r = await traceRepairVerificationPhase(phase, "workspace-files", () => exec(command.cmd, command.args, {
             cwd: invocation.cwd,
             env,
             allowNonZero: true,
             ...rescueTaskWatchdogOptions("test", env),
-          }).catch((e: unknown) => ({
+          }), { workspace, fileCount: wsFiles.length }).catch((e: unknown) => ({
             code: 1,
             stdout: "",
             stderr: String(e),
@@ -25512,7 +25563,7 @@ export function realCheckpointDeps(
           // Timing is safe by construction: a FAILED group run always classifies `real-red`, so
           // no auto-refire is pending and these extra minutes cannot starve a rescue. The only
           // cost is delaying a verdict that is not going to change.
-          perFile = await splitTipFailuresPerFile(
+          perFile = await traceRepairVerificationPhase(phase, "diagnostic-split", (splitPhase) => splitTipFailuresPerFile(
             files,
             async (wsName, file) => {
               const invocation = resolveWorkspaceFileTestInvocation(
@@ -25524,17 +25575,17 @@ export function realCheckpointDeps(
                   `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
                 ],
               );
-              const one = await exec(invocation.cmd, invocation.args, {
+              const one = await traceRepairVerificationPhase(splitPhase, "diagnostic-file", () => exec(invocation.cmd, invocation.args, {
                 cwd: invocation.cwd,
                 env,
                 allowNonZero: true,
                 ...rescueTaskWatchdogOptions("test", env),
-              }).catch(() => null);
+              }), { workspace: wsName, file }).catch(() => null);
               // A throw is INDETERMINATE, not a failure — returning false here would name a
               // healthy file under "STILL FAILING (fix these)". null abandons the whole split.
               return one === null ? null : one.code === 0;
             },
-          ).catch(() => undefined);
+          )).catch(() => undefined);
           if (perFile) {
             const still = perFile.filter((p) => !p.pass).length;
             summaries.push(
@@ -25550,6 +25601,7 @@ export function realCheckpointDeps(
         measuredHead: verifiedHead,
         coverageComplete: verifiedHead === ref && perWorkspace.every((entry) => entry.status !== "errored"),
       };
+      }, { fileCount: files.length });
     },
     async runPostSuiteAtRef(ref) {
       const verifiedHead = await revParse(cfg.checkpointRoot, "HEAD");
@@ -25581,13 +25633,14 @@ export function realCheckpointDeps(
     // never populates `failingFiles` (that list is test-FILE-only), so without this seam
     // it fell straight past the stale-candidate rescue with nothing to re-run.
     async runGateAtRef(ref, gateIds, opts) {
+      return traceRepairVerificationPhase({ log, runId, ref }, "gate-runner", async (phase) => {
       // Same honest-absence contract as runTestsAtRef: a setupTree throw here propagates
       // to the caller's .catch(() => null), which reads as tipRetest=null → 'tip re-run
       // unavailable' — never a fabricated REPRODUCE for a tip we never actually checked out.
-      await this.setupTree(ref);
-      const verifiedHead = await revParse(cfg.checkpointRoot, "HEAD").catch(
-        () => "unresolved",
-      );
+      await traceRepairVerificationPhase(phase, "setup", () => this.setupTree(ref));
+      const verifiedHead = await traceRepairVerificationPhase(phase, "verify-head", () =>
+        revParse(cfg.checkpointRoot, "HEAD"),
+      ).catch(() => "unresolved");
       const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
       // A verified-ref task is a child execution, not part of the candidate suite's
       // test group. Give each invocation its own UUID so reuse observations and test
@@ -25633,7 +25686,7 @@ export function realCheckpointDeps(
         const reuseLines: string[] = [];
         const armed =
           workspace && verifiedHead === ref
-            ? await armTargetedTaskReuse({
+            ? await traceRepairVerificationPhase(phase, "task-reuse", () => armTargetedTaskReuse({
                 root: cfg.checkpointRoot,
                 workspace,
                 script,
@@ -25647,7 +25700,7 @@ export function realCheckpointDeps(
                 checkpointRoot: cfg.checkpointRoot,
                 integrationRoot: cfg.integrationRoot,
                 releaseRoot: cfg.releaseRoot,
-              }).catch(async (e: unknown) => {
+              }), { workspace, script }).catch(async (e: unknown) => {
                 const reason = `arming-threw(${String(e instanceof Error ? e.message : e).replace(/\s+/g, "_").slice(0, 160)})`;
                 const line = `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false reason=${reason}`;
                 reuseLines.push(line);
@@ -25674,12 +25727,12 @@ export function realCheckpointDeps(
             ? [...invocation.args, "--", ...armed.args]
             : invocation.args;
           measuredCommand = [invocation.cmd, ...taskArgs].join(' ');
-          taskResult = await exec(invocation.cmd, taskArgs, {
+          taskResult = await traceRepairVerificationPhase(phase, "task-execution", () => exec(invocation.cmd, taskArgs, {
             cwd: invocation.cwd,
             env: taskEnv,
             allowNonZero: true,
             ...rescueTaskWatchdogOptions(script, taskEnv),
-          });
+          }), { workspace: workspace ?? "", script });
           completedAtMs = Date.now();
           return taskResult;
         } finally {
@@ -25698,6 +25751,7 @@ export function realCheckpointDeps(
         coverageComplete: measured.coverageComplete === true && verifiedHead === ref,
         summary: `${headNote}; ${measured.summary}`,
       };
+      }, { gateCount: gateIds.length });
     },
     // P-009: the repair-tick cheap-legs MEASUREMENT — same tree/setup contract as
     // runGateAtRef above, with additional per-gate duration/lifecycle records (see
@@ -25962,8 +26016,9 @@ export function realCheckpointDeps(
     // generation) or a non-zero selector exit PROPAGATES as an error naming its cause;
     // verifyRepairHead carries it into the hold (WI-10004151). `null` is only malformed output.
     async affectedTestsAtRef(ref, paths) {
-      await this.setupTree(ref);
-      const probe = await exec(
+      return traceRepairVerificationPhase({ log, runId, ref }, "radius", async (phase) => {
+      await traceRepairVerificationPhase(phase, "setup", () => this.setupTree(ref));
+      const probe = await traceRepairVerificationPhase(phase, "selector", () => exec(
         process.execPath,
         [
           path.join(cfg.checkpointRoot, "scripts/affected-tests.mjs"),
@@ -25978,7 +26033,7 @@ export function realCheckpointDeps(
           timeoutMs: SETUP_TREE_TIMEOUT_MS,
           killProcessGroupOnTimeout: true,
         },
-      );
+      ));
       if (probe.code !== 0) {
         const tail = (probe.stderr || probe.stdout)
           .trim()
@@ -25991,6 +26046,7 @@ export function realCheckpointDeps(
         );
       }
       return parseRepairHeadRadius(probe.stdout);
+      }, { pathCount: paths.length });
     },
     async detectSplitSourceTestPairs(input) {
       return detectSplitSourceTestPairs({
