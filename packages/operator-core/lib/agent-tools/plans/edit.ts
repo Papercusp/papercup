@@ -187,7 +187,10 @@ export default defineTool({
         slug: args.slug,
         intent: 'plans:edit',
         ...(harnessSlug ? { harnessSlug } : {}),
-        preserveStoredItemText: args.anchors !== undefined && args.old_string === undefined,
+        // harness_plans.content is canonical; a derived graph row can lag behind it.
+        // Keep matching stored item text when preparing the body so an unrelated
+        // edit (for example, changing only ## Now) cannot rewrite stale item text.
+        preserveStoredItemText: true,
         afterWrite: rev.afterWrite,
         inTransaction: async (tx, _body, scope, value) => {
           if (value.ok && anchors !== undefined) {

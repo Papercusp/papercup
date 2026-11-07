@@ -138,8 +138,7 @@ function archiveSource(root) {
     progress: record => progress(record.completedFiles),
   });
 }
-function sourcePaths(root) {
-  const archive = archiveSource(root);
+function sourcePaths(root, archive = archiveSource(root)) {
   if (archive) return archive.files.map(file => file.path).filter(sourceInput).sort();
   const result = new Set();
   function visit(repo, prefix = '') {
@@ -160,7 +159,17 @@ function sourcePaths(root) {
 }
 
 export function buildInputs(root) {
-  const paths = sourcePaths(root);
+  const archive = archiveSource(root);
+  if (archive) {
+    // This invocation just verified every archived byte, mode, link and member.
+    // Project that fresh measurement instead of hashing it all a second time.
+    // No receipt is cached across producer/preflight calls or build boundaries.
+    return archive.files.filter(file => sourceInput(file.path))
+      .map(file => file.kind === 'symlink' ? identity(root, file.path)
+        : { path: file.path, sha256: file.sha256, executable: file.executable })
+      .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  }
+  const paths = sourcePaths(root, null);
   if (paths.length < 128) {
     const progress = censusProgress();
     const result = paths.map((path, index) => {
@@ -265,11 +274,11 @@ export function buildWorkspace(root, packagePath, command) {
   return receipt;
 }
 
-function manifests(root) {
+function manifests(root, archive) {
   // Requirements and producing inputs must describe the same source census.
   // A retained, gitignored candidate contains package.json files too, but is
   // output rather than another workspace requiring a native build receipt.
-  return sourcePaths(root).filter(path => path === 'package.json' || path.endsWith('/package.json'));
+  return sourcePaths(root, archive).filter(path => path === 'package.json' || path.endsWith('/package.json'));
 }
 function checkInputs(root, inputs) {
   if (!Array.isArray(inputs) || !inputs.length) fail('missing-build-inputs');
@@ -290,7 +299,7 @@ function workspaceRequirements(root) {
   const required = [];
   const archive = archiveSource(root);
   const archived = archive ? new Set(archive.files.map(file => file.path)) : null;
-  for (const path of manifests(root)) {
+  for (const path of manifests(root, archive)) {
     const pkg = JSON.parse(readFileSync(join(root, path), 'utf8'));
     const bins = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin || {});
     const targets = bins.filter(bin => typeof bin === 'string' && /^(\.\/)?dist\//.test(bin));

@@ -1,0 +1,6 @@
+# Match the desktop Windows producer: PUI must run on a clean installation
+# without a separately installed Visual C++ redistributable. Cargo reads this
+# default when invoked from apps/tui; explicit RUSTFLAGS replace it, so main.rs
+# also rejects MSVC builds that lose the static CRT feature.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

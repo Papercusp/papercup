@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { verifierSourceFiles } from '../libs/test-config/src/verifier-source.ts';
 import { buildInputs, buildWorkspace, captureClosure, verifyClosure } from '../apps/operator/bin/release/dependency-generation-verifier.mjs';
 
 const roots = [];
@@ -35,6 +38,51 @@ function ignoredCandidate(root) {
   generatedPackage(root, path);
   return path;
 }
+
+test('archive inputs and requirements each use one fresh full census and reject later tampering', () => {
+  const root = fixture();
+  rmSync(join(root, '.git'), { recursive: true });
+  write(root, 'src/probe.js', 'export default 1;\n');
+  chmodSync(join(root, 'src/probe.js'), 0o755);
+  symlinkSync('probe.js', join(root, 'src/alias.js'));
+  const files = verifierSourceFiles(root);
+  const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: '7'.repeat(40),
+    testedInputs: [{ path: 'src/probe.js', sha256: files.find(file => file.path === 'src/probe.js').sha256 }], files };
+  const independent = join(mkdtempSync(join(tmpdir(), 'independent-census-')), 'receipt.json');
+  roots.push(dirname(independent));
+  writeFileSync(independent, JSON.stringify(receipt));
+  writeFileSync(join(root, '.verifier-source.json'), JSON.stringify(receipt));
+  const oldReceipt = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+  const oldRef = process.env.VERIFY_TAURI_SOURCE_REF;
+  const originalOpen = fs.openSync, originalRead = fs.readFileSync;
+  let reads = 0;
+  const subject = join(root, 'src/probe.js');
+  fs.openSync = function(path, ...args) { if (path === subject) reads++; return originalOpen.call(this, path, ...args); };
+  fs.readFileSync = function(path, ...args) { if (path === subject) reads++; return originalRead.call(this, path, ...args); };
+  syncBuiltinESMExports();
+  process.env.VERIFY_TAURI_SOURCE_RECEIPT = independent;
+  process.env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
+  try {
+    const inputs = buildInputs(root);
+    assert.equal(reads, 1, 'archive input bytes must not be re-read after their full verification');
+    assert.deepEqual(inputs.find(input => input.path === 'src/probe.js'), {
+      path: 'src/probe.js', sha256: receipt.testedInputs[0].sha256, executable: true,
+    });
+    assert.deepEqual(inputs.find(input => input.path === 'src/alias.js'), { path: 'src/alias.js', link: 'probe.js' });
+    reads = 0;
+    assert.equal(captureClosure(root).complete, true);
+    assert.equal(reads, 1, 'requirements must share the census inside this closure read');
+    write(root, 'src/probe.js', 'export default 2;\n');
+    assert.throws(() => buildInputs(root), /changed src\/probe.js/);
+    assert.equal(captureClosure(root).complete, false);
+  } finally {
+    fs.openSync = originalOpen; fs.readFileSync = originalRead;
+    syncBuiltinESMExports();
+    for (const [key, value] of [['VERIFY_TAURI_SOURCE_RECEIPT', oldReceipt], ['VERIFY_TAURI_SOURCE_REF', oldRef]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
 
 test('bounded source census preserves bytes, modes, links and membership through a producing build', () => {
   const root = fixture();

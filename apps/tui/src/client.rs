@@ -953,6 +953,89 @@ impl OperatorClient {
             .await
     }
 
+    pub async fn native_conversation(&self, expected: &BackendIdentity, conversation_id: &str) -> Result<BackendIdentity> {
+        use crate::native_panel::{ReadModel, ReadRequest};
+        use serde_json::json;
+        let current = self.backend_identity().await?;
+        anyhow::ensure!(expected.same_rendezvous(&current), "selected environment changed before chat");
+        let active = self.native_panel_read(&ReadRequest { name: ReadModel::OperatorConversation,
+            args: serde_json::from_value(json!({"workspaceId":current.workspace_id}))?, environment: Some(current.clone()) }).await?;
+        let rows = active["rows"].as_array().context("conversation unavailable")?;
+        anyhow::ensure!(active["partial"] != true && rows.len() == 1 && rows[0]["id"] == conversation_id
+            && rows[0]["workspaceId"] == current.workspace_id && rows[0]["subjectKind"] == "global"
+            && rows[0]["status"] == "active", "selected conversation changed before chat");
+        Ok(current)
+    }
+
+    pub async fn native_chat_prepare(&self, request: &crate::native_panel::ChatRequest)
+        -> Result<(BackendIdentity, serde_json::Value, Option<serde_json::Value>)> {
+        use crate::native_panel::{ChatOperation, ReadModel, ReadRequest};
+        use serde_json::json;
+        request.validate()?;
+        let current = self.native_conversation(&request.environment, &request.conversation_id).await?;
+        if request.operation != ChatOperation::Send { return Ok((current, request.control_body(), None)); }
+        let modality = request.modality.as_deref().unwrap_or("text");
+        let saved = self.post_json(&format!("/api/operator/conversations/{}/turns", urlencode(&request.conversation_id)),
+            json!({"role":"user","text":request.text,"source":if modality == "voice" {"voice_stt"} else {"text_typed"},"turnId":request.user_turn_id})).await?;
+        anyhow::ensure!(saved["conversationId"] == request.conversation_id
+            && saved["turn"]["id"] == request.user_turn_id.as_deref().unwrap()
+            && saved["turn"]["conversationId"] == request.conversation_id
+            && saved["turn"]["role"] == "user" && saved["turn"]["text"] == request.text.as_deref().unwrap(),
+            "message acknowledgement mismatch; refresh before sending again");
+        let page = self.native_panel_read(&ReadRequest { name: ReadModel::OperatorTurns,
+            args: serde_json::from_value(json!({"conversationId":request.conversation_id,"limit":200}))?,
+            environment: Some(current.clone()) }).await?;
+        let pages = page["rows"].as_array().context("conversation history unavailable after saving message")?;
+        anyhow::ensure!(page["partial"] != true && pages.len() == 1, "conversation history incomplete after saving message");
+        let turns = pages[0]["turns"].as_array().context("conversation history unavailable after saving message")?;
+        let mut messages = Vec::new();
+        for turn in turns {
+            anyhow::ensure!(turn["conversationId"] == request.conversation_id && turn["text"].is_string(), "foreign history after saving message");
+            if matches!(turn["role"].as_str(), Some("user" | "assistant" | "system")) {
+                messages.push(json!({"role":turn["role"],"content":turn["text"]}));
+            }
+        }
+        anyhow::ensure!(turns.iter().any(|turn| turn["id"] == saved["turn"]["id"]), "saved message is missing from canonical history");
+        anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?), "selected environment changed before reply");
+        Ok((current, json!({"chatProtocolVersion":1,"messages":messages,"conversationId":request.conversation_id,
+            "trigger":"user_message","modality":modality,"mayAskActive":false,"uiClientId":request.user_turn_id}), Some(saved)))
+    }
+
+    pub async fn native_voice(&self, request: &crate::native_panel::VoiceRequest) -> Result<serde_json::Value> {
+        use base64::Engine as _;
+        let audio = request.audio()?;
+        let environment = self.native_conversation(&request.environment, &request.conversation_id).await?;
+        let mut row = serde_json::json!({"conversationId":request.conversation_id,"requestId":request.request_id,
+            "operation":if audio.is_some() {"transcribe"} else {"speak"}});
+        if let Some(audio) = audio {
+            let text = self.stt_transcribe(&audio).await?;
+            anyhow::ensure!(text.len() <= 32 * 1024, "voice transcript is too large");
+            row["text"] = serde_json::json!(text);
+        } else {
+            let audio = self.tts_speak(request.text.as_deref().unwrap()).await?;
+            anyhow::ensure!(!audio.is_empty() && audio.len() <= 8 * 1024 * 1024, "spoken audio is empty or too large");
+            row["audioBase64"] = serde_json::json!(base64::engine::general_purpose::STANDARD.encode(audio));
+        }
+        anyhow::ensure!(environment.same_rendezvous(&self.backend_identity().await?), "voice environment changed; discard the result");
+        Ok(serde_json::json!({"environment":environment,"rows":[row]}))
+    }
+
+    pub async fn native_chat_cancel(&self, body: serde_json::Value) -> Result<serde_json::Value> {
+        self.post_json("/api/agent-mcp/operator-converse", body).await
+    }
+
+    pub async fn native_cards_respond(&self, request: &crate::native_panel::CardsRequest) -> Result<serde_json::Value> {
+        use crate::native_panel::CardsOperation;
+        request.validate()?;
+        anyhow::ensure!(request.operation == CardsOperation::Respond, "expected a card response");
+        let environment = self.native_conversation(&request.environment, &request.conversation_id).await?;
+        self.card_respond(&request.conversation_id, request.correlation_id.as_deref().unwrap(),
+            &environment.workspace_id, request.action.as_deref().unwrap(), request.payload.clone(), None).await?;
+        anyhow::ensure!(environment.same_rendezvous(&self.backend_identity().await?), "card environment changed; reconcile the answer");
+        Ok(serde_json::json!({"environment":environment,"rows":[{"responded":true,
+            "conversationId":request.conversation_id,"correlationId":request.correlation_id}]}))
+    }
+
     /// Subscribe to the state-channel snapshot SSE for the active workspace
     /// (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a). Each
     /// `snapshot` frame's `data` is a `VersionedSnapshot` (`{runId, version,
@@ -991,7 +1074,7 @@ impl OperatorClient {
         if let Some(r) = reason {
             body["reason"] = serde_json::Value::String(r.to_string());
         }
-        self.post_json(
+        let receipt = self.post_json(
             &format!(
                 "/api/operator/conversations/{}/card-response",
                 urlencode(conversation_id)
@@ -999,6 +1082,7 @@ impl OperatorClient {
             body,
         )
         .await?;
+        anyhow::ensure!(receipt["ok"] == true, "card response was not acknowledged; reconcile the question");
         Ok(())
     }
 
@@ -2529,6 +2613,20 @@ impl OperatorClient {
         Ok(payload)
     }
 
+    pub async fn native_agent_focus(&self, request: &crate::native_panel::AgentFocusRequest) -> Result<serde_json::Value> {
+        use crate::native_panel::{ReadModel, ReadRequest};
+        let current = self.backend_identity().await?;
+        anyhow::ensure!(request.environment.same_rendezvous(&current), "selected environment changed before focus");
+        let payload = self.native_panel_read(&ReadRequest { name: ReadModel::Agents,
+            args: Default::default(), environment: Some(current.clone()) }).await?;
+        let row = request.target(&payload, &crate::session_panes::local_host())?;
+        anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?), "selected environment changed before focus");
+        anyhow::ensure!(self.focus_session(Some(request.adv_session_id), row["pid"].as_i64(),
+            row["windowId"].as_str().filter(|s| !s.is_empty()).map(str::to_owned)).await?,
+            "could not verify focus on the selected terminal");
+        Ok(serde_json::json!({"rows":[{"focused":true,"advSessionId":request.adv_session_id}],"environment":current}))
+    }
+
     pub async fn native_account_action(&self, request: &crate::native_panel::AccountRequest) -> Result<serde_json::Value> {
         use crate::native_panel::{ReadModel, ReadRequest};
         let current = self.backend_identity().await?;
@@ -3908,6 +4006,198 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn native_chat_uses_canonical_history_and_refuses_changed_scope_before_writes() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let conversation = "c88bf103-8399-42ee-93ae-19e73114e3fd";
+        let user = "15138297-1c15-4a94-8d70-e6bfdb15ae01";
+        for scenario in ["send", "voice", "changed-environment", "foreign-conversation", "wrong-receipt", "reconnect"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let identity = json!({"schemaVersion":1,"workspaceId":"selected","store":{"id":"store","target":"test","source":"test"},
+                "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:selected","route":"test"},"capabilities":{}});
+            let current = json!({"rows":[{"id":if scenario == "foreign-conversation" {"foreign"} else {conversation},
+                "workspaceId":"selected","subjectKind":"global","status":"active"}]});
+            let turn = json!({"id":user,"conversationId":conversation,"role":"user","text":"literal ' $() λ","seq":2});
+            let receipt = json!({"conversationId":conversation,"turn":turn});
+            let mut steps = vec![("GET", "/api/tui/identity", identity.clone())];
+            if scenario != "changed-environment" {
+                steps.push(("GET", "/api/tui/identity", identity.clone()));
+                steps.push(("GET", "/api/zero-harness/rest-query", current));
+                if !matches!(scenario, "foreign-conversation" | "reconnect") {
+                    steps.push(("POST", "/api/operator/conversations/c88bf103-8399-42ee-93ae-19e73114e3fd/turns",
+                        if scenario == "wrong-receipt" { json!({"conversationId":"foreign","turn":turn}) } else { receipt.clone() }));
+                    if matches!(scenario, "send" | "voice") {
+                        steps.push(("GET", "/api/tui/identity", identity.clone()));
+                        steps.push(("GET", "/api/zero-harness/rest-query", json!({"rows":[{"turns":[
+                            {"id":"older","conversationId":conversation,"role":"assistant","text":"previous","seq":1,"tools":["display only"]},turn],
+                            "hasMoreEarlier":false}]})));
+                        steps.push(("GET", "/api/tui/identity", identity.clone()));
+                    }
+                }
+            }
+            let server = tokio::spawn(async move {
+                for (method, path, payload) in steps {
+                    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+                    let mut bytes = Vec::new();
+                    let (head, offset, length) = loop {
+                        let mut chunk = [0; 2048]; let n = socket.read(&mut chunk).await.unwrap(); assert!(n > 0);
+                        bytes.extend_from_slice(&chunk[..n]);
+                        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8(bytes[..i].to_vec()).unwrap();
+                            let length = head.lines().find_map(|line| line.to_lowercase().strip_prefix("content-length: ").and_then(|v| v.parse::<usize>().ok())).unwrap_or(0);
+                            if bytes.len() >= i + 4 + length { break (head, i + 4, length); }
+                        }
+                    };
+                    let mut request = head.lines().next().unwrap().split_whitespace(); assert_eq!(request.next(), Some(method));
+                    let url = reqwest::Url::parse(&format!("http://fixture{}", request.next().unwrap())).unwrap();
+                    assert_eq!(url.path(), path); assert!(head.to_lowercase().contains("authorization: bearer native-chat-fixture"));
+                    if method == "POST" { assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[offset..offset+length]).unwrap(),
+                        json!({"role":"user","text":"literal ' $() λ","source":if scenario == "voice" {"voice_stt"} else {"text_typed"},"turnId":user})); }
+                    let body = payload.to_string();
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+                }
+                // Any forbidden write/extra request is refused by the closed listener.
+            });
+            let client = OperatorClient { transport: Transport::Http(HttpClient::new(base.clone(), Some("native-chat-fixture".into()))),
+                endpoint: base.clone(), selection_source: "test".into() };
+            let mut expected = identity;
+            expected["endpoint"] = json!(base); expected["transport"] = json!("http"); expected["selectionSource"] = json!("test");
+            if scenario == "changed-environment" { expected["store"]["id"] = json!("other"); }
+            let request = if scenario == "reconnect" { json!({"environment":expected,"conversationId":conversation,
+                "operation":"reconnect","turnId":user,"afterSequence":7}) }
+                else { json!({"environment":expected,"conversationId":conversation,"operation":"send","text":"literal ' $() λ","userTurnId":user}) };
+            let mut request = request;
+            if scenario == "voice" { request["modality"] = json!("voice"); }
+            let request = serde_json::from_value(request).unwrap();
+            let result = client.native_chat_prepare(&request).await;
+            if matches!(scenario, "send" | "voice") {
+                let (_, body, saved) = result.unwrap(); assert_eq!(saved, Some(receipt));
+                assert_eq!(body["messages"], json!([{"role":"assistant","content":"previous"},{"role":"user","content":"literal ' $() λ"}]));
+                assert_eq!(body["chatProtocolVersion"], 1); assert_eq!(body["conversationId"], conversation);
+                assert_eq!(body["modality"], if scenario == "voice" {"voice"} else {"text"});
+            } else if scenario == "reconnect" {
+                let (_, body, saved) = result.unwrap(); assert!(saved.is_none());
+                assert_eq!(body["afterSequence"], 7); assert!(body.get("messages").is_none());
+            } else { assert!(result.is_err(), "accepted {scenario}"); }
+            server.await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn native_voice_checks_scope_before_and_after_the_authenticated_tts_proxy() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let conv = "c88bf103-8399-42ee-93ae-19e73114e3fd";
+        for scenario in ["speak", "denied", "bad-audio", "foreign", "changed-before", "changed-after"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let identity = json!({"schemaVersion":1,"workspaceId":"selected","store":{"id":"store","target":"test","source":"test"},
+                "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:selected","route":"test"},"capabilities":{}});
+            let mut steps = vec![("/api/tui/identity", identity.clone())];
+            if scenario != "changed-before" {
+                steps.push(("/api/tui/identity", identity.clone()));
+                steps.push(("/api/zero-harness/rest-query", json!({"rows":[{"id":if scenario == "foreign" {"foreign"} else {conv},
+                    "workspaceId":"selected","subjectKind":"global","status":"active"}]})));
+                if scenario != "foreign" {
+                    steps.push(("/api/agent-mcp/operator-tts", json!({"ok":true,"audioBase64":if scenario == "bad-audio" {"invalid"} else {"AAEC"}})));
+                    if !matches!(scenario, "denied" | "bad-audio") {
+                        let mut after = identity.clone(); if scenario == "changed-after" {after["store"]["id"] = json!("other");}
+                        steps.push(("/api/tui/identity", after));
+                    }
+                }
+            }
+            let server = tokio::spawn(async move {
+                for (path, payload) in steps {
+                    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+                    let mut bytes = Vec::new();
+                    let (head, offset, length) = loop {
+                        let mut buf = [0;2048]; let n = socket.read(&mut buf).await.unwrap(); assert!(n > 0); bytes.extend_from_slice(&buf[..n]);
+                        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8(bytes[..i].to_vec()).unwrap();
+                            let length = head.lines().find_map(|s| s.to_lowercase().strip_prefix("content-length: ").and_then(|n| n.parse::<usize>().ok())).unwrap_or(0);
+                            if bytes.len() >= i+4+length {break (head,i+4,length);}
+                        }
+                    };
+                    let mut parts = head.lines().next().unwrap().split_whitespace(); let method = parts.next().unwrap();
+                    assert_eq!(reqwest::Url::parse(&format!("http://fixture{}", parts.next().unwrap())).unwrap().path(), path);
+                    assert!(head.to_lowercase().contains("authorization: bearer native-voice-fixture"));
+                    if path.ends_with("operator-tts") {
+                        assert_eq!(method,"POST"); assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[offset..offset+length]).unwrap(),json!({"text":"literal ' $() λ"}));
+                    } else {assert_eq!(method,"GET");}
+                    let body = payload.to_string(); let status = if path.ends_with("operator-tts") && scenario == "denied" {"403 Forbidden"} else {"200 OK"};
+                    socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+                }
+            });
+            let client = OperatorClient {transport:Transport::Http(HttpClient::new(base.clone(),Some("native-voice-fixture".into()))),endpoint:base.clone(),selection_source:"test".into()};
+            let mut env = identity; env["endpoint"] = json!(base); env["transport"] = json!("http"); env["selectionSource"] = json!("test");
+            if scenario == "changed-before" {env["store"]["id"] = json!("other");}
+            let request = serde_json::from_value(json!({"environment":env,"conversationId":conv,"operation":"speak",
+                "requestId":"15138297-1c15-4a94-8d70-e6bfdb15ae01","text":"literal ' $() λ"})).unwrap();
+            let result = client.native_voice(&request).await;
+            if scenario == "speak" {assert_eq!(result.unwrap()["rows"][0]["audioBase64"],"AAEC");}
+            else {assert!(result.is_err(),"accepted {scenario}");}
+            server.await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn native_cards_require_scope_and_successful_server_acknowledgement() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let conversation = "c88bf103-8399-42ee-93ae-19e73114e3fd";
+        for scenario in ["submit", "denied", "bad-receipt", "foreign-conversation", "changed-environment"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let identity = json!({"schemaVersion":1,"workspaceId":"selected","store":{"id":"store","target":"test","source":"test"},
+                "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:selected","route":"test"},"capabilities":{}});
+            let mut steps = vec![("/api/tui/identity", identity.clone())];
+            if scenario != "changed-environment" {
+                steps.push(("/api/tui/identity", identity.clone()));
+                steps.push(("/api/zero-harness/rest-query", json!({"rows":[{"id":if scenario == "foreign-conversation" {"foreign"} else {conversation},
+                    "workspaceId":"selected","subjectKind":"global","status":"active"}]})));
+                if scenario != "foreign-conversation" { steps.push(("/api/operator/conversations/c88bf103-8399-42ee-93ae-19e73114e3fd/card-response",
+                    json!({"ok":scenario == "submit"}))); }
+                if scenario == "submit" { steps.push(("/api/tui/identity", identity.clone())); }
+            }
+            let server = tokio::spawn(async move {
+                for (path, payload) in steps {
+                    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+                    let mut bytes = Vec::new();
+                    let (head, offset, length) = loop {
+                        let mut chunk = [0; 2048]; let n = socket.read(&mut chunk).await.unwrap(); assert!(n > 0); bytes.extend_from_slice(&chunk[..n]);
+                        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8(bytes[..i].to_vec()).unwrap();
+                            let length = head.lines().find_map(|line| line.to_lowercase().strip_prefix("content-length: ").and_then(|v| v.parse::<usize>().ok())).unwrap_or(0);
+                            if bytes.len() >= i + 4 + length { break (head, i + 4, length); }
+                        }
+                    };
+                    let mut parts = head.lines().next().unwrap().split_whitespace();
+                    let method = parts.next().unwrap();
+                    let url = reqwest::Url::parse(&format!("http://fixture{}", parts.next().unwrap())).unwrap(); assert_eq!(url.path(), path);
+                    assert!(head.to_lowercase().contains("authorization: bearer native-cards-fixture"));
+                    if path.ends_with("card-response") {
+                        assert_eq!(method, "POST");
+                        assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[offset..offset+length]).unwrap(),
+                            json!({"correlationId":"card-1","workspaceId":"selected","action":"submit","payload":{"picks":["yes"]}}));
+                    } else { assert_eq!(method, "GET"); }
+                    let body = payload.to_string(); let status = if path.ends_with("card-response") && scenario == "denied" { "403 Forbidden" } else { "200 OK" };
+                    socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                }
+            });
+            let client = OperatorClient { transport: Transport::Http(HttpClient::new(base.clone(), Some("native-cards-fixture".into()))), endpoint:base.clone(), selection_source:"test".into() };
+            let mut expected = identity; expected["endpoint"] = json!(base); expected["transport"] = json!("http"); expected["selectionSource"] = json!("test");
+            if scenario == "changed-environment" { expected["store"]["id"] = json!("other"); }
+            let request = serde_json::from_value(json!({"environment":expected,"conversationId":conversation,"operation":"respond",
+                "correlationId":"card-1","action":"submit","payload":{"picks":["yes"]}})).unwrap();
+            let result = client.native_cards_respond(&request).await;
+            if scenario == "submit" { assert_eq!(result.unwrap()["rows"][0]["correlationId"], "card-1"); }
+            else { assert!(result.is_err(), "accepted {scenario}"); }
+            server.await.unwrap();
+        }
+    }
     #[tokio::test]
     async fn native_goal_controls_revalidate_environment_and_read_back_server_outcomes() {
         use super::*;
