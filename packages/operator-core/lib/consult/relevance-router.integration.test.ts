@@ -542,8 +542,7 @@ describe('bounded subject evidence against real transcript SQL', () => {
     await passage('subject-timeout-slow', slowText, 0.01);
     let finishSlow!: (scores: Array<number | null>) => void;
     let slowSettled = false;
-    const result = await routeConsult({ ...baseParams, question, subjectRefs: ['computer:provision_desktop'],
-      subjectEvidenceDeadline: Date.now() + SUBJECT_EVIDENCE_TIMEOUT_MS }, deps(0, {
+    const result = await routeConsult({ ...baseParams, question, subjectRefs: ['computer:provision_desktop'] }, deps(0, {
       scoreSubjectEvidence: async (_subject, texts, _deadline, _onPhase, onScore) => {
         expect(texts).toEqual(expect.arrayContaining([fastText, slowText]));
         return Promise.all(texts.map((text, index) => {
@@ -551,11 +550,11 @@ describe('bounded subject evidence against real transcript SQL', () => {
             onScore?.(index, 0.9);
             return Promise.resolve(0.9);
           }
-          return new Promise<Array<number | null>>(resolve => {
+          return new Promise<number | null>(resolve => {
             finishSlow = scores => {
               onScore?.(index, scores[0] ?? null);
               slowSettled = true;
-              resolve(scores);
+              resolve(scores[0] ?? null);
             };
           });
         }));
