@@ -326,6 +326,28 @@ describe('retained preview recovery across generated declaration times (EI-28093
     expect(brief).not.toContain(`candidate/source SHA-256 ${input().preview.approval.reviewSourceHash}`);
   });
 
+  it('rejects missing truncated or changed immutable review sources', async () => {
+    const { input, deps, route, body } = await fixture();
+    await expect(openAcceptanceBarAmendmentReview({ ...input(), previewPostRef: 'thread-post:999999999' }, deps))
+      .rejects.toThrow(/acceptance_bar_/);
+    for (const invalidBody of [body.slice(0, -10), body.replace('Added outcome', 'Altered outcome')]) {
+      const [post] = await db.adminSql<Array<{ id: number }>>`
+        INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+        VALUES (${workspaceId}, 'retained-time-preview', 'applier', ${invalidBody}, 'local') RETURNING id`;
+      await expect(openAcceptanceBarAmendmentReview({ ...input(), previewPostRef: `thread-post:${post!.id}` }, deps))
+        .rejects.toThrow(/acceptance_bar_review_source_/);
+    }
+    expect(route).not.toHaveBeenCalled();
+    await expect(openAcceptanceBarAmendmentReview(input(), deps)).resolves.toMatchObject({ state: 'routed' });
+    expect(route).toHaveBeenCalledOnce();
+    const brief = route.mock.calls[0]![0].brief;
+    const positions = ['Purpose:', 'Semantic field changes', 'Removals:', 'Dependency changes',
+      'Preflight:', 'Approval identity:', 'Supporting material'].map((heading) => brief.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(brief).not.toContain('end of complete source');
+  });
+
   it('requires persisted reviewer attestation of the original retained source before apply', async () => {
     const { input, current, reviewed } = await fixture();
     const originalHash = preview(reviewed).approval.reviewSourceHash!;
