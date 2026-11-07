@@ -282,15 +282,24 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   }
 
   async enqueue(record: DurableAdmissionRecord): Promise<StoredAdmissionRecord & { readonly created: boolean }> {
+    // Keep enqueue's existing bounded transaction diagnostic as precise as the
+    // targeted transition diagnostics. The outer admission timer includes all
+    // these statements; it cannot distinguish a latch/identity/INSERT timeout.
+    const prefix = 'resource-governor.admission-ledger.enqueue';
+    let phase = `${prefix}.begin`;
     return this.transaction(async (tx) => {
       const identityLock = `resource-governor:${this.workspaceId}:${record.namespace}:id:${record.idempotencyKey}`;
       const coalesceLock = record.coalesceKey
         ? `resource-governor:${this.workspaceId}:${record.namespace}:coalesce:${record.coalesceKey}`
         : identityLock;
+      phase = `${prefix}.lock`;
       await this.lockKeys(tx, [identityLock, coalesceLock]);
+      phase = `${prefix}.cutover-latch`;
       await this.latchCutover(tx);
 
+      phase = `${prefix}.find-identity`;
       const existing = await this.findRow(tx, record.namespace, record.idempotencyKey, true);
+      phase = `${prefix}.find-legacy-identity`;
       const legacy = await this.legacyAdapter?.findIdentity(tx, record.namespace, record.idempotencyKey);
       if (existing && legacy) {
         throw new AdmissionPersistenceError(
@@ -304,13 +313,16 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
       // The tenant guard must run before coalescing or INSERT. Refusal rolls
       // back every side effect, and replay above adds no second quota charge.
       if (this.admitNewRecord) {
+        phase = `${prefix}.tenant-guard`;
         const evidence = await this.admitNewRecord(tx, record);
         record = { ...record, decision: { ...record.decision,
           evidence: { ...record.decision.evidence, ...evidence } } };
       }
 
       if (record.coalesceKey) {
+        phase = `${prefix}.coalesce-legacy`;
         await this.legacyAdapter?.supersedeActiveCoalesce(tx, record);
+        phase = `${prefix}.coalesce-ledger-read`;
         const priorRows = await tx<LedgerDbRow[]>`
           SELECT receipt_id, record
             FROM harness_shared.resource_governor_admissions
@@ -327,10 +339,12 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
             }),
             lease: undefined,
           };
+          phase = `${prefix}.coalesce-ledger-write`;
           await this.writeRecord(tx, prior.receiptId, superseded);
         }
       }
 
+      phase = `${prefix}.insert`;
       const rows = await tx<LedgerDbRow[]>`
         INSERT INTO harness_shared.resource_governor_admissions (
           workspace_id, record
@@ -340,7 +354,9 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
         ON CONFLICT DO NOTHING
         RETURNING receipt_id, record`;
       if (rows[0]) return { ...storedFromRow(rows[0]), created: true };
+      phase = `${prefix}.find-raced-identity`;
       const raced = await this.findRow(tx, record.namespace, record.idempotencyKey, true);
+      phase = `${prefix}.find-raced-legacy-identity`;
       const racedLegacy = await this.legacyAdapter?.findIdentity(tx, record.namespace, record.idempotencyKey);
       if (raced && racedLegacy) {
         throw new AdmissionPersistenceError(
@@ -353,7 +369,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
         throw new AdmissionPersistenceError('admission ledger insert returned no row and no durable receipt exists');
       }
       return { ...storedFromRow(raced), created: false };
-    });
+    }, () => phase);
   }
 
   async find(namespace: string, idempotencyKey: string): Promise<StoredAdmissionRecord | null> {

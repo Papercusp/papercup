@@ -90,7 +90,7 @@ function runChild(mode: 'crash' | 'recover' | 'code', scenario: Scenario) {
   expect(dsn, 'private DBOS database must be prepared before launching the child').toBeTruthy();
   expect(scenario.runKey, 'durable run key is required').toBeTruthy();
   expect(scenario.script, 'durable script source is required').toBeTruthy();
-  return spawnSync(process.execPath, ['--import', 'tsx', childPath], {
+  const child = spawnSync(process.execPath, ['--import', 'tsx', childPath], {
     cwd: packageRoot,
     env: {
       ...process.env,
@@ -105,6 +105,13 @@ function runChild(mode: 'crash' | 'recover' | 'code', scenario: Scenario) {
     timeout: mode === 'code' ? 240_000 : 150_000,
     encoding: 'utf8',
   });
+  const prefix = 'DURABLE_DBOS_STARTUP ';
+  const startup = (child.stderr ?? '').split('\n').filter(line => line.startsWith(prefix))
+    .map(line => JSON.parse(line.slice(prefix.length)));
+  if (startup.length) console.info('DURABLE_DBOS_STARTUP_TRACE ' + JSON.stringify({
+    mode, runKey: scenario.runKey, phases: startup,
+  }));
+  return child;
 }
 
 async function calls(runKey: string): Promise<Array<{ tool: string; mode: string; args: Record<string, unknown>; key: string | null }>> {

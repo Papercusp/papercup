@@ -1,0 +1,19 @@
+{
+  "group": "dda3bf65-6944-49b9-ac2f-aee945dc130f",
+  "files": [
+    "packages/operator-core/lib/consult/park.integration.test.ts",
+    "packages/operator-core/lib/events/await/wake-executor.test.ts"
+  ],
+  "titles": [
+    "requires matching verdict pickup proof",
+    "persisted owner-authority survives park creation and expiry",
+    "adopt-alternative: an objection with an alternative wakes the parker",
+    "silent-proceed: with no objection",
+    "books host-attested when the host confirmed a native turn start",
+    "books host-attested when the host finds a durable exact-ID",
+    "does not attest a turn on a host that was never asked",
+    "does not attest a turn on a duplicate-delivery-id reply"
+  ],
+  "sourceWorkspace": "@papercusp/operator-core",
+  "scope": "isolated component proof; mocked native transport; not live or deployed acceptance"
+}

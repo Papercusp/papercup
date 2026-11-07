@@ -62,6 +62,32 @@ function instance(
 }
 
 describe('PgAdmissionLedgerQueueStore', () => {
+  it('names the enqueue lock phase on a real timeout and leaves the identity retryable', { timeout: 20_000 }, async () => {
+    const key = 'enqueue-phase-timeout';
+    const lockKey = `resource-governor:ws-ledger:integration:id:${key}`;
+    const store = new PgAdmissionLedgerQueueStore({ sql: db.sql, workspaceId: 'ws-ledger' });
+    const governor = new Governor(new WorkItemAdmissionQueueDriver(store, {
+      namespace: 'integration', admissionRetryBackoffsMs: [],
+    }));
+    const holder = await db.sql.reserve();
+    try {
+      await holder`SELECT pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+      await expect(governor.admit({ idempotencyKey: key, admissionClass: 'process' }))
+        .rejects.toMatchObject({ cause: {
+          pgCode: '55P03',
+          message: expect.stringContaining('[phase: resource-governor.admission-ledger.enqueue.lock]'),
+        } });
+      expect(await store.find('integration', key)).toBeNull();
+    } finally {
+      await holder`SELECT pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
+      holder.release();
+    }
+
+    const outcome = await governor.admit({ idempotencyKey: key, admissionClass: 'process' });
+    expect(outcome.kind).toBe('queued');
+    expect(await store.find('integration', key)).toMatchObject({ record: { idempotencyKey: key, state: 'queued' } });
+  });
+
   it.for(['pool', 'advisory'] as const)('distinguishes a controlled %s wait in the real admission transaction', { timeout: 20_000 }, async (mode) => {
     const pool = `admission-control-${mode}`;
     const client = postgres(db.url, { max: 1, prepare: false, onnotice: () => {} });

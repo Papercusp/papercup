@@ -20,6 +20,22 @@ export interface DiscoveryShippedTarget {
   health: { sha: string; service: string };
 }
 
+/** Reject internally inconsistent selections before reading a service or opening
+ * a private host. The live recheck below still owns process/artifact authority. */
+export function assertDiscoveryShippedIdentity(target: DiscoveryShippedTarget) {
+  assert.equal(target.runtime, 'release-operator');
+  assert.equal(target.artifact.status, 'measured');
+  assert.match(target.artifact.sourceSha, /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
+  assert.match(target.source.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(target.artifact.bundleSha256, target.source.sha256, 'loaded bundle differs from release artifact');
+  assert.equal(target.health.service, 'papercusp-operator');
+  assert.match(target.health.sha, /^[a-f0-9]{7,64}$/);
+  assert.ok(target.artifact.sourceSha.startsWith(target.health.sha), 'health and release candidate differ');
+  assert.ok(isAbsolute(target.source.entry), 'release entry must be absolute');
+  assert.ok(Number.isFinite(target.processStartedAtMs) && target.processStartedAtMs > 0,
+    'release process start must be measured');
+}
+
 async function releaseHealth() {
   const runtime = SERVING_RUNTIMES['release-operator'];
   const response = await fetch(`http://127.0.0.1:${runtime.healthPort}/api/health`,
@@ -47,13 +63,15 @@ export async function pinDiscoveryShippedTarget(): Promise<DiscoveryShippedTarge
   if (artifact.status !== 'measured') throw new Error('release artifact is unknown');
   assert.equal(artifact.bundleSha256, source.sha256);
   assert.ok(isLiveNodeEntrySourceCurrent(source), 'release changed during selection');
-  return { runtime: 'release-operator', source, processStartedAtMs, artifact, health };
+  const target: DiscoveryShippedTarget = { runtime: 'release-operator', source, processStartedAtMs, artifact, health };
+  assertDiscoveryShippedIdentity(target);
+  return target;
 }
 
 /** Re-resolve the service and immutable boot bytes before and after execution.
  * A replaced process, changed bundle, staging target or rewritten pin refuses. */
 export async function recheckDiscoveryShippedTarget(target: DiscoveryShippedTarget) {
-  assert.equal(target.runtime, 'release-operator');
+  assertDiscoveryShippedIdentity(target);
   const current = await pinDiscoveryShippedTarget();
   assert.deepEqual(current, target, 'the exact shipped target changed during the journey');
   return current;

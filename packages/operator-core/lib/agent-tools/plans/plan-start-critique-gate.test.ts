@@ -65,7 +65,7 @@ describe('selected review orchestration', () => {
     nonDroppedItemCount: 9, contractEnforced: true };
   const sql = ((strings: TemplateStringsArray) => Promise.resolve(strings.join('').includes('FROM harness_shared.harness_plans')
     ? [{ owner: 'su-author', acceptance_bar_seeded_by: null, created_at: '2026-10-23T00:00:00Z' }] : [])) as unknown as Sql;
-  const deps = { sql, listClauses: (async () => [clause('S-1')]) as typeof listSpecClauses,
+  const deps = { sql, listClauses: (async () => [clause('S-1')]) as unknown as typeof listSpecClauses,
     partyKeys: async (ids: readonly string[]) => new Map(ids.map(id => [id, id])) };
   it('satisfies the selected requirement without manufacturing two consults or lowering their threshold', async () => {
     selectedReviewLoader.mockResolvedValueOnce({ ok: true, receipt: { reviewerId: 'real-reviewer' } });
