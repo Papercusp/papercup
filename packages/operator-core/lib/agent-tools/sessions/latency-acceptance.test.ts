@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  assessLatencyCohort, calibrateLatencyOracle, frozenOutputOracle,
+  assessLatencyCohort, assessLatencyExperiment, assertLatencyPhaseOrder, calibrateLatencyOracle, frozenOutputOracle,
   latencyAttemptId, latencyAttemptSchedule, latencyDistribution, latencyFixtureDigest,
   latencyRecipeCriterionCompatibility, pinLatencyCardFixture,
   type LatencyAttempt, type LatencyCardReference, type LatencyCardSnapshot,
@@ -20,16 +20,79 @@ function calibrationSamples(): LatencyAttempt[] {
 }
 
 describe('LATENCY-M1 frozen experiment preparation', () => {
-  it('keeps all 60 pairs and the predeclared AB/BA/AB order in both cache strata', () => {
+  it('keeps 60 matched pairs in complete baseline/candidate phases with identical within-arm order', () => {
     const schedule = latencyAttemptSchedule();
     expect(schedule).toHaveLength(120);
     expect(new Set(schedule.map(latencyAttemptId)).size).toBe(120);
     for (const task of Array.from({ length: 10 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`)) {
       for (const stratum of ['cold', 'warm']) {
         expect(schedule.filter(a => a.task === task && a.stratum === stratum).map(a => a.arm))
-          .toEqual(['baseline', 'candidate', 'candidate', 'baseline', 'baseline', 'candidate']);
+          .toEqual(['baseline', 'baseline', 'baseline', 'candidate', 'candidate', 'candidate']);
       }
     }
+    expect(schedule.slice(0, 60).every(a => a.arm === 'baseline')).toBe(true);
+    expect(schedule.slice(60).every(a => a.arm === 'candidate')).toBe(true);
+    expect(schedule.slice(0, 60).map(({ arm, ...key }) => key))
+      .toEqual(schedule.slice(60).map(({ arm, ...key }) => key));
+  });
+
+  function phaseReceipts(): Parameters<typeof assertLatencyPhaseOrder>[0][number][] {
+    const samples = calibrationSamples();
+    const events: ReturnType<typeof phaseReceipts> = [{ kind: 'baseline-ready', atMs: 0,
+      evidenceRef: 'calibration:preflight', producerId: 'producer', contractSha256: 'a'.repeat(64),
+      sourceSha256: 'b'.repeat(64), calibrationSha256: 'c'.repeat(64), environmentSha256: 'd'.repeat(64) }];
+    for (const [i, attempt] of samples.slice(0, 60).entries()) events.push({ kind: 'attempt',
+      startedAtMs: i * 101 + 1, atMs: i * 101 + 101, evidenceRef: `calibration:baseline:${i}`, attempt });
+    events.push({ kind: 'baseline-accepted', atMs: 6061, evidenceRef: 'calibration:independent-review',
+      reviewerId: 'independent-reviewer', baselineSha256: latencyFixtureDigest(events) });
+    events.push({ kind: 'product-edit', atMs: 6062, evidenceRef: 'calibration:edit' });
+    events.push({ kind: 'candidate-ready', atMs: 6063, evidenceRef: 'calibration:candidate',
+      contractSha256: 'a'.repeat(64), sourceSha256: 'e'.repeat(64), calibrationSha256: 'c'.repeat(64),
+      baselineEnvironmentSha256: 'd'.repeat(64), environmentSha256: 'f'.repeat(64),
+      comparability: 'comparable', comparabilityEvidenceRef: 'calibration:environment-comparison' });
+    for (const [i, attempt] of samples.slice(60).entries()) events.push({ kind: 'attempt',
+      startedAtMs: i * 81 + 6064, atMs: i * 81 + 6144, evidenceRef: `calibration:candidate:${i}`, attempt });
+    return events;
+  }
+
+  it('admits only independently accepted baseline bytes before edits and pinned candidate measurements', () => {
+    const events = phaseReceipts();
+    expect(assertLatencyPhaseOrder(events.slice(0, 61))).toMatchObject({ attempts: 60, baselineAccepted: false });
+    expect(assessLatencyExperiment(events)).toMatchObject({ verdict: 'pass',
+      phase: { complete: true, baselineAccepted: true, candidateReady: true, comparable: true } });
+  });
+
+  it('refuses early edits/candidates, reordered/duplicate/extra attempts, and overlapping measured tasks', () => {
+    const rows = phaseReceipts();
+    for (const events of [
+      [rows[0]!, rows[62]!],
+      [...rows.slice(0, 61), rows[63]!],
+      [...rows.slice(0, 64), rows[65]!, rows[64]!],
+      [...rows, rows.at(-1)!],
+      [...rows.slice(0, 60), rows[61]!],
+      [rows[0]!, rows[1]!, { ...rows[2]!, startedAtMs: 1 }],
+    ]) expect(() => assertLatencyPhaseOrder(events)).toThrow(/LATENCY-M1/);
+  });
+
+  it('refuses self acceptance, changed baseline bytes, missing review and changed candidate contracts', () => {
+    for (const patch of [{ reviewerId: 'producer' }, { baselineSha256: '0'.repeat(64) }, { evidenceRef: '' }]) {
+      const events = phaseReceipts();
+      events[61] = { ...events[61]!, ...patch };
+      expect(() => assertLatencyPhaseOrder(events)).toThrow(/LATENCY-M1/);
+    }
+    for (const patch of [{ contractSha256: '0'.repeat(64) }, { calibrationSha256: '0'.repeat(64) },
+      { baselineEnvironmentSha256: '0'.repeat(64) }, { comparabilityEvidenceRef: '' }]) {
+      const events = phaseReceipts();
+      events[63] = { ...events[63]!, ...patch };
+      expect(() => assertLatencyPhaseOrder(events)).toThrow(/LATENCY-M1/);
+    }
+  });
+
+  it('keeps missing phases and unresolved unrelated environment drift UNKNOWN despite fast arithmetic', () => {
+    const events = phaseReceipts();
+    expect(assessLatencyExperiment(events.slice(0, 61)).verdict).toBe('unknown');
+    events[63] = { ...events[63]!, comparability: 'unknown' } as typeof events[number];
+    expect(assessLatencyExperiment(events)).toMatchObject({ verdict: 'unknown', phase: { comparable: false } });
   });
 
   it('uses average-of-central-pair median and nearest-rank p95 without mutating raw samples', () => {
@@ -160,7 +223,7 @@ describe('LATENCY-M1 frozen experiment preparation', () => {
       { oracle: { passed: false, evidenceRef: 'failed-control', referenceSha256: 'b'.repeat(64) } },
     ]) {
       const rows = calibrationSamples();
-      rows[1] = { ...rows[1]!, actualElapsedMs: 0, ...change };
+      rows[60] = { ...rows[60]!, actualElapsedMs: 0, ...change };
       expect(assessLatencyCohort(rows).verdict).toBe('fail');
     }
   });

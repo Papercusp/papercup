@@ -21,13 +21,13 @@ export function latencyAttemptId(key: LatencyAttemptKey): string {
   return `${key.task}:${key.stratum}:${key.repetition}:${key.arm}`;
 }
 
-/** The manifest fixes 60 pairs/120 attempts and AB, BA, AB within each cell. */
+/** Manifest4: complete baseline, independent acceptance, edits, then candidate.
+ * Both arms retain the same task/stratum/repetition order; this is not temporal
+ * counterbalancing. */
 export function latencyAttemptSchedule(): LatencyAttemptKey[] {
-  return LATENCY_M1_TASKS.flatMap(task => (['cold', 'warm'] as const).flatMap(stratum =>
-    [1, 2, 3].flatMap(repetition => {
-      const arms: LatencyArm[] = repetition === 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'];
-      return arms.map(arm => ({ task, stratum, repetition, arm }));
-    })));
+  return (['baseline', 'candidate'] as const).flatMap(arm =>
+    LATENCY_M1_TASKS.flatMap(task => (['cold', 'warm'] as const).flatMap(stratum =>
+      [1, 2, 3].map(repetition => ({ task, stratum, repetition, arm })))));
 }
 
 export function latencyFixtureDigest(value: unknown): string {
@@ -126,6 +126,98 @@ function validAttempt(r: LatencyAttempt): boolean {
     && r.gatewayAttemptIds !== null && r.gatewayAttemptIds.every(id => id.trim().length > 0)
     && r.oracle !== null && r.oracle.evidenceRef.trim().length > 0
     && digestPattern.test(r.oracle.referenceSha256);
+}
+
+type LatencyPhaseEvent = { atMs: number; evidenceRef: string } & (
+  | { kind: 'baseline-ready'; producerId: string; contractSha256: string;
+      sourceSha256: string; calibrationSha256: string; environmentSha256: string }
+  | { kind: 'attempt'; startedAtMs: number; attempt: LatencyAttempt }
+  | { kind: 'baseline-accepted'; reviewerId: string; baselineSha256: string }
+  | { kind: 'product-edit' }
+  | { kind: 'candidate-ready'; contractSha256: string; sourceSha256: string;
+      calibrationSha256: string; baselineEnvironmentSha256: string; environmentSha256: string;
+      comparability: 'comparable' | 'unknown'; comparabilityEvidenceRef: string }
+);
+
+/** Validate an ordered prefix of immutable receipts BEFORE opening the next
+ * phase. Resolve receipt authors/bytes through the existing results rails first;
+ * this pure validator does not authenticate a caller-supplied review identity.
+ * All event times must come from the same pinned clock. */
+export function assertLatencyPhaseOrder(events: readonly LatencyPhaseEvent[]) {
+  const schedule = latencyAttemptSchedule();
+  const baseline: LatencyPhaseEvent[] = [];
+  let ready: Extract<LatencyPhaseEvent, { kind: 'baseline-ready' }> | undefined;
+  let accepted = false;
+  let edited = false;
+  let candidateReady = false;
+  let attempts = 0;
+  let previousAt = -Infinity;
+  let comparable = false;
+  for (const event of events) {
+    if (!Number.isSafeInteger(event.atMs) || event.atMs < 0 || event.atMs < previousAt
+      || !event.evidenceRef.trim()) throw new Error('LATENCY-M1 invalid chronological receipt');
+    const priorAt = previousAt;
+    previousAt = event.atMs;
+    switch (event.kind) {
+      case 'baseline-ready':
+        if (ready || attempts || !event.producerId.trim()
+          || ![event.contractSha256, event.sourceSha256, event.calibrationSha256, event.environmentSha256]
+            .every(hash => digestPattern.test(hash))) throw new Error('LATENCY-M1 invalid baseline preflight');
+        ready = event;
+        baseline.push(event);
+        break;
+      case 'attempt': {
+        const key = schedule[attempts];
+        if (!ready || !key || latencyAttemptId(event.attempt) !== latencyAttemptId(key)
+          || !validAttempt(event.attempt) || event.attempt.status === 'unknown'
+          || !Number.isSafeInteger(event.startedAtMs) || event.startedAtMs < priorAt
+          || event.startedAtMs > event.atMs
+          || event.atMs - event.startedAtMs !== event.attempt.actualElapsedMs
+          || (event.attempt.arm === 'baseline' ? accepted || edited : !candidateReady)) {
+          throw new Error('LATENCY-M1 attempt violates frozen population or phase order');
+        }
+        attempts++;
+        if (event.attempt.arm === 'baseline') baseline.push(event);
+        break;
+      }
+      case 'baseline-accepted':
+        if (!ready || accepted || edited || attempts !== 60 || !event.reviewerId.trim()
+          || event.reviewerId === ready.producerId
+          || event.baselineSha256 !== latencyFixtureDigest(baseline)) {
+          throw new Error('LATENCY-M1 requires independent acceptance of the complete immutable baseline');
+        }
+        accepted = true;
+        break;
+      case 'product-edit':
+        if (!accepted || candidateReady) throw new Error('LATENCY-M1 edit before baseline acceptance or after candidate pin');
+        edited = true;
+        break;
+      case 'candidate-ready':
+        if (!ready || !accepted || !edited || candidateReady || attempts !== 60
+          || event.contractSha256 !== ready.contractSha256
+          || event.calibrationSha256 !== ready.calibrationSha256
+          || event.baselineEnvironmentSha256 !== ready.environmentSha256
+          || !digestPattern.test(event.sourceSha256) || !digestPattern.test(event.environmentSha256)
+          || !event.comparabilityEvidenceRef.trim()
+          || !['comparable', 'unknown'].includes(event.comparability)) {
+          throw new Error('LATENCY-M1 candidate provenance or unchanged calibration is missing');
+        }
+        candidateReady = true;
+        comparable = event.comparability === 'comparable';
+        break;
+      default:
+        throw new Error('LATENCY-M1 unknown phase receipt');
+    }
+  }
+  return { attempts, baselineAccepted: accepted, candidateReady,
+    complete: attempts === schedule.length, comparable };
+}
+
+/** Arithmetic calibration alone cannot certify a measured experiment. */
+export function assessLatencyExperiment(events: readonly LatencyPhaseEvent[]) {
+  const phase = assertLatencyPhaseOrder(events);
+  const cohort = assessLatencyCohort(events.flatMap(event => event.kind === 'attempt' ? [event.attempt] : []));
+  return { ...cohort, phase, verdict: !phase.complete || !phase.comparable ? 'unknown' as const : cohort.verdict };
 }
 
 /** This is an exact frozen-output oracle for deterministic fixture outputs.
