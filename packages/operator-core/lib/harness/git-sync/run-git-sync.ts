@@ -86,6 +86,7 @@ import {
   type AttributionRosterEntry,
 } from './git-sync-attribution';
 import { attributionScopeLabel, resolveAttributionRepo } from './attribution-repo';
+import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
 
 /**
  * Per-call options a git runner must forward to the git child.
@@ -3387,6 +3388,9 @@ async function recoverIndexLockContention(
   return result;
 }
 
+type GitMetadataLockName = 'config.lock' | 'shallow.lock' | 'objects/maintenance.lock' | 'HEAD.lock'
+  | `refs/heads/${string}.lock`;
+
 interface ClearStaleConfigLockDeps {
   inspectLock?: (p: string) => Promise<GitLockSnapshot | null>;
   isOpen?: (p: string) => Promise<boolean | null>;
@@ -3403,7 +3407,7 @@ interface ClearStaleConfigLockDeps {
 export async function clearStaleHolderlessEmptyGitLock(
   runGit: RunGit,
   repoPath: string,
-  lockName: 'config.lock' | 'shallow.lock' | 'objects/maintenance.lock',
+  lockName: GitMetadataLockName,
   log: (m: string) => void,
   deps: ClearStaleConfigLockDeps = {},
 ): Promise<boolean> {
@@ -3413,7 +3417,19 @@ export async function clearStaleHolderlessEmptyGitLock(
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? STALE_INDEX_LOCK_MS;
 
-  const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  const branchLock = lockName.startsWith('refs/');
+  if (branchLock) {
+    const ref = lockName.slice(0, -'.lock'.length);
+    // This helper is also called outside publication. Refuse traversal before
+    // inspecting any filesystem path, even if an untyped caller supplies it.
+    if (!lockName.startsWith('refs/heads/') || !lockName.endsWith('.lock')
+      || /[\\\0]/.test(lockName) || ref.split('/').some((part) => !part || part === '.' || part === '..')) return false;
+    if ((await runGit(['check-ref-format', ref], repoPath)).code !== 0) return false;
+  }
+  // Branch refs live in the common directory, including in a Git worktree.
+  const gd = await runGit(branchLock
+    ? ['rev-parse', '--path-format=absolute', '--git-common-dir']
+    : ['rev-parse', '--absolute-git-dir'], repoPath);
   if (gd.code !== 0) return false;
   const lockPath = join(gd.stdout.trim(), lockName);
   const before = await inspectLock(lockPath);
@@ -5346,6 +5362,8 @@ async function publishPrivateIndexCommit(
     messageArgs: () => Promise<string[]>;
     beforePublish?: (commit: string, tree: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     onPublished?: (sha: string) => void;
+    log?: (message: string) => void;
+    isGitLockOpen?: (path: string) => Promise<boolean | null>;
   },
 ): Promise<
   | { status: 'nothing' }
@@ -5371,8 +5389,38 @@ async function publishPrivateIndexCommit(
     const ready = await p.beforePublish(commit, tree);
     if (!ready.ok) return { status: 'error', error: ready.error };
   }
-  const cas = await runGit(['update-ref', '-m', p.reflogMessage, 'HEAD', commit, p.base ?? ''], repoPath);
-  if (cas.code !== 0) return { status: 'cas-refused', detail: gitFailureDetail(cas) };
+  const publishArgs = ['update-ref', '-m', p.reflogMessage, 'HEAD', commit, p.base ?? ''];
+  let cas = await runGit(publishArgs, repoPath);
+  const publicationLock = async (): Promise<GitMetadataLockName | null> => {
+    const failedPath = /Unable to create ['"]([^'"\r\n]+\.lock)['"]: File exists\b/
+      .exec(gitFailureDetail(cas))?.[1]?.replaceAll('\\', '/');
+    if (!failedPath) return null;
+    if (failedPath.endsWith('/HEAD.lock')) return 'HEAD.lock';
+    if (!failedPath.includes('/refs/heads/')) return null;
+    const head = await runGit(['symbolic-ref', '--quiet', 'HEAD'], repoPath);
+    const ref = head.stdout.trim();
+    const lock = `${ref}.lock`;
+    // Recover only this checkout's current symbolic HEAD, never an arbitrary
+    // ref path copied from stderr. The helper validates the ref again.
+    return head.code === 0 && ref.startsWith('refs/heads/') && failedPath.endsWith(`/${lock}`)
+      ? lock as GitMetadataLockName : null;
+  };
+  // A symbolic HEAD transaction can encounter both HEAD.lock and its branch
+  // lock. Bound recovery to those two locks and keep the original CAS base.
+  for (let attempt = 0; cas.code !== 0 && attempt < 2; attempt++) {
+    const lock = await publicationLock();
+    if (!lock) break;
+    const cleared = await clearStaleHolderlessEmptyGitLock(
+      runGit, repoPath, lock, p.log ?? (() => {}), { isOpen: p.isGitLockOpen },
+    );
+    if (!cleared) return { status: 'error', error: `${p.label} blocked by ${lock}: ${gitFailureDetail(cas)}` };
+    cas = await runGit(publishArgs, repoPath);
+  }
+  if (cas.code !== 0) {
+    const lock = await publicationLock();
+    if (lock) return { status: 'error', error: `${p.label} blocked by ${lock}: ${gitFailureDetail(cas)}` };
+    return { status: 'cas-refused', detail: gitFailureDetail(cas) };
+  }
   p.onPublished?.(commit);
   return { status: 'committed', commit, tree };
 }
@@ -5391,6 +5439,7 @@ async function commitPriorityPaths(
   beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>,
   log: (m: string) => void = () => {},
   onPublished?: (sha: string) => void,
+  isGitLockOpen?: (path: string) => Promise<boolean | null>,
 ): Promise<
   | { status: 'nothing' }
   | { status: 'committed' }
@@ -5422,6 +5471,8 @@ async function commitPriorityPaths(
       label: 'priority path commit',
       reflogMessage: 'git-sync: priority submodule gitlinks',
       onPublished,
+      log,
+      isGitLockOpen,
       messageArgs: async () => {
         if (diffSubjects === false) return ['-m', message];
         const numstat = await privateGit(
@@ -5477,6 +5528,171 @@ async function commitPriorityPaths(
 
 /** Argv batch size for the vanished-path `ls-files` probe. */
 const VANISHED_PATH_PROBE_BATCH = 500;
+
+/** Frozen input to a capture, persisted on the existing operation by its caller. */
+export interface GitSyncCandidateRequest {
+  requestId: string;
+  generation: number;
+  base: string | null;
+  paths: readonly string[];
+}
+
+/** Version two of the existing custody manifest roots an entire candidate tree. */
+export interface GitSyncCandidateCapture {
+  version: 2;
+  kind: 'candidate';
+  repository: string;
+  requestId: string;
+  generation: number;
+  base: string | null;
+  paths: string[];
+  baseTree: string;
+  tree: string;
+}
+
+export type GitSyncCandidateCaptureResult =
+  | { ok: true; ref: string; candidate: GitSyncCandidateCapture }
+  | { ok: false; error: string };
+
+/**
+ * Freeze working content using the existing private index and custody namespace.
+ * The caller owns the existing repository writer/capture fence. This is a local
+ * primitive, not another publisher: it never changes HEAD, the real index or
+ * working files. A persisted request/generation is replayed from custody before
+ * observing newer working content. Changed inputs require a new generation.
+ */
+export async function captureGitSyncCandidate(
+  runGit: RunGit,
+  repoPath: string,
+  request: GitSyncCandidateRequest,
+): Promise<GitSyncCandidateCaptureResult> {
+  const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+  const paths = [...new Set(request.paths)].sort();
+  if (!request.requestId || !Number.isSafeInteger(request.generation) || request.generation < 1 ||
+      (request.base !== null && !oidPattern.test(request.base)) || paths.length === 0 ||
+      paths.some(path => !path || path.includes('\0') || path.includes('\\') || isAbsolute(path) ||
+        path.split('/').some(part => !part || part === '.' || part === '..'))) {
+    return custodyRefused('candidate-input');
+  }
+  // Even read-only Git commands must not opportunistically refresh the real index.
+  const sharedGit: RunGit = (args, cwd, options) => runGit(args, cwd, {
+    ...options, env: { ...options?.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' },
+  });
+  try {
+    const common = await sharedGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], repoPath);
+    if (common.code !== 0 || !common.stdout.trim()) return custodyRefused('candidate-repository');
+    const repository = await realpath(common.stdout.trim());
+    const identity = { repository, requestId: request.requestId, generation: request.generation };
+    const ref = SOURCE_CUSTODY_REF_PREFIX + createHash('sha256').update(canonicalJson(identity)).digest('hex');
+    const input = { version: 2 as const, kind: 'candidate' as const, ...identity, base: request.base, paths };
+    const readCapture = async (): Promise<GitSyncCandidateCaptureResult> => {
+      const metadata = await sharedGit(['show', `${ref}:manifest.json`], repoPath);
+      if (metadata.code !== 0) return custodyRefused('candidate-manifest-read');
+      let candidate: GitSyncCandidateCapture;
+      try { candidate = JSON.parse(metadata.stdout); } catch { return custodyRefused('candidate-manifest'); }
+      if (!candidate || !oidPattern.test(candidate.tree) || !oidPattern.test(candidate.baseTree) ||
+          canonicalJson(candidate) !== canonicalJson({ ...input, baseTree: candidate.baseTree, tree: candidate.tree })) {
+        return custodyRefused('candidate-input-mismatch');
+      }
+      const contents = await sharedGit(['ls-tree', '-z', ref], repoPath);
+      const rows = contents.stdout.split('\0').filter(Boolean);
+      if (contents.code !== 0 || rows.length !== 2 ||
+          !rows.includes(`040000 tree ${candidate.tree}\tpayload`) ||
+          !rows.some(row => /^100644 blob [a-f0-9]+\tmanifest\.json$/.test(row))) {
+        return custodyRefused('candidate-root-mismatch');
+      }
+      const base = candidate.base
+        ? await sharedGit(['rev-parse', '--verify', `${candidate.base}^{tree}`], repoPath)
+        : await sharedGit(['ls-tree', '-z', candidate.baseTree], repoPath);
+      if (base.code !== 0 || (candidate.base ? base.stdout.trim() !== candidate.baseTree : base.stdout !== '')) {
+        return custodyRefused('candidate-base-mismatch');
+      }
+      const objects = await sharedGit(['cat-file', '-e', `${candidate.tree}^{tree}`], repoPath);
+      if (objects.code !== 0) return custodyRefused('candidate-tree-read');
+      return { ok: true, ref, candidate };
+    };
+    const existing = await sharedGit(['show-ref', '--verify', '--quiet', ref], repoPath);
+    if (existing.code === 0) return await readCapture();
+    if (existing.code !== 1) return custodyRefused('candidate-ref-read');
+    const conflicts = await sharedGit(['ls-files', '--unmerged', '-z', '--', ...paths], repoPath);
+    if (conflicts.code !== 0 || conflicts.stdout) return custodyRefused('candidate-unmerged-index');
+    // A canonical Git blob may differ from acknowledged working bytes. Until
+    // raw/filter correspondence is preserved, refuse conversions before add
+    // can invoke a clean filter (including LFS). Existing custody still replays.
+    const autoCrlf = await sharedGit(['config', '--get', 'core.autocrlf'], repoPath);
+    if ((autoCrlf.code !== 0 && autoCrlf.code !== 1) ||
+        (autoCrlf.code === 0 && !['', 'false', 'no', 'off', '0'].includes(autoCrlf.stdout.trim().toLowerCase()))) {
+      return custodyRefused('candidate-working-transform-unsupported');
+    }
+    const selected = await sharedGit(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...paths], repoPath);
+    if (selected.code !== 0) return custodyRefused('candidate-attribute-paths');
+    const selectedPaths = [...new Set(selected.stdout.split('\0').filter(Boolean))];
+    for (let i = 0; i < selectedPaths.length; i += VANISHED_PATH_PROBE_BATCH) {
+      const attributes = await sharedGit(['check-attr', '-z', 'filter', 'text', 'eol', 'working-tree-encoding', 'ident',
+        '--', ...selectedPaths.slice(i, i + VANISHED_PATH_PROBE_BATCH)], repoPath);
+      if (attributes.code !== 0) return custodyRefused('candidate-attribute-read');
+      const fields = attributes.stdout.split('\0');
+      if (fields.pop() !== '' || fields.length !== Math.min(VANISHED_PATH_PROBE_BATCH, selectedPaths.length - i) * 15) {
+        return custodyRefused('candidate-attribute-read');
+      }
+      for (let j = 2; j < fields.length; j += 3) {
+        if (fields[j] !== 'unspecified' && fields[j] !== 'unset') {
+          return custodyRefused('candidate-working-transform-unsupported');
+        }
+      }
+    }
+    const opened = await openPrivateIndexSite(sharedGit, repoPath, 'candidate capture', 'candidate');
+    if (!opened.ok) return custodyRefused('candidate-private-index');
+    const indexFile = opened.site.newIndexFile();
+    const manifestFile = indexFile + '.manifest';
+    const rootFile = indexFile + '.tree';
+    const privateGit = opened.site.bindIndex(indexFile);
+    try {
+      const seeded = await seedPrivateIndex(sharedGit, privateGit, repoPath, indexFile, opened.site.sharedIndex, 'candidate capture');
+      if (!seeded.ok || seeded.base !== request.base) return custodyRefused('candidate-base-moved');
+      // Shared stat/visibility flags are caller state, not permission to omit
+      // current bytes from this generation. Clear them only on private entries.
+      const tracked = await privateGit(['ls-files', '-z', '--', ...paths], repoPath);
+      if (tracked.code !== 0) return custodyRefused('candidate-private-paths');
+      const trackedPaths = tracked.stdout.split('\0').filter(Boolean);
+      for (let i = 0; i < trackedPaths.length; i += VANISHED_PATH_PROBE_BATCH) {
+        // update-index's marking modes are exclusive; combining these options
+        // can report success while retaining skip-worktree on the entry.
+        for (const flag of ['--no-assume-unchanged', '--no-skip-worktree']) {
+          const flags = await privateGit(['update-index', flag,
+            '--', ...trackedPaths.slice(i, i + VANISHED_PATH_PROBE_BATCH)], repoPath);
+          if (flags.code !== 0) return custodyRefused('candidate-private-flags');
+        }
+      }
+      const added = await privateGit(['add', '--all', '--', ...paths], repoPath);
+      if (added.code !== 0) return custodyRefused('candidate-stage');
+      const tree = await privateGit(['write-tree'], repoPath);
+      if (tree.code !== 0 || !oidPattern.test(tree.stdout.trim())) return custodyRefused('candidate-tree-write');
+      const candidate: GitSyncCandidateCapture = { ...input, baseTree: seeded.baseTree, tree: tree.stdout.trim() };
+      await writeFile(manifestFile, canonicalJson(candidate) + '\n', { mode: 0o600, flag: 'wx' });
+      const metadata = await sharedGit(['hash-object', '-w', '--no-filters', '--', manifestFile], repoPath);
+      if (metadata.code !== 0 || !oidPattern.test(metadata.stdout.trim())) return custodyRefused('candidate-manifest-write');
+      // Indexes omit empty directories. Write the two fixed, sorted Git tree
+      // entries directly so even an empty payload remains reachable by GC.
+      await writeFile(rootFile, Buffer.concat([
+        Buffer.from('100644 manifest.json\0'), Buffer.from(metadata.stdout.trim(), 'hex'),
+        Buffer.from('40000 payload\0'), Buffer.from(candidate.tree, 'hex'),
+      ]), { mode: 0o600, flag: 'wx' });
+      const root = await sharedGit(['hash-object', '-w', '-t', 'tree', '--no-filters', '--', rootFile], repoPath);
+      if (root.code !== 0 || !oidPattern.test(root.stdout.trim())) return custodyRefused('candidate-root-tree');
+      // An identical concurrent creator is accepted only after complete readback.
+      await sharedGit(['update-ref', ref, root.stdout.trim(), '0'.repeat(root.stdout.trim().length)], repoPath);
+      return await readCapture();
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => {});
+      await rm(indexFile + '.lock', { force: true }).catch(() => {});
+      await rm(manifestFile, { force: true }).catch(() => {});
+      await rm(rootFile, { force: true }).catch(() => {});
+    }
+  } catch {
+    return custodyRefused('candidate-capture-exception');
+  }
+}
 
 /** Local object custody, deliberately outside every normal branch push refspec. */
 export const SOURCE_CUSTODY_REF_PREFIX = 'refs/papercusp/source-custody/';
@@ -5875,6 +6091,8 @@ async function commitAttributedGroupsPass(
     readText?: (relPath: string) => Promise<string | null>;
     /** WI-10006519: receives the stale-lock recovery diagnostics. */
     log?: (m: string) => void;
+    /** Existing metadata-lock holder probe, also used by HEAD publication. */
+    isGitLockOpen?: (path: string) => Promise<boolean | null>;
   } = {},
   tally: { agentGroupCount: number; agentCommitCount: number },
 ): Promise<Omit<AttributedGroupsResult, 'agentGroupCount' | 'agentCommitCount'>> {
@@ -6007,6 +6225,7 @@ async function commitAttributedGroupsPass(
       opts.beforeCommit,
       log,
       opts.onPublished,
+      opts.isGitLockOpen,
     );
     if (priority.status === 'committed') {
       committedAny = true;
@@ -6165,6 +6384,8 @@ async function commitAttributedGroupsPass(
         label: groupLabel,
         reflogMessage: g.agent ? `git-sync: attributed commit for ${g.agent}` : 'git-sync: residual catch-all',
         onPublished: opts.onPublished,
+        log,
+        isGitLockOpen: opts.isGitLockOpen,
         beforePublish: refreshSharedIndex,
         messageArgs: async () => {
           let subject = g.subject;
@@ -7288,6 +7509,7 @@ async function commitOneRepoWithScratch(
           custodyPaths: custody.protectedPaths,
           readText: (rel) => o.readText(repoPath, rel),
           log: o.log,
+          isGitLockOpen: o.isGitLockOpen,
         },
       );
       if (res.custodyFatal) {
@@ -7610,6 +7832,8 @@ async function commitOneRepoWithScratch(
         label: 'catch-all commit',
         reflogMessage: 'git-sync: catch-all commit',
         onPublished: o.onPublished,
+        log: o.log,
+        isGitLockOpen: o.isGitLockOpen,
         messageArgs: async () => messageArgs,
         beforePublish: refreshSharedIndex,
       });

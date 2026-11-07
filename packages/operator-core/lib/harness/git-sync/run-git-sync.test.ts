@@ -50,6 +50,7 @@ import {
   MIN_VALID_GIT_INDEX_BYTES,
   clearStaleIndexLock,
   clearStaleConfigLock,
+  clearStaleHolderlessEmptyGitLock,
   clearStaleMaintenanceLock,
   scavengeStaleTempPacks,
   STALE_INDEX_LOCK_MS,
@@ -3569,6 +3570,44 @@ describe('runGitSync (real git, no submodule)', () => {
       }),
     ).toBe(false);
   });
+
+  describe.each(['HEAD.lock', 'refs/heads/topic/nested.lock'] as const)(
+    'protects %s during metadata orphan recovery', (lockName) => {
+  it.each(['fresh', 'nonempty', 'live', 'unknown', 'replaced'] as const)(
+    'preserves a %s lock during metadata orphan recovery', async (condition) => {
+      const old = { mtimeMs: 0, size: 0, dev: 1, ino: 2 };
+      const before = condition === 'fresh' ? { ...old, mtimeMs: 999_999 }
+        : condition === 'nonempty' ? { ...old, size: 40 } : old;
+      let inspections = 0;
+      const unlinked: string[] = [];
+      const result = await clearStaleHolderlessEmptyGitLock(
+        async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' }),
+        '/fake', lockName, () => {}, {
+          now: () => 1_000_000,
+          staleMs: 60_000,
+          inspectLock: async () => inspections++ === 0 ? before
+            : condition === 'replaced' ? { ...old, ino: 3 } : before,
+          isOpen: async () => condition === 'unknown' ? null : condition === 'live',
+          unlinkFile: async (path) => { unlinked.push(path); },
+        },
+      );
+      expect(result).toBe(false);
+      expect(unlinked).toEqual([]);
+    },
+  );
+  });
+
+  it.each(['refs/heads/../../HEAD.lock', 'refs/heads/topic\\nested.lock'] as const)(
+    'refuses an unsafe branch lock path %s before filesystem inspection', async (lockName) => {
+      let inspected = false;
+      expect(await clearStaleHolderlessEmptyGitLock(
+        async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' }), '/fake', lockName, () => {}, {
+          inspectLock: async () => { inspected = true; return null; },
+        },
+      )).toBe(false);
+      expect(inspected).toBe(false);
+    },
+  );
 
   it('clearStaleIndexLock LIVE-HOLDER guard (EI-22703121889295786): an mtime-stale index.lock still held open by a live process is NEVER unlinked', async () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });

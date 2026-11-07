@@ -723,6 +723,92 @@ describe('commitAttributedGroups private index (WI-10006705)', () => {
     expect(await trailer('Co-Authored-By')).toBe('ag1 <ag1@agents.papercusp>');
   });
 
+  it.each(['HEAD.lock', 'refs/heads/topic/nested.lock'] as const)(
+    'recovers an old empty holderless %s before publishing (real git)', async (lockName) => {
+    const repo = await seededRepo('gs-attr-head-orphan-');
+    await git(repo, 'branch', '-m', 'topic/nested');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const lock = join(repo, '.git', lockName);
+    await writeFile(lock, '');
+    const old = new Date(Date.now() - 10 * 60_000);
+    await utimes(lock, old, old);
+    const logs: string[] = [];
+    const result = await commitAttributedGroups(realRunGit, repo,
+      new Map([['a.ts', { agent: 'ag1', intent: 'add a' }]]), [], MSG, {
+        isGitLockOpen: async () => false,
+        log: (message) => logs.push(message),
+      });
+    expect(result.committedAny).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+    expect(await git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('a.ts');
+    expect(logs.some((message) => message.includes(`cleared STALE empty holderless ${lockName}`))).toBe(true);
+  });
+
+  it.each([
+    { lockName: 'HEAD.lock', held: true }, { lockName: 'HEAD.lock', held: null },
+    { lockName: 'refs/heads/topic/nested.lock', held: true }, { lockName: 'refs/heads/topic/nested.lock', held: null },
+  ])('preserves an old empty $lockName with holder verdict $held (real git)', async ({ lockName, held }) => {
+    const repo = await seededRepo('gs-attr-head-held-');
+    await git(repo, 'branch', '-m', 'topic/nested');
+    const base = await git(repo, 'rev-parse', 'HEAD');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const lock = join(repo, '.git', lockName);
+    await writeFile(lock, '');
+    const old = new Date(Date.now() - 10 * 60_000);
+    await utimes(lock, old, old);
+    const result = await commitAttributedGroups(realRunGit, repo,
+      new Map([['a.ts', { agent: 'ag1', intent: 'add a' }]]), [], MSG, {
+        isGitLockOpen: async () => held,
+      });
+    expect(result.committedAny).toBe(false);
+    expect(existsSync(lock)).toBe(true);
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(base);
+    expect(result.groupFailures?.some((failure) => failure.error.includes(`blocked by ${lockName}`))).toBe(true);
+  });
+
+  it.each(['HEAD.lock', 'refs/heads/topic/nested.lock'] as const)(
+    'retains the original CAS base after recovering %s (real git)', async (lockName) => {
+    const repo = await seededRepo('gs-attr-head-cas-');
+    await git(repo, 'branch', '-m', 'topic/nested');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const lock = join(repo, '.git', lockName);
+    const logs: string[] = [];
+    const result = await commitAttributedGroups(realRunGit, repo,
+      new Map([['a.ts', { agent: 'ag1', intent: 'add a' }]]), [], MSG, {
+        isGitLockOpen: async () => false,
+        log: (message) => logs.push(message),
+        beforeCommit: async () => {
+          await git(repo, ...ID, 'commit', '-q', '--allow-empty', '-m', 'concurrent');
+          await writeFile(lock, '');
+          const old = new Date(Date.now() - 10 * 60_000);
+          await utimes(lock, old, old);
+          return { ok: true };
+        },
+      });
+    expect(result.committedAny).toBe(false);
+    expect(existsSync(lock)).toBe(false);
+    expect(await git(repo, 'log', '-1', '--format=%s')).toBe('concurrent');
+    expect(await git(repo, 'ls-tree', '--name-only', 'HEAD')).toBe('base.ts');
+    expect(logs.some((message) => message.includes('update-ref CAS refused'))).toBe(true);
+  });
+
+  it('recovers both orphaned symbolic HEAD transaction locks before publishing (real git)', async () => {
+    const repo = await seededRepo('gs-attr-head-pair-');
+    await git(repo, 'branch', '-m', 'topic/nested');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const locks = ['HEAD.lock', 'refs/heads/topic/nested.lock'].map((name) => join(repo, '.git', name));
+    const old = new Date(Date.now() - 10 * 60_000);
+    for (const lock of locks) {
+      await writeFile(lock, '');
+      await utimes(lock, old, old);
+    }
+    const result = await commitAttributedGroups(realRunGit, repo,
+      new Map([['a.ts', { agent: 'ag1', intent: 'add a' }]]), [], MSG, { isGitLockOpen: async () => false });
+    expect(result.committedAny).toBe(true);
+    expect(locks.every((lock) => !existsSync(lock))).toBe(true);
+    expect(await git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('a.ts');
+  });
+
   it('refuses to publish when HEAD moves between the guard and the commit (update-ref CAS, real git)', async () => {
     const repo = await seededRepo('gs-attr-cas-');
     await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
