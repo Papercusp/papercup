@@ -85,7 +85,7 @@ import {
   type TerminalCompletionConflict,
 } from '../../work-items';
 import { refuseNonAgentWorkAtDoor } from '../../work-nature/agent-work-door-gate';
-import { readWorkItemDefinition } from '../../work-item-definition';
+import { readWorkItemDefinition, WORK_ITEM_DEFINITION_KEY } from '../../work-item-definition';
 import {
   CompletionRecordSchema,
   CompletionVerificationEvidenceSchema,
@@ -4022,6 +4022,22 @@ async function completeOneTracked(
     Boolean(effectiveState) &&
     ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some((state) => state === String(effectiveState).trim().toLowerCase());
 
+  // A corrupt definition is not an absent legacy definition. In particular, an
+  // invalid optional field must not erase valid requested criteria by making the
+  // reader return null and thereby disabling the coverage gate below.
+  const workDefinition = readWorkItemDefinition(existing.payload);
+  if (closeIntentRequested && successfulClose &&
+      existing.payload && typeof existing.payload === 'object' &&
+      Object.hasOwn(existing.payload, WORK_ITEM_DEFINITION_KEY) && !workDefinition) {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'invalid_work_definition',
+      message: 'The saved workDefinition is malformed. Repair it against the originating request with ' +
+        'work_items:update { definition } before closing. No completion record or state transition was written.',
+    };
+  }
+
   if (closeIntentRequested && successfulClose &&
       (existing.payload as { ownerDirectiveRecovery?: unknown } | null)?.ownerDirectiveRecovery) {
     const { directiveRecoveryClosureError } = await import('../../owner-directive-recovery');
@@ -4544,7 +4560,7 @@ async function completeOneTracked(
   // the requested acceptance criteria. Apply this to every successful declared
   // task, including honest partial summaries without universal wording. Progress
   // records and administrative dispositions keep their existing contracts.
-  const acceptanceCriteria = readWorkItemDefinition(existing.payload)?.acceptanceCriteria ?? [];
+  const acceptanceCriteria = workDefinition?.acceptanceCriteria ?? [];
   const declaredCriteriaCoverageApplicable =
     closeIntentRequested && successfulClose && !duplicateCloseCoverageException && acceptanceCriteria.length > 0;
   const verificationCoverageApplicable =

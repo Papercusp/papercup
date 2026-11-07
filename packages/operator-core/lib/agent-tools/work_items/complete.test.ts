@@ -5179,6 +5179,44 @@ describe('work_items:complete (keyed-array)', () => {
       payload: { workDefinition: { acceptanceCriteria: requestedCriteria } },
     };
 
+    it.each([
+      { acceptanceCriteria: requestedCriteria, scope: { inScope: ['requested work'] } },
+      { acceptanceCriteria: [] },
+      null,
+    ])('refuses a malformed persisted work definition before successful completion writes (%j)', async (definition) => {
+      const item = { ...verificationItem, title: 'Produce the fleet report', payload: { workDefinition: definition } };
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'resolved' }));
+
+      for (const validateOnly of [false, true]) {
+        const r = await one({
+          id: item.id,
+          state: 'resolved',
+          validateOnly,
+          completion: {
+            summary: 'Report saved.',
+            verifiedHow: 'manual',
+            testResult: 'Artifact review completed',
+            coverage: { population: requestedCriteria, checked: requestedCriteria, residue: [] },
+          },
+        });
+
+        expect(r.ok).toBe(false);
+        expect(r.error).toBe('invalid_work_definition');
+        expect(r).not.toHaveProperty('completion');
+        expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+        expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+      }
+    });
+
+    it('preserves record-only progress when the persisted definition needs repair', async () => {
+      getWorkItem.mockResolvedValue({ ...verificationItem, payload: { workDefinition: { acceptanceCriteria: [] } } });
+      const r = await one({ id: verificationItem.id, recordOnly: true, completion: { summary: 'Repairing the task definition.' } });
+
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
     it('rejects full verification completion whose coverage omits declared acceptance criteria', async () => {
       getWorkItem.mockResolvedValue(declaredVerificationItem);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'resolved' }));
