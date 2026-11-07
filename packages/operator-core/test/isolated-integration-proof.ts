@@ -459,6 +459,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let completedCases = 0;
     const caseProgress = new Set<string>();
     const nestedProgress = new Set<string>();
+    const custodyProgress = new Map<string, {
+      id: number; stages: Set<string>; objects: number; bytes: number; metadata: boolean;
+    }>();
     const provenanceByPhase = new Map<WorkerPhase, Map<string, {
       id: number; steps: Set<string>; files: number; total?: number;
     }>>();
@@ -489,6 +492,46 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
             value.phase === 'files-complete' && value.scope === undefined;
           if (invocationComplete &&
               phase === 'execute' && deadlines.finalizeMs) armPhase('finalize');
+          else if (phase === 'finalize' &&
+              ['capture-start', 'family-start', 'family-complete', 'metadata-start'].includes(value.phase)) {
+            // The router captures immutable proof after source provenance. Its
+            // distinct custody stages are progress too, never a new phase or
+            // successful-test evidence. Keep the same absolute finalize cap.
+            if (!Number.isSafeInteger(value.pid) || value.pid <= 0 ||
+                typeof value.custodyDirectory !== 'string' || !value.custodyDirectory.length ||
+                value.custodyDirectory.length > 4096) return;
+            const producer = JSON.stringify([value.pid, value.custodyDirectory]);
+            let custody = custodyProgress.get(producer);
+            if (value.phase === 'capture-start') {
+              if (custody || custodyProgress.size >= 64) return;
+              custody = { id: custodyProgress.size + 1, stages: new Set(['capture-start']),
+                objects: 0, bytes: 0, metadata: false };
+              custodyProgress.set(producer, custody);
+            } else {
+              if (!custody || custody.metadata || custody.stages.size >= 4096) return;
+              const familyStage = value.phase !== 'metadata-start';
+              if (familyStage && (typeof value.group !== 'string' || !value.group.length ||
+                  value.group.length > 200 || !['A', 'B', 'C', 'D'].includes(value.family))) return;
+              const family = JSON.stringify([value.group, value.family]);
+              const key = value.phase + (familyStage ? ':' + family : '');
+              if (custody.stages.has(key)) return;
+              if (value.phase !== 'family-start') {
+                if (familyStage && !custody.stages.has('family-start:' + family)) return;
+                if (!Number.isSafeInteger(value.objectsRead) || !Number.isSafeInteger(value.bytesRead) ||
+                    value.objectsRead < custody.objects || value.bytesRead < custody.bytes ||
+                    value.phase === 'family-complete' &&
+                      value.objectsRead === custody.objects && value.bytesRead === custody.bytes) return;
+                custody.objects = value.objectsRead;
+                custody.bytes = value.bytesRead;
+              }
+              custody.stages.add(key);
+              if (value.phase === 'metadata-start') custody.metadata = true;
+            }
+            progressWatchdog?.noteProgress();
+            // Numeric stage identities distinguish group advances for nested
+            // observers without exposing private custody paths.
+            relayProgress('custody-' + custody.id + '-stage-' + custody.stages.size);
+          }
           else if ((phase === 'bootstrap' || phase === 'finalize') && value.phase === 'provenance-progress' &&
               ['git-checkout', 'source-census'].includes(value.step)) {
             // Reporters verify source before the first case as well as after

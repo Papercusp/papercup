@@ -87,6 +87,15 @@ export async function loadNodeTestLedger() {
   return import('../libs/test-config/src/node-test-ledger.ts');
 }
 
+/** Load the private verifier before its source/dependency preparation starts. */
+export async function loadPrivateVerifier() {
+  // Source preparation imports TypeScript with extensionless dependencies before
+  // the verifier's tsx-enabled test child exists. Reuse the same process-lifetime
+  // loader as the ledger and governed runner at this earlier import boundary.
+  await loadGovernedExecutionModule();
+  return import('./source-preview.mjs');
+}
+
 /**
  * A governed child that never starts has no test verdict. Keep the reason for
  * that refusal typed all the way to the terminal marker: retryable PG
@@ -3927,7 +3936,7 @@ export async function main(
     runVitestListImpl = runVitestList,
     restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
     preflightPrivateIntegrationPgImpl = preflightPrivateIntegrationPg,
-    runPrivateVerifierImpl = async options => (await import('./source-preview.mjs')).runVerifierCommand(options),
+    runPrivateVerifierImpl = async options => (await loadPrivateVerifier()).runVerifierCommand(options),
   } = {},
 ) {
   // EI-25671809770924720: pc-heavy addresses these two marker paths to THIS router alone. Take

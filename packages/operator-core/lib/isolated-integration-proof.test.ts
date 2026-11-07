@@ -533,6 +533,83 @@ it('separates nested worker finalization and renews it only on distinct census p
   });
 });
 
+it('renews bounded finalization across custody groups and relays distinct stages', async () => {
+  const options = { ...routerPhaseOptions, progressIntervalMs: 0,
+    phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, finalizeMaxMs: 150 } };
+  const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    await withCapturedRouter(options, async (child, result) => {
+      const progress = (phase: string, detail = {}) => child.stderr!.emit('data',
+        'TEST_FILE_FINALIZATION ' + JSON.stringify({ pid: 12345, custodyDirectory: '/private/custody',
+          phase, ...detail }) + '\n');
+      child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+      child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+      progress('capture-start');
+      for (const [group, family, objectsRead, bytesRead] of [
+        ['group-0', 'A', 1, 20], ['group-0', 'B', 5, 60],
+        ['group-1', 'A', 6, 80], ['group-1', 'B', 10, 120],
+      ] as const) {
+        await vi.advanceTimersByTimeAsync(20);
+        progress('family-start', { group, family });
+        progress('family-complete', { group, family, objectsRead, bytesRead });
+        expect(child.kill).not.toHaveBeenCalled();
+      }
+      await vi.advanceTimersByTimeAsync(20);
+      progress('metadata-start', { objectsRead: 10, bytesRead: 120 });
+      expect(child.kill).not.toHaveBeenCalled();
+      const relayed = write.mock.calls.map(([line]) => String(line)).filter(line => line.includes('custody-'));
+      expect(relayed.length).toBeGreaterThan(4);
+      expect(new Set(relayed).size).toBe(relayed.length);
+      expect(relayed.join('')).not.toContain('/private/custody');
+      Object.assign(child, { exitCode: 0 });
+      child.emit('exit', 0, null);
+      child.emit('close', 0, null);
+      expect(await result).toMatchObject({ code: 0, timedOut: false });
+    });
+  } finally { write.mockRestore(); }
+});
+
+it.each(['replay', 'regressed', 'unstarted', 'malformed', 'unrelated', 'absolute-ceiling'])(
+  'bounds custody finalization progress: %s', async scenario => {
+    const options = { ...routerPhaseOptions,
+      phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, finalizeMaxMs: 90 } };
+    await withCapturedRouter(options, async (child, result) => {
+      const progress = (phase: string, detail = {}) => child.stderr!.emit('data',
+        'TEST_FILE_FINALIZATION ' + JSON.stringify({ pid: 12345, custodyDirectory: '/private/custody',
+          phase, ...detail }) + '\n');
+      child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+      child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"provenance-start"}\n');
+      progress('capture-start');
+      progress('family-start', { group: 'group-0', family: 'A' });
+      progress('family-start', { group: 'group-0', family: 'B' });
+      await vi.advanceTimersByTimeAsync(20);
+      progress('family-complete', { group: 'group-0', family: 'A', objectsRead: 5, bytesRead: 50 });
+      await vi.advanceTimersByTimeAsync(39);
+      expect(child.kill).not.toHaveBeenCalled();
+      if (scenario === 'replay') {
+        progress('capture-start');
+        progress('family-start', { group: 'group-0', family: 'A' });
+        progress('family-complete', { group: 'group-0', family: 'A', objectsRead: 6, bytesRead: 60 });
+      } else if (scenario === 'unrelated') {
+        progress('diagnostic', { group: 'group-1', family: 'A', elapsedMs: 1000 });
+      } else {
+        progress('family-complete', { group: scenario === 'unstarted' ? 'group-1' : 'group-0',
+          family: 'B', objectsRead: scenario === 'regressed' ? 4 : scenario === 'malformed' ? '6' : 6,
+          bytesRead: 60 });
+      }
+      await vi.advanceTimersByTimeAsync(1);
+      if (scenario === 'absolute-ceiling') {
+        expect(child.kill).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(20);
+        progress('metadata-start', { objectsRead: 6, bytesRead: 60 });
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      child.emit('close');
+      expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+    });
+  });
+
 it.each(['pid', 'origin'])('tracks independent finalization census producers by %s', async identity => {
   const options = { ...routerPhaseOptions, progressIntervalMs: 0,
     phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, finalizeMaxMs: 180 } };

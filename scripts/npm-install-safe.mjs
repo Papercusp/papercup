@@ -81,7 +81,7 @@ import {
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
 import { TEST_FILE_EXIT_NOT_MEASURED } from "./lib/test-file-exit-codes.mjs";
-import { envWithInstallMutex, installLockNameForRoot, installMutexIsHeld } from "./lib/install-lock-name.mjs";
+import { envWithInstallMutex, installLockNameForRoot, installLockRootForPath, installMutexIsHeld } from "./lib/install-lock-name.mjs";
 export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 import {
   findIncompleteWorkspacePackagesWithRetry,
@@ -1023,11 +1023,11 @@ export async function verifyDepsExtracted({
     first.runtimeFailures.length > 0 ||
     first.brokenBinLinks.length > 0;
   if (needsRootRepair) {
-    const repairArgs = developmentInstallArgs(repoRoot, [
+    const repairArgs = isolateNestedProjectInstallArgs(repoRoot, developmentInstallArgs(repoRoot, [
       ...REPAIR_ARGS,
       ...(first.lockTreeDefects.length > 0 || runtimeFindings.length > 0 ? [] : repairWorkspaceArgs),
       ...dependencySelectionArgs(npmArgs),
-    ]);
+    ]));
     console.error(
       `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
     );
@@ -2058,6 +2058,24 @@ export function npmChildEnv({
   };
 }
 
+/** A separately locked project can still match an enclosing npm workspace.
+ * Keep npm on the selected standalone project during resolution, reify and
+ * repair. Its install mutex still belongs to the enclosing workspace root.
+ */
+function isolateNestedProjectInstallArgs(repoRoot, npmArgs) {
+  if (!["install", "i", "ci", "update", "up", "dedupe", "prune", "uninstall", "remove", "rm", "link", "unlink"].includes(npmArgs[0]))
+    return npmArgs;
+  if (!existsSync(join(repoRoot, "package-lock.json")) && !existsSync(join(repoRoot, "npm-shrinkwrap.json")))
+    return npmArgs;
+  const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  const workspaces = Array.isArray(manifest.workspaces) ? manifest.workspaces : manifest.workspaces?.packages ?? [];
+  if (workspaces.length > 0 || installLockRootForPath(repoRoot) === realpathSync(repoRoot))
+    return npmArgs;
+  return npmBooleanArg(npmArgs, "--workspaces") === false
+    ? npmArgs
+    : [...npmArgs, "--workspaces=false"];
+}
+
 /** A development checkout must not lose its tools because NODE_ENV, npm config,
  * or .npmrc implicitly omits dev dependencies. An explicit production selection
  * on this invocation remains authoritative. Apply before resolve AND reify so
@@ -2438,7 +2456,7 @@ export async function main(argv = process.argv.slice(2)) {
   if ("commandArgs" in parsed) return runCommandUnderInstallMutex(parsed);
 
   const { repoRoot } = parsed;
-  const npmArgs = developmentInstallArgs(repoRoot, parsed.npmArgs);
+  const npmArgs = isolateNestedProjectInstallArgs(repoRoot, developmentInstallArgs(repoRoot, parsed.npmArgs));
   assertPatchPostimageGitSource({ repoRoot, npmArgs });
   const lockName = repoLockName(repoRoot);
   const npmEnv = {

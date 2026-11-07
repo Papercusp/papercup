@@ -17,6 +17,25 @@ import AdminTestRunsReporter, {
   type TestRunRow,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 
+it('loads the private verifier from plain Node before allocating private PG', () => {
+  const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    const { loadPrivateVerifier } = await import(${JSON.stringify(router)});
+    const { runVerifierCommand } = await loadPrivateVerifier();
+    let allocations = 0;
+    await assert.rejects(runVerifierCommand({
+      repo: process.cwd(), ref: '', receiptPath: '', command: [],
+      prepareChildEnv: async () => { allocations++; return {}; },
+    }), /verifier command needs an explicit ref, external receipt and command/);
+    assert.equal(allocations, 0);
+    console.log('private-verifier-preflight-reached');
+  `], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
+  expect(child.status, JSON.stringify({ status: child.status, signal: child.signal,
+    error: child.error?.message, stderr: child.stderr, stdout: child.stdout })).toBe(0);
+  expect(child.stdout).toContain('private-verifier-preflight-reached');
+});
+
 it('records a real node:test child when the focused router starts without a TS loader', () => {
   const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `

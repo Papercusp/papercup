@@ -68,6 +68,79 @@ const NPM_FIXTURE_CONFIG_RESET = Object.fromEntries(
   ]),
 );
 
+for (const forceRepair of [false, true]) {
+  test(`nested standalone project stays isolated through real npm ${forceRepair ? "bounded repair" : "resolve and reify"}`, {
+    skip: process.platform === "win32",
+    timeout: 180_000,
+  }, (t) => {
+    const temporary = mkdtempSync(join(tmpdir(), "install-safe-nested-project-"));
+    t.after(() => rmSync(temporary, { recursive: true, force: true }));
+    const outer = join(temporary, "outer");
+    const inner = join(outer, "apps", "fixture");
+    const dependency = join(temporary, "dependency");
+    mkdirSync(inner, { recursive: true });
+    mkdirSync(dependency);
+    mkdirSync(join(outer, "node_modules"));
+    writeFileSync(join(outer, "node_modules", "sentinel"), "enclosing tree\n");
+    const outerManifest = { name: "enclosing-project", version: "1.0.0", private: true, workspaces: ["apps/*"] };
+    writeFileSync(join(outer, "package.json"), JSON.stringify(outerManifest));
+    const outerLock = JSON.stringify({
+      name: outerManifest.name, version: "1.0.0", lockfileVersion: 3,
+      packages: { "": outerManifest },
+    });
+    writeFileSync(join(outer, "package-lock.json"), outerLock);
+    writeFileSync(join(dependency, "package.json"), JSON.stringify({
+      name: "nested-fixture-dependency", version: "1.0.0", main: "index.js",
+    }));
+    writeFileSync(join(dependency, "index.js"), "module.exports = 'nested fixture';\n");
+    const env = {
+      ...process.env, ...NPM_FIXTURE_CONFIG_RESET, NODE_OPTIONS: "",
+      npm_config_offline: "true", npm_config_audit: "false", npm_config_fund: "false",
+      npm_config_cache: join(temporary, "cache"),
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: join(temporary, "mutex"),
+      PAPERCUSP_FS_MUTEX_TIMEOUT_MS: "10000", PAPERCUSP_SKIP_DEP_GENERATION: "1",
+      PAPERCUSP_SKIP_DEP_VERIFY: "0", PAPERCUSP_INSTALL_MUTEX_HELD: "",
+    };
+    const npm = (args, cwd) => {
+      const result = spawnSync("npm", args, { cwd, env, encoding: "utf8", timeout: 45_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr + result.stdout);
+      return result;
+    };
+    const packed = JSON.parse(npm([
+      "pack", "--json", "--offline", "--ignore-scripts", "--pack-destination", inner,
+    ], dependency).stdout)[0].filename;
+    const postinstall = [
+      "const fs = require('node:fs');",
+      "fs.appendFileSync('postinstall-runs', 'run\\n');",
+      ...(forceRepair ? [
+        "if (!fs.existsSync('removed-once')) {",
+        "fs.writeFileSync('removed-once', '1');",
+        "fs.rmSync('node_modules/nested-fixture-dependency', {recursive:true, force:true});",
+        "}",
+      ] : []),
+    ].join(" ");
+    writeFileSync(join(inner, "package.json"), JSON.stringify({
+      name: "independent-fixture", version: "1.0.0", private: true,
+      dependencies: { "nested-fixture-dependency": `file:./${packed}` },
+      scripts: { postinstall: `node -e ${JSON.stringify(postinstall)}` },
+    }));
+    npm(["install", "--package-lock-only", "--ignore-scripts", "--workspaces=false"], inner);
+    assert.equal(repoLockName(inner), repoLockName(outer), "the enclosing install mutex remains shared");
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url)),
+      "--repo-root", inner, "install",
+    ], { cwd: outer, env, encoding: "utf8", timeout: 120_000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(JSON.parse(readFileSync(join(inner, "node_modules/nested-fixture-dependency/package.json"))).version, "1.0.0");
+    assert.equal(readFileSync(join(outer, "package-lock.json"), "utf8"), outerLock);
+    assert.deepEqual(readdirSync(join(outer, "node_modules")), ["sentinel"]);
+    assert.equal(readFileSync(join(inner, "postinstall-runs"), "utf8"), "run\n".repeat(forceRepair ? 2 : 1));
+    if (forceRepair) assert.match(result.stdout, /NPM_INSTALL_SAFE repaired:/);
+  });
+}
+
 test("Git-dependent postinstall refuses an archive before any npm or dependency mutation", (t) => {
   const root = mkdtempSync(join(tmpdir(), "install-safe-archive-preflight-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
