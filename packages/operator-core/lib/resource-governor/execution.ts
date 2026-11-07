@@ -67,7 +67,8 @@ export interface GovernedExecutionAdmissionPhaseEvent {
   readonly elapsedMs: number;
 }
 
-const detachedSettlements = new WeakSet<GovernedExecution>();
+const detachedSettlements = new WeakMap<GovernedExecution, Promise<void>>();
+const processRuntimeSettlements = new WeakMap<GovernedExecutionDeps, Set<Promise<void>>>();
 
 /**
  * Event emitters do not await their listeners. Observe settlement here and keep
@@ -79,17 +80,21 @@ export function settleGovernedExecutionInBackground(
   execution: GovernedExecution,
   settlement: GovernedExecutionSettlement,
   onSettled?: () => void,
-): void {
+): Promise<void> {
   // An error followed by exit must not replace a pending cancellation with a
   // release, nor treat settleOnce's concurrent-call false as a completed write.
-  if (detachedSettlements.has(execution)) return;
-  detachedSettlements.add(execution);
+  const existing = detachedSettlements.get(execution);
+  if (existing) return existing;
+  let markSettled!: () => void;
+  const pending = new Promise<void>((resolve) => { markSettled = resolve; });
+  detachedSettlements.set(execution, pending);
   let retryDelayMs = 1_000;
   const settle = async (): Promise<void> => {
     try {
       if (settlement.kind === 'cancel') await execution.cancel(settlement.reason);
       else await execution.finish(settlement.actualDemand);
       try { onSettled?.(); } catch { /* observers must not retry an already-written settlement */ }
+      markSettled();
     } catch (error) {
       console.error('[governed-execution] settlement failed; lease retained, retry pending', {
         receiptId: execution.context.receiptId,
@@ -102,6 +107,7 @@ export function settleGovernedExecutionInBackground(
     }
   };
   void settle();
+  return pending;
 }
 
 export interface GovernedExecutionInput<T = unknown> {
@@ -161,12 +167,22 @@ export async function withGovernedExecution<T>(
 
   let execution: GovernedExecution | null = null;
   let preBeginCancellation: Promise<void> | null = null;
+  const cancelInBackground = (settlement: GovernedExecutionSettlement): void => {
+    const pending = settleGovernedExecutionInBackground(execution!, settlement);
+    // One-shot runtimes own their database client. Keep its lifetime around
+    // the exact retry promise; shared hosts retain detached settlement.
+    const owned = processRuntimeSettlements.get(deps);
+    if (owned) {
+      owned.add(pending);
+      void pending.then(() => { owned.delete(pending); });
+    }
+  };
   const cancelForAbort = (): Promise<void> => {
     if (execution) {
       // A failed cancellation write must not replace the caller's abort or
       // silently strand its lease. Reuse the observed, exact-action retry
       // lifecycle; repeated abort checkpoints share its first settlement.
-      settleGovernedExecutionInBackground(execution, { kind: 'cancel', reason: abortMessage() });
+      cancelInBackground({ kind: 'cancel', reason: abortMessage() });
       return Promise.resolve();
     }
     if (!preBeginCancellation) {
@@ -218,7 +234,7 @@ export async function withGovernedExecution<T>(
     if (settlement.kind === 'cancel') {
       // Do not let a transient cancellation-write failure replace the already
       // computed operation outcome; retain the lease and retry the exact action.
-      settleGovernedExecutionInBackground(execution, settlement);
+      cancelInBackground(settlement);
     } else {
       await execution.finish(settlement.actualDemand);
     }
@@ -569,6 +585,7 @@ function governedProcessRuntime(workspaceId: string, namespace: string): Governe
     );
     runtime = { driver, governor: new Governor(driver) };
     processRuntimes.set(key, runtime);
+    processRuntimeSettlements.set(runtime, new Set());
   }
   return runtime;
 }
@@ -588,6 +605,9 @@ export async function withGovernedProcessRuntime<T>(
   try {
     return await run(deps);
   } finally {
+    // A cancellation may intentionally return its operation outcome before its
+    // write finishes. Dedicated clients must outlive that write and its retries.
+    await Promise.all(processRuntimeSettlements.get(deps) ?? []);
     processInFlight -= 1;
     if (processInFlight === 0) {
       // Detach BEFORE awaiting the close: an operation admitted while this

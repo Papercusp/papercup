@@ -826,6 +826,75 @@ describe('governed process client lifetime (WI-638180)', () => {
     expect(built[0]!.ends).toBe(1);
   });
 
+  it.each(['verdict', 'abort', 'verdict-retry', 'abort-retry'] as const)(
+    'keeps the dedicated client open through delayed %s cancellation persistence',
+    async (mode) => {
+      const retry = mode.endsWith('-retry');
+      const aborts = mode.startsWith('abort');
+      if (retry) vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const events: string[] = [];
+      setGovernedProcessClientFactoryForTests(() => fakeClient(async () => { events.push('client-close'); }));
+      const d = deps();
+      const controller = new AbortController();
+      const abort = new Error('caller disconnected');
+      let releaseCancel!: () => void;
+      let markCancelling!: () => void;
+      const blocked = new Promise<void>((resolve) => { releaseCancel = resolve; });
+      const cancelling = new Promise<void>((resolve) => { markCancelling = resolve; });
+      const persist = d.store.cancel.bind(d.store);
+      let attempts = 0;
+      vi.spyOn(d.store, 'cancel').mockImplementation(async (...args) => {
+        if (retry && attempts++ === 0) {
+          events.push('cancel-retry');
+          throw new Error('cancellation persistence unavailable');
+        }
+        events.push('cancel-start');
+        markCancelling();
+        await blocked;
+        events.push(built[0]!.ends === 0 ? 'cancel-persisted' : 'client-already-closed');
+        return persist(...args);
+      });
+      const operation = withGovernedProcessRuntime('ws-1', 'ns-1', async (runtime) => {
+        vi.spyOn(runtime.governor, 'admit').mockImplementation(d.governor.admit.bind(d.governor));
+        vi.spyOn(runtime.governor, 'cancel').mockImplementation(d.governor.cancel.bind(d.governor));
+        vi.spyOn(runtime.driver, 'leaseReceipt').mockImplementation(d.driver.leaseReceipt.bind(d.driver));
+        vi.spyOn(runtime.driver, 'markRunning').mockImplementation(d.driver.markRunning.bind(d.driver));
+        return runGovernedOperation({
+          workspaceId: 'ws-1', namespace: 'ns-1', owner: 'lifetime-test', admissionClass: 'process',
+          dedicatedClient: true, signal: controller.signal,
+          settle: () => ({ kind: 'cancel', reason: 'test process timed out' }),
+        }, async () => {
+          if (aborts) controller.abort(abort);
+          return 'test output is complete';
+        });
+      }).then(
+        (value) => { events.push('operation-settled'); return value; },
+        (error) => { events.push('operation-settled'); return error; },
+      );
+
+      if (retry) {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(events).toEqual(['cancel-retry']);
+        expect(built[0]!.ends).toBe(0);
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      await cancelling;
+      // Drain the operation's microtasks while persistence remains deliberately blocked.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const beforePersistence = [...events];
+      releaseCancel();
+      const result = await operation;
+      const prefix = retry ? ['cancel-retry'] : [];
+      expect(beforePersistence).toEqual([...prefix, 'cancel-start']);
+      expect(events).toEqual([...prefix, 'cancel-start', 'cancel-persisted', 'client-close', 'operation-settled']);
+      expect(result).toBe(aborts ? abort : 'test output is complete');
+      expect(d.current()).toMatchObject({ state: 'cancelled' });
+      expect(built[0]!.ends).toBe(1);
+      expect(warning).toHaveBeenCalledTimes(retry ? 1 : 0);
+    },
+  );
+
   it('routes runGovernedOperation onto the dedicated client when asked', async () => {
     // The `dedicatedClient` flag is the only thing selecting this path, so the
     // wiring is proven rather than assumed: admission fails on the throwing
