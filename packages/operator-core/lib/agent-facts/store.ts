@@ -41,7 +41,7 @@ import { SEALED_FIELD_STUB, sealSharedTextInTxOrRefuse } from '../personal-vault
 // never re-declared — cell-contract.ts declares itself the canonical home and
 // forbids a local copy, and a second enumeration is precisely how a caller's
 // branch set silently diverges from the contract it thinks it implements.
-import type { CellUnknownCode } from '../cell-contract';
+import { parseCellObservationAnchor, type CellComparisonTarget, type CellObservationAnchor, type CellUnknownCode } from '../cell-contract';
 
 export const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'] as const;
 export type FactScope = (typeof FACT_SCOPES)[number];
@@ -613,6 +613,9 @@ export interface FactDependency {
    * and it would report `changed` on two files that both sat perfectly still.
    */
   subject?: string;
+  /** The selected lens and versioned semantic anchor from the SAME cell read. */
+  target?: CellComparisonTarget;
+  semanticAnchor?: CellObservationAnchor;
   /** ISO timestamp the cell was read at assert time. */
   observedAt: string;
   /** Stable digest of the observed value. Absent iff `unknown` is set. */
@@ -1602,9 +1605,15 @@ export function parseFactDependencies(raw: unknown): FactDependency[] {
     // Exactly one anchor. Neither ⇒ nothing to compare; both ⇒ contradictory,
     // and guessing which one to believe is how a wrong verdict gets minted.
     if ((digest === undefined) === (unknown === undefined)) continue;
+    const semanticAnchor = parseCellObservationAnchor(d.semanticAnchor);
     out.push({
       cell,
       ...(typeof d.subject === 'string' && d.subject ? { subject: d.subject } : {}),
+      ...(['measurement', 'assessment', 'material'].includes(String(d.target)) ? { target: d.target as CellComparisonTarget } : {}),
+      ...(semanticAnchor ? { semanticAnchor } : {}),
+      ...(digest && typeof d.materialDigest === 'string' && d.materialDigest ? { materialDigest: d.materialDigest } : {}),
+      ...(digest && typeof d.material === 'string' ? { material: d.material.slice(0, FACT_DEPENDENCY_OBSERVED_CHARS) } : {}),
+      ...(digest && typeof d.materialPath === 'string' ? { materialPath: d.materialPath } : {}),
       observedAt,
       ...(digest ? { digest } : {}),
       ...(unknown ? { unknown } : {}),
@@ -1637,14 +1646,21 @@ export function normalizeFactDependencies(
   const out: FactDependency[] = [];
   for (const d of deps) {
     const cell = (d?.cell ?? '').trim();
-    if (!cell || seen.has(cell)) continue;
+    const identity = JSON.stringify([cell, d?.subject ?? null, d?.target ?? null]);
+    if (!cell || seen.has(identity)) continue;
     const hasDigest = typeof d.digest === 'string' && d.digest.length > 0;
     const hasUnknown = typeof d.unknown === 'string' && d.unknown.length > 0;
     if (hasDigest === hasUnknown) continue; // anchorless or contradictory
-    seen.add(cell);
+    seen.add(identity);
+    const semanticAnchor = parseCellObservationAnchor(d.semanticAnchor);
     out.push({
       cell,
       ...(d.subject ? { subject: d.subject } : {}),
+      ...(d.target ? { target: d.target } : {}),
+      ...(semanticAnchor ? { semanticAnchor } : {}),
+      ...(hasDigest && d.materialDigest ? { materialDigest: d.materialDigest } : {}),
+      ...(hasDigest && d.material !== undefined ? { material: d.material.slice(0, FACT_DEPENDENCY_OBSERVED_CHARS) } : {}),
+      ...(hasDigest && d.materialPath ? { materialPath: d.materialPath } : {}),
       observedAt: d.observedAt || new Date().toISOString(),
       ...(hasDigest ? { digest: d.digest } : {}),
       ...(hasUnknown ? { unknown: d.unknown } : {}),

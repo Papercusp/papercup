@@ -72,6 +72,13 @@ export interface CommittedTreeLsTreeRecord {
   outcome: 'success' | 'error';
   failurePhase?: 'git' | 'parse';
   errorCode?: string;
+  gitExecution?: {
+    timeoutMs: number;
+    route?: 'local' | 'sidecar';
+    code?: string | number | null;
+    signal?: string | null;
+    killed?: boolean;
+  };
 }
 
 export interface CommittedTreeCallerContext {
@@ -479,12 +486,16 @@ async function lsTree(
     output = await git(dir, args);
   } catch (error) {
     const errorCode = gitErrorCode(error);
+    const cause = error instanceof Error ? error.cause as {
+      gitExecution?: CommittedTreeLsTreeRecord['gitExecution'];
+    } | undefined : undefined;
     recordLsTree(diagnostics, {
       ...details,
       durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
       outcome: 'error',
       failurePhase: 'git',
       ...(errorCode ? { errorCode } : {}),
+      ...(cause?.gitExecution ? { gitExecution: cause.gitExecution } : {}),
     });
     throw error;
   }

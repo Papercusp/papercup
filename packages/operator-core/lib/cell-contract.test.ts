@@ -1,5 +1,54 @@
 import { describe, it, expect } from 'vitest';
-import { cellUnknown, formatCellUnknown, type CellUnknownCode } from './cell-contract';
+import { cellUnknown, formatCellUnknown, projectCellComparison, parseCellObservationAnchor, type CellUnknownCode } from './cell-contract';
+import type { CellRead } from './cell-read';
+
+const semanticRead = (): Extract<CellRead, { status: 'value' }> => ({
+  status: 'value', cell: 'test.semantic', resolver: 'test:read', measurementPath: 'sha', value: 'abc', headline: 'candidate',
+  assessment: { status: 'resolved', path: 'assessment', code: 'executing', meaning: 'running', safeAction: 'wait', evidence: [{ path: 'count', value: 0, measuredBy: { path: 'measured', value: true } }] },
+  material: { path: 'contained', value: false },
+  source: { path: 'source', value: 'live', authoritative: true, why: 'measured' },
+  unknownHoist: { key: 'unknown', value: [] },
+});
+
+describe('versioned cell comparison projection', () => {
+  it('selects a SHA independently from an unchanged assessment and retains false material values', () => {
+    const r = semanticRead();
+    expect(projectCellComparison(r, 'a.ts', 'measurement')).toMatchObject({ status: 'value', selected: 'abc', target: 'measurement' });
+    expect(projectCellComparison(r, 'a.ts', 'assessment')).toMatchObject({ status: 'value', selected: 'executing' });
+    expect(projectCellComparison(r)).toMatchObject({ status: 'value', selected: false, target: 'material' });
+    expect(projectCellComparison({ ...r, value: 0 }, undefined, 'measurement')).toMatchObject({ selected: 0 });
+  });
+
+  it('keeps assessment, uncertainty, measuredness, authority and schema in the comparison', () => {
+    const r = semanticRead();
+    const baseline = projectCellComparison(r, 'a.ts');
+    expect(projectCellComparison({ ...r, source: { ...r.source!, authoritative: false } }, 'a.ts')).not.toEqual(baseline);
+    expect(projectCellComparison({ ...r, unknownHoist: { key: 'unknown', value: ['incomplete'] } }, 'a.ts')).not.toEqual(baseline);
+    expect(projectCellComparison({ ...r, measurementPath: 'different' }, 'a.ts')).not.toEqual(baseline);
+    expect(projectCellComparison(r, 'b.ts')).not.toEqual(baseline);
+  });
+
+  it('ignores evidence telemetry values while preserving their measuredness qualifiers', () => {
+    const r = semanticRead();
+    const assessment = r.assessment!;
+    expect(projectCellComparison({ ...r, assessment: { ...assessment, evidence: [{ ...assessment.evidence[0], value: 12345 }] } })).toEqual(projectCellComparison(r));
+    expect(projectCellComparison({ ...r, assessment: { ...assessment, evidence: [{ ...assessment.evidence[0], measuredBy: { path: 'measured', value: false } }] } })).not.toEqual(projectCellComparison(r));
+  });
+
+  it('refuses unavailable assessments, drifted uncertainty and an undeclared target', () => {
+    const r = semanticRead();
+    expect(projectCellComparison({ ...r, assessment: { status: 'unavailable', path: 'assessment', code: null, meaning: null, safeAction: 'reread', evidence: [], unknown: { code: 'not-measured' } } })).toEqual({ status: 'unknown', unknown: 'not-measured' });
+    expect(projectCellComparison({ ...r, unknownHoist: { key: 'unknown', value: null, drifted: true } })).toEqual({ status: 'unknown', unknown: 'insufficient-data' });
+    expect(projectCellComparison({ ...r, material: undefined }, undefined, 'material').status).toBe('unknown');
+    expect(projectCellComparison({ status: 'unknown', cell: r.cell, unknown: { code: 'resolver-failed' } }).status).toBe('unknown');
+  });
+
+  it('never upgrades missing, malformed or future anchor versions to the current version', () => {
+    expect(parseCellObservationAnchor(undefined)).toBeUndefined();
+    expect(parseCellObservationAnchor({ version: 2, target: 'measurement' })).toBeUndefined();
+    expect(parseCellObservationAnchor({ version: 1, target: 'measurement', identityDigest: 'invalid' })).toBeUndefined();
+  });
+});
 
 /**
  * The contract term under test (unified-agent-state-plane-2026-07-27 #D-038,

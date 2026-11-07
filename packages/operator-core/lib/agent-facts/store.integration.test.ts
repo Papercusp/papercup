@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import { evaluateDependencyStaleness, observationKey } from '../agent-tools/facts/dependency-staleness';
 
 // These tests exercise the store's SQL and eviction ranking against a throwaway
 // database. Owner notices are covered by notify-evicted.test.ts; letting this
@@ -2270,6 +2271,26 @@ describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
     expect(f?.kind).toBe('assumption');
     expect(f?.claim).toEqual({ subject: 'cell:gate.greenCheckpoint.verdict', assertion: 'unrelated-to-my-change' });
     expect(f?.dependsOn).toEqual([dep()]);
+  });
+
+  it('P004 persists semantic and material anchors through real PG before comparing changed assessment qualifiers', async () => {
+    const semanticAnchor = { version: 1 as const, target: 'material' as const, identityDigest: '1111111111111111', qualifierDigest: '2222222222222222', selectedDigest: '3333333333333333' };
+    const dependency = dep({ target: 'material', subject: 'a.ts', semanticAnchor, materialDigest: '3333333333333333', material: 'false', materialPath: 'contained' });
+    await assertFact({ ttlSec: 3600, ...base, body: 'anchored', dependsOn: [dependency] }, db.sql);
+    const stored = (await read())!;
+    expect(stored.dependsOn).toEqual([dependency]);
+    const current = new Map([[observationKey(dependency.cell, 'a.ts', 'material'), { digest: dependency.digest, semanticAnchor: { ...semanticAnchor, qualifierDigest: '4444444444444444' } }]]);
+    expect(evaluateDependencyStaleness(stored.dependsOn, current)?.status).toBe('stale');
+    expect(stored.body).toBe('anchored');
+    expect((await read())?.body).toBe('anchored'); // comparison never retracts
+    const history = await factVersions({ scope: 'owner', scopeRef: 'su-d', key: 'dep', workspaceId: WS }, db.sql);
+    expect(history[0].dependsOn).toEqual([dependency]);
+  });
+
+  it('P004 keeps subjects and selected targets distinct when normalizing dependencies', async () => {
+    const dependencies = [dep({ subject: 'a.ts', target: 'measurement' }), dep({ subject: 'b.ts', target: 'measurement' }), dep({ subject: 'a.ts', target: 'assessment' })];
+    await assertFact({ ttlSec: 3600, ...base, body: 'three questions', dependsOn: dependencies }, db.sql);
+    expect((await read())?.dependsOn).toEqual(dependencies);
   });
 
   it('a fact with no declaration reads kind:null, claim:null and an EMPTY dependsOn (never null)', async () => {

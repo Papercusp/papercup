@@ -86,6 +86,11 @@ describe('defaultGitRunner (EI-24852529885337741)', () => {
   it('keeps missing-executable evidence in the first line recorded by measurement callers', async () => {
     vi.stubEnv('PATH', join(root, 'no-executables'));
     try {
+      const failure = await defaultGitRunner(root, ['ls-tree', '0'.repeat(40), '--', 'missing.ts'])
+        .catch(error => error);
+      expect(failure.cause).toEqual({ gitExecution: {
+        timeoutMs: 5_000, route: 'local', code: 'ENOENT', signal: null, killed: false,
+      } });
       await expect(defaultGitRunner(root, ['ls-tree', '0'.repeat(40), '--', 'missing.ts'])).rejects.toThrow(
         /^Command failed \([^\n]*code=ENOENT[^\n]*signal=none[^\n]*killed=false[^\n]*\): git /,
       );

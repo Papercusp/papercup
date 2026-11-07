@@ -110,7 +110,12 @@ export const defaultGitRunner: GitRunner = async (cwd, args) => {
       ? `no exit status; code=${result.error.code ?? 'none'}, signal=${result.error.signal ?? 'none'}, killed=${result.error.killed}`
       : 'no exit status'
     : `exit ${result.status}`;
-  throw new Error(`Command failed (${why}): git ${argv.join(' ')}\n${result.stderr}`);
+  throw new Error(`Command failed (${why}): git ${argv.join(' ')}\n${result.stderr}`, {
+    cause: { gitExecution: { timeoutMs: GIT_TIMEOUT_MS,
+      ...(result.failureRoute ? { route: result.failureRoute } : {}),
+      ...(result.error ? { code: result.error.code, signal: result.error.signal, killed: result.error.killed } : {}),
+    } },
+  });
 };
 
 /** Git's sha1 blob id for `content`, identical to `git hash-object`. */

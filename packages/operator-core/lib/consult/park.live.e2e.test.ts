@@ -58,24 +58,70 @@ async function recorderPreflight() {
   expect(measured, JSON.stringify(measured)).toMatchObject({ ok: true, status: 'pass' });
 }
 
+function requireParkingRuntimeWitnesses(units: string[], apiUnit: string) {
+  for (const unit of [apiUnit, 'bg-host']) {
+    if (!units.includes(unit)) throw new Error(`Parking acceptance requires a recorder runtime witness for ${unit}`);
+  }
+}
+
+function requireParkingSourceContainment(
+  acceptedSource: { matches?: boolean; runtimeContainment?: Record<string, boolean | null> } | undefined,
+  runtimes: string[],
+  path: string,
+) {
+  if (acceptedSource?.matches !== true) throw new Error(`Parking source bytes are unverified: ${path}`);
+  for (const runtime of runtimes) {
+    if (acceptedSource.runtimeContainment?.[runtime] !== true) {
+      throw new Error(`Parking source containment is unverified for ${runtime}: ${path}`);
+    }
+  }
+}
+
+describe('native parking runtime prerequisites', () => {
+  it('rejects the historical API-only recorder profile before launching a subject', () => {
+    expect(() => requireParkingRuntimeWitnesses(['hono-host:3170'], 'hono-host:3170')).toThrow('bg-host');
+    expect(() => requireParkingRuntimeWitnesses(['hono-host:3170', 'bg-host'], 'hono-host:3170')).not.toThrow();
+  });
+
+  it.each([null, false, undefined])('rejects API containment when background containment is %s', bg => {
+    const source = { matches: true, runtimeContainment: { 'staging-operator': true, 'bg-host': bg } };
+    expect(() => requireParkingSourceContainment(source as never, ['bg-host'], 'park-delivery-prod.ts'))
+      .toThrow('bg-host');
+  });
+
+  it('accepts matching API and background source while rejecting changed bytes', () => {
+    const source = { matches: true, runtimeContainment: { 'staging-operator': true, 'bg-host': true } };
+    expect(() => requireParkingSourceContainment(source, ['staging-operator', 'bg-host'], 'park-prod.ts'))
+      .not.toThrow();
+    expect(() => requireParkingSourceContainment({ ...source, matches: false }, ['bg-host'], 'park-prod.ts'))
+      .toThrow('source bytes');
+  });
+});
+
 describe.skipIf(!profilePath)('consult-backed parking on the loaded staging operator', () => {
   it('native recorder preflight writes a receipt before any native subject launches', recorderPreflight, 120_000);
 
   it('public park door resumes a real native subject after deadline and alternative verdicts', async () => {
-    await recorderPreflight();
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     const origin = String(profile.origin);
     expect(['http://127.0.0.1:3170', 'http://127.0.0.1:3070']).toContain(origin);
     const runtime = origin.endsWith(':3170') ? 'staging-operator' : 'release-operator';
-    for (const path of ['packages/operator-core/lib/consult/park-door.ts',
-      'packages/operator-core/lib/consult/park-delivery-prod.ts']) {
+    requireParkingRuntimeWitnesses(profile.runtimeUnits, `hono-host:${new URL(origin).port}`);
+    await recorderPreflight();
+    const sources = [
+      { path: 'packages/operator-core/lib/consult/park-door.ts', runtimes: [runtime] },
+      { path: 'packages/operator-core/lib/consult/park-prod.ts', runtimes: [runtime, 'bg-host'] },
+      { path: 'packages/operator-core/lib/consult/park-delivery-prod.ts', runtimes: ['bg-host'] },
+      { path: 'packages/operator-core/lib/events/await/wake-executor.ts', runtimes: ['bg-host'] },
+      { path: 'packages/operator-core/lib/events/await/store.ts', runtimes: ['bg-host'] },
+    ];
+    for (const { path, runtimes } of sources) {
       const position = call('dev:pipeline_position', { path, sourceRuntimeOnly: true,
         expectedSourceSha256: createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex'),
         projection: { pick: ['acceptedSource'] } }, origin);
-      const evidence = JSON.stringify({ path, runtime, acceptedSource: position.acceptedSource });
+      const evidence = JSON.stringify({ path, runtimes, acceptedSource: position.acceptedSource });
       console.info('CBP_NATIVE_SOURCE_PREFLIGHT', evidence);
-      expect(position.acceptedSource.matches, evidence).toBe(true);
-      expect(position.acceptedSource.runtimeContainment[runtime], evidence).toBe(true);
+      requireParkingSourceContainment(position.acceptedSource, runtimes, path);
     }
     const seed = `park-native-${randomUUID()}`;
     const flows = ['proceed', 'adopted', 'owner-hold'] as const;

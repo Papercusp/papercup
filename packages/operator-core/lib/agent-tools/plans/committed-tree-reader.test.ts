@@ -395,7 +395,9 @@ describe('batched reads', () => {
       requestTraceId: 'trace-plans-get-spec-evidence-timeout',
       toolName: 'plans:get-spec-evidence',
     });
-    const timeout = Object.assign(new Error('git ls-tree timed out'), { code: 'ETIMEDOUT' });
+    const gitExecution = { timeoutMs: 5_000, route: 'local' as const,
+      code: null, signal: 'SIGTERM', killed: true };
+    const timeout = Object.assign(new Error('git ls-tree timed out', { cause: { gitExecution } }), { code: 'ETIMEDOUT' });
     const gitRunner: GitRunner = async (dir, args) => {
       if (args[0] === 'ls-tree') {
         await new Promise<void>((resolve) => setTimeout(resolve, 8));
@@ -421,6 +423,7 @@ describe('batched reads', () => {
       outcome: 'error',
       failurePhase: 'git',
       errorCode: 'ETIMEDOUT',
+      gitExecution,
     });
     expect(diagnostics.lsTreeRecords?.[0]?.durationMs).toBeGreaterThan(0);
     expect(diagnostics.lsTreeRecords?.[0]).not.toHaveProperty('paths');

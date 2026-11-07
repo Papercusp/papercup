@@ -252,7 +252,7 @@ export function overwroteAuthorField(input: {
   };
 }
 
-type DependsOnInput = string | { cell: string; as?: string };
+type DependsOnInput = string | { cell: string; as?: string; target?: 'measurement' | 'assessment' | 'material' };
 
 export interface IncompleteDependsOnSuggestion {
   /** The cell the body transcribed but the accept payload could not safely add. */
@@ -664,6 +664,8 @@ export default defineTool({
           z.string().min(1).max(200),
           z.object({
             cell: z.string().min(1).max(200),
+            target: z.enum(['measurement', 'assessment', 'material']).optional()
+              .describe('The comparison lens; omitted inherits declared materiality, otherwise measurement. Assessment and validity qualifiers are retained for every target.'),
             as: z
               .string()
               .max(200)
@@ -1233,10 +1235,12 @@ export default defineTool({
         // A caller-relative cell needs its SUBJECT, or the read comes back
         // `insufficient-data` and the dependency can never be compared.
         const subjects: Record<string, string> = {};
+        const targets: Record<string, 'measurement' | 'assessment' | 'material'> = {};
         for (const d of args.dependsOn ?? []) {
           if (typeof d !== 'string' && d.as) subjects[d.cell] = d.as;
+          if (typeof d !== 'string' && d.target) targets[d.cell] = d.target;
         }
-        dependsOn = await captureFactDependencies(declaredCells, cellReader, env, subjects);
+        dependsOn = await captureFactDependencies(declaredCells, cellReader, env, subjects, undefined, targets);
       } catch {
         dependsOn = [];
       }

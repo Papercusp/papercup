@@ -15,23 +15,32 @@ import {
   evaluateDependencyStaleness,
   observationKey,
   captureFactDependencies,
+  markStaleDependencyFacts,
   type CurrentCellObservation,
 } from './dependency-staleness';
 import { FACT_DEPENDENCY_OBSERVED_CHARS, type FactDependency } from '../../agent-facts/store';
+import type { CellObservationAnchor } from '../../cell-contract';
+import type { CellRead } from '../../cell-read';
 
 const readCellSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../cell-read', () => ({ readCell: readCellSpy }));
 
+const anchor = (selectedDigest: string, target: CellObservationAnchor['target'] = 'measurement'): CellObservationAnchor => ({
+  version: 1, target, selectedDigest, identityDigest: '1111111111111111', qualifierDigest: '2222222222222222',
+});
 const dep = (over: Partial<FactDependency> = {}): FactDependency => ({
   cell: 'pipeline.myChange',
   observedAt: '2026-07-27T00:00:00.000Z',
   digest: digestCellValue('deployed'),
   observed: 'deployed',
+  semanticAnchor: anchor(over.digest ?? digestCellValue('deployed')),
   ...over,
 });
 
-const now = (entries: Record<string, CurrentCellObservation>) => new Map(Object.entries(entries));
+const now = (entries: Record<string, CurrentCellObservation>) => new Map(Object.entries(entries).map(([k, v]) => [k, {
+  ...(v.digest ? { semanticAnchor: anchor(v.digest) } : {}), ...v,
+}]));
 
 describe('canonicalJson — order-independent for objects, order-SENSITIVE for arrays', () => {
   it('sorts object keys at every depth, so a resolver reordering its result is not a change', () => {
@@ -209,6 +218,76 @@ describe('captureFactDependencies — independent reads share the request budget
   });
 });
 
+describe('P004 semantic dependency capture and reread', () => {
+  const read = (): Extract<CellRead, { status: 'value' }> => ({
+    status: 'value', cell: 'semantic', resolver: 'test:semantic', headline: 'candidate', measurementPath: 'sha', value: 'sha-a',
+    material: { path: 'contained', value: true },
+    assessment: { status: 'resolved', path: 'state', code: 'live', meaning: 'live', safeAction: 'read', evidence: [{ path: 'count', value: 0, measuredBy: { path: 'measured', value: true } }] },
+    source: { path: 'origin', value: 'direct', authoritative: true, why: 'directly measured' },
+    unknownHoist: { key: 'unknown', value: [] },
+  });
+  const capture = async (r: CellRead, target?: CellObservationAnchor['target']) => {
+    readCellSpy.mockReset().mockResolvedValue(r);
+    return captureFactDependencies(['semantic'], {} as never, {} as never, { semantic: 'a.ts' }, undefined, target ? { semantic: target } : undefined);
+  };
+  const reread = async (deps: FactDependency[], r: CellRead) => {
+    readCellSpy.mockResolvedValue(r);
+    const fact = { body: 'retained conclusion', dependsOn: deps } as never;
+    return (await markStaleDependencyFacts([fact], {} as never, {} as never))[0];
+  };
+
+  it.each(['assessment', 'uncertainty', 'authority', 'measuredness'] as const)('detects changed %s behind an unchanged raw and material value', async (dimension) => {
+    const original = read();
+    const deps = await capture(original);
+    const changed = read();
+    if (dimension === 'assessment') changed.assessment = { ...original.assessment!, status: 'resolved', code: 'restart-required', meaning: 'restart', safeAction: 'restart' };
+    if (dimension === 'uncertainty') changed.unknownHoist = { key: 'unknown', value: ['not-measured'] };
+    if (dimension === 'authority') changed.source = { ...original.source!, authoritative: false };
+    if (dimension === 'measuredness') changed.assessment = { ...original.assessment!, evidence: [{ path: 'count', value: 0, measuredBy: { path: 'measured', value: false } }] };
+    const result = await reread(deps, changed);
+    expect(result.depsStale?.status).toBe('stale');
+    expect(result.body).toBe('retained conclusion');
+  });
+
+  it('compares a selected measurement SHA even while assessment remains executing', async () => {
+    const r = read();
+    const deps = await capture(r, 'measurement');
+    expect((await reread(deps, { ...r, value: 'sha-b' })).depsStale?.status).toBe('stale');
+    expect(readCellSpy).toHaveBeenCalledTimes(2); // one dispatch for each observation
+  });
+
+  it('preserves material suppression and ignores telemetry-only evidence values', async () => {
+    const r = read();
+    const deps = await capture(r);
+    expect((await reread(deps, { ...r, value: 'sha-b' })).depsStale?.deps[0].status).toBe('immaterial');
+    const telemetry = { ...r, assessment: { ...r.assessment!, evidence: [{ ...r.assessment!.evidence[0], value: 999999 }] } };
+    expect((await reread(deps, telemetry)).depsStale?.status).toBe('fresh');
+  });
+
+  it('reports unavailable assessments and old anchors as undeterminable with reanchor guidance', async () => {
+    const r = read();
+    const deps = await capture(r);
+    const unavailable: CellRead = { ...r, assessment: { status: 'unavailable', path: 'state', code: null, meaning: null, safeAction: 'reread', evidence: [], unknown: { code: 'insufficient-data' } } };
+    expect((await reread(deps, unavailable)).depsStale?.status).toBe('undeterminable');
+    const legacy = deps.map(({ semanticAnchor: _anchor, ...d }) => d);
+    const verdict = (await reread(legacy, r)).depsStale;
+    expect(verdict?.status).toBe('undeterminable');
+    expect(verdict?.deps[0].detail).toContain('reanchor');
+  });
+
+  it('refuses a changed schema identity and preserves false and zero measurements', async () => {
+    const r = read();
+    const deps = await capture(r);
+    expect((await reread(deps, { ...r, measurementPath: 'different' })).depsStale?.status).toBe('undeterminable');
+    for (const value of [false, 0]) {
+      const measured = { ...r, value };
+      const anchored = await capture(measured, 'measurement');
+      expect(anchored[0].digest).toBe(digestCellValue(value));
+      expect((await reread(anchored, measured)).depsStale?.status).toBe('fresh');
+    }
+  });
+});
+
 describe('subject keying — a caller-relative cell is a different question per subject', () => {
   it('reads the observation under the (cell, subject) key, not the bare cell id', () => {
     const d = dep({ cell: 'git.pipelinePosition', subject: 'a.ts', digest: digestCellValue('deployed') });
@@ -286,6 +365,7 @@ const candidateDep = (sha: string, contained: boolean): FactDependency => ({
   materialDigest: digestCellValue(contained),
   material: String(contained),
   materialPath: MATERIAL_PATH,
+  semanticAnchor: anchor(digestCellValue(contained), 'material'),
 });
 
 /** What that cell resolves to now. */
@@ -295,12 +375,14 @@ const candidateNow = (sha: string, contained: boolean): CurrentCellObservation =
   materialDigest: digestCellValue(contained),
   material: String(contained),
   materialPath: MATERIAL_PATH,
+  semanticAnchor: anchor(digestCellValue(contained), 'material'),
 });
 
 /** Strip the material anchor — a fact filed before P-021, i.e. today's behaviour. */
 const unanchor = (d: FactDependency): FactDependency => {
   const c = { ...d };
   delete (c as { materialDigest?: string }).materialDigest;
+  delete c.semanticAnchor;
   return c;
 };
 
@@ -360,10 +442,11 @@ describe('P-021 materiality — a version bump is carried, not raised', () => {
     const reAimed: CurrentCellObservation = {
       ...candidateNow('a63daa83', true),
       materialPath: 'changeInCandidate.nextContainsPath',
+      semanticAnchor: { ...candidateNow('a63daa83', true).semanticAnchor!, identityDigest: '3333333333333333' },
     };
     const v = evaluateDependencyStaleness([filed], keyed(reAimed));
-    expect(v?.status).toBe('stale');
-    expect(v?.changed).toEqual([CANDIDATE]);
+    expect(v?.status).toBe('undeterminable');
+    expect(v?.undeterminable).toEqual([CANDIDATE]);
   });
 
   it('a MATERIAL change is still loud — containment flipping is the news', () => {
@@ -398,8 +481,8 @@ describe('P-021 materiality — a version bump is carried, not raised', () => {
   it('falls back to LOUD when the material path stops resolving NOW (registration drift)', () => {
     const nowNoMaterial: CurrentCellObservation = { digest: digestCellValue('a63daa83'), observed: 'a63daa83' };
     const v = evaluateDependencyStaleness([candidateDep('4c871fdc', true)], keyed(nowNoMaterial));
-    expect(v?.status).toBe('stale');
-    expect(v?.changed).toEqual([CANDIDATE]);
+    expect(v?.status).toBe('undeterminable');
+    expect(v?.undeterminable).toEqual([CANDIDATE]);
   });
 
   it('a cell declaring NO materiality is completely unaffected (opt-in, not a behaviour change)', () => {

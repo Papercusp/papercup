@@ -126,10 +126,12 @@ describe('execFileResult', () => {
     const missing = await execFileResult('/nonexistent/ei25735005110182664-binary', []);
     expect(missing.status).toBeNull();
     expect(missing.error).toMatchObject({ code: 'ENOENT', signal: null, killed: false });
+    expect(missing.failureRoute).toBe('local');
 
     const timed = await execFileResult(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 100 });
     expect(timed.status).toBeNull();
     expect(timed.error).toMatchObject({ code: null, signal: 'SIGTERM', killed: true });
+    expect(timed.failureRoute).toBe('local');
 
     const exited = await execFileResult(process.execPath, ['-e', 'process.exit(3)']);
     expect(exited.status).toBe(3);
@@ -425,7 +427,7 @@ describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host
 
   it('runs in the sidecar when enabled, passing the caller timeout and keeping the exit code', async () => {
     const h = harness({ enabled: true, sidecar: async () => ({ code: 1, stdout: '', stderr: 'no' }) });
-    expect(await h.exec('git', ['rev-parse', 'HEAD'], { timeout: 5_000 })).toEqual({ status: 1, stdout: '', stderr: 'no' });
+    expect(await h.exec('git', ['rev-parse', 'HEAD'], { timeout: 5_000 })).toEqual({ status: 1, stdout: '', stderr: 'no', failureRoute: 'sidecar' });
     expect(h.calls).toEqual([{ where: 'sidecar', cmd: 'git', args: ['rev-parse', 'HEAD'], timeoutMs: 5_000 }]);
     expect(h.fallbacks).toEqual([]);
   });
@@ -461,7 +463,7 @@ describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host
 
   it('maps a killed child (negative code, not an infrastructure fault) to status null and does not re-run it', async () => {
     const h = harness({ enabled: true, sidecar: async () => ({ code: -1, stdout: '', stderr: 'timed out' }) });
-    expect(await h.exec('git', ['log'], { timeout: 50 })).toEqual({ status: null, stdout: '', stderr: 'timed out' });
+    expect(await h.exec('git', ['log'], { timeout: 50 })).toEqual({ status: null, stdout: '', stderr: 'timed out', failureRoute: 'sidecar' });
     expect(h.calls.map((c) => c.where)).toEqual(['sidecar']);
     expect(h.fallbacks).toEqual([]);
   });
@@ -477,6 +479,7 @@ describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host
     const result = await h.exec('git', ['ls-tree'], { timeout: 50 });
     expect(result.status).toBeNull();
     expect(result.error).toEqual(error);
+    expect(result.failureRoute).toBe('sidecar');
     expect(h.calls.map(c => c.where)).toEqual(['sidecar']);
     expect(h.fallbacks).toEqual([]);
   });

@@ -53,6 +53,7 @@ import type { AgentFact, FactDependency } from '../../agent-facts/store';
 import { FACT_MAX_DEPENDENCIES, FACT_DEPENDENCY_OBSERVED_CHARS, isFactFileAnchor } from '../../agent-facts/store';
 import type { CellReadEnv } from '../../cell-read';
 import type { CellReader } from '../../cell-registry';
+import { projectCellComparison, parseCellObservationAnchor, type CellComparisonTarget, type CellObservationAnchor } from '../../cell-contract';
 import { resolveCurrentTokens } from '../../freshness/resolvers';
 
 let cellReadModule: Promise<typeof import('../../cell-read')> | undefined;
@@ -227,6 +228,8 @@ export interface FactDependencyStaleness {
 
 /** What a cell resolves to RIGHT NOW, as far as the comparison is concerned. */
 export interface CurrentCellObservation {
+  target?: CellComparisonTarget;
+  semanticAnchor?: CellObservationAnchor;
   digest?: string;
   observed?: string;
   /** Set instead of `digest` when the cell yields no value now. */
@@ -267,7 +270,7 @@ export function evaluateDependencyStaleness(
     // Keyed by cell AND subject: the same cell read about two different subjects
     // is two different questions, and collapsing them would compare one file's
     // pipeline position against another's.
-    const now = current.get(observationKey(dep.cell, dep.subject));
+    const now = current.get(observationKey(dep.cell, dep.subject, dep.target));
     const base: FactDependencyVerdict = {
       cell: dep.cell,
       ...(dep.subject ? { subject: dep.subject } : {}),
@@ -300,6 +303,40 @@ export function evaluateDependencyStaleness(
             'the fact may still be current, but this read cannot confirm it.',
       });
       undeterminable.push(dep.cell);
+      continue;
+    }
+    if (!isFactFileAnchor(dep.cell)) {
+      const before = parseCellObservationAnchor(dep.semanticAnchor);
+      const after = parseCellObservationAnchor(now.semanticAnchor);
+      // A legacy raw anchor proves a raw change, but cannot certify that its
+      // unrecorded assessment/source/uncertainty remained unchanged.
+      if (!before || !after) {
+        if (now.digest !== dep.digest) {
+          verdicts.push({ ...base, status: 'changed', ...(now.observed !== undefined ? { now: now.observed } : {}) });
+          changed.push(dep.cell);
+        } else {
+          verdicts.push({ ...base, detail: 'Semantic anchor version is absent or unsupported; reassert this dependency to reanchor its selected value and validity qualifiers.' });
+          undeterminable.push(dep.cell);
+        }
+        continue;
+      }
+      if (before.target !== after.target || (dep.target !== undefined && dep.target !== before.target) || before.identityDigest !== after.identityDigest) {
+        verdicts.push({ ...base, detail: 'The comparison target, subject or cell schema changed; reassert this dependency under the current contract.' });
+        undeterminable.push(dep.cell);
+        continue;
+      }
+      if (before.qualifierDigest !== after.qualifierDigest || before.selectedDigest !== after.selectedDigest) {
+        verdicts.push({ ...base, status: 'changed', ...(now.observed !== undefined ? { now: now.observed } : {}) });
+        changed.push(dep.cell);
+        continue;
+      }
+      if (now.digest !== dep.digest && before.target === 'material') {
+        const { was: _was, ...withoutRaw } = base;
+        verdicts.push({ ...withoutRaw, status: 'immaterial', ...(now.material !== undefined ? { material: now.material } : {}) });
+        immaterial.push(dep.cell);
+      } else {
+        verdicts.push({ ...base, status: 'fresh', ...(now.observed !== undefined ? { now: now.observed } : {}) });
+      }
       continue;
     }
     // P-021 — THE MATERIALITY GATE, and note the ORDER: the material answer is
@@ -447,6 +484,7 @@ export async function captureFactDependencies(
   env: CellReadEnv,
   subjects?: Readonly<Record<string, string>>,
   fileOptions?: FileAnchorOptions,
+  targets?: Readonly<Record<string, CellComparisonTarget>>,
 ): Promise<FactDependency[]> {
   const wanted = dedupeCells(cells);
   if (wanted.length === 0) return [];
@@ -472,7 +510,7 @@ export async function captureFactDependencies(
       const subject = subjects?.[cell];
       let obs: CurrentCellObservation;
       try {
-        obs = await observeCell(cell, reader, env, subject);
+        obs = await observeCell(cell, reader, env, subject, targets?.[cell]);
       } catch {
         // readCell is documented TOTAL, but this is a write path on a shared
         // table: a belt here costs nothing and a thrown assert costs a fact.
@@ -486,6 +524,8 @@ export async function captureFactDependencies(
     cell,
     // Persisted so the re-read asks the SAME question — see FactDependency.subject.
     ...(subject ? { subject } : {}),
+    ...(obs.target ? { target: obs.target } : {}),
+    ...(obs.semanticAnchor ? { semanticAnchor: obs.semanticAnchor } : {}),
     observedAt,
     ...(obs.digest
       ? {
@@ -530,7 +570,7 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
   // De-duplicate on (cell, subject), not on cell alone: two facts resting on the
   // same cell about DIFFERENT subjects need two reads, and one read reused for
   // both would answer the wrong question for one of them.
-  const targets = new Map<string, { cell: string; subject?: string }>();
+  const targets = new Map<string, { cell: string; subject?: string; target?: CellComparisonTarget }>();
   // P-012 — file anchors are hashed in one batch under their own budget.
   const fileTargets = new Set<string>();
   const overBudget: string[] = [];
@@ -545,13 +585,13 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
         fileTargets.add(d.cell);
         continue;
       }
-      const key = observationKey(d.cell, d.subject);
+      const key = observationKey(d.cell, d.subject, d.target);
       if (targets.has(key)) continue;
       if (targets.size >= STALENESS_READ_BUDGET) {
         overBudget.push(key);
         continue;
       }
-      targets.set(key, { cell: d.cell, ...(d.subject ? { subject: d.subject } : {}) });
+      targets.set(key, { cell: d.cell, ...(d.subject ? { subject: d.subject } : {}), ...(d.target ? { target: d.target } : {}) });
     }
   }
   if (targets.size === 0 && fileTargets.size === 0) return facts.map((f) => ({ ...f }));
@@ -567,7 +607,7 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
     // adding its latency in front (observeFileAnchors is total — never rejects).
     const fileObservationsPending = observeFileAnchors([...fileTargets], env, fileOptions);
     for (const [key, t] of targets) {
-      current.set(key, await observeCell(t.cell, reader, env, t.subject));
+      current.set(key, await observeCell(t.cell, reader, env, t.subject, t.target));
     }
     for (const [cell, obs] of await fileObservationsPending) {
       current.set(cell, obs);
@@ -597,6 +637,7 @@ async function observeCell(
   reader: CellReader,
   env: CellReadEnv,
   subject?: string,
+  target?: CellComparisonTarget,
 ): Promise<CurrentCellObservation> {
   // File-only facts use the freshness resolver directly. Loading the cell
   // dispatcher for them pulls in the full tool graph before a single hash,
@@ -604,8 +645,18 @@ async function observeCell(
   // Share initialization across the parallel reads in captureFactDependencies.
   const { readCell } = await (cellReadModule ??= import('../../cell-read'));
   const read = await readCell(cell, reader, env, subject);
+  const comparison = projectCellComparison(read, subject, target);
+  if (comparison.status === 'unknown') return { unknown: comparison.unknown, ...(target ? { target } : {}) };
   if (read.status === 'value') {
     return {
+      target: comparison.target,
+      semanticAnchor: {
+        version: 1,
+        target: comparison.target,
+        identityDigest: digestCellValue(comparison.identity),
+        qualifierDigest: digestCellValue(comparison.qualifiers),
+        selectedDigest: digestCellValue(comparison.selected),
+      },
       digest: digestCellValue(read.value),
       observed: renderObservedValue(read.value),
       // P-021 — same dispatch, no extra resolver call. Absent unless the spec
@@ -664,8 +715,9 @@ async function observeFileAnchors(
  * stand in for another's. Shared by the write and read halves so they cannot
  * disagree about what counts as "the same observation". PURE.
  */
-export function observationKey(cell: string, subject?: string): string {
-  return subject ? `${cell}\x00${subject}` : cell;
+export function observationKey(cell: string, subject?: string, target?: CellComparisonTarget): string {
+  const key = subject ? `${cell}\x00${subject}` : cell;
+  return target ? `${key}\x00${target}` : key;
 }
 
 /** Trim, drop empties, de-duplicate, and bound — shared by both halves so the

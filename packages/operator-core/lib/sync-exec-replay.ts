@@ -28,6 +28,8 @@ export interface ExecResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  /** Actual executor for a failed read; never inferred from inherited environment. */
+  failureRoute?: 'local' | 'sidecar';
   /** Native execFile failure evidence; a null status alone cannot identify a timeout. */
   error?: {
     code: string | number | null;
@@ -117,6 +119,7 @@ export function execFileResult(
           status: typeof code === 'number' ? code : null,
           stdout: stdout ?? '',
           stderr: stderr ?? '',
+          failureRoute: 'local',
           error: { code: code ?? null, signal: err.signal ?? null, killed: err.killed === true },
         });
       },
@@ -355,6 +358,7 @@ export function createSidecarFirstExec(deps: SidecarFirstExecDeps = {}): AsyncEx
       return local();
     }
     return { status: res.code >= 0 ? res.code : null, stdout: res.stdout, stderr: res.stderr,
+      ...(res.code !== 0 ? { failureRoute: 'sidecar' as const } : {}),
       ...(res.error ? { error: res.error } : {}),
     };
   };
