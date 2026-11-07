@@ -34,6 +34,103 @@ export function latencyFixtureDigest(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
 }
 
+/** Frozen LATENCY-M1 seed, independent of the wall clock and the measured arm.
+ * These are inputs/reference data only; no production reader supplies the oracle.
+ * The existing migrated PG fixture can insert these ordinary work-item/envelope
+ * records without introducing another store or benchmark runner. */
+export function latencyDataFixtures() {
+  const workspace = 'latency-acceptance-fixture';
+  const harness = 'papercusp';
+  const plan = 'latency-acceptance-coverage';
+  const anchorMs = Date.parse('2026-11-06T00:00:00.000Z');
+  const dayMs = 86_400_000;
+  const workItems = Array.from({ length: 10_000 }, (_, ordinal) => ({
+    feature_id: `WI-${8_000_000 + ordinal}`,
+    workspace_id: workspace,
+    harness_slug: harness,
+    item_kind: 'task',
+    status: 'open',
+    title: `Unrelated deterministic item ${ordinal}`,
+    summary: '',
+    payload: {} as Record<string, unknown>,
+    created_ts: anchorMs - dayMs,
+    updated_ts: anchorMs - dayMs,
+  }));
+  const marker = (item: string) => `Plan: ${plan} item ${item}`;
+  const stamp = (item: string) => ({ plan_item: {
+    plan_slug: plan, item_id: item, harness_slug: harness,
+  } });
+  workItems[0]!.payload = stamp('P-001'); // typed-only
+  workItems[1]!.summary = marker('P-002'); // legacy-only
+  workItems[2]!.payload = stamp('P-003'); // mixed, one target
+  workItems[2]!.summary = marker('P-003');
+  workItems[3]!.summary = marker('P-004'); // terminal coverage is retained
+  workItems[3]!.status = 'done';
+  workItems[4]!.payload = { ...stamp('P-005'), _claimHold: true }; // shadow
+  workItems[5]!.payload = stamp('P-005'); // eligible target beside the shadow
+  workItems[6]!.summary = `(${marker('P-006')})`; // exact marker boundary
+  workItems[7]!.summary = `${marker('P-006')}0`; // adjacent item is not P-006
+  workItems[8]!.summary = `x${marker('P-006')}`; // adjacent marker prefix
+  workItems[9]!.payload = stamp('P-007'); // repeated lookup uses the same target
+  workItems[10]!.summary = marker('P-008');
+  workItems[10]!.workspace_id = 'latency-acceptance-other';
+  workItems[11]!.summary = marker('P-009');
+  workItems[11]!.harness_slug = 'other-harness';
+  const coverageReference = [
+    { case: 'typed-only', item: 'P-001', eligibleIds: ['WI-8000000'] },
+    { case: 'legacy-only', item: 'P-002', eligibleIds: ['WI-8000001'] },
+    { case: 'mixed', item: 'P-003', eligibleIds: ['WI-8000002'] },
+    { case: 'terminal', item: 'P-004', eligibleIds: ['WI-8000003'] },
+    { case: 'parked', item: 'P-005', eligibleIds: ['WI-8000005'] },
+    { case: 'exact-boundary', item: 'P-006', eligibleIds: ['WI-8000006'] },
+    { case: 'idempotent-repeat', item: 'P-007', eligibleIds: ['WI-8000009'] },
+    { case: 'cross-workspace', item: 'P-008', eligibleIds: [] },
+    { case: 'cross-harness', item: 'P-009', eligibleIds: [] },
+  ];
+  const coverageEdges = [0, 2, 4, 5, 9].map(ordinal => ({
+    workspace_id: workspace, src_kind: 'issue', src_ref: workItems[ordinal]!.feature_id,
+    dst_kind: 'plan_item',
+    dst_ref: `${plan}#${ordinal === 0 ? 'P-001' : ordinal === 2 ? 'P-003'
+      : ordinal === 9 ? 'P-007' : 'P-005'}`,
+    rel: 'implements', created_at: '2026-11-05T00:00:00.000Z',
+  }));
+
+  const busy = 'latency-acceptance:busy:';
+  const quiet = 'latency-acceptance:quiet:';
+  const unrelated = 'latency-acceptance:unrelated:';
+  const oldKeys = Array.from({ length: 20 }, (_, i) =>
+    `${i < 10 ? busy : quiet}old-${String(i % 10).padStart(2, '0')}`);
+  const bodies: Record<string, unknown>[] = oldKeys.map(condition_key => ({
+    condition_key, ts: new Date(anchorMs - 30 * dayMs).toISOString(),
+  }));
+  const controls = [
+    { condition_key: busy + 'closed-exact' },
+    { condition_key: busy + 'closed-many-a' },
+    { condition_key: quiet + 'closed-many-b' },
+    { resolves_condition: busy + 'closed-exact' },
+    { resolves_conditions: [busy + 'closed-many-a', quiet + 'closed-many-b'] },
+    // Same suffix, different key: cannot release an old busy-prefix hold.
+    { resolves_condition: unrelated + 'old-00' },
+  ];
+  for (const [i, control] of controls.entries()) bodies.push({ ...control,
+    ts: new Date(anchorMs - dayMs + i).toISOString() });
+  while (bodies.length < 10_000) bodies.push({
+    resolves_condition: busy + `resolved-noise-${bodies.length}`,
+    ts: new Date(anchorMs - 10_000 + bodies.length).toISOString(),
+  });
+  const conditionEnvelopes = bodies.map((body, ordinal) => ({
+    ...body, msg_id: `latency-m1-condition-${String(ordinal).padStart(5, '0')}`,
+    from: 'fixture:latency-author-su', to: ['*'], summary: 'Frozen condition fixture',
+  }));
+  const conditionReference = {
+    [busy]: ['00', '01', '02', '03', '04', '05', '06', '07', '08', '09'].map(n => busy + 'old-' + n),
+    [quiet]: ['00', '01', '02', '03', '04', '05', '06', '07', '08', '09'].map(n => quiet + 'old-' + n),
+    [unrelated]: [] as string[],
+  };
+  return { seed: 'LATENCY-M1-v2-20261107', anchorMs, workspace, harness, plan,
+    workItems, coverageEdges, coverageReference, conditionEnvelopes, conditionReference };
+}
+
 export interface LatencyCardReference {
   issueId: string;
   rubricRef: string;

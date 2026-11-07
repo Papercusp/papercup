@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assessLatencyCohort, assessLatencyExperiment, assertLatencyPhaseOrder, calibrateLatencyOracle, frozenOutputOracle,
   latencyAttemptId, latencyAttemptSchedule, latencyDistribution, latencyFixtureDigest,
-  latencyRecipeCriterionCompatibility, pinLatencyCardFixture,
+  latencyRecipeCriterionCompatibility, pinLatencyCardFixture, latencyDataFixtures,
   type LatencyAttempt, type LatencyCardReference, type LatencyCardSnapshot,
 } from '../../../test/_latency-acceptance';
 
@@ -20,6 +20,47 @@ function calibrationSamples(): LatencyAttempt[] {
 }
 
 describe('LATENCY-M1 frozen experiment preparation', () => {
+  it('materializes the frozen 10000-row populations with stable scope, identities and explicit controls', () => {
+    const fixture = latencyDataFixtures();
+    expect(latencyFixtureDigest(fixture)).toBe(latencyFixtureDigest(latencyDataFixtures()));
+    expect(fixture.seed).toBe('LATENCY-M1-v2-20261107');
+    expect(fixture.anchorMs).toBe(Date.parse('2026-11-06T00:00:00.000Z'));
+    expect(fixture.workItems).toHaveLength(10_000);
+    expect(fixture.conditionEnvelopes).toHaveLength(10_000);
+    expect(new Set(fixture.workItems.map(row => row.feature_id)).size).toBe(10_000);
+    expect(new Set(fixture.conditionEnvelopes.map(row => row.msg_id)).size).toBe(10_000);
+    expect(fixture.coverageReference.map(row => row.eligibleIds)).toEqual([
+      ['WI-8000000'], ['WI-8000001'], ['WI-8000002'], ['WI-8000003'],
+      ['WI-8000005'], ['WI-8000006'], ['WI-8000009'], [], [],
+    ]);
+    expect(fixture.workItems[3]!.status).toBe('done');
+    expect(fixture.workItems[4]!.payload._claimHold).toBe(true);
+    expect(fixture.workItems[5]!.payload._claimHold).toBeUndefined();
+    expect(fixture.workItems[7]!.summary).toBe('Plan: latency-acceptance-coverage item P-0060');
+    expect(fixture.workItems[8]!.summary).toBe('xPlan: latency-acceptance-coverage item P-006');
+    expect(fixture.workItems[10]!.workspace_id).toBe('latency-acceptance-other');
+    expect(fixture.workItems[11]!.harness_slug).toBe('other-harness');
+  });
+
+  it('calibrates complete hold-set evidence against lost old holds, extra keys and denied authority', () => {
+    const fixture = latencyDataFixtures();
+    const reference = fixture.conditionReference;
+    const busy = 'latency-acceptance:busy:';
+    expect(Object.values(reference).flat()).toHaveLength(20);
+    const oldAlarms = fixture.conditionEnvelopes.slice(0, 20);
+    expect(oldAlarms.every(row => row.ts === '2026-10-07T00:00:00.000Z')).toBe(true);
+    const check = (observed: unknown, authorized: boolean) => frozenOutputOracle(reference, observed, authorized);
+    expect(calibrateLatencyOracle(check, { positive: reference,
+      incorrect: { ...reference, [busy]: [...reference[busy]!, busy + 'closed-exact'] },
+      incomplete: { ...reference, [busy]: reference[busy]!.slice(1) } }))
+      .toEqual({ positive: true, incorrect: false, incomplete: false, unauthorized: false });
+    const changed = latencyDataFixtures();
+    changed.conditionEnvelopes.pop();
+    expect(latencyFixtureDigest(changed)).not.toBe(latencyFixtureDigest(fixture));
+    changed.workItems[0]!.payload = {};
+    expect(fixture.workItems[0]!.payload).toHaveProperty('plan_item');
+  });
+
   it('keeps 60 matched pairs in complete baseline/candidate phases with identical within-arm order', () => {
     const schedule = latencyAttemptSchedule();
     expect(schedule).toHaveLength(120);
