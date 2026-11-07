@@ -36,6 +36,90 @@ function cleanupNativeReporterFixture(dir: string, completed: boolean,
 }
 
 describe('focused runner startup tracing', () => {
+  it.each(['run', 'collect'])('passive execution transport preserves %s call and result identities without inspecting data', request => {
+    const child = new EventEmitter() as any;
+    child.pid = 42;
+    const rows: any[] = [], calls: any[] = [];
+    const receiver = { transport: 'native' }, handle = { secret: 'never-log' };
+    const options = { keepOpen: true };
+    const expectedError = new Error('never-log');
+    Object.defineProperty(expectedError, 'name', { get() { throw new Error('error inspected'); } });
+    let callbackCalls = 0, nativeResult: unknown, nativeThrows = false;
+    const callback = (error: unknown) => { expect(error).toBe(expectedError); callbackCalls++; };
+    const originalSend = child.send = function(this: unknown, ...args: unknown[]) {
+      calls.push({ receiver: this, args });
+      if (nativeThrows) throw expectedError;
+      (args[3] as typeof callback)(expectedError);
+      return nativeResult;
+    };
+    const message = { type: request, context: { secret: 'never-log' } };
+    Object.defineProperty(message, 'payload', { get() { throw new Error('payload inspected'); } });
+    const opaque = { toJSON() { throw new Error('return inspected'); } };
+    const detach = observeForkStartup(child, row => rows.push(row), () => 0);
+    for (const result of [false, true, Promise.resolve('never-log'), opaque, undefined]) {
+      nativeResult = result;
+      expect(child.send.call(receiver, message, handle, options, callback)).toBe(result);
+    }
+    nativeThrows = true;
+    let caught: unknown;
+    try { child.send.call(receiver, message, handle, options, callback); }
+    catch (error) { caught = error; }
+    expect(caught).toBe(expectedError);
+    expect(callbackCalls).toBe(5);
+    expect(calls).toHaveLength(6);
+    for (const call of calls) {
+      expect(call.receiver).toBe(receiver);
+      expect(call.args).toHaveLength(4);
+      [message, handle, options, callback].forEach((value, index) => expect(call.args[index]).toBe(value));
+    }
+    expect(rows.map(row => row.event)).toEqual([
+      ...Array(5).fill('execution-send-return'), 'execution-send-error',
+    ]);
+    expect(rows.map(row => row.returnType)).toEqual(['boolean', 'boolean', 'object', 'object', 'undefined', undefined]);
+    expect(rows.slice(0, 5).map(row => row.returnValue)).toEqual([false, true, null, null, null]);
+    expect(rows[5]).toMatchObject({ request, sendSequence: 6, thrownType: 'object' });
+    expect(JSON.stringify(rows)).not.toContain('never-log');
+    detach(); detach();
+    expect(child.send).toBe(originalSend);
+    expect(child.eventNames()).toEqual([]);
+  });
+
+  it('passive execution transport bounds observations while forwarding every request and error', () => {
+    const child = new EventEmitter() as any, rows: any[] = [];
+    let calls = 0;
+    const expected = new Error('native-send-failed');
+    const originalSend = child.send = () => { if (++calls === 40) throw expected; return false; };
+    const detach = observeForkStartup(child, row => rows.push(row), () => 0);
+    for (let index = 0; index < 39; index++)
+      expect(child.send({ type: index % 2 ? 'run' : 'collect' })).toBe(false);
+    expect(() => child.send({ type: 'run' })).toThrow(expected);
+    expect(calls).toBe(40);
+    expect(rows).toHaveLength(17);
+    expect(rows.at(-1)).toMatchObject({ event: 'execution-send-limit', limit: 16 });
+    expect(rows.filter(row => row.event === 'execution-send-return')).toHaveLength(16);
+    detach();
+    expect(child.send).toBe(originalSend);
+  });
+
+  it.each(['observer-first', 'fence-first'])('passive execution transport preserves startup-only refusal with a throwing sink: %s', order => {
+    const child = new EventEmitter() as any, calls: unknown[] = [], errors: any[] = [];
+    const originalSend = child.send = (...args: unknown[]) => { calls.push(args); return false; };
+    child.on('error', (error: unknown) => errors.push(error));
+    const sink = () => { throw new Error('diagnostics unavailable'); };
+    const attachObserver = () => observeForkStartup(child, sink);
+    const attachFence = () => controlForkStartupOnly(child, sink);
+    const detaches = order === 'observer-first' ? [attachObserver(), attachFence()] : [attachFence(), attachObserver()];
+    const start = { type: 'start', __vitest_worker_request__: true };
+    expect(child.send(start)).toBe(false);
+    for (const type of ['run', 'collect']) expect(child.send({ type, __vitest_worker_request__: true })).toBe(false);
+    expect(calls).toEqual([[start]]);
+    expect(errors.map(error => error.code)).toEqual(Array(2).fill('VITEST_STARTUP_ONLY_EXECUTION_REFUSED'));
+    detaches.reverse().forEach(detach => { detach(); detach(); });
+    expect(child.send).toBe(originalSend);
+    expect(child.listenerCount('close')).toBe(0);
+    expect(child.listenerCount('message')).toBe(0);
+  });
+
   it('startup-only preserves native lifecycle send inputs, returns and errors even with a throwing sink', () => {
     const child = new EventEmitter() as any;
     const expected = new Error('native-send-error');

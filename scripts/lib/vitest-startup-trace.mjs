@@ -472,6 +472,8 @@ export function observeForkStartup(child, emit, now = () => performance.now()) {
   let stop = null;
   let seenStarted = false;
   let seenStopped = false;
+  let executionSends = 0;
+  let executionTraceLimited = false;
   const record = (event, fields = {}) => {
     try { emit({ event, childPid: child.pid, elapsedMs: Math.round(now() - origin), ...fields }); }
     catch { /* A passive observer must not change the runner's IPC or signals. */ }
@@ -485,7 +487,29 @@ export function observeForkStartup(child, emit, now = () => performance.now()) {
       stop = now();
       record('stop-sent');
     }
-    return originalSend.call(this, message, ...args);
+    const request = message?.type;
+    if (request !== 'run' && request !== 'collect')
+      return originalSend.call(this, message, ...args);
+    // Observe only the local transport call, never payloads, callbacks or
+    // Promise settlement. A return does not prove worker pickup or execution.
+    if (executionSends >= 16) {
+      if (!executionTraceLimited) {
+        executionTraceLimited = true;
+        record('execution-send-limit', { limit: 16 });
+      }
+      return originalSend.call(this, message, ...args);
+    }
+    const fields = { request, sendSequence: ++executionSends };
+    try {
+      const result = originalSend.call(this, message, ...args);
+      record('execution-send-return', { ...fields, returnType: typeof result,
+        returnValue: typeof result === 'boolean' ? result : null });
+      return result;
+    } catch (error) {
+      // Even error names/codes may contain payload data or invoke getters.
+      record('execution-send-error', { ...fields, thrownType: typeof error });
+      throw error;
+    }
   };
   if (typeof originalKill === 'function') {
     child.kill = function(signal, ...args) {
