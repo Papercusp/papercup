@@ -83,6 +83,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# Systemd staging/release builds do not pass through an interactive admission
+# hook. Join the existing host-wide memory/PSI admission before reserving disk
+# or holding an output lock. pc-heavy sets PC_HEAVY_BYPASS for its admitted
+# child, so callers that already hold a slot keep that slot without nesting.
+if [ "${PC_HEAVY_BYPASS:-}" != "1" ]; then
+  # A cached command verdict cannot recreate a missing output artifact.
+  PC_HEAVY_COALESCE=0 exec bash "$REPO_ROOT/scripts/pc-heavy.sh" -- bash "$SCRIPT_DIR/vite-build-singleflight" "$@"
+fi
+
 # EI-22462478663416972: a production Vite build can transform the whole graph
 # successfully and still die while copying public assets into dist/ when the
 # filesystem is already under pressure. Refuse before the expensive transform,

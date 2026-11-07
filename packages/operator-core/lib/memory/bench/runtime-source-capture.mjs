@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import inspector from 'node:inspector';
 import { isMainThread } from 'node:worker_threads';
+import { bindRuntimeProcessTree } from './runtime-file-opens.mjs';
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -60,8 +61,55 @@ export function validateRuntimeSourceCapture(rows, expectedWorkerIds = [], proce
     scope: 'V8 parsed sources in the captured main isolate and attached workers only' };
 }
 
+/** Join the existing V8 receipts to independently traced process lifetimes.
+ * Every process image must have its own complete capture. In particular, a
+ * parent receipt cannot account for an uncaptured Node child, a native helper,
+ * a fork without exec, or an earlier image replaced by exec. This is still
+ * parsed-source evidence only: original loader inputs, executable/native bytes,
+ * dependencies and creator exclusion need their separate maintained producers.
+ */
+export function bindRuntimeSourcePopulation(trace, terminal, captures) {
+  const processTree = bindRuntimeProcessTree(trace, terminal);
+  const processes = processTree.tasks.filter(task => task.taskId === task.threadGroupId);
+  if (!Array.isArray(captures) || !captures.length || captures.length !== processes.length)
+    throw new Error('runtime source process population differs from independent trace');
+  const byProcess = new Map();
+  let sourceRows = 0;
+  for (const rows of captures) {
+    if (!Array.isArray(rows) || !rows.length || (sourceRows += rows.length) > 100_000)
+      throw new Error('runtime source process capture population incomplete or oversized');
+    const id = rows[0]?.processId;
+    if (byProcess.has(id) || !processes.some(task => task.taskId === id))
+      throw new Error('runtime source process capture duplicate or outside traced population');
+    byProcess.set(id, rows);
+  }
+  const receipts = processes.map(task => {
+    const rows = byProcess.get(task.taskId), header = rows?.[0], end = rows?.at(-1);
+    if (!rows || task.execs.length !== 1 || task.execs[0].executable !== header.executable)
+      throw new Error('runtime source process image missing, replaced or mismatched');
+    const startedAtMs = Date.parse(header.startedAt), finishedAtMs = Date.parse(end?.finishedAt);
+    // ISO receipts have millisecond precision; strace records microseconds.
+    if (!Number.isFinite(startedAtMs) || !Number.isFinite(finishedAtMs)
+      || startedAtMs < Math.floor(task.execs[0].atMs) || finishedAtMs < startedAtMs
+      || finishedAtMs > Math.ceil(task.terminalAtMs))
+      throw new Error('runtime source capture lies outside traced process lifetime');
+    return validateRuntimeSourceCapture(rows, [], {
+      processId: task.taskId, exitCode: 0, signal: null, eof: terminal.eof,
+    });
+  });
+  return { schema: 'runtime-traced-source-population/v1', processId: processTree.processId,
+    processes: receipts, tracedTaskPopulationComplete: true,
+    parsedSourceProcessPopulationComplete: true, completeRuntimeClosureVerified: false,
+    sourceQualification: 'required', dependencyQualification: 'required', creatorFence: 'required',
+    scope: 'V8 parsed sources and attached workers in every independently traced single-image process' };
+}
+
 export function startRuntimeSourceCapture(destination) {
-  const fd = fs.openSync(destination, 'wx', 0o600);
+  // The existing destination may opt into per-process receipts. Inherited
+  // subprocess preloads then retain independent evidence instead of racing to
+  // reopen the parent's write-once file. The historical exact-path mode stays
+  // write-once, including its existing refusal on a second process.
+  const fd = fs.openSync(destination.replaceAll('%p', String(process.pid)), 'wx', 0o600);
   const session = new inspector.Session();
   const targets = new Map(), errors = [];
   let sourceCount = 0, workerCount = 0, finished = false;

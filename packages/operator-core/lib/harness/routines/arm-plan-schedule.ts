@@ -21,6 +21,7 @@ import {
   type PlanScheduleSystemAction,
 } from './materialize-plan-schedule';
 import type { ScheduleTrigger } from './schedule-next';
+import { validateRubricRescoreSchedule } from './rubric-rescore-action';
 
 export interface ArmPlanScheduleInput {
   sql?: Sql;
@@ -61,6 +62,7 @@ export type ArmResult =
  */
 export async function armPlanSchedule(input: ArmPlanScheduleInput): Promise<ArmResult> {
   if (!input.schedule && !input.scheduledAt) return { ok: false, reason: 'not_scheduled' };
+  await validateRubricRescoreSchedule(input.schedule, input);
   const sql = input.sql ?? getOrgPg().sql;
   const { workspaceId } = input;
 

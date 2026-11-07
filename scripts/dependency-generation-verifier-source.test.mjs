@@ -86,15 +86,19 @@ test('archive inputs and requirements each use one fresh full census and reject 
 
 test('multi-workspace closure verification uses one fresh census and rejects later source and output tampering', () => {
   const root = fixture();
-  for (const name of ['one', 'two']) generatedPackage(root, 'packages/' + name);
+  const workspaces = ['packages/omp-plugin', 'libs/generic/sse'];
+  for (const packagePath of workspaces) generatedPackage(root, packagePath);
   write(root, 'src/probe.js', 'export default 1;\n');
   write(root, 'src/other.js', 'export default 2;\n');
   chmodSync(join(root, 'src/probe.js'), 0o755);
   symlinkSync('probe.js', join(root, 'src/alias.js'));
-  for (const name of ['one', 'two']) buildWorkspace(root, 'packages/' + name, [process.execPath, '-e',
+  // Freeze source before producing the separately attested outputs, as a Git
+  // export does. Recording dist here would correctly make its bin source and
+  // waive the generated-workspace requirement this regression must exercise.
+  const files = verifierSourceFiles(root, { gitMetadataPaths: ['.git'] });
+  for (const packagePath of workspaces) buildWorkspace(root, packagePath, [process.execPath, '-e',
     'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/cli.cjs","dist/cli.cjs");']);
   rmSync(join(root, '.git'), { recursive: true });
-  const files = verifierSourceFiles(root);
   const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: '7'.repeat(40),
     testedInputs: [{ path: 'src/probe.js', sha256: files.find(file => file.path === 'src/probe.js').sha256 }], files };
   const generation = mkdtempSync(join(tmpdir(), 'multi-workspace-generation-'));
@@ -117,10 +121,10 @@ test('multi-workspace closure verification uses one fresh census and rejects lat
     assert.equal(closure.workspaces.length, 2);
     assert.equal(reads, 1, 'capture must measure source once regardless of workspace count');
     write(generation, '.verifier-closure.json', JSON.stringify(closure));
-    for (const name of ['one', 'two']) {
-      const dest = join(generation, 'tree/packages/' + name + '/dist');
+    for (const packagePath of workspaces) {
+      const dest = join(generation, 'tree', packagePath, 'dist');
       mkdirSync(dirname(dest), { recursive: true });
-      fs.cpSync(join(root, 'packages/' + name + '/dist'), dest, { recursive: true });
+      fs.cpSync(join(root, packagePath, 'dist'), dest, { recursive: true });
     }
     reads = 0;
     assert.doesNotThrow(() => verifyClosure(generation, root, false, true));
@@ -138,7 +142,7 @@ test('multi-workspace closure verification uses one fresh census and rejects lat
       restore();
       assert.doesNotThrow(() => verifyClosure(generation, root));
     }
-    const output = 'tree/packages/two/dist/cli.cjs';
+    const output = 'tree/libs/generic/sse/dist/cli.cjs';
     const originalOutput = readFileSync(join(generation, output));
     write(generation, output, 'changed');
     assert.throws(() => verifyClosure(generation, root), /stale-workspace-output/);
@@ -148,7 +152,7 @@ test('multi-workspace closure verification uses one fresh census and rejects lat
     write(generation, '.verifier-closure.json', JSON.stringify(badClosure));
     assert.throws(() => verifyClosure(generation, root), /selected-source-population-mismatch/);
     write(generation, '.verifier-closure.json', JSON.stringify(closure));
-    for (const name of ['one', 'two']) rmSync(join(root, 'packages/' + name + '/dist'), { recursive: true });
+    for (const packagePath of workspaces) rmSync(join(root, packagePath, 'dist'), { recursive: true });
     assert.doesNotThrow(() => verifyClosure(generation, root, true));
     assert.doesNotThrow(() => verifyClosure(generation, root, false, true));
   } finally {

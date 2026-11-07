@@ -14,13 +14,13 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
-import { setPlanSchedule } from './source';
+import { setPlanSchedule, resolvePlanScope } from './source';
 import { validateRrule, frequencyWarning } from '../../harness/routines/schedule-next';
 import { deletePlanSchedule } from '../../harness/routines/materialize-plan-schedule';
 import { getSystemActionEntry, listSystemActions } from '../../harness/routines/system-actions';
 // Registers the plan-schedulable actions in THIS process (the tool host may not load the
 // routines engine's full register-system-actions set), so the check above sees them.
-import '../../harness/routines/rubric-rescore-action';
+import { validateRubricRescoreSchedule } from '../../harness/routines/rubric-rescore-action';
 import '../../harness/routines/clone-family-sweep-action';
 import '../../spec-conformance/conformance-review';
 import '../../harness/routines/hosted-billing-reconcile-action';
@@ -136,6 +136,13 @@ export default defineTool({
     }
 
     const opts = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
+    try {
+      if (sched?.action?.system === 'rubric-rescore') {
+        await validateRubricRescoreSchedule(sched, await resolvePlanScope(opts));
+      }
+    } catch (error) {
+      return errorOut('rubric_rescore_schedule_incompatible', String(error));
+    }
     const ok = await setPlanSchedule({
       ...opts,
       slug: args.slug,

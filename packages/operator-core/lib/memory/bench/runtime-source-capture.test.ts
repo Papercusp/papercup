@@ -5,7 +5,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
+import { bindRuntimeSourcePopulation, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
+import { runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -43,6 +44,8 @@ describe('actual runtime parsed-source capture', () => {
       })().catch(error => { console.error(error); process.exitCode = 1; });
     `, ['--import', 'tsx']);
     expect(result.status, result.stderr).toBe(0);
+    expect(rows.filter(row=>row.kind==='error')).toEqual([]);
+    expect(rows.at(-1)).toMatchObject({exitCode:0,errors:0,pending:0});
     const processTerminal = {processId: rows[0].processId, exitCode: result.status!, signal: result.signal, eof: true as const};
     const receipt = validateRuntimeSourceCapture(rows, [], processTerminal);
     expect(rows.filter(row => row.kind === 'start')).toHaveLength(1);
@@ -111,5 +114,80 @@ describe('actual runtime parsed-source capture', () => {
     expect(replay.status).not.toBe(0);
     expect(replay.stderr).toContain('EEXIST');
     expect(fs.readFileSync(output)).toEqual(before);
+  });
+});
+
+describe('parsed sources joined to independent process lifetimes', () => {
+  const terminal = {processId:10,exitCode:0,signal:null,eof:true,captureStartedBeforeExec:true};
+  const trace = [
+    '10 1.000000 execve("/usr/bin/node", ["node"], 0x1) = 0',
+    '10 1.200000 fork() = 20',
+    '20 1.300000 execve("/usr/bin/node", ["node"], 0x1) = 0',
+    '20 1.800000 +++ exited with 0 +++',
+    '10 2.000000 +++ exited with 0 +++',
+  ].join('\n')+'\n';
+  const capture = (processId: number, start: number, end: number) => [
+    {kind:'start',schemaVersion:1,processId,executable:'/usr/bin/node',startedAt:new Date(start).toISOString()},
+    {kind:'source',target:'main',scriptId:'1',url:'file:///input.js',sha256:'a'.repeat(64),bytes:10},
+    {kind:'terminal',processId,exitCode:0,errors:0,pending:0,sources:1,workers:0,liveWorkers:0,
+      finishedAt:new Date(end).toISOString()},
+  ];
+  const captures = () => [capture(10,1100,1900),capture(20,1400,1700)];
+  it('requires a separate source receipt for each observed process', () => {
+    const result = bindRuntimeSourcePopulation(trace,terminal,captures());
+    expect(result.processes.map(row=>row.processId)).toEqual([10,20]);
+    expect(result.parsedSourceProcessPopulationComplete).toBe(true);
+    expect(result.completeRuntimeClosureVerified).toBe(false);
+    expect(result.dependencyQualification).toBe('required');
+  });
+  it.each(['missing-child','extra-child','duplicate','wrong-executable','reexec','fork-only',
+    'early-start','late-terminal','invalid-time','failed-capture','incomplete-worker','missing-source'])(
+    'refuses %s instead of extending parent evidence to unobserved code', variant => {
+      const rows = captures(); let input = trace;
+      if (variant === 'missing-child') rows.pop();
+      if (variant === 'extra-child') rows.push(capture(30,1400,1700));
+      if (variant === 'duplicate') rows[1]=rows[0];
+      if (variant === 'wrong-executable') rows[1][0].executable='/other/node';
+      if (variant === 'reexec') input=input.replace('20 1.800000',
+        '20 1.600000 execve("/usr/bin/node", ["node"], 0x1) = 0\n20 1.800000');
+      if (variant === 'fork-only') input=input.replace('20 1.300000 execve("/usr/bin/node", ["node"], 0x1) = 0\n','');
+      if (variant === 'early-start') rows[1][0].startedAt=new Date(1000).toISOString();
+      if (variant === 'late-terminal') rows[1][2].finishedAt=new Date(1900).toISOString();
+      if (variant === 'invalid-time') rows[1][0].startedAt='unknown';
+      if (variant === 'failed-capture') rows[1][2].errors=1;
+      if (variant === 'incomplete-worker') rows[1][2].liveWorkers=1;
+      if (variant === 'missing-source') rows[1].splice(1,1);
+      expect(()=>bindRuntimeSourcePopulation(input,terminal,rows)).toThrow();
+    });
+  it.runIf(process.platform==='linux')('captures a real Node subprocess and refuses a child that removes instrumentation', () => {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-source-process-')); roots.push(root);
+    const fixture=path.join(root,'input.cjs'); fs.writeFileSync(fixture,'module.exports=42;\n');
+    const env:NodeJS.ProcessEnv={...process.env,PAPERCUSP_RUNTIME_SOURCE_CAPTURE:path.join(root,'source-%p.jsonl')};
+    delete env.NODE_OPTIONS;
+    const runChild=(instrumented:boolean)=> {
+      const tracePath=path.join(root,instrumented?'traced.log':'uncaptured.log');
+      const child=spawnSync('/usr/bin/strace',runtimeFileTraceArguments(tracePath,[process.execPath,'--import',preload,'-e',`
+        require(${JSON.stringify(fixture)});
+        const {spawnSync}=require('node:child_process');
+        const child=spawnSync(process.execPath,${JSON.stringify(instrumented?['--import',preload]:[])}.concat(
+          ['-e',${JSON.stringify('require('+JSON.stringify(fixture)+')')}]),{stdio:'inherit'});
+        if(child.status!==0)process.exit(1);process.stdout.write(String(process.pid));
+      `]),{env,encoding:'utf8',timeout:20_000,maxBuffer:1024*1024});
+      expect(child.status,child.stderr).toBe(0);
+      const rows=fs.readdirSync(root).filter(file=>/^source-\d+\.jsonl$/.test(file)).map(file=>
+        fs.readFileSync(path.join(root,file),'utf8').trim().split('\n').map(line=>JSON.parse(line)));
+      return {text:fs.readFileSync(tracePath,'utf8'),proof:{...terminal,processId:Number(child.stdout)},rows};
+    };
+    const observed=runChild(true);
+    const result=bindRuntimeSourcePopulation(observed.text,observed.proof,observed.rows);
+    expect(result.processes).toHaveLength(2);
+    for(const rows of observed.rows) {
+      expect(rows.some(row=>row.kind==='source' && row.url.endsWith(fixture))).toBe(true);
+      const output=path.join(root,'source-'+rows[0].processId+'.jsonl');
+      expect(fs.statSync(output).mode&0o777).toBe(0o600); fs.unlinkSync(output);
+    }
+    const missing=runChild(false);
+    expect(missing.rows).toHaveLength(1);
+    expect(()=>bindRuntimeSourcePopulation(missing.text,missing.proof,missing.rows)).toThrow('population');
   });
 });

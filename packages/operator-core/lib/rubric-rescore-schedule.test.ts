@@ -32,6 +32,9 @@ vi.mock('./agent-tools/_harness-scope', async (orig) => ({
 }));
 vi.mock('./agent-tools/plans/plan-start-gate', () => ({ checkPlanStartable: vi.fn(async () => ({ ok: true })) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+vi.mock('./rubrics', async original => ({
+  ...(await original<typeof import('./rubrics')>()), getRubric: vi.fn(),
+}));
 const fakeSql = vi.fn(async () => []);
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
@@ -43,6 +46,8 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 
 import { upsertRoutine } from '@papercusp/db-org';
+import { getRubric } from './rubrics';
+import { maximumStartGapMs } from './harness/routines/schedule-next';
 import { getPlanRow, setPlanSchedule, type PlanRow } from './agent-tools/plans/source';
 import { mockResolvedTyped } from './testing/typed-mock';
 import { catalogEntry, buildKey, keyMatchesCatalog } from './events/await/catalog';
@@ -58,6 +63,7 @@ import {
   rescoreRubric,
   rubricCriterionRegressedKey,
   runRubricRescoreAction,
+  validateRescoreCadence,
   type RubricRescoreDeps,
 } from './harness/routines/rubric-rescore-action';
 
@@ -131,6 +137,7 @@ beforeEach(() => {
   vi.mocked(setPlanSchedule).mockReset().mockResolvedValue(true);
   vi.mocked(upsertRoutine).mockClear();
   fakeSql.mockClear();
+  vi.mocked(getRubric).mockReset().mockResolvedValue({ rubricId: RUBRIC, workspaceId: 'ws-test', criteria: [] } as never);
 });
 
 describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
@@ -333,6 +340,85 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
 
 type Out = { data?: any; content?: { text: string }[]; isError?: boolean };
 const body = (o: Out) => o.data ?? JSON.parse(o.content![0]!.text);
+
+describe('grading schedule freshness policy', () => {
+  const live = { ...probeCriterion('live-health'), check: { ...probeCriterion('live-health').check, maxAgeMs: 60_050 } } as CheckedCriterion;
+  const schedule = {
+    kind: 'rrule' as const, rrule: 'FREQ=MINUTELY',
+    action: { system: RUBRIC_RESCORE_ACTION,
+      input: { rubricRef: RUBRIC, maxRuntimeMs: 40, maxSchedulingDelayMs: 10 } },
+  };
+
+  it('grading schedule accepts freshness budget equality and rejects one millisecond over', () => {
+    expect(() => validateRescoreCadence(schedule, [live])).not.toThrow();
+    expect(() => validateRescoreCadence({ ...schedule, action: { ...schedule.action,
+      input: { ...schedule.action.input, maxRuntimeMs: 41 } } }, [live])).toThrow('exceeds maxAgeMs');
+  });
+
+  it.each([undefined, -1, NaN, Infinity])('grading schedule refuses missing or invalid runtime bound %s', maxRuntimeMs => {
+    expect(() => validateRescoreCadence({ ...schedule, action: { ...schedule.action,
+      input: { ...schedule.action.input, maxRuntimeMs } } }, [live])).toThrow('finite nonnegative');
+  });
+
+  it.each([undefined, -1, NaN, Infinity])('grading schedule refuses missing or invalid scheduling delay %s', maxSchedulingDelayMs => {
+    expect(() => validateRescoreCadence({ ...schedule, action: { ...schedule.action,
+      input: { ...schedule.action.input, maxSchedulingDelayMs } } }, [live])).toThrow('finite nonnegative');
+  });
+
+  it('grading schedule proves the recurrence rather than sampling its next starts', () => {
+    expect(maximumStartGapMs({ rrule: 'FREQ=MINUTELY;INTERVAL=17', dtstart: '2026-01-01T00:00:00Z' })).toBe(1_020_000);
+    expect(maximumStartGapMs({ rrule: 'FREQ=MINUTELY;INTERVAL=17' })).toBeNull();
+    expect(maximumStartGapMs({ kind: 'rrule', cron: '* * * * *' })).toBeNull();
+    expect(maximumStartGapMs({ rrule: 'FREQ=DAILY', exdate: ['2027-01-01T00:00:00Z'] })).toBeNull();
+    expect(maximumStartGapMs({ rrule: 'FREQ=MONTHLY;BYMONTHDAY=31' })).toBeNull();
+    expect(maximumStartGapMs({ rrule: 'FREQ=DAILY;COUNT=100' })).toBeNull();
+    expect(maximumStartGapMs({ rrule: 'FREQ=DAILY', tzid: 'America/New_York' })).toBeNull();
+    expect(() => validateRescoreCadence({ ...schedule, rrule: 'FREQ=MONTHLY;BYMONTHDAY=31' }, [live]))
+      .toThrow('maximum UTC start gap is not established');
+  });
+
+  it('grading schedule computes the exact weekly UTC cron wrap gap and refuses calendar filters', () => {
+    const value = new Intl.DateTimeFormat().resolvedOptions();
+    const zone = vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockReturnValue({ ...value, timeZone: 'UTC' });
+    try {
+      expect(maximumStartGapMs({ cron: '*/15 * * * *' })).toBe(900_000);
+      expect(maximumStartGapMs({ cron: '0 9 * * 1,5' })).toBe(345_600_000);
+      expect(maximumStartGapMs({ cron: '0 9 31 * *' })).toBeNull();
+      expect(maximumStartGapMs({ cron: 'invalid' })).toBeNull();
+    } finally { zone.mockRestore(); }
+  });
+
+  it('grading schedule keeps artifact and manual collection distinct from live cadence', () => {
+    const manual: CheckedCriterion = { key: 'manual', check: { kind: 'instrument', instrumentKey: 'none' } };
+    expect(() => validateRescoreCadence({ rrule: 'FREQ=MONTHLY' }, [probeCriterion('artifact'), manual])).not.toThrow();
+  });
+
+  it('grading schedule validates current rubric before authoring without storing an incompatible schedule', async () => {
+    vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [live] } as never);
+    const out = await setSchedTool.handler({ harness: 'papercusp', slug: 'private-policy',
+      schedule: { ...schedule, rrule: 'FREQ=HOURLY' } } as never, {} as never) as Out;
+    expect(body(out).error).toBe('rubric_rescore_schedule_incompatible');
+    expect(setPlanSchedule).not.toHaveBeenCalled();
+  });
+
+  it('grading schedule revalidates a changed rubric at arm and fire before writes or measurement', async () => {
+    const changed = { ...live, check: { ...live.check, maxAgeMs: 60_049 } };
+    vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [changed] } as never);
+    mockResolvedTyped(vi.mocked(getPlanRow), { workspaceId: 'ws-test', harnessSlug: 'papercusp',
+      planSlug: 'private-policy', schedule, scheduledAt: null, content: '' } as PlanRow);
+    const armed = body(await armSchedTool.handler({ harness: 'papercusp', slug: 'private-policy' } as never, {} as never) as Out);
+    expect(armed.results[0].ok).toBe(false);
+    expect(fakeSql).not.toHaveBeenCalled();
+    expect(upsertRoutine).not.toHaveBeenCalled();
+    const { deps, readLatest, record } = depsFor([changed as CheckedCriterion], [], []);
+    await expect(runRubricRescoreAction({ workspaceId: 'ws-test', installSlug: 'papercusp',
+      triggerConfig: { kind: 'rrule', rrule: schedule.rrule },
+      payloadTemplate: { input: schedule.action.input } }, deps)).rejects.toThrow('exceeds maxAgeMs');
+    expect(readLatest).not.toHaveBeenCalled();
+    expect(deps.runInstruments).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+});
 
 describe('rubric re-score: driven by an armed plan schedule (R-8 falsifier 3)', () => {
   const action = { system: RUBRIC_RESCORE_ACTION, input: { rubricRef: RUBRIC } };

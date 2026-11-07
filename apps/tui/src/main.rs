@@ -111,6 +111,7 @@ Subcommands:
   native-read                Read a native desktop model (JSON request on stdin)
   native-account             Apply a scoped native account control (JSON on stdin)
   native-goal                Apply a confirmed native goal control (JSON on stdin)
+  native-inbox               Control a canonical Inbox run or selected item (JSON on stdin)
   native-agent-focus         Focus a freshly validated exact local session (JSON on stdin)
   native-chat                Send/recover/cancel a canonical native conversation (JSON on stdin)
   native-cards               Subscribe/respond to scoped canonical cards (JSON on stdin)
@@ -474,6 +475,7 @@ async fn main() -> Result<()> {
         Some("native-read") => return native_panel::run().await,
         Some("native-account") => return native_panel::run_account().await,
         Some("native-goal") => return native_panel::run_goal().await,
+        Some("native-inbox") => return native_panel::run_inbox().await,
         Some("native-agent-focus") => return native_panel::run_agent_focus().await,
         Some("native-chat") => return native_panel::run_chat().await,
         Some("native-cards") => return native_panel::run_cards().await,

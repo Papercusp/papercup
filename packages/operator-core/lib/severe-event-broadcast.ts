@@ -230,11 +230,22 @@ export function isRepeatOfOpenOneShotAlarm(
   return isRepeatOfOpenConditionAlarm(latest, conditionKey, summary);
 }
 
+let conditionStateModule: Promise<typeof import('./agent-tools/coordination/condition-state')> | undefined;
+
+function loadConditionState() {
+  // Share acquisition across concurrent broadcasts, while every invocation
+  // still reads the current episode through the returned module.
+  return conditionStateModule ??= import('./agent-tools/coordination/condition-state').catch(error => {
+    conditionStateModule = undefined;
+    throw error;
+  });
+}
+
 /** Fail-OPEN: a read failure broadcasts, because a lost alarm costs more than a duplicate. */
 async function readOpenConditionRepeat(ev: SevereEventBroadcast): Promise<boolean> {
   if (!ev.conditionKey) return false;
   try {
-    const { readLatestConditionEnvelope } = await import('./agent-tools/coordination/condition-state');
+    const { readLatestConditionEnvelope } = await loadConditionState();
     return isRepeatOfOpenConditionAlarm(
       await readLatestConditionEnvelope(ev.conditionKey),
       ev.conditionKey,
@@ -376,17 +387,42 @@ export interface SevereEventResolutionMany {
 export async function broadcastSevereEventResolvedMany(res: SevereEventResolutionMany): Promise<boolean> {
   if (res.conditionKeys.length === 0) return true;
   try {
+    const { readLatestConditionEnvelope } = await loadConditionState();
+    const episodes = await Promise.all([...new Set(res.conditionKeys)].map(async key => {
+      try {
+        const latest = await readLatestConditionEnvelope(key);
+        if (latest && (latest.resolves_condition === key
+          || (Array.isArray(latest.resolves_conditions) && latest.resolves_conditions.includes(key)))) return null;
+        return { key, alarmId: typeof latest?.msg_id === 'string' ? latest.msg_id : null };
+      } catch (error) {
+        // An unavailable episode read cannot suppress a real recovery notice.
+        console.warn(`[severe-event-broadcast] recovery episode read failed, broadcasting (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
+        return { key, alarmId: null };
+      }
+    }));
+    const pending = episodes.filter(episode => episode !== null);
+    if (!pending.length) return true;
+    // Concurrent reconcilers can read the same open episode. Reuse the message
+    // store's atomic identity, as the singular recovery path already does.
+    const identities = pending.map(episode => [episode.key, episode.alarmId] as const)
+      .sort(([a], [b]) => a.localeCompare(b));
+    const msgId = pending.every(episode => episode.alarmId)
+      ? `condition-resolution-${createHash('sha256').update(JSON.stringify(
+        identities.length === 1 ? identities[0] : identities,
+      )).digest('hex')}` : undefined;
+    const conditionKeys = pending.map(episode => episode.key);
     await sendMessage(SEVERE_EVENT_IDENTITY, {
+      ...(msgId ? { msgId } : {}),
       to: ['@topic:severe-events'],
       summary: res.summary,
       body: res.body,
       category: 'severe-event-resolved',
       extra: {
-        resolves_conditions: res.conditionKeys,
+        resolves_conditions: conditionKeys,
         // Stamp the singular fields too (first key) so a reader that only knows the
         // singular shape still supersedes at least the primary condition.
-        resolves_condition: res.conditionKeys[0],
-        condition_key: res.conditionKeys[0],
+        resolves_condition: conditionKeys[0],
+        condition_key: conditionKeys[0],
       },
     });
     return true;

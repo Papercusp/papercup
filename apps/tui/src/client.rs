@@ -2627,6 +2627,98 @@ impl OperatorClient {
         Ok(serde_json::json!({"rows":[{"focused":true,"advSessionId":request.adv_session_id}],"environment":current}))
     }
 
+    pub async fn native_inbox_action(&self, request: &crate::native_panel::InboxRequest) -> Result<serde_json::Value> {
+        use crate::native_panel::{InboxOperation, InboxRequest, ReadModel, ReadRequest};
+        use serde_json::{json, Value};
+        request.validate()?;
+        let current = self.backend_identity().await?;
+        anyhow::ensure!(request.environment.same_rendezvous(&current), "selected environment changed; refresh Inbox");
+        let read = |name, args| ReadRequest { name, args, environment: Some(current.clone()) };
+        let mut result;
+        if request.operation == InboxOperation::Start {
+            let list = self.native_panel_read(&read(ReadModel::Attention, Default::default())).await?;
+            anyhow::ensure!(list["partial"] != true, "Inbox batch is unavailable or incomplete");
+            let groups = list["rows"].as_array().context("Inbox list is unavailable")?;
+            let mut rows = Vec::new();
+            for group in groups {
+                anyhow::ensure!(group["_meta"]["hasMore"] != true, "Inbox list is incomplete; refresh before Start");
+                rows.extend(group["items"].as_array().context("Inbox group is unavailable")?);
+            }
+            for seed in request.items.as_ref().unwrap() {
+                let matches: Vec<_> = rows.iter().filter(|row| row["id"] == seed["itemId"]).collect();
+                anyhow::ensure!(!matches.is_empty() && matches.iter().all(|row| row["kind"] == seed["kind"]
+                    && row["ref"] == seed["ref"] && row["ownerAgentId"] == seed["ownerAgentId"]),
+                    "visible Inbox item changed; refresh before Start");
+            }
+            let config = self.get_json("/api/agent-config").await?;
+            anyhow::ensure!(config["ok"] != false && config.get("error").is_none_or(Value::is_null), "resolver settings unavailable");
+            anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?), "environment changed before Start");
+            result = self.post_json("/api/admin/attention-bulk-resolve", json!({"items":request.items,
+                "filter":request.filter,"launch":config["config"]["resolverProfiles"]["inbox-resolve"]})).await?;
+        } else {
+            let saved = if let Some(run_id) = &request.run_id {
+                let payload = self.native_panel_read(&read(ReadModel::AttentionBulkRun,
+                    serde_json::from_value(json!({"runId":run_id}))?)).await?;
+                let rows = payload["rows"].as_array().context("saved run unavailable")?;
+                anyhow::ensure!(payload["partial"] != true && rows.len() == 1 && rows[0]["run"]["runId"] == *run_id
+                    && rows[0]["items"].is_array(), "saved run unavailable or changed");
+                Some(rows[0].clone())
+            } else { None };
+            match request.operation {
+                InboxOperation::Stop | InboxOperation::Resume => {
+                    let saved = saved.as_ref().unwrap();
+                    if request.operation == InboxOperation::Resume {
+                        anyhow::ensure!(matches!(saved["run"]["phase"].as_str(), Some("review" | "failed" | "complete")),
+                            "stop the active run before continuing retryable items");
+                        for id in request.item_ids.as_ref().unwrap() {
+                            let rows: Vec<_> = saved["items"].as_array().unwrap().iter().filter(|row| row["itemId"] == *id).collect();
+                            anyhow::ensure!(rows.len() == 1 && InboxRequest::retryable(rows[0]), "selected item is no longer retryable");
+                        }
+                    }
+                    anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?), "environment changed before run control");
+                    result = self.post_json("/api/admin/attention-bulk-resolve", if request.operation == InboxOperation::Stop {
+                        json!({"op":"stop","runId":request.run_id})
+                    } else { json!({"op":"resume","runId":request.run_id,"itemIds":request.item_ids}) }).await?;
+                }
+                InboxOperation::Apply | InboxOperation::Resolve => {
+                    let expected = request.expected.as_ref().unwrap();
+                    if let Some(saved) = &saved {
+                        anyhow::ensure!(saved["run"]["phase"] == "review", "the run is not ready for selected review");
+                        let rows: Vec<_> = saved["items"].as_array().unwrap().iter().filter(|row| row["itemId"] == expected["id"]).collect();
+                        anyhow::ensure!(rows.len() == 1 && InboxRequest::reviewable(rows[0]) && rows[0]["ref"] == expected["ref"],
+                            "recommendation changed or requires manual owner handling");
+                    }
+                    let payload = self.native_panel_read(&read(ReadModel::AttentionItem,
+                        serde_json::from_value(json!({"id":expected["id"]}))?)).await?;
+                    let rows = payload["rows"].as_array().context("selected question unavailable")?;
+                    anyhow::ensure!(payload["partial"] != true && rows.len() == 1 && rows[0]["id"] == expected["id"]
+                        && rows[0]["kind"] == expected["kind"] && rows[0]["ref"] == expected["ref"], "selected question changed");
+                    let item: AttentionItem = serde_json::from_value(rows[0].clone())?;
+                    let target = InboxActionTarget::from(&item);
+                    anyhow::ensure!(current.same_rendezvous(&self.backend_identity().await?), "environment changed before question action");
+                    // The existing PUI router checks the LIVE offered action and
+                    // performs canonical reply/resolve effects before bookkeeping.
+                    self.run_inbox_action(&target, request.action_id.as_deref().unwrap(), request.answer.as_deref()).await?;
+                    result = json!({"ok":true,"resolved":true,"itemId":item.id});
+                    if let Some(run_id) = &request.run_id {
+                        match self.post_json("/api/admin/attention-bulk-resolve", json!({"op":"accept","runId":run_id,
+                            "itemId":item.id,"actionId":request.action_id})).await {
+                            Ok(recorded) if recorded["ok"] == true => { result["recorded"] = json!(true); }
+                            _ => {
+                                result["recorded"] = json!(false);
+                                result["warning"] = json!("Action succeeded; run bookkeeping is unconfirmed. Refresh and reconcile the run; do not repeat the action.");
+                            }
+                        }
+                    }
+                }
+                InboxOperation::Start => unreachable!(),
+            }
+        }
+        anyhow::ensure!(result["ok"] == true && result.get("error").is_none_or(Value::is_null),
+            "Inbox action was refused; refresh to verify server state: {result}");
+        Ok(json!({"rows":[result],"environment":current}))
+    }
+
     pub async fn native_account_action(&self, request: &crate::native_panel::AccountRequest) -> Result<serde_json::Value> {
         use crate::native_panel::{ReadModel, ReadRequest};
         let current = self.backend_identity().await?;

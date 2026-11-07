@@ -6,6 +6,7 @@ import { productionOpportunityReaders } from '../../agent-opportunities/source-r
 import { resolveStoredSourceOperation } from '../../recipe-source-operation';
 import { getRecipe } from '../../code-recipes-store';
 import { recipeCandidates } from '../../code-recipes-candidates';
+import { recipeSourceOperationSchema } from '../../recipe-contract';
 import recipeGet from './get';
 import recipeSearch from './search';
 import recipeList from './list';
@@ -17,7 +18,7 @@ let fixture: Awaited<ReturnType<typeof sqlMiningFixture>>;
 let permitted = true;
 const workspaceId = 'sql-mining-test', harnessSlug = 'mining-test';
 const originalScope = { workspaceId, sourceBoundary: 'authorized-tool-ledger',
-  epoch: 'discovery-test', key: new Uint8Array(32).fill(83) };
+  epoch: new Date().toISOString().slice(0, 7), key: new Uint8Array(32).fill(83) };
 let scope = originalScope;
 vi.mock('@papercusp/db-org', async original => ({
   ...await original<Record<string, unknown>>(), getOrgPg: () => ({ sql: fixture.db.adminSql }),
@@ -70,6 +71,7 @@ for (const family of ['sql', 'shell'] as const) {
     });
     expect(captured).not.toBeNull();
     const saved = (await getRecipe(fixture.db.adminSql, captured!.row.id))!;
+    expect(recipeSourceOperationSchema.safeParse(saved.capabilityManifest!.sourceOperation).success).toBe(true);
     expect(JSON.stringify(saved)).not.toContain('PRIVATE_');
     const visible = async (ctx = context()) => {
       const searched = data(await recipeSearch.handler({ query: saved.title, semantic: false, limit: 50 } as never, ctx));
@@ -96,7 +98,7 @@ for (const family of ['sql', 'shell'] as const) {
     expect(await visible(context({ harnessSlug: 'foreign-harness' }))).toEqual(denied);
     scope = { ...originalScope, key: new Uint8Array(32).fill(84) };
     expect(await visible()).toEqual(denied);
-    scope = { ...originalScope, epoch: 'rotated' };
+    scope = { ...originalScope, epoch: originalScope.epoch === '2000-01' ? '2000-02' : '2000-01' };
     expect(await visible()).toEqual(denied);
     scope = originalScope;
     expect(await visible()).toEqual(allowed);

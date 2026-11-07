@@ -42,8 +42,46 @@ import { evaluateCriterionProbeChecks, type CheckedCriterion } from '../../rubri
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { dispatchPaletteTarget } from '../../capabilities/invoke';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
+import { maximumStartGapMs, type ScheduleTrigger } from './schedule-next';
 
 export const RUBRIC_RESCORE_ACTION = 'rubric-rescore';
+
+type RescoreSchedule = ScheduleTrigger & { action?: { system: string; input?: Record<string, unknown> } };
+
+/** Existing action input owns the bounds; no separate policy store or timer. */
+export function validateRescoreCadence(schedule: RescoreSchedule, criteria: ReadonlyArray<CheckedCriterion>): void {
+  const live = criteria.filter(c => c.check && 'maxAgeMs' in c.check && c.check.maxAgeMs !== undefined);
+  if (live.length === 0) return; // Artifact/manual checks have no live freshness promise.
+  const bounds = schedule.action?.input;
+  const w = bounds?.maxRuntimeMs;
+  const j = bounds?.maxSchedulingDelayMs;
+  if (typeof w !== 'number' || !Number.isFinite(w) || w < 0 ||
+      typeof j !== 'number' || !Number.isFinite(j) || j < 0) {
+    throw new Error('rubric_rescore_cadence_incompatible: finite nonnegative maxRuntimeMs and maxSchedulingDelayMs required');
+  }
+  const gap = maximumStartGapMs(schedule);
+  if (gap === null) throw new Error('rubric_rescore_cadence_incompatible: maximum UTC start gap is not established');
+  for (const c of live) {
+    const age = (c.check as { maxAgeMs?: number }).maxAgeMs;
+    if (typeof age !== 'number' || !Number.isFinite(age) || age <= 0 || gap + w + j > age) {
+      throw new Error(`rubric_rescore_cadence_incompatible: ${c.key}: G=${gap} + W=${w} + J=${j} exceeds maxAgeMs=${age}`);
+    }
+  }
+}
+
+/** Re-read current rubric/acceptance requirements at every admission boundary. */
+export async function validateRubricRescoreSchedule(
+  schedule: RescoreSchedule | null | undefined,
+  scope: { workspaceId: string; harnessSlug?: string | null },
+  deps: RubricRescoreDeps = {},
+): Promise<void> {
+  if (schedule?.action?.system !== RUBRIC_RESCORE_ACTION) return;
+  const ref = schedule.action.input?.rubricRef;
+  if (typeof ref !== 'string' || !ref.trim()) throw new Error('rubric_rescore_rubric_ref_required');
+  const rubric = await readRescoreRubric({ rubricRef: ref.trim(), workspaceId: scope.workspaceId,
+    harnessSlug: scope.harnessSlug ?? null }, deps);
+  validateRescoreCadence(schedule, rubric.criteria);
+}
 
 /** The awaitable key a crossing fires; the watch subscribes to exactly this. */
 export function rubricCriterionRegressedKey(rubricRef: string): string {
@@ -136,10 +174,10 @@ export function rescoreProbeDispatcher(
 }
 
 /** Re-run a rubric's executable checks and emit one event per pass → fail crossing. */
-export async function rescoreRubric(
+async function readRescoreRubric(
   input: { rubricRef: string; workspaceId: string; harnessSlug: string | null },
   deps: RubricRescoreDeps = {},
-): Promise<RubricRescoreOutcome> {
+) {
   const stored = await (deps.getRubric ?? (getRubric as NonNullable<RubricRescoreDeps['getRubric']>))(input.rubricRef);
   if (!stored) throw new Error(`rubric_rescore_rubric_not_found: ${input.rubricRef}`);
   const workspaceId = stored.workspaceId ?? input.workspaceId;
@@ -161,7 +199,16 @@ export async function rescoreRubric(
   if (live.status.source === 'stored-rubric' && live.status.reason !== 'not-a-plan-acceptance-rubric') {
     throw new Error(`rubric_rescore_live_requirements_unavailable: ${stored.rubricId}: ${live.status.reason}`);
   }
-  const rubric = { ...stored, criteria: live.criteria };
+  return { ...stored, workspaceId, criteria: live.criteria };
+}
+
+export async function rescoreRubric(
+  input: { rubricRef: string; workspaceId: string; harnessSlug: string | null; schedule?: RescoreSchedule },
+  deps: RubricRescoreDeps = {},
+): Promise<RubricRescoreOutcome> {
+  const rubric = await readRescoreRubric(input, deps);
+  if (input.schedule) validateRescoreCadence(input.schedule, rubric.criteria);
+  const workspaceId = rubric.workspaceId;
   const rubricRef = rubric.rubricId;
   const harnessSlug = rubric.subjectHarnessSlug ?? input.harnessSlug;
   const readLatest = deps.readLatest ?? readLatestRubricCheckResults;
@@ -245,11 +292,12 @@ export async function rescoreRubric(
 
 /** The routine handler: payload `{ templateSlug, harnessSlug, input: { rubricRef } }`. */
 export async function runRubricRescoreAction(ctx: SystemActionCtx, deps: RubricRescoreDeps = {}): Promise<SystemActionResult> {
-  const payload = (ctx.payloadTemplate ?? {}) as { harnessSlug?: unknown; input?: { rubricRef?: unknown } };
+  const payload = (ctx.payloadTemplate ?? {}) as { harnessSlug?: unknown; input?: Record<string, unknown> };
   const rubricRef = typeof payload.input?.rubricRef === 'string' ? payload.input.rubricRef.trim() : '';
   if (!rubricRef) throw new Error('rubric_rescore_rubric_ref_required');
   const harnessSlug = typeof payload.harnessSlug === 'string' ? payload.harnessSlug : ctx.installSlug;
-  const outcome = await rescoreRubric({ rubricRef, workspaceId: ctx.workspaceId, harnessSlug }, deps);
+  const outcome = await rescoreRubric({ rubricRef, workspaceId: ctx.workspaceId, harnessSlug,
+    schedule: { ...ctx.triggerConfig, action: { system: RUBRIC_RESCORE_ACTION, input: payload.input } } }, deps);
   return {
     diagnostics: { rubricRescore: outcome },
     ...(outcome.probeError ? { softError: `rubric-rescore probe batch: ${outcome.probeError}`.slice(0, 600) } : {}),

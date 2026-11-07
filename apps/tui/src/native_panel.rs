@@ -255,6 +255,78 @@ pub struct AccountRequest {
     pub account_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxOperation { Start, Stop, Resume, Apply, Resolve }
+
+/// Extend the existing native/PUI boundary; the operator remains the sole run
+/// store and resolver. The seed is the concrete list the owner saw at click time.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InboxRequest {
+    pub environment: crate::client::BackendIdentity,
+    pub operation: InboxOperation,
+    pub confirmed: bool,
+    pub items: Option<Vec<Value>>,
+    pub filter: Option<Value>,
+    pub run_id: Option<String>,
+    pub item_ids: Option<Vec<String>>,
+    pub expected: Option<Value>,
+    pub action_id: Option<String>,
+    pub answer: Option<String>,
+}
+
+impl InboxRequest {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(self.confirmed, "confirm the Inbox action first");
+        let run = self.run_id.as_deref().is_some_and(|s| !s.is_empty() && s.len() <= 512);
+        match self.operation {
+            InboxOperation::Start => {
+                let items = self.items.as_ref().context("select an exact visible batch")?;
+                let mut seen = std::collections::HashSet::new();
+                anyhow::ensure!(!items.is_empty() && items.len() <= 2000 && self.filter.as_ref().is_some_and(Value::is_object),
+                    "select a nonempty visible batch and filter");
+                for row in items {
+                    let id = row["itemId"].as_str().filter(|s| !s.is_empty()).context("batch item identity missing")?;
+                    anyhow::ensure!(seen.insert(id) && row["kind"].as_str().is_some_and(|s| !s.is_empty())
+                        && row["ref"].is_object(), "batch contains duplicate or incomplete identities");
+                }
+                anyhow::ensure!(self.run_id.is_none() && self.item_ids.is_none() && self.expected.is_none()
+                    && self.action_id.is_none() && self.answer.is_none(), "invalid start fields");
+            }
+            InboxOperation::Stop | InboxOperation::Resume => {
+                anyhow::ensure!(run && self.items.is_none() && self.filter.is_none() && self.expected.is_none()
+                    && self.action_id.is_none() && self.answer.is_none(), "select an exact saved run");
+                if self.operation == InboxOperation::Resume {
+                    let ids = self.item_ids.as_ref().context("select retryable items")?;
+                    let unique: std::collections::HashSet<_> = ids.iter().collect();
+                    anyhow::ensure!(!ids.is_empty() && ids.len() <= 2000 && unique.len() == ids.len()
+                        && ids.iter().all(|s| !s.is_empty()), "select distinct retryable items");
+                } else { anyhow::ensure!(self.item_ids.is_none(), "Stop does not accept item ids"); }
+            }
+            InboxOperation::Apply | InboxOperation::Resolve => {
+                let item = self.expected.as_ref().context("select a current question")?;
+                anyhow::ensure!(item["id"].as_str().is_some_and(|s| !s.is_empty())
+                    && item["kind"].as_str().is_some_and(|s| !s.is_empty()) && item["ref"].is_object()
+                    && self.action_id.as_deref().is_some_and(|s| !s.is_empty())
+                    && self.items.is_none() && self.filter.is_none() && self.item_ids.is_none(), "invalid question action");
+                anyhow::ensure!((self.operation == InboxOperation::Apply && run)
+                    || (self.operation == InboxOperation::Resolve && self.run_id.is_none()), "invalid recommendation run");
+                anyhow::ensure!(self.answer.as_ref().is_none_or(|s| s.len() <= 32 * 1024), "reply is too large");
+            }
+        }
+        Ok(())
+    }
+    pub fn retryable(row: &Value) -> bool {
+        matches!(row["outcome"].as_str(), Some("pending" | "failed")) ||
+            (row["outcome"] == "skipped" && (row.get("disposition").is_none()
+                || row["disposition"] == "retry_needed"))
+    }
+    pub fn reviewable(row: &Value) -> bool {
+        row["outcome"] == "recommended" && matches!(row["disposition"].as_str(), None | Some("recommended"))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GoalAction { Pause, Resume, Start, Reopen, Achieve, Kill }
@@ -433,6 +505,19 @@ pub async fn run_goal() -> Result<()> {
     }
 }
 
+pub async fn run_inbox() -> Result<()> {
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let request: InboxRequest = bounded_request(std::io::stdin().lock())?;
+        request.validate()?;
+        let client = crate::client::OperatorClient::from_discovery().await?;
+        client.native_inbox_action(&request).await
+    }).await.context("Inbox action timed out; refresh to verify server state before retrying")?;
+    match result {
+        Ok(payload) => { println!("{}", payload); Ok(()) }
+        Err(error) => { println!("{}", json!({"ok":false,"error":format!("{error:#}")})); Err(error) }
+    }
+}
+
 pub async fn run_agent_focus() -> Result<()> {
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         let request: AgentFocusRequest = bounded_request(std::io::stdin().lock())?;
@@ -513,6 +598,49 @@ mod tests {
             assert_eq!(Value::Object(request.args), args);
         }
         assert!(read_request(br#"{"name":"plans.attentionBulkRun.write"}"#.as_slice()).is_err());
+    }
+
+    #[test]
+    fn native_inbox_start_preserves_literal_snapshot_and_rejects_ambiguous_batches() {
+        let base = json!({"environment":{"schemaVersion":1,"endpoint":"http://selected","selectionSource":"test",
+            "transport":"http","workspaceId":"w","store":{"id":"s","target":"test","source":"test"},
+            "build":{"version":"test","sha":null},"agentChat":{"scope":"workspace:w","route":"test"},"capabilities":{}},
+            "operation":"start","confirmed":true,"items":[{"itemId":"literal +/=& λ","kind":"coord-message",
+                "title":"Question","ref":{"kind":"coord-message","msgId":"exact +/=& λ"},"ownerAgentId":"asker"}],
+            "filter":{"query":"λ","shownCount":1}});
+        let parse = |value: Value| serde_json::from_value::<InboxRequest>(value);
+        let request = parse(base.clone()).unwrap(); request.validate().unwrap();
+        assert_eq!(request.items.unwrap()[0]["ref"]["msgId"], "exact +/=& λ");
+        for field in ["duplicate", "empty", "missing-ref", "unconfirmed", "mixed-op"] {
+            let mut bad = base.clone();
+            match field {
+                "duplicate" => bad["items"].as_array_mut().unwrap().push(base["items"][0].clone()),
+                "empty" => bad["items"] = json!([]),
+                "missing-ref" => bad["items"][0]["ref"] = Value::Null,
+                "unconfirmed" => bad["confirmed"] = json!(false),
+                _ => bad["runId"] = json!("different run"),
+            }
+            assert!(parse(bad).unwrap().validate().is_err(), "accepted {field}");
+        }
+        let mut unknown = base; unknown["command"] = json!("arbitrary");
+        assert!(parse(unknown).is_err());
+    }
+
+    #[test]
+    fn native_inbox_continuation_and_review_keep_owner_decisions_out_of_automation() {
+        for outcome in ["pending", "failed"] {
+            assert!(InboxRequest::retryable(&json!({"outcome":outcome})));
+        }
+        assert!(InboxRequest::retryable(&json!({"outcome":"skipped"})));
+        assert!(InboxRequest::retryable(&json!({"outcome":"skipped","disposition":"retry_needed"})));
+        for disposition in ["owner_action", "cleanup_candidate", "routed", "investigate", "legacy_skipped"] {
+            assert!(!InboxRequest::retryable(&json!({"outcome":"skipped","disposition":disposition})));
+            assert!(!InboxRequest::reviewable(&json!({"outcome":"recommended","disposition":disposition})));
+        }
+        for outcome in ["auto_resolved", "dismissed", "recommended"] {
+            assert!(!InboxRequest::retryable(&json!({"outcome":outcome})));
+        }
+        assert!(InboxRequest::reviewable(&json!({"outcome":"recommended","disposition":"recommended"})));
     }
     #[test]
     fn native_voice_validates_audio_identity_and_operation_before_transport() {

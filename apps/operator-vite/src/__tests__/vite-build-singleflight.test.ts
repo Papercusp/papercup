@@ -57,6 +57,9 @@ function launch(env: Record<string, string>): ChildProcess {
       // Pin the measured production default so the suite is independent of an
       // operator's ambient override. Heap-contract cases override this value.
       PAPERCUSP_VITE_BUILD_HEAP_MB: '8192',
+      // Ordinary cases exercise output serialization inside an admitted job.
+      // Admission cases below explicitly enter their own private slot pool.
+      PC_HEAVY_BYPASS: '1',
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -132,6 +135,70 @@ afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
     tmp = '';
   }
+});
+
+describe('vite-build-singleflight — heavy admission (EI-28111479965176820)', () => {
+  it('queues independent outputs before source reads and preserves the admitted command verdict', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-admission-'));
+    const started = join(tmp, 'first-started');
+    const release = join(tmp, 'first-release');
+    const secondStarted = join(tmp, 'second-started');
+    const secondOutput = join(tmp, 'second-output');
+    const admission = {
+      PC_HEAVY_BYPASS: '',
+      PC_HEAVY_RELEASE_GATE: '',
+      PC_HEAVY_DIR: join(tmp, 'heavy-slots'),
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_TIMEOUT_SEC: '90',
+      PC_HEAVY_COALESCE: '1',
+      PC_HEAVY_MEM_CLAMP: '0',
+      PC_HEAVY_PSI_ADMISSION: '0',
+      PC_HEAVY_PREEMPTIBLE: '0',
+      PC_HEAVY_PEAK_LEDGER: 'off',
+      PC_HEAVY_GATE_RESERVE: '0',
+      PC_HEAVY_ALLOW_DURING_GATE: '1',
+      VITE_BUILD_LOCK: '',
+      TMPDIR: tmp,
+    };
+    const first = collect(launch({
+      ...admission,
+      VITE_BUILD_OUT_ROOT: join(tmp, 'first-output'),
+      TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild,
+    }));
+    let second: ReturnType<typeof collect> | undefined;
+    try {
+      await waitForFile(started);
+      second = collect(launch({
+        ...admission,
+        VITE_BUILD_OUT_ROOT: secondOutput,
+        TEST_STARTED: secondStarted,
+        VITE_BUILD_CMD: 'touch "$TEST_STARTED"; exit 7',
+      }));
+      const deadline = Date.now() + START_DEADLINE_MS;
+      while (!second.stderr().includes('[pc-heavy] queued') && !existsSync(secondStarted) && Date.now() < deadline) {
+        await sleep(50);
+      }
+      expect(second.stderr()).toContain('[pc-heavy] queued');
+      expect(existsSync(secondStarted)).toBe(false);
+      expect(existsSync(secondOutput)).toBe(false);
+    } finally {
+      writeFileSync(release, 'release');
+      expect(await first.exited).toBe(0);
+    }
+    expect(second).toBeDefined();
+    expect(await second!.exited).toBe(7);
+    expect(existsSync(secondStarted)).toBe(true);
+    // Even with ambient result coalescing enabled, artifact work must execute
+    // again at the same source revision rather than replay its prior exit 0.
+    rmSync(started);
+    const repeated = collect(launch({
+      ...admission,
+      VITE_BUILD_OUT_ROOT: join(tmp, 'first-output'),
+      TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild,
+    }));
+    expect(await repeated.exited).toBe(0);
+    expect(existsSync(started)).toBe(true);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 });
 
 describe('vite-build-singleflight — build serialization (EI-9836)', () => {

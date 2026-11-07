@@ -270,6 +270,20 @@ describe('describeUnreadRun', () => {
     expect(naiveUnreadRun(body, 0)).not.toBeNull();
   });
 
+  it('does not infer a run from the P026 negated launch and already-read CLI captures (EI-27696059008558682)', () => {
+    const body = [
+      'The authored checkpoint explicitly says no audit/test/admission launched before nested dispatch.',
+      'It also says no amendment preview/review request occurred.',
+      'Native tool calls parsed the complete rubric/runtime captures at /tmp/p026-native-rubric21-20261102.json',
+      'and /tmp/p026-packer-current-20261102.json, and read the refusal trace',
+      '/tmp/p026-retirement-preview-20261102.trace before checkpointing.',
+      'No product run was launched.',
+    ].join(' ');
+
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
   it('does not infer a launched run from a conditional future step', () => {
     const body = '## Next\nLaunch a test run; if the suite is still running, read /tmp/future.log.';
     expect(describeUnreadRun(body, 0)).toBeNull();

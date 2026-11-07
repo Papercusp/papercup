@@ -13,6 +13,7 @@
  */
 import { createRequire } from 'node:module';
 import { computeNextFireAt } from './cron';
+import cronParser from 'cron-parser';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
 
 // `rrule` is a CommonJS package: under the ESM/tsx host its classes are exposed on the
@@ -100,6 +101,48 @@ export interface ScheduleTrigger {
   cron?: string;
   /** Carried with the authored schedule; recurrence math deliberately ignores it. */
   execution?: AgenticPlanExecutionTarget;
+}
+
+/** A proof over a periodic UTC recurrence, never an estimate from its next few fires.
+ * Calendar filters, finite rules and exceptions need a different proof; fail closed
+ * until one exists. This deliberately leaves ordinary scheduling fully expressive.
+ */
+export function maximumStartGapMs(cfg: ScheduleTrigger): number | null {
+  if ((cfg.tzid && !['UTC', 'Etc/UTC'].includes(cfg.tzid)) || cfg.rdate?.length || cfg.exdate?.length) return null;
+  if (cfg.kind === 'rrule' && !cfg.rrule) return null;
+  if (cfg.rrule) {
+    const parts = cfg.rrule.toUpperCase().split(';');
+    if (parts.some(p => !/^(FREQ=(SECONDLY|MINUTELY|HOURLY|DAILY|WEEKLY)|INTERVAL=[1-9]\d*)$/.test(p))) return null;
+    const entries = parts.map(p => p.split('='));
+    if (new Set(entries.map(([key]) => key)).size !== entries.length) return null;
+    const rule = Object.fromEntries(entries);
+    if (Number(rule.INTERVAL ?? 1) > 1 && !cfg.dtstart) return null;
+    const units: Record<string, number> = { SECONDLY: 1000, MINUTELY: 60_000, HOURLY: 3_600_000, DAILY: 86_400_000, WEEKLY: 604_800_000 };
+    const gap = units[rule.FREQ] * Number(rule.INTERVAL ?? 1);
+    if (cfg.dtstart && !Number.isFinite(Date.parse(cfg.dtstart))) return null;
+    return Number.isSafeInteger(gap) && gap > 0 ? gap : null;
+  }
+  // The cron engine uses the process zone. Only a UTC process has the periodic
+  // UTC week proved below; a calendar/DST recurrence must not borrow this proof.
+  if (!cfg.cron || !['UTC', 'Etc/UTC'].includes(Intl.DateTimeFormat().resolvedOptions().timeZone)) return null;
+  try {
+    const f = cronParser.parseExpression(cfg.cron).fields;
+    if (f.month.length !== 12 || f.dayOfMonth.length !== 31) return null;
+    const days = [...new Set(f.dayOfWeek.map(Number).map(n => n % 7))].sort((a, b) => a - b);
+    if (days.some(n => !Number.isInteger(n) || n < 0 || n > 6)) return null;
+    let first: number | undefined;
+    let previous = 0;
+    let maximum = 0;
+    for (const day of days) for (const hour of f.hour) for (const minute of f.minute) for (const second of f.second) {
+      const at = ((day * 24 + Number(hour)) * 60 + Number(minute)) * 60_000 + Number(second) * 1000;
+      if (first === undefined) first = at;
+      else maximum = Math.max(maximum, at - previous);
+      previous = at;
+    }
+    return first === undefined ? null : Math.max(maximum, 604_800_000 + first - previous);
+  } catch {
+    return null;
+  }
 }
 
 /**

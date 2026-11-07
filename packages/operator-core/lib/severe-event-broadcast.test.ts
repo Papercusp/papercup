@@ -330,6 +330,44 @@ describe('broadcastSevereEventResolved (WI-1444)', () => {
 });
 
 describe('broadcastSevereEventResolvedMany (EI-9030b — one coalesced all-clear)', () => {
+  it('uses one atomic identity for concurrent recovery of the same episodes, including reordered keys', async () => {
+    M.readLatestConditionEnvelope.mockImplementation(async key => ({ condition_key: key, msg_id: `original-${key}` }));
+    await Promise.all([['a', 'b'], ['b', 'a'], ['a', 'b']].map(conditionKeys =>
+      broadcastSevereEventResolvedMany({ conditionKeys, summary: 'recovered' })));
+    const ids = M.sendMessage.mock.calls.map(([, options]) => (options as Record<string, unknown>).msgId);
+    expect(M.readLatestConditionEnvelope.mock.calls, JSON.stringify(M.sendMessage.mock.calls))
+      .toEqual([['a'], ['b'], ['b'], ['a'], ['a'], ['b']]);
+    expect(ids, JSON.stringify(M.sendMessage.mock.calls)).toEqual([ids[0], ids[0], ids[0]]);
+    expect(ids[0]).toMatch(/^condition-resolution-[a-f0-9]{64}$/);
+    M.readLatestConditionEnvelope.mockImplementation(async key => ({ condition_key: key, msg_id: `reopened-${key}` }));
+    await broadcastSevereEventResolvedMany({ conditionKeys: ['a', 'b'], summary: 'recovered' });
+    expect((M.sendMessage.mock.calls[3]![1] as Record<string, unknown>).msgId).not.toBe(ids[0]);
+  });
+
+  it('omits settled episodes while preserving the unresolved key in a recovery batch', async () => {
+    M.readLatestConditionEnvelope.mockImplementation(async key => key === 'a'
+      ? { resolves_conditions: ['a'], msg_id: 'resolved-a' }
+      : { condition_key: key, msg_id: 'original-b' });
+    await broadcastSevereEventResolvedMany({ conditionKeys: ['a', 'a'], summary: 'recovered' });
+    expect(M.sendMessage).not.toHaveBeenCalled();
+    await broadcastSevereEventResolvedMany({ conditionKeys: ['a', 'b', 'b'], summary: 'recovered' });
+    expect(M.sendMessage).toHaveBeenCalledOnce();
+    expect(M.sendMessage.mock.calls[0]![1]).toMatchObject({
+      extra: { resolves_conditions: ['b'], resolves_condition: 'b', condition_key: 'b' },
+    });
+  });
+
+  it('delivers recovery without an invented episode identity when its read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      M.readLatestConditionEnvelope.mockRejectedValueOnce(new Error('read unavailable'));
+      await expect(broadcastSevereEventResolvedMany({ conditionKeys: ['a'], summary: 'recovered' })).resolves.toBe(true);
+      expect(M.sendMessage).toHaveBeenCalledOnce();
+      expect(M.sendMessage.mock.calls[0]![1]).not.toHaveProperty('msgId');
+      expect(warn).toHaveBeenCalledOnce();
+    } finally { warn.mockRestore(); }
+  });
+
   it('sends ONE message carrying every condition key (plural) + the singular first-key stamp', async () => {
     const keys = ['git-sync-stall:x', 'git-sync-stall:y', 'git-sync-stall:z'];
     const ok = await broadcastSevereEventResolvedMany({
