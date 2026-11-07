@@ -29,6 +29,8 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
+import * as ts from 'typescript';
+export { compileDeclarationsIncrementally } from './lib/declaration-compiler.mts';
 import { exportParityProblems, formatProblems } from './lib/declaration-export-parity.js';
 import { orphanedJsdocProblems, formatOrphanedJsdoc } from './lib/orphaned-jsdoc.ts';
 import {
@@ -111,15 +113,106 @@ function selectedInputs(
   return declaredInputs.filter((input) => requested.has(input));
 }
 
+/** Refresh enrolled importers too when git-sync is repairing changed source pairs. */
+export function includeEnrolledImporters(
+  repoRoot: string,
+  config: string,
+  declaredInputs: string[],
+  selection: string[],
+): string[] {
+  const configPath = resolve(repoRoot, config);
+  const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (loaded.error) throw new Error(ts.flattenDiagnosticMessageText(loaded.error.messageText, '\n'));
+  const parsed = ts.parseJsonConfigFileContent(loaded.config, ts.sys, dirname(configPath));
+  if (parsed.errors.length) throw new Error(ts.formatDiagnosticsWithColorAndContext(parsed.errors, {
+    getCanonicalFileName: (path) => path,
+    getCurrentDirectory: () => repoRoot,
+    getNewLine: () => '\n',
+  }));
+  // Constructing the graph resolves imports without checking/emitting every root.
+  const program = ts.createProgram(parsed.fileNames, parsed.options);
+  const roots = new Set(declaredInputs.map((input) => resolve(repoRoot, input)));
+  const changed = new Set(selection.map((input) => resolve(repoRoot, input)));
+  const dependencies = new Map<string, string[]>();
+  for (const source of program.getSourceFiles()) {
+    // TypeScript's bound import list includes JSDoc import types as well as imports
+    // and re-exports. Keep this pinned to the same compiler as declaration emit.
+    const imports = (source as ts.SourceFile & { imports?: readonly ts.StringLiteralLike[] }).imports ?? [];
+    const targets: string[] = [];
+    for (const specifier of imports) {
+      const target = ts.resolveModuleName(specifier.text, source.fileName, parsed.options, ts.sys).resolvedModule;
+      if (!target) {
+        // Optional dependency imports in external declarations cannot resolve to
+        // our enrolled sources. They must not widen every selected emit (for
+        // example an SDK declaration referencing an absent undici-types file).
+        // Preserve the conservative fallback for unresolved repository edges.
+        if (specifier.text.startsWith('.') && !program.isSourceFileFromExternalLibrary(source)) {
+          return declaredInputs;
+        }
+        continue;
+      }
+      const path = resolve(target.resolvedFileName);
+      const enrolledSource = path.replace(/\.d\.mts$/, '.mjs');
+      targets.push(roots.has(enrolledSource) ? enrolledSource : path);
+    }
+    dependencies.set(resolve(source.fileName), targets);
+  }
+  function reachesChange(path: string, seen: Set<string>): boolean {
+    if (changed.has(path)) return true;
+    if (seen.has(path)) return false;
+    seen.add(path);
+    return (dependencies.get(path) ?? []).some((target) => reachesChange(target, seen));
+  }
+  return declaredInputs.filter((input) => reachesChange(resolve(repoRoot, input), new Set()));
+}
+
 type Compile = (repoRoot: string, config: string, outDir: string) => void;
 
+/** Keep the original compiler settings and dependency graph, but omit unrelated roots. */
+function compileSelection(
+  repoRoot: string,
+  config: string,
+  outDir: string,
+  declaredInputs: string[],
+  selection: string[],
+  compile: Compile,
+): void {
+  if (selection.length === declaredInputs.length) {
+    compile(repoRoot, config, outDir);
+    return;
+  }
+  const selectedConfig = join(outDir, 'tsconfig.selected.json');
+  // Implicit @types lookup starts beside the CONFIG, not the input files.
+  // Moving only that config to OS tmp loses the repository's ambient packages.
+  // Resolve the original effective roots (including inherited explicit roots)
+  // with the pinned compiler before relocating the selected configuration.
+  const original = ts.getParsedCommandLineOfConfigFile(resolve(repoRoot, config), {}, {
+    ...ts.sys,
+    onUnRecoverableConfigFileDiagnostic(diagnostic) {
+      throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
+    },
+  });
+  if (!original) throw new Error('cannot read original declaration compiler configuration');
+  writeFileSync(selectedConfig, JSON.stringify({
+    extends: resolve(repoRoot, config),
+    compilerOptions: { typeRoots: ts.getEffectiveTypeRoots(original.options, ts.sys) },
+    files: selection.map((input) => resolve(repoRoot, input)),
+    include: [],
+    exclude: [],
+  }));
+  compile(repoRoot, selectedConfig, outDir);
+}
+
 function runTsc(repoRoot: string, config: string, outDir: string): void {
-  const args = ['-p', config, ...(outDir ? ['--outDir', outDir] : [])];
   try {
-    execFileSync(process.execPath, [TSC_JS, ...args], {
+    execFileSync(process.execPath, [
+      '--import', createRequire(import.meta.url).resolve('tsx/esm'), fileURLToPath(new URL('./lib/declaration-compiler.mts', import.meta.url)),
+      repoRoot, resolve(repoRoot, config), outDir,
+    ], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: 'pipe',
+      maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
@@ -222,13 +315,17 @@ export function generate(
   config = CONFIG,
   compile: Compile = runTsc,
   requestedInputs?: readonly string[],
+  includeImporters = false,
 ): void {
   const declaredInputs = inputs(repoRoot, config);
-  const selection = selectedInputs(declaredInputs, requestedInputs, 'generate');
+  const requested = selectedInputs(declaredInputs, requestedInputs, 'generate');
+  const selection = includeImporters
+    ? includeEnrolledImporters(repoRoot, config, declaredInputs, requested)
+    : requested;
   const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-generate-'));
   try {
-    compile(repoRoot, config, out);
-    stamp(out, declaredInputs);
+    compileSelection(repoRoot, config, out, declaredInputs, selection, compile);
+    stamp(out, selection);
     publish(out, repoRoot, selection);
     console.log(
       `✓ gen:declarations: emitted ${selection.length} of ${declaredInputs.length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
@@ -260,15 +357,19 @@ export function check(
   config = CONFIG,
   requestedInputs?: readonly string[],
   compile: Compile = runTsc,
+  includeImporters = false,
 ): void {
   // BEFORE the comparison, so a red names the compiler that produced the emit.
   console.log(`gen:declarations:check — compiler: ${COMPILER_LABEL}`);
   const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-check-'));
   try {
     const declaredInputs = inputs(repoRoot, config);
-    const selection = selectedInputs(declaredInputs, requestedInputs, 'check');
-    compile(repoRoot, config, out);
-    stamp(out, declaredInputs);
+    const requested = selectedInputs(declaredInputs, requestedInputs, 'check');
+    const selection = includeImporters
+      ? includeEnrolledImporters(repoRoot, config, declaredInputs, requested)
+      : requested;
+    compileSelection(repoRoot, config, out, declaredInputs, selection, compile);
+    stamp(out, selection);
 
     const stale: string[] = [];
     const missing: string[] = [];
@@ -356,17 +457,22 @@ export function check(
 export function runDeclarationCli(
   args: readonly string[],
   {
-    generateImpl = (selected?: readonly string[]) => generate(REPO_ROOT, CONFIG, runTsc, selected),
-    checkImpl = (selected?: readonly string[]) => check(REPO_ROOT, CONFIG, selected),
+    generateImpl = (selected?: readonly string[], importers = false) => generate(REPO_ROOT, CONFIG, runTsc, selected, importers),
+    checkImpl = (selected?: readonly string[], importers = false) => check(REPO_ROOT, CONFIG, selected, runTsc, importers),
   } = {},
 ): void {
   const requestedInputs: string[] = [];
   let hasSelection = false;
   let checkOnly = false;
+  let includeImporters = false;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === '--check') {
       checkOnly = true;
+      continue;
+    }
+    if (arg === '--include-importers') {
+      includeImporters = true;
       continue;
     }
     let value: string | undefined;
@@ -379,11 +485,10 @@ export function runDeclarationCli(
     hasSelection = true;
     requestedInputs.push(...value.split(','));
   }
-  if (checkOnly) {
-    checkImpl(hasSelection ? requestedInputs : undefined);
-  } else {
-    generateImpl(hasSelection ? requestedInputs : undefined);
-  }
+  if (includeImporters && !hasSelection) throw new Error('`--include-importers` requires `--files`');
+  const operation = checkOnly ? checkImpl : generateImpl;
+  if (includeImporters) operation(requestedInputs, true);
+  else operation(hasSelection ? requestedInputs : undefined);
 }
 
 const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

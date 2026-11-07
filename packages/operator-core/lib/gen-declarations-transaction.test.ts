@@ -1,9 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { transformSync } from 'esbuild';
 import { describe, expect, it, vi } from 'vitest';
-import { check, generate, runDeclarationCli } from '../../../scripts/gen-declarations.ts';
+import { check, compileDeclarationsIncrementally, generate, includeEnrolledImporters, runDeclarationCli } from '../../../scripts/gen-declarations.ts';
+import * as ts from 'typescript';
 
 type Compile = (repoRoot: string, config: string, outDir: string) => void;
 
@@ -25,6 +28,61 @@ function withFixture(run: (paths: { root: string; declaration: string }) => void
     rmSync(paths.root, { recursive: true, force: true });
   }
 }
+
+describe('declaration compiler resumption', () => {
+  it('compiles in the public tsx CLI CommonJS format', () => {
+    // The test runner deliberately refuses edited CJS entry points. Exercise
+    // tsx's actual transform grammar without disabling that source guard.
+    const source = readFileSync(fileURLToPath(new URL('../../../scripts/gen-declarations.ts', import.meta.url)), 'utf8');
+    expect(() => transformSync(source, { loader: 'ts', format: 'cjs', target: 'node22' })).not.toThrow();
+  });
+
+  it('resumes incomplete native work, invalidates changed dependencies, and retains cached diagnostics', async () => {
+    const { root, declaration } = fixture();
+    try {
+      const config = join(root, 'tsconfig.declarations.json');
+      writeFileSync(config, JSON.stringify({
+        compilerOptions: { allowJs: true, declaration: true, emitDeclarationOnly: true,
+          rootDir: '.', outDir: '.', types: [], skipLibCheck: true,
+          module: 'esnext', moduleResolution: 'bundler', target: 'es2022' },
+        files: ['input.mjs'],
+      }));
+      writeFileSync(join(root, 'dependency.ts'), 'export const value = 42;\n');
+      writeFileSync(join(root, 'input.mjs'), "export { value as answer } from './dependency.js';\n");
+      writeFileSync(declaration, '// last published bytes\n');
+      const out = join(root, 'isolated');
+      const cacheRoot = join(root, 'cache');
+      let checkedBeforeCancel = 0;
+      await expect(compileDeclarationsIncrementally(root, config, out, {
+        cacheRoot, onProgress: (checked) => { checkedBeforeCancel = checked; }, cancellationToken: {
+          isCancellationRequested: () => checkedBeforeCancel > 0,
+          throwIfCancellationRequested() {
+            if (this.isCancellationRequested()) throw new ts.OperationCanceledException();
+          },
+        },
+      })).rejects.toThrow('slice incomplete');
+      expect(checkedBeforeCancel).toBeGreaterThan(0);
+      const key = readdirSync(cacheRoot).find((name) => name !== 'locks')!;
+      expect(existsSync(join(cacheRoot, key, 'compiler.tsbuildinfo'))).toBe(true);
+      expect(readFileSync(declaration, 'utf8')).toBe('// last published bytes\n');
+      expect(existsSync(join(out, 'input.d.mts'))).toBe(false);
+
+      await compileDeclarationsIncrementally(root, config, out, { cacheRoot });
+      expect(readFileSync(join(out, 'input.d.mts'), 'utf8')).toContain('value as answer');
+      writeFileSync(join(root, 'dependency.ts'), 'export const value: number = "wrong";\n');
+      await expect(compileDeclarationsIncrementally(root, config, out, { cacheRoot }))
+        .rejects.toThrow('not assignable to type');
+      // A cached failure must fail again; an empty affected set is not success.
+      await expect(compileDeclarationsIncrementally(root, config, out, { cacheRoot }))
+        .rejects.toThrow('not assignable to type');
+      writeFileSync(join(root, 'dependency.ts'), 'export const value = "fixed";\n');
+      await compileDeclarationsIncrementally(root, config, out, { cacheRoot });
+      expect(readFileSync(declaration, 'utf8')).toBe('// last published bytes\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
 
 describe('gen:declarations transactional publish', () => {
   it('leaves existing declarations untouched when compilation fails after partial output', () => {
@@ -135,6 +193,113 @@ describe('gen:declarations transactional publish', () => {
       expect(readFileSync(declaration, 'utf8')).toBe(original);
     });
   });
+
+  it('compiles only selected roots with the pinned real compiler and keeps reachable imports', () => {
+    withFixture(({ root, declaration }) => {
+      writeFileSync(join(root, 'input.mjs'), "import { value } from './dependency.mjs';\nexport const answer = value;\n");
+      writeFileSync(join(root, 'dependency.mjs'), 'export const value = 42;\n');
+      writeFileSync(join(root, 'sibling.mjs'), 'export const invalid = ;\n');
+      writeFileSync(join(root, 'sibling.d.mts'), '// last good sibling\n');
+      writeFileSync(join(root, 'tsconfig.declarations.json'), JSON.stringify({
+        compilerOptions: {
+          allowJs: true, declaration: true, emitDeclarationOnly: true,
+          rootDir: '.', outDir: '.', types: [], skipLibCheck: true,
+          module: 'esnext', moduleResolution: 'bundler', target: 'es2022',
+        },
+        files: ['input.mjs', 'sibling.mjs'],
+      }));
+
+      generate(root, 'tsconfig.declarations.json', undefined, ['input.mjs']);
+      const generated = readFileSync(declaration, 'utf8');
+      expect(generated).toContain('answer: 42');
+      expect(readFileSync(join(root, 'sibling.d.mts'), 'utf8')).toBe('// last good sibling\n');
+      expect(existsSync(join(root, 'dependency.d.mts'))).toBe(false);
+
+      // Full generation still diagnoses the unrelated broken root and cannot
+      // replace the last good selected output with a partial compile.
+      expect(() => generate(root)).toThrow(/tsc failed/);
+      expect(readFileSync(declaration, 'utf8')).toBe(generated);
+    });
+  }, 30_000);
+
+  it.each(['implicit', 'inherited-explicit'])(
+    'selected real compiler preserves original ambient type roots: %s', mode => {
+      withFixture(({ root, declaration }) => {
+        const ambient = join(root, mode === 'implicit' ? 'node_modules/@types' : 'ambient');
+        mkdirSync(join(ambient, 'fixture-original'), { recursive: true });
+        writeFileSync(join(ambient, 'fixture-original/index.d.ts'), 'type OriginalAmbient = { answer: 42 };\n');
+        writeFileSync(join(root, 'input.mjs'), '/** @type {OriginalAmbient} */\nexport const answer = { answer: 42 };\n');
+        writeFileSync(join(root, 'sibling.mjs'), 'export const sibling = true;\n');
+        writeFileSync(join(root, 'sibling.d.mts'), '// preserve sibling\n');
+        if (mode === 'inherited-explicit') {
+          mkdirSync(join(root, 'config'));
+          writeFileSync(join(root, 'config/base.json'), JSON.stringify({ compilerOptions: { typeRoots: ['../ambient'] } }));
+        }
+        writeFileSync(join(root, 'tsconfig.declarations.json'), JSON.stringify({
+          ...(mode === 'inherited-explicit' ? { extends: './config/base.json' } : {}),
+          compilerOptions: { allowJs: true, declaration: true, emitDeclarationOnly: true,
+            rootDir: '.', outDir: '.', types: ['fixture-original'], skipLibCheck: true,
+            module: 'esnext', moduleResolution: 'bundler', target: 'es2022' },
+          files: ['input.mjs', 'sibling.mjs'],
+        }));
+        generate(root, 'tsconfig.declarations.json', undefined, ['input.mjs']);
+        expect(readFileSync(declaration, 'utf8')).toContain('answer: OriginalAmbient');
+        expect(readFileSync(join(root, 'sibling.d.mts'), 'utf8')).toBe('// preserve sibling\n');
+      });
+    }, 30_000);
+
+  it('includes transitive and JSDoc importers while leaving independent roots out', () => {
+    withFixture(({ root }) => {
+      writeFileSync(join(root, 'input.d.mts'), 'export declare const answer: 42;\n');
+      writeFileSync(join(root, 'middle.mjs'), "export { answer } from './input.mjs';\n");
+      writeFileSync(join(root, 'importer.mjs'), "export { answer } from './middle.mjs';\n");
+      writeFileSync(join(root, 'doc-importer.mjs'), '/** @type {typeof import("./middle.mjs").answer} */\nexport const answer = 42;\n');
+      writeFileSync(join(root, 'independent.mjs'), 'export const independent = true;\n');
+      const enrolled = ['input.mjs', 'importer.mjs', 'doc-importer.mjs', 'independent.mjs'];
+      writeFileSync(join(root, 'tsconfig.declarations.json'), JSON.stringify({
+        compilerOptions: { allowJs: true, types: [], module: 'esnext', moduleResolution: 'bundler' },
+        files: enrolled,
+      }));
+
+      expect(includeEnrolledImporters(root, 'tsconfig.declarations.json', enrolled, ['input.mjs']))
+        .toEqual(['input.mjs', 'importer.mjs', 'doc-importer.mjs']);
+    });
+  });
+
+  it('keeps selection narrow when an external declaration has an unresolved optional import', () => {
+    withFixture(({ root }) => {
+      const vendor = join(root, 'node_modules/vendor');
+      mkdirSync(vendor, { recursive: true });
+      writeFileSync(join(vendor, 'package.json'), JSON.stringify({ name: 'vendor', types: 'index.d.ts' }));
+      writeFileSync(join(vendor, 'index.d.ts'),
+        "export type { Optional } from './missing-optional';\nexport interface Value { answer: number }\n");
+      writeFileSync(join(root, 'importer.mjs'), "export { answer } from './input.mjs';\n");
+      writeFileSync(join(root, 'independent.mjs'),
+        '/** @type {import("vendor").Value} */\nexport const independent = { answer: 1 };\n');
+      const enrolled = ['input.mjs', 'importer.mjs', 'independent.mjs'];
+      writeFileSync(join(root, 'tsconfig.declarations.json'), JSON.stringify({
+        compilerOptions: { allowJs: true, types: [], module: 'esnext', moduleResolution: 'bundler' },
+        files: enrolled,
+      }));
+
+      expect(includeEnrolledImporters(root, 'tsconfig.declarations.json', enrolled, ['input.mjs']))
+        .toEqual(['input.mjs', 'importer.mjs']);
+    });
+  });
+
+  it('retains full generation when a repository import cannot be resolved', () => {
+    withFixture(({ root }) => {
+      writeFileSync(join(root, 'independent.mjs'), "export { unknown } from './missing-local.mjs';\n");
+      const enrolled = ['input.mjs', 'independent.mjs'];
+      writeFileSync(join(root, 'tsconfig.declarations.json'), JSON.stringify({
+        compilerOptions: { allowJs: true, types: [], module: 'esnext', moduleResolution: 'bundler' },
+        files: enrolled,
+      }));
+
+      expect(includeEnrolledImporters(root, 'tsconfig.declarations.json', enrolled, ['input.mjs']))
+        .toEqual(enrolled);
+    });
+  });
 });
 
 describe('gen:declarations CLI validation', () => {
@@ -147,6 +312,7 @@ describe('gen:declarations CLI validation', () => {
     { args: ['--file=input.mjs'], error: /unknown declaration-generator argument/ },
     { args: ['--files=input.mjs', 'unexpected'], error: /unknown declaration-generator argument/ },
     { args: ['--check', '--unknown'], error: /unknown declaration-generator argument/ },
+    { args: ['--include-importers'], error: /requires `--files`/ },
   ])('refuses $args before either operation can change output', ({ args, error }) => {
     const generateImpl = vi.fn();
     const checkImpl = vi.fn();
@@ -181,5 +347,15 @@ describe('gen:declarations CLI validation', () => {
     const generateImpl = vi.fn();
     runDeclarationCli(['--files=input.mjs,sibling.mjs', '--files', 'another.mjs'], { generateImpl });
     expect(generateImpl).toHaveBeenCalledExactlyOnceWith(['input.mjs', 'sibling.mjs', 'another.mjs']);
+  });
+
+  it.each([false, true])('routes importer expansion only when explicitly requested (check=%s)', (checkOnly) => {
+    const generateImpl = vi.fn();
+    const checkImpl = vi.fn();
+    runDeclarationCli(['--files=input.mjs', '--include-importers', ...(checkOnly ? ['--check'] : [])], {
+      generateImpl, checkImpl,
+    });
+    expect(checkOnly ? checkImpl : generateImpl).toHaveBeenCalledExactlyOnceWith(['input.mjs'], true);
+    expect(checkOnly ? generateImpl : checkImpl).not.toHaveBeenCalled();
   });
 });
