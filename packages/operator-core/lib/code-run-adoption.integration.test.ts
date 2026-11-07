@@ -1,6 +1,7 @@
 /** Real PostgreSQL semantics and plan guard for EI-25299577060523251. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
+import { existsSync, readFileSync } from 'node:fs';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import {
   CODE_RUN_ADOPTION_SQL,
@@ -14,6 +15,10 @@ import {
   type SpawnAdoptionRow,
 } from './code-run-adoption';
 import { TURN_GAP_MS } from './code-run-batch-nudge';
+
+const receiptIndexMigration = new URL('../../../libs/papercusp/libs/db/sql/1624-recipe-receipt-invocation-index.sql', import.meta.url);
+const receiptIndexSql = readFileSync(existsSync(receiptIndexMigration)
+  ? receiptIndexMigration : new URL(receiptIndexMigration.href + '.DRAFT'), 'utf8');
 
 describe('adoption SQL: one turn stream without materialized call reuse', () => {
   let db: MigratedTestDb;
@@ -110,6 +115,9 @@ describe('R13 exact-window recipe outcome report (real PG)', () => {
       success boolean, reused boolean, execution_trace jsonb, ts timestamptz)`;
     await sql`CREATE TABLE harness_shared.tool_invocations (
       id serial, workspace_id text, harness_slug text, tool_name text, invoked_at timestamptz, metadata_json jsonb)`;
+    await sql.unsafe(receiptIndexSql);
+    // Reapplying after a concurrent online prebuild must be harmless.
+    await sql.unsafe(receiptIndexSql);
   });
   afterAll(async () => { await sql?.end({ timeout: 5 }); await db?.drop(); });
   const read = () => readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) =>
@@ -154,14 +162,19 @@ describe('R13 exact-window recipe outcome report (real PG)', () => {
     expect((await read()).measurement).toMatchObject({ authored: 0, unknown: 3, unscopedWorkspaceReceipts: 2 });
   });
 
-  it('scans invocation history once across distinct receipts', async () => {
+  it('looks up receipt identities through the partial index instead of rescanning unrelated history', async () => {
     for (let i = 0; i < 20; i++) {
       await host('plan-' + i, 10);
       await run('plan-' + i, 0);
     }
+    await sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id,harness_slug,tool_name,invoked_at,metadata_json)
+      SELECT 'report-ws','app','docs:get','2026-10-01T12:00:01Z','{}'::jsonb
+      FROM generate_series(1,2000)`;
+    await sql`ANALYZE harness_shared.tool_invocations`;
     const rows = await sql.unsafe('EXPLAIN (ANALYZE, FORMAT JSON) ' + RECIPE_OUTCOME_REPORT_SQL,
       [scope.workspaceId, scope.harnessSlug, scope.windowStart, scope.windowEnd]);
-    type Plan = { 'Relation Name'?: string; 'Actual Loops'?: number; Plans?: Plan[] };
+    type Plan = { 'Relation Name'?: string; 'Index Name'?: string; 'Index Cond'?: string; Plans?: Plan[] };
     const scans: Plan[] = [];
     const visit = (node: Plan) => {
       if (node['Relation Name'] === 'tool_invocations') scans.push(node);
@@ -169,7 +182,26 @@ describe('R13 exact-window recipe outcome report (real PG)', () => {
     };
     visit(rows[0]!['QUERY PLAN'][0].Plan);
     expect(scans).toHaveLength(1);
-    expect(scans[0]!['Actual Loops']).toBe(1);
+    expect(scans[0]!['Index Name']).toBe('tool_invocations_recipe_receipt_idx');
+    expect(scans[0]!['Index Cond']).toContain("'callId'");
+    expect(scans[0]!['Index Cond']).toContain(' = ');
+  });
+
+  it('admits one report across database clients without blocking or confusing contention with zero usage', async () => {
+    const competing = postgres(db.url, { max: 1, onnotice: () => {} });
+    const compete = (harnessSlug = scope.harnessSlug) => readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) =>
+      await competing.unsafe(query, params as never) as unknown as T[], { ...scope, harnessSlug });
+    try {
+      await sql.begin(async tx => {
+        await tx.unsafe(RECIPE_OUTCOME_REPORT_SQL,
+          [scope.workspaceId, scope.harnessSlug, scope.windowStart, scope.windowEnd]);
+        expect(await compete()).toMatchObject({ availability: 'busy', measurement: null });
+        expect((await compete('independent-harness')).availability).toBe('available');
+      });
+      expect((await compete()).availability).toBe('available');
+    } finally {
+      await competing.end({ timeout: 5 });
+    }
   });
 
   it('cancels a slow report on the server without leaking its timeout to the pooled connection', async () => {
@@ -180,6 +212,19 @@ describe('R13 exact-window recipe outcome report (real PG)', () => {
     }, scope)).rejects.toMatchObject({ code: '57014' });
     expect(await sql.unsafe('SHOW statement_timeout')).toEqual(before);
     expect((await read()).measurement).not.toBeNull();
+  });
+
+  it('refuses migration success for an invalid concurrent prebuild and accepts a repaired index', async () => {
+    await sql`DROP INDEX harness_shared.tool_invocations_recipe_receipt_idx`;
+    try {
+      await expect(sql.unsafe(`CREATE UNIQUE INDEX CONCURRENTLY tool_invocations_recipe_receipt_idx
+        ON harness_shared.tool_invocations (workspace_id)`)).rejects.toMatchObject({ code: '23505' });
+      await expect(sql.unsafe(receiptIndexSql)).rejects.toMatchObject({ code: '55000' });
+    } finally {
+      await sql`DROP INDEX IF EXISTS harness_shared.tool_invocations_recipe_receipt_idx`;
+      await sql.unsafe(receiptIndexSql);
+    }
+    expect((await read()).availability).toBe('available');
   });
 
   it('keeps quoted and backslash-containing scope values literal in the timeout batch', async () => {

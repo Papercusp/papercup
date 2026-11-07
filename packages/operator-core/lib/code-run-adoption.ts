@@ -56,9 +56,15 @@ export interface RecipeOutcomeScope {
  * returned context is counted once, never charged once per recipe selection.
  * No payload column, script text or guessed client identity is selected. */
 export const RECIPE_OUTCOME_REPORT_SQL = `
-WITH recipe_run_source AS (
+WITH report_admission AS MATERIALIZED (
+  SELECT pg_try_advisory_xact_lock(hashtextextended(jsonb_build_array(
+    'recipe-outcome-report', $1::text, $2::text,
+    extract(epoch FROM $3::timestamptz), extract(epoch FROM $4::timestamptz)
+  )::text, 0)) AS admitted
+), recipe_run_source AS (
   SELECT * FROM harness_shared.code_recipe_runs
    WHERE workspace_id = $1 AND ts >= $3::timestamptz AND ts < $4::timestamptz
+     AND (SELECT admitted FROM report_admission)
 ), ${RECIPE_RUN_RECEIPTS_CTE}, host_invocations AS MATERIALIZED (
     SELECT t.metadata_json->'otel'->>'callId' AS invocation_id,
       count(*) AS host_rows, min(harness_slug) AS host_harness,
@@ -89,7 +95,8 @@ WITH recipe_run_source AS (
 ), dispatches AS (
   SELECT DISTINCT host_ref, context_bytes, recorded_context_bytes FROM scoped WHERE attributed AND variants = 1
 )
-SELECT jsonb_build_object(
+SELECT (SELECT admitted FROM report_admission) AS admitted,
+  CASE WHEN (SELECT admitted FROM report_admission) THEN (SELECT jsonb_build_object(
   'sourceRows', COALESCE(sum(source_rows), 0),
   'attempts', count(*),
   'verifiedCopiesExcluded', COALESCE(sum(source_rows - 1) FILTER (WHERE variants = 1), 0),
@@ -117,7 +124,7 @@ SELECT jsonb_build_object(
   'latestReceiptAt', max(ts),
   'sourceRefs', ARRAY(SELECT 'code-recipe-run:' || id::text FROM scoped ORDER BY id LIMIT 10),
   'dispatchRefs', ARRAY(SELECT 'tool-invocation:' || host_ref FROM dispatches ORDER BY host_ref LIMIT 10)
-) AS report FROM scoped`;
+) FROM scoped) ELSE NULL END AS report`;
 
 export async function readRecipeOutcomeReport(runQuery: RunQuery, scope: RecipeOutcomeScope) {
   const start = Date.parse(scope.windowStart), end = Date.parse(scope.windowEnd);
@@ -132,10 +139,14 @@ export async function readRecipeOutcomeReport(runQuery: RunQuery, scope: RecipeO
   const query = "SET LOCAL statement_timeout = '" + CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS + "ms';\n"
     + RECIPE_OUTCOME_REPORT_SQL.replace(/\$([1-4])\b/g, (_, index: string) => quote(values[Number(index) - 1]!));
   // postgres.js returns one result set per statement in a simple batch.
-  const [row] = (await runQuery<{ report: Record<string, unknown> }>(query, [])).flat();
+  // A transaction-scoped try-lock prevents overlapping copies across operator
+  // processes without queueing them. The statement timeout bounds the owner;
+  // PostgreSQL releases admission on success, cancellation and rollback.
+  const [row] = (await runQuery<{ admitted: boolean; report: Record<string, unknown> | null }>(query, [])).flat();
   return {
     scope, boundary: 'recipe-run-recorded-at' as const,
-    measurement: row?.report ?? null,
+    availability: row?.admitted === false ? 'busy' as const : row?.report ? 'available' as const : 'unavailable' as const,
+    measurement: row?.admitted === false ? null : row?.report ?? null,
     units: { counts: 'canonical-execution-receipts', sourceBytes: 'utf8-bytes-per-receipt',
       intermediateBytes: 'utf8-bytes-per-receipt', elapsedBeforeRecordMs: 'milliseconds-per-receipt',
       returnedContextBytes: 'utf8-bytes-per-dispatch-at-settled-result-door',

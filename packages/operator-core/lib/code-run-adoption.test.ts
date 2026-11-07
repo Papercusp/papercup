@@ -63,6 +63,16 @@ it('R13 recipe report keeps raw units and missing source coverage separate from 
   await expect(readRecipeOutcomeReport(async () => [], { ...scope, harnessSlug: 'app\0' })).rejects.toThrow('Exact scope');
 });
 
+it('reports contention as unknown usage instead of an empty census', async () => {
+  const report = await readRecipeOutcomeReport(async <T>() =>
+    [[], [{ admitted: false, report: null }]] as unknown as T[], {
+      workspaceId: 'ws', harnessSlug: 'app',
+      windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z',
+    });
+  expect(report).toMatchObject({ availability: 'busy', measurement: null,
+    coverage: { complete: false }, benefit: { measuredSavings: null } });
+});
+
 it('reads the report from the SELECT result of a real simple-protocol batch shape', async () => {
   const scope = { workspaceId: 'ws', harnessSlug: 'app', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
   const report = await readRecipeOutcomeReport(async <T>() =>
