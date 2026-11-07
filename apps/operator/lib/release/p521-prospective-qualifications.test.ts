@@ -133,7 +133,7 @@ async function fixture(): Promise<Fixture> {
   packet.childState = 'closed';
   packet.stage('child-close', { exitCode: 0, signal: null });
   const command = ['npm', 'run', 'test:file', '--', MERGE_FILE, WRITER_FILE];
-  packet.finish({ exitCode: 0, command, startedAtMs: START - 39_000, finishedAtMs: START - 20_000,
+  await packet.finish({ exitCode: 0, command, startedAtMs: START - 39_000, finishedAtMs: START - 20_000,
     workspaceId: WORKSPACE, harnessSlug: HARNESS });
   const report = { success: true, numTotalTestSuites: 2, numPassedTestSuites: 2,
     numTotalTests: 22, numPassedTests: 22, numFailedTests: 0, numPendingTests: 0,
@@ -342,7 +342,7 @@ describe('D298-D302 independently resolved signed P521 qualification originals',
 
   it('accepts the complete four-variant packet against independently fixed maps', async () => {
     const report = evaluate(await fixture());
-    expect(report.ok).toBe(true);
+    expect(report.ok, JSON.stringify(report.checks, null, 2)).toBe(true);
     expect(report.checks.filter(check => check.status === 'pass').map(check => check.id).sort()).toEqual(
       ['P-521:qualification', ...KINDS.map(kind => `P-521:qualification:${kind}`)].sort());
   });
