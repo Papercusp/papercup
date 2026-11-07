@@ -6,7 +6,7 @@
  * at the operator boundary.
  */
 import { createHash } from 'node:crypto';
-import { projectedToolRegistryRevision } from '@papercusp/agent-mcp';
+import { projectedToolRegistryRevision } from '@papercusp/tooldef';
 import {
   readAppliedMigrationLedgerIdentity,
   type AppliedMigrationLedgerIdentity,

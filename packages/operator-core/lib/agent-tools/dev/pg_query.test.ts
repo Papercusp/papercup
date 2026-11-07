@@ -69,6 +69,21 @@ beforeEach(() => {
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
+  it('passes typed SQL parameters to the read-only driver without interpolating source', async () => {
+    const sql = 'SELECT $1::text AS value, $2::int AS n, $3::boolean AS enabled, $4::text AS absent';
+    const parameters = ["x'); SELECT pg_sleep(30); --", 7, true, null];
+    const args = (pgQueryTool.args as z.ZodTypeAny).parse({ sql, parameters });
+    await pgQueryTool.handler(args as never, { log: () => {} } as never);
+    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, expect.objectContaining({ parameters }));
+    expect(pgReadQueryMock.mock.calls[0][0]).not.toContain(parameters[0]);
+  });
+
+  it('rejects structured or non-finite SQL parameters before execution', () => {
+    for (const parameters of [[{ sql: 'SELECT 2' }], [[1]], [Infinity], [NaN]]) {
+      expect((pgQueryTool.args as z.ZodTypeAny).safeParse({ sql: 'SELECT $1', parameters }).success).toBe(false);
+    }
+  });
+
   it('bounds default advisory prose and restores it only for an explicit full request', async () => {
     const advisory = '⚠ tenant scope: ' + '界'.repeat(4000);
     advisoryMock.mockResolvedValue(advisory);
@@ -310,6 +325,25 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     );
     expect(payloadOf(res as never)).toMatchObject({ advisory: '⚠ tenant scope: …', rowCount: 1 });
     expect(pgReadQueryMock).toHaveBeenCalledOnce();
+  });
+
+  it('returns a positive EXISTS schema probe without a non-summing partition warning', async () => {
+    const sql =
+      "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'harness_shared' AND table_name = 'harness_plans' AND column_name = 'execution_start_revision_seq') AS execution_start_column_present";
+    pgReadQueryMock.mockResolvedValueOnce({
+      ...OK_RESULT,
+      fields: ['execution_start_column_present'],
+      rows: [{ execution_start_column_present: true }],
+    });
+
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    const payload = payloadOf(res as never);
+
+    expect(payload).toMatchObject({
+      rowCount: 1,
+      rows: [{ execution_start_column_present: true }],
+    });
+    expect(String(payload.advisory ?? '')).not.toContain('buckets may not sum');
   });
 
   it('refuses oversized SQL results before serializing the response', async () => {

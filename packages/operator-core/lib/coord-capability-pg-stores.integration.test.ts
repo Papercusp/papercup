@@ -100,6 +100,36 @@ describeResolveObjectSubscribers('Pg trio', () => {
   };
 });
 
+test.each(['commit', 'rollback'] as const)('PgThreadStore preserves the injected outer transaction on %s', async (outcome) => {
+  const workspaceId = freshWs();
+  const threadId = `outer-transaction-${outcome}`;
+  const reader = new PgThreadStore(opts(workspaceId));
+  const timestamp = '2026-11-07T00:00:00.000Z';
+  const write = sql.begin(async (tx) => {
+    const writer = new PgThreadStore({ ...opts(workspaceId), getSql: () => tx });
+    await writer.getOrCreateThread(
+      { kind: 'issue', ref: 'EI-28095172458195199' },
+      { thread_id: threadId, created_ts: timestamp },
+    );
+    const post = await writer.addPost({ thread_id: threadId, body: 'atomic comment', created_ts: timestamp });
+    expect(await writer.getPostById(post.id)).toMatchObject({ body: 'atomic comment' });
+    expect(await writer.getThreadById(threadId)).toMatchObject({ post_count: 1, last_post_ts: timestamp });
+    // A pooled connection cannot observe either write before the outer commit.
+    expect(await reader.getThreadById(threadId)).toBeNull();
+    expect(await reader.listPosts(threadId)).toEqual([]);
+    if (outcome === 'rollback') throw new Error('injected outer transaction failure');
+  });
+  if (outcome === 'rollback') {
+    await expect(write).rejects.toThrow('injected outer transaction failure');
+    expect(await reader.getThreadById(threadId)).toBeNull();
+    expect(await reader.listPosts(threadId)).toEqual([]);
+  } else {
+    await write;
+    expect(await reader.getThreadById(threadId)).toMatchObject({ post_count: 1, last_post_ts: timestamp });
+    expect(await reader.listPosts(threadId)).toMatchObject([{ body: 'atomic comment' }]);
+  }
+});
+
 // EI-1743 regression: a stable id-derived thread_id can outlive a CHANGED parent_ref (e.g. a
 // work-item whose workItemObjectRef mutates). The second getOrCreateThread then inserts the SAME
 // thread_id under a new parent → before the fix the named-arbiter ON CONFLICT let the PK conflict

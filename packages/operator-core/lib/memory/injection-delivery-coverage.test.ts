@@ -24,11 +24,107 @@ import { join } from 'node:path';
 import {
   foldInjectionCoverage,
   assessDeliveredContext,
+  deliveryMatrixPopulation,
+  deliveryMatrixCellKey,
+  deliveryTerminalOracle,
+  validateDeliveryMatrix,
+  type DeliveryMatrixManifest,
   type DeliveredContextAttempt,
   INJECTION_PORTS,
   type CoverageWindowRow,
   type CoverageEverRow,
 } from './injection-delivery-coverage';
+
+describe('context reliability R-1: artifact-validator', () => {
+  // Synthetic validator controls, not receipts from a client or matrix run.
+  const fixture = (): DeliveryMatrixManifest => ({
+    schemaVersion: 'delivery-matrix-v1',
+    identity: { planRevision: 28, planHash: 'a'.repeat(64), rubricRevision: 3, rubricHash: 'b'.repeat(64),
+      barHash: 'c'.repeat(64), specHash: 'd'.repeat(64), sourceHash: 'e'.repeat(64), testHash: 'f'.repeat(64), runtimeGeneration: 'fixture-only' },
+    cells: deliveryMatrixPopulation().map(cell => ({ ...cell, selector: 'fixture-only', evidenceRefs: ['fixture-only'],
+      verdict: 'UNKNOWN', terminalOracle: deliveryTerminalOracle(cell), state: 'UNKNOWN', suppressionWrites: 0 })),
+  });
+  const emitted = () => {
+    const manifest = fixture();
+    const cell = manifest.cells.find(c => c.client === 'codex' && c.sink === 'turn-start' && c.source === 'memory' && c.fault === 'retry')!;
+    const fragment = { kind: 'memory' as const, id: 'source-1', epoch: 7, port: 'turn-start', bodySha256: '1'.repeat(64), bodyBytes: 30 };
+    cell.state = 'emitted'; cell.verdict = 'passed'; cell.suppressionWrites = 1;
+    cell.attempt = { id: 'attempt-1', recipient: 'agent-1', workspace: 'workspace-1', epoch: 7, token: 'token-1', fragment };
+    cell.proof = { event: 'complete-stdout', adapter: 'fixture-only', receiptRef: 'fixture-only', attemptId: 'attempt-1',
+      recipient: 'agent-1', workspace: 'workspace-1', epoch: 7, token: 'token-1', client: 'codex', sink: 'turn-start',
+      payloadSha256: '2'.repeat(64), payloadBytes: 90, fragment: { ...fragment } };
+    return { manifest, cell };
+  };
+
+  it('context reliability R-1: closed-delivery-matrix', () => {
+    const population = deliveryMatrixPopulation();
+    expect(population).toHaveLength(432);
+    expect(new Set(population.map(deliveryMatrixCellKey)).size).toBe(432);
+    expect(validateDeliveryMatrix(fixture())).toMatchObject({ closed: true, valid: true, acceptanceReady: false });
+    // UNKNOWN is a real cell in the denominator, never omitted as untested.
+    expect(validateDeliveryMatrix(fixture()).unknown).toHaveLength(432);
+  });
+
+  it('rejects missing, duplicate and unexpected cells even if the row count is unchanged', () => {
+    for (const mode of ['missing', 'duplicate', 'unexpected']) {
+      const m = fixture();
+      if (mode === 'missing') m.cells.pop();
+      if (mode === 'duplicate') m.cells[0] = { ...m.cells[1]! };
+      if (mode === 'unexpected') m.cells[0] = { ...m.cells[0]!, sink: 'invented' as never };
+      expect(validateDeliveryMatrix(m)).toMatchObject({ closed: false, valid: false, acceptanceReady: false });
+    }
+  });
+
+  it('context reliability R-1: per-sink-terminal-oracle', () => {
+    const m = fixture();
+    const extra = m.cells.filter(c => c.client === 'NONE');
+    expect(extra).toHaveLength(96);
+    expect(extra.every(c => deliveryTerminalOracle(c) === 'NONE')).toBe(true);
+    for (const sink of ['operator', 'architect', 'oracle', 'agent-chats', 'system-launch', 'system-wake']) {
+      const bad = fixture();
+      const c = bad.cells.find(c => c.sink === sink)!;
+      c.verdict = 'passed'; c.state = 'emitted'; c.suppressionWrites = 1;
+      expect(validateDeliveryMatrix(bad).errors).toContain(`${deliveryMatrixCellKey(c)}:uninstrumented-sink`);
+    }
+    // The current five native MCP/brief ports also lack terminal instruments.
+    expect(deliveryTerminalOracle(m.cells[0]!)).toBe('NONE');
+  });
+
+  it('accepts an exact receipt join without upgrading the other unknown cells', () => {
+    const { manifest } = emitted();
+    expect(validateDeliveryMatrix(manifest)).toMatchObject({ valid: true, acceptanceReady: false, errors: [] });
+    expect(validateDeliveryMatrix(manifest).unknown).toHaveLength(431);
+  });
+
+  it.each(['recipient', 'workspace', 'epoch', 'token', 'attemptId', 'client', 'sink', 'event'] as const)(
+    'rejects a mismatched %s proof', field => {
+      const { manifest, cell } = emitted();
+      Object.assign(cell.proof!, { [field]: field === 'epoch' ? 8 : 'wrong' });
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:receipt-join`);
+    });
+
+  it.each(['kind', 'id', 'epoch', 'port', 'bodySha256', 'bodyBytes'] as const)(
+    'rejects a mismatched fragment %s', field => {
+      const { manifest, cell } = emitted();
+      Object.assign(cell.proof!.fragment, { [field]: field === 'epoch' ? 8 : field === 'bodyBytes' ? 31 : 'wrong' });
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:receipt-join`);
+    });
+
+  it.each(['prepared', 'partial', 'abandoned', 'UNKNOWN'] as const)(
+    '%s cannot suppress recall', state => {
+      const { manifest, cell } = emitted(); cell.state = state;
+      expect(validateDeliveryMatrix(manifest).errors).toContain(`${deliveryMatrixCellKey(cell)}:unproven-suppression`);
+    });
+
+  it('requires execution references and exact measurement identity', () => {
+    const m = fixture(); m.cells[0]!.evidenceRefs = [];
+    expect(validateDeliveryMatrix(m).valid).toBe(false);
+    const other = fixture(); other.identity.sourceHash = 'missing';
+    expect(validateDeliveryMatrix(other).errors).toContain('measurement-identity');
+    const incomplete = { ...fixture(), cells: null } as unknown as DeliveryMatrixManifest;
+    expect(validateDeliveryMatrix(incomplete)).toMatchObject({ closed: false, valid: false });
+  });
+});
 
 const fold = (o: {
   clients?: string[];

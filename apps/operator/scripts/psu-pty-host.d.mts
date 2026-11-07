@@ -5858,7 +5858,7 @@ export function fleetOscFromEnv(env?: EnvironmentMap): string | null;
  */
 export function injectTurn(sock: string, text: string, ownerId?: string): Promise<any>;
 /**
- * EI-24091823697677465: heal a DEAD loopback operator pin before an in-place respawn.
+ * EI-24091823697677465: heal a dead or cross-runtime loopback operator pin before an in-place respawn.
  * Direct :3170 pins also route proactively through the same-build staging proxy (:9171),
  * including explicit pins. The ordinary launcher already applies this rule, but an
  * in-place carry-respawn reuses this host's environment and bypasses that resolver.
@@ -5872,13 +5872,15 @@ export function injectTurn(sock: string, text: string, ownerId?: string): Promis
  * restart took its MCP tools and its owner-directive capture down with it.
  *
  * Only launcher-managed URLs may heal, using the existing provenance marker shared
- * with ptool. An explicit target stays authoritative even when its server is down:
- * a refusal does not authorize moving a current-build session to stable code.
- * A managed pin is replaced only when it refuses connections or its /api/mcp route
- * is confirmed missing. A slow/erroring service and a live MCP endpoint stay
- * authoritative. The replacement is the local MCP proxy, and it must answer both
- * /api/health and /api/mcp. Mutates `env` in place and returns `{ from, to }` when it
- * healed, otherwise null. Never throws.
+ * with ptool. An explicit target stays authoritative. Ordinary managed pins are
+ * replaced only when they refuse connections or their /api/mcp route is confirmed
+ * missing; a slow/erroring service and a live MCP endpoint stay authoritative.
+ * There is one known cross-runtime exception: a managed :9071 pin plus target :3271
+ * is a stale green route even when it answers HTTP 200. Before an in-place respawn,
+ * prefer the configured local same-runtime proxy, or fall back to direct :3271 so a
+ * cold successor never receives green-runtime traffic. The ordinary replacement
+ * proxy must answer both /api/health and /api/mcp. Mutates `env` in place and returns
+ * `{ from, to }` when it routed/healed, otherwise null. Never throws.
  *
  * @param {EnvironmentMap} env
  * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
@@ -5888,7 +5890,7 @@ export function healDeadOperatorPin(env: EnvironmentMap, { fetchImpl, timeoutMs 
     timeoutMs?: number;
 }): Promise<{
     from: string;
-    to: string;
+    to: string | null;
     route: string;
 } | {
     from: string;

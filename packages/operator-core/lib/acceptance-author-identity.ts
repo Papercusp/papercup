@@ -204,9 +204,10 @@ export async function areAcceptanceLineageRelated(
  */
 export async function acceptanceLineageClosure(
   id: string | null | undefined,
-  opts: AcceptanceAuthorIdentityOpts = {},
+  opts: AcceptanceAuthorIdentityOpts & { requireComplete?: boolean } = {},
 ): Promise<Set<string>> {
   const self = id?.trim() ?? '';
+  if (!self && opts.requireComplete) throw new Error('acceptance_lineage_identity_missing');
   if (!self) return new Set();
   if (!opts.sql) {
     return boundedPgReadTxn((sql) => acceptanceLineageClosure(self, { ...opts, sql }),
@@ -214,7 +215,7 @@ export async function acceptanceLineageClosure(
   }
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await sql<Array<{ node: string }>>`
+  const rows = await sql<Array<{ node: string; incomplete: boolean }>>`
       WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
@@ -234,10 +235,22 @@ export async function acceptanceLineageClosure(
           JOIN identity_edges AS edge ON edge.to_id = ancestors.node
          WHERE ancestors.depth < 64
       )
-      SELECT node FROM descendants
-      UNION
-      SELECT node FROM ancestors
+      , population AS (
+        SELECT node FROM descendants UNION SELECT node FROM ancestors
+      ), completeness AS (
+        SELECT EXISTS (
+          SELECT 1 FROM descendants d JOIN identity_edges e ON e.from_id = d.node
+           WHERE NOT EXISTS (SELECT 1 FROM descendants seen WHERE seen.node = e.to_id)
+          UNION ALL
+          SELECT 1 FROM ancestors a JOIN identity_edges e ON e.to_id = a.node
+           WHERE NOT EXISTS (SELECT 1 FROM ancestors seen WHERE seen.node = e.from_id)
+        ) AS incomplete
+      )
+      SELECT node, incomplete FROM population CROSS JOIN completeness
+      LIMIT ${opts.requireComplete ? 1025 : null}
   `;
+  if (opts.requireComplete && (rows.length > 1024 || rows.some(row => row.incomplete)))
+    throw new Error('acceptance_lineage_census_incomplete');
   return new Set(rows.map((row) => row.node).filter((node): node is string => Boolean(node)));
 }
 
@@ -366,13 +379,16 @@ export async function isAcceptanceAuthorIdentity(
  */
 export async function resolvePlanImplementerIdentities(
   subjectPlan: string | null | undefined,
-  opts: AcceptanceAuthorIdentityOpts = {},
+  opts: AcceptanceAuthorIdentityOpts & { maxRows?: number } = {},
 ): Promise<string[]> {
   const planSlug = subjectPlan?.trim() ?? '';
   if (!planSlug) return [];
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
+  if (opts.maxRows !== undefined && (!Number.isInteger(opts.maxRows) || opts.maxRows < 1 || opts.maxRows > 1024))
+    throw new Error('acceptance_implementer_census_limit_invalid');
+  const limit = opts.maxRows === undefined ? null : opts.maxRows + 1;
   const [workItems, audits, editors] = await Promise.all([
     sql<
       Array<{
@@ -387,6 +403,7 @@ export async function resolvePlanImplementerIdentities(
        WHERE workspace_id = ${workspaceId}
          AND source_plan_slug = ${planSlug}
        ORDER BY feature_id
+       LIMIT ${limit}
     `,
     sql<Array<{ created_by: string | null }>>`
       SELECT created_by
@@ -395,6 +412,7 @@ export async function resolvePlanImplementerIdentities(
          AND plan_slug = ${planSlug}
          AND audit_kind IN ('activation', 'completion')
        ORDER BY audit_seq
+       LIMIT ${limit}
     `,
     // Plan code-intel-relevance-routing-2026-10-21 R-5/R-10: an agent that
     // EDITED code for this plan is an implementer even when it never claimed a
@@ -409,12 +427,15 @@ export async function resolvePlanImplementerIdentities(
                 SELECT w.feature_id FROM harness_shared.work_items w
                  WHERE w.workspace_id = ${workspaceId} AND w.source_plan_slug = ${planSlug}))
        ORDER BY e.agent_id
+       LIMIT ${limit}
     `.catch((err: unknown) => {
       throw new Error(
         `acceptance_lineage_unreadable: edit attribution for plan '${planSlug}' could not be read (${(err as Error)?.message ?? err})`,
       );
     }),
   ]);
+  if (opts.maxRows !== undefined && [workItems, audits, editors].some(rows => rows.length > opts.maxRows!))
+    throw new Error('acceptance_implementer_census_incomplete');
 
   const identities = new Set<string>();
   const add = (value: string | null | undefined) => {

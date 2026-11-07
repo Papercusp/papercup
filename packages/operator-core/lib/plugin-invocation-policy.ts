@@ -56,10 +56,11 @@ export function createPluginInvocationChokepoint(deps: {
     if (!policy) return refuse('The host has not bound a current resource policy to this installation');
     const principal = request.ctx.principal;
     const harnessSlug = request.ctx.harnessSlug;
+    const signal = request.ctx.signal;
     if (!principal || !['trusted', 'verified'].includes(principal.trust ?? '')
       || !principal.kind || !principal.authMethod || !principal.slug || !principal.workspaceId || principal.workspaceId === '*'
       || request.ctx.workspaceId !== principal.workspaceId || !harnessSlug || !request.callId
-      || request.ctx.signal.aborted || !principal.allowedTools?.has(request.toolName)) {
+      || signal.aborted || !principal.allowedTools?.has(request.toolName)) {
       return refuse('An authenticated workspace, harness and exact tool allowlist are required');
     }
 
@@ -76,7 +77,7 @@ export function createPluginInvocationChokepoint(deps: {
         allowedTools: new Set(principal.allowedTools) } satisfies Principal;
       const declaration = { name: request.toolName, capabilities: [...request.tool.capabilities] };
       const input = structuredClone(request.input);
-      const dispatchIdentity = () => canonicalJson({ toolName: request.toolName, pluginName: request.tool.pluginName,
+      const dispatchIdentity = () => canonicalJson({ callId: request.callId, toolName: request.toolName, pluginName: request.tool.pluginName,
         installation: request.tool.pluginInstallation, capabilities: request.tool.capabilities, input: request.input,
         harnessSlug: request.ctx.harnessSlug, workspaceId: request.ctx.workspaceId,
         principal: request.ctx.principal && { ...request.ctx.principal,
@@ -112,7 +113,10 @@ export function createPluginInvocationChokepoint(deps: {
         return refuse('A current host approval bound to this exact invocation is required');
       }
       const expiresAt = approval.expiresAt;
-      const isActive = () => active && Date.now() < expiresAt && !request.ctx.signal.aborted && resolvePolicy() === policy && dispatchIdentity() === originalIdentity
+      // Retain the approved cancellation source: replacing the mutable context
+      // signal cannot revive an aborted invocation or transfer its lease.
+      const isActive = () => active && Date.now() < expiresAt && !signal.aborted && request.ctx.signal === signal
+        && resolvePolicy() === policy && dispatchIdentity() === originalIdentity
         && policy.isCurrent(structuredClone(query), structuredClone(decision)) === true;
       context = createInvocationCapabilityContext({ pluginName, capabilities: manifest,
         granted: granted as Capability[], principal: boundPrincipal, invocationId: request.callId,

@@ -9,6 +9,21 @@ import type { HandlerRuntimeFile } from './handler-runtime';
 
 export function snapshotInstalledHandlerFiles(directory: string, entryPoint: string,
   installation: { name: string; version: string }): HandlerRuntimeFile[] {
+  if (typeof entryPoint !== 'string') throw new Error('installed handler entry required');
+  return snapshotInstalledFiles(directory, entryPoint, installation);
+}
+
+/** Inventory custody also covers manifest-only plugins. This captures package
+ * bytes without generating an executable entry or granting runtime approval.
+ * Keep handler admission on snapshotInstalledHandlerFiles, with a real entry.
+ */
+export function snapshotInstalledPluginFiles(directory: string,
+  installation: { name: string; version: string }): HandlerRuntimeFile[] {
+  return snapshotInstalledFiles(directory, null, installation);
+}
+
+function snapshotInstalledFiles(directory: string, entryPoint: string | null,
+  installation: { name: string; version: string }): HandlerRuntimeFile[] {
   const fail = () => new Error('invalid or changing installed handler snapshot');
   const relative = (path: string) => path.length > 0 && path.length <= 2048
     && !path.startsWith('/') && !path.endsWith('/') && path === posix.normalize(path)
@@ -16,8 +31,7 @@ export function snapshotInstalledHandlerFiles(directory: string, entryPoint: str
   if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)
     || typeof directory !== 'string' || !directory.startsWith('/') || directory === '/'
     || directory !== posix.normalize(directory) || !relative(directory.slice(1))
-    || typeof entryPoint !== 'string' || !relative(entryPoint)
-    || !/\.(?:cjs|js|mjs|ts)$/.test(entryPoint)
+    || (entryPoint !== null && (!relative(entryPoint) || !/\.(?:cjs|js|mjs|ts)$/.test(entryPoint)))
     || !installation || typeof installation.name !== 'string' || typeof installation.version !== 'string') throw fail();
   // Pin caller data before any IO. Paths originate in the host loader, never
   // in tool arguments. Each path component is opened beneath its actual fd.
@@ -97,8 +111,8 @@ export function snapshotInstalledHandlerFiles(directory: string, entryPoint: str
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
       || (metadata as Record<string, unknown>).name !== expected.name
       || (metadata as Record<string, unknown>).version !== expected.version
-      || !files.some(file => file.path === `/handler/${entryPoint}`)) throw fail();
-    if (entryPoint !== 'entry.cjs') {
+      || (entryPoint !== null && !files.some(file => file.path === `/handler/${entryPoint}`))) throw fail();
+    if (entryPoint !== null && entryPoint !== 'entry.cjs') {
       if (files.some(file => file.path === '/handler/entry.cjs')) throw fail();
       // Keep the original entry location: relative dependency resolution and
       // package scope must not change when the entry is nested in dist/.

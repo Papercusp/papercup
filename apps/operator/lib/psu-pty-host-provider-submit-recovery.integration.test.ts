@@ -27,6 +27,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
   const transcript = join(nativeDir, 'fixture.jsonl');
   const recovered = join(root, 'gateway-recovered');
   const parkNativeId = '12345678-1234-4234-8234-123456789abc';
+  const nativeSessionId = '87654321-4321-4321-8321-cba987654321';
   const ownerId = `submit-rx-${process.pid}-${++serial}`;
   let output = '';
   const stdin = Object.assign(new EventEmitter(), { isTTY: true, setRawMode() {}, resume() {}, pause() {} });
@@ -87,6 +88,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
     ...(options.env?.PAPERCUSP_PSU_PARK_IDLE_MS !== undefined ? {
       mintParkResumeArgs: (args: string[]) => ({ args: [...args, 'resume', parkNativeId], nativeId: parkNativeId }),
     } : {}),
+    resolveRespawnNativeId: agent === 'codex' ? () => nativeSessionId : null,
     activityPersistMs: options.activityPersistMs ?? 25, onExit: () => {} });
   const sock = socketPathFor(ownerId);
   const rows = () => existsSync(eventLogPathForOwner(ownerId))
@@ -102,7 +104,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
     ...(requireNativeTurnStart ? { requireNativeTurnStart: true,
       expectedHostStartedAt: meta.startedAt, expectedChildGeneration: meta.execution.childGeneration } : {}),
   };
-  return { root, done, sock, rows, envelope, data, stdin, output: () => output, transcript,
+  return { root, done, sock, rows, envelope, data, stdin, output: () => output, transcript, home, nativeSessionId,
     recover: () => writeFileSync(recovered, 'ready'),
     async close() {
       await injectIntoHostWithConfirmation(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => {});
@@ -375,8 +377,49 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
         () => JSON.stringify({ output: f.output(), events: f.rows() }));
       const recoveryEnters = f.rows().filter(row => row.kind === 'submit-verify-recovery-resubmit');
       expect(recoveryEnters).toHaveLength(2);
+      if (agent === 'codex') {
+        const write = f.rows().find(row => row.kind === 'native-turn-submit-write-attempt'
+          && row.deliveryId === f.envelope.deliveryId);
+        expect(write?.nativeSubmitContextAtWrite).toMatchObject({
+          nativeSessionId: f.nativeSessionId,
+          CODEX_HOME: f.home,
+          tuiState: {
+            bridgeTty: true, stdinIsTTY: true, stdoutIsTTY: false,
+            columns: 120, rows: 30, machineTurnActive: true, ownerInputPending: false,
+          },
+        });
+        const startFailure = f.rows().find(row => row.kind === 'native-turn-start-unverified'
+          && row.deliveryId === f.envelope.deliveryId);
+        expect(startFailure).toMatchObject({
+          nativeSubmitContextAtWrite: write?.nativeSubmitContextAtWrite,
+          nativeSubmitContextAtVerificationFailure: {
+            nativeSessionId: f.nativeSessionId,
+            CODEX_HOME: f.home,
+            tuiState: { bridgeTty: true, stdinIsTTY: true, columns: 120, rows: 30 },
+          },
+        });
+        for (const retry of recoveryEnters) {
+          expect(retry).toMatchObject({
+            nativeSubmitContextAtWrite: write?.nativeSubmitContextAtWrite,
+            nativeSubmitContextAtRetry: {
+              nativeSessionId: f.nativeSessionId,
+              CODEX_HOME: f.home,
+              tuiState: { bridgeTty: true, stdinIsTTY: true, columns: 120, rows: 30 },
+            },
+          });
+          expect(JSON.stringify(retry.nativeSubmitContextAtRetry)).not.toContain(f.data);
+        }
+      }
       expect(f.rows()).toContainEqual(expect.objectContaining({ kind: 'pending-submit-recovery-exhausted',
-        deliveryId: f.envelope.deliveryId, retiredDeliveryIds: [f.envelope.deliveryId], reason: 'max-resubmits' }));
+        deliveryId: f.envelope.deliveryId, retiredDeliveryIds: [f.envelope.deliveryId], reason: 'max-resubmits',
+        ...(agent === 'codex' ? {
+          nativeSubmitContextAtWrite: expect.objectContaining({ nativeSessionId: f.nativeSessionId, CODEX_HOME: f.home }),
+          nativeSubmitContextAtExhaustion: expect.objectContaining({
+            nativeSessionId: f.nativeSessionId, CODEX_HOME: f.home,
+            tuiState: expect.objectContaining({ bridgeTty: true, stdinIsTTY: true, columns: 120, rows: 30 }),
+          }),
+        } : {}),
+      }));
       const entersAtRetire = f.output().match(/ENTER:/g)?.length ?? 0;
       await delay(300);
       // Bounded: no further recovery Enter for the retired record.

@@ -52,7 +52,10 @@ import * as path from 'node:path';
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 // WI-2140338: the live projected-tool registry — the steward seed derives its
 // exact names from it at spec-build time instead of hand-maintaining a list.
-import { listMcpProjections } from '@papercusp/agent-mcp';
+// Admission's liveness oracle reaches this module too. Read the registry from
+// its owner, without loading agent-mcp's tools and evaluation-only modules into
+// a test launcher (which must never substitute its own mutation subject).
+import { listMcpProjections } from '@papercusp/tooldef';
 import { normalizeSuContextSize } from './su-context-size.mjs';
 
 /**

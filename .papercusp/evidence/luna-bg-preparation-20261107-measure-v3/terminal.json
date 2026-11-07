@@ -1,0 +1,110 @@
+{
+  "status": "passed",
+  "taskId": "0mw5q8d8d86xfd2vls0",
+  "deadlineEpochMs": 1794022236161,
+  "startedAtMs": 1794015039685,
+  "completedAtMs": 1794016519890,
+  "measurements": {
+    "probe.prepare": 425491,
+    "probe.begin": 419326,
+    "bg.compiler.before-build": 176600,
+    "bg.compiler.node": 224,
+    "bg.compiler.metadata": 1,
+    "bg.compiler.binary": 42,
+    "bg.compiler.toolchain-files": 388,
+    "bg.compiler.custody": 204320,
+    "bg.compiler.binary-seal": 283,
+    "bg.compiler.import": 9,
+    "bg.compiler.build": 10853,
+    "bg.compiler.verify": 223230,
+    "bg.compiler.output": 4024,
+    "bg.compiler.stop": 1,
+    "probe.compiler": 620031
+  },
+  "forecast": {
+    "preparationMs": 0,
+    "sourceCheckMs": 0,
+    "dependencyCheckMs": 0,
+    "cleanupMs": 120000,
+    "childEstimateMs": 0,
+    "unknownChild": false,
+    "remainingMs": 26498938,
+    "totalMs": 33123673,
+    "observedLaunchMs": null,
+    "launchReserveMs": 30000,
+    "requiredTimeoutMs": 33154000,
+    "recipePhases": [
+      {
+        "phase": "bg.recipe.validate",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.begin",
+        "estimateMs": 1859925
+      },
+      {
+        "phase": "bg.recipe.compiler.0",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.1",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.2",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.3",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.4",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.5",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.6",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.7",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.8",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.9",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.assets",
+        "estimateMs": 1239950
+      },
+      {
+        "phase": "bg.recipe.output",
+        "estimateMs": 1239950
+      },
+      {
+        "phase": "bg.recipe.logical",
+        "estimateMs": 4339825
+      },
+      {
+        "phase": "bg.recipe.publish",
+        "estimateMs": 3719850
+      },
+      {
+        "phase": "bg.recipe.verify",
+        "estimateMs": 1859925
+      }
+    ]
+  },
+  "phasePath": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/evidence/luna-bg-preparation-20261107-measure-v3/phases.jsonl",
+  "archivePath": "/home/marsh-office/.papercusp/checkpoint-logs/verifier-phases-aa4c35e32d0cfa582ee8f3ba1e31df6e57203cb8ef3d4a26cf5cf4a2370155c2.jsonl",
+  "scope": "measurement only; no recipe publication, runtime acceptance or shipment"
+}

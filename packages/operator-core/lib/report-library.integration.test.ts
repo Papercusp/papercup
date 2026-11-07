@@ -88,6 +88,21 @@ const AGENT_1: ReportOrigin = {
 };
 
 describe('report_library store (real PG)', () => {
+  it('current-edition evidence refuses a private successor while historical exact-ID reads still resolve', async () => {
+    const workspaceId = nextWs();
+    const viewer = { ownerId: 'unrelated-agent' };
+    const original = await publishReport(db.adminSql, { workspaceId, title: 'Original review',
+      bodyMd: 'Reviewed bytes', visibility: 'workspace' }, AGENT_1);
+    expect(await getReport(db.adminSql, workspaceId, original.reportId, viewer, undefined,
+      { currentEditionOnly: true })).toMatchObject({ reportId: original.reportId });
+    const successor = await publishReport(db.adminSql, { workspaceId, title: 'Private correction',
+      supersedes: original.reportId, visibility: 'owner' }, AGENT_1);
+    expect(await getReport(db.adminSql, workspaceId, original.reportId, viewer, undefined,
+      { currentEditionOnly: true })).toBeNull();
+    expect(await getReport(db.adminSql, workspaceId, successor.reportId, viewer)).toBeNull();
+    expect(await getReport(db.adminSql, workspaceId, original.reportId, viewer))
+      .toMatchObject({ bodyMd: 'Reviewed bytes' });
+  });
   it('P008 full-text filter searches the latest edition rather than resurrecting a matching ancestor', async () => {
     const workspaceId = nextWs();
     const old = await publishReport(db.adminSql, { workspaceId, title: 'Earlier', bodyMd: 'zephyrquartz', visibility: 'workspace' }, AGENT_1);

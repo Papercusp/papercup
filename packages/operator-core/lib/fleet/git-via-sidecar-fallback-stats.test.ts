@@ -14,12 +14,16 @@
 import { describe, expect, it, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import * as recorder from '../degradation/fallback-observations';
 
-const primary = vi.hoisted(() => ({ call: vi.fn() }));
+const primary = vi.hoisted(() => ({
+  call: vi.fn(),
+  servingIdentity: vi.fn<() => { host: string; processId: string | null; buildSha: string | null }>(),
+}));
 vi.mock('./spawner-sidecar-spawn', () => ({ spawnSpawnerSidecar: async () => undefined }));
 vi.mock('./spawner-ipc-client', () => ({
   getSpawnerIpcClient: () => ({ call: primary.call }),
   SpawnerIpcClient: class {},
 }));
+vi.mock('../serving-host-identity', () => ({ getServingHostIdentity: primary.servingIdentity }));
 
 import {
   getSidecarFallbackStats,
@@ -56,6 +60,8 @@ describe('sidecar fallback accounting', () => {
   beforeEach(() => {
     observation = vi.spyOn(recorder, 'observeFallback').mockReturnValue(true);
     primary.call.mockReset();
+    primary.servingIdentity.mockReset();
+    primary.servingIdentity.mockReturnValue({ host: 'port-3170', processId: 'linux:test-boot:123', buildSha: 'test' });
     resetSidecarFallbackStatsForTest();
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
@@ -75,13 +81,20 @@ describe('sidecar fallback accounting', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(observation).toHaveBeenCalledTimes(25);
     expect(observation).toHaveBeenLastCalledWith('spawner-sidecar-exec',
-      { eligible: 1, applied: 0, reason: 'sidecar-unavailable' }, { observedAt: new Date(1024) });
+      { eligible: 1, applied: 0, reason: 'sidecar-unavailable', scope: 'pot-git' },
+      { observedAt: new Date(1024), processTag: 'linux:test-boot:123' });
     noteSidecarFallback('pot-git', new SidecarCircuitOpenError(10), 2000);
     noteSidecarDeadlineFallback('pot-git', new Error('deadline'), 2001);
     noteSidecarFallback('pot-git', new Error('unknown result'), 2002, 'rejected');
     expect(observation.mock.calls.slice(-3).map(([, row]) => row.reason)).toEqual([
       'circuit-open', 'deadline-exceeded', 'local-execution-rejected',
     ]);
+
+    primary.servingIdentity.mockReturnValueOnce({ host: 'port-3170', processId: null, buildSha: 'test' });
+    noteSidecarFallback('process-identity-unavailable', new Error('timeout'), 3000);
+    expect(observation).toHaveBeenLastCalledWith('spawner-sidecar-exec',
+      { eligible: 1, applied: 0, reason: 'sidecar-unavailable', scope: 'process-identity-unavailable' },
+      { observedAt: new Date(3000) });
   });
 
   it('measures actual primary child exits but excludes infrastructure rejection and pre-cancellation', async () => {

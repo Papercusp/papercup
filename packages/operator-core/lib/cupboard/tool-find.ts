@@ -25,7 +25,7 @@
 import type { ToolDiscoveryEntry } from './tools-discovery';
 import { scoreTool, searchTools } from './tools-search';
 
-export type Embedder = (text: string) => Promise<number[]>;
+export type Embedder = (text: string, signal?: AbortSignal) => Promise<number[]>;
 
 /**
  * Cosine similarity of two equal-length vectors. Returns 0 for degenerate
@@ -107,16 +107,18 @@ const DEFAULT_EMBED_TIMEOUT_MS = 4_000;
 
 /**
  * Await one query embedding without allowing a stalled provider to block
- * lexical discovery. The losing promise is intentionally not cancelled — the
- * Embedder type has no signal seam — but its eventual settlement is handled so
- * a late rejection cannot become an unhandled promise.
+ * lexical discovery. When the budget expires, abort the request so an
+ * abort-aware embedder can release provider work and avoid retaining a stuck
+ * in-flight query in its cache. Keep a rejection handler attached for embedders
+ * that cannot cancel already-started work.
  */
 async function embedWithBudget(
   embedder: Embedder,
   query: string,
   budgetMs: number,
 ): Promise<{ outcome: 'embedded'; vector: number[] } | { outcome: 'timeout' | 'failed' }> {
-  const p = Promise.resolve().then(() => embedder(query));
+  const controller = budgetMs > 0 ? new AbortController() : undefined;
+  const p = Promise.resolve().then(() => embedder(query, controller?.signal));
   if (!(budgetMs > 0)) {
     try {
       return { outcome: 'embedded', vector: await p };
@@ -129,13 +131,16 @@ async function embedWithBudget(
   >((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (result: { outcome: 'embedded'; vector: number[] } | { outcome: 'timeout' | 'failed' }): void => {
-      if (settled) return;
+    const finish = (result: { outcome: 'embedded'; vector: number[] } | { outcome: 'timeout' | 'failed' }): boolean => {
+      if (settled) return false;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
       resolve(result);
+      return true;
     };
-    timer = setTimeout(() => finish({ outcome: 'timeout' }), budgetMs);
+    timer = setTimeout(() => {
+      if (finish({ outcome: 'timeout' })) controller?.abort();
+    }, budgetMs);
     p.then(
       (vector) => finish({ outcome: 'embedded', vector }),
       () => finish({ outcome: 'failed' }),

@@ -527,5 +527,6 @@ packages/operator-core/lib/dream/study/native-graph-calibration-key-v2.json
 # Luna verifier transactions/publications contain large generated dependency
 # inventories. Retain their exact files for verifier custody; keep them out of
 # git-sync. Small attempt/terminal receipts and maintained source stay tracked.
+/.papercusp/evidence/luna-bg-preparation-*/transaction.json
 /.papercusp/evidence/luna-bg-preparation-*/build-transaction*.json
 /.papercusp/evidence/luna-bg-preparation-*/build-publication*.json

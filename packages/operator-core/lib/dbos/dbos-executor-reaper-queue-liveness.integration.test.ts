@@ -143,8 +143,10 @@ async function routineMeta(id: string): Promise<Record<string, unknown> | null> 
 
 describe('qualification custody survives generic DBOS reaping (WI-6554700010045612, real PG)', () => {
   const causes = ['no-output', 'dead-executor', 'deadline', 'restart', 'orphan'] as const;
-  it.each(causes.flatMap(cause => (['live', 'unknown', 'dead'] as const).map(liveness => ({ cause, liveness }))))(
-    'checks confined payload custody before $cause reaping: $liveness', async ({ cause, liveness }) => {
+  // %s preserves the exact R-3/R-6 case identity; $property interpolation adds
+  // quotes around strings, making passing receipts unselectable by those bars.
+  it.each(causes.flatMap(cause => (['live', 'unknown', 'dead'] as const).map(liveness => [cause, liveness] as const)))(
+    'checks confined payload custody before %s reaping: %s', async (cause, liveness) => {
       const id = 'rt-checkpoint-custody';
       const uuid = 'wf-checkpoint-custody';
       const old = Date.now() - DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS - 60_000;

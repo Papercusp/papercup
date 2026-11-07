@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045955:02aceb61c0dcb73d8a3e2d4714410c51",
+  "inputSha256": "02aceb61c0dcb73d8a3e2d4714410c513160a392907506737c6f48166c4bfdd5",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-07T01:07:09.818Z",
+  "actor": "su-8e582458-5f13-475d-8950-77e479c89a18",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045955",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "2bd8309f9096d2f4e9b50fa8412eb5fbef23b03de275785c301abaf82a7319b6",
+      "observedParkFingerprint": "2bd8309f9096d2f4e9b50fa8412eb5fbef23b03de275785c301abaf82a7319b6",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi's standing owner AUTO/self directive authorizes implementation and shipment of rubric-coverage-and-evidence-guidance-2026-11-06; fact mode-instructions:auto read in full. Scoped P-008 custody per D-011/D-016 verified. Exact six-node census shows WI-6554700010045953..5958 unassigned and conversion-owned parks only; dependencies remain blocking. Plan25 discoveryaudit16ready/activationaudit17current; both SPEC3 whole-contract critiques closed_answered; independent integrity passed EI-28080612612825440. Lift only these migration parks for canonical start, preserve leases/DAG/BARs and leave global P-008 open.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045955-02aceb61c0dcb73d8a3e2d4714410c51-reconcile.json"
+}

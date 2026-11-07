@@ -4,8 +4,9 @@
  * D-012 rules that cells are a watermark surface, not a new subscription
  * mechanism: the default tier is a fold into `coord:orient`, which already runs
  * on every wake and already carries watermarked deltas. This module is the pure
- * delta computation that fold uses; the cursor itself lives in the agent's
- * existing `Watermark.cursors` map (the open surface map added by D-077).
+ * delta computation that fold uses. Legacy cursors live in `Watermark.cursors`;
+ * proof-backed per-cell versions reuse `coord_read_cursors`. Full-body delivery
+ * requires the trusted host seam below; constructing a fold never advances it.
  *
  * WHY THE FULL FOLD STAYS
  * -----------------------
@@ -23,11 +24,13 @@
  * Per D-012's hard constraint, cell versions ride the existing HLC scheme
  * (`agent_facts.fed_hlc`, stamped by migration 693 — see D-077 for why that
  * migration was needed at all). An HLC is a total order by construction, so
- * comparison is a plain string compare and the cursor is a single opaque token.
+ * comparison is a plain string compare. A legacy cursor is a single opaque token;
+ * body delivery keeps one HLC per scoped key so partial output cannot skip peers.
  * The local `id` sequence would have been easier and is WRONG: it is per-database,
  * so two hives both mint id 5 and cells silently break under federation.
  */
 
+import { createHash } from 'node:crypto';
 import type { AgentFact } from './store';
 
 /**
@@ -42,9 +45,9 @@ export const FACTS_CELL_SURFACE = 'facts';
  * watermark. A subset can prove one scoped cell without proving its siblings. */
 export type FactBodyCursor = { schemaVersion: 1; versions: Record<string, string> };
 export type FactBodyCell = Pick<AgentFact, 'scope' | 'scopeRef' | 'key' | 'body' | 'cellVersion'>;
-export type DeliveredFactBody = { scope: string; ref: string | null; body: string };
+export type DeliveredFactBody = { scope: string; ref: string | null; key: string; cellVersion: FactBodyCell['cellVersion']; body: string };
 
-export function factCellKey(f: Pick<FactBodyCell, 'scope' | 'scopeRef' | 'key'>): string {
+export function factCellKey(f: { scope: string; scopeRef?: string | null; key: string }): string {
   return JSON.stringify([f.scope, f.scopeRef ?? '', f.key]);
 }
 
@@ -69,9 +72,9 @@ export async function readFactBodyCursor(ownerId: string, confirmedToken: string
  * an orient result, returning it over MCP, and rendering fact KEYS cannot call
  * this seam as if they proved body delivery. Unsupported hosts keep replaying.
  *
- * Match a multiset of exact scoped bodies: shortened/key-only rows match none.
- * If identical bodies hide distinct keys, consume that group only when every
- * member is present; guessing which omitted key arrived would invent proof. */
+ * The host must bind each delivered body to its offered key AND HLC. Text alone
+ * cannot identify a cell: a truncated body's prefix can equal another cell's
+ * complete body. Shortened, key-only, and unbound rows therefore prove nothing. */
 export async function stageFactBodyDelivery(
   ownerId: string,
   offered: readonly FactBodyCell[],
@@ -83,33 +86,74 @@ export async function stageFactBodyDelivery(
   // Discard an older unconfirmed offer, retaining ONLY committed per-cell floors.
   const committed = await readFactBodyCursor(ownerId);
   const versions = { ...(committed?.versions ?? {}) };
-  const bodyKey = (scope: string, ref: string | null, body: string) => JSON.stringify([scope, ref ?? '', body]);
-  const counts = new Map<string, number>();
+  const offeredByKey = new Map(offered.map(cell => [factCellKey(cell), cell]));
+  const matchedKeys = new Set<string>();
   for (const row of delivered) {
-    if (!row || typeof row.body !== 'string' || typeof row.scope !== 'string') continue;
-    const key = bodyKey(row.scope, row.ref, row.body);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!row || typeof row.body !== 'string' || typeof row.scope !== 'string' ||
+      typeof row.key !== 'string' || !row.cellVersion) continue;
+    const identity = factCellKey({ scope: row.scope, scopeRef: row.ref, key: row.key });
+    const cell = offeredByKey.get(identity);
+    if (!cell || cell.body !== row.body || cell.cellVersion !== row.cellVersion) continue;
+    versions[identity] = versions[identity] && versions[identity] > row.cellVersion
+      ? versions[identity] : row.cellVersion;
+    matchedKeys.add(identity);
   }
-  const groups = new Map<string, FactBodyCell[]>();
-  for (const cell of offered) {
-    const key = bodyKey(cell.scope, cell.scopeRef, cell.body);
-    const group = groups.get(key) ?? [];
-    group.push(cell);
-    groups.set(key, group);
-  }
-  let matched = 0;
-  for (const [key, cells] of groups) {
-    if ((counts.get(key) ?? 0) < cells.length) continue;
-    for (const cell of cells) {
-      if (!cell.cellVersion) continue;
-      const identity = factCellKey(cell);
-      versions[identity] = versions[identity] && versions[identity] > cell.cellVersion
-        ? versions[identity] : cell.cellVersion;
-      matched++;
-    }
-  }
+  const matched = matchedKeys.size;
   if (matched > 0) await stage(ownerId, FACTS_CELL_SURFACE, { schemaVersion: 1, versions }, { deliveryToken });
   return matched;
+}
+
+/** Private native-host metadata. Receipts retain hashes, never fact plaintext. */
+export type FactBodyManifest = {
+  scope: string; ref: string | null; key: string; cellVersion: string;
+  bodySha256: string; bodyBytes: number;
+};
+export type FactBodyOffer = FactBodyManifest & { rendered: string };
+
+/** One complete line binds identity, HLC and body, including quotes/newlines. */
+export function factBodyOffer(f: FactBodyCell): FactBodyOffer | null {
+  if (!f.cellVersion) return null;
+  const identity = { scope: f.scope, ref: f.scopeRef, key: f.key, cellVersion: f.cellVersion };
+  const rendered = `- Standing fact: ${JSON.stringify({ ...identity, body: f.body })}`;
+  return { ...identity, rendered, bodySha256: createHash('sha256').update(rendered).digest('hex'),
+    bodyBytes: Buffer.byteLength(rendered) };
+}
+
+/** Stage the server offer; only a final native emission manifest may confirm it. */
+export async function stageNativeFactBodyDelivery(ownerId: string, offers: readonly FactBodyOffer[], token: string): Promise<void> {
+  if (!token.trim()) throw new Error('Fact body delivery requires a host emission token');
+  const { stage } = await import('../agent-tools/coordination/read-cursors');
+  const committed = await readFactBodyCursor(ownerId);
+  await stage(ownerId, FACTS_CELL_SURFACE, {
+    schemaVersion: 1, versions: committed?.versions ?? {},
+    nativeOffer: { token, bodies: offers.map(({ rendered: _rendered, ...manifest }) => manifest) },
+  }, { deliveryToken: token });
+}
+
+/** Reuse the native stdout token, requiring the receipt's exact final-body subset.
+ * An old/key-only hook cannot confirm this offer even if it echoes that token. */
+export async function confirmNativeFactBodyDelivery(
+  ownerId: string, token: string | null, delivered: readonly FactBodyManifest[],
+): Promise<FactBodyCursor | null> {
+  const { ackAndRead, stage } = await import('../agent-tools/coordination/read-cursors');
+  // Deliberately do not promote the offered candidate on the shared token alone.
+  const ack = await ackAndRead(ownerId, FACTS_CELL_SURFACE, { confirmedToken: null });
+  const committed = factBodyCursor(ack.committed);
+  const candidate = ack.unconfirmedPending?.nativeOffer as { token?: unknown; bodies?: FactBodyManifest[] } | undefined;
+  if (!token || candidate?.token !== token || !Array.isArray(candidate.bodies)) return committed;
+  const versions = { ...(committed?.versions ?? {}) };
+  let matched = false;
+  for (const body of candidate.bodies) {
+    if (!delivered.some(row => row && row.scope === body.scope && row.ref === body.ref &&
+      row.key === body.key && row.cellVersion === body.cellVersion &&
+      row.bodySha256 === body.bodySha256 && row.bodyBytes === body.bodyBytes)) continue;
+    const key = factCellKey({ scope: body.scope, scopeRef: body.ref, key: body.key });
+    versions[key] = versions[key] && versions[key] > body.cellVersion ? versions[key] : body.cellVersion;
+    matched = true;
+  }
+  if (!matched) return committed;
+  await stage(ownerId, FACTS_CELL_SURFACE, { schemaVersion: 1, versions }, { deliveryToken: token });
+  return readFactBodyCursor(ownerId, token);
 }
 
 export interface FactsCellDelta {

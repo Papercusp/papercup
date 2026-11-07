@@ -123,10 +123,25 @@ export const capabilityRequirementSchema = z
   })
   .strict();
 
+/** Private executable examples stay in their source ledger. The global recipe
+ * stores only this expiring, revision-bound locator; it grants no read authority. */
+export const recipeSourceOperationSchema = z.object({
+  version: z.literal(1),
+  family: z.enum(['sql', 'shell']),
+  invocationId: z.string().regex(/^\d+$/),
+  workspaceId: z.string().min(1),
+  harness: z.string().min(1),
+  epoch: z.string().regex(/^\d{4}-\d{2}$/),
+  revision: z.string().regex(/^[a-f0-9]{64}$/),
+  expiresAt: z.string().datetime(),
+}).strict();
+export type RecipeSourceOperation = z.infer<typeof recipeSourceOperationSchema>;
+
 export const capabilityManifestV1Schema = z
   .object({
     version: z.literal(RECIPE_CONTRACT_VERSION),
     representation: z.literal(RECIPE_SCRIPT_REPRESENTATION),
+    sourceOperation: recipeSourceOperationSchema.optional(),
     topology: z
       .object({ premises: z.tuple([z.literal(REQUIRED_RECIPE_TOPOLOGY_PREMISE)]) })
       .strict(),

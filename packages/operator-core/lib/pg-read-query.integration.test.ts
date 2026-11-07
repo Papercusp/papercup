@@ -57,6 +57,25 @@ describe('pgReadQuery (real PG)', () => {
     expect(Array.isArray(r.rows)).toBe(true);
   });
 
+  it('replays hostile quoted values as typed parameters with unchanged SQL semantics', async () => {
+    const hostile = "x'); SELECT pg_sleep(30); --";
+    const result = await pgReadQuery(
+      'SELECT $1::text AS value, $2::int AS n, $3::boolean AS enabled, $4::text AS absent',
+      { client: db.adminSql, parameters: [hostile, 7, true, null] },
+    );
+    expect(result.rows).toEqual([{ value: hostile, n: 7, enabled: true, absent: null }]);
+    expect(result.rowCount).toBe(1);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('keeps primary parameters separate from its same-transaction positive control', async () => {
+    const result = await pgReadQuery('SELECT $1::text AS value WHERE false', {
+      client: db.adminSql, parameters: ["'"], positiveControlSql: 'SELECT 1 AS present',
+    });
+    expect(result.rows).toEqual([]);
+    expect(result.positiveControl).toMatchObject({ rowCount: 1, rows: [{ present: 1 }] });
+  });
+
   it('runs inside a READ ONLY transaction (PG-enforced, not just the regex)', async () => {
     const r = await pgReadQuery("SELECT current_setting('transaction_read_only') AS ro", {
       client: db.adminSql,

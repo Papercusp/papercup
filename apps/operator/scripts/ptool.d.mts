@@ -513,7 +513,7 @@ export function createPtoolStdioBridge(client: {
     listTools?: Function;
 }): {
     listTools(): Promise<{
-        tools: any[];
+        tools: any;
     }>;
     callTool(params: any, options?: {}): Promise<any>;
 };

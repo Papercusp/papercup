@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P005 native Windows Goals and helper shutdown regression",
+  "framework": "operational",
+  "command": [
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-bridge.ps1 -BridgeSource PuiReadBridge.cs",
+    "powershell.exe -STA -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-host.ps1 -SourceDirectory . -Phase goals -Interactive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-07T00:18:11.331998Z",
+  "finishedAt": "2026-11-07T00:21:28.168074Z",
+  "summary": "32 native assertions passed: 16 owned-helper framing/lifetime checks including an actual Windows TerminateProcess error 5 after exit, plus 16 interactive WPF Goal controls and clean resident shutdown. The historical failure did not capture post-error child liveness; the deterministic regression proves and guards the exit-race defect class, while a live-helper access-denied control still fails.",
+  "workItem": "EI-28085429725562126",
+  "parentWorkItem": "WI-6554700010044411",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "nativeRunDirectory": "C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9",
+  "sourceSha256": {
+    "papercusp-desktop/native/windows/PuiReadBridge.cs": "a7076e560f3e3304dced5c465334cf4c40907d5cbf78ee7a1deca62d162eef4c",
+    "papercusp-desktop/native/windows/WorkbenchModel.cs": "2a21a6508e981f2e431d7c45b502fcb07665a6a2b0823db6b3787f7b0d2c8eee",
+    "papercusp-desktop/native/windows/WorkbenchHost.cs": "6f0e54cb48369107595826fb5528d4686f7095bf279e9e9cc3922f102e847ab5",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "e76d2fabb2f4b1e86fc272beae877b4f3892a54061abc105994dadc0697ff692",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-host.ps1": "e7fcdafc48fbd636412d7f65a43066ef7775134c243706249cc7e724f0f32d6a",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "2cd6b6e73989d0f2d47605a5a88dae4de888b4ac9db19f8d98583397344a2c5d"
+  },
+  "prerequisites": {
+    "runtime": "Native Windows PowerShell/.NET Framework; signed-in interactive Session1 for WPF. SSH is control transport only.",
+    "custody": "Five remote Get-FileHash values matched current canonical local bytes before this evidence was created.",
+    "selection": "Fixture-owned helper processes and Goal state; no real operator Goal writes."
+  },
+  "targets": [
+    {
+      "name": "bridge",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "goals",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "cases": [
+    "live owned helper access-denied remains a failure",
+    "actual exited-helper Win32 error 5 is confirmed and safely reaped",
+    "already-exited owned helper shutdown is idempotent",
+    "unrelated native termination failure remains visible",
+    "literal executable path and Unicode identity round-trip",
+    "canonical empty result preserved",
+    "reject malformed",
+    "reject missing",
+    "reject badrows",
+    "reject denied",
+    "reject exit",
+    "reject oversize",
+    "large stderr drains concurrently",
+    "timeout reaps only owned PUI helper",
+    "cancellation reaps owned helper",
+    "oversized request and mutation rejected before spawn",
+    "Goals native portfolio preserves the exact canonical selection",
+    "Goal detail shows environment liveness and canonical evidence before enabling controls",
+    "cancelled native confirmation performs no write or optimistic status change",
+    "native Goal pause reads back confirmed status and evidence",
+    "native Goal resume reads back confirmed status and evidence",
+    "native Goal achieve reads back confirmed status and evidence",
+    "native Goal reopen reads back confirmed status and evidence 5",
+    "native Goal kill reads back confirmed status and evidence",
+    "native Goal reopen reads back confirmed status and evidence 7",
+    "every accepted native Goal transition requires confirmation and exactly one write",
+    "degraded Goal success remains visible alongside confirmed server status",
+    "failed native Goal write preserves the last confirmed detail",
+    "failed native Goal action disables controls until refreshed",
+    "unknown Goal holder liveness never becomes permission to start or mutate",
+    "holderless native Start follows the composed activation seam",
+    "Goals controls retain the same resident native panel across toggles"
+  ],
+  "assertions": [
+    {
+      "id": "native-exit-race",
+      "passed": true,
+      "evidence": "Actual Win32 TerminateProcess on the exited owned helper returns code5; the guard rechecks exit and completes."
+    },
+    {
+      "id": "live-denial-negative-control",
+      "passed": true,
+      "evidence": "The same code5 while a real owned helper remains alive propagates. Unrelated code6 also propagates."
+    },
+    {
+      "id": "native-goals-clean-shutdown",
+      "passed": true,
+      "evidence": "All16 WPF controls pass and the InteractiveToken process exits0 after disposing the resident host."
+    }
+  ],
+  "rootCauseVerification": {
+    "hypothesis": "The cleanup boundary fails to handle Win32 access-denied after the owned process exits between its running check and termination.",
+    "alternativeHypothesis": "The termination error indicates a still-running process whose termination is genuinely denied.",
+    "distinguishingTest": "Maintained native fixture holds one child alive for injected code5 and verifies propagation; then exits that same child between the running check and native TerminateProcess, observes actual code5, and verifies safe completion.",
+    "actualObservation": "The live denial propagated with the child still alive; actual TerminateProcess returned5 after child exit and was handled; Goals resident shutdown exited0.",
+    "historicalLimit": "The original failure stack did not capture child liveness after its failed Kill, so its exact race timing is not retrospectively proven."
+  },
+  "logs": {
+    "bridge": {
+      "path": "/tmp/wb-shutdown-bridge-stop-v2-20261107.json",
+      "sha256": "496c4a6d622bc20d62e5609f5dd3857d89b01435d4d7c28dd997190cecf5792a"
+    },
+    "goals": {
+      "path": "/tmp/wb-shutdown-goals-v2-20261107.json",
+      "sha256": "405688b8d4758e744ae9c3cc2e0ecc402151093a3b48b4b1adba819dd4eb5de9"
+    }
+  },
+  "sourceCustody": {
+    "path": "/tmp/wb-shutdown-source-custody-20261107.json",
+    "sha256": "334e207a761dd5f45b8684f5bf6ca724d5f0f1ab4cf8e263cbc3fb169ad39eec"
+  },
+  "harnessCorrection": "The first new fixture used Process.Kill after WaitForExit, which is an idempotent no-op once .NET caches exit. It was corrected to call the same native TerminateProcess primitive with the retained owned handle.",
+  "limits": [
+    "Current-build native fixtures only; exact installed-artifact acceptance across all three OSes remains pending.",
+    "New actual PUI native-goal operator integration remains pending.",
+    "No final shipment claim."
+  ]
+}

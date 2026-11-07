@@ -511,6 +511,7 @@
     "apps/operator/scripts/tutorial-character-model.mjs",
     "apps/operator/scripts/tutorial-video-contract.mjs",
     "apps/operator/scripts/hooks/inject/core.mjs",
+    "apps/operator/scripts/hooks/inject/recall-query.mjs",
     "scripts/lib/partial-task-resume.mjs",
     // P-003 shares the native config-loader policy with direct fixture producers.
     "scripts/lib/vitest-host-preflight.mjs",

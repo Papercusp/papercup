@@ -23,6 +23,9 @@ documents:
   - "packages/operator-core/lib/agent-tools/plans/plan-declarations.ts"
   - "packages/operator-core/lib/agent-tools/plans/audit.ts"
   - "packages/operator-core/lib/agent-tools/plans/product-shaping.ts"
+  - "packages/operator-core/lib/agent-tools/plans/get-activation-readiness.ts"
+  - "packages/operator-core/lib/agent-tools/plans/start.ts"
+  - "packages/operator-core/lib/agent-tools/recipes/activation-quality-publication.ts"
 plans:
   - "plan-structured-inputs-2026-08-01"
   - "discovery-before-implementation-review-2026-11-05"
@@ -162,6 +165,48 @@ A refusal is fail-loud and carries what you need to act:
 `missing` leads wherever both apply, because "you did not supply `harness`" is
 actionable and "`/harness` must be string" for an absent field is not. A schema that
 cannot be compiled fails **closed** (`bad_schema`) — never silently unchecked.
+
+
+## Complete activation diagnostic and exact publication
+
+Use `plans:get { slug, harness, activationReadiness:true }` before activation to
+inspect independent blockers together. The bounded diagnostic reports each finite
+stage, dependencies, codes, evidence and next action; an unavailable dependency or
+a changed plan, specification, policy or evidence basis remains unknown/blocked.
+The diagnostic is advisory. Canonical `plans:start` and execution guards still
+decide whether work may proceed.
+
+This read leaves plan content/status, clauses/specs, audits/pins/evidence,
+claims/admission/promotion, review/consult recruitment, scorecards and admission
+shadow observations unchanged. Ordinary invocation telemetry is allowed.
+Consultation can inspect historical expertise; it does not recruit a reviewer.
+`plans:audit` activation responses and refused `plans:start` responses attach the
+same diagnostic while preserving the primary error and any partial-effect receipt.
+An activation audit may already have recorded effects: inspect its receipt before
+retrying. A validation preview does not route consultation.
+
+Within one unchanged audit/auto-start request, the diagnostic reuses the nested
+start's actual consultation receipt. Requester, scope, plan or policy drift
+invalidates reuse. A separate request measures current conditions again.
+
+The existing saved recipe `persist-exact-passing-plan-specification-quality`
+accepts invocation bindings `harness`, `plan` and optional
+`expectedSpecSetHash`. Obtain its current revision and authority descriptor,
+then validate the bound invocation with `recipes:run` using `dryRun:true`.
+The recipe transfers the evaluator's complete `scorecardDraft` unchanged to
+`scorecards:emit`, adding only `targetHive` for routing. Do not rewrite generated
+ratings or evidence. Fail, unknown, partial or hash-mismatched evaluation stops
+before publication.
+
+For a checkpointed publication use the existing `orchestrate:run` durable route
+and its current saved-recipe contract. Durability preserves execution history;
+it does not grant permission or freeze plan/evidence/review authority. Canonical
+emission revalidates the exact evaluator result. An interrupted write or incomplete
+completion/readback receipt means `needs-reconciliation`: resolve that exact
+attempt/card through the canonical receipt before any retry. An emitted card with
+a pending grading audit is `emitted-pending`, with `ready:false`; independent
+grading integrity and canonical activation/execution guards still apply.
+
 
 ## Supplying values
 

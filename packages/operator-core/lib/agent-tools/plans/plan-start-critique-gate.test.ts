@@ -6,6 +6,7 @@ import {
   buildBarCritiqueRecord,
   clauseSemanticHash,
   evaluateBarCritiqueGate,
+  evaluatePlanStartBarCritique,
   loadBarCritiqueEvidence,
   type BarCritiqueClause,
   type BarCritiqueEvidence,
@@ -13,6 +14,8 @@ import {
 import type { listSpecClauses } from './spec-clauses-store';
 
 const PLAN = 'demo-plan';
+const selectedReviewLoader = vi.hoisted(() => vi.fn());
+vi.mock('./plan-start-owner-review', () => ({ loadOwnerSelectedReview: (...args: unknown[]) => selectedReviewLoader(...args) }));
 const BAR_SET_A = 'a'.repeat(64);
 const BAR_SET_B = 'b'.repeat(64);
 
@@ -56,6 +59,27 @@ function critique(
 }
 
 const NO_AUTHOR = new Set<string>(['su-author']);
+
+describe('selected review orchestration', () => {
+  const input = { workspaceId: 'workspace', harnessSlug: 'harness', planSlug: PLAN,
+    nonDroppedItemCount: 9, contractEnforced: true };
+  const sql = ((strings: TemplateStringsArray) => Promise.resolve(strings.join('').includes('FROM harness_shared.harness_plans')
+    ? [{ owner: 'su-author', acceptance_bar_seeded_by: null, created_at: '2026-10-23T00:00:00Z' }] : [])) as unknown as Sql;
+  const deps = { sql, listClauses: (async () => [clause('S-1')]) as typeof listSpecClauses,
+    partyKeys: async (ids: readonly string[]) => new Map(ids.map(id => [id, id])) };
+  it('satisfies the selected requirement without manufacturing two consults or lowering their threshold', async () => {
+    selectedReviewLoader.mockResolvedValueOnce({ ok: true, receipt: { reviewerId: 'real-reviewer' } });
+    const result = await evaluatePlanStartBarCritique(input, deps);
+    expect(result).toMatchObject({ mode: 'enforced', verdict: { satisfied: true, threshold: 2,
+      consultIds: [], critics: [], clauseShortfalls: [{ coveredBy: 0 }] },
+      ownerSelectedReview: { ok: true, receipt: { reviewerId: 'real-reviewer' } } });
+  });
+  it('retains the ordinary threshold when the recorded selection is unverified', async () => {
+    selectedReviewLoader.mockResolvedValueOnce({ ok: false, reason: 'owner_selection_unverified' });
+    expect(await evaluatePlanStartBarCritique(input, deps))
+      .toMatchObject({ verdict: { satisfied: false, threshold: 2, code: 'critique_missing' } });
+  });
+});
 
 describe('plan-start bar-critique gate (P-007)', () => {
   it('passes when every current clause is covered by the required number of outside critiques', () => {

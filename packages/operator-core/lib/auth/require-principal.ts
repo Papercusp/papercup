@@ -121,6 +121,12 @@ export async function requirePrincipal(
  * re-resolves the original credentials; neither resolver fall-through nor a
  * later grant may widen the authority the launching request actually held. */
 export type HostRequestPrincipalResolver = () => Promise<Principal | null>;
+const retainedRequestPrincipals = new WeakSet<HostRequestPrincipalResolver>();
+/** Host-local provenance, preserved only by the original closure. A copied
+ * Principal or a function returning one cannot impersonate a retained request. */
+export function isRetainedRequestPrincipal(value: unknown): value is HostRequestPrincipalResolver {
+  return typeof value === 'function' && retainedRequestPrincipals.has(value as HostRequestPrincipalResolver);
+}
 export async function retainRequestPrincipal(
   headers: Headers | null, workspaceId: string,
 ): Promise<HostRequestPrincipalResolver | undefined> {
@@ -132,7 +138,7 @@ export async function retainRequestPrincipal(
   const ceiling = structuredClone(original);
   const intersect = (current: ReadonlySet<string>, prior: ReadonlySet<string>) =>
     new Set([...current].filter(value => prior.has('*') || prior.has(value)));
-  return async () => {
+  const retained: HostRequestPrincipalResolver = async () => {
     const current = await resolve().catch(() => null);
     if (!current || current.slug !== ceiling.slug || current.kind !== ceiling.kind
       || current.workspaceId !== ceiling.workspaceId || current.authMethod !== ceiling.authMethod
@@ -147,6 +153,8 @@ export async function retainRequestPrincipal(
           : new Set([...current.allowedTools].filter(name => ceiling.allowedTools!.has(name))),
     };
   };
+  retainedRequestPrincipals.add(retained);
+  return retained;
 }
 
 /**

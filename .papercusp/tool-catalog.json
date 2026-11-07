@@ -16372,7 +16372,7 @@
       "guidance": {
         "when": "Use mode:'claim' with an id when a directed review must take one known pending item without consuming unrelated review work. Use mode:'claim-next' only to take the next pending change/feature. Then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item. Use mode:'adopt' (id) or 'adopt-next' to take a content revision whose original submitter is provably gone, then revise and resubmit it.",
         "notWhen": "Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.",
-        "chaining": "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → use returned gradeWith.ideaId or ledgerIdeaId with blender:grade-idea { ideaId, grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id }."
+        "chaining": "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → use returned gradeWith.ideaId or ledgerIdeaId with blender:grade-idea { ideaId, grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id, acceptance?:{problem,evidence,outcome,scope,completionCheck} }. acceptance is an unsealed proposal; independent grading still owns acceptance. Never write implementationReadiness through generic update."
       }
     },
     {

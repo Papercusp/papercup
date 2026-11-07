@@ -1,0 +1,209 @@
+{
+  "scope": "fresh whole BG recipe; publication only, no activation or shipment",
+  "taskId": "0mw5r7aacqlf6xcnale",
+  "deadlineEpochMs": 1794050484302,
+  "startedAtMs": 1794016670678,
+  "controllerSha256": "5724cb3a81fc6ef73446d2f813540a6b010a1db193197bfd4ef352b6b7450d21",
+  "priorPath": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/evidence/luna-bg-preparation-20261106-v1/build-transaction-v2.json",
+  "priorTransactionSha256": "c14efcce9a94207c82bfcd9602b76d14ed22a657601a93f45cccf6b9b4043bd2",
+  "sourceCommit": "72959875a3b38694f1f7ebaf78eb7b0782d954ab",
+  "measurementTaskId": "0mw5q8d8d86xfd2vls0",
+  "measurementSha256": "367a254365bce99110bd13093725526028f6d810b575bd5399dfb60b70610fd9",
+  "measurements": {
+    "probe.prepare": 425491,
+    "probe.begin": 419326,
+    "bg.compiler.before-build": 176600,
+    "bg.compiler.node": 224,
+    "bg.compiler.metadata": 1,
+    "bg.compiler.binary": 42,
+    "bg.compiler.toolchain-files": 388,
+    "bg.compiler.custody": 204320,
+    "bg.compiler.binary-seal": 283,
+    "bg.compiler.import": 9,
+    "bg.compiler.build": 10853,
+    "bg.compiler.verify": 223230,
+    "bg.compiler.output": 4024,
+    "bg.compiler.stop": 1,
+    "probe.compiler": 620031
+  },
+  "recipeForecast": {
+    "preparationMs": 0,
+    "sourceCheckMs": 0,
+    "dependencyCheckMs": 0,
+    "cleanupMs": 120000,
+    "childEstimateMs": 0,
+    "unknownChild": false,
+    "remainingMs": 26498938,
+    "totalMs": 33123673,
+    "observedLaunchMs": null,
+    "launchReserveMs": 30000,
+    "requiredTimeoutMs": 33154000,
+    "recipePhases": [
+      {
+        "phase": "bg.recipe.validate",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.begin",
+        "estimateMs": 1859925
+      },
+      {
+        "phase": "bg.recipe.compiler.0",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.1",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.2",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.3",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.4",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.5",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.6",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.7",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.8",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.9",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.assets",
+        "estimateMs": 1239950
+      },
+      {
+        "phase": "bg.recipe.output",
+        "estimateMs": 1239950
+      },
+      {
+        "phase": "bg.recipe.logical",
+        "estimateMs": 4339825
+      },
+      {
+        "phase": "bg.recipe.publish",
+        "estimateMs": 3719850
+      },
+      {
+        "phase": "bg.recipe.verify",
+        "estimateMs": 1859925
+      }
+    ]
+  },
+  "fullForecast": {
+    "preparationMs": 0,
+    "sourceCheckMs": 0,
+    "dependencyCheckMs": 0,
+    "cleanupMs": 120000,
+    "childEstimateMs": 0,
+    "unknownChild": false,
+    "remainingMs": 27163768,
+    "totalMs": 33788503,
+    "observedLaunchMs": null,
+    "launchReserveMs": 30000,
+    "requiredTimeoutMs": 33819000,
+    "recipePhases": [
+      {
+        "phase": "bg.recipe.validate",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.begin",
+        "estimateMs": 1859925
+      },
+      {
+        "phase": "bg.recipe.compiler.0",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.1",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.2",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.3",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.4",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.5",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.6",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.7",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.8",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.compiler.9",
+        "estimateMs": 619975
+      },
+      {
+        "phase": "bg.recipe.assets",
+        "estimateMs": 1239950
+      },
+      {
+        "phase": "bg.recipe.output",
+        "estimateMs": 1239950
+      },
+      {
+        "phase": "bg.recipe.logical",
+        "estimateMs": 4339825
+      },
+      {
+        "phase": "bg.recipe.publish",
+        "estimateMs": 3719850
+      },
+      {
+        "phase": "bg.recipe.verify",
+        "estimateMs": 1859925
+      }
+    ],
+    "preparationReserveMs": 664830
+  },
+  "supportedTimeoutMs": 43200000,
+  "stage": "/mnt/data/tmp/luna-bg-source-20261106-v1/apps/operator/dist-verify/luna-generation-20261107-v4",
+  "publicationLeaf": "luna-generation-20261107-v4.publication.json",
+  "recurrenceGuards": [
+    "new independent original task clock",
+    "new exclusive stage and publication",
+    "complete selected ten-command population and original order",
+    "original frozen source/dependency receipts",
+    "maintained consumed-byte custody and physical identity fences",
+    "whole recipe plus preparation launch budget",
+    "qualified physical paths remain unchanged",
+    "no service activation or inherited runtime claim"
+  ]
+}

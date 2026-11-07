@@ -19,6 +19,7 @@ const runKey = process.env.DURABLE_CRASH_RUN_KEY;
 const mode = process.env.DURABLE_CRASH_MODE;
 const script = process.env.DURABLE_CRASH_SCRIPT;
 const crashTarget = process.env.DURABLE_CRASH_TARGET ?? '';
+const recipeInputs = JSON.parse(process.env.DURABLE_CRASH_INPUTS ?? '{}');
 const revoked = new Set((process.env.DURABLE_CRASH_REVOKE ?? '').split(',').filter(Boolean));
 if (!dsn || !runKey || !script || !['crash', 'recover', 'code'].includes(mode ?? '')) {
   throw new Error('durable orchestration crash fixture configuration is incomplete: ' + JSON.stringify({
@@ -38,6 +39,12 @@ function probeTool(name: string, effect: 'read' | 'write', idempotent: boolean):
     idempotent,
     expose: { mcp: { name } },
     fn: async (args: unknown, ctx: UnifiedToolContext): Promise<ToolResult> => {
+      if (mode === 'crash' && crashTarget === 'before:' + name) {
+        // The invocation intent exists, but the independent effect oracle has
+        // no effect. Recovery must still reconcile rather than assume absence.
+        process.kill(process.pid, 'SIGKILL');
+        await new Promise<never>(() => {});
+      }
       await sql.unsafe(
         'INSERT INTO test_durable.calls (run_key, tool, mode, args, idempotency_key) VALUES ($1, $2, $3, $4, $5)',
         [runKey, name, mode, JSON.stringify(args ?? null), ctx.idempotencyKey ?? null],
@@ -48,6 +55,25 @@ function probeTool(name: string, effect: 'read' | 'write', idempotent: boolean):
         await new Promise<never>(() => {});
       }
       const count = await sql.unsafe('SELECT count(*)::int AS n FROM test_durable.calls WHERE run_key = $1', [runKey]);
+      // Publication fixtures use the actual maintained recipe and DBOS runner.
+      // These synthetic tool contracts make the effect ledger an independent
+      // crash oracle; they do not stand in for the canonical emitter's tests.
+      let publication: unknown;
+      if (name === 'plans:evaluate-spec-quality') publication = { ok: true, verdict: 'pass', specSetHash: 'a'.repeat(64),
+        scorecardDraft: { rubricRef: 'plan-specification-quality', terminal: true,
+          subject: { kind: 'plan', ref: 'fixture-spec:' + (args as { slug: string }).slug },
+          ratings: { exact: { rating: 'healthy', evidence: 'original evaluator evidence' } } } };
+      if (name === 'scorecards:emit') publication = { ok: true, issueId: 'EI-quality-' + runKey,
+        completionReceipt: { status: 'recorded', effectRef: 'EI-quality-' + runKey }, gradingAuditPending: true };
+      if (name === 'scorecards:get') {
+        const [row] = await sql.unsafe('SELECT args FROM test_durable.calls WHERE run_key=$1 AND tool=$2 ORDER BY seq LIMIT 1',
+          [runKey, 'scorecards:emit']);
+        const emitted = row ? JSON.parse(String(row.args)) : null;
+        publication = emitted ? { ok: true, scorecard: { issueId: 'EI-quality-' + runKey,
+          rubricRef: emitted.rubricRef, subject: emitted.subject, gradingAudit: { state: 'pending' },
+          evidenceFingerprint: 'fixture-exact-evidence' } } : { ok: false, error: 'card_not_recorded' };
+      }
+      if (publication) return { content: [{ type: 'text', text: JSON.stringify(publication) }] };
       return { content: [{ type: 'text', text: JSON.stringify({ tool: name, seen: count[0]?.n ?? 0 }) }] };
     },
   } as ProjectedTool;
@@ -58,6 +84,9 @@ const TOOLS: ProjectedTool[] = [
   probeTool('probe:put', 'write', true),
   probeTool('probe:send', 'write', false),
   probeTool('probe:after', 'read', false),
+  probeTool('plans:evaluate-spec-quality', 'read', false),
+  probeTool('scorecards:emit', 'write', false),
+  probeTool('scorecards:get', 'read', false),
 ];
 
 DBOS.setConfig({
@@ -87,6 +116,7 @@ await DBOS.launch();
 const input = {
   runKey,
   script,
+  inputs: recipeInputs,
   pin: { sourceSha256: 'fixture', bindingsSha256: 'fixture' },
   caller: { ownerId: 'durable-crash-caller', workspaceId: 'ws-p019-crash', role: 'worker' },
   timeoutSec: 60,
@@ -120,10 +150,11 @@ if (mode === 'code') {
   const admitted = JSON.parse(JSON.parse((admissionText as { text: string }).text).summary);
   if (admitted.durableRun?.workflowId !== workflowId) throw new Error('original workflow not admitted: ' + JSON.stringify(admission));
   await DBOS.getResult(workflowId, 190);
-  const result = await runDurableCode({ durableRun: { workflowId } }, ctx, deps);
-  const resultText = result.content.find(row => row.type === 'text');
+  const inspected = await inspectOrchestration({ durableRun: { workflowId } }, ctx);
+  const result = (inspected as ToolResult & { data?: unknown }).data;
+  if (!result) throw new Error('original durable workflow inspection returned no data');
   process.stdout.write('DURABLE_CODE_OUTCOME ' + JSON.stringify({ workflowId, admissionElapsedMs,
-    elapsedMs: Date.now() - startedAt, result: JSON.parse((resultText as { text: string }).text) }) + '\n');
+    elapsedMs: Date.now() - startedAt, result }) + '\n');
   await DBOS.shutdown(); await sql.end({ timeout: 5 });
   process.exit(0);
 }

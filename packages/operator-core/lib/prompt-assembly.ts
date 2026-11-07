@@ -65,7 +65,7 @@ import {
   projectedToolRegistryRevision,
   PROJECTED_TOOL_REGISTRY_SOURCE,
   type ProjectedTool,
-} from '@papercusp/agent-mcp';
+} from '@papercusp/tooldef';
 import {
   isPositionalReadEncoding,
   listPrePromptEntries,

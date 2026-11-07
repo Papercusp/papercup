@@ -1952,16 +1952,28 @@ export function requireServingGeneration(tool) {
  */
 export function createPtoolStdioBridge(client, { toolName = null, listTools = () => listAllTools(client) } = {}) {
   let catalog = null;
+  let discovery = null;
   return {
     async listTools() {
-      catalog = null;
-      const listed = await listTools();
-      const selected = toolName ? listed.filter(tool => tool.name === toolName) : listed;
-      if (toolName && selected.length !== 1) throw new Error(`Unknown tool: ${toolName}`);
-      catalog = new Map(selected.map(tool => [tool.name, structuredClone(tool)]));
-      return { tools: structuredClone([...catalog.values()]) };
+      if (!discovery) {
+        catalog = null;
+        discovery = (async () => {
+          const listed = await listTools();
+          const selected = toolName ? listed.filter(tool => tool.name === toolName) : listed;
+          if (toolName && selected.length !== 1) throw new Error(`Unknown tool: ${toolName}`);
+          catalog = new Map(selected.map(tool => [tool.name, structuredClone(tool)]));
+          return [...catalog.values()];
+        })();
+      }
+      const pending = discovery;
+      try { return { tools: structuredClone(await pending) }; }
+      finally { if (discovery === pending) discovery = null; }
     },
     async callTool(params, options = {}) {
+      // Resumed clients can invoke a cached tool while their explicit listing
+      // is still in flight. Join that discovery; never initiate one here or
+      // replay a call that has already reached the upstream generation fence.
+      if (!catalog && discovery) await discovery;
       if (!catalog) throw new Error('stale_tool_contract: read tools/list before tools/call');
       const tool = catalog.get(params.name);
       if (!tool) throw new Error(`Unknown tool: ${params.name}`);

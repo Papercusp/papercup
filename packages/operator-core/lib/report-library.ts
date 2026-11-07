@@ -417,6 +417,7 @@ export async function getReport(
   reportId: string,
   viewer?: ReportViewer,
   citationScope?: ReportCitationReadScope,
+  options?: { currentEditionOnly?: boolean },
 ): Promise<ReportRecord | null> {
   const visibleGate = viewer ? visibleTo(sql, viewer) : sql`TRUE`;
   const citationGate =
@@ -426,10 +427,17 @@ export async function getReport(
       ? sql`report_id = ${citationScope.reportId}`
       : sql`FALSE`;
   const gate = sql`(${visibleGate}) OR (${citationGate})`;
+  // Evidence consumers can require a current edition without learning private
+  // successor metadata. Historical readers keep their existing exact-ID behavior.
+  const currentEdition = options?.currentEditionOnly ? sql`AND NOT EXISTS (
+    SELECT 1 FROM harness_shared.report_library newer
+     WHERE newer.workspace_id=candidate.workspace_id AND newer.lineage_id=candidate.lineage_id
+       AND (newer.published_at, newer.report_id) > (candidate.published_at, candidate.report_id)
+  )` : sql``;
   const [row] = await sql<DbRow[]>`
     SELECT ${sql.unsafe(SELECT_COLS)}
-      FROM harness_shared.report_library
-     WHERE workspace_id = ${workspaceId} AND report_id = ${reportId} AND ${gate}`;
+      FROM harness_shared.report_library candidate
+     WHERE workspace_id = ${workspaceId} AND report_id = ${reportId} AND (${gate}) ${currentEdition}`;
   return row ? mapRow(row) : null;
 }
 

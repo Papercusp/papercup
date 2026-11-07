@@ -22,6 +22,8 @@ import {
   applyListDelta,
   evalSnapshotTransition,
   checksumRows,
+  assessBaselineSufficiency,
+  type BaselineSufficiencyInput,
   type Row,
 } from './delta-eval-harness';
 
@@ -238,5 +240,72 @@ describe('evalSnapshotTransition — token ROI on plans:list-shaped payloads', (
     const next: Row[] = [{ slug: 'a', n: 2 }];
     const e = await evalSnapshotTransition(base, next, KEY);
     expect(e.winner === 'full_toon' || e.winner === 'full_json').toBe(true);
+  });
+});
+
+describe('recorded baseline sufficiency — fail-closed comparison prerequisite', () => {
+  const baseline = (): BaselineSufficiencyInput => ({
+    eligibleFamilies: ['selected-view'],
+    minimumSamplesPerWorkload: 10,
+    samples: { 'selected-view': { unchanged: 10, changed: 10, ordinary: 10 } },
+    complete: true,
+    comparable: true,
+  });
+
+  it('permits comparison at the preregistered minimum without awarding adoption', () => {
+    expect(assessBaselineSufficiency(baseline())).toEqual({
+      sufficient: true, disposition: 'ready-for-comparison', reasons: [],
+    });
+  });
+
+  it('defers an empty eligible population even when offline token savings are large', async () => {
+    const replay = await evalSnapshotTransition(workspaceView(60), workspaceView(60), KEY);
+    expect(replay.savedVsFullPct).toBeGreaterThan(99);
+    const result = assessBaselineSufficiency({ ...baseline(), eligibleFamilies: [] });
+    expect(result.sufficient).toBe(false);
+    expect(result.disposition).toBe('unknown/defer');
+    expect(result.reasons).toContain('No measured nonempty eligible population.');
+  });
+
+  it('checks every family and workload instead of pooling away a deficient ordinary cohort', () => {
+    const result = assessBaselineSufficiency({ ...baseline(),
+      eligibleFamilies: ['selected-view', 'second-view'],
+      samples: { ...baseline().samples,
+        'second-view': { unchanged: 100, changed: 100, ordinary: 9 } },
+    });
+    expect(result.disposition).toBe('unknown/defer');
+    expect(result.reasons).toEqual(['second-view/ordinary: 9 samples is below minimum 10.']);
+  });
+
+  it.each([null, undefined, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'defers an unknown or invalid cohort count (%s)', count => {
+      const result = assessBaselineSufficiency({ ...baseline(),
+        samples: { 'selected-view': { unchanged: 10, changed: count, ordinary: 10 } },
+      });
+      expect(result.sufficient).toBe(false);
+      expect(result.disposition).toBe('unknown/defer');
+      expect(result.reasons).toHaveLength(1);
+    },
+  );
+
+  it('preserves measured zero as insufficient rather than unknown', () => {
+    expect(assessBaselineSufficiency({ ...baseline(),
+      samples: { 'selected-view': { unchanged: 0, changed: 10, ordinary: 10 } },
+    }).reasons).toEqual(['selected-view/unchanged: 0 samples is below minimum 10.']);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects an invalid preregistered minimum (%s)', minimumSamplesPerWorkload => {
+      expect(assessBaselineSufficiency({ ...baseline(), minimumSamplesPerWorkload })
+        .disposition).toBe('unknown/defer');
+    },
+  );
+
+  it.each([
+    { eligibleFamilies: null }, { eligibleFamilies: ['selected-view', 'selected-view'] },
+    { eligibleFamilies: [''] }, { complete: false }, { complete: null },
+    { comparable: false }, { comparable: null },
+  ])('defers unavailable or invalid eligibility/completeness/comparability (%j)', patch => {
+    expect(assessBaselineSufficiency({ ...baseline(), ...patch }).disposition).toBe('unknown/defer');
   });
 });

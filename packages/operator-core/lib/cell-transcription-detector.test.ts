@@ -514,7 +514,11 @@ describe('EI-24684014950807803 — a hex token that names no commit is not a sha
   it('does not treat generated coord:send chunk headers as authored commit references', async () => {
     const groupId = 'abaddeed';
     const realSha = '8badf00d';
-    const text = `${chunkHeaderText(1, 2, groupId, true)}\n:3070 is serving ${realSha}`;
+    const summary = 'The authored note reports the current service state.';
+    const bodyText = [chunkHeaderText(1, 2, groupId, true), `:3070 is serving ${realSha}`].join('\n\n');
+    // Match coord:send's summary + flattened section body composition. The summary
+    // precedes the generated line in the actual detector input.
+    const text = [summary, bodyText].join('\n');
     const asked: string[] = [];
     const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
       asked.push(token);
@@ -524,6 +528,17 @@ describe('EI-24684014950807803 — a hex token that names no commit is not a sha
     expect(asked).toEqual([realSha]);
     expect(hint).toContain(realSha);
     expect(hint).not.toContain(groupId);
+
+    const groupOnlyBody = [chunkHeaderText(1, 2, groupId, true), ':3070 is serving the current release'].join('\n\n');
+    const groupOnlyText = [summary, groupOnlyBody].join('\n');
+    const groupOnlyAsked: string[] = [];
+    expect(
+      await cellTranscriptionHintResolvingCommits(groupOnlyText, async (token) => {
+        groupOnlyAsked.push(token);
+        return true;
+      }),
+    ).toBeNull();
+    expect(groupOnlyAsked).toEqual([]);
   });
 
   it('resolves against PAPERCUSP_INTEGRATION_ROOT, not the release checkout cwd', () => {

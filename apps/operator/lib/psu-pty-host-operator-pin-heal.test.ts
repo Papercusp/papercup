@@ -10,8 +10,9 @@
  * The rule under test is deliberately narrow, and both halves matter:
  *   - a managed pin that REFUSES the connection is replaced by a healthy local proxy;
  *   - an explicit pin stays authoritative even when it refuses connections;
- *   - a pin that answers at all — even with an error, even slowly — is ALIVE and stays
- *     authoritative, so a live staging session is never silently moved to green.
+ *   - a pin that answers at all — even with an error, even slowly — stays authoritative,
+ *     except for a launcher-managed :9071 pin whose target has moved to background :3271.
+ *     That known cross-runtime mismatch must be corrected even when the old route returns 200.
  *
  * The cases use real loopback sockets for the pin, so the refusal is recognised from
  * the error shape Node's fetch actually produces, not from a hand-built stand-in.
@@ -276,5 +277,72 @@ describe('healDeadOperatorPin staging route (WI-10004511)', () => {
     };
     expect(await healDeadOperatorPin(env)).toBeNull();
     expect(env.PAPERCUSP_OPERATOR_URL).toBe(STAGING_PIN);
+  });
+});
+
+describe('healDeadOperatorPin background route (EI-24899559853673371)', () => {
+  const LEGACY_GREEN_PIN = 'http://127.0.0.1:9071';
+
+  it('routes a managed legacy :9071 pin to the healthy same-runtime proxy for target :3271', async () => {
+    const requests: string[] = [];
+    const backgroundProxyPort = await serve((req, res) => {
+      requests.push(req.url || '');
+      res.writeHead(req.url === '/__mcp_proxy_health' ? 200 : 404);
+      res.end();
+    });
+    const backgroundProxy = `http://127.0.0.1:${backgroundProxyPort}`;
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: LEGACY_GREEN_PIN,
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_PROXY_PORT: '9071',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+      PAPERCUSP_MCP_PROXY_BASE: backgroundProxy,
+    };
+
+    const routed = await healDeadOperatorPin(env);
+
+    expect(routed).toEqual({ from: LEGACY_GREEN_PIN, to: backgroundProxy, route: 'background-proxy' });
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe(backgroundProxy);
+    expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
+    expect(requests).toEqual(['/__mcp_proxy_health']);
+  });
+
+  it('falls back to direct :3271 when the same-runtime proxy is unavailable', async () => {
+    const deadBackgroundProxy = `http://127.0.0.1:${await deadPort()}`;
+    const initialPins = [LEGACY_GREEN_PIN, deadBackgroundProxy];
+
+    for (const pin of initialPins) {
+      const env: Record<string, string> = {
+        PAPERCUSP_OPERATOR_URL: pin,
+        PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+        PAPERCUSP_MCP_PROXY_PORT: '9071',
+        PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+        PAPERCUSP_MCP_PROXY_BASE: deadBackgroundProxy,
+      };
+
+      const routed = await healDeadOperatorPin(env);
+
+      expect(routed).toEqual({
+        from: pin,
+        to: 'http://127.0.0.1:3271',
+        route: 'background-direct',
+      });
+      expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3271');
+    }
+  });
+
+  it('preserves an explicit :9071 pin even when the background target hint is :3271', async () => {
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: LEGACY_GREEN_PIN,
+      PAPERCUSP_MCP_PROXY_PORT: '9071',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+    };
+    const before = { ...env };
+    const fetchImpl = vi.fn(async () => new Response('ok'));
+
+    expect(await healDeadOperatorPin(env, { fetchImpl: fetchImpl as unknown as typeof fetch })).toBeNull();
+    expect(env).toEqual(before);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

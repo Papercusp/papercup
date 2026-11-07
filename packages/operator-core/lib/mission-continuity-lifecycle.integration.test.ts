@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { applyMissionEvent, applyMissionEventInTransaction, readSessionMission, updateMissionOutboxInTransaction } from './session-brief-mission';
+import { applyMissionEvent, applyMissionEventInTransaction, readCurrentMissionContinuity, readSessionMission, updateMissionOutboxInTransaction } from './session-brief-mission';
 import type { MissionParent, MissionEvent } from './mission-continuity';
 import { applySessionTaskOp, type SessionTaskOpArgs } from './session-tasks';
 import { commitMissionTaskTransition } from './mission-continuity-task-acceptance';
@@ -163,6 +163,37 @@ describe('canonical accepted task operations compose with retained mission state
 
 
 describe('retained mission state and atomic consequence intent on Postgres', () => {
+  it.each(['unfinished', 'paused', 'peer-claim', 'released-without-successor'])(
+    'refreshes consumer authority after bounded close without a lifecycle write: %s', async condition => {
+      const owner = 'su-consumer-' + condition;
+      const workItem = 'WI-consumer-' + condition;
+      await initTask(owner, 'review', workItem);
+      await taskOp(owner, { op: 'start', taskId: 'review' });
+      await taskOp(owner, { op: 'done', taskId: 'review' });
+      if (condition === 'paused') {
+        await db.sql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=NULL WHERE plan_slug='root'`;
+      } else if (condition === 'peer-claim') {
+        await db.sql`UPDATE harness_shared.work_items SET taken_by='su-peer',taken_at=now() WHERE feature_id=${workItem}`;
+      } else if (condition === 'released-without-successor') {
+        await db.sql`UPDATE harness_shared.work_items SET taken_by=NULL,taken_at=NULL WHERE feature_id=${workItem}`;
+      }
+      try {
+        const before = await mission(owner);
+        const read = await readCurrentMissionContinuity(scope(owner), { sql: db.sql, nowMs: 5_000 });
+        expect(read.availability).toBe('available');
+        if (read.availability !== 'available') throw new Error('missing consumer view');
+        expect(read.projection.accountableOwner).toBe(owner);
+        expect(read.projection.disposition).toBe(condition === 'paused' ? 'unknown'
+          : condition === 'peer-claim' ? 'transferred' : 'ready');
+        expect(read.projection.assignmentRef).toBe('plan:eng:root');
+        if (condition === 'peer-claim') expect(read.projection.nextActionRef).toBeNull();
+        expect(await mission(owner)).toEqual(before);
+      } finally {
+        await db.sql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=7 WHERE plan_slug='root'`;
+      }
+    },
+  );
+
   it('retains the root and deadlines across recovery and current-activity changes', async () => {
     const p = await seed('su-recover');
     await db.sql`UPDATE harness_shared.session_briefs SET current_plan_slug='other-activity', intent='a short question' WHERE owner_id='su-recover'`;

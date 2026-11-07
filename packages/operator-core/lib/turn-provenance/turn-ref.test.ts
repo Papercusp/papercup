@@ -970,6 +970,20 @@ describe('hook-stamp agreement — a turn the live hook judged non-owner never r
     expect(enrolledStamp).toEqual({ ref: `[turn:bf1881bc@${ts}]`, verdict: 'agent-injected', origin: 'stop-hook' });
   });
 
+  it('writtenDuring handles the quoted native Stop-hook header immediately followed by its envelope', async () => {
+    const header = '<hook_prompt hook_run_id="stop:22:/tmp/.papercusp/su-codex-homes/session-55466/hooks.json">';
+    const ts = '2026-09-23T12:31:00.000Z';
+    const unwrapped = `${header}STOP CONTEXT`;
+    write([codexUserLine(unwrapped, ts)]);
+    const unwrappedStamp = await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID });
+    expect(unwrappedStamp).toEqual({ ref: `[turn:bf1881bc@${ts}]`, verdict: 'machine-surface', origin: null });
+
+    const enrolled = `${header}⟦turn-origin:stop-hook nonce:13cb83302faee103⟧\nSTOP CONTEXT`;
+    write([codexUserLine(enrolled, ts)]);
+    const enrolledStamp = await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID });
+    expect(enrolledStamp).toEqual({ ref: `[turn:bf1881bc@${ts}]`, verdict: 'agent-injected', origin: 'stop-hook' });
+  });
+
   it('writtenDuring defers to a VERIFIED AGENT-ORIGIN hook stamp when the envelope was lost in transit', async () => {
     write([
       userLine(ENVELOPE_LOST, '2026-09-23T12:00:00.000Z'),

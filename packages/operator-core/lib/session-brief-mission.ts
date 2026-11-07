@@ -6,7 +6,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import {
-  reduceMissionContinuity, type MissionBinding, type MissionConsequence,
+  projectMissionContinuity, reduceMissionContinuity, type MissionBinding, type MissionConsequence,
   type MissionEvent, type MissionParent, type MissionState, type MissionTransition,
 } from './mission-continuity';
 
@@ -80,6 +80,33 @@ export async function readSessionMission(
        WHERE owner_id=${identity.ownerId} AND workspace_id=${identity.workspaceId}`;
     const envelope = parseSessionMission(rows[0]?.mission_continuity);
     return envelope ? { availability: 'available', envelope } : { availability: 'absent' };
+  } catch (error) {
+    return { availability: 'unknown', reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export type CurrentMissionContinuity =
+  | { availability: 'available'; revision: number; projection: ReturnType<typeof projectMissionContinuity> }
+  | { availability: 'absent' }
+  | { availability: 'unknown'; reason: string };
+
+/** Read-only consumer view. Refresh custody and disposition without committing a
+ * recovery event, enqueuing a return, or turning carried intent into authority. */
+export async function readCurrentMissionContinuity(
+  identity: MissionSessionIdentity, options: { sql?: Sql; nowMs?: number } = {},
+): Promise<CurrentMissionContinuity> {
+  try {
+    const sql = options.sql ?? getOrgPg().sql;
+    const stored = await readSessionMission(identity, sql);
+    if (stored.availability !== 'available') return stored;
+    const { readMissionTaskParent } = await import('./mission-continuity-task-acceptance');
+    const binding = stored.envelope.state.binding;
+    const parent = binding ? await readMissionTaskParent(sql, identity, binding) : null;
+    const current = reduceMissionContinuity(stored.envelope.state, {
+      id: `mission-consumer:${stored.envelope.revision}`, kind: 'recovered',
+    }, parent, options.nowMs ?? Date.now());
+    return { availability: 'available', revision: stored.envelope.revision,
+      projection: projectMissionContinuity(current.state) };
   } catch (error) {
     return { availability: 'unknown', reason: error instanceof Error ? error.message : String(error) };
   }

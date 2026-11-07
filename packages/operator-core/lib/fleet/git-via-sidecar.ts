@@ -43,7 +43,8 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { observeFallback } from '../degradation/fallback-observations';
+import { FALLBACK_SCOPE_MAX_CHARS, observeFallback } from '../degradation/fallback-observations';
+import { getServingHostIdentity } from '../serving-host-identity';
 
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
 import { isReadOnlyGitBatchExec } from '../git-batch';
@@ -440,13 +441,22 @@ function recordSidecarFallback(
   const reason = e instanceof Error ? e.message : String(e);
   // Record every eligible rejection before warning throttling. Use bounded reasons;
   // arbitrary exception text would create a new condition key for every command.
+  const servingProcessId = getServingHostIdentity().processId;
   observeFallback('spawner-sidecar-exec', {
     eligible: 1,
     applied: 0,
     reason: !tripBreaker ? 'deadline-exceeded'
       : e instanceof SidecarCircuitOpenError ? 'circuit-open'
       : disposition === 'rejected' ? 'local-execution-rejected' : 'sidecar-unavailable',
-  }, { observedAt: new Date(nowMs) });
+    // Bound the caller-provided subsystem label; an overlong label stays unscoped
+    // rather than collapsing unrelated subsystems onto one truncated value.
+    scope: subsystem.length <= FALLBACK_SCOPE_MAX_CHARS ? subsystem : null,
+  }, {
+    observedAt: new Date(nowMs),
+    // This matches tool_invocations.serving_process_id. Never substitute process.pid,
+    // which can be reused and cannot be joined to the invocation ledger.
+    ...(servingProcessId ? { processTag: servingProcessId } : {}),
+  });
   if (tripBreaker && !(e instanceof SidecarCircuitOpenError)) {
     const b = __sidecarBreaker;
     b.consecutiveFailures += 1;

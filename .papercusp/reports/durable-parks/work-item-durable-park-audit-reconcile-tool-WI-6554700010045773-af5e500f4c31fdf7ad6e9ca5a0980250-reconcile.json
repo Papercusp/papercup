@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045773:af5e500f4c31fdf7ad6e9ca5a0980250",
+  "inputSha256": "af5e500f4c31fdf7ad6e9ca5a09802501235ea1ea633aeff8c725ccd4ea25c5f",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-07T03:44:51.059Z",
+  "actor": "su-59ccf895-21f4-4cfd-b94c-7b6e3fcb7464",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045773",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "a0cf18de2f535c4931972682522a108f6d1f4ee3dbabc4ad3cfbd32db83713d6",
+      "observedParkFingerprint": "a0cf18de2f535c4931972682522a108f6d1f4ee3dbabc4ad3cfbd32db83713d6",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi verified owner AUTO/self grant in facts owner mode-instructions:auto authorizes activation-readiness plan end to end; plan D007. Temporary P008 WI6554700010030915 held self; durable custody comment1217520. D011/D016 and existing scoped adoption precedents read. Clear only conversion-owned park on this exact canonical node; preserve every other hold/lease/DAG/BAR. Global P008 remains open/unimplemented.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045773-af5e500f4c31fdf7ad6e9ca5a0980250-reconcile.json"
+}

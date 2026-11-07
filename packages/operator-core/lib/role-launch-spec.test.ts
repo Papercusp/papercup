@@ -84,6 +84,7 @@ vi.mock('./papercusp-root', async (importOriginal) => ({
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { importGraph } from './search/import-graph';
 import {
   buildRoleLaunchSpec,
   mintRoleLaunchIdentity,
@@ -101,13 +102,28 @@ import {
 // steward-seed tests are deterministic regardless of what this test process has
 // registered. `listings: null` ⇒ passthrough to the real registry.
 const stewardMockState = vi.hoisted(() => ({ listings: null as null | { name: string }[] }));
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
+vi.mock('@papercusp/tooldef', async (importOriginal) => {
   const real = (await importOriginal()) as Record<string, unknown>;
   const realList = real.listMcpProjections as (...a: unknown[]) => { name: string }[];
   return {
     ...real,
     listMcpProjections: (...args: unknown[]) => stewardMockState.listings ?? realList(...args),
   };
+});
+
+describe('launch liveness import boundary', () => {
+  it('reads registry metadata without loading the agent tool/evaluation barrel', () => {
+    const oracle = join(__dirname, 'agent-tools/coordination/liveness-oracle.ts');
+    const evaluator = join(__dirname, '../../agent-mcp/src/delta-eval-harness.ts');
+    const graph = importGraph(oracle);
+    expect(graph.externals.has('@papercusp/tooldef')).toBe(true);
+    expect(graph.externals.has('@papercusp/agent-mcp')).toBe(false);
+    expect(graph.modules.has(evaluator)).toBe(false);
+    // The same walker must detect the forbidden dependency from its real
+    // positive control; a broken graph must not turn this absence green.
+    const barrel = join(__dirname, '../../agent-mcp/src/index.ts');
+    expect(importGraph(barrel).modules.has(evaluator)).toBe(true);
+  });
 });
 
 describe('Papercusp su instance override source guard', () => {

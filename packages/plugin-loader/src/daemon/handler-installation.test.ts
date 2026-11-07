@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { snapshotInstalledHandlerFiles } from './handler-installation';
+import { snapshotInstalledHandlerFiles, snapshotInstalledPluginFiles } from './handler-installation';
 
 vi.mock('node:fs', async original => {
   const actual = await original<typeof import('node:fs')>();
@@ -25,6 +25,30 @@ function fixture() {
 }
 
 describe.runIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch))('installed guest snapshot', () => {
+  it('captures manifest-only assets without inventing an entry or admitting them as a handler', () => {
+    const f = fixture();
+    fs.rmSync(join(f.root, 'dist'), { recursive: true });
+    f.put('provision/setup.sh', 'echo MUST_NOT_EXECUTE\n');
+    fs.chmodSync(join(f.root, 'provision/setup.sh'), 0o755);
+    const files = snapshotInstalledPluginFiles(f.root, { name: 'fixture', version: '1.0.0' });
+    expect(files.map(file => file.path)).toEqual(['/handler/papercusp.json', '/handler/provision/setup.sh']);
+    const asset = files.find(file => file.path === '/handler/provision/setup.sh')!;
+    expect(asset.executable).toBe(true);
+    expect(asset.sha256).toBe(createHash('sha256').update('echo MUST_NOT_EXECUTE\n').digest('hex'));
+    f.put('provision/setup.sh', 'changed after capture');
+    expect(Buffer.from(asset.contents).toString()).toBe('echo MUST_NOT_EXECUTE\n');
+    expect(f.read).toThrow();
+    expect(() => snapshotInstalledHandlerFiles(f.root, null as unknown as string,
+      { name: 'fixture', version: '1.0.0' })).toThrow(/entry required/);
+  });
+
+  it('keeps manifest identity and no-follow constraints on inventory-only custody', () => {
+    const f = fixture();
+    expect(() => snapshotInstalledPluginFiles(f.root, { name: 'fixture', version: '2.0.0' })).toThrow();
+    fs.symlinkSync(join(f.root, 'dist/index.cjs'), join(f.root, 'linked-entry'));
+    expect(() => snapshotInstalledPluginFiles(f.root, { name: 'fixture', version: '1.0.0' })).toThrow();
+  });
+
   it('pins real entry, transitive dependencies and package data without executing them', () => {
     const f = fixture();
     f.put('node_modules/dependency/index.cjs', 'module.exports = require("./nested.cjs");');

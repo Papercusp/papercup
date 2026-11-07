@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046015:3295f14f4c8f65615c62416828489591",
+  "inputSha256": "3295f14f4c8f65615c62416828489591118ebba5f9193f40bfb06bc8820266d0",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-07T01:05:54.198Z",
+  "actor": "su-8e582458-5f13-475d-8950-77e479c89a18",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046015",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "observedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "reasonCode": "operator-directed",
+      "evidence": "Bounded P-008 adoption per one-work-graph-structured-holds-2026-10-26 D-011/D-016 and recorded Avi AUTO authorization on requesting session su-07e4aca6-d95c-4e50-972a-be582ae8b56e. Directed request coord-send-74a1c55fd9f59fe25326dcd92732ebd378e26da10c8146d09e67eabbd0b3f07d carries holding owner AUTO premise. P-008 custody verified su-8e582458-5f13-475d-8950-77e479c89a18; exact lifecycle P-001 is unassigned/open, sole migration park, fingerprint read by maintained dry run. Quality EI-28085677226031280 is current/nonretracted/nonsuperseded with passed independent audit EI-28087710308318349. Lift only this conversion park for canonical start; preserve leases, dependencies, BARs and global P-008 reader implementation.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046015-3295f14f4c8f65615c62416828489591-reconcile.json"
+}

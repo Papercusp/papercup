@@ -25,6 +25,167 @@ const home = () => ({ PAPERCUSP_HOME: mkdtempSync(path.join(tmpdir(), 'ledger-un
 type CodeIntelState = { turn: string; chars: number; subjects: string[] };
 
 describe('delivery ledger', () => {
+  it.each(['codex', 'claude', 'omp'])('records exact %s mid-turn output without replacing the orientation token', client => {
+    const env = home();
+    const owner = 'su-mid-turn';
+    const rendered = '- memory: complete operative condition ☃';
+    const offer = { kind: 'memory', id: 'mid-memory', epoch: 5, port: 'mid-turn', rendered,
+      bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
+    const payload = (text: string, event = client === 'codex' ? 'PostToolUse' : 'PostToolBatch') =>
+      client === 'omp' ? text : JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
+    const start = openDeliveryLedger(owner, env);
+    start.offer('orientation-token');
+    expect(start.commit()).toBe(true);
+    const mid = openDeliveryLedger(owner, env, 'mid-turn');
+    mid.offer('partial-token', { payload: payload(rendered.slice(0, -3)), client, memoryFragmentOffers: [offer] });
+    expect(mid.commit()).toBe(true);
+    expect(mid.confirmedMemoryDeliveries()).toEqual([]);
+    mid.offer('mid-token', { payload: payload(rendered) + '\n', client, memoryFragmentOffers: [offer] });
+    expect(mid.confirmedMemoryDeliveries()).toEqual([]); // preparing cannot prove stdout
+    expect(mid.commit()).toBe(true);
+    const { rendered: _text, ...fragment } = offer;
+    expect(openDeliveryLedger(owner, env).confirmed()).toBe('orientation-token');
+    expect(openDeliveryLedger(owner, env, 'mid-turn').confirmed()).toBe('mid-token');
+    expect(start.confirmedMemoryDeliveries()).toEqual([{ token: 'mid-token', fragments: [fragment] }]);
+    if (client !== 'omp') {
+      mid.offer('wrong-envelope', { payload: payload(rendered, 'PreToolUse'), client, memoryFragmentOffers: [offer] });
+      expect(mid.commit()).toBe(true);
+      expect(start.confirmedMemoryDeliveries()).toEqual([{ token: 'mid-token', fragments: [fragment] }]);
+    }
+  });
+
+  it.each(['codex', 'claude'])('relays a %s post-tool fragment through its actual adapter envelope', async client => {
+    const env = { ...home(), PAPERCUSP_SID: 'su-mid-relay' };
+    const adapter = await import(path.join(HERE, '..', 'adapters', `${client}.mjs`));
+    const text = '- memory: complete mid-turn condition';
+    const offer = { kind: 'corpus', id: 'WI-42', epoch: 3, port: 'mid-turn', rendered: text,
+      bodySha256: createHash('sha256').update(text).digest('hex'), bodyBytes: Buffer.byteLength(text) };
+    const call = { tool_name: 'Read', tool_input: { file_path: 'src/receipt.ts' }, tool_response: 'receipt' };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text, deliveryToken: 'mid-relay-token',
+      memoryFragmentOffers: [offer] }), { status: 200 }));
+    let ledger: ReturnType<typeof openDeliveryLedger> = null;
+    const args = { adapter, env, fetchImpl: fetchImpl as typeof fetch,
+      nativeEvent: client === 'codex' ? 'PostToolUse' : 'PostToolBatch',
+      event: client === 'codex' ? call : { tool_calls: [call] },
+      openDeliveryLedger: (owner: string, env: NodeJS.ProcessEnv, port?: 'turn-start' | 'mid-turn') =>
+        (ledger = openDeliveryLedger(owner, env, port)) };
+    const payload = await runInjection(args);
+    expect(JSON.parse(payload!).hookSpecificOutput.additionalContext).toContain(text);
+    expect(ledger!.confirmedMemoryDeliveries()).toEqual([]);
+    expect(ledger!.commit()).toBe(true);
+    await runInjection(args);
+    const request = JSON.parse(String((fetchImpl.mock.calls[1] as unknown as [string, RequestInit])[1].body));
+    const { rendered: _text, ...manifest } = offer;
+    expect(request.memoryReceiptMode).toBe(true);
+    expect(request).not.toHaveProperty('confirmedDelivery');
+    expect(request.confirmedMemoryDeliveries).toEqual([{ token: 'mid-relay-token', fragments: [manifest] }]);
+    expect(openDeliveryLedger(env.PAPERCUSP_SID, env).confirmed()).toBeNull();
+  });
+
+  it.each(['codex', 'claude', 'omp'])('confirms exact memory fragments only after complete %s stdout, retaining overlapping receipts', client => {
+    const env = home();
+    const offer = (id: string, rendered: string) => ({ kind: 'memory', id, epoch: 7, port: 'turn-start', rendered,
+      bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) });
+    const a = offer('id-a', '- memory a: complete ☃'), b = offer('id-b', '- memory b: last condition needs approval');
+    const payload = (text: string) => client === 'omp' ? text : JSON.stringify({ hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit', additionalContext: text,
+    } });
+    const first = openDeliveryLedger('su-memory', env), second = openDeliveryLedger('su-memory', env);
+    first.offer('token-a', { payload: payload(a.rendered + '\n' + b.rendered.slice(0, -4)) + '\n', client,
+      memoryFragmentOffers: [a, b] });
+    second.offer('token-b', { payload: payload(b.rendered) + '\n', client, memoryFragmentOffers: [b] });
+    expect(first.confirmedMemoryDeliveries()).toEqual([]); // response receipt is not a stdout receipt
+    expect(second.commit()).toBe(true);
+    expect(first.commit()).toBe(true); // reversed finish order must preserve both proofs
+    const proofs = openDeliveryLedger('su-memory', env).confirmedMemoryDeliveries();
+    const { rendered: _a, ...ma } = a, { rendered: _b, ...mb } = b;
+    expect(proofs).toEqual(expect.arrayContaining([
+      { token: 'token-a', fragments: [ma] }, { token: 'token-b', fragments: [mb] },
+    ]));
+    for (const file of readdirSync(path.join(ledgerDir(env), 'su-memory.emissions'))) {
+      const stored = readFileSync(path.join(ledgerDir(env), 'su-memory.emissions', file), 'utf8');
+      expect(stored).not.toContain('complete ☃');
+      expect(stored).not.toContain('needs approval');
+    }
+  });
+
+  it('relays the exact memory receipt through the native adapter into its next request', async () => {
+    const env = { ...home(), PAPERCUSP_SID: 'su-memory-relay' };
+    const adapter = await import(path.join(HERE, '..', 'adapters', 'codex.mjs'));
+    const text = '- memory: retain the entire operative condition ☃';
+    const offer = { kind: 'memory', id: 'memory-id', epoch: 2, port: 'turn-start', rendered: text,
+      bodySha256: createHash('sha256').update(text).digest('hex'), bodyBytes: Buffer.byteLength(text) };
+    const fetchImpl = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response(JSON.stringify({ text,
+      deliveryToken: 'memory-token', memoryFragmentOffers: [offer] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const ledger = openDeliveryLedger(env.PAPERCUSP_SID, env);
+    const args = { adapter, nativeEvent: 'UserPromptSubmit', event: { prompt: 'go' }, env,
+      fetchImpl: fetchImpl as typeof fetch };
+    await runInjection({ ...args, openDeliveryLedger: () => ledger });
+    expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+    expect(ledger.commit()).toBe(true);
+    await runInjection({ ...args, openDeliveryLedger });
+    const request = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body));
+    const { rendered: _text, ...manifest } = offer;
+    expect(request.confirmedMemoryDeliveries).toEqual([{ token: 'memory-token', fragments: [manifest] }]);
+  });
+
+  it('relays complete bodies through the native Codex adapter and immutable receipt into the next request', async () => {
+    const env = { ...home(), PAPERCUSP_SID: 'su-native-relay' };
+    const adapter = await import(path.join(HERE, '..', 'adapters', 'codex.mjs'));
+    const rendered = '- Standing fact: {"key":"a","body":"complete body"}';
+    const manifest = { scope: 'workspace', ref: null, key: 'a', cellVersion: '0001:0:node',
+      bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
+    const ledger = openDeliveryLedger(env.PAPERCUSP_SID, env);
+    let call = 0;
+    const fetchImpl = vi.fn(async (_url: string | URL, _init?: RequestInit) => new Response(JSON.stringify(
+      call++ === 0 ? { text: rendered, deliveryToken: 'native-token', factBodyOffers: [{ ...manifest, rendered }] }
+        : { text: '' },
+    ), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const args = { adapter, nativeEvent: 'UserPromptSubmit', event: { prompt: 'go' }, env,
+      fetchImpl: fetchImpl as typeof fetch };
+    const payload = await runInjection({ ...args, openDeliveryLedger: () => ledger });
+    expect(JSON.parse(payload!).hookSpecificOutput.additionalContext).toBe(rendered);
+    expect(openDeliveryLedger(env.PAPERCUSP_SID, env).confirmedFactBodies()).toEqual([]);
+    expect(ledger.commit()).toBe(true); // index.mjs commits from its successful stdout callback
+    await runInjection({ ...args, openDeliveryLedger });
+    const request = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body));
+    expect(request.confirmedDelivery).toBe('native-token');
+    expect(request.confirmedFactBodies).toEqual([manifest]);
+    expect(JSON.stringify(request.confirmedFactBodies)).not.toContain('complete body');
+  });
+
+  it.each(['codex', 'claude', 'omp'])('proves only complete bodies in the final %s adapter output', client => {
+    const env = home();
+    const complete = '- Standing fact: {"key":"a","body":"quoted \\"text\\" and ☃"}';
+    const missing = '- Standing fact: {"key":"b","body":"not emitted"}';
+    const offer = (key: string, rendered: string) => ({ scope: 'workspace', ref: null, key,
+      cellVersion: '0001:0:node', rendered,
+      bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) });
+    const offers = [offer('a', complete), offer('b', missing)];
+    const text = `## Standing facts\n${complete}\n${missing.slice(0, -5)}`;
+    const payload = client === 'omp' ? text : JSON.stringify({ hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit', additionalContext: text,
+    } });
+    const ledger = openDeliveryLedger('su-body', env);
+    ledger.offer('body-token', { payload: payload + '\n', client, factBodyOffers: offers });
+    expect(openDeliveryLedger('su-body', env).confirmedFactBodies()).toEqual([]);
+    expect(ledger.commit()).toBe(true);
+    const expected = { ...offers[0] }; delete (expected as Partial<typeof expected>).rendered;
+    expect(openDeliveryLedger('su-body', env).confirmedFactBodies()).toEqual([expected]);
+    const receipt = readFileSync(path.join(ledgerDir(env), 'su-body.emissions',
+      readdirSync(path.join(ledgerDir(env), 'su-body.emissions'))[0]), 'utf8');
+    expect(receipt).not.toContain('quoted');
+    expect(receipt).not.toContain('not emitted');
+  });
+
+  it.each(['unknown', 'codex'])('does not prove a key-only or unparseable %s output', client => {
+    const env = home();
+    const ledger = openDeliveryLedger('su-no-body', env);
+    ledger.offer('key-only', { payload: 'keys: a', client, factBodyOffers: [{ key: 'a' }] });
+    ledger.commit();
+    expect(openDeliveryLedger('su-no-body', env).confirmedFactBodies()).toEqual([]);
+  });
+
   it('confirms only what was offered AND committed', () => {
     const env = home();
     const ledger = openDeliveryLedger('su-1', env);

@@ -4851,6 +4851,56 @@ describe('ptool stdio catalog generation bridge', () => {
       _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:first' } });
   });
 
+  it('joins an in-progress initial listing before forwarding a resumed cached tool', async () => {
+    let finishListing!: (tools: ReturnType<typeof entry>[]) => void;
+    const listTools = vi.fn(() => new Promise<ReturnType<typeof entry>[]>(resolve => { finishListing = resolve; }));
+    const result = { content: [{ type: 'text', text: 'managed execution preserved' }] };
+    const callTool = vi.fn(async (_params: Record<string, unknown>) => result);
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools });
+    const listing = bridge.listTools();
+    const request = bridge.callTool({ name: 'tools:invoke', arguments: { name: 'capability:bash', args: {} } });
+    const settled = request.then(value => ({ value }), error => ({ error }));
+    await Promise.resolve();
+    expect(callTool).not.toHaveBeenCalled();
+    finishListing([entry()]);
+    await listing;
+    expect(await settled).toEqual({ value: result });
+    expect(listTools).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool.mock.calls[0]![0]).toMatchObject({
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:first' },
+    });
+  });
+
+  it('keeps a failed in-progress listing closed to waiting calls', async () => {
+    let failListing!: (error: Error) => void;
+    const listTools = vi.fn(() => new Promise<ReturnType<typeof entry>[]>((_, reject) => { failListing = reject; }));
+    const callTool = vi.fn();
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool }, { listTools });
+    const listing = bridge.listTools();
+    const listingResult = listing.catch(error => error);
+    const requestResult = bridge.callTool({ name: 'tools:invoke' }).catch(error => error);
+    const unavailable = new Error('catalog unavailable');
+    failListing(unavailable);
+    expect(await listingResult).toBe(unavailable);
+    expect(await requestResult).toBe(unavailable);
+    await expect(bridge.callTool({ name: 'tools:invoke' })).rejects.toThrow(/read tools\/list/);
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('shares concurrent listings without racing catalog generations', async () => {
+    let finishListing!: (tools: ReturnType<typeof entry>[]) => void;
+    const listTools = vi.fn(() => new Promise<ReturnType<typeof entry>[]>(resolve => { finishListing = resolve; }));
+    const bridge = createPtoolStdioBridge({ listTools: vi.fn(), callTool: vi.fn() }, { listTools });
+    const first = bridge.listTools();
+    const second = bridge.listTools();
+    expect(listTools).toHaveBeenCalledTimes(1);
+    finishListing([entry()]);
+    const [one, two] = await Promise.all([first, second]);
+    one.tools[0]!._meta['papercusp/servingGeneration'] = 'caller-tampered';
+    expect(two.tools[0]!._meta['papercusp/servingGeneration']).toBe('serving-generation-v1:first');
+  });
+
   it('does not refresh or replay a rejected stale mutation; an explicit listing admits the new generation', async () => {
     let generation = 'serving-generation-v1:first';
     const listTools = vi.fn(async () => [entry(generation)]);

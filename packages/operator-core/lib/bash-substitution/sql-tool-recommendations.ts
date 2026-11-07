@@ -5,10 +5,12 @@
  * A registry pair retrieves a candidate; it does not certify its current contract.
  */
 import { isDeepStrictEqual } from 'node:util';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { SQL_READ_PAIRS, SQL_READ_NO_PAIR_DECISIONS } from './pairs/sql-reads';
 import { sqlPairClaimsAtom } from './sql-corpus';
 import { fingerprintSqlIntent, type SqlIntentFeatures, type SqlIntentScope } from './sql-intent-fingerprint';
+import { isSensitiveValueKey, redactSensitiveText } from '../sensitive-text';
 
 export type SqlRecommendationKind = 'route-existing' | 'extend-existing' | 'availability-gap'
   | 'new-tool' | 'keep-sql' | 'insufficient-evidence';
@@ -18,7 +20,57 @@ export interface SqlToolContract {
   name: string;
   /** Versioned identity of the schema, implementation AND output contract. */
   contractRef: string;
+  sourceFingerprint?: string;
   args: { safeParse(value: unknown): { success: boolean } };
+}
+
+export function sqlToolContractIdentity(generation: string, registryRevision: string): string {
+  return 'sql-tool-contract-v1:' + createHash('sha256').update(JSON.stringify([generation, registryRevision])).digest('hex');
+}
+
+/** Domain-separated, scoped tokens cannot disclose low-entropy private values
+ * through an unkeyed digest. Non-JSON and oversized evidence stays unavailable. */
+export function sqlCoverageToken(scope: SqlIntentScope, harness: string, domain: 'args' | 'rows' | 'features',
+  value: unknown): string | null {
+  try {
+    if (!scope.workspaceId || !scope.sourceBoundary || !scope.epoch || !harness || scope.key.byteLength < 32) return null;
+    const json = canonicalJson(value);
+    if (Buffer.byteLength(json) > 2 * 1024 * 1024) return null;
+    const sensitive = (v: unknown): boolean => Array.isArray(v) ? v.some(sensitive)
+      : v !== null && typeof v === 'object' && Object.entries(v).some(([key, child]) => isSensitiveValueKey(key) || sensitive(child));
+    if (domain === 'args' && sensitive(value) || redactSensitiveText(json, scope.knownSecrets) !== json
+      || scope.knownSecrets?.some(secret => secret.length > 0 &&
+        (json.includes(secret) || json.includes(JSON.stringify(secret).slice(1, -1))))) return null;
+    return createHmac('sha256', scope.key).update(JSON.stringify([
+      'sql-coverage-v1', scope.workspaceId, harness, scope.sourceBoundary, scope.epoch, domain, json,
+    ])).digest('hex');
+  } catch { return null; }
+}
+
+/** The maintained comparison supports complete named JSON rows only. It never
+ * guesses a projection from a tool name, drops row order, or treats a clipped
+ * response as complete. Other result contracts need their own measured fixture. */
+export function sqlCoverageRows(value: unknown): unknown[] | null {
+  try {
+    const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+    const complete = (v: unknown): boolean => Array.isArray(v) ? v.every(complete) : !record(v) ||
+      !(v._partial === true || v._truncated === true || v.truncated === true || v.isError === true
+        || record(v._projection) && v._projection.truncated === true) && Object.values(v).every(complete);
+    if (!record(value) || !complete(value)) return null;
+    let body: unknown = value;
+    if (value.structuredContent !== undefined) body = value.structuredContent;
+    else if (value.data !== undefined) body = value.data;
+    else if (Array.isArray(value.content)) {
+      if (value.content.length !== 1 || !record(value.content[0]) || value.content[0].type !== 'text'
+        || typeof value.content[0].text !== 'string' || Buffer.byteLength(value.content[0].text) > 2 * 1024 * 1024) return null;
+      body = JSON.parse(value.content[0].text);
+    }
+    if (!record(body) || !complete(body) || body.truncated !== false || !Array.isArray(body.rows)
+      || body.rows.length === 0 || body.rows.length > 10_000 || body.rows.some(row => !record(row))
+      || body.rowCount !== undefined && body.rowCount !== body.rows.length) return null;
+    canonicalJson(body.rows); // Reject non-finite numbers, BigInt, dates and cycles.
+    return body.rows;
+  } catch { return null; }
 }
 export interface SqlToolCatalog {
   /** A registry/runtime receipt; staging and served snapshots must be separate. */

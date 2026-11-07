@@ -37,7 +37,8 @@ import { randomUUID } from 'node:crypto';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { createOrgTestDb } from '../../../test/_org-test-db';
 import { getOrgPg } from '@papercusp/db-org';
-import { factCellKey, readFactBodyCursor, stageFactBodyDelivery, type FactBodyCell } from '../../agent-facts/cells';
+import { factCellKey, readFactBodyCursor, stageFactBodyDelivery, type FactBodyCell,
+  factBodyOffer, stageNativeFactBodyDelivery, confirmNativeFactBodyDelivery } from '../../agent-facts/cells';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache getOrgPg() memoizes (not re-exported from the index) — same pattern as hive-git-mode-gc-arming.integration.test.ts
 import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/src/connection';
 import {
@@ -197,7 +198,7 @@ describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real
     const f = (key: string, cellVersion: string): FactBodyCell => ({
       scope: 'workspace', scopeRef: null, key, body: `body:${key}`, cellVersion,
     });
-    const row = (cell: FactBodyCell) => ({ scope: cell.scope, ref: cell.scopeRef, body: cell.body });
+    const row = (cell: FactBodyCell) => ({ scope: cell.scope, ref: cell.scopeRef, key: cell.key, cellVersion: cell.cellVersion, body: cell.body });
     const baseline = f('baseline', 'hlc-1');
     await stageFactBodyDelivery(owner, [baseline], [row(baseline)], 'baseline');
     await readFactBodyCursor(owner, 'baseline');
@@ -215,6 +216,21 @@ describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real
     expect((await readFactBodyCursor(owner, 'retry'))?.versions).toEqual({
       ...proven!.versions, [factCellKey(older)]: 'hlc-5',
     });
+  });
+
+  it('confirms the native emission subset after a PostgreSQL store restart without consuming omitted peers', async () => {
+    const owner = `su-${randomUUID().slice(0, 8)}`;
+    const a: FactBodyCell = { scope: 'workspace', scopeRef: null, key: 'a', body: 'full a', cellVersion: 'hlc-9' };
+    const b = { ...a, key: 'b', body: 'full b' };
+    const offers = [a, b].map(f => factBodyOffer(f)!);
+    await stageNativeFactBodyDelivery(owner, offers, 'native');
+    resetReadCursorStore();
+    const cursor = await confirmNativeFactBodyDelivery(owner, 'native', [offers[0]]);
+    expect(cursor?.versions).toEqual({ [factCellKey(a)]: 'hlc-9' });
+    await stageNativeFactBodyDelivery(owner, [factBodyOffer({ ...a, cellVersion: 'hlc-z' })!], 'lost');
+    resetReadCursorStore();
+    expect(await confirmNativeFactBodyDelivery(owner, 'old', offers)).toEqual(cursor);
+    expect((await readFactBodyCursor(owner))?.versions[factCellKey(b)]).toBeUndefined();
   });
 
   it('clearReadCursor deletes the row via the real DB', async () => {

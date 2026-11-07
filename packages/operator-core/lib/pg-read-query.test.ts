@@ -262,6 +262,41 @@ describe('extractPgErrorInfo (EI-8301 — surface PG HINT/DETAIL/code/position)'
   });
 });
 
+describe('pgReadQuery — typed replay parameters', () => {
+  it('keeps hostile values out of SQL and binds only the primary query', async () => {
+    const value = "quoted'); DELETE FROM private_examples; --";
+    const calls: Array<{ query: string; parameters: unknown }> = [];
+    const client = {
+      begin: async (run: (tx: unknown) => Promise<void>) => run({
+        unsafe: async (query: string, parameters?: unknown[]) => {
+          calls.push({ query, parameters });
+          return query.includes('SELECT * FROM') ? [{ value }] : [];
+        },
+      }),
+    } as never;
+    const parameters = [value];
+    const result = await pgReadQuery('SELECT $1::text AS value', {
+      client, parameters, positiveControlSql: 'SELECT 1 AS present',
+    });
+    expect(result.rows).toEqual([{ value }]);
+    expect(calls.filter(call => call.parameters !== undefined)).toEqual([{
+      query: 'SELECT * FROM (SELECT $1::text AS value) AS _pgq LIMIT 201',
+      parameters: [value],
+    }]);
+    expect(calls.every(call => !call.query.includes(value))).toBe(true);
+    expect(parameters).toEqual([value]);
+  });
+
+  it('retains the read-only guard when parameters are supplied', async () => {
+    let entered = false;
+    const client = { begin: async () => { entered = true; } } as never;
+    await expect(pgReadQuery('DELETE FROM private_examples WHERE id = $1', {
+      client, parameters: ['id'],
+    })).rejects.toThrow();
+    expect(entered).toBe(false);
+  });
+});
+
 describe('pgReadQuery — whole-call deadline (EI-19415142351884573)', () => {
   it('rejects with PgReadQueryTimeoutError instead of hanging when connect/acquire never settles', async () => {
     vi.useFakeTimers();
@@ -4306,15 +4341,18 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
     expect(advisory).not.toContain("(workspace_id = 'papercusp-workspace') AS d");
   });
 
-  it('fires on an EXISTS whose predicate sits one paren deep, without a stray paren', () => {
-    const advisory = buildNonSummingPartitionAdvisory(
-      "SELECT EXISTS (SELECT 1 FROM harness_shared.work_items WHERE payload->>'lane' <> 'observation')",
-    );
-    expect(advisory).toBeTruthy();
-    expect(advisory).toContain("(payload->>'lane' <> 'observation') AS d1");
-    expect(advisory, 'the subquery close paren must not ride along into the dimension').not.toContain(
-      "'observation')) AS d1",
-    );
+  it('stays silent on a standalone boolean EXISTS with a predicate one paren deep', () => {
+    const sql =
+      "SELECT EXISTS (SELECT 1 FROM harness_shared.work_items WHERE payload->>'lane' <> 'observation')";
+    expect(planPredicatePartition(sql)).toBeNull();
+    expect(buildNonSummingPartitionAdvisory(sql)).toBeNull();
+  });
+
+  it('stays silent on an information-schema EXISTS probe with multiple predicates', () => {
+    const sql =
+      "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'harness_shared' AND table_name = 'harness_plans' AND column_name = 'execution_start_revision_seq') AS execution_start_column_present";
+    expect(planPredicatePartition(sql)).toBeNull();
+    expect(buildNonSummingPartitionAdvisory(sql)).toBeNull();
   });
 
   it('stays silent on a row-returning query with a correlated EXISTS projection', () => {
@@ -4430,11 +4468,8 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
   });
 
   it('keeps shape checks linear for large dollar-quoted projections', () => {
-    // The partition detector masks string bodies with spaces before checking
-    // whether a projection is a scalar EXISTS. An end-anchored alias regex
-    // used to backtrack across those spaces quadratically, so this otherwise
-    // ordinary 32 KB read spent seconds in preflight and hit dev:pg_query's
-    // default whole-call deadline.
+    // Keep the shape preflight bounded on large opaque string literals; a
+    // 32 KB non-census projection should not consume dev:pg_query's deadline.
     const literal = 'x'.repeat(31_799);
     const sql =
       `SELECT encode(sha256(convert_to($qx7zk$${literal}$qx7zk$,'UTF8')),'hex') AS h, ` +

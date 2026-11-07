@@ -215,8 +215,13 @@ export async function withGovernedExecution<T>(
       await cancelForAbort();
       throw abortReason();
     }
-    if (settlement.kind === 'cancel') await execution.cancel(settlement.reason);
-    else await execution.finish(settlement.actualDemand);
+    if (settlement.kind === 'cancel') {
+      // Do not let a transient cancellation-write failure replace the already
+      // computed operation outcome; retain the lease and retry the exact action.
+      settleGovernedExecutionInBackground(execution, settlement);
+    } else {
+      await execution.finish(settlement.actualDemand);
+    }
     return result;
   } catch (error) {
     if (signal?.aborted) {

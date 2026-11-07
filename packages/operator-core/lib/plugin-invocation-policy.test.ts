@@ -146,6 +146,39 @@ describe('projected plugin host resource approval', () => {
     expect(existsSync(f.marker)).toBe(false);
   });
 
+  it('rejects a call ID changed while its exact host approval is pending', async () => {
+    const f = fixture();
+    expect((await f.run()).result?.isError).not.toBe(true);
+    expect(readFileSync(f.marker, 'utf8')).toBe('authorized'); rmSync(f.marker);
+    let pending: Request;
+    const decide = f.policy.decide;
+    f.policy.decide = async query => {
+      const decision = await decide(query);
+      pending.callId = `${pending.callId}-different`;
+      return decision;
+    };
+    const result = await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx,
+      { aroundInvoke: request => { pending = request; return f.aroundInvoke(request); } });
+    expect(existsSync(f.marker)).toBe(false);
+    expect(result.result?.isError).toBe(true);
+  });
+
+  it('cannot revive a cancelled effect by replacing the approved abort signal', async () => {
+    const f = fixture();
+    expect((await f.run()).result?.isError).not.toBe(true);
+    expect(readFileSync(f.marker, 'utf8')).toBe('authorized'); rmSync(f.marker);
+    const controller = new AbortController(); f.ctx.signal = controller.signal;
+    f.tool.fn = async (_input, context) => {
+      await Promise.resolve(); controller.abort();
+      context.signal = new AbortController().signal;
+      f.service.perform();
+      return { content: [] };
+    };
+    const result = await f.run();
+    expect(existsSync(f.marker)).toBe(false);
+    expect(result.ok === false || result.result?.isError === true).toBe(true);
+  });
+
   it('rejects a caller missing transport authentication provenance', async () => {
     const f = fixture(); const { kind: _kind, ...incomplete } = f.principal;
     f.ctx.principal = incomplete;

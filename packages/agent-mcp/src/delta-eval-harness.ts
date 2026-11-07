@@ -62,6 +62,62 @@ export interface DeltaEvalOpts {
   itemKey?: string;
 }
 
+export type BaselineWorkload = 'unchanged' | 'changed' | 'ordinary';
+
+export interface BaselineSufficiencyInput {
+  /** Source-backed eligible population; null means the census is unavailable. */
+  eligibleFamilies: readonly string[] | null;
+  /** Fixed by preregistration, never chosen from the observed sample. */
+  minimumSamplesPerWorkload: number;
+  samples: Readonly<Record<string, Partial<Record<BaselineWorkload, number | null>>>>;
+  complete: boolean | null;
+  comparable: boolean | null;
+}
+
+/**
+ * Assess a recorded baseline without re-executing tools or treating token ROI
+ * as operational evidence. Every eligible family needs every workload; an
+ * empty population cannot pass vacuously. A sufficient baseline only permits
+ * comparison: target, correctness, latency and independent receipt review are
+ * separate obligations. This function never awards adoption or performance PASS.
+ */
+export function assessBaselineSufficiency(input: BaselineSufficiencyInput): {
+  sufficient: boolean;
+  disposition: 'ready-for-comparison' | 'unknown/defer';
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  const families = input.eligibleFamilies;
+  if (!families?.length) reasons.push('No measured nonempty eligible population.');
+  if (families && (new Set(families).size !== families.length
+    || families.some(family => !family.trim()))) {
+    reasons.push('The eligible-family census is invalid.');
+  }
+  const minimum = input.minimumSamplesPerWorkload;
+  if (!Number.isSafeInteger(minimum) || minimum < 1) {
+    reasons.push('The preregistered minimum must be a positive safe integer.');
+  }
+  if (input.complete !== true) reasons.push('Baseline completeness is not established.');
+  if (input.comparable !== true) reasons.push('Baseline comparability is not established.');
+  for (const family of families ?? []) {
+    for (const workload of ['unchanged', 'changed', 'ordinary'] as const) {
+      const count = input.samples[family]?.[workload];
+      if (count == null) {
+        reasons.push(`${family}/${workload}: sample count is unknown.`);
+      } else if (!Number.isSafeInteger(count) || count < 0) {
+        reasons.push(`${family}/${workload}: sample count is invalid.`);
+      } else if (count < minimum) {
+        reasons.push(`${family}/${workload}: ${count} samples is below minimum ${minimum}.`);
+      }
+    }
+  }
+  return {
+    sufficient: reasons.length === 0,
+    disposition: reasons.length === 0 ? 'ready-for-comparison' : 'unknown/defer',
+    reasons,
+  };
+}
+
 /** Why a transition degrades to a full re-send instead of a delta (telemetry + the harness signal). */
 export type FullReason = 'base_absent' | 'no_item_key' | 'duplicate_key';
 

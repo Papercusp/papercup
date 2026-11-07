@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046016:7f06c35b16ae464a72bb1ec8aee48607",
+  "inputSha256": "7f06c35b16ae464a72bb1ec8aee486070a35ce7f766456b4cebbd71e1b5909d5",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-07T02:24:25.560Z",
+  "actor": "su-07e4aca6-d95c-4e50-972a-be582ae8b56e",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046016",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "observedParkFingerprint": "f9a744c299644027819b5f4f2d04bf4aabc292d539e2628ec874339c8622fe9c",
+      "reasonCode": "operator-directed",
+      "evidence": "Verified Avi owner AUTO lifecycle execution grant in current mode-instructions:auto; lifecycle-driven-git-sync-2026-11-06#D-011 authorizes exact temporary P008 custody. P008 claim receipt /tmp/lifecycle-p008-claim-0219.json; dry /tmp/lifecycle-p002-park-dry-0220.json proves sole conversion-owned migration park with no peer claim/lease. Read graph D-011/D-016. Clear ONLY P002; preserve all other holds/DAG/BARs; no global P008 completion.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046016-7f06c35b16ae464a72bb1ec8aee48607-reconcile.json"
+}

@@ -65,8 +65,8 @@ const fixture = [
   },
 ];
 
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+vi.mock('@papercusp/tooldef', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/tooldef')>()),
   listAllProjectedTools: () => fixture,
 }));
 

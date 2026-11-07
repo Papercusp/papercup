@@ -11,10 +11,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { getTestPg, teardownTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { ACTIVATION_QUALITY_PUBLICATION_SCRIPT } from '../agent-tools/recipes/activation-quality-publication';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childPath = resolve(packageRoot, 'test/_durable-orchestration-crash-child.ts');
@@ -24,6 +26,20 @@ let dsn: string;
 let sql: postgres.Sql;
 
 beforeAll(async () => {
+  // Children inherit the committed-source loader outside Vitest's worker.
+  // Match the interruption suite's precondition before creating a DB.
+  if (process.env.NODE_OPTIONS?.includes('committed-source-loader')) {
+    const root = resolve(packageRoot, '../..');
+    for (const path of ['packages/operator-core/test/_durable-orchestration-crash-child.ts',
+      'packages/operator-core/lib/dbos/durable-orchestration-workflow.ts',
+      'packages/operator-core/lib/agent-tools/code/durable-run.ts',
+      'packages/operator-core/lib/agent-tools/orchestration/run.ts']) {
+      const committed = spawnSync('git', ['show', 'HEAD:' + path], { cwd: root, maxBuffer: 8 * 1024 * 1024 });
+      expect(committed.status, 'await git-sync before crash proof: ' + path).toBe(0);
+      expect(readFileSync(resolve(root, path)).equals(committed.stdout),
+        'await git-sync; committed-source loader would substitute ' + path).toBe(true);
+    }
+  }
   adminUri = await getTestPg();
   databaseName = 'durable_orch_crash_' + randomBytes(5).toString('hex');
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
@@ -66,6 +82,7 @@ interface Scenario {
   script: string;
   crashTarget: string;
   revoke?: string;
+  inputs?: Record<string, string>;
 }
 
 function runChild(mode: 'crash' | 'recover' | 'code', scenario: Scenario) {
@@ -81,6 +98,7 @@ function runChild(mode: 'crash' | 'recover' | 'code', scenario: Scenario) {
       DURABLE_CRASH_RUN_KEY: scenario.runKey,
       DURABLE_CRASH_MODE: mode,
       DURABLE_CRASH_SCRIPT: scenario.script,
+      DURABLE_CRASH_INPUTS: JSON.stringify(scenario.inputs ?? {}),
       DURABLE_CRASH_TARGET: scenario.crashTarget,
       DURABLE_CRASH_REVOKE: mode === 'recover' ? (scenario.revoke ?? '') : '',
     },
@@ -130,6 +148,71 @@ async function crashThenRecover(scenario: Scenario) {
 const key = (label: string) => label + '-' + randomBytes(4).toString('hex');
 
 describe('durable tool orchestration survives real producer death (P-019)', () => {
+  it('stops an ambiguous activation publication before a duplicate emit or an unproved ready claim', async () => {
+    const scenario = { runKey: key('activation-uncertain'), script: ACTIVATION_QUALITY_PUBLICATION_SCRIPT,
+      inputs: { harness: 'h', plan: 'explicit-plan' }, crashTarget: 'scorecards:emit' };
+    const { afterCrash, outcome } = await crashThenRecover(scenario);
+    expect(afterCrash.map(row => row.tool)).toEqual(['plans:evaluate-spec-quality', 'scorecards:emit']);
+    expect(outcome.status).toBe('needs-reconciliation');
+    const all = await calls(scenario.runKey);
+    expect(all.map(row => row.tool)).toEqual(['plans:evaluate-spec-quality', 'scorecards:emit']);
+    // Reconcile against the effect writer's durable receipt before any new run.
+    expect(all[1].args).toMatchObject({ targetHive: 'h', terminal: true,
+      subject: { ref: 'fixture-spec:explicit-plan' },
+      ratings: { exact: { evidence: 'original evaluator evidence' } } });
+  }, 400_000);
+
+  it('recovers the recorded exact publication and rechecks current read permission', async () => {
+    const scenario = { runKey: key('activation-permission'), script: ACTIVATION_QUALITY_PUBLICATION_SCRIPT,
+      inputs: { harness: 'h', plan: 'explicit-plan' }, crashTarget: 'scorecards:get', revoke: 'scorecards:get' };
+    const { outcome } = await crashThenRecover(scenario);
+    expect(outcome.status).toBe('failed');
+    expect(String(outcome.error)).toMatch(/not allowed for role worker/);
+    const all = await calls(scenario.runKey);
+    expect(all.filter(row => row.tool === 'scorecards:emit')).toHaveLength(1);
+    expect(all.filter(row => row.tool === 'scorecards:get')).toHaveLength(1);
+    expect(all.every(row => row.mode === 'crash')).toBe(true);
+  }, 400_000);
+  it('keeps an older equivalent publication separate from an uncertain current attempt', async () => {
+    const runKey = key('activation-older-card');
+    const olderRun = key('activation-old-equivalent');
+    const oldArgs = { targetHive: 'h', rubricRef: 'plan-specification-quality', terminal: true,
+      subject: { kind: 'plan', ref: 'fixture-spec:explicit-plan' },
+      ratings: { exact: { rating: 'healthy', evidence: 'original evaluator evidence' } } };
+    await sql.unsafe('INSERT INTO test_durable.calls (run_key,tool,mode,args) VALUES ($1,$2,$3,$4)',
+      [olderRun, 'scorecards:emit', 'historical', JSON.stringify(oldArgs)]);
+    const { outcome } = await crashThenRecover({ runKey, script: ACTIVATION_QUALITY_PUBLICATION_SCRIPT,
+      inputs: { harness: 'h', plan: 'explicit-plan', expectedSpecSetHash: 'a'.repeat(64) },
+      crashTarget: 'scorecards:emit' });
+    expect(outcome).toMatchObject({ status: 'needs-reconciliation',
+      reconciliation: { tool: 'scorecards:emit' } });
+    expect((await calls(runKey)).map(row => row.tool)).toEqual(['plans:evaluate-spec-quality', 'scorecards:emit']);
+    expect((await calls(olderRun)).map(row => row.mode)).toEqual(['historical']);
+    expect(await stepNames(runKey)).toContain('intent:1:scorecards:emit');
+  }, 400_000);
+
+  it('does not retry an unreceipted attempt even when the independent oracle proves no effect', async () => {
+    const scenario = { runKey: key('activation-before-effect'), script: ACTIVATION_QUALITY_PUBLICATION_SCRIPT,
+      inputs: { harness: 'h', plan: 'explicit-plan' }, crashTarget: 'before:scorecards:emit' };
+    const { outcome } = await crashThenRecover(scenario);
+    expect(outcome.status).toBe('needs-reconciliation');
+    expect((await calls(scenario.runKey)).map(row => row.tool)).toEqual(['plans:evaluate-spec-quality']);
+  }, 400_000);
+
+  it('recovers the current exact emission receipt without another emit and retains pending review', async () => {
+    const scenario = { runKey: key('activation-exact-receipt'), script: ACTIVATION_QUALITY_PUBLICATION_SCRIPT,
+      inputs: { harness: 'h', plan: 'explicit-plan', expectedSpecSetHash: 'a'.repeat(64) }, crashTarget: 'scorecards:get' };
+    const { outcome, status } = await crashThenRecover(scenario);
+    expect(outcome).toMatchObject({ status: 'succeeded', summary: { status: 'emitted-pending', ready: false,
+      issueId: 'EI-quality-' + scenario.runKey, specSetHash: 'a'.repeat(64),
+      receipt: { completionReceipt: { status: 'recorded', effectRef: 'EI-quality-' + scenario.runKey } } } });
+    expect(status.status).toBe('SUCCESS');
+    const emit = (await calls(scenario.runKey)).filter(row => row.tool === 'scorecards:emit');
+    expect(emit).toHaveLength(1);
+    expect(emit[0].args).toMatchObject({ targetHive: 'h', subject: { ref: 'fixture-spec:explicit-plan' },
+      ratings: { exact: { evidence: 'original evaluator evidence' } } });
+    expect(await stepNames(scenario.runKey)).toContain('tool:1:scorecards:emit');
+  }, 400_000);
   it('code:run returns before its two-minute script completes and recovers the original terminal result (MC-P026-SCRIPT)', async () => {
     const runKey = key('code-two-minute');
     const script = '/*' + 'large script '.repeat(2500) + `*/
@@ -142,6 +225,7 @@ describe('durable tool orchestration survives real producer death (P-019)', () =
     const line = child.stdout.split('\n').find(row => row.startsWith('DURABLE_CODE_OUTCOME '));
     expect(line, child.stdout).toBeDefined();
     const proof = JSON.parse(line!.slice('DURABLE_CODE_OUTCOME '.length));
+    console.info('DURABLE_CODE_OUTCOME ' + JSON.stringify(proof));
     expect(proof.admissionElapsedMs).toBeLessThan(50_000);
     expect(proof.elapsedMs).toBeGreaterThanOrEqual(120_000);
     expect(proof.result).toMatchObject({ ok: true, durableRun: {

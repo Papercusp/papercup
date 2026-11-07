@@ -404,6 +404,8 @@ export interface PlanStartBarCritiqueOutcome {
   mandatoryOutcomeBarCount: number;
   nonDroppedItemCount: number;
   verdict: BarCritiqueGateVerdict;
+  /** One real review selected by a verified owner; never represented as consults. */
+  ownerSelectedReview?: import('./plan-start-owner-review').OwnerSelectedReviewResult;
 }
 
 /**
@@ -462,6 +464,15 @@ export async function evaluatePlanStartBarCritique(
     authorPartyKeys: evidence.authorPartyKeys,
     threshold,
   });
+  const { loadOwnerSelectedReview } = await import('./plan-start-owner-review');
+  const ownerSelectedReview = await loadOwnerSelectedReview(scope, authorIds, sql);
+  if (ownerSelectedReview?.ok) {
+    // Preserve the ordinary threshold, critic identities and shortfalls for audit.
+    // The explicit selection satisfies only this pre-implementation requirement.
+    verdict.satisfied = true;
+    delete verdict.code;
+    delete verdict.message;
+  }
   const createdMs = plan ? Date.parse(new Date(plan.created_at).toISOString()) : Number.NaN;
   const inCohort = isPlanStartBarCritiqueInCohort(createdMs);
   const reportOnlyReason = !input.contractEnforced ? 'spec-quality-report-only' : !inCohort ? 'pre-cohort' : undefined;
@@ -472,5 +483,6 @@ export async function evaluatePlanStartBarCritique(
     mandatoryOutcomeBarCount,
     nonDroppedItemCount: input.nonDroppedItemCount,
     verdict,
+    ...(ownerSelectedReview ? { ownerSelectedReview } : {}),
   };
 }

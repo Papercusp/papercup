@@ -11353,7 +11353,7 @@ export function injectTurn(sock, text, ownerId) {
 }
 
 /**
- * EI-24091823697677465: heal a DEAD loopback operator pin before an in-place respawn.
+ * EI-24091823697677465: heal a dead or cross-runtime loopback operator pin before an in-place respawn.
  * Direct :3170 pins also route proactively through the same-build staging proxy (:9171),
  * including explicit pins. The ordinary launcher already applies this rule, but an
  * in-place carry-respawn reuses this host's environment and bypasses that resolver.
@@ -11367,13 +11367,15 @@ export function injectTurn(sock, text, ownerId) {
  * restart took its MCP tools and its owner-directive capture down with it.
  *
  * Only launcher-managed URLs may heal, using the existing provenance marker shared
- * with ptool. An explicit target stays authoritative even when its server is down:
- * a refusal does not authorize moving a current-build session to stable code.
- * A managed pin is replaced only when it refuses connections or its /api/mcp route
- * is confirmed missing. A slow/erroring service and a live MCP endpoint stay
- * authoritative. The replacement is the local MCP proxy, and it must answer both
- * /api/health and /api/mcp. Mutates `env` in place and returns `{ from, to }` when it
- * healed, otherwise null. Never throws.
+ * with ptool. An explicit target stays authoritative. Ordinary managed pins are
+ * replaced only when they refuse connections or their /api/mcp route is confirmed
+ * missing; a slow/erroring service and a live MCP endpoint stay authoritative.
+ * There is one known cross-runtime exception: a managed :9071 pin plus target :3271
+ * is a stale green route even when it answers HTTP 200. Before an in-place respawn,
+ * prefer the configured local same-runtime proxy, or fall back to direct :3271 so a
+ * cold successor never receives green-runtime traffic. The ordinary replacement
+ * proxy must answer both /api/health and /api/mcp. Mutates `env` in place and returns
+ * `{ from, to }` when it routed/healed, otherwise null. Never throws.
  *
  * @param {EnvironmentMap} env
  * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
@@ -11439,6 +11441,58 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
     if (env.PAPERCUSP_OPERATOR_URL_PROVENANCE !== 'psu-launcher') return null;
     const proxyPort =
       Number(env.PAPERCUSP_MCP_PROXY_PORT) > 0 ? Number(env.PAPERCUSP_MCP_PROXY_PORT) : 9071;
+    if (String(env.PAPERCUSP_MCP_PROXY_TARGET_PORT || '').trim() === '3271') {
+      const localHosts = ['127.0.0.1', 'localhost', '[::1]', '::1'];
+      const rawBackgroundProxy = String(env.PAPERCUSP_MCP_PROXY_BASE || '').trim();
+      let backgroundProxy = null;
+      try {
+        const candidate = new URL(rawBackgroundProxy);
+        const candidatePort = Number(candidate.port);
+        const validPort = candidate.port.length > 0 && Number.isInteger(candidatePort) &&
+          candidatePort > 0 && candidatePort <= 65535 &&
+          candidatePort !== 3271 && candidatePort !== proxyPort;
+        if (
+          candidate.protocol === 'http:' &&
+          localHosts.includes(candidate.hostname.toLowerCase()) &&
+          !candidate.username && !candidate.password &&
+          candidate.pathname === '/' && !candidate.search && !candidate.hash &&
+          validPort
+        ) backgroundProxy = candidate.origin;
+      } catch {
+        /* an invalid proxy base falls back to the direct same-runtime host */
+      }
+
+      const legacyGreenPin =
+        localHosts.includes(pinnedUrl.hostname.toLowerCase()) &&
+        pinnedUrl.port === String(proxyPort);
+      const directBackgroundPin =
+        localHosts.includes(pinnedUrl.hostname.toLowerCase()) &&
+        pinnedUrl.port === '3271';
+      const configuredBackgroundProxyPin = backgroundProxy === pinned;
+      if (legacyGreenPin || directBackgroundPin || configuredBackgroundProxyPin) {
+        let backgroundProxyLive = false;
+        if (backgroundProxy) {
+          try {
+            const health = await fetchImpl(`${backgroundProxy}/__mcp_proxy_health`, {
+              signal: AbortSignal.timeout(timeoutMs),
+            });
+            backgroundProxyLive = health?.status === 200;
+            try { await health?.body?.cancel?.(); } catch { /* release the small probe response */ }
+          } catch {
+            /* a dead same-runtime proxy falls back to its direct upstream */
+          }
+        }
+        const target = backgroundProxyLive ? backgroundProxy : 'http://127.0.0.1:3271';
+        if (target === pinned || (!backgroundProxyLive && directBackgroundPin)) return null;
+        env.PAPERCUSP_OPERATOR_URL = target;
+        env.PAPERCUSP_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+        return {
+          from: pinned,
+          to: target,
+          route: backgroundProxyLive ? 'background-proxy' : 'background-direct',
+        };
+      }
+    }
     if (pinnedUrl.port === String(proxyPort)) return null;
     const proxy = `http://127.0.0.1:${proxyPort}`;
 
@@ -14542,6 +14596,40 @@ export function hostThroughPty(o) {
     return key == null ? null : `${key}:owner-stop:${ownerStopGeneration}`;
   };
   const nativeStartPending = new Map();
+  // Keep submit-failure evidence bounded and content-free. These fields let a
+  // later reader distinguish a missing native turn from a host/TUI binding
+  // mismatch without retaining the prompt or terminal screen.
+  const captureNativeSubmitContext = (targetChild, capturedAtMs = Date.now()) => {
+    const activityState = activity.snapshot();
+    const timestamp = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    };
+    const lastInputAtMs = timestamp(activityState.lastInputAt);
+    const lastOutputAtMs = timestamp(activityState.lastOutputAt);
+    const agent = String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase();
+    return {
+      capturedAtMs,
+      nativeSessionId: agent === 'codex'
+        ? currentNativeSessionId(targetChild?.pid, resolveRespawnNativeId)
+        : null,
+      CODEX_HOME: agent === 'codex' && typeof env.CODEX_HOME === 'string' ? env.CODEX_HOME : null,
+      tuiState: {
+        bridgeTty: Boolean(bridgeTty),
+        stdinIsTTY: Boolean(stdin?.isTTY),
+        stdoutIsTTY: Boolean(stdout?.isTTY),
+        columns: Number.isFinite(stdout?.columns) ? stdout.columns : null,
+        rows: Number.isFinite(stdout?.rows) ? stdout.rows : null,
+        promptReady: Boolean(childPromptReady),
+        machineTurnActive: Boolean(machineTurnActive),
+        ownerInputPending: Boolean(ownerComposerGate.hasPending()),
+        lastInputAtMs,
+        lastOutputAtMs,
+        inputQuietMs: lastInputAtMs == null ? null : Math.max(0, capturedAtMs - lastInputAtMs),
+        outputQuietMs: lastOutputAtMs == null ? null : Math.max(0, capturedAtMs - lastOutputAtMs),
+      },
+    };
+  };
   const nativeStartProof = (pending) => {
     if (pending.child !== child) return { available: false, started: false };
     const nativeRef = findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
@@ -14597,6 +14685,8 @@ export function hostThroughPty(o) {
           const retiredDeliveryIds = retirePendingSubmission(nativeStartPending, pending, deliveryDedup);
           appendHostEvent(ownerId, 'native-turn-start-failed', {
             deliveryId: id, retiredDeliveryIds, childGeneration, failure: proof.failure,
+            nativeSubmitContextAtWrite: pending.nativeSubmitContextAtWrite ?? null,
+            nativeSubmitContextAtFailure: captureNativeSubmitContext(pending.child),
           });
         }
       }
@@ -14652,6 +14742,8 @@ export function hostThroughPty(o) {
     appendHostEvent(ownerId, 'pending-submit-recovery-exhausted', {
       deliveryId, retiredDeliveryIds: retired, reason, childGeneration,
       resubmits: pending.submissionRecovery.resubmits, ...extra,
+      nativeSubmitContextAtWrite: pending.nativeSubmitContextAtWrite ?? null,
+      nativeSubmitContextAtExhaustion: captureNativeSubmitContext(pending.child),
     });
     try {
       writeTerminalDiagnostic(
@@ -14735,6 +14827,8 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, 'submit-verify-recovery-resubmit', {
           deliveryId, childGeneration, resubmits: recovery.resubmits,
           countedResubmits: recovery.countedResubmits, quotaBlocked, authBlocked,
+          nativeSubmitContextAtWrite: pending.nativeSubmitContextAtWrite ?? null,
+          nativeSubmitContextAtRetry: captureNativeSubmitContext(pending.child),
         });
       }
     } finally {
@@ -16814,6 +16908,10 @@ export function hostThroughPty(o) {
         let firstInputWrite = true;
         const turnWriteStartedAt = Date.now();
         const composerGenerationAtWrite = composerInputGeneration;
+        const nativeSubmitContextAtWrite = msg.mode === 'turn' && deliver.requireNativeTurnStart
+          ? captureNativeSubmitContext(child, turnWriteStartedAt)
+          : null;
+        let nativeSubmitWriteAttemptRecorded = false;
         // WI-10004943: snapshot BEFORE the first byte, so a frame the write
         // provokes cannot be mistaken for readiness that preceded it.
         const injectWriteContext = msg.mode === 'turn' || msg.mode === 'reset'
@@ -16877,6 +16975,14 @@ export function hostThroughPty(o) {
               quotaBlockDetector.observeInput(step.data);
               authBlockDetector.observeInput(step.data);
             }
+            if (nativeSubmitContextAtWrite && !nativeSubmitWriteAttemptRecorded && step.data) {
+              appendHostEvent(ownerId, 'native-turn-submit-write-attempt', {
+                deliveryId: deliver.deliveryId,
+                childGeneration,
+                nativeSubmitContextAtWrite,
+              });
+              nativeSubmitWriteAttemptRecorded = true;
+            }
             sink.write(step.data);
             if ((msg.mode === 'turn' || msg.mode === 'reset') && step.data.includes('\r')) {
               activeHeadlessCodexModelChoice?.complete();
@@ -16918,6 +17024,7 @@ export function hostThroughPty(o) {
             const target = child;
             const pending = { child: target, childGeneration, marker, submittedAtMs: turnWriteStartedAt,
               submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite),
+              nativeSubmitContextAtWrite,
               anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
             nativeStartPending.set(deliver.deliveryId, pending);
             const proof = await waitForNativeTurnStart({ probe: () => nativeStartProof(pending),
@@ -16928,6 +17035,8 @@ export function hostThroughPty(o) {
             } else {
               appendHostEvent(ownerId, 'native-turn-start-unverified', {
                 deliveryId: deliver.deliveryId, childGeneration, reason: proof.reason,
+                nativeSubmitContextAtWrite,
+                nativeSubmitContextAtVerificationFailure: captureNativeSubmitContext(target),
               });
             }
             if (!proof.started) return { ok: false, reason: 'native-turn-start-unverified' };
@@ -18726,13 +18835,14 @@ export function hostThroughPty(o) {
         try {
           const healed = await healOperatorPin(env);
           if (healed) {
+            const routed = healed.route === 'staging-proxy' || healed.route?.startsWith('background-');
             appendHostEvent(
               ownerId,
-              healed.route === 'staging-proxy' ? 'operator-pin-routed' : 'operator-pin-healed',
+              routed ? 'operator-pin-routed' : 'operator-pin-healed',
               {
                 from: operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: healed.from }),
                 to: operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: healed.to }),
-                ...(healed.route === 'staging-proxy' ? { route: 'staging-proxy' } : {}),
+                ...(healed.route ? { route: healed.route } : {}),
                 mode: respawnMode,
               },
             );

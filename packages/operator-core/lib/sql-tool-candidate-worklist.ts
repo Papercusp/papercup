@@ -1,7 +1,7 @@
 /** P008: passive pull worklist. Nothing from this read is persisted or executed. */
 import { getOrgPg } from '@papercusp/db-org';
 import { isDeepStrictEqual } from 'node:util';
-import { readSqlCandidates, type SqlCandidateReadOptions } from './bash-substitution/sql-tool-candidates';
+import { readSqlCandidates, type SqlCandidateReadOptions, type SqlCandidateSnapshot } from './bash-substitution/sql-tool-candidates';
 import { fingerprintSqlIntent } from './bash-substitution/sql-intent-fingerprint';
 import { recommendSqlTool, type SqlRecommendationInput, type SqlToolRecommendation } from './bash-substitution/sql-tool-recommendations';
 import { miningScopeId } from './agent-opportunities/privacy';
@@ -40,7 +40,7 @@ export type SqlCandidateWorklistOptions = SqlCandidateReadOptions & {
   /** Trusted host composition, never accepted from tool arguments. The host
    * supplies current/served contracts and maintained audits from their sources. */
   recommendationInput?: (candidate: SqlToolCandidateScore,
-    opts: SqlCandidateReadOptions) => Promise<SqlRecommendationInput | null>;
+    opts: SqlCandidateReadOptions, snapshot: SqlCandidateSnapshot) => Promise<SqlRecommendationInput | null>;
 };
 export interface SqlCandidateWorklistDeps {
   read?: typeof readSqlCandidates;
@@ -82,7 +82,8 @@ export async function readSqlToolCandidateWorklist(opts: SqlCandidateWorklistOpt
       entry.decisionHistory = history.slice(0, 20);
       entry.decisionHistoryTruncated = history.length > 20;
       if (opts.recommendationInput) recommendationInputs.set(entry.candidate.id,
-        await opts.recommendationInput(entry.candidate, opts));
+        await opts.recommendationInput(entry.candidate, opts,
+          snapshots.find(row => row.ranOn === entry.sourceRef.ranOn)!));
     }
     // Derivation/history reads may take time. Resolve the contributing sources again
     // before releasing counts, membership, decisions or refs to the caller.

@@ -725,6 +725,11 @@ export default defineTool({
         .string()
         .min(1)
         .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements. Serialized SQL results are capped at 4 MiB; select fewer columns/rows or aggregate large JSON values.'),
+      parameters: z
+        .array(z.union([z.string(), z.number(), z.boolean(), z.null()]))
+        .max(1000)
+        .optional()
+        .describe('Typed positional values for $1, $2, … in sql, passed separately to PostgreSQL without interpolation. Applies only to the primary query; positiveControlSql is independent. Encode JSON as a string and cast its placeholder to jsonb.'),
       describe: z.never().optional().describe('Only valid for relation-description calls; omit it when passing `sql`.'),
       maxRows: z
         .number()
@@ -1190,6 +1195,7 @@ export default defineTool({
         const queryResult = await pgReadQuery(sql, {
           maxRows: args.maxRows,
           timeoutMs: remainingQueryTimeoutMs,
+          ...(args.parameters !== undefined ? { parameters: args.parameters } : {}),
           ...(args.positiveControlSql ? { positiveControlSql: args.positiveControlSql } : {}),
         });
         assertActive();

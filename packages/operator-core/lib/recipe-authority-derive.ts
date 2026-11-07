@@ -428,11 +428,11 @@ function inspectCall(
   return null;
 }
 
-export async function deriveRecipeAuthority(script: string): Promise<RecipeAuthorityDescriptor> {
+export async function deriveRecipeAuthority(script: string, staticInputs?: Readonly<Record<string, unknown>>): Promise<RecipeAuthorityDescriptor> {
   await ensureParseCheckReady();
   // An empty catalog is intentional: call inspection still resolves dotted
   // members and tools.call names; authority matching normalizes both spellings.
-  const analysis = checkScript(script, []);
+  const analysis = checkScript(script, [], undefined, staticInputs);
   const sets: Record<keyof RecipeAuthorityRefs, Set<string>> = {
     workspaces: new Set(),
     fleets: new Set(),

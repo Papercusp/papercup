@@ -6,9 +6,50 @@ import {
   consumeGovernedResumeReservation,
   freshSuBootstrapBody,
   GOVERNED_RESUME_RESERVATION_ENV,
+  resolveOperatorTarget,
   routeFreshKickoff,
   tagKickoffProvenance,
 } from './psu-launcher.mjs';
+
+describe('launcher-managed legacy green route for the background runtime', () => {
+  const managedEnvironment = {
+    PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+    PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+    PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+  };
+
+  it('routes a stale managed :9071 pin through the same-runtime :9271 proxy', () => {
+    const target = resolveOperatorTarget({
+      env: { ...managedEnvironment },
+      probe: (port) => port === 9271,
+      warn: () => {},
+    });
+
+    expect(target).toMatchObject({ url: 'http://127.0.0.1:9271', source: 'managed-env' });
+  });
+
+  it('falls back to the direct :3271 operator when the matching proxy is unavailable', () => {
+    const target = resolveOperatorTarget({
+      env: { ...managedEnvironment },
+      probe: () => false,
+      warn: () => {},
+    });
+
+    expect(target).toMatchObject({ url: 'http://127.0.0.1:3271', source: 'managed-env' });
+  });
+
+  it('preserves an explicit :9071 operator pin', () => {
+    const { PAPERCUSP_OPERATOR_URL_PROVENANCE: _ignored, ...explicitEnvironment } = managedEnvironment;
+    const target = resolveOperatorTarget({
+      env: explicitEnvironment,
+      probe: () => true,
+      warn: () => {},
+    });
+
+    expect(target).toMatchObject({ url: 'http://127.0.0.1:9071', source: 'env' });
+  });
+});
 
 describe('headless task enrollment identity in bootstrap', () => {
   const selections = { agent: 'claude', workspace: 'default', harness: 'papercup', plan: null };

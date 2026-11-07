@@ -55,6 +55,31 @@ function recordGoalReadTiming(
   try { observeTiming?.({ stage, durationMs }); } catch { /* diagnostics must not affect goal resolution */ }
 }
 
+type CancellableGoalQuery<T> = PromiseLike<T> & { cancel?: () => void };
+
+/** Cancel each Postgres.js query when the enclosing plan-selector budget expires. */
+function withGoalQueryCancellation<T>(query: PromiseLike<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return Promise.resolve(query);
+  const cancellable = query as CancellableGoalQuery<T>;
+  const cancel = () => cancellable.cancel?.();
+  if (signal.aborted) cancel();
+  else signal.addEventListener('abort', cancel, { once: true });
+  return Promise.resolve(query).finally(() => signal.removeEventListener('abort', cancel));
+}
+
+/** Preserve the Sql tag's other methods while attaching cancellation to each query. */
+function withGoalQuerySignal(sql: Sql, signal?: AbortSignal): Sql {
+  if (!signal) return sql;
+  return new Proxy(sql, {
+    apply(target, thisArg, args) {
+      return withGoalQueryCancellation(
+        Reflect.apply(target, thisArg, args) as PromiseLike<unknown>,
+        signal,
+      );
+    },
+  });
+}
+
 /**
  * The plan-write guard asks for measured goal reads. Reserve the same pool
  * connection that runs the query so pool wait is separated from query time;
@@ -66,14 +91,16 @@ async function withMeasuredGoalConnection<T>(
   observeTiming: GoalReadTimingObserver | undefined,
   read: (connection: Sql) => Promise<T>,
   shouldAcquire = true,
+  signal?: AbortSignal,
 ): Promise<T> {
-  if (!observeTiming || !shouldAcquire) return read(sql);
+  if (signal?.aborted) throw signal.reason ?? new Error('goal read aborted');
+  if (!observeTiming || !shouldAcquire) return read(withGoalQuerySignal(sql, signal));
   const suffix = leg.replace(/-/g, '_');
   const acquireStarted = performance.now();
-  const connection = await sql.reserve().finally(() => {
+  const connection = await withGoalQueryCancellation(sql.reserve(), signal).finally(() => {
     recordGoalReadTiming(observeTiming, `goal_pool_acquire_${suffix}`, performance.now() - acquireStarted);
   });
-  try { return await read(connection); }
+  try { return await read(withGoalQuerySignal(connection, signal)); }
   finally { connection.release(); }
 }
 
@@ -186,11 +213,13 @@ async function readGoalLegs(
   ownerId: string,
   lens: GoalLens,
   observeTiming?: GoalReadTimingObserver,
+  signal?: AbortSignal,
 ): Promise<{
   candidates: GoalCandidates;
   planItems: readonly HeldPlanItemRow[];
   diagnostics: GoalResolverDiagnostic[];
 }> {
+  if (signal?.aborted) throw signal.reason ?? new Error('goal read aborted');
   const owner = (ownerId ?? '').trim();
   if (!owner || !coordHasPgFastPath()) {
     return {
@@ -234,21 +263,22 @@ async function readGoalLegs(
 
   const [workItemsRead, planItemsRead, fleetRead, overrideRead] = await Promise.all([
     settle('work-items', () => withMeasuredGoalConnection(sql, 'work-items', observeTiming,
-      connection => readHeldWorkItems(connection, ws, owner)), [] as HeldWorkItem[]),
+      connection => readHeldWorkItems(connection, ws, owner), true, signal), [] as HeldWorkItem[]),
     settle('plan-items', () => withMeasuredGoalConnection(sql, 'plan-items', observeTiming,
-      connection => readHeldPlanItems(connection, ws, owner, lens)), [] as HeldPlanItemRow[]),
+      connection => readHeldPlanItems(connection, ws, owner, lens), true, signal), [] as HeldPlanItemRow[]),
     settle('fleet', () => withMeasuredGoalConnection(sql, 'fleet', observeTiming,
-      connection => readFleetMission(connection, ws, owner)), null as HeldFleet | null),
+      connection => readFleetMission(connection, ws, owner), true, signal), null as HeldFleet | null),
     settle('override', () => withMeasuredGoalConnection(sql, 'override', observeTiming,
-      connection => readGoalOverride(owner, observeTiming ? connection : undefined)), null as GoalCandidates['override']),
+      connection => readGoalOverride(owner, observeTiming ? connection : undefined), true, signal), null as GoalCandidates['override']),
   ]);
   const workItems = workItemsRead.value;
   const planItems = planItemsRead.value;
   const fleet = fleetRead.value;
   const override = overrideRead.value;
+  if (signal?.aborted) throw signal.reason ?? new Error('goal read aborted');
   const linksRead = await settle('links', () => withMeasuredGoalConnection(sql, 'links', observeTiming,
     connection => readImplementsLinks(connection, ws, workItems, planItems),
-    workItems.length > 0 && planItems.length > 0), [] as GoalLink[]);
+    workItems.length > 0 && planItems.length > 0, signal), [] as GoalLink[]);
 
   return {
     candidates: {
@@ -462,13 +492,14 @@ export async function resolveOwnerGoalWithAssessment(
   ownerId: string,
   lens: GoalLens,
   observeTiming?: GoalReadTimingObserver,
+  signal?: AbortSignal,
 ): Promise<{
   goal: ResolvedGoal | null;
   assessment: AgentGoalAssessment | null;
   diagnostics: GoalResolverDiagnostic[];
 }> {
   try {
-    const read = await readGoalLegs(ownerId, lens, observeTiming);
+    const read = await readGoalLegs(ownerId, lens, observeTiming, signal);
     const goal = resolveAgentGoal(read.candidates);
     return { goal, assessment: assessAgentGoal(goal, read.diagnostics), diagnostics: read.diagnostics };
   } catch (err) {

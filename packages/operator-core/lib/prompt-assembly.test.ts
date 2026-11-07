@@ -41,8 +41,8 @@ const mockTools: Array<{
   replaces?: readonly string[];
 }> = [];
 
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+vi.mock('@papercusp/tooldef', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/tooldef')>()),
   listAllProjectedTools: () => mockTools,
   // Admission must answer from the SAME fixture as the tool list above. The real
   // implementation resolves `lookupByMcpName` against the live registry, so leaving

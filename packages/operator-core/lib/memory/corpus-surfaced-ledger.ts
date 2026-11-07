@@ -81,15 +81,23 @@ export async function stampSurfacedRefs(
   refs: readonly string[],
   port: string,
 ): Promise<boolean> {
-  if (!sessionId || relationMissing) return false;
+  return (await stampSurfacedRefsResult(sql, sessionId, epoch, refs, port)).ok;
+}
+
+/** DB uniqueness decides which competing receipt commits this reference. */
+export async function stampSurfacedRefsResult(
+  sql: SqlTag, sessionId: string, epoch: number, refs: readonly string[], port: string,
+): Promise<{ ok: boolean; inserted: number }> {
+  if (!sessionId || relationMissing) return { ok: false, inserted: 0 };
   const wanted = [...new Set(refs.filter((r) => typeof r === 'string' && r.length > 0))];
-  if (wanted.length === 0) return true;
+  if (wanted.length === 0) return { ok: true, inserted: 0 };
   try {
-    await sql`
+    const rows = await sql<unknown[]>`
       INSERT INTO harness_shared.corpus_session_surfaced (session_id, epoch, ref, port)
       SELECT ${sessionId}, ${epoch}, r, ${port}
         FROM unnest(${wanted as string[]}::text[]) AS r
       ON CONFLICT (session_id, epoch, ref) DO NOTHING
+      RETURNING ref
     `;
     // Opportunistic GC on the same connection — cheap, indexed, and it keeps a
     // long-lived box from accumulating dead epochs. Its failure must NOT undo
@@ -102,9 +110,9 @@ export async function stampSurfacedRefs(
     } catch {
       /* GC is opportunistic — never load-bearing */
     }
-    return true;
+    return { ok: true, inserted: rows.length };
   } catch (err) {
     noteMissingRelation(err);
-    return false;
+    return { ok: false, inserted: 0 };
   }
 }

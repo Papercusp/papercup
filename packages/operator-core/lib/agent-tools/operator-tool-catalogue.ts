@@ -13,6 +13,11 @@ export function markOperatorToolCatalogueLoaded(): void {
   catalogue.loaded = true;
 }
 
+/** Completion authority for readers making claims about the whole registry. */
+export function isOperatorToolCatalogueLoaded(): boolean {
+  return catalogue.loaded;
+}
+
 /** Reuse static registration, or share a lazy load across HTTP/native hosts. */
 export function loadOperatorToolCatalogue(load: () => Promise<unknown>): Promise<void> {
   if (catalogue.loaded) return Promise.resolve();

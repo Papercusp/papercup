@@ -84,6 +84,17 @@ describe('bounded acceptance lineage on converging graphs', () => {
     expect(await acceptanceLineageClosure('cycle-a', opts)).toEqual(new Set(['cycle-a', 'cycle-b']));
     expect(await acceptanceLineageAncestors('cycle-a', opts)).toEqual(new Set(['cycle-a', 'cycle-b']));
   });
+
+  it('refuses an incomplete census when the caller requires an independence proof', async () => {
+    const opts = { sql: db.adminSql, workspaceId, requireComplete: true };
+    await expect(acceptanceLineageClosure('chain-0', opts)).rejects.toThrow('census_incomplete');
+    await expect(acceptanceLineageClosure('chain-66', opts)).rejects.toThrow('census_incomplete');
+    await expect(acceptanceLineageClosure('', opts)).rejects.toThrow('identity_missing');
+    expect(await acceptanceLineageClosure('cycle-a', opts)).toEqual(new Set(['cycle-a', 'cycle-b']));
+    expect(await acceptanceLineageClosure(root, opts)).toEqual(
+      new Set([root, ...Array.from({ length: layers }, (_, n) => layer(n + 1)).flat()]),
+    );
+  });
 });
 
 describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {

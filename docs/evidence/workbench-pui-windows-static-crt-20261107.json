@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Standalone Windows PUI static CRT and native loader regression",
+  "framework": "operational",
+  "workItem": "EI-28088261740961265",
+  "parentWorkItem": "WI-6554700010044411",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "startedAt": "2026-11-07T01:15:04.042208050Z",
+  "finishedAt": "2026-11-07T01:15:08.531647763Z",
+  "timingSource": "Earliest birth time and latest write time of the two retained native startup output files, measured with stat.",
+  "exitCode": 0,
+  "command": [
+    "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-bridge.ps1 -BridgeSource PuiReadBridge.cs -Phase startup -PuiExecutable pui-goals-static.exe",
+    "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native-workbench-windows-bridge.ps1 -BridgeSource PuiReadBridge.cs -Phase startup -PuiExecutable pui-goals-current.exe (expected refusal)"
+  ],
+  "summary": "The maintained native Windows startup fixture passes both startup/version checks for the corrected artifact and rejects the previous dynamic-CRT artifact with STATUS_DLL_NOT_FOUND. Both artifacts ran on the same Windows VM without installing a redistributable. This proves the loader repair and its startup regression; full Workbench operator integration and installed three-OS shipment remain separate.",
+  "nativeRunDirectory": "C:/Users/user/AppData/Local/Temp/workbench-p005-host-20261106-b3cf9",
+  "artifacts": {
+    "corrected": {
+      "file": "pui-goals-static.exe",
+      "sha256": "7f63c220cf47d08b8d63906ebc98c1cad823df864bd220a5242c2fd416703650",
+      "nativeExitCode": 0,
+      "version": "pui 0.1.0 (df01a886c5, uncommitted changes)",
+      "importsInspectedWith": "objdump -p",
+      "dynamicVcOrCrtImports": []
+    },
+    "negativeControl": {
+      "file": "pui-goals-current.exe",
+      "sha256": "193cbcb6a3ebb16adb99e1b29329d0e56373d0e79842f07564bed743823956d0",
+      "nativeExitCode": -1073741515,
+      "fixtureExitCode": 1,
+      "dynamicVcOrCrtImports": [
+        "VCRUNTIME140.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll"
+      ]
+    }
+  },
+  "sourceSha256": {
+    "apps/tui/.cargo/config.toml": "6e65e01cd4c689b2efb06809c782323acca2fa7383a0323f0670790bdd3a1ab6",
+    "apps/tui/src/main.rs": "2e5b78b5c631087265f6a81552b2da6966341ae995c59581531257a9344d4812",
+    "papercusp-desktop/test/fixtures/native-workbench-windows-bridge.ps1": "2ed9d5138a9affbee68415e17d7ed27a8ab2dbe4d8da8edf44a62b73d25811a0",
+    "papercusp-desktop/test/native-workbench-windows.test.mjs": "110cdeb93f09fca21e920b717247ff20fbc518d96edce27248242025855fc848"
+  },
+  "assertions": [
+    {
+      "id": "native-loader-startup",
+      "passed": true,
+      "evidence": "Maintained Windows startup phase exits0 for artifact7f63c220; its count2 includes loader startup and version response without any operator request."
+    },
+    {
+      "id": "dynamic-crt-negative-control",
+      "passed": true,
+      "evidence": "The same maintained phase rejects artifact193cbcb6 on the same VM: native exit-1073741515, fixture exit1 and diagnostic PUI failed before startup."
+    },
+    {
+      "id": "pe-import-closure",
+      "passed": true,
+      "evidence": "objdump -p shows the six recorded VC/CRT imports in the rejected artifact and none in corrected artifact7f63c220."
+    }
+  ],
+  "logs": [
+    "/tmp/wb-crt-native-startup-pass-20261107.json",
+    "/tmp/wb-crt-native-startup-negative-20261107.err",
+    "/tmp/wb-pui-crt-static-build-20261107.log",
+    "/tmp/wb-crt-node-20261107.log"
+  ],
+  "limits": [
+    "Linux Node run passes its packaging case and skips eleven native/producer cases; native startup proof comes from the maintained PowerShell fixture on Windows.",
+    "Native host and bridge operator phases both hit canonical plans.list resolver timeout10000ms; tracked separately as owned EI-28089652962527269. This is not a successful operator integration run.",
+    "Negative compile guard proof is not established: cargo-xwin attempts retained static CRT and succeeded; plain Cargo stopped in ring because lib.exe was unavailable, before checking the PUI guard.",
+    "No actual canonical Goal detail, full installed-artifact acceptance, Ubuntu/macOS acceptance, or shipment claim."
+  ]
+}

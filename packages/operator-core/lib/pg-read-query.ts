@@ -39,6 +39,9 @@ import {
 /** The postgres-js client type the org handle exposes. */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
+/** Values cross the PostgreSQL bind protocol; they never become SQL source. */
+export type PgReadQueryParameter = string | number | boolean | null;
+
 export interface PgReadQueryResult {
   /** Rows, capped at `maxRows`. */
   rows: Record<string, unknown>[];
@@ -4236,7 +4239,14 @@ export function assertReadOnlyExplainStatement(raw: string): string {
  */
 export async function pgReadQuery(
   rawQuery: string,
-  opts: { maxRows?: number; timeoutMs?: number; client?: OrgSql; positiveControlSql?: string } = {},
+  opts: {
+    maxRows?: number;
+    timeoutMs?: number;
+    client?: OrgSql;
+    positiveControlSql?: string;
+    /** Positional $1, $2, … values for the primary query only. */
+    parameters?: readonly PgReadQueryParameter[];
+  } = {},
 ): Promise<PgReadQueryResult> {
   const isExplain = startsWithExplain(rawQuery);
   const query = isExplain ? assertReadOnlyExplainStatement(rawQuery) : assertSingleReadStatement(rawQuery);
@@ -4282,9 +4292,10 @@ export async function pgReadQuery(
       )) as unknown as Record<string, unknown>[];
     }
     assertActive();
-    const resultRows = (await tx.unsafe(
-      isExplain ? query : `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`,
-    )) as unknown as Record<string, unknown>[];
+    const primaryQuery = isExplain ? query : `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`;
+    const resultRows = (await (opts.parameters === undefined
+      ? tx.unsafe(primaryQuery)
+      : tx.unsafe(primaryQuery, [...opts.parameters]))) as unknown as Record<string, unknown>[];
     assertActive();
     // EXPLAIN returns its plan as rows and cannot itself be wrapped in the
     // SELECT * / LIMIT shape above. Keep the same response cap at this seam;
@@ -4781,7 +4792,7 @@ function hasWindowedCount(masked: string): boolean {
  * Find the outer SELECT list. CTE and scalar-subquery SELECTs are nested, so
  * their tokens must not make a row-returning outer query look like a census.
  */
-function locateOuterSelectList(masked: string): { list: string; hasOuterFrom: boolean } | null {
+function locateOuterSelectList(masked: string): { list: string } | null {
   const depth = sqlDepthPrefix(masked);
   const selectRe = /\bselect\b/gi;
   let selectEnd = -1;
@@ -4796,9 +4807,9 @@ function locateOuterSelectList(masked: string): { list: string; hasOuterFrom: bo
   fromRe.lastIndex = selectEnd;
   for (let match = fromRe.exec(masked); match; match = fromRe.exec(masked)) {
     if (depth[match.index] !== 0 || fromIsNotAClause(masked, match.index)) continue;
-    return { list: masked.slice(selectEnd, match.index), hasOuterFrom: true };
+    return { list: masked.slice(selectEnd, match.index) };
   }
-  return { list: masked.slice(selectEnd), hasOuterFrom: false };
+  return { list: masked.slice(selectEnd) };
 }
 
 /** COUNT must belong to an outer SELECT expression, not a correlated subquery. */
@@ -4811,99 +4822,15 @@ function hasTopLevelCountProjection(list: string): boolean {
   return false;
 }
 
-/** A standalone EXISTS is scalar only when it is the entire projection call. */
-function isOnlyExistsProjection(list: string): boolean {
-  let expression = list.trim();
-  // Do not use a leading `\s+` in an end-anchored alias regex here. The
-  // index-preserving SQL mask turns a large dollar-quoted literal into one
-  // long run of spaces; when the projection is not an EXISTS expression,
-  // that regex backtracks over the run for every possible start and makes
-  // this cheap shape check quadratic in the query length.
-  let end = expression.length;
-  while (end > 0 && /\s/.test(expression[end - 1]!)) end--;
-  let aliasStart = end;
-  if (end > 0 && expression[end - 1] === '"') {
-    let cursor = end - 2;
-    let foundOpeningQuote = false;
-    while (cursor >= 0) {
-      if (expression[cursor] !== '"') {
-        cursor--;
-        continue;
-      }
-      if (cursor > 0 && expression[cursor - 1] === '"') {
-        cursor -= 2;
-        continue;
-      }
-      aliasStart = cursor;
-      foundOpeningQuote = true;
-      break;
-    }
-    if (!foundOpeningQuote) aliasStart = end;
-  } else {
-    let cursor = end;
-    while (cursor > 0 && /[A-Za-z0-9_$]/.test(expression[cursor - 1]!)) cursor--;
-    if (cursor < end && /[A-Za-z_]/.test(expression[cursor]!)) aliasStart = cursor;
-  }
-  if (aliasStart < end) {
-    let asEnd = aliasStart;
-    while (asEnd > 0 && /\s/.test(expression[asEnd - 1]!)) asEnd--;
-    let asStart = asEnd;
-    while (asStart > 0 && /[A-Za-z]/.test(expression[asStart - 1]!)) asStart--;
-    if (
-      asEnd - asStart === 2 &&
-      expression.slice(asStart, asEnd).toLowerCase() === 'as' &&
-      (asStart === 0 || /\s/.test(expression[asStart - 1]!))
-    ) {
-      end = asStart;
-      while (end > 0 && /\s/.test(expression[end - 1]!)) end--;
-      expression = expression.slice(0, end);
-    }
-  }
-  expression = expression.replace(/^\s*(?:distinct|all)\b/i, '').trim();
-
-  // Parentheses around one expression preserve its scalar shape; do not unwrap
-  // when they contain trailing operators or additional projection text.
-  while (expression.startsWith('(')) {
-    let nesting = 0;
-    let close = -1;
-    for (let index = 0; index < expression.length; index++) {
-      if (expression[index] === '(') nesting++;
-      else if (expression[index] === ')') {
-        nesting--;
-        if (nesting === 0) {
-          close = index;
-          break;
-        }
-      }
-    }
-    if (close !== expression.length - 1) break;
-    expression = expression.slice(1, -1).trim();
-  }
-
-  const exists = /^exists\s*\(/i.exec(expression);
-  if (!exists) return false;
-  let nesting = 0;
-  const open = exists[0].lastIndexOf('(');
-  for (let index = open; index < expression.length; index++) {
-    if (expression[index] === '(') nesting++;
-    else if (expression[index] === ')') {
-      nesting--;
-      if (nesting === 0) return expression.slice(index + 1).trim().length === 0;
-    }
-  }
-  return false;
-}
-
 /**
- * A partition applies to a scalar census, not to rows whose projection happens
- * to contain EXISTS. Accept an outer COUNT or a standalone EXISTS with no outer
- * FROM; a correlated EXISTS over an outer relation is row-returning.
+ * A partition applies to a scalar COUNT census, not to a boolean EXISTS.
+ * EXISTS answers whether at least one matching row exists; its inner predicates
+ * are not count buckets whose rows need an exhaustive partition.
  */
 function hasScalarPartitionShape(masked: string): boolean {
   const projection = locateOuterSelectList(masked);
   if (!projection) return false;
-  if (hasTopLevelCountProjection(projection.list)) return true;
-  return !projection.hasOuterFrom && isOnlyExistsProjection(projection.list);
+  return hasTopLevelCountProjection(projection.list);
 }
 
 /**

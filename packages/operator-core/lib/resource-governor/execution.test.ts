@@ -569,6 +569,47 @@ describe('governed execution lifecycle', () => {
     },
   );
 
+  it('retries a failed caller-selected cancellation without replacing the operation result', async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = deps();
+    const persistCancel = d.store.cancel.bind(d.store);
+    let persistenceAvailable = false;
+    const cancel = vi.spyOn(d.store, 'cancel').mockImplementation(async (...args) => {
+      if (!persistenceAvailable) throw new Error('cancel statement timed out');
+      return persistCancel(...args);
+    });
+    const release = vi.spyOn(d.store, 'releaseClaim');
+
+    const result = await withGovernedExecution(
+      { idempotencyKey: 'settled-cancel-outage', admissionClass: 'process' },
+      {
+        owner: 'bounded-runner',
+        settle: () => ({ kind: 'cancel', reason: 'test process timed out' }),
+      },
+      d,
+      async () => 'test output is complete',
+    );
+
+    expect(result).toBe('test output is complete');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(d.current()).toMatchObject({ state: 'running', lease: { owner: 'bounded-runner' } });
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('settlement failed; lease retained, retry pending'),
+      expect.objectContaining({ receiptId: 'WI-R1', action: 'cancel' }),
+    );
+    expect(release).not.toHaveBeenCalled();
+
+    persistenceAvailable = true;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(d.current()).toMatchObject({
+      state: 'cancelled',
+      cancellationReason: 'test process timed out',
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('does not create a durable receipt for an already-aborted caller', async () => {
     const d = deps();
     const controller = new AbortController();

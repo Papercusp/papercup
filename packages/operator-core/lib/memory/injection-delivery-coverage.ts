@@ -44,6 +44,141 @@
  * is a wedged agent.
  */
 
+/** Closed acceptance population, distinct from the two-port traffic counters below.
+ * A selector must report cells it actually exercised; expanding these keys alone
+ * supplies no execution or delivery evidence. Reuses this module's final-delivery
+ * assessor rather than introducing another measurement service. */
+export const DELIVERY_MATRIX_CLIENTS = ['codex', 'claude', 'omp'] as const;
+export const DELIVERY_MATRIX_PORTS = ['initialize', 'orient', 'claim', 'create', 'turn-start', 'mid-turn', 'compact-reprime'] as const;
+export const DELIVERY_MATRIX_EXTRA_SINKS = ['operator', 'architect', 'oracle', 'agent-chats', 'system-launch', 'system-wake'] as const;
+export const DELIVERY_MATRIX_SOURCES = ['memory', 'corpus'] as const;
+export const DELIVERY_MATRIX_FAULTS = ['prepare', 'lost-response', 'partial-stdout', 'deadline', 'retry', 'duplicate-commit', 'abandon-expiry', 'overlapping-ports'] as const;
+
+export type DeliveryMatrixCoordinate = {
+  client: typeof DELIVERY_MATRIX_CLIENTS[number] | 'NONE';
+  sink: typeof DELIVERY_MATRIX_PORTS[number] | typeof DELIVERY_MATRIX_EXTRA_SINKS[number];
+  source: typeof DELIVERY_MATRIX_SOURCES[number];
+  fault: typeof DELIVERY_MATRIX_FAULTS[number];
+};
+export type DeliveryTerminalOracle = 'complete-stdout' | 'NONE';
+
+/** Only these production adapters currently expose complete native output.
+ * Model-call acceptance, MCP response creation and first-turn activity are not
+ * terminal events. Extend this census together with an adapter and its tests. */
+export function deliveryTerminalOracle(cell: DeliveryMatrixCoordinate): DeliveryTerminalOracle {
+  return DELIVERY_MATRIX_CLIENTS.includes(cell.client as typeof DELIVERY_MATRIX_CLIENTS[number]) &&
+    (cell.sink === 'turn-start' || cell.sink === 'mid-turn') ? 'complete-stdout' : 'NONE';
+}
+
+export function deliveryMatrixCellKey(cell: DeliveryMatrixCoordinate): string {
+  return [cell.client, cell.sink, cell.source, cell.fault].join('/');
+}
+
+export function deliveryMatrixPopulation(): DeliveryMatrixCoordinate[] {
+  const endpoints: Pick<DeliveryMatrixCoordinate, 'client' | 'sink'>[] = [
+    ...DELIVERY_MATRIX_CLIENTS.flatMap(client => DELIVERY_MATRIX_PORTS.map(sink => ({ client, sink }))),
+    ...DELIVERY_MATRIX_EXTRA_SINKS.map(sink => ({ client: 'NONE' as const, sink })),
+  ];
+  return endpoints.flatMap(endpoint => DELIVERY_MATRIX_SOURCES.flatMap(source =>
+    DELIVERY_MATRIX_FAULTS.map(fault => ({ ...endpoint, source, fault }))));
+}
+
+export type DeliveryMatrixFragment = {
+  kind: 'memory' | 'corpus'; id: string; epoch: number; port: string;
+  bodySha256: string; bodyBytes: number;
+};
+export type DeliveryMatrixCell = DeliveryMatrixCoordinate & {
+  selector: string;
+  evidenceRefs: string[];
+  verdict: 'passed' | 'failed' | 'UNKNOWN';
+  terminalOracle: DeliveryTerminalOracle;
+  state: 'prepared' | 'emitted' | 'partial' | 'abandoned' | 'UNKNOWN';
+  suppressionWrites: number;
+  attempt?: {
+    id: string; recipient: string; workspace: string; epoch: number;
+    token: string; fragment: DeliveryMatrixFragment;
+  };
+  proof?: {
+    event: 'complete-stdout'; adapter: string; receiptRef: string;
+    attemptId: string; recipient: string; workspace: string; epoch: number; token: string;
+    client: string; sink: string; payloadSha256: string; payloadBytes: number;
+    fragment: DeliveryMatrixFragment;
+  };
+};
+export type DeliveryMatrixManifest = {
+  schemaVersion: 'delivery-matrix-v1';
+  /** Acceptance identity belongs here, never in production receipt rows. */
+  identity: {
+    planRevision: number; planHash: string; rubricRevision: number; rubricHash: string;
+    barHash: string; specHash: string; sourceHash: string; testHash: string; runtimeGeneration: string;
+  };
+  cells: DeliveryMatrixCell[];
+};
+
+/** Structural and receipt-join validation; never infers execution from titles.
+ * Closed != accepted: UNKNOWN native cells remain in the denominator and block
+ * acceptance. Explicit NONE/UNKNOWN extra sinks are the reviewed exception. */
+export function validateDeliveryMatrix(manifest: DeliveryMatrixManifest): {
+  closed: boolean; valid: boolean; acceptanceReady: boolean;
+  missing: string[]; duplicates: string[]; unexpected: string[];
+  unknown: string[]; failed: string[]; errors: string[];
+} {
+  const expected = new Set(deliveryMatrixPopulation().map(deliveryMatrixCellKey));
+  const actual = new Set<string>();
+  const duplicates: string[] = [], unexpected: string[] = [], unknown: string[] = [], failed: string[] = [], errors: string[] = [];
+  const hash = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+  const positive = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
+  const fragmentValid = (v: DeliveryMatrixFragment | undefined, cell: DeliveryMatrixCoordinate) => !!v &&
+    v.kind === cell.source && text(v.id) && Number.isSafeInteger(v.epoch) && v.epoch >= 0 &&
+    v.port === cell.sink && hash(v.bodySha256) && positive(v.bodyBytes);
+  const sameFragment = (a: DeliveryMatrixFragment, b: DeliveryMatrixFragment) =>
+    a.kind === b.kind && a.id === b.id && a.epoch === b.epoch && a.port === b.port &&
+    a.bodySha256 === b.bodySha256 && a.bodyBytes === b.bodyBytes;
+  if (manifest?.schemaVersion !== 'delivery-matrix-v1') errors.push('schema-version');
+  const identity = manifest?.identity;
+  if (!identity || !positive(identity.planRevision) || !positive(identity.rubricRevision) || !text(identity.runtimeGeneration) ||
+      ![identity.planHash, identity.rubricHash, identity.barHash, identity.specHash, identity.sourceHash, identity.testHash].every(hash)) {
+    errors.push('measurement-identity');
+  }
+  if (!Array.isArray(manifest?.cells)) errors.push('cells-not-array');
+  for (const cell of Array.isArray(manifest?.cells) ? manifest.cells : []) {
+    if (!cell || typeof cell !== 'object') { errors.push('invalid-cell'); continue; }
+    const key = deliveryMatrixCellKey(cell);
+    if (actual.has(key)) duplicates.push(key);
+    actual.add(key);
+    if (!expected.has(key)) { unexpected.push(key); continue; }
+    const reject = (reason: string) => errors.push(`${key}:${reason}`);
+    const oracle = deliveryTerminalOracle(cell);
+    if (cell.terminalOracle !== oracle) reject('terminal-oracle');
+    if (!['passed', 'failed', 'UNKNOWN'].includes(cell.verdict)) reject('verdict');
+    if (!['prepared', 'emitted', 'partial', 'abandoned', 'UNKNOWN'].includes(cell.state)) reject('state');
+    if (!Number.isSafeInteger(cell.suppressionWrites) || cell.suppressionWrites < 0 || cell.suppressionWrites > 1) reject('suppression-count');
+    if (cell.verdict === 'UNKNOWN') unknown.push(key);
+    if (cell.verdict === 'failed') failed.push(key);
+    if (!text(cell.selector) || !Array.isArray(cell.evidenceRefs) || !cell.evidenceRefs.length || !cell.evidenceRefs.every(text)) reject('execution-evidence');
+    if (oracle === 'NONE' && (cell.state !== 'UNKNOWN' || cell.verdict !== 'UNKNOWN' || cell.proof || cell.suppressionWrites !== 0)) reject('uninstrumented-sink');
+    if (cell.state !== 'emitted' && (cell.suppressionWrites !== 0 || cell.proof)) reject('unproven-suppression');
+    if (cell.state === 'emitted') {
+      const a = cell.attempt, p = cell.proof;
+      if (!a || !p || p.event !== 'complete-stdout' || !text(p.adapter) || !text(p.receiptRef) ||
+          !text(a.id) || !text(a.recipient) || !text(a.workspace) || !text(a.token) ||
+          !Number.isSafeInteger(a.epoch) || a.epoch < 0 ||
+          p.attemptId !== a.id || p.recipient !== a.recipient || p.workspace !== a.workspace ||
+          p.epoch !== a.epoch || p.token !== a.token || p.client !== cell.client || p.sink !== cell.sink ||
+          !hash(p.payloadSha256) || !positive(p.payloadBytes) ||
+          !fragmentValid(a.fragment, cell) || !fragmentValid(p.fragment, cell) ||
+          a.fragment.epoch !== a.epoch || !sameFragment(a.fragment, p.fragment) || p.payloadBytes < p.fragment.bodyBytes) reject('receipt-join');
+    }
+  }
+  const missing = [...expected].filter(key => !actual.has(key));
+  const closed = !missing.length && !duplicates.length && !unexpected.length;
+  const valid = closed && !errors.length;
+  const nativeUnknown = unknown.some(key => !key.startsWith('NONE/'));
+  return { closed, valid, acceptanceReady: valid && !failed.length && !nativeUnknown,
+    missing, duplicates, unexpected, unknown, failed, errors };
+}
+
 /**
  * The injection PORTS, as ONE source of truth. Matches memory_recall_stats.surface
  * vocabulary.

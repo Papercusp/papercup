@@ -607,7 +607,7 @@ export function resolveOperatorTarget({
       ? Number(env.PAPERCUSP_MCP_PROXY_PORT)
       : 9071;
   if (env.PAPERCUSP_OPERATOR_URL) {
-    const pinned = normalizeOperatorBaseUrl(env.PAPERCUSP_OPERATOR_URL, {
+    let pinned = normalizeOperatorBaseUrl(env.PAPERCUSP_OPERATOR_URL, {
       warn,
     });
     // WI-1457: an explicit :3070 pin while the proxy is alive is exactly the
@@ -634,6 +634,23 @@ export function resolveOperatorTarget({
     const source =
       env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
         ? "managed-env" : "env";
+    // A carry-respawn can inherit a launcher-managed green proxy URL from an
+    // older launch even after the current runtime has moved to the background
+    // host. :9071 is green-only; when the inherited target is :3271, recover
+    // the same-runtime direct base first, then let the existing proxy branch
+    // select :9271 if it is live. If that proxy is down, the final fallback
+    // remains :3271 and can never leak current-build traffic to green.
+    const legacyManagedBackgroundProxy =
+      source === "managed-env" &&
+      /^https?:\/\/(127\.0\.0\.1|localhost):9071$/.test(pinned) &&
+      validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT) === "3271";
+    if (legacyManagedBackgroundProxy) {
+      pinned = "http://127.0.0.1:3271";
+      warn(
+        "psu: launcher-managed :9071 is a legacy green route for the current background runtime; " +
+          "using the same-runtime operator :3271 before proxy selection.",
+      );
+    }
     // A staging launcher can inherit a legacy :9071 URL from an older
     // psu-launcher generation. Its provenance says the URL was selected by the
     // launcher, and the staging service supplies :9171 without a target hint;

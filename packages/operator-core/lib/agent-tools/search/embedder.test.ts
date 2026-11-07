@@ -23,6 +23,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { beginEmbedLatencyTrace, finishEmbedLatencyTrace } from '@papercusp/search';
+import type { ToolDiscoveryEntry } from '../../cupboard/tools-discovery';
+import { findTools } from '../../cupboard/tool-find';
 
 // Both deps are pulled in via dynamic import() inside buildQueryEmbedder, so the
 // mocks below intercept those too (same shape rerank.test.ts uses).
@@ -531,6 +533,72 @@ describe('query-embed memo (WI-4734 — facet/window re-queries must not re-pay 
     const e2 = await buildQueryEmbedder();
     expect(await e2!('improvements')).toEqual([0.5]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not keep a timed-out query embedding cached after the discovery budget aborts it', async () => {
+    const profile = EMBEDDER_DIM_SPECS.gemma;
+    const vector = new Array<number>(profile.targetDims).fill(0);
+    vector[0] = 1;
+    let attempts = 0;
+    const sourceEmbed = vi.fn((_text: string, signal?: AbortSignal) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Promise<number[]>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+      return Promise.resolve(vector);
+    });
+    const acquired = await buildQueryEmbedderResolved(undefined, {
+      acquire: async () => ({
+        mode: 'gemma',
+        dims: profile.targetDims,
+        profile,
+        embed: sourceEmbed,
+      }),
+      observeFallback: vi.fn(),
+    });
+    const corpus = [{
+      tool: 'target:semantic',
+      category: 'target',
+      capability: null,
+      description: 'A unique capability absent from the query words',
+      provider: null,
+      unit: null,
+    }] as unknown as ToolDiscoveryEntry[];
+    const index = new Map([['target:semantic', vector]]);
+
+    vi.useFakeTimers();
+    try {
+      const firstOutcome = vi.fn();
+      const first = findTools(corpus, 'same intent', {
+        embedder: acquired!.embed,
+        embeddings: index,
+        embedTimeoutMs: 10,
+        onQueryEmbeddingOutcome: firstOutcome,
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      await first;
+      expect(firstOutcome).toHaveBeenCalledWith('timeout');
+      expect(sourceEmbed).toHaveBeenCalledTimes(1);
+      expect(sourceEmbed.mock.calls[0]?.[1]?.aborted).toBe(true);
+
+      const secondOutcome = vi.fn();
+      const secondPending = findTools(corpus, 'same intent', {
+        embedder: acquired!.embed,
+        embeddings: index,
+        embedTimeoutMs: 10,
+        onQueryEmbeddingOutcome: secondOutcome,
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      const second = await secondPending;
+
+      expect(sourceEmbed).toHaveBeenCalledTimes(2);
+      expect(secondOutcome).toHaveBeenCalledWith('used');
+      expect(second).toContainEqual(expect.objectContaining({ tool: 'target:semantic', via: 'semantic' }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('normalizes casing and incidental whitespace for exact-query memo identity', async () => {

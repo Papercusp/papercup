@@ -182,13 +182,16 @@ describe('session recovery exact green shipment', () => {
     const proof = control(); proof.acceptedRevision = 'c'.repeat(40);
     expect(() => verify(proof)).not.toThrow();
   });
-  it.each(['missing-file', 'unknown-runtime', 'extra-unknown-runtime', 'wrong-bytes', 'missing-green',
+  it.each(['missing-file', 'unknown-runtime', 'extra-unknown-runtime', 'wrong-bytes', 'not-deployed',
+    'unknown-deployment', 'missing-green',
     'deployment-before-green', 'wrong-deployed-revision', 'changed-process', 'unknown-artifact'] as const)('refuses %s', fault => {
     const proof = control();
     if (fault === 'missing-file') proof.containment.pop();
     if (fault === 'unknown-runtime') proof.containment[0]!.acceptedSource!.runtimeContainment['release-operator'] = null;
     if (fault === 'extra-unknown-runtime') proof.containment[0]!.runtimeIds!.push('psu-pty-host');
     if (fault === 'wrong-bytes') proof.containment[0]!.acceptedSource!.observedSha256 = 'd'.repeat(64);
+    if (fault === 'not-deployed') proof.containment[0]!.acceptedSource!.deployedContains = false;
+    if (fault === 'unknown-deployment') proof.containment[0]!.acceptedSource!.deployedContains = null;
     if (fault === 'missing-green') proof.promotion = null;
     if (fault === 'deployment-before-green') proof.deployment!.at = '2026-11-05T00:00:00Z';
     if (fault === 'wrong-deployed-revision') proof.deployment!.sourceSha = 'd'.repeat(40);

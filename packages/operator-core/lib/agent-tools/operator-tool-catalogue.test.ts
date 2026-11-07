@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readPinnedModuleState } from '@papercusp/module-singleton';
-import { loadOperatorToolCatalogue, markOperatorToolCatalogueLoaded } from './operator-tool-catalogue';
+import { isOperatorToolCatalogueLoaded, loadOperatorToolCatalogue, markOperatorToolCatalogueLoaded } from './operator-tool-catalogue';
 
 beforeEach(() => {
   const state = readPinnedModuleState<{ loaded: boolean; loading: Promise<void> | null }>(
@@ -13,11 +13,14 @@ beforeEach(() => {
 
 describe('operator catalogue registration across HTTP/native module records', () => {
   it('does not re-import the catalogue after static HTTP registration completes', async () => {
+    expect(isOperatorToolCatalogueLoaded()).toBe(false);
     markOperatorToolCatalogueLoaded();
+    expect(isOperatorToolCatalogueLoaded()).toBe(true);
     const nativeLoad = vi.fn(async () => { throw new Error('redundant catalogue import'); });
     // A second evaluated helper must observe the first record's completion.
     vi.resetModules();
     const native = await import('./operator-tool-catalogue');
+    expect(native.isOperatorToolCatalogueLoaded()).toBe(true);
     await expect(native.loadOperatorToolCatalogue(nativeLoad)).resolves.toBeUndefined();
     expect(nativeLoad).not.toHaveBeenCalled();
   });
@@ -37,8 +40,10 @@ describe('operator catalogue registration across HTTP/native module records', ()
     expect(load).toHaveBeenCalledTimes(1);
     expect(redundant).not.toHaveBeenCalled();
     expect(ready).toBe(false);
+    expect(isOperatorToolCatalogueLoaded()).toBe(false);
     finish();
     await http;
+    expect(native.isOperatorToolCatalogueLoaded()).toBe(true);
     await expect(native.loadOperatorToolCatalogue(redundant)).resolves.toBeUndefined();
     expect(redundant).not.toHaveBeenCalled();
   });
@@ -48,7 +53,9 @@ describe('operator catalogue registration across HTTP/native module records', ()
       .mockRejectedValueOnce(new Error('catalogue registration failed'))
       .mockResolvedValueOnce(undefined);
     await expect(loadOperatorToolCatalogue(load)).rejects.toThrow('catalogue registration failed');
+    expect(isOperatorToolCatalogueLoaded()).toBe(false);
     await expect(loadOperatorToolCatalogue(load)).resolves.toBeUndefined();
+    expect(isOperatorToolCatalogueLoaded()).toBe(true);
     await loadOperatorToolCatalogue(load);
     expect(load).toHaveBeenCalledTimes(2);
   });

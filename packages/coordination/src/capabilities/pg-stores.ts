@@ -11,7 +11,7 @@
  * ensureSchema (schema is migrations-only — repo storage policy).
  */
 
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '../event-log/pg-log';
 import { newMsgId } from '@papercusp/pubsub-substrate/core';
 import {
@@ -33,8 +33,9 @@ import {
 import { LinkBackedTaggable } from './taggable';
 
 export interface PgCapabilityStoreOptions {
-  /** The org Postgres handle (postgres-js tagged template). Called per use. */
-  getSql: () => Sql;
+  /** Query handle, optionally bound to the caller's transaction. Stores never
+   * start or finish that transaction; all queries use this same injected handle. */
+  getSql: () => Sql | TransactionSql;
   /** Ensure the coord_* capability tables exist before first use (no-op in the
    *  operator; ensureCoordCapabilityTables on the package test rig). */
   ensureSchema: () => Promise<void>;
