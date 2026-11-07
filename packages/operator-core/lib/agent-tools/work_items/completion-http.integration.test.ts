@@ -5,12 +5,16 @@ import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { validatePrivateCompletionRequests } from '../../../test/private-completion-http-scenario';
+import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(480_000);
 
-it('completes a report-only work item through the current private API after exact report readback', async context => {
+it.for(['palette HTTP', 'authenticated MCP proxy'] as const)(
+  'completes a report-only work item through %s after exact report readback',
+  { timeout: options.testTimeoutMs }, async (transport, context) => {
   await validatePrivateCompletionRequests();
+  let prepared: { sha256: string; receiptSha256: string } | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/work_items/completion-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
@@ -23,19 +27,34 @@ it('completes a report-only work item through the current private API after exac
       'packages/operator-core/lib/agent-tools/reports/publish.ts',
       'packages/operator-core/lib/agent-tools/reports/get.ts', 'packages/operator-core/lib/report-library.ts',
       'packages/operator-core/lib/capabilities/invoke.ts',
+      'packages/operator-core/lib/agent-mcp-client.ts', 'apps/operator/lib/mcp-proxy/proxy.ts',
+      'packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts',
+      'packages/operator-core/lib/endpoint-route/routes/transport/_mcp-result-replay.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+    retainedArtifacts: ['phases/execute/completion-observation.json',
+      'phases/execute/completion-readback.json',
+      ...(transport === 'authenticated MCP proxy' ? ['phases/execute/completion-proxy.log',
+        'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+        'phases/prepare/operator-api-preflight.json', 'phases/prepare/hono-host.mjs.build-steps.jsonl'] : [])],
+    prepare: transport === 'authenticated MCP proxy' ? async evidenceDir => {
+      prepared = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } });
+    } : undefined,
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-        STAGING_FIRST_HTTP_SCENARIO: 'private-completion', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+        STAGING_FIRST_HTTP_SCENARIO: transport === 'palette HTTP' ? 'private-completion' : 'private-completion-mcp',
+        STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
         TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        ...(prepared ? ['--prepared-api-sha=' + prepared.sha256,
+          '--prepared-receipt-sha=' + prepared.receiptSha256] : [])],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => {
@@ -57,10 +76,16 @@ it('completes a report-only work item through the current private API after exac
       expect(receipt.completionElapsedMs).toBeLessThan(20_000);
       expect(receipt.requests.map((request: { name: string }) => request.name)).toEqual([
         'coord:whoami', 'work_items:create', 'reports:publish', 'reports:get', 'work_items:complete',
+        ...(transport === 'authenticated MCP proxy' ? ['work_items:complete'] : []),
       ]);
+      if (transport === 'authenticated MCP proxy') {
+        expect(receipt).toMatchObject({ transport: 'mcp-proxy',
+          replay: { tagged: true, originalHandlerExecutions: 1 } });
+        expect([401, 403]).toContain(receipt.invalidBearerStatus);
+      }
       console.info('PRIVATE_COMPLETION_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('PRIVATE_COMPLETION_HTTP_PROOF_RUN ' + runId);
-}, options.testTimeoutMs);
+});
