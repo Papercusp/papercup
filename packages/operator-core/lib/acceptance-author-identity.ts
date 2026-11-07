@@ -419,14 +419,20 @@ export async function resolvePlanImplementerIdentities(
     // work-item. Only edits attributed to THIS plan (or one of its work-items)
     // count; editing a cited file for another plan does not exclude a grader.
     sql<Array<{ agent_id: string | null }>>`
-      SELECT DISTINCT e.agent_id
+      -- Separate the membership branches before sorting/deduplication. A single
+      -- OR with the work-item subquery can make ORDER BY agent_id scan the
+      -- workspace-wide agent index instead of the work-item membership index.
+      SELECT e.agent_id
         FROM harness_shared.edit_attribution_ledger e
        WHERE e.workspace_id = ${workspaceId}
-         AND (e.plan_slug = ${planSlug}
-              OR e.work_item_id IN (
-                SELECT w.feature_id FROM harness_shared.work_items w
-                 WHERE w.workspace_id = ${workspaceId} AND w.source_plan_slug = ${planSlug}))
-       ORDER BY e.agent_id
+         AND e.plan_slug = ${planSlug}
+      UNION
+      SELECT e.agent_id
+        FROM harness_shared.work_items w
+        JOIN harness_shared.edit_attribution_ledger e
+          ON e.work_item_id = w.feature_id AND e.workspace_id = w.workspace_id
+       WHERE w.workspace_id = ${workspaceId} AND w.source_plan_slug = ${planSlug}
+       ORDER BY agent_id
        LIMIT ${limit}
     `.catch((err: unknown) => {
       throw new Error(
