@@ -158,6 +158,283 @@
     "skipCount": 13,
     "scope": "packaging assertion only; skipped tests are not native proof"
   },
+  "assertions": [
+    {
+      "id": "fixture-diagnostics:001",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-failure rejects the injected failure"
+    },
+    {
+      "id": "fixture-diagnostics:002",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-failure returns retained evidence location"
+    },
+    {
+      "id": "fixture-diagnostics:003",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-failure records failed phase"
+    },
+    {
+      "id": "fixture-diagnostics:004",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-failure retains child stdout"
+    },
+    {
+      "id": "fixture-diagnostics:005",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-failure retains child stderr"
+    },
+    {
+      "id": "fixture-diagnostics:006",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-failure leaves no owned child"
+    },
+    {
+      "id": "fixture-diagnostics:007",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-failure unregisters its task"
+    },
+    {
+      "id": "fixture-diagnostics:008",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-timeout rejects the injected failure"
+    },
+    {
+      "id": "fixture-diagnostics:009",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-timeout returns retained evidence location"
+    },
+    {
+      "id": "fixture-diagnostics:010",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-timeout records failed phase"
+    },
+    {
+      "id": "fixture-diagnostics:011",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-timeout retains child stdout"
+    },
+    {
+      "id": "fixture-diagnostics:012",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-timeout retains child stderr"
+    },
+    {
+      "id": "fixture-diagnostics:013",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-timeout leaves no owned child"
+    },
+    {
+      "id": "fixture-diagnostics:014",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: fixture-timeout unregisters its task"
+    },
+    {
+      "id": "fixture-diagnostics:015",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-diagnostics-20261107-v4.json: timeout cleanup verifies and terminates the owned child tree"
+    },
+    {
+      "id": "lifecycle:001",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: first install enables native panels with distinct default shortcuts"
+    },
+    {
+      "id": "lifecycle:002",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: first install enables the Accounts shortcut"
+    },
+    {
+      "id": "lifecycle:003",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: first install enables Inbox on Ctrl Alt B"
+    },
+    {
+      "id": "lifecycle:004",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: Inbox migration chooses a free accelerator without resetting existing panels"
+    },
+    {
+      "id": "lifecycle:005",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: installer persists the migrated Inbox shortcut"
+    },
+    {
+      "id": "lifecycle:006",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: upgrade preserves explicitly disabled Inbox"
+    },
+    {
+      "id": "lifecycle:007",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: adding Accounts preserves legacy disable and shortcut choices"
+    },
+    {
+      "id": "lifecycle:008",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: Accounts migration avoids existing Quick Access and Inbox shortcuts"
+    },
+    {
+      "id": "lifecycle:009",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: preserve-existing installer persists the missing Accounts binding"
+    },
+    {
+      "id": "lifecycle:010",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: login registration uses the exact installed controller and fixed argv"
+    },
+    {
+      "id": "lifecycle:011",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: Workbench registration preserves unrelated login applications"
+    },
+    {
+      "id": "lifecycle:012",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: native login command preserves spaces apostrophes and literal dollar signs"
+    },
+    {
+      "id": "lifecycle:013",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: upgrade preserves account shortcuts and individual panel disable"
+    },
+    {
+      "id": "lifecycle:014",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: upgrade refreshes the registered installation without resetting choices"
+    },
+    {
+      "id": "lifecycle:015",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: disable removes this accounts Workbench login value"
+    },
+    {
+      "id": "lifecycle:016",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: reinstall does not re-enable an explicitly disabled account"
+    },
+    {
+      "id": "lifecycle:017",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: explicit enable restores login registration"
+    },
+    {
+      "id": "lifecycle:018",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: duplicate enabled shortcuts are refused before writing"
+    },
+    {
+      "id": "lifecycle:019",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: reserved F12 remains invalid even for a disabled panel"
+    },
+    {
+      "id": "lifecycle:020",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: invalid native modifier bits are refused"
+    },
+    {
+      "id": "lifecycle:021",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: invalid settings leave both persistence and login state unchanged"
+    },
+    {
+      "id": "lifecycle:022",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: concurrent settings writer cannot bypass the per-account lock"
+    },
+    {
+      "id": "lifecycle:023",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: registry failure is surfaced instead of accepting a partial settings update"
+    },
+    {
+      "id": "lifecycle:024",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: registry failure restores the previous settings"
+    },
+    {
+      "id": "lifecycle:025",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: missing resident is reported without starting a service or touching another account"
+    },
+    {
+      "id": "lifecycle:026",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: settings wake targets the exact account and state-directory identity"
+    },
+    {
+      "id": "lifecycle:027",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: uninstalling another role preserves the current roles login entry"
+    },
+    {
+      "id": "lifecycle:028",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: uninstall removes owned login registration and retains account preferences"
+    },
+    {
+      "id": "lifecycle:029",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: retained preferences survive uninstall and reinstall"
+    },
+    {
+      "id": "lifecycle:030",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: corrupt preferences fail visibly instead of silently resetting shortcuts"
+    },
+    {
+      "id": "lifecycle:031",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: resident fixture refuses to overwrite an existing Workbench login registration"
+    },
+    {
+      "id": "lifecycle:032",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: actual controller starts the resident in the signed-in desktop and acknowledges native readiness"
+    },
+    {
+      "id": "lifecycle:033",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: unchanged desktop preparation preserves the same resident process"
+    },
+    {
+      "id": "lifecycle:034",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: settings command reaches the resident native WPF dialog through its account event"
+    },
+    {
+      "id": "lifecycle:035",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: saving native disable releases the resident and removes login registration"
+    },
+    {
+      "id": "lifecycle:036",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: native settings persist explicit disable"
+    },
+    {
+      "id": "lifecycle:037",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: login invocation respects the saved disabled choice"
+    },
+    {
+      "id": "lifecycle:038",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: explicit enable restarts the same configured native host"
+    },
+    {
+      "id": "lifecycle:039",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: explicit disable waits for resident shutdown"
+    },
+    {
+      "id": "lifecycle:040",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-resident-20261107-v4.json: controller uninstall leaves no owned login entry and retains account choices"
+    }
+  ],
   "limitations": [
     "Isolated helper and test account state only; no real Inbox actions or account controls.",
     "No actual canonical Inbox write journey or installed-artifact acceptance claimed.",

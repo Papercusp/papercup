@@ -166,6 +166,343 @@
     "evidence": "/tmp/wb-p005-windows-inbox-node-20261107-v1.log",
     "scope": "packaging only; skips are not native proof"
   },
+  "assertions": [
+    {
+      "id": "inbox:001",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: Inbox reads and filters canonical attention groups"
+    },
+    {
+      "id": "inbox:002",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: visible batch freezes nested references before confirmation"
+    },
+    {
+      "id": "inbox:003",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: context uses exact question identity and offered escalation option"
+    },
+    {
+      "id": "inbox:004",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: late context generation is rejected"
+    },
+    {
+      "id": "inbox:005",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: changed reference cannot resolve a recycled question identity"
+    },
+    {
+      "id": "inbox:006",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: manual resolution refuses unoffered actions"
+    },
+    {
+      "id": "inbox:007",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: pending action suppresses duplicate invocation"
+    },
+    {
+      "id": "inbox:008",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: unrecorded terminal effect is surfaced for reconciliation"
+    },
+    {
+      "id": "inbox:009",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: confirmed terminal effect cannot repeat when bookkeeping fails"
+    },
+    {
+      "id": "inbox:010",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: locally confirmed question cannot be applied twice"
+    },
+    {
+      "id": "inbox:011",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: owner action stays outside Apply selected"
+    },
+    {
+      "id": "inbox:012",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: partial delivery uses persisted total as the progress denominator"
+    },
+    {
+      "id": "inbox:013",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: Apply freezes the edited draft and saved run identity"
+    },
+    {
+      "id": "inbox:014",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: owner-only row cannot enter a bulk apply request"
+    },
+    {
+      "id": "inbox:015",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: action receipt from another workspace is rejected"
+    },
+    {
+      "id": "inbox:016",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: live saved run refresh cannot overwrite a pending action"
+    },
+    {
+      "id": "inbox:017",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: live refresh cannot replace the selected saved run"
+    },
+    {
+      "id": "inbox:018",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: duplicate bulk identities fail closed"
+    },
+    {
+      "id": "inbox:019",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: resume submits only retryable saved item identities"
+    },
+    {
+      "id": "inbox:020",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: stop refuses a terminal run"
+    },
+    {
+      "id": "inbox:021",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: stop targets the exact active saved run"
+    },
+    {
+      "id": "inbox:022",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: active saved run prevents a second batch"
+    },
+    {
+      "id": "inbox:023",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: filtering out a question dismisses context and fences its late response"
+    },
+    {
+      "id": "inbox:024",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: incomplete canonical run blocks actions"
+    },
+    {
+      "id": "inbox:025",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: conflicting attention identities are surfaced instead of silently merged"
+    },
+    {
+      "id": "inbox:026",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: native Inbox renders canonical attention and selected environment"
+    },
+    {
+      "id": "inbox:027",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: native visible batch waits for explicit confirmation without writes"
+    },
+    {
+      "id": "inbox:028",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: query edit cancels a frozen batch confirmation"
+    },
+    {
+      "id": "inbox:029",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: native question context exposes offered actions and answer control"
+    },
+    {
+      "id": "inbox:030",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: manual offered action also waits for confirmation"
+    },
+    {
+      "id": "inbox:031",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: confirmed batch submits exactly the one filtered visible question"
+    },
+    {
+      "id": "inbox:032",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: saved run polling renders authoritative review progress"
+    },
+    {
+      "id": "inbox:033",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: saved run refresh preserves the live draft control and edited text"
+    },
+    {
+      "id": "inbox:034",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: selected recommendation is never auto-applied"
+    },
+    {
+      "id": "inbox:035",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: native Apply sends the exact selected identity and edited Unicode draft"
+    },
+    {
+      "id": "inbox:036",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: Inbox pins alongside independent panels within separate native slots"
+    },
+    {
+      "id": "inbox:037",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-20261107-v1.json: native Inbox retains its resident HWND and query across toggles"
+    },
+    {
+      "id": "lifecycle:001",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: first install enables native panels with distinct default shortcuts"
+    },
+    {
+      "id": "lifecycle:002",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: first install enables the Accounts shortcut"
+    },
+    {
+      "id": "lifecycle:003",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: first install enables Inbox on Ctrl Alt B"
+    },
+    {
+      "id": "lifecycle:004",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: Inbox migration chooses a free accelerator without resetting existing panels"
+    },
+    {
+      "id": "lifecycle:005",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: installer persists the migrated Inbox shortcut"
+    },
+    {
+      "id": "lifecycle:006",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: upgrade preserves explicitly disabled Inbox"
+    },
+    {
+      "id": "lifecycle:007",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: adding Accounts preserves legacy disable and shortcut choices"
+    },
+    {
+      "id": "lifecycle:008",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: Accounts migration avoids existing Quick Access and Inbox shortcuts"
+    },
+    {
+      "id": "lifecycle:009",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: preserve-existing installer persists the missing Accounts binding"
+    },
+    {
+      "id": "lifecycle:010",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: login registration uses the exact installed controller and fixed argv"
+    },
+    {
+      "id": "lifecycle:011",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: Workbench registration preserves unrelated login applications"
+    },
+    {
+      "id": "lifecycle:012",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: native login command preserves spaces apostrophes and literal dollar signs"
+    },
+    {
+      "id": "lifecycle:013",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: upgrade preserves account shortcuts and individual panel disable"
+    },
+    {
+      "id": "lifecycle:014",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: upgrade refreshes the registered installation without resetting choices"
+    },
+    {
+      "id": "lifecycle:015",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: disable removes this accounts Workbench login value"
+    },
+    {
+      "id": "lifecycle:016",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: reinstall does not re-enable an explicitly disabled account"
+    },
+    {
+      "id": "lifecycle:017",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: explicit enable restores login registration"
+    },
+    {
+      "id": "lifecycle:018",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: duplicate enabled shortcuts are refused before writing"
+    },
+    {
+      "id": "lifecycle:019",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: reserved F12 remains invalid even for a disabled panel"
+    },
+    {
+      "id": "lifecycle:020",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: invalid native modifier bits are refused"
+    },
+    {
+      "id": "lifecycle:021",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: invalid settings leave both persistence and login state unchanged"
+    },
+    {
+      "id": "lifecycle:022",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: concurrent settings writer cannot bypass the per-account lock"
+    },
+    {
+      "id": "lifecycle:023",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: registry failure is surfaced instead of accepting a partial settings update"
+    },
+    {
+      "id": "lifecycle:024",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: registry failure restores the previous settings"
+    },
+    {
+      "id": "lifecycle:025",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: missing resident is reported without starting a service or touching another account"
+    },
+    {
+      "id": "lifecycle:026",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: settings wake targets the exact account and state-directory identity"
+    },
+    {
+      "id": "lifecycle:027",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: uninstalling another role preserves the current roles login entry"
+    },
+    {
+      "id": "lifecycle:028",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: uninstall removes owned login registration and retains account preferences"
+    },
+    {
+      "id": "lifecycle:029",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: retained preferences survive uninstall and reinstall"
+    },
+    {
+      "id": "lifecycle:030",
+      "passed": true,
+      "evidence": "/tmp/wb-p005-windows-inbox-lifecycle-20261107-v1.json: corrupt preferences fail visibly instead of silently resetting shortcuts"
+    }
+  ],
   "limitations": [
     "No real Inbox actions or account steering performed.",
     "No installed artifact, AppKit, full three-OS acceptance, independent certificate or shipment claim.",
