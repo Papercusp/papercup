@@ -86,6 +86,25 @@ it('every required qualification scenario has an exact maintained detector route
   ]) cases.push({ scenario, file: 'apps/operator/lib/release/green-checkpoint.test.ts', testName });
   cases.push({ scenario: 'scheduled-execution', file: 'apps/operator/lib/release/green-checkpoint-qualification-execution.test.ts',
     testName: 'has no run-level wall clock without a transported deadline (WI-6554700010042457)' });
+  const scheduledFile = prefix + 'harness/routines/release-actions.test.ts';
+  const scheduledRoutes = ['scope', 'direct', 'fallback'] as const;
+  const scheduledScenarios: string[] = [];
+  for (const route of scheduledRoutes) {
+    for (const offset of [120_000, -120_000]) {
+      const scenario = `scheduled-inherited-${route}-${offset}`;
+      scheduledScenarios.push(scenario);
+      cases.push({ scenario, file: scheduledFile,
+        testName: `drops the inherited caller cutoff through the scheduled ${route} launch (offset ${offset})` });
+    }
+    const scenario = `scheduled-unbounded-${route}`;
+    scheduledScenarios.push(scenario);
+    cases.push({ scenario, file: scheduledFile,
+      testName: `adds no run-level deadline through the scheduled ${route} launch` });
+  }
+  cases.push({ scenario: 'scheduled-scope-default', file: scheduledFile,
+    testName: 'the wall is OPT-IN: a caller with its own supervision is unchanged (no RuntimeMaxSec)' });
+  cases.push({ scenario: 'scheduled-scope-bounded-control', file: scheduledFile,
+    testName: 'keeps an explicitly bounded generic scope available to other callers' });
   // A selector's file may have moved since Design; bind its actual assertions.
   // R-7/R-8 deliberately require authoritative manual artifact/ledger comparisons.
   // Their registration here never constitutes passing deployed/live evidence.
@@ -105,8 +124,10 @@ it('every required qualification scenario has an exact maintained detector route
     'pid-scope-reuse': { scenarios: ['pid-scope-reuse'] },
     'returning-controller': { scenarios: ['returning-controller'] },
     'partial-scope-read': { scenarios: ['partial-scope-read'] },
-    'unlimited-generated-unit-env': { scenarios: ['deadline-representation'] },
-    'manual-scheduled-ceilings': { scenarios: ['manual-launch', 'scheduled-execution', 'setup', 'materialization', 'rescue-confirmation'] },
+    'unlimited-generated-unit-env': { scenarios: ['deadline-representation', 'scheduled-unbounded-scope',
+      'scheduled-scope-default', 'scheduled-scope-bounded-control'] },
+    'manual-scheduled-ceilings': { scenarios: ['manual-launch', 'scheduled-execution', ...scheduledScenarios,
+      'setup', 'materialization', 'rescue-confirmation'] },
     'unlimited-horizon-restart': { scenarios: ['clock-horizon', 'former-horizon'] },
     'retained-test-guard': { scenarios: ['worker-guard', 'cancellation'] },
     'dbos-long-step': { scenarios: ['dbos-no-output-live', 'dbos-no-output-unknown'] },

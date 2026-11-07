@@ -3195,6 +3195,16 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         const options = call[2] as { env?: Record<string, string | undefined> };
         expect(options.env?.[key]).toBeUndefined();
       }
+      if (route !== 'direct') {
+        // Inspect the scheduled caller's actual configuration: the generic builder's
+        // unbounded default cannot detect a finite override at this call site.
+        const [command, argv] = spawnMock.mock.calls[0] as [string, string[]];
+        expect(command).toBe('systemd-run');
+        expect(argv).toContain('--scope');
+        expect(argv.some(arg => arg.startsWith('--property=MemoryMax='))).toBe(true);
+        expect(argv.join(' ')).toContain('green-checkpoint.ts');
+        expect(argv.some(arg => arg.startsWith('--property=RuntimeMaxSec='))).toBe(false);
+      }
     } finally {
       if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
     }
