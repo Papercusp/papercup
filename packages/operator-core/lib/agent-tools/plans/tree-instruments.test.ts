@@ -131,6 +131,84 @@ describe('provider-specific-census tree instrument', () => {
   });
 });
 
+describe('plan-content-writer-census tree instrument', () => {
+  const key = 'plan-content-writer-census' as const;
+  const writer = 'packages/operator-core/lib/neutral-writer.ts';
+  const insert = 'await tx`INSERT INTO harness_shared.harness_plans (content, content_hash) VALUES (body, hash)`;';
+  const good = `${insert}\nawait recordPlanRevisionInTransaction(tx, args);`;
+  const fp = (output: unknown) => foldTreeInstrumentFingerprint('sha256-file-set-v1:x', key, output);
+
+  it('detects a newly planted writer and a missing recorder/hash in an existing writer', async () => {
+    const base = await put({ [writer]: good });
+    const before = await measureTreeInstrumentAtCommit(key, root, base);
+    expect(before).toMatchObject({ writers: [{ file: writer, recorded: true, missingHashes: [] }] });
+    const unrelated = await put({ 'apps/operator/lib/unrelated.ts': 'export const n = 1;' });
+    expect(fp(await measureTreeInstrumentAtCommit(key, root, unrelated))).toBe(fp(before));
+    const planted = await put({ 'apps/operator/lib/new-writer.ts': insert });
+    const afterPlant = await measureTreeInstrumentAtCommit(key, root, planted);
+    expect(afterPlant).toMatchObject({ writers: [
+      { file: 'apps/operator/lib/new-writer.ts', recorded: false, missingHashes: [] },
+      { file: writer, recorded: true, missingHashes: [] },
+    ] });
+    expect(fp(afterPlant)).not.toBe(fp(before));
+    const broken = await put({ [writer]: good.replace('content, content_hash', 'content') });
+    expect(await measureTreeInstrumentAtCommit(key, root, broken)).toMatchObject({ writers: [
+      { file: 'apps/operator/lib/new-writer.ts', recorded: false },
+      { file: writer, recorded: true, missingHashes: [expect.stringContaining('(content)')] },
+    ] });
+    const noRecorder = await put({ [writer]: insert });
+    expect(await measureTreeInstrumentAtCommit(key, root, noRecorder)).toMatchObject({ writers: [
+      { file: 'apps/operator/lib/new-writer.ts', recorded: false },
+      { file: writer, recorded: false },
+    ] });
+  });
+
+  it('uses committed bytes, ignores comments and matches the maintained scanner scope', async () => {
+    const base = await put({
+      [writer]: good,
+      'apps/operator/lib/comment.ts': `// ${insert}\nexport {};`,
+      'apps/operator/lib/writer.test.ts': insert,
+      'apps/operator/lib/writer.spec.ts': insert,
+      'apps/operator/lib/writer.d.ts': insert,
+      'apps/operator/lib/__tests__/writer.ts': insert,
+      'apps/operator/lib/.hidden/writer.ts': insert,
+      'apps/operator/lib/node_modules/writer.ts': insert,
+      'apps/operator/app/outside.ts': insert,
+    });
+    await writeFile(join(root, writer), insert);
+    await writeFile(join(root, 'apps/operator/lib/untracked.ts'), insert);
+    expect(await measureTreeInstrumentAtCommit(key, root, base)).toMatchObject({
+      writers: [{ file: writer, recorded: true, missingHashes: [] }],
+    });
+  });
+
+  it('preserves the full writer population beyond the ordinary glob limit', async () => {
+    const files = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [
+      `packages/operator-core/lib/writer-${i}.ts`, good,
+    ]));
+    const base = await put(files);
+    const output = await measureTreeInstrumentAtCommit(key, root, base) as { writers: unknown[] };
+    expect(output.writers).toHaveLength(150);
+  });
+
+  it('measures exemption validity and notices when its writer disappears or becomes canonical', async () => {
+    const exempt = 'packages/operator-core/lib/search/lexical/test-pg/bm25-test-db.ts';
+    const privateWriter = `await sql\`CREATE DATABASE isolated\`;\nawait sql\`CREATE TABLE harness_shared.harness_plans (content text)\`;\n${insert}`;
+    const base = await put({ [exempt]: privateWriter });
+    expect(await measureTreeInstrumentAtCommit(key, root, base)).toMatchObject({
+      writers: [{ file: exempt, exemption: { valid: true } }], missingExemptions: [],
+    });
+    const canonical = await put({ [exempt]: `${privateWriter}\ngetOrgPg();` });
+    expect(await measureTreeInstrumentAtCommit(key, root, canonical)).toMatchObject({
+      writers: [{ file: exempt, exemption: { valid: false } }],
+    });
+    const removed = await put({ [exempt]: 'export {};' });
+    expect(await measureTreeInstrumentAtCommit(key, root, removed)).toMatchObject({
+      writers: [], missingExemptions: [exempt],
+    });
+  });
+});
+
 describe('embedded-terminal-host-census tree instrument', () => {
   const key = 'embedded-terminal-host-census' as const;
 

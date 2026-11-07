@@ -21,96 +21,41 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { stripCommentsOnly } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
+import {
+  PLAN_WRITER_SCAN_ROOTS as SCAN_ROOTS,
+  PLAN_WRITER_EXEMPTIONS as EXEMPT,
+  contentWritesWithoutHash,
+  isPlanWriterSourcePath,
+  recordsRevision,
+  scanPlanContentWriter,
+  writesPlanContent,
+  type PlanContentWriter,
+} from './plan-content-writer-census';
 
 const REPO_ROOT = resolve(__dirname, '../../../../..');
-const SCAN_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
-
-/** Isolated fixture writers do not mutate canonical plans or their revision spine. */
-const EXEMPT: Readonly<Record<string, string>> = {
-  'packages/operator-core/lib/search/lexical/test-pg/bm25-test-db.ts':
-    'Seeds a minimal harness_plans corpus in its private testcontainer database, which has no plan_revisions or content_hash columns.',
-};
-
-const RAW_INSERT = /INSERT\s+INTO\s+harness_shared\.harness_plans\b/;
-const RAW_UPDATE = /UPDATE\s+harness_shared\.harness_plans\b/g;
-const SETS_CONTENT = /\bcontent\s*=/;
-const RECORDER =
-  /\b(?:recordSystemPlanRevisionInTransaction|recordPlanRevisionInTransaction|recordPlanRevision|insertSystemPlanRevision)\s*\(|INSERT\s+INTO\s+harness_shared\.plan_revisions\b/;
-
-/** True when the (comment-stripped) source contains a raw write of `harness_plans.content`. */
-export function writesPlanContent(src: string): boolean {
-  if (RAW_INSERT.test(src)) return true;
-  for (const m of src.matchAll(RAW_UPDATE)) {
-    const tail = src.slice(m.index! + m[0].length, m.index! + m[0].length + 1200);
-    const where = tail.search(/\bWHERE\b/);
-    const setClause = where === -1 ? tail : tail.slice(0, where);
-    if (SETS_CONTENT.test(setClause)) return true;
-  }
-  return false;
-}
-
-export function recordsRevision(src: string): boolean {
-  return RECORDER.test(src);
-}
-
-const INSERT_COLUMNS = /INSERT\s+INTO\s+harness_shared\.harness_plans\s*(?:AS\s+\w+\s*)?\(([^)]*)\)/g;
-const SETS_CONTENT_HASH = /\bcontent_hash\s*=/;
-
-/**
- * Raw statements that write `content` but leave `content_hash` alone. The column defaults to
- * '' and the plan-parts reconcile joins plan_revisions on it, so such a body never matches
- * its own revision even when one is recorded (WI-10006321: adhoc-spec-scope.ts, live row
- * `adhoc-work-item-specs`). Per STATEMENT, unlike the file-level recorder rule: the column
- * list and SET clause are both local to one statement. An INSERT whose columns come from a
- * helper (`${sql(row)}`) has no literal list and is out of reach of this check.
- */
-export function contentWritesWithoutHash(src: string): string[] {
-  const out: string[] = [];
-  for (const m of src.matchAll(INSERT_COLUMNS)) {
-    const cols = m[1]!.split(',').map((c) => c.trim());
-    if (cols.includes('content') && !cols.includes('content_hash')) out.push(m[0].replace(/\s+/g, ' ').slice(0, 160));
-  }
-  for (const m of src.matchAll(RAW_UPDATE)) {
-    const tail = src.slice(m.index! + m[0].length, m.index! + m[0].length + 1200);
-    const where = tail.search(/\bWHERE\b/);
-    const setClause = where === -1 ? tail : tail.slice(0, where);
-    if (SETS_CONTENT.test(setClause) && !SETS_CONTENT_HASH.test(setClause)) {
-      out.push(`${m[0]}${setClause}`.replace(/\s+/g, ' ').slice(0, 160));
-    }
-  }
-  return out;
-}
 
 function walk(dir: string, out: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === '__tests__' || entry.name.startsWith('.')) continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) walk(full, out);
-    else if (
-      entry.name.endsWith('.ts') &&
-      !entry.name.endsWith('.test.ts') &&
-      !entry.name.endsWith('.spec.ts') &&
-      !entry.name.endsWith('.d.ts')
-    ) {
+    else if (isPlanWriterSourcePath(relative(REPO_ROOT, full))) {
       out.push(full);
     }
   }
 }
 
-let writerCensus: Array<{ file: string; recorded: boolean }> | undefined;
-function contentWriters(): Array<{ file: string; recorded: boolean }> {
+let writerCensus: PlanContentWriter[] | undefined;
+function contentWriters(): PlanContentWriter[] {
   if (writerCensus) return writerCensus;
   const files: string[] = [];
   for (const root of SCAN_ROOTS) walk(join(REPO_ROOT, root), files);
-  const writers: Array<{ file: string; recorded: boolean }> = [];
+  const writers: PlanContentWriter[] = [];
   for (const full of files) {
     const rel = relative(REPO_ROOT, full);
     const raw = readFileSync(full, 'utf8');
-    // Every detector below requires this literal table identity. Avoid parsing
-    // unrelated source; candidates still cross the comment-aware detector.
-    if (!raw.includes('harness_shared.harness_plans')) continue;
-    const src = stripCommentsOnly(raw, rel);
-    if (writesPlanContent(src)) writers.push({ file: rel, recorded: recordsRevision(src) });
+    const writer = scanPlanContentWriter(rel, raw);
+    if (writer) writers.push(writer);
   }
   return writerCensus = writers;
 }

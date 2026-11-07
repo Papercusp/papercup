@@ -45,8 +45,15 @@ import {
   scanSourceForKindBranches,
   type KindBranchFinding,
 } from '../../plan-types/kind-branch-census';
+import {
+  PLAN_WRITER_SCAN_ROOTS,
+  isPlanWriterSourcePath,
+  planContentWriterCensusOutput,
+  scanPlanContentWriter,
+  type PlanContentWriter,
+} from './plan-content-writer-census';
 
-export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census', 'embedded-terminal-host-census'] as const;
+export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census', 'embedded-terminal-host-census', 'plan-content-writer-census'] as const;
 export const treeInstrumentKeySchema = z.enum(TREE_INSTRUMENT_KEYS);
 export type TreeInstrumentKey = z.infer<typeof treeInstrumentKeySchema>;
 
@@ -70,6 +77,7 @@ const memo = pinModuleState('@papercusp/operator-core.tree-instrument-memo', () 
   verdicts: new Map<string, StrictKind[]>(),
   /** Kind-branch findings by [path, blob]: findings carry the path, so the key does too. */
   kindFindings: new Map<string, KindBranchFinding[]>(),
+  planWriters: new Map<string, PlanContentWriter | null>(),
   /** Instrument outputs by [key, root, commit]; a commit's tree never changes. */
   outputs: new Map<string, Promise<unknown>>(),
 }));
@@ -78,6 +86,7 @@ const memo = pinModuleState('@papercusp/operator-core.tree-instrument-memo', () 
 export function __resetTreeInstrumentMemoForTest(): void {
   memo.verdicts.clear();
   memo.kindFindings.clear();
+  memo.planWriters.clear();
   memo.outputs.clear();
 }
 
@@ -337,11 +346,34 @@ async function embeddedTerminalCensusAtCommit(root: string, commit: string, deps
   return { schemaVersion: 1, hosts };
 }
 
+async function planContentWriterCensusAtCommit(root: string, commit: string, deps: CommittedTreeDeps): Promise<unknown> {
+  const files = (await listCommittedFilesUnder(root, commit, PLAN_WRITER_SCAN_ROOTS, isPlanWriterSourcePath, deps))
+    .filter(file => isPlanWriterSourcePath(file.path));
+  const writers: PlanContentWriter[] = [];
+  const unread: CommittedTreeFile[] = [];
+  for (const file of files) {
+    const key = `${file.path}\0${file.blob}`;
+    if (!memo.planWriters.has(key)) unread.push(file);
+    else {
+      const writer = memo.planWriters.get(key);
+      if (writer) writers.push(writer);
+    }
+  }
+  await forEachCommittedBody(root, unread, (file, body) => {
+    const writer = scanPlanContentWriter(file.path, body);
+    if (writer) writers.push(writer);
+    if (memo.planWriters.size >= MAX_MEMOIZED_VERDICTS) memo.planWriters.clear();
+    memo.planWriters.set(`${file.path}\0${file.blob}`, writer);
+  }, deps);
+  return planContentWriterCensusOutput(writers);
+}
+
 const TREE_INSTRUMENTS: Record<TreeInstrumentKey, (root: string, commit: string, deps: CommittedTreeDeps) => Promise<unknown>> = {
   'provider-specific-census': providerCensusAtCommit,
   'deliverable-kind-branch-census': kindBranchCensusAtCommit,
   'notification-classification-census': notificationCensusAtCommit,
   'embedded-terminal-host-census': embeddedTerminalCensusAtCommit,
+  'plan-content-writer-census': planContentWriterCensusAtCommit,
 };
 
 /**
