@@ -712,6 +712,11 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
                  -- the terminal write (a NULL new outcome keeps the old one via the COALESCE).
                  || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
                          THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                         ELSE '{}'::jsonb END
+                 -- Typed review findings/dispositions remain addressable after expiry,
+                 -- including the requester's late consult:close disposition.
+                 || CASE WHEN (outcome -> 'review') IS NOT NULL
+                         THEN jsonb_build_object('review', outcome -> 'review')
                          ELSE '{}'::jsonb END, outcome),
                closed_at = ${nowIso}::timestamptz,
                updated_at = ${nowIso}::timestamptz
@@ -945,6 +950,9 @@ async function convertReviewConsult(
                } as never)}::jsonb
                  || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
                          THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                         ELSE '{}'::jsonb END
+                 || CASE WHEN (outcome -> 'review') IS NOT NULL
+                         THEN jsonb_build_object('review', outcome -> 'review')
                          ELSE '{}'::jsonb END,
                closed_at = ${commitNowIso}::timestamptz,
                updated_at = ${commitNowIso}::timestamptz

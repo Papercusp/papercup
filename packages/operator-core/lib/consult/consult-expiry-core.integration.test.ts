@@ -2400,6 +2400,18 @@ describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpi
     at: PAST,
     consult_state: 'awaiting_responder',
   };
+  const REVIEW = {
+    version: 1,
+    answers: [{ postId: 1, reviewerId: 'ans-a', subjectRef: 'plan:fixture@frozen',
+      coverage: 'complete', at: PAST }],
+    findings: [{ id: 'post:1#chronology', key: 'chronology', severity: 'blocker',
+      text: 'The measured arms must preserve the accepted baseline boundary.',
+      evidenceRefs: ['plan:fixture@frozen'], postId: 1, reviewerId: 'ans-a',
+      subjectRef: 'plan:fixture@frozen' }],
+    dispositions: [{ findingId: 'post:1#chronology', status: 'planned',
+      reason: 'The fixture guard is owned before measurement.', reference: 'WI-fixture',
+      postId: 2, authorId: 'req-1', at: PAST }],
+  };
   const cand = (ownerId: string, score: number, similarity: number) => ({
     ownerId,
     score,
@@ -2411,7 +2423,7 @@ describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpi
   async function reconcileRow(id: string) {
     await rootSql`
       UPDATE harness_shared.consult_state
-         SET outcome = ${rootSql.json({ reconciliation: RECONCILIATION } as never)}
+         SET outcome = ${rootSql.json({ reconciliation: RECONCILIATION, review: REVIEW } as never)}
        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
   }
   async function outcomeOf(id: string) {
@@ -2448,6 +2460,7 @@ describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpi
         answers: 1,
         answered_by: ['ans-a'],
         reconciliation: RECONCILIATION,
+        review: REVIEW,
       },
     });
   });
@@ -2458,7 +2471,21 @@ describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpi
     const { deps } = makeDeps({ withReach: true });
     await sweepExpiredConsults(deps);
 
-    expect(await outcomeOf(id)).toEqual({ state: 'expired', outcome: { reconciliation: RECONCILIATION } });
+    expect(await outcomeOf(id)).toEqual({ state: 'expired',
+      outcome: { reconciliation: RECONCILIATION, review: REVIEW } });
+  });
+
+  it('retains complete typed review evidence without a reconciliation on answered expiry', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['only-r']) });
+    await setDigest(id, [{ ownerId: 'only-r', kind: 'answer', at: PAST, excerpt: 'a real answer' }]);
+    await rootSql`UPDATE harness_shared.consult_state SET outcome = ${rootSql.json({ review: REVIEW } as never)}
+      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const { deps } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+
+    expect(await outcomeOf(id)).toEqual({ state: 'expired', outcome: {
+      disposition: 'cascade_exhausted_with_answers', answers: 1, answered_by: ['only-r'], review: REVIEW,
+    } });
   });
 
   it('CONTROL: terminal expiry with zero answers and NO reconciliation still writes a NULL outcome (not "{}" or a JSON null)', async () => {
@@ -2485,7 +2512,7 @@ describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpi
          'proceed', ${at(50)}::timestamptz,
          ${rootSql.json({ policy: 'rubric-vetting', ...menuSnapshot(['resp-1', 'resp-2']) } as never)}, 0, 0,
          ${at(-70)}::timestamptz, ${at(-70)}::timestamptz,
-         ${rootSql.json({ reconciliation: RECONCILIATION } as never)})`;
+         ${rootSql.json({ reconciliation: RECONCILIATION, review: REVIEW } as never)})`;
     await rootSql`
       INSERT INTO harness_shared.coord_conversations (workspace_id, id, kind, state, updated_at)
       VALUES (${WS}, ${id}, 'consult', 'open', ${at(-70)}::timestamptz)`;
@@ -2501,6 +2528,7 @@ describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpi
         review_kind: 'rubric-vetting',
         silent_responder: 'resp-1',
         reconciliation: RECONCILIATION,
+        review: REVIEW,
       },
     });
   });
