@@ -20,6 +20,71 @@ import {
 } from './execution';
 
 describe('admission ledger acquisition attribution', () => {
+  it.each([
+    ['pg_advisory_xact_lock', 'lock'],
+    ['INSERT INTO harness_shared.operator_settings', 'cutover-latch'],
+    ['SELECT value', 'cutover-latch'],
+    ['SELECT receipt_id, record', 'find-identity'],
+    ['legacy-identity', 'find-legacy-identity'],
+    ['INSERT INTO harness_shared.resource_governor_admissions', 'insert'],
+  ])('attributes an enqueue failure at %s to its internal phase', async (statement, phase) => {
+    const failure = new Error('controlled enqueue failure');
+    const sql = vi.fn((strings: TemplateStringsArray) => {
+      const query = strings.join(' ');
+      if (query.includes(statement)) throw failure;
+      if (query.includes('SELECT value')) return Promise.resolve([{ value: '1' }]);
+      if (query.includes('FOR UPDATE') && !query.includes('SELECT')) return 'FOR UPDATE';
+      return Promise.resolve([]);
+    });
+    let phaseAtFailure: string | undefined;
+    mocks.transaction.mockReset().mockImplementation(async (fn, options) => {
+      try {
+        return await fn(sql as never);
+      } catch (error) {
+        phaseAtFailure = options?.phase?.();
+        throw error;
+      }
+    });
+    const store = new PgAdmissionLedgerQueueStore({
+      workspaceId: 'phase-test', sql: sql as never,
+      legacyAdapter: {
+        async findIdentity() {
+          if (statement === 'legacy-identity') throw failure;
+          return null;
+        },
+        async supersedeActiveCoalesce() {},
+      },
+    });
+
+    await expect(store.enqueue({ namespace: 'integration', idempotencyKey: 'phase-test' } as never))
+      .rejects.toBe(failure);
+    expect(phaseAtFailure).toBe(`resource-governor.admission-ledger.enqueue.${phase}`);
+  });
+
+  it('labels a commit failure after a successful legacy replay separately from its identity read', async () => {
+    const failure = new Error('controlled commit failure');
+    const sql = vi.fn((strings: TemplateStringsArray) => Promise.resolve(
+      strings.join(' ').includes('SELECT value') ? [{ value: '1' }] : [],
+    ));
+    let phaseAtFailure: string | undefined;
+    mocks.transaction.mockReset().mockImplementation(async (fn, options) => {
+      await fn(sql as never);
+      phaseAtFailure = options?.phase?.();
+      throw failure;
+    });
+    const store = new PgAdmissionLedgerQueueStore({
+      workspaceId: 'phase-test', sql: sql as never,
+      legacyAdapter: {
+        async findIdentity() { return { receiptId: 'WI-legacy', record: {} } as never; },
+        async supersedeActiveCoalesce() {},
+      },
+    });
+
+    await expect(store.enqueue({ namespace: 'integration', idempotencyKey: 'phase-test' } as never))
+      .rejects.toBe(failure);
+    expect(phaseAtFailure).toBe('resource-governor.admission-ledger.enqueue.commit');
+  });
+
   it('labels mark-running timeout phases at the exact ledger statement', async () => {
     const sql = vi.fn((strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
@@ -83,10 +148,10 @@ describe('admission ledger acquisition attribution', () => {
       ...(injected ? { sql: sql as never } : {}),
     });
     await expect(store.enqueue({} as never)).rejects.toBe(failure);
-    expect(mocks.transaction).toHaveBeenCalledWith(expect.any(Function), {
+    expect(mocks.transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
       client: injected ? sql : mocks.defaultSql,
       acquirePool: injected ? undefined : 'org-admin',
-    });
+    }));
   });
 
   it.each([
@@ -103,10 +168,10 @@ describe('admission ledger acquisition attribution', () => {
       acquirePool: 'registered-test-pool',
     });
     await expect(store.enqueue({} as never)).rejects.toBe(failure);
-    expect(mocks.transaction).toHaveBeenCalledWith(expect.any(Function), {
+    expect(mocks.transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
       client: sql,
       acquirePool: 'registered-test-pool',
-    });
+    }));
   });
 
   it('attributes process-runtime admission transactions to the registered dedicated pool', async () => {
@@ -123,10 +188,10 @@ describe('admission ledger acquisition attribution', () => {
       })).rejects.toBe(failure);
 
       expect(mocks.transaction).toHaveBeenCalledTimes(1);
-      expect(mocks.transaction).toHaveBeenCalledWith(expect.any(Function), {
+      expect(mocks.transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
         client: sql,
         acquirePool: 'org-admin-governed-process',
-      });
+      }));
     } finally {
       resetGovernedExecutionRuntimesForTests();
       setGovernedProcessClientFactoryForTests(null);

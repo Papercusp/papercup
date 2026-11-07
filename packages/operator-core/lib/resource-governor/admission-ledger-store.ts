@@ -307,8 +307,14 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
             `the admission ledger (${existing.receipt_id}) and legacy work_items (${legacy.receiptId})`,
         );
       }
-      if (legacy) return { ...legacy, created: false };
-      if (existing) return { ...storedFromRow(existing), created: false };
+      if (legacy) {
+        phase = `${prefix}.commit`;
+        return { ...legacy, created: false };
+      }
+      if (existing) {
+        phase = `${prefix}.commit`;
+        return { ...storedFromRow(existing), created: false };
+      }
 
       // The tenant guard must run before coalescing or INSERT. Refusal rolls
       // back every side effect, and replay above adds no second quota charge.
@@ -353,7 +359,11 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
         )
         ON CONFLICT DO NOTHING
         RETURNING receipt_id, record`;
-      if (rows[0]) return { ...storedFromRow(rows[0]), created: true };
+      if (rows[0]) {
+        const stored = storedFromRow(rows[0]);
+        phase = `${prefix}.commit`;
+        return { ...stored, created: true };
+      }
       phase = `${prefix}.find-raced-identity`;
       const raced = await this.findRow(tx, record.namespace, record.idempotencyKey, true);
       phase = `${prefix}.find-raced-legacy-identity`;
@@ -364,11 +374,16 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
             `the admission ledger (${raced.receipt_id}) and legacy work_items (${racedLegacy.receiptId})`,
         );
       }
-      if (racedLegacy) return { ...racedLegacy, created: false };
+      if (racedLegacy) {
+        phase = `${prefix}.commit`;
+        return { ...racedLegacy, created: false };
+      }
       if (!raced) {
         throw new AdmissionPersistenceError('admission ledger insert returned no row and no durable receipt exists');
       }
-      return { ...storedFromRow(raced), created: false };
+      const stored = storedFromRow(raced);
+      phase = `${prefix}.commit`;
+      return { ...stored, created: false };
     }, () => phase);
   }
 
