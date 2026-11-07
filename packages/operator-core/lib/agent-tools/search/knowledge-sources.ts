@@ -28,7 +28,7 @@ type SectionRow = {
  * window. Keep the existing metadata carrier bounded; larger bodies resolve
  * through their source handle instead. */
 export function completeContextUnit(body: string): string | null {
-  return body.trim() && body.length <= 1_500 ? body : null;
+  return body.trim().length > 0 && body.length <= 1_500 ? body : null;
 }
 
 /** Use the existing cancellation/transaction contract on both search legs. */
@@ -117,7 +117,8 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
       ? lastMarkdownHeading(content) ?? (r.section_prefix ? lastMarkdownHeading(String(r.section_prefix)) : null)
       : matched.section;
     return { source_id: `${harness}:${slug}`, title: String(r.title ?? slug), content,
-      contextUnit: r.match_content == null ? completeContextUnit(String(r.content ?? '')) : null,
+      contextUnit: r.match_content == null
+        ? completeContextUnit(`${String(r.title ?? slug)}\n${String(r.content ?? '')}`) : null,
       highlight: String(r.highlight ?? content), scope: `harness:${harness}`, rank: Number(r.rank),
       section, status: r.archived || r.superseded_by || r.status === 'superseded' ? 'historical' : String(r.status),
       updated_at: r.updated_at as string | Date,

@@ -23,6 +23,20 @@ export async function recordReportSharingFailure(
   save();
 }
 
+/** Leave execution and receipt finalization under the canonical router's custody. */
+export function runReportSharingTestFile(sourceRoot: string, env: NodeJS.ProcessEnv) {
+  const selection = ['--', '--reporter=default', '--reporter=hanging-process',
+    ...(env.PAPERCUSP_REPORT_SHARING_FINAL_RELEASE === '1'
+      ? [] : ['-t', 'shares the selected harmless edition'])];
+  // test:file owns its execution watchdog and provenance finalization. The
+  // enrolled native task supplies the outer deadline. A second six-minute
+  // spawnSync timeout killed npm after the test had returned, while its router
+  // was still recording the source receipt (EI-28071068503449846).
+  execFileSync('npm', ['run', 'test:file', '--',
+    'packages/operator-core/lib/report-sharing-native.e2e.test.ts', ...selection],
+  { cwd: sourceRoot, env, stdio: 'inherit' });
+}
+
 export async function runReportSharingNativeAcceptance() {
   assert.equal(process.env.PAPERCUSP_REPORT_SHARING_NATIVE_LIVE, '1', 'Explicit fixture publication opt-in required');
   // Publication is allowed only in disposable app state. Any explicit account
@@ -57,11 +71,7 @@ export async function runReportSharingNativeAcceptance() {
       PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath };
     // Initialize retained-resource tracking before Vitest loads its config so a
     // shutdown timeout preserves the resource owner instead of only a warning.
-    const selection = ['--', '--reporter=default', '--reporter=hanging-process',
-      ...(process.env.PAPERCUSP_REPORT_SHARING_FINAL_RELEASE === '1'
-        ? [] : ['-t', 'shares the selected harmless edition'])];
-    execFileSync('npm', ['run', 'test:file', '--', test, ...selection], { cwd: sourceRoot, env,
-      stdio: 'inherit', timeout: 360_000 });
+    runReportSharingTestFile(sourceRoot, env);
     verifyVerifierSourceSync(sourceRoot, receipt, { runtimeArtifacts: true });
     console.log('REPORT_SHARING_NATIVE_COMPLETE evidence=' + evidencePath);
   } finally { rmSync(profileDir, { recursive: true, force: true }); }
