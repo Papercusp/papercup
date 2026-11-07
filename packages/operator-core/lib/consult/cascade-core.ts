@@ -80,7 +80,7 @@ export interface CascadeSelectionEntry {
   }>;
   /**
    * D-002: the identity that will actually POST for this selectee, stamped when
-   * dispatch launches the answering session. It differs from `ownerId` on a FORK
+   * dispatch reserves the answering session. It differs from `ownerId` on a FORK
    * — psu gives a fork a new coord id so it cannot collide with a still-live
    * original — and equals it on a cross-backend conversion.
    *
@@ -264,7 +264,7 @@ export function cascadeWakeCopyForRouting(routing: unknown): CascadeWakeCopyWrit
  * dispatcher (`makeConsultReachDispatcher`), NEVER a wake: `responder` names the
  * expert whose TRANSCRIPT answers, and a non-zero `woke` means an answering
  * session was launched from it. Zero WITHOUT an answering identity means no
- * session was launched; zero WITH an identity means the session is still booting.
+ * session was launched; an identity alone is a reservation, not launch proof.
  *
  * `answeringOwnerId` is who will actually post — it differs from `responder` on a
  * fork, and `stampAnsweringOwner` persists it so the launched session's reply is
@@ -282,11 +282,11 @@ export type CascadeDispatch = (opts: {
   summary: string;
   body: string;
   evidence?: CascadeSelectionEntry['evidence'];
-  /** Persist the answering identity AS SOON AS that session is running, rather
+  /** Reserve the answering identity BEFORE starting that session, rather
    *  than when dispatch returns: the launched session can post during the
    *  dispatcher's verification wait, and the reply gate refuses an author the
    *  row does not name yet. The post-dispatch stamp stays as the backstop. */
-  onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+  onAnsweringOwner?: (answeringOwnerId: string, spawnFence?: CascadeSpawnFence) => void | Promise<void>;
   /** Refresh the selected responder's TTL after persisted native kickoff proof. */
   onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
   /** Rechecked under the consult row lock at actual process creation. */
@@ -399,7 +399,11 @@ export async function continueCascadeDispatchCore(
   let expectedKickoffExpiry: string | Date = row.expires_at;
   let kickoffExpiryRefreshed = false;
   try {
-    const onAnsweringOwner = async (owner: string) => {
+    const onAnsweringOwner = async (owner: string, spawnFence?: CascadeSpawnFence) => {
+        if (spawnFence && (spawnFence.cursor !== row.cascade_cursor ||
+            spawnFence.responder !== pending.responder || spawnFence.leaseToken !== token)) {
+          throw new Error('consult-cascade-dispatch-lease-lost');
+        }
         if (!(await isCurrent())) throw new Error('consult-cascade-dispatch-lease-lost');
         const stamped = await sql`
           UPDATE harness_shared.consult_state
@@ -409,7 +413,9 @@ export async function continueCascadeDispatchCore(
                  WHEN routing #>> '{cascadeDispatch,spawn,answeringOwnerId}' = ${owner}
                    AND routing #>> '{cascadeDispatch,spawn,leaseToken}' = ${token}
                  THEN routing #> '{cascadeDispatch,spawn}'
-                 ELSE ${sql.json({ protocol: 1, phase: 'reserved', answeringOwnerId: owner, leaseToken: token } as never)}::jsonb END)
+                 WHEN ${spawnFence !== undefined}::boolean
+                 THEN ${sql.json({ protocol: 1, phase: 'reserved', answeringOwnerId: owner, leaseToken: token } as never)}::jsonb
+                 ELSE 'null'::jsonb END)
            WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
              AND closed_at IS NULL AND cascade_cursor = ${row.cascade_cursor}
              AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}

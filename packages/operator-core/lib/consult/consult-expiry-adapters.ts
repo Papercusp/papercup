@@ -412,9 +412,9 @@ export function consultExpiryFindSilentResponders(
         const routedMs = Date.parse(row.routedAt);
         if (!Number.isFinite(routedMs)) return;
         if (row.answeringOwnerId === null) {
-          // onAnsweringOwner is stamped as soon as a launched session submits
-          // its kickoff, before the verifier wait. No stamp after this window
-          // plus no post is a failed dispatch; never probe the SOURCE owner.
+          // onAnsweringOwner reserves a participant before launch. No stamp
+          // after this window plus no post is a failed dispatch; a stamp alone
+          // does not prove launch or death. Never probe the SOURCE owner.
           if (!Number.isFinite(checkedAtMs) || checkedAtMs - routedMs < HARD_BLOCKED_EXPIRY_MS) return;
         } else {
           const lastActiveAt = presenceByOwner.get(row.answeringOwnerId)?.lastActiveAt;

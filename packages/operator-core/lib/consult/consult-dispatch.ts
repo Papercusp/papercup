@@ -1619,9 +1619,10 @@ async function defaultIsConsultOpen(workspaceId: string, conversationId: string)
 /**
  * Serialize the terminal consult transition with the last process-creation
  * boundary. consultCloseCore already locks this row FOR UPDATE; this lease holds
- * the same row lock across child_process.spawn(), then rolls back the read-only
- * transaction so a close either wins first (and launch is refused) or commits
- * only after the answering process exists.
+ * the same row lock across child_process.spawn(). For a cascade, first commit
+ * its entered marker so a crash cannot masquerade as an unentered reservation.
+ * The subsequent read transaction rolls back on release: a close either wins
+ * first (and launch is refused) or commits after the answering process exists.
  */
 export async function acquireConsultSpawnLease(
   workspaceId: string,
@@ -1829,7 +1830,7 @@ export async function dispatchConsultResponder(
      * receipt. For conversions, the identity is already known and is stamped
      * after launch. The caller persists it here; failures are best-effort.
      */
-    onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+    onAnsweringOwner?: (answeringOwnerId: string, spawnFence?: CascadeSpawnFence) => void | Promise<void>;
     /** Called only after the launcher proves the native kickoff was persisted.
      * False means this dispatch no longer owns the selected reply window. */
     onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
@@ -2385,7 +2386,7 @@ async function launchAnsweringSession(
     /** `brief` only: the cited turns quoted into the fresh session's kickoff. */
     citedTurns?: CitedTranscriptTurn[];
     brief: string | ((operation: DispatchOperation) => string);
-    onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+    onAnsweringOwner?: (answeringOwnerId: string, spawnFence?: CascadeSpawnFence) => void | Promise<void>;
     onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
     spawnFence?: CascadeSpawnFence;
     checkApprover?: import('./acceptance-bar-amendment-review').AmendmentReviewerScreen;
@@ -2511,7 +2512,10 @@ async function launchAnsweringSession(
   if (!(await d.isConsultOpen(ctx.workspaceId, opts.conversationId))) return consultClosed();
   if (opts.onAnsweringOwner) {
     try {
-      await opts.onAnsweringOwner(answeringOwnerId);
+      // A cached older dispatcher ignores spawnFence. Only acknowledge when
+      // this launch path actually carries it to the guarded process boundary.
+      if (opts.spawnFence) await opts.onAnsweringOwner(answeringOwnerId, opts.spawnFence);
+      else await opts.onAnsweringOwner(answeringOwnerId);
     } catch {
       return failed(
         'answering-owner-stamp-failed',
@@ -2954,7 +2958,7 @@ export function makeConsultReachDispatcher(
   evidence?: ConsultDispatchEvidenceRef[];
   /** Persist the answering identity before a fork is launched, or before a
    *  conversion's verification wait, so the first reply is already authorized. */
-  onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+  onAnsweringOwner?: (answeringOwnerId: string, spawnFence?: CascadeSpawnFence) => void | Promise<void>;
   /** Refresh a cascade reply deadline after native kickoff persistence. */
   onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
   spawnFence?: CascadeSpawnFence;
