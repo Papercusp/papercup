@@ -17,6 +17,7 @@ import {
   _resetStoreIdentityForTests,
   beginAcquire,
   capturePgDiagnosticContext,
+  pgResultDiagnosticSnapshot,
   pinOrVerifyStoreIdentity,
   setPgDiagnosticContextResolver,
   resetPgDiagnosticContextResolver,
@@ -131,6 +132,36 @@ describe('dev:pg_health completed-result delivery', () => {
       acquisition.release();
     }
   });
+  it.each(['org-admin-priority', 'org-app-priority', SU_LOCK_TX_POOL_LABEL])(
+    'delivers distinct pre-build and completion timings from %s without a database query', async (pool) => {
+      const timings = [
+        { queryId: 91, preBuildMs: 27_500, elapsedMs: 1_200 },
+        { queryId: 92, preBuildMs: 0, elapsedMs: 27_500 },
+      ];
+      for (const timing of timings) recordPgResult(pool, {
+        ...timing,
+        connectionId: 2,
+        backendPid: 8123,
+        query: "SELECT id FROM harness_shared.session_briefs WHERE token = 'never-retain-secret'",
+        command: 'SELECT', rowCount: 1, wireBytes: 64, status: 'ok',
+      });
+      // Positive control: the production registry retained both records before
+      // testing their delivery. An omitted pool is not an empty result ring.
+      expect(pgResultDiagnosticSnapshot(pool).results).toHaveLength(2);
+
+      const { data } = await run({ localOnly: true });
+      const resultPool = data.processDiagnostics.pools.find((entry: { pool: string }) => entry.pool === pool);
+      expect(resultPool).toMatchObject({
+        observed: true, totalRecorded: 2, retained: 2, omittedRetained: 0,
+        results: timings.map(timing => expect.objectContaining({ pool, ...timing })),
+      });
+      const emptyPool = pool === 'org-admin-priority' ? 'org-app-priority' : 'org-admin-priority';
+      expect(data.processDiagnostics.pools.find((entry: { pool: string }) => entry.pool === emptyPool))
+        .toMatchObject({ observed: false, totalRecorded: 0, results: [] });
+      expect(pgHealth).not.toHaveBeenCalled();
+      expect(JSON.stringify(data.processDiagnostics)).not.toMatch(/never-retain-secret|SELECT id|WHERE token/);
+    },
+  );
   it.each([
     { label: 'is explicitly configured', value: '24', expected: '24' },
     { label: 'is unset', value: undefined, expected: null },
@@ -170,6 +201,9 @@ describe('dev:pg_health completed-result delivery', () => {
       'org-app',
       'org-admin',
       'org-admin-lossless-bigint',
+      SU_LOCK_TX_POOL_LABEL,
+      'org-admin-priority',
+      'org-app-priority',
       'scheduler-claim',
     ]);
     expect(diagnostic.pools[0].results).toEqual([

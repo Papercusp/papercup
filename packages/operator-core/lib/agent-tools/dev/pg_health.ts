@@ -17,7 +17,9 @@ import {
 } from '@papercusp/db-org';
 import { pgHealth } from '../../dev-data';
 
-const ACQUISITION_POOLS = [
+// Use the same bounded pool population for results and acquisition tickets so
+// a retained authority query cannot disappear from this diagnostic reader.
+const DIAGNOSTIC_POOLS = [
   'org-app',
   'org-admin',
   'org-admin-lossless-bigint',
@@ -75,7 +77,7 @@ export default defineTool({
         'ReadyForQuery, not acquisition, CPU, GC or root cause. preBuildMs spans first Query.handle to build, ' +
         'including queue/connect/preparation but excluding caller-controlled lazy time; it is not pure acquisition ' +
         'or CPU, and null means unmeasured. Non-ReadyForQuery failures are not covered.',
-      pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint', 'scheduler-claim'].map((pool) => {
+      pools: DIAGNOSTIC_POOLS.map((pool) => {
         const snapshot = pgResultDiagnosticSnapshot(pool, resultLimitPerPool);
         const retained = snapshot.totalRecorded - snapshot.dropped;
         return {
@@ -99,7 +101,7 @@ export default defineTool({
           PAPERCUSP_DB_POOL_MAX: process.env.PAPERCUSP_DB_POOL_MAX ?? null,
           note: 'Raw per-process environment override only; null means unset and does not report the profile-derived effective pool max.',
         },
-        pools: ACQUISITION_POOLS.map((pool) => ({
+        pools: DIAGNOSTIC_POOLS.map((pool) => ({
           counters: acquireSnapshot(pool),
           tickets: acquireTicketSnapshot(pool),
         })),
