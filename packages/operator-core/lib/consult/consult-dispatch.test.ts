@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, BAR_CRITIQUE_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
 import type { NativeConsultBoundary } from './native-consult';
 import {
+  analyzeClaudeResumeTranscript,
   analyzeClaudeResumeTranscriptFile,
   __resetClaudeResumeTranscriptCacheForTests,
 } from '../claude-resume-tool-references.mjs';
@@ -826,6 +827,7 @@ describe('dispatchConsultResponder — the walk', () => {
 
   it('carries the cascade token to the final process boundary after async launch preparation', async () => {
     const fence = { cursor: 2, responder: OPTS.sourceOwnerId, leaseToken: 'original-dispatch' };
+    const onAnsweringOwner = vi.fn(async () => {});
     let currentToken = fence.leaseToken;
     const reserveConsultSpawnLease = vi.fn(async (_workspace: string, _conversation: string,
       expected?: typeof fence & { answeringOwnerId: string }) =>
@@ -847,8 +849,9 @@ describe('dispatchConsultResponder — the walk', () => {
     const result = await makeConsultReachDispatcher(CTX, deps)({
       responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
       summary: 'fenced launch', body: 'review the current contract', spawnFence: fence,
-      onAnsweringOwner: async () => {},
+      onAnsweringOwner,
     });
+    expect(onAnsweringOwner).toHaveBeenCalledExactlyOnceWith('su-answer-1', fence);
     expect(reserveConsultSpawnLease).toHaveBeenCalledExactlyOnceWith(CTX.workspaceId, OPTS.conversationId,
       { ...fence, answeringOwnerId: 'su-answer-1' });
     expect(result).toMatchObject({ woke: 0, answeringOwnerId: null });
@@ -2169,15 +2172,10 @@ describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', (
     const exit = '[papercusp] initial terminal command exited with status 1';
     const launchLogReason = launchLogFailureReason(`${receipt}\n${exit}\n`);
     expect(launchLogReason).toBe(`${receipt} · ${exit}`);
-    const read = {
-      readLaunchLogReason: async (path: string) => path === claudeTarget.launchLogPath ? launchLogReason : null,
-      analyzeClaudeTranscript: (path: string) => path === claudeTarget.transcriptPath ? {
-        trailingMissingToolReferenceTurns: 0,
-        lastMissingToolReferenceName: null,
-        assistantTurnsSinceLastPrompt: 0,
-        trailingContextLimitTurns: 0,
-        lastContextLimitEvidence: null,
-      } : null,
+    const read: Pick<ConsultDispatchDeps, 'analyzeClaudeTranscript' | 'analyzeCodexRollout' | 'readLaunchLogReason'> = {
+      readLaunchLogReason: async (path) => path === claudeTarget.launchLogPath ? launchLogReason : null,
+      analyzeClaudeTranscript: (path: string) => path === claudeTarget.transcriptPath
+        ? analyzeClaudeResumeTranscript('') : null,
       analyzeCodexRollout: () => { throw new Error('the Codex reader must not be used for a Claude rank'); },
     };
     const verdict = await rejudgeFirstTurn(claudeTarget, read);
