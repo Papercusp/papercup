@@ -132,6 +132,9 @@ export function judgeConsultReceiptMatrix(input: {
     const answer = qualifying.find(post => answering !== null && post.author_id === answering) ?? qualifying[0];
     const checks: Record<string, boolean> = {
       consult_row_present: consult !== undefined,
+      // Canonical replies activate a consult. A decline can exceed the length
+      // floor after valid native delivery, while leaving the consult expired.
+      consult_has_answer: consult?.state === 'active' || consult?.state === 'closed_answered',
       mode_matches_definition: cell.mode === def.mode,
       requester_matches_claim: consult?.requester_id === requester,
       dispatched_session_matches_claim: answering !== null && answering === cell.answeringOwnerId,
