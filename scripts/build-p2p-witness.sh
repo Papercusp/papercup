@@ -16,7 +16,13 @@ CAPABILITY_PACK="${PAPERCUSP_WITNESS_CAPABILITY_PACK:-}"
   exit 2
 }
 
-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-p2p-witness.XXXXXX")"
+# A cross-filesystem mv copies directly into OUT and exposes its manifest before
+# runtime dependencies arrive. Keep the private stage beside OUT so publication
+# is one rename regardless of TMPDIR's filesystem.
+mkdir -p "$(dirname "$OUT")"
+OUT_PARENT="$(cd "$(dirname "$OUT")" && pwd -P)"
+OUT="$OUT_PARENT/$(basename "$OUT")"
+STAGE="$(mktemp -d "$OUT_PARENT/.papercusp-p2p-witness.XXXXXX")"
 cleanup() {
   local status=$?
   if [[ "$status" != 0 ]]; then
@@ -26,7 +32,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-mkdir -p "$STAGE/packs"
+mkdir -p "$STAGE/packs" "$STAGE/build-meta" "$STAGE/build-state"
 
 source "$ROOT/apps/operator/bin/bundle-host-common.sh"
 BUNDLE_HOST_STEP_LOG="$STAGE/build-steps.jsonl"
@@ -48,6 +54,7 @@ echo "→ bundling headless P2P witness"
   --bundle --platform=node --format=esm --target=node22 \
   --minify-whitespace --minify-syntax \
   --outfile="$STAGE/serve.mjs" \
+  --metafile="$STAGE/build-meta/serve.meta.json" \
   --banner:js="$HOST_BANNER" \
   "${HOST_BANNER_DEFINES[@]}" \
   --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
@@ -69,8 +76,20 @@ source "$ROOT/papercusp-desktop/bin/lib/transformers-models.sh"
 source "$ROOT/papercusp-desktop/bin/lib/host-runtime-closure.sh"
 mkdir -p "$STAGE/node_modules"
 bundle_host_run_step runtime-closure copy_host_external_closures
-bundle_host_run_step runtime-closure-check assert_runtime_dependency_closure "$STAGE"
+bundle_host_run_step runtime-opaque-closure copy_host_runtime_require_closures
+# Qualify the real default provider before classifying DBOS's legacy lazy
+# telemetry imports. The shared census refuses to infer this from source alone.
+bundle_host_run_step runtime-trace-context assert_host_default_trace_context "$STAGE"
+# Resolve wildcard externals from the compiler's actual import graph using the
+# production census, including its required-versus-optional loader policy.
+bundle_host_run_step runtime-import-census write_host_graph_dependency_census "$STAGE" > "$STAGE/graph-packages.tsv"
+while IFS=$'\t' read -r dependency_kind dependency_name; do
+  if [[ "$dependency_kind" == required ]] || resolve_pkg_source "$dependency_name" '' >/dev/null 2>&1; then
+    bundle_host_run_step "closure-import:$dependency_name" copy_pkg_closure "$dependency_name"
+  fi
+done < "$STAGE/graph-packages.tsv"
 [[ "$nat_missing" == 0 ]] || { echo "ERROR: witness runtime dependencies are incomplete" >&2; exit 1; }
+bundle_host_run_step runtime-closure-check assert_runtime_dependency_closure "$STAGE"
 
 if [[ -n "$MODEL_PACK" ]]; then
   [[ -e "$MODEL_PACK" ]] || { echo "ERROR: model pack does not exist: $MODEL_PACK" >&2; exit 2; }
