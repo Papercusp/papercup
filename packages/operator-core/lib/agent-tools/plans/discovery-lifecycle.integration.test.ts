@@ -292,7 +292,9 @@ async function deliveryFixture() {
         adequacy: { targeted: specId, fixtureCalibrated: true, falsifiable: true, testLayer: 'integration',
           pathReachable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
           outcome: kind === 'test' ? 'passed' : 'caught', testCases: [title], coverageRungs: { l3: true } } } });
-    expect(result, JSON.stringify(result)).toMatchObject({ status: 'created' });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: expect.stringMatching(/^(created|unchanged)$/), specId, workItemId: item,
+    });
   }
   await bind(prerequisite, ordinary, 'test');
   await bind(prerequisite, ordinary, 'counterexample');
