@@ -57,8 +57,10 @@ it('runs maintained verifier source producer regressions', () => {
   const result = spawnSync(process.execPath, ['--test', '--test-reporter=tap', join(ROOT, 'scripts/dependency-generation-verifier-source.test.mjs')], {
     cwd: ROOT, encoding: 'utf8', timeout: 45_000,
   });
-  expect(result.error, result.stdout + result.stderr).toBeUndefined();
-  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const failedCase = result.stdout.search(/^not ok /m);
+  const diagnostics = (failedCase < 0 ? result.stdout : result.stdout.slice(failedCase, failedCase + 6000)) + result.stderr;
+  expect(result.error, diagnostics).toBeUndefined();
+  expect(result.status, diagnostics).toBe(0);
   expect(result.stdout).toMatch(/ok \d+ - archive inputs and requirements each use one fresh full census and reject later tampering/);
   expect(result.stdout).toMatch(/ok \d+ - multi-workspace closure verification uses one fresh census and rejects later source and output tampering/);
 }, 60_000);
