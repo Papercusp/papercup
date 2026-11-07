@@ -71,11 +71,12 @@ function startServer(sock: string): Promise<net.Server> {
   return new Promise((resolve) => server.listen(sock, () => resolve(server)));
 }
 
-function deferClientConnect(socket: net.Socket, immediates: Array<() => void>): void {
-  vi.spyOn(net, 'createConnection').mockImplementation(((_socketPath: string, listener?: () => void) => {
-    if (listener) socket.once('connect', listener);
-    return socket;
-  }) as never);
+function deferClientConnect(immediates: Array<() => void>): void {
+  vi.spyOn(net.Socket.prototype, 'connect').mockImplementation(function (this: net.Socket, ...args: unknown[]) {
+    const listener = args.find((arg): arg is () => void => typeof arg === 'function');
+    if (listener) this.once('connect', listener);
+    return this;
+  } as never);
   vi.spyOn(globalThis, 'setImmediate').mockImplementation(((_callback: (...args: unknown[]) => void, ...args: unknown[]) => {
     immediates.push(() => _callback(...args));
     return {} as NodeJS.Immediate;
@@ -124,16 +125,16 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
   });
 
   it('lets a connect queued with the deadline win before the deferred timeout verdict', async () => {
-    const socket = new net.Socket();
-    vi.spyOn(socket, 'unref').mockReturnValue(socket);
     const immediates: Array<() => void> = [];
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.useFakeTimers();
-    deferClientConnect(socket, immediates);
-
     try {
+      vi.useFakeTimers();
+      deferClientConnect(immediates);
       const connection = client.ensureConnected();
+      const socket = (client as unknown as { socket: net.Socket | null }).socket;
+      if (!socket) throw new Error('client socket missing before deferred connect');
+      vi.spyOn(socket, 'unref').mockReturnValue(socket);
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await vi.advanceTimersByTimeAsync(5000);
       expect(immediates).toHaveLength(1);
 
@@ -157,20 +158,19 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
         (details as { event?: string }).event === 'connect-timeout',
       )).toBe(false);
     } finally {
-      client.close();
       vi.useRealTimers();
+      vi.restoreAllMocks();
+      client.close();
     }
   });
 
   it('keeps a genuinely stalled connect as a timeout and records socket state', async () => {
-    const socket = new net.Socket();
     const immediates: Array<() => void> = [];
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.useFakeTimers();
-    deferClientConnect(socket, immediates);
-
     try {
+      vi.useFakeTimers();
+      deferClientConnect(immediates);
       const connection = client.ensureConnected();
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await vi.advanceTimersByTimeAsync(5000);
       expect(immediates).toHaveLength(1);
       immediates[0]();
@@ -191,8 +191,9 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
         },
       });
     } finally {
-      client.close();
       vi.useRealTimers();
+      vi.restoreAllMocks();
+      client.close();
     }
   });
 

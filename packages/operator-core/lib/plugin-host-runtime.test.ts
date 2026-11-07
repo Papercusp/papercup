@@ -93,7 +93,8 @@ describe('plugin host security discovery', () => {
     expect(row.attrs).toMatchObject({ importCustody: record.importCustody,
       importCustodyCoverage: 'synchronous-entry-import-only', loadedArtifactCoverage: 'unknown',
       initializationEffectCoverage: 'unknown' });
-    const copy = row.attrs!.importCustody as { sources: Array<{ sourceSha256: string }> };
+    if (!row.attrs || !('importCustody' in row.attrs)) throw new Error('expected module import custody');
+    const copy = row.attrs.importCustody as { sources: Array<{ sourceSha256: string }> };
     copy.sources[0]!.sourceSha256 = 'consumer mutation';
     expect(record.importCustody.sources[0]!.sourceSha256).toBe('a'.repeat(64));
     Object.defineProperty(record, 'importCustody', { get() { throw Error('custody getter must not run'); } });

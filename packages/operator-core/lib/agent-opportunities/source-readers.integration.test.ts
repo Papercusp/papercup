@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { runToolOrchestration, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { buildScratchUri, safeScratchFilesystemPath } from '../scratch-uri';
 import { writeScratchReference } from '../scratch-reference';
@@ -11,6 +13,7 @@ import { captureRecipe } from '../agent-tools/code/capture-recipe';
 import { countRecipes, getRecipe, listRecipes, listRecipesActivityPage, summarizeRecipesActivity } from '../code-recipes-store';
 import { recipeCandidates } from '../code-recipes-candidates';
 import { resolveRecipeSourceOperation } from '../recipe-source-operation';
+import { bindCurrentCallerDispatch } from '../agent-tools/orchestration/current-caller-dispatch';
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
 
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>, dir: string, oldRoot: string | undefined;
@@ -142,7 +145,7 @@ for (const family of ['sql', 'shell'] as const) {
       const { id } = await managedRow(callId);
       const at = new Date().toISOString();
       const args = family === 'sql' ? { sql: 'SELECT $1::text AS PRIVATE_COLUMN', parameters: [value] }
-        : { command: `printf '%s' '${value}'`, cwd: '/PRIVATE_PATH' };
+        : { command: `printf '%s' '${value}'`, cwd: dir };
       await f.db.adminSql`UPDATE harness_shared.tool_invocations SET invoked_at=${at}::timestamptz,
         tool_name=${tool}, args_json=${JSON.stringify(args)}::jsonb WHERE id=${id}::bigint`;
       const source = await readers().readRecipeOperation({ id, scope });
@@ -167,7 +170,43 @@ for (const family of ['sql', 'shell'] as const) {
     const secondCallerOperation = await resolveRecipeSourceOperation(input);
     const hostile = "'; printf INJECTED; # $(printf EXTRA)";
     expect(secondCallerOperation?.prepare({ value0: hostile })).toMatchObject(family === 'sql'
-      ? { sql: 'SELECT $1::text AS PRIVATE_COLUMN', parameters: [hostile] } : { cwd: '/PRIVATE_PATH' });
+      ? { sql: 'SELECT $1::text AS PRIVATE_COLUMN', parameters: [hostile] } : { cwd: dir });
+    // Run the stored adapter through the real VM and current-caller dispatcher.
+    // The small tool boundary performs real SQL / interpreter execution while
+    // avoiding production background-job infrastructure in this private DB.
+    let effects = 0;
+    const reuser = 'su-current-private-reuser';
+    const ctx = { workspaceId, harnessSlug, role: 'su', isSuperuser: true, uiClientId: reuser,
+      tx: f.db.adminSql, log: () => {}, emit: () => {}, progress: () => {},
+      signal: new AbortController().signal } as unknown as UnifiedToolContext;
+    const target: ProjectedTool = { pluginName: 'private-replay-fixture', description: 'actual read-only operation',
+      expose: { mcp: { name: tool } }, capabilities: [], effect: 'read', needsWorkspaceTx: true,
+      inputSchema: { type: 'object' }, fn: async (raw, caller) => {
+        expect(caller.uiClientId).toBe(reuser);
+        expect(caller.workspaceId).toBe(workspaceId);
+        expect(caller.harnessSlug).toBe(harnessSlug);
+        expect(caller.tx).toBe(f.db.adminSql);
+        effects++;
+        const args = raw as { sql: string; parameters: string[]; command: string; cwd: string };
+        const value = family === 'sql'
+          ? (await f.db.adminSql.unsafe(args.sql, args.parameters))[0]!.private_column
+          : execFileSync('/bin/bash', ['--noprofile', '--norc', '-c', args.command], { cwd: args.cwd, encoding: 'utf8' });
+        return { content: [{ type: 'text', text: JSON.stringify({ value }) }] };
+      } };
+    const replay = () => runToolOrchestration(saved!.script, { ctx, deps: {}, tools: [target], allowed: new Set([tool]),
+      inputs: { value0: hostile, __sourceOperation: secondCallerOperation!.prepare({ value0: hostile }) },
+      wrapDispatch: async (target, name, _args, caller, next) => {
+        const current = await resolveRecipeSourceOperation(input);
+        const args = current?.prepare({ value0: hostile });
+        if (!args) throw new Error('authority_source_unavailable');
+        return bindCurrentCallerDispatch(target, name, args, caller, next);
+      } });
+    expect(await replay()).toMatchObject({ ok: true, summary: { value: hostile } });
+    expect(effects).toBe(1);
+    permitted = false;
+    expect(await replay()).toMatchObject({ ok: false });
+    expect(effects).toBe(1);
+    permitted = true;
     // Exercise the actual DB browse/worklist after warming it, using the same
     // per-read source resolver the handlers provide. Neither the recipe id nor
     // a previously successful read is an authorization token.
