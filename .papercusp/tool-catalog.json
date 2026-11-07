@@ -37717,3 +37717,8 @@
     }
   ]
 }
+s the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
+      }
+    }
+  ]
+}

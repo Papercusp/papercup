@@ -205,6 +205,9 @@ export type BlockerEvidenceMeasurement =
     condition?: 'satisfied' | 'pending';
     reachable?: boolean;
     subjectWorkItemId?: string;
+    /** Host-resolved tenant/harness identity; aliases share a condition only
+     * when their canonical readers return this exact identity. */
+    conditionIdentity?: string;
     responsibleParty?: string;
     liveOwnerId?: string;
     authorityDenied?: boolean;
@@ -229,12 +232,13 @@ export async function validateBlockerDecisionEvidence(
   },
 ): Promise<{ ok: true } | BlockerDecisionProblem> {
   const refs = [
+    ...context.obligationRefs,
     ...input.evidenceRefs,
     ...input.investigation.flatMap((step) => step.evidenceRefs),
     ...input.attempts.flatMap((step) => step.evidenceRefs),
     ...(input.disposition === 'defer'
       ? [...input.deferral.reasonEvidenceRefs, input.deferral.recheckRef]
-      : [...input.verification.evidenceRefs, ...context.obligationRefs]),
+      : input.verification.evidenceRefs),
   ];
   const unique = new Map(refs.map((ref) => [evidenceKey(ref), ref]));
   const refuse = (missing: string[]) => problem('blocker_decision_evidence', missing,
@@ -258,7 +262,10 @@ export async function validateBlockerDecisionEvidence(
   if (missing.length) return refuse(missing);
   const value = (ref: BlockerEvidenceRef) => measured.get(evidenceKey(ref)) as Extract<BlockerEvidenceMeasurement, { status: 'available' }>;
   const obligations = new Set(context.obligationRefs.map(evidenceKey));
-  const relevant = (ref: BlockerEvidenceRef) => obligations.has(evidenceKey(ref)) || value(ref).subjectWorkItemId === context.workItemId;
+  const conditionIdentities = new Set(context.obligationRefs.map(ref => value(ref).conditionIdentity).filter(Boolean));
+  const relevant = (ref: BlockerEvidenceRef) => obligations.has(evidenceKey(ref)) ||
+    (Boolean(value(ref).conditionIdentity) && conditionIdentities.has(value(ref).conditionIdentity)) ||
+    value(ref).subjectWorkItemId === context.workItemId;
   if (input.disposition === 'self_resolve') {
     if (!input.verification.evidenceRefs.some((ref) => relevant(ref) && value(ref).condition === 'satisfied')) {
       missing.push('measured verification bound to this work item or its canonical blocker condition');

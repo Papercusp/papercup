@@ -51,6 +51,23 @@ describe('canonical blocker decision evidence', () => {
     expect(await validateBlockerDecisionEvidence(defer(), { ...context(async () => ({ ...pending, subjectWorkItemId: 'WI-1' })),
       obligationRefs: [] })).toEqual({ ok: true });
   });
+  it('matches dependency aliases only through measured canonical identity', async () => {
+    const input = defer() as Extract<BlockerDecisionInput, { disposition: 'defer' }>;
+    const qualified = { kind: 'work-item' as const, ref: 'harness-b#WI-2' };
+    const bare = { kind: 'work-item' as const, ref: 'WI-2' };
+    input.evidenceRefs = [qualified];
+    input.investigation[0].evidenceRefs = [qualified];
+    input.deferral.reasonEvidenceRefs = [qualified];
+    input.deferral.recheckRef = qualified;
+    const identity = JSON.stringify(['work-item', 'workspace-a', 'harness-b', 'WI-2']);
+    const scoped = { ...context(async () => ({ ...pending, conditionIdentity: identity })), obligationRefs: [bare] };
+    expect(await validateBlockerDecisionEvidence(input, scoped)).toEqual({ ok: true });
+    expect((await validateBlockerDecisionEvidence(input, { ...scoped,
+      readEvidence: async ref => ({ ...pending, conditionIdentity: ref.ref === bare.ref ? identity
+        : JSON.stringify(['work-item', 'workspace-a', 'harness-c', 'WI-2']) }) })).ok).toBe(false);
+    expect((await validateBlockerDecisionEvidence(input, { ...scoped,
+      readEvidence: async () => pending })).ok).toBe(false);
+  });
   it('rejects unreachable, already-satisfied and narrative-only rechecks', async () => {
     for (const fact of [{ ...pending, reachable: false }, { ...pending, condition: 'satisfied' }, { status: 'available' }]) {
       expect((await validateBlockerDecisionEvidence(defer(), context(async (r) => r.kind === 'event'

@@ -96,6 +96,22 @@ export function operatorBases(env = process.env) {
   return pinnedPort === proxyPort ? [pinned] : [pinned, `http://127.0.0.1:${proxyPort}`];
 }
 
+/** The native tool guard is an idempotent read; reserve a bounded direct route
+ * when a session is pinned to the standard local proxy and that proxy stalls. */
+function preToolGuardRoute(env = process.env) {
+  const bases = operatorBases(env);
+  if (bases.length !== 1) return { bases, splitWall: false };
+  let pinned;
+  try { pinned = new URL(operatorBase(env)); }
+  catch { return { bases, splitWall: false }; }
+  if (!LOOPBACK_HOSTS.has(pinned.hostname.toLowerCase())) return { bases, splitWall: false };
+  const raw = String(env.PAPERCUSP_MCP_PROXY_PORT ?? '').trim();
+  const proxyPort = /^\d+$/.test(raw) && Number(raw) > 0 && Number(raw) <= 65535 ? String(Number(raw)) : '9071';
+  const pinnedPort = pinned.port || (pinned.protocol === 'https:' ? '443' : '80');
+  if (proxyPort !== '9071' || pinnedPort !== proxyPort) return { bases, splitWall: false };
+  return { bases: [...bases, 'http://localhost:3070'], splitWall: true };
+}
+
 /**
  * The session id IS the gate: no PAPERCUSP_SID means this is not a psu session,
  * so there is no session to inject into and nothing to look up (invariant 3).
@@ -338,13 +354,25 @@ export async function postInjection(port, body, opts = {}) {
     let res = null;
     fetchStartedAt = now();
     transportPhase = 'waiting-for-headers';
-    // WI-10005007: the next base is tried ONLY when the previous one could not be
-    // reached at all (the fetch rejected before the wall fired — refused, reset,
-    // unreachable). A wall abort means the time is spent, and an HTTP answer means
-    // an operator DID handle the request; re-sending either would just double-run
-    // the turn-start acknowledgement on a second host. One wall bounds the chain.
-    for (const base of operatorBases(env)) {
+    // Context ports retain their single-wall fallback rules because a delayed
+    // answer may acknowledge delivery on another host. The native tool guard is
+    // an idempotent authority read: when pinned to the local :9071 proxy, split
+    // its hard wall with the direct :3070 route so a proxy header stall still
+    // leaves time for one bounded server verdict. Never retry an HTTP response.
+    const guardRoute = port === 'pre-tool' ? preToolGuardRoute(env) : null;
+    const bases = guardRoute?.bases ?? operatorBases(env);
+    for (let index = 0; index < bases.length; index++) {
+      const base = bases[index];
+      let attemptTimer = null;
       try {
+        let signal = controller.signal;
+        if (guardRoute?.splitWall && index === 0) {
+          const remainingWallMs = Math.max(1, spec.timeoutMs - Math.max(0, now() - startedAt));
+          const attemptBudgetMs = Math.max(1, Math.floor(remainingWallMs / (bases.length - index)));
+          const attemptController = new AbortController();
+          attemptTimer = setTimeout(() => attemptController.abort(), attemptBudgetMs);
+          signal = AbortSignal.any([controller.signal, attemptController.signal]);
+        }
         // URL.origin excludes credentials, paths and query parameters.
         attemptedOperatorOrigin = new URL(base).origin;
         res = await fetchImpl(base + spec.endpoint, {
@@ -355,7 +383,7 @@ export async function postInjection(port, body, opts = {}) {
             ...(guardRequestId ? { 'X-Papercusp-Guard-Request-Id': guardRequestId } : {}),
           },
           body: payloadBody,
-          signal: controller.signal,
+          signal,
         });
         headersReceivedAt = now();
         responseStatus = res.status;
@@ -363,6 +391,8 @@ export async function postInjection(port, body, opts = {}) {
         break;
       } catch (err) {
         if (controller.signal.aborted) throw err;
+      } finally {
+        if (attemptTimer) clearTimeout(attemptTimer);
       }
     }
     if (!res || !res.ok) {

@@ -143,6 +143,10 @@ describe('unavailable mutation authority reports its transport branch', () => {
   const run = (fetchImpl: typeof fetch) => runInjection({
     adapter, nativeEvent: 'PreToolUse', event: {}, env: { PAPERCUSP_SID: 'su-test' }, fetchImpl,
   });
+  const runPinnedToProxy = (fetchImpl: typeof fetch) => runInjection({
+    adapter, nativeEvent: 'PreToolUse', event: {},
+    env: { PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071' }, fetchImpl,
+  });
 
   it('names HTTP status without exposing response bodies', async () => {
     const out = await run((async () => ({ ok: false, status: 503,
@@ -176,6 +180,40 @@ describe('unavailable mutation authority reports its transport branch', () => {
     expect(out).toContain('headersElapsedMs=null');
     expect(out).toContain('responseBodyMs=null');
     expect(out).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
+  });
+
+  it('uses the direct operator when pinned proxy headers exhaust their bounded share', async () => {
+    vi.useFakeTimers();
+    const origins: string[] = [];
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      const url = new URL(String(input));
+      origins.push(url.origin);
+      if (url.port === '9071') return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('proxy attempt expired')), { once: true });
+      });
+      return { ok: true, status: 200, json: async () => ({ text: 'server-verdict' }) } as Response;
+    }) as typeof fetch;
+    const pending = runPinnedToProxy(fetchImpl);
+    await vi.advanceTimersByTimeAsync(Math.floor(PORTS['pre-tool']!.timeoutMs / 2));
+    await expect(pending).resolves.toBe('server-verdict');
+    expect(origins).toEqual(['http://127.0.0.1:9071', 'http://localhost:3070']);
+  });
+
+  it('keeps the same hard wall and fails closed when both guard origins stall', async () => {
+    vi.useFakeTimers();
+    const origins: string[] = [];
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      origins.push(new URL(String(input)).origin);
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('attempt expired')), { once: true });
+      });
+    }) as typeof fetch;
+    const pending = runPinnedToProxy(fetchImpl);
+    await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
+    const out = await pending;
+    expect(origins).toEqual(['http://127.0.0.1:9071', 'http://localhost:3070']);
+    expect(out).toContain('execution-authority lookup failed');
+    expect(out).toContain('stage=wall-during-fetch');
   });
 
   it('identifies a body-read timeout after headers while keeping the same fail-closed wall', async () => {
